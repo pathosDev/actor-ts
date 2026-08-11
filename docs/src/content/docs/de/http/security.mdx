@@ -44,6 +44,47 @@ const routes =
 | `handleErrors` | geworfene Fehler nahe den Routen auf Responses mappen |
 | `fallback` | an der Wurzel — beantwortet alles Unpassende |
 
+## Was jede Response ohnehin schon trägt
+
+`X-Content-Type-Options: nosniff` braucht keine Einrichtung. Geschrieben
+wird der Header vom **Backend**, nicht von einer Middleware — er erreicht
+damit auch die Responses, die keine Middleware sieht: das backend-eigene
+Fehler-Mapping, den `fallback`-404 und den 413 bei zu großem Body. Ein
+Header aus dem Handler gewinnt weiterhin.
+
+Er ist bewusst der einzige, der per Default an ist — es ist der einzige
+Header des Bündels, der nichts daran ändern kann, wie eine bestehende
+Anwendung eingebettet, geframed oder referenziert wird. `X-Frame-Options`
+und `Cross-Origin-Resource-Policy` würden iframes, Cross-Origin-Einbettung
+und OAuth-Popups brechen und bleiben deshalb Opt-in.
+
+Um das **ganze** Bündel auf jede Response zu legen — inklusive derselben
+middleware-unsichtbaren Pfade — konfiguriere es am Server statt am
+Routen-Baum:
+
+```ts
+import { SecurityHeadersOptions } from 'actor-ts/http';
+
+const securityHeadersOptions = SecurityHeadersOptions.create()
+  .withFrameOptions('SAMEORIGIN')
+  .withReferrerPolicy('strict-origin-when-cross-origin');
+
+await http.newServerAt('0.0.0.0', 8080)
+  .withSecurityHeaders(securityHeadersOptions)
+  .bind(routes);
+```
+
+Optionen zu übergeben ist ein Opt-in in das vollständige Bündel, samt
+dessen eigener Defaults — die beiden Header oben kommen also zusammen mit
+`Cross-Origin-Resource-Policy: same-origin` und dem Rest. Ein einfaches
+Objekt geht genauso (`withSecurityHeaders({ frameOptions: 'SAMEORIGIN' })`),
+und `withSecurityHeaders(false)` schaltet den Mechanismus komplett ab.
+
+Serverweit oder als `securityHeaders()`-Middleware — beide setzen dieselbe
+Menge. Zur Middleware greifst du, wenn nur ein Routen-Teilbaum sie braucht;
+zum Builder, wenn der ganze Server sie braucht — denn die Middleware wird
+überall dort übersprungen, wo eine Response nie durch sie zurückläuft.
+
 ## Betriebsumfeld
 
 - **TLS terminiert am Proxy.** Setze [HSTS](/de/http/middleware/security-headers/)
@@ -72,6 +113,18 @@ Detail serverseitig, verschlüsselt über die Request-ID. Halte `403`/`404`
 unspezifisch — die Static-File-Schicht liefert für jeden abgelehnten Pfad
 einen einheitlichen `404`, verrät also nie, was existiert.
 
+## Redirects
+
+`redirect(target)` nimmt **ausschließlich Same-Origin-Ziele** — eine
+relative Referenz. Eine absolute URL, ein protokollrelatives `//host` oder
+ein Steuerzeichen wirft `HttpError(400)`; einen `?next=`-Parameter direkt
+in einen Redirect zu reichen, scheitert damit geschlossen, statt zum
+Open-Redirect zu werden. Wenn das Verlassen des Origins Absicht ist, sag
+es: `redirectExternal(...)` ist derselbe Helper ohne Origin-Regel, und der
+eigene Name macht jeden bewussten Off-Origin-Sprung mit einem Befehl
+auffindbar. Übergib eine Konstante oder ein Ziel aus deiner Allowlist —
+nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
+
 ## Untrusted Input begrenzen
 
 - **Request-Bodies** werden vom Backend gekappt (Fastify 1 MiB Default;
@@ -97,11 +150,13 @@ Upgrade-Zeit und gated damit den Handshake.
 
 | Maßnahme | Womit |
 | --- | --- |
-| Security-Header auf jeder Response | `securityHeaders()` |
+| MIME-Sniffing auf jeder Response abgeschaltet | nichts — per Default an |
+| Security-Header auf jeder Response | `securityHeaders()`, oder serverweit `withSecurityHeaders(...)` |
 | HTTPS vom Browser erzwungen | `strictTransportSecurity()` / `withHsts` |
 | Cross-Origin kontrolliert | `cors(...)` |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
+| Keine Open Redirects | `redirect(...)` — same-origin per Default |
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |

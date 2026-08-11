@@ -41,6 +41,8 @@ type DnsSeedProviderOptionsType = {
   port:        number;   // wird im A-Record-Modus mit jeder IP gepaart
   useSrv?:     boolean;  // SRV-Records (die einen Port tragen) A vorziehen
   cacheTtlMs?: number;   // In-Process-TTL-Cache; Default 60_000 ms, 0 deaktiviert
+  pinnedAddresses?: readonly string[];  // nur diese akzeptieren; unbesetzt = alle
+  log?: (message: string, error?: unknown) => void;  // meldet ausgefilterte Adressen
   // DNS-Funktionen überschreiben (Default: node:dns/promises) — v. a. für Tests:
   resolve?:    (hostname: string) => Promise<string[]>;
   resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
@@ -94,6 +96,113 @@ A-Records zeigen typischerweise auf einen Loadbalancer oder eine
 Round-Robin-DNS-Liste; mehrere A-Einträge bedeuten mehrere
 Seed-Kandidaten.
 
+## Aufgelöste Adressen pinnen
+
+Was DNS zurückgibt, ist die Antwort einer Gegenstelle, die der
+Node nie authentifiziert hat.  `pinnedAddresses` begrenzt, was
+diese Antwort sagen darf: Adressen außerhalb der Liste werden
+verworfen, bevor sie dem Cluster als Seeds angeboten werden.
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.0.0.0/8'])
+  .withLog((message) => logger.warn(message));
+```
+
+**Die Form der Einträge hängt vom Modus ab**, weil die beiden Modi
+zu Unterschiedlichem auflösen:
+
+| Modus | Löst auf zu | Pinnen mit |
+| --- | --- | --- |
+| A-Records | IP-Adressen | CIDRs — `'10.0.0.0/8'`, `'2001:db8::/32'` |
+| SRV-Records | Ziel-**Hostnames** | Host-Suffixe — `'svc.cluster.local'` |
+
+Ein Suffix greift auf einer Label-Grenze, also lässt
+`svc.cluster.local` `pod-1.svc.cluster.local` und den Apex selbst
+zu, aber nicht `evilsvc.cluster.local`.  Ein CIDR wird nie für
+einen Hostname herangezogen und ein Suffix nie für eine IP —
+beide Formen in einer Liste zu mischen ist deshalb unproblematisch
+und praktisch, wenn dieselbe Konfiguration beide Modi bedient.
+
+Eine Liste, die im konfigurierten Modus nichts treffen kann, wird
+**bei der Konstruktion abgelehnt**, statt still jeden Record zu
+verwerfen:
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv()
+  .withPinnedAddresses(['10.0.0.0/8']);
+// Wirft OptionsError — SRV-Ziele sind Hostnames, diese Liste würde
+// jeden Record verwerfen und wie eine leere DNS-Antwort aussehen.
+new DnsSeedProvider(dnsSeedProviderOptions);
+```
+
+Dieselbe Prüfung lehnt ein bloßes `'10.0.0.1'` ab (schreibe
+`'10.0.0.1/32'`), ebenso eine leere Liste und ein fehlerhaftes
+CIDR.
+
+### Adressen werden nur in kanonischer Form verglichen
+
+Beide Seiten des Vergleichs — die CIDRs, die du pinnst, und die
+Adressen, die der Resolver zurückgibt — müssen **kanonisch** sein:
+Dezimal-Oktette ohne führende Null, ohne `0x`, ohne Exponent, ohne
+Whitespace, und eine schlichte dezimale Präfixlänge.
+
+Das ist keine Pedanterie.  `1e1.0.0.1`, `010.0.0.1` und
+`0x0a.0.0.1` lesen sich für einen großzügigen Zahlen-Parser alle
+als `10.0.0.1`, aber die Socket-Schicht wertet sie als *keine IP*
+und löst sie stattdessen über DNS auf — eine Antwort in einer
+dieser Schreibweisen käme also an einem `10.0.0.0/8`-Pin vorbei
+und verbände sich dann dorthin, wohin der Resolver des Angreifers
+zeigt.  Alles Nicht-Kanonische gilt jetzt als Hostname, und ein
+Hostname wird nie gegen einen CIDR-Pin geprüft.
+
+Zwei Konsequenzen, die beim Upgrade zählen:
+
+- Ein nicht-kanonisch geschriebener Pin-Eintrag (`'010.0.0.0/8'`)
+  wirft bei der Konstruktion, statt ein anderes Netz zu pinnen als
+  dort steht.
+- Ein Tippfehler mit abschließendem Slash (`'10.0.0.0/'`) wirft
+  ebenfalls.  Bisher wurde er als `/0` gelesen — ein Pin, der ein
+  Netz zulassen sollte und den gesamten Adressraum zuließ.
+
+Ein rein numerisches Host-Suffix (`'0.1'`) wird ebenfalls
+abgelehnt: Suffix-Matching ist Stringvergleich, ein solcher
+Eintrag würde also das Ende unbeteiligter Adressen treffen.  Pinne
+stattdessen ein CIDR.
+
+Verworfene Adressen sind **gefiltert, nicht fatal** — ein
+veralteter Record kostet diesen Record, nicht den gesamten
+Bootstrap.  Jeder Wurf geht an `log`, und das lohnt sich zu
+verdrahten: eine zu enge Pin-Liste und eine leere DNS-Antwort
+sehen von außen identisch aus, und eine leere Seed-Liste heißt,
+dass der Node seinen eigenen Single-Node-Cluster bildet.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Das ist Defense-in-Depth, nicht die primäre Kontrolle">
+  Die Kontrolle, die tatsächlich entscheidet, wer joinen darf, ist
+  **mTLS**: das Zertifikat eines Peers muss für die Adresse
+  bürgen, die er beansprucht — eine gefälschte Seed-Adresse
+  bekommt also eine Verbindung, die dann beim Handshake
+  abgewiesen wird.  Pinning zählt dort, wo mTLS *nicht*
+  konfiguriert ist — und als zweite Schicht dort, wo es das ist,
+  denn ein Node mit nur halb konfiguriertem TLS fällt darauf
+  zurück, jeden Peer zu akzeptieren.  Siehe
+  [Cluster-Sicherheit](/de/operations/security/cluster-security/).
+
+  Im SRV-Modus ist ein Suffix-Pin noch schwächer: er begrenzt den
+  Namensraum, in den ein Record zeigen darf, aber der A-Lookup
+  dieses Ziels ist selbst nicht gepinnt.  Er stoppt einen
+  eingeschleusten Record auf eine fremde Domain; er stoppt keinen
+  Angreifer, der den Resolver vollständig kontrolliert.
+</Aside>
+
 ## Wann du ihn einsetzt
 
 | Umgebung | Verwendung |
@@ -139,8 +248,6 @@ dem heißen Pfad liegt.  Das heißt:
   nicht für die Steady-State-Laufzeit des Clusters.
 
 ## Wann NICHT
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Langsames / unzuverlässiges DNS">
   ```ts

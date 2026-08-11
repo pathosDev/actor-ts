@@ -260,11 +260,11 @@ Correlation-ID, eine Request-ID, eine User-ID — verwende die
 darin liest sie automatisch:
 
 ```ts
-import { LogContext } from 'actor-ts';
+import { LogContext, randomUuid } from 'actor-ts';
 
 // HTTP-Request-Handler — wickelt die Actor-Arbeit in einen Kontext-Scope.
 app.post('/orders', async (req, res) => {
-  const correlationId = req.headers['x-correlation-id'] ?? randomUUID();
+  const correlationId = req.headers['x-correlation-id'] ?? randomUuid();
 
   await LogContext.run({ correlationId, userId: req.user.id }, async () => {
     const result = await orderActor.ask({ kind: 'place', ... });
@@ -283,14 +283,24 @@ class OrderActor extends Actor<...> {
 ```
 
 `LogContext` ist mit `AsyncLocalStorage` unterlegt — der Kontext
-propagiert über `await`s, `tell`s und Cluster-Hops hinweg.  Drei
+propagiert über `await`s, `tell`s und Cluster-Hops hinweg.  Die
 Operationen:
 
 | Methode | Was sie tut |
 | --- | --- |
-| `LogContext.run(context, fn)` | Führt `fn` mit `context` als aktuellem Kontext aus. |
-| `LogContext.with(extra, fn)` | Führt `fn` mit `{ ...current, ...extra }` als Kontext aus. |
+| `LogContext.run(context, callback)` | Führt `callback` mit `context` als aktuellem Kontext aus. |
+| `LogContext.with(extra, callback)` | Führt `callback` mit `{ ...current, ...extra }` als Kontext aus. |
 | `LogContext.get()` | Liest den aktuellen Kontext (leeres Objekt, wenn keiner aktiv). |
+| `LogContext.snapshot()` | Kopiert den aktuellen Kontext in ein frisches, veränderbares Objekt. |
+| `LogContext.runFresh(callback)` | Führt `callback` mit geleertem Kontext aus und ignoriert den umgebenden. |
+| `LogContext.runEach(entries, callback)` | Führt `callback` je Eintrag aus, jeweils unter dessen mitgeschnappschusstem Kontext. |
+
+`get()` liefert den lebenden Readonly-Kontext — dieselbe Referenz für
+den ganzen Scope.  Halte sie deshalb nie über den Scope hinaus fest
+und gib sie nichts, was sie mutieren könnte.  An einer Grenze ist
+`snapshot()` das Mittel der Wahl: es liefert **bei jedem Aufruf eine
+frische Kopie**, die du behalten, verändern oder an einen Serialisierer
+geben kannst.
 
 **Statische Felder (`withFields`) und dynamische MDC mergen zur
 Emit-Zeit**; dynamisch gewinnt bei Schlüssel-Kollision
@@ -314,7 +324,7 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
 
 <Aside type="caution" title="MDC-Werte müssen JSON-sicher sein">
   ```ts
-  LogContext.run({ user: req.user }, fn);   // ← Objekt, kann das Wire nicht überqueren
+  LogContext.run({ user: req.user }, callback);   // ← Objekt, kann das Wire nicht überqueren
   ```
   `LogContext`-Werte sind nur `string | number | boolean`.  Das
   wird vom Typ erzwungen — komplexe Objekte zu übergeben, scheitert
@@ -324,19 +334,27 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
   kann den User nachschlagen, wenn er mehr braucht.
 </Aside>
 
-<Aside type="caution" title="Logging in `onReceive` ≠ Logging in einem setTimeout">
+<Aside type="caution" title="Aufgeschobene Arbeit behält die MDC — das ist die Gefahr, nicht der Verlust">
   ```ts
   override onReceive(message) {
     this.log.info('handling');               // ✓ MDC vorhanden
     setTimeout(() => {
-      this.log.info('later');                 // ✗ MDC kann verloren gehen
-    }, 1_000);
+      this.log.info('later');                 // ✓ MDC weiterhin da — die der
+    }, 1_000);                                //   Runde, nicht die des Aufrufers
   }
   ```
-  Rohes `setTimeout` läuft außerhalb der
-  Nachrichtenverarbeitungs-Runde des Actors — und `AsyncLocalStorage`
-  kann bis dahin gelöscht sein.  Verwende `context.timers` für
-  actor-gebundene Timer; sie halten die MDC-Propagation am Laufen.
+  `AsyncLocalStorage` bindet den Store, wenn eine Async-Ressource
+  **erzeugt** wird, nicht wenn sie läuft.  Ein innerhalb der Runde
+  scharfgemachtes `setTimeout` sieht beim Feuern also weiterhin die MDC
+  dieser Runde — obwohl `run()` längst zurückgekehrt ist.
+  `context.timers` verhält sich genauso: es delegiert an den
+  System-Scheduler, dessen Callback ein normales `tell` absetzt, und
+  dieses `tell` snapshotet den zur Feuerzeit aktuellen Kontext.
+
+  Der Fehlerfall ist damit das Gegenteil von Kontextverlust —
+  aufgeschobene Arbeit **erbt** den Kontext derjenigen Runde, die sie
+  zufällig gestartet hat.  Wenn diese Arbeit jemand anderem dient, siehe
+  [Aufgeschobene Arbeit und Tenant-Isolation](#aufgeschobene-arbeit-und-tenant-isolation).
 </Aside>
 
 <Aside type="caution" title="`info`-Aufrufe, die große Objekte allokieren">
@@ -352,6 +370,126 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
     this.log.debug('snapshot:', this.expensiveSnapshot());
   }
   ```
+</Aside>
+
+## Aufgeschobene Arbeit und Tenant-Isolation
+
+Den Kontext zu erben ist genau das, was du für einen geradlinig
+durchlaufenden Request willst: eine `correlationId`, jeder Hop. Es
+hört in dem Moment auf, das Gewünschte zu sein, in dem Arbeit **die
+Runde überlebt, die sie gestartet hat** — ein nicht awaitetes Promise,
+ein später geflushter Puffer, eine im Batch geleerte Queue, ein für
+die Zukunft scharfgemachter Retry.
+
+`AsyncLocalStorage` bindet den Store, wenn die Async-Ressource
+*erzeugt* wird. Ein in einer Runde gestartetes Promise behält deren
+Kontext also für immer, und jedes `tell` seiner Fortsetzung stempelt
+diesen Kontext auf das Envelope. Dient die aufgeschobene Arbeit einem
+anderen Prinzipal als die auslösende Runde, reisen die Identifier des
+einen Tenants mit den Nachrichten eines anderen mit — ein Datenleck,
+nicht bloß eine verwirrende Log-Zeile:
+
+```ts
+// ✗ Leckt: der Drain erbt den Request, der den Flush ausgelöst hat.
+override onReceive(message: CollectorMessage): void {
+  match(message)
+    .with({ kind: 'buffer' }, (m) => this.onBuffer(m))
+    .with({ kind: 'drain' }, () => this.onDrain())
+    .exhaustive();
+}
+
+private onDrain(): void {
+  void (async () => {                       // niemand awaitet das hier
+    for (const item of this.buffered.splice(0)) {
+      await this.flush(item);
+      this.sink.tell(item);                 // ← trägt den Tenant der DRAIN-
+    }                                       //   Runde, für jedes Item
+  })();
+}
+```
+
+Zwei Primitive schließen die Lücke. Welches passt, hängt davon ab,
+wem die aufgeschobene Arbeit gehört.
+
+### `runFresh` — die Arbeit gehört niemandem
+
+Nimm es an der Naht, an der Arbeit dem Aufrufer nicht mehr zurechenbar
+ist, der sie zufällig gestartet hat: eine Hintergrundschleife, ein
+Wartungslauf, ein Retry-Timer.
+
+```ts
+override onReceive(_message: string): void {
+  LogContext.runFresh(async () => {
+    await this.rebuildIndex();
+    this.sink.tell('index-rebuilt');        // ← trägt keine Tenant-Felder
+  }).catch((error) => this.log.error('index rebuild failed', error));
+}
+```
+
+Das `.catch` ist keine Zierde. Niemand awaitet dieses Promise, eine
+Rejection hat also keinen Ort, an den sie gehen könnte: Auf Node ist
+eine unbehandelte Rejection seit v15 standardmäßig fatal, ein
+fehlschlagender Rebuild reißt also den Prozess mit, statt eine Zeile zu
+loggen. Ein `void` vor dem Aufruf würde den Linter beruhigen und den
+Absturz behalten.
+
+Es ist die Umkehrung von `with()`: wo `with` erbt und ergänzt, startet
+`runFresh` bewusst leer. Das schlägt sicher fehl — ein Feld, das
+niemand gesetzt hat, kann nicht lecken — und ist leichter zu
+überblicken, als sich zu merken, welche Schlüssel zu entfernen sind.
+
+### `runEach` — jedes Item gehört jemand anderem
+
+Nimm es, wenn der Batch gemischt ist: eine in einer Runde geleerte
+Mailbox, ein Flush gepufferter Writes, über Tenants hinweg
+zusammengefasste Requests. Schnappschusse den Kontext jedes Items
+**beim Einreihen** — nur dann ist er noch aktuell — und spiele ihn
+beim Drainen wieder ein:
+
+```ts
+import type { LogContextEntry } from 'actor-ts';
+
+// Die Queue überlebt die Runde, die sie gefüllt hat, das Feld braucht
+// also einen Typ — genau dafür ist `LogContextEntry` exportiert.
+private readonly buffered: Array<LogContextEntry<Item>> = [];
+
+private onBuffer(m: BufferMessage): void {
+  // Jetzt schnappschussen; die Drain-Runde ist viel zu spät.
+  this.buffered.push({ context: LogContext.get(), item: m.item });
+}
+
+private onDrain(): void {
+  LogContext.runEach(this.buffered.splice(0), async (item) => {
+    await this.flush(item);
+    this.sink.tell(item);                   // ← der EIGENE Tenant je Item
+  }).catch((error) => this.log.error('drain failed', error));
+}
+```
+
+Die Einträge werden **sequenziell** abgearbeitet, jeder in seinem
+eigenen Scope, und der zur Drain-Zeit umgebende Kontext wird ignoriert
+statt gemerged.
+
+<Aside type="note" title="Warum `runEach` `Promise<void>` liefert">
+  Es resolvt, wenn der letzte Eintrag fertig ist, und liefert nichts
+  zurück. Ergebnisse herauszugeben würde es wie `Promise.all` lesen
+  lassen und zur Nutzung als Nebenläufigkeits-Helfer einladen, was es
+  nicht ist — die Reihenfolge und die Garantie „ein Scope pro Item"
+  sind das Produkt, und die Nutzlast jedes Aufrufs ist ein Seiteneffekt
+  (eine Log-Zeile, ein nachgelagertes `tell`).
+
+  Ein Fehler **propagiert sofort** und lässt die restlichen Einträge
+  liegen. Ihn zu schlucken wäre eine Supervision-Entscheidung, und die
+  gehört nicht in ein Diagnose-Primitiv; willst du Isolation je Item,
+  gehört das `try`/`catch` in den Callback, wo es weiterhin unter dem
+  richtigen Kontext läuft.
+
+  Genau deshalb endet der Aufruf oben auf `.catch` und beginnt nicht mit
+  `void`. Niemand awaitet das zurückgegebene Promise, eine Rejection,
+  die daraus entkommt, ist also unbehandelt — auf Node seit v15
+  standardmäßig fatal. Das Framework hält es bei eigener aufgeschobener
+  Arbeit genauso: `Scheduler.scheduleOnceFunction` verpackt den Task in
+  `runGuarded`, statt ihn blank abzufeuern.
 </Aside>
 
 ## Strukturiertes Logging — `withFields` + MDC zusammen

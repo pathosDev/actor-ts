@@ -172,11 +172,11 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
     }
 
     if (common.circuitBreaker !== undefined) {
-      const cb = common.circuitBreaker;
-      if (typeof cb.failureThreshold !== 'number' || !Number.isInteger(cb.failureThreshold) || cb.failureThreshold < 1) {
-        this.fail('circuitBreaker.failureThreshold', 'must be an integer >= 1', cb.failureThreshold);
+      const circuitBreaker = common.circuitBreaker;
+      if (typeof circuitBreaker.failureThreshold !== 'number' || !Number.isInteger(circuitBreaker.failureThreshold) || circuitBreaker.failureThreshold < 1) {
+        this.fail('circuitBreaker.failureThreshold', 'must be an integer >= 1', circuitBreaker.failureThreshold);
       }
-      this.nestedPositive('circuitBreaker.resetMs', cb.resetMs);
+      this.nestedPositive('circuitBreaker.resetMs', circuitBreaker.resetMs);
     }
   }
 

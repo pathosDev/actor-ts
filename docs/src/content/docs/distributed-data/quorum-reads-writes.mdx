@@ -3,6 +3,8 @@ title: Quorum reads and writes
 description: When eventual consistency isn't enough — `updateAsync` and `getAsync` with explicit consistency levels (local / majority / all) give synchronous guarantees about how many replicas have seen / contributed to a value.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 DistributedData's default `update` / `get` are **local-only** —
 they apply to the local replica immediately; propagation happens
 via gossip.  For workloads needing stronger guarantees, the
@@ -185,9 +187,76 @@ try {
 }
 ```
 
-## What quorum doesn't guarantee
+## Bounding the pending set
 
-import { Aside } from '@astrojs/starlight/components';
+Every quorum call that cannot resolve on the self-ack alone parks a
+record — a promise, a timer, the set of peers it is waiting on — until
+either enough replies arrive or the deadline passes.  Two settings bound
+that set, in code or via
+[`actor-ts.distributed-data`](/reference/configuration/#actor-tsdistributed-data):
+
+```ts
+import { DistributedDataId, DistributedDataOptions } from 'actor-ts';
+
+const distributedDataOptions = DistributedDataOptions.create()
+  .withMaxPendingQuorumRequests(1_000)
+  .withMaxQuorumTimeout(30_000);
+
+const dd = system.extension(DistributedDataId).start(cluster, distributedDataOptions);
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `maxPendingQuorumRequests` | `1000` | Most unsettled quorum requests at once.  `updateAsync` and `getAsync` share the budget.  `0` disables it. |
+| `maxQuorumTimeout` | `30000` | Ceiling in ms on a call's `timeoutMs`; a larger value is clamped down.  `0` disables it. |
+
+Past the cap, the call rejects immediately with an error naming the
+setting — it does **not** queue and it does **not** wait:
+
+```ts
+try {
+  await dd.updateAsync('x', ..., { consistency: 'majority' });
+} catch (e) {
+  // "DistributedData refused a quorum write on "x": 1000 quorum requests
+  //  are already pending (max-pending-quorum-requests = 1000)"
+}
+```
+
+As with a timeout, a refusal **doesn't undo the local write** — the value
+is applied before the quorum starts and gossips normally.
+
+<Aside type="tip" title="Why the default is 1000 and not 10 000">
+  The replicator runs on the default bounded mailbox — 10 000 entries,
+  `drop-head`.  At saturation that policy discards the **oldest** queued
+  envelope, and a queued `updateAsync` envelope carries your `resolve` and
+  `reject` with it: the promise you are awaiting can then never settle, and
+  nothing is logged.  A cap set at 10 000 would never be reached before the
+  mailbox got there first, so it would convert nothing.  Set an order of
+  magnitude below, the cap's entire value is that it turns that silent drop
+  into an explicit rejection you can catch.
+</Aside>
+
+## Watching it in production
+
+With [metrics](/observability/metrics/core-metrics/) enabled, the replicator publishes
+four series — the label sets are fixed, so they cost a handful of series
+and no more:
+
+| Metric | Kind | Labels |
+| --- | --- | --- |
+| `distributed_data_quorum_pending` | gauge | — |
+| `distributed_data_quorum_timeouts_total` | counter | `operation` = `write` \| `read` |
+| `distributed_data_quorum_rejected_total` | counter | `operation` = `write` \| `read` |
+| `distributed_data_dropped_values_total` | counter | — |
+
+The pair worth alerting on is the last two.  A rising
+`..._rejected_total` means callers are outrunning the cap — either a
+runaway producer or a cap set too low for the workload.  A rising
+`..._dropped_values_total` means a peer is sending CRDT payloads this
+replica cannot decode, which is a broken or hostile peer rather than a
+tuning problem.
+
+## What quorum doesn't guarantee
 
 <Aside type="caution" title="`'majority'` isn't linearizability">
   A majority write + a majority read **don't** give you full

@@ -1,6 +1,6 @@
 ---
 title: Core metrics
-description: The three metric primitives — Counter, Gauge, Histogram — plus the label model that turns one metric into many time-series. Cardinality discipline is the user's responsibility.
+description: The three metric primitives — Counter, Gauge, Histogram — plus the label model that turns one metric into many time-series, and the per-family cardinality cap that keeps an unbounded label from taking your monitoring down.
 ---
 
 The metrics extension exposes three classic primitives:
@@ -168,6 +168,74 @@ series** — your monitoring system runs out of memory.
 - Pod names if the pod count is bounded.
 
 Aim for **< 100 series per metric**.  Above that, alarm.
+
+### `bucketize` — bound a value at the source
+
+When a label value comes from outside — a URL path, a header, an
+id — map it onto a **fixed allow-list** before it reaches the
+registry:
+
+```ts
+import { bucketize } from 'actor-ts';
+
+const ALLOWED_ROUTES = ['/orders', '/users/:id', '/health'] as const;
+
+metrics.counter('http_requests_total', {
+  route: bucketize(routeTemplateOf(request), ALLOWED_ROUTES),
+}).inc();
+```
+
+`bucketize(value, allowed)` returns `value` when it is one of
+`allowed`, and `'other'` otherwise — so the family can never hold
+more series than `allowed.length + 1`, no matter what an attacker
+sends.
+
+### The cardinality cap
+
+`bucketize` is the fix; the registry's cap is the **backstop** for
+the labels nobody bounded.  A family stops minting new series once
+it holds `maxSeriesPerFamily` of them (default **10 000**) and
+folds everything past that into one overflow series:
+
+```
+http_requests_total{route="/orders"}       1234
+http_requests_total{route="/health"}         56
+http_requests_total{route="__overflow__"}  8_912_004
+```
+
+The first family to hit the cap logs a warning naming the family
+and the tuple that overflowed — one warning per family, not per
+call.  The marker lives in the label **value**, not in a label
+name: Prometheus reserves `__`-prefixed label *names* and strips
+them at ingestion, which would silently merge the overflow series
+into a real one.
+
+Raise or disable the cap when the registry is installed:
+
+```ts
+import { MetricsExtensionId, MetricsRegistryOptions } from 'actor-ts';
+
+const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50_000);
+const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
+
+// or as a plain object: .enable({ maxSeriesPerFamily: 50_000 })
+```
+
+`0` disables the cap entirely — only do that when every label
+value provably comes from a bounded set.  (`0`, not `Infinity`:
+the cap is an integer count, and `Infinity` is not an integer.)
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Pick the cap above your legitimate series count">
+  A cap below what your system legitimately produces discards
+  **real operating data**.  `actor_mailbox_dropped_total` carries a
+  `path` label — one series per dropping actor path — so a node
+  hosting thousands of sharded entities under back-pressure can
+  cross a few thousand series with nothing hostile happening.  That
+  is why the default is 10 000 rather than the ~1 000 that would
+  otherwise look sufficient.
+</Aside>
 
 ## Reading values in-process
 

@@ -70,6 +70,7 @@ The seed-related knobs:
 | --- | --- | --- |
 | `seeds` | `[]` | List of `"host:port"` strings.  Empty = "I'm the first." |
 | `seedRetryIntervalMs` | 3000 | If no seed responds, retry the list this often until one does. |
+| `selfElection` | `'immediate'` | When this node may form a cluster alone: `'immediate'` (only on an empty seed list), `'never'`, or a millisecond grace.  Set by [cluster bootstrap](/cluster/cluster-bootstrap/). |
 
 ## The first node
 
@@ -92,40 +93,48 @@ This makes single-node development trivial — no seed list to
 maintain.  Add a second node later by giving it the first's
 address as a seed.
 
-**For production**, give every node the same seed list (3-5
-addresses, ideally well-known nodes you don't expect to churn).
-Order doesn't matter; the joiner tries each.
+**For production**, designate one node with an empty seed list and
+give the rest that node's address — or, better, use
+[cluster bootstrap](/cluster/cluster-bootstrap/), which removes the
+need for a designated first node entirely.
 
-## Self-seeded nodes — the bootstrap race
+## The symmetric seed list does not cold-start
+
+It is tempting to hand every node the same list containing every
+node.  That configuration **never forms a cluster**:
 
 ```mermaid
 sequenceDiagram
   participant N1 as n1
   participant N2 as n2
   participant N3 as n3
-  Note over N1,N3: All three fresh, all in seed list [n1, n2, n3]
-  N1->>N2: contact seed
-  N2-->>N1: no cluster yet / times out
-  N1->>N3: contact seed
-  N3-->>N1: no cluster yet / times out
-  N1->>N1: contact self → recognizes, auto-bootstraps
-  Note over N1: n1 is now leader
-  N2->>N1: contact seed
-  N1-->>N2: join through me
-  N3->>N1: contact seed
-  N1-->>N3: join through me
+  Note over N1,N3: All three fresh, all given seed list [n1, n2, n3]
+  Note over N1: filters itself out → seeds = [n2, n3] → not empty
+  N1->>N2: join announcement
+  N1->>N3: join announcement
+  Note over N2,N3: same on both — everyone waits to be let in
+  Note over N1,N3: no member is `up`, so there is no leader,<br/>so nobody is ever promoted
 ```
 
-When a cluster cold-starts (all nodes coming up simultaneously),
-the joiners race.  The framework's seed-retry logic handles this:
+`Cluster` removes this node's own address from its seed list, so a
+symmetric list leaves **no** node with the empty list that
+`selfElection: 'immediate'` requires.  Every node stays `joining`
+forever; there is no leader, and the leader is what promotes
+`joining → up`.
 
-- Each node retries its seed list at `seedRetryIntervalMs`.
-- One node eventually contacts itself first; that's the
-  bootstrap.
-- The rest converge on the now-existing cluster.
+Two ways out:
 
-The default 3-second retry makes cold-start convergence reliable
-in a few rounds.
+- **One designated first node** with `seeds: []`, the rest pointing at
+  it.  Simple, but that node is special at start-up, which containers
+  and autoscalers make awkward.
+- **[Cluster bootstrap](/cluster/cluster-bootstrap/)** — every node
+  gets the same configuration and the framework elects exactly one to
+  break the tie.  This is the option to reach for whenever nodes start
+  simultaneously.
+
+The `seedRetryIntervalMs` retry loop still matters, but it solves a
+different problem: a seed that is reachable *eventually*.  It cannot
+manufacture a first member.
 
 ## Seed discovery — beyond a static list
 
@@ -223,9 +232,9 @@ import { Aside } from '@astrojs/starlight/components';
   Once the partition heals, the gossip protocol *doesn't* merge
   the two clusters automatically — they're independent.  Mitigate
   with a downing strategy ([downing-strategies](/cluster/downing-strategies/))
-  and **don't bootstrap during partition** if you can help it
-  (use a seed strategy that fails fast rather than self-bootstrapping
-  on no-seed-response — see weakly-up).
+  and with [cluster bootstrap](/cluster/cluster-bootstrap/), which
+  makes exactly one node eligible to form a cluster and refuses to
+  decide at all while discovery keeps changing its mind.
 </Aside>
 
 <Aside type="caution" title="Hostname vs IP mismatch">
@@ -246,6 +255,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Cluster overview](/cluster/overview/)** — the
   bigger picture.
+- **[Cluster bootstrap](/cluster/cluster-bootstrap/)** —
+  stable observation and initial-seed election for simultaneous starts.
 - **[Weakly-up](/cluster/weakly-up/)** — gradual-join
   semantics for slow convergence.
 - **[Failure detector](/cluster/failure-detector/)** —

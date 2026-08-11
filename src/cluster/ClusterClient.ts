@@ -40,9 +40,11 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
+import { validateWireFrame } from './WireValidation.js';
 import type {
   ClusterClientEnvelopeMessage,
   ClusterClientReplyMessage,
@@ -67,13 +69,13 @@ const HELLO_TIMEOUT_MS = 5_000;
  * which an attacker on the wire (MitM on plaintext, malicious cluster
  * peer, or someone with frame-level write access via TLS-stripping
  * proxy) could predict and use to inject a forged reply BEFORE the
- * legitimate one arrives.  `crypto.randomUUID()` gives 122 bits of
+ * legitimate one arrives.  {@link randomUuid} gives 122 bits of
  * entropy per call — guessing the next ID is computationally
  * infeasible.  Frame replies whose ID doesn't match a current
  * pending entry are dropped by `handleReply()` (existing behaviour).
  */
 function nextAskId(): string {
-  return globalThis.crypto.randomUUID();
+  return randomUuid();
 }
 
 /** @internal — test-only handle for the predictability regression. */
@@ -158,7 +160,7 @@ export class ClusterClient {
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();
     const env: ClusterClientEnvelopeMessage = {
-      t: 'cluster-client-envelope',
+      kind: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
       body: message,
@@ -179,7 +181,7 @@ export class ClusterClient {
     await this.ensureConnected();
     const askId = nextAskId();
     const env: ClusterClientEnvelopeMessage = {
-      t: 'cluster-client-envelope',
+      kind: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
       askId,
@@ -251,7 +253,7 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMessage = { t: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = { kind: 'hello', self: this.identity.toJSON() };
                 try { s.write(encodeFrame(hello)); } catch (e) {
                   clearTimeout(timer);
                   reject(e as Error);
@@ -297,14 +299,37 @@ export class ClusterClient {
     chunk: Uint8Array,
     onHelloAcknowledgment: (peer: NodeAddress) => void,
   ): void {
-    const frames = this.decoder.push(chunk);
+    // The client trusts its contact points no more than a node trusts a peer.
+    // `push` throws on an oversized length-prefix or malformed JSON, and this
+    // runs inside the runtime's socket-data callback — so an unguarded call
+    // meant one bad frame from one contact point killed the client process
+    // (#587).  The transport-side equivalent has been guarded since #563.
+    let frames;
+    try {
+      frames = this.decoder.push(chunk);
+    } catch (e) {
+      this.log.warn(
+        `ClusterClient: frame-decoder error from a contact point; dropping the connection: `
+        + `${e instanceof Error ? e.message : String(e)}`,
+      );
+      try { sock.end(); } catch { /* already gone */ }
+      return;
+    }
     for (const frame of frames) {
-      if (frame.t === 'hello-ack') {
-        const ack = frame as HelloAcknowledgmentMessage;
+      const checked = validateWireFrame(frame);
+      if ('problem' in checked) {
+        this.log.warn(`ClusterClient: ignoring malformed frame — ${checked.problem}`);
+        continue;
+      }
+      if (checked.message.kind === 'hello-ack') {
+        const ack = checked.message as HelloAcknowledgmentMessage;
         onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
-      const frameType = (frame as { t: string }).t;
+      // Widened on purpose: `WireMessage` enumerates only the core kinds, and
+      // `cluster-client-reply` is one of the extension kinds that ride the same
+      // wire (see the note in WireValidation.ts).
+      const frameType = (checked.message as { kind: string }).kind;
       if (frameType === 'cluster-client-reply') {
         // Contained on purpose.  `push` returns a *batch* of frames, so a throw
         // from one reply used to abandon the rest of the batch — every later
@@ -312,7 +337,7 @@ export class ClusterClient {
         // settled were left to time out instead.  One malformed reply must not
         // take the others with it.
         try {
-          this.handleReply(frame as unknown as ClusterClientReplyMessage);
+          this.handleReply(checked.message as unknown as ClusterClientReplyMessage);
         } catch (e) {
           this.log.warn(`ClusterClient: failed to handle a reply frame: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -320,7 +345,6 @@ export class ClusterClient {
       }
       this.log.debug(`ClusterClient: ignoring unsolicited frame type "${frameType}"`);
     }
-    void sock;
   }
 
   private handleReply(reply: ClusterClientReplyMessage): void {

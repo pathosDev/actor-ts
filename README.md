@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3925%20of%203925-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~91%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-5080%20of%205080-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~92%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~3925 tests, ~91 % line) but the
+> production**.  Test coverage is good (~5080 tests, ~92 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -80,6 +80,20 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
+- **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
+  `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
+  also answers `value → key` and keeps the inverse in step for you, and
+  `BidirectionalMultiMap<L, R>`, which does the same for a many-to-many
+  relation and leaves nothing behind when a participant drops out (both,
+  unlike an ordinary class, survive a snapshot as real instances — no
+  adapter); plus
+  the small helpers the framework itself runs on: `randomString` / `randomHex`
+  / `randomId` (crypto entropy, no modulo bias, exact length) and `randomUuid`
+  (a v4 UUID, for when the identifier has to be globally unique too),
+  `safeStringify`
+  (a `JSON.stringify` for log and error paths that cannot throw),
+  `lazyImportModule` (import an optional peer dependency, or fail with a
+  message naming the install command).
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
@@ -369,9 +383,9 @@ Issues and feature requests live on
 
 <a href="https://www.star-history.com/?repos=pathosDev%2Factor-ts&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
  </picture>
 </a>
 

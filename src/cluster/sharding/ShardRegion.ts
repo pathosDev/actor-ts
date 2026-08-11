@@ -100,7 +100,7 @@ type RoutableMessage<TMessage> = TMessage | EntityEnvelope;
 function isEntityEnvelope(message: unknown): message is EntityEnvelope {
   return typeof message === 'object'
     && message !== null
-    && (message as { $t?: unknown }).$t === 'sharding.EntityEnvelope';
+    && (message as { kind?: unknown }).kind === 'sharding.EntityEnvelope';
 }
 
 /**
@@ -318,7 +318,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.recordActivity(shardId, entityId);
     // Forward the original sender so that ask-pattern replies bypass region
     // and shard and reach the caller directly.
-    this.ensureShard(shardId).tell({ $t: 'sharding.EntityEnvelope', entityId, message }, sender);
+    this.ensureShard(shardId).tell({ kind: 'sharding.EntityEnvelope', entityId, message }, sender);
   }
 
   /**
@@ -384,7 +384,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const shard = this.shards.get(shardId);
     if (!shard) return;
     this.passivating.add(entityId);
-    shard.tell({ $t: 'sharding.PassivateEntity', entityId });
+    shard.tell({ kind: 'sharding.PassivateEntity', entityId });
   }
 
   private deliverRemote(
@@ -417,7 +417,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     }
 
     const envelope: ShardEnvelope = {
-      $t: 'sharding.Envelope',
+      kind: 'sharding.Envelope',
       message,
       originNode: originNode.toJSON(),
       originRegion,
@@ -497,7 +497,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private register(): void {
     const message: RegisterRegion = {
-      $t: 'sharding.Register',
+      kind: 'sharding.Register',
       region: this.self.path.toString(),
       node: this.config.cluster.selfAddress.toJSON(),
       proxy: this.config.proxy,
@@ -515,7 +515,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private askCoordinator(shardId: number): void {
     const getShardHome: GetShardHome = {
-      $t: 'sharding.GetShardHome',
+      kind: 'sharding.GetShardHome',
       shardId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
@@ -527,25 +527,25 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private handleShardingMessage(message: ShardingMessage): void {
     match(message)
-      .with({ $t: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m))
-      .with({ $t: 'sharding.ShardHome' }, (m) => this.onShardHome(m))
-      .with({ $t: 'sharding.HandOff' }, (m) => this.onHandOff(m))
-      .with({ $t: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
-      .with({ $t: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
-      .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
+      .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m))
+      .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m))
+      .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m))
+      .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
+      .with({ kind: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
+      .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m))
       // An EntityRef addressed one of our entities by id.
-      .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
+      .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       // Someone on another node told a ref to one of our shards.
-      .with({ $t: 'sharding.ToShard' }, (m) => this.onToShard(m))
+      .with({ kind: 'sharding.ToShard' }, (m) => this.onToShard(m))
       // Lifecycle reports coming up from our own shards.
-      .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
       // Introspection — node-local queries plus the coordinator's fan-out.
-      .with({ $t: 'sharding.GetShards' }, (m) => this.onGetShards(m))
-      .with({ $t: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
-      .with({ $t: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
-      .with({ $t: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
-      .with({ $t: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m))
+      .with({ kind: 'sharding.GetShards' }, (m) => this.onGetShards(m))
+      .with({ kind: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
+      .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
+      .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
+      .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m))
       // Coordinator-only messages; regions ignore them.
       .otherwise(() => this.onUnhandled());
   }
@@ -602,7 +602,25 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.registerTimer = null;
   }
 
+  /**
+   * A shard id is `hash(entityId) % numShards`, so anything outside the range
+   * did not come from an honest allocation.  It matters here more than
+   * elsewhere because `ensureShard` turns the id into a **child actor name**:
+   * an out-of-range or non-integer id minted a permanent child under an
+   * attacker-chosen name, and the region has no way to tell it apart from a
+   * real shard afterwards (#569).
+   */
+  private isKnownShardId(shardId: number): boolean {
+    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards) return true;
+    this.log.warn(
+      `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
+      + `outside 0..${this.config.numShards - 1}`,
+    );
+    return false;
+  }
+
   private onShardHome(message: ShardHome): void {
+    if (!this.isKnownShardId(message.shardId)) return;
     const node = NodeAddress.fromJSON(message.node);
     const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
     this.log.debug(
@@ -639,7 +657,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const correlationId = ++this.nextStatsCorrelation;
     this.pendingStatsAsks.set(correlationId, asker);
     this.tellCoordinator({
-      $t: 'sharding.GetClusterShardingStats',
+      kind: 'sharding.GetClusterShardingStats',
       correlationId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
@@ -706,7 +724,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       resident: this.shards.has(shardId),
     }));
     const reply: ShardRegionStats = {
-      $t: 'sharding.ShardRegionStats',
+      kind: 'sharding.ShardRegionStats',
       queryId: message.queryId,
       region: this.self.path.toString(),
       node: this.config.cluster.selfAddress.toJSON(),
@@ -816,7 +834,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       `[sharding] handing off shard ${shardId} of '${this.config.typeName}' (stopping ${entityIds.length} entit(ies))`,
     );
     this.shardState.set(shardId, 'handing-off');
-    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId };
+    const ack: BeginHandOffAcknowledgment = { kind: 'sharding.BeginHandOffAcknowledgment', shardId };
     this.tellCoordinator(ack);
 
     // Deliberately no `EntityStopped`, the same way an unexpected shard death
@@ -848,7 +866,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.shardState.delete(shardId);
 
     const complete: HandOffComplete = {
-      $t: 'sharding.HandOffComplete',
+      kind: 'sharding.HandOffComplete',
       shardId,
       region: this.self.path.toString(),
       node: this.config.cluster.selfAddress.toJSON(),
@@ -898,7 +916,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (!this.localShards.has(message.shardId)) return;
     if (this.config.proxy) return;
     const startEntities: ShardMessage = {
-      $t: 'sharding.StartEntities',
+      kind: 'sharding.StartEntities',
       entityIds: message.entityIds,
     };
     this.ensureShard(message.shardId).tell(startEntities);
@@ -949,7 +967,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       // still the record of them.  But ownership did not move, so nothing
       // re-ships that registry on its own (#894) — ask for it.
       if (this.config.rememberEntities) {
-        this.tellCoordinator({ $t: 'sharding.GetRememberedEntities', shardId });
+        this.tellCoordinator({ kind: 'sharding.GetRememberedEntities', shardId });
       }
       return;
     }
@@ -1131,7 +1149,7 @@ export class RemoteShardRef extends ActorRef<ShardMessage> {
   }
 
   override tell(message: ShardMessage, sender: ActorRef | null = null): void {
-    this.region.tell({ $t: 'sharding.ToShard', shardId: this.shardId, message }, sender);
+    this.region.tell({ kind: 'sharding.ToShard', shardId: this.shardId, message }, sender);
   }
 
   /** The shard's path, not the region's — the region is only the delivery route. */
@@ -1164,7 +1182,7 @@ export class ShardSenderRef extends ActorRef<unknown> {
 
   override tell(message: unknown): void {
     const reply: ShardReply = {
-      $t: 'sharding.Reply',
+      kind: 'sharding.Reply',
       correlationId: this.correlationId,
       message,
     };

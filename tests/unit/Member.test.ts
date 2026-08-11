@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Member } from '../../src/cluster/Member.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
+import { MEMBER_STATUSES } from '../../src/cluster/Protocol.js';
 import type { MemberStatus } from '../../src/cluster/Protocol.js';
 
 const addr = new NodeAddress('demo', 'h', 1);
@@ -98,5 +99,31 @@ describe('Member', () => {
     const member = new Member(addr, 'up', 1, rolesIn);
     rolesIn.push('c');
     expect(member.roles.has('c')).toBe(false);
+  });
+});
+
+describe('Member.fromData — status is checked, not trusted (#563)', () => {
+  const address = { systemName: 'app', host: 'h', port: 60_100 };
+
+  test('rejects a status outside the seven legal values', () => {
+    // Pre-fix this was copied through verbatim and reached
+    // `Cluster.emitStatusTransition`'s `match(...).exhaustive()`, which throws —
+    // from a socket callback, and only after the member had been stored and
+    // was therefore queued to be re-gossiped to every peer.
+    expect(() => Member.fromData({ address, status: 'pwned' as never, version: 1 }))
+      .toThrow(/Invalid member status/);
+  });
+
+  test('names the legal values so the error is actionable', () => {
+    expect(() => Member.fromData({ address, status: '' as never, version: 1 }))
+      .toThrow(/joining, weakly-up, up, unreachable, leaving, down, removed/);
+  });
+
+  test('accepts every legal status and round-trips through toData', () => {
+    for (const status of MEMBER_STATUSES) {
+      const member = Member.fromData({ address, status, version: 3, roles: ['backend'] });
+      expect(member.status).toBe(status);
+      expect(Member.fromData(member.toData()).status).toBe(status);
+    }
   });
 });

@@ -43,6 +43,46 @@ const routes =
 | `handleErrors` | map thrown errors to responses close to the routes |
 | `fallback` | at the root — answers anything unmatched |
 
+## What every response already carries
+
+`X-Content-Type-Options: nosniff` needs no setup. The **backend** writes it,
+not a middleware, so it also reaches the responses no middleware sees: the
+backend's own error mapping, the `fallback` 404 and the body-too-large 413.
+A handler's own header still wins.
+
+It is the only one on by default, deliberately — it is the only header of
+the bundle that cannot change how an existing application is embedded,
+framed or referred to. `X-Frame-Options` and
+`Cross-Origin-Resource-Policy` would break iframes, cross-origin embedding
+and OAuth popups, so they stay opt-in.
+
+To put the **whole** bundle on every response — including those same
+middleware-invisible paths — configure it on the server rather than the
+route tree:
+
+```ts
+import { SecurityHeadersOptions } from 'actor-ts/http';
+
+const securityHeadersOptions = SecurityHeadersOptions.create()
+  .withFrameOptions('SAMEORIGIN')
+  .withReferrerPolicy('strict-origin-when-cross-origin');
+
+await http.newServerAt('0.0.0.0', 8080)
+  .withSecurityHeaders(securityHeadersOptions)
+  .bind(routes);
+```
+
+Passing options opts into the full bundle, its own defaults included — so
+the two headers above arrive alongside `Cross-Origin-Resource-Policy:
+same-origin` and the rest. A plain object works as well
+(`withSecurityHeaders({ frameOptions: 'SAMEORIGIN' })`), and
+`withSecurityHeaders(false)` turns the mechanism off entirely.
+
+Server-wide or as `securityHeaders()` middleware — both stamp the same set.
+Reach for the middleware when only a route subtree needs it; reach for the
+builder when the whole server does, because the middleware is skipped
+wherever a response never comes back through it.
+
 ## Operational environment
 
 - **TLS terminates at a proxy.** Set [HSTS](/http/middleware/security-headers/)
@@ -70,6 +110,18 @@ request id. Keep `403`/`404` responses unspecific — the static-file layer
 returns a uniform `404` for every rejected path so it never reveals what
 exists.
 
+## Redirects
+
+`redirect(target)` takes **same-origin targets only** — a relative
+reference. An absolute URL, a protocol-relative `//host`, or a control
+character throws `HttpError(400)`, so forwarding a `?next=` parameter
+straight into a redirect fails closed instead of becoming an open redirect.
+When leaving the origin is the intent, say so: `redirectExternal(...)` is
+the same helper without the origin rule, and being a separate name makes
+every deliberate off-origin hop greppable in one command. Hand it a
+constant or a target you allowlisted — never a raw request parameter. See
+the [Route DSL](/http/route-dsl/).
+
 ## Capping untrusted input
 
 - **Request bodies** are capped by the backend (Fastify 1 MiB default;
@@ -94,11 +146,13 @@ so it gates the handshake.
 
 | Measure | How |
 | --- | --- |
-| Security headers on every response | `securityHeaders()` |
+| MIME-sniffing disabled on every response | nothing — on by default |
+| Security headers on every response | `securityHeaders()`, or `withSecurityHeaders(...)` server-wide |
 | HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
 | Cross-origin controlled | `cors(...)` |
 | CSRF (browser forms) | `csrfProtection(...)` |
 | No internal error leaks | `withErrorHandler` + generic bodies |
+| No open redirects | `redirect(...)` — same-origin by default |
 | Request correlation | `requestId()` |
 | Bounded latency | `requestTimeout(...)` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |

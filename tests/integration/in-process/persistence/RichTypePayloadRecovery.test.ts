@@ -14,6 +14,8 @@ import {
   type SnapshotPolicy,
 } from '../../../../src/persistence/index.js';
 
+import { awaitCondition } from '../../../util/AwaitCondition.js';
+
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
@@ -85,7 +87,14 @@ describe('PersistentActor — rich payload types through a real store (#888)', (
     writer.tell({ kind: 'addMember', name: 'ada', joinedAt: new Date('2024-01-01T00:00:00.000Z') });
     writer.tell({ kind: 'addMember', name: 'grace', joinedAt: new Date('2024-02-01T00:00:00.000Z') });
     writer.tell({ kind: 'addMember', name: 'linus', joinedAt: new Date('2024-03-01T00:00:00.000Z') });
-    await sleep(150);
+    // Wait on the third event, not on the snapshot: `persistAll` awaits the
+    // snapshot write before returning and stashes commands meanwhile, so
+    // event 3 landing implies the snapshot at 2 is durable.  Polling the
+    // snapshot for `sequenceNr === 2` would also accept a transient write
+    // from a policy that snapshots on every event (#418).
+    await awaitCondition(async () => (await journal.read('roster-1', 1)).length === 3, {
+      timeoutMs: 4_000, label: 'all three member events reached the SQLite journal',
+    });
 
     // The snapshot policy fired at seq 2, so recovery must fold the stored
     // snapshot AND the trailing journal event — both paths carry rich types.
@@ -93,11 +102,14 @@ describe('PersistentActor — rich payload types through a real store (#888)', (
     expect(storedSnapshot?.sequenceNr).toBe(2);
 
     system.stop(writer);
+    // Precondition only — nothing reads what postStop produces.
     await sleep(50);
 
     let recovered: State | undefined;
     system.spawn(() => new Roster('roster-1', (s) => { recovered = s; }), 'reader');
-    await sleep(150);
+    await awaitCondition(() => recovered !== undefined, {
+      timeoutMs: 4_000, label: 'the reader finished recovering from snapshot + journal',
+    });
 
     expect(recovered).toBeDefined();
     const state = recovered!;

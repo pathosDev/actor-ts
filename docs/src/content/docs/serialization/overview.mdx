@@ -18,8 +18,17 @@ Two built-ins ship:
 | **`JsonSerializer`** | JSON | Default.  Human-debuggable, widely understood. |
 | **`CborSerializer`** | CBOR (RFC 8949) | Compact, binary-native, faster. |
 
+Two more take a schema you bring — the schema library
+(`avsc`, `protobufjs`, generated code) stays a dependency of your
+project:
+
+| Serializer | Format | When |
+| --- | --- | --- |
+| **`AvroSerializer`** | Avro | Smallest rows; schema-registry interop. |
+| **`ProtobufSerializer`** | Protobuf | Cross-language contracts; forward-compatible wire. |
+
 Plus an extension point: implement `Serializer<T>` for
-**Protobuf, Avro, MessagePack**, etc.
+**MessagePack, FlatBuffers**, or anything else.
 
 ## How it works
 
@@ -96,16 +105,20 @@ events, IoT-style payloads), CBOR wins meaningfully.
 See [JsonSerializer](/serialization/json/) +
 [CborSerializer](/serialization/cbor/) for details.
 
-## Custom serializers
+## Schema serializers and custom formats
 
-For Protobuf / Avro / etc., implement `Serializer<T>` and
-register:
+**Avro and Protobuf ship ready-made** — you supply the compiled
+schema, the framework supplies the serializer:
 
 ```ts
-import { SerializationExtensionId } from 'actor-ts';
+import { ProtobufSerializer, ProtobufSerializerOptions, SerializationExtensionId } from 'actor-ts';
+
+const protobufOptions = ProtobufSerializerOptions.create<MyEvent>()
+  .withMessageType(root.lookupType('shop.MyEvent'))
+  .withId(100);
+const serializer = new ProtobufSerializer(protobufOptions);
 
 const ext = system.extension(SerializationExtensionId);
-const serializer = new ProtobufSerializer<MyEvent>(MyEventSchema);
 ext.register(serializer);          // add it to the id lookup table
 ext.bind(MyEvent, serializer.id);  // route MyEvent through it
 ```
@@ -113,6 +126,10 @@ ext.bind(MyEvent, serializer.id);  // route MyEvent through it
 `bind` takes a **numeric serializer id**, so the serializer must
 be `register`ed first.  Now the extension resolves every `MyEvent`
 value to Protobuf; other types fall back to JSON.
+
+For any other format — MessagePack, FlatBuffers, something
+bespoke — implement `Serializer<T>` yourself.  Ids **1–99 are
+reserved** for the built-ins; pick ≥ 100.
 
 See [Custom serializers](/serialization/custom/) for
 the full setup.
@@ -134,9 +151,12 @@ The `JsonSerializer` class handles:
 It **throws** on functions, symbols, `undefined`, circular
 references, `Promise`, and `WeakMap` / `WeakSet`; class
 instances decode to plain objects (methods + identity lost).
-`CborSerializer` also round-trips `Uint8Array`, `Date`, and
-`bigint`, but — unlike `JsonSerializer` — it does **not** preserve
-`Map` / `Set` (they encode to an empty `{}`).
+
+`CborSerializer` carries **the same list** — a shared test suite
+asserts the two agree on every type — just as compact binary
+instead of tagged JSON text.  It differs in one place: `undefined`
+is carried natively rather than rejected, which makes it the more
+permissive of the two.
 
 The **cluster wire is different**: cross-node messages go through
 raw `JSON.stringify` (not `JsonSerializer`), so the usual JSON

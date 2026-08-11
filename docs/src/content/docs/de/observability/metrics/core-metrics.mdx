@@ -1,6 +1,6 @@
 ---
 title: Core-Metriken
-description: Die drei Metrik-Primitive — Counter, Gauge, Histogram — plus das Label-Modell, das aus einer Metrik viele Zeitreihen macht. Kardinalitätsdisziplin liegt in der Verantwortung des Anwenders.
+description: Die drei Metrik-Primitive — Counter, Gauge, Histogram — plus das Label-Modell, das aus einer Metrik viele Zeitreihen macht, und die Kardinalitätsgrenze pro Familie, die ein unbeschränktes Label daran hindert, dein Monitoring zu reißen.
 ---
 
 Die Metrics-Extension stellt drei klassische Primitive bereit:
@@ -173,6 +173,76 @@ geht der Speicher aus.
 - Pod-Namen, wenn die Pod-Anzahl beschränkt ist.
 
 Ziel: **< 100 Serien pro Metrik**. Darüber Alarm schlagen.
+
+### `bucketize` — den Wert an der Quelle beschränken
+
+Wenn ein Label-Wert von außen kommt — ein URL-Pfad, ein Header,
+eine ID — bilde ihn auf eine **feste Allow-List** ab, bevor er die
+Registry erreicht:
+
+```ts
+import { bucketize } from 'actor-ts';
+
+const ALLOWED_ROUTES = ['/orders', '/users/:id', '/health'] as const;
+
+metrics.counter('http_requests_total', {
+  route: bucketize(routeTemplateOf(request), ALLOWED_ROUTES),
+}).inc();
+```
+
+`bucketize(value, allowed)` gibt `value` zurück, wenn es in
+`allowed` steht, sonst `'other'` — die Familie kann also nie mehr
+als `allowed.length + 1` Serien halten, egal was ein Angreifer
+schickt.
+
+### Die Kardinalitätsgrenze
+
+`bucketize` ist die eigentliche Lösung; die Grenze in der Registry
+ist der **Auffangnetz** für die Labels, die niemand beschränkt hat.
+Eine Familie hört auf, neue Serien anzulegen, sobald sie
+`maxSeriesPerFamily` davon hält (Default **10 000**), und faltet
+alles darüber in eine einzige Overflow-Serie:
+
+```
+http_requests_total{route="/orders"}       1234
+http_requests_total{route="/health"}         56
+http_requests_total{route="__overflow__"}  8_912_004
+```
+
+Die erste Familie, die die Grenze erreicht, loggt eine Warnung mit
+Familienname und dem übergelaufenen Tupel — eine Warnung pro
+Familie, nicht pro Aufruf. Der Marker steckt im Label-**Wert**,
+nicht in einem Label-Namen: Prometheus reserviert Label-*Namen* mit
+`__`-Präfix und entfernt sie beim Ingest, was die Overflow-Serie
+still in eine echte Serie mischen würde.
+
+Grenze beim Installieren der Registry anheben oder abschalten:
+
+```ts
+import { MetricsExtensionId, MetricsRegistryOptions } from 'actor-ts';
+
+const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50_000);
+const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
+
+// oder als einfaches Objekt: .enable({ maxSeriesPerFamily: 50_000 })
+```
+
+`0` schaltet die Grenze komplett ab — tu das nur, wenn jeder
+Label-Wert nachweislich aus einer beschränkten Menge stammt.
+(`0`, nicht `Infinity`: die Grenze ist eine Ganzzahl-Anzahl, und
+`Infinity` ist keine Ganzzahl.)
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Wähle die Grenze über deiner legitimen Serien-Anzahl">
+  Eine Grenze unterhalb dessen, was dein System legitim produziert,
+  verwirft **echte Betriebsdaten**. `actor_mailbox_dropped_total`
+  trägt ein `path`-Label — eine Serie pro droppendem Actor-Pfad —
+  ein Knoten mit Tausenden sharded Entities unter Gegendruck kommt
+  also über einige Tausend Serien, ohne dass irgendetwas Feindliches
+  passiert. Deshalb ist der Default 10 000 und nicht die ~1 000, die
+  auf den ersten Blick reichen würden.
+</Aside>
 
 ## Werte im Prozess auslesen
 

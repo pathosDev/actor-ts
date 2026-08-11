@@ -63,8 +63,13 @@ export type DevToolsOptionsType = {
    */
   readonly uiDevelopmentRoot?: string;
   /**
-   * Origins allowed to open the DevTools WebSocket.  Default: same-origin
-   * only, since the UI is served from the DevTools server itself.
+   * Additional origins allowed to open the DevTools WebSocket.  Same-origin
+   * is always accepted — the UI is served from the DevTools server itself,
+   * so it needs no entry here — and anything else is rejected with 403.  Set
+   * this only to admit a UI served from somewhere else.
+   *
+   * A missing `Origin` is allowed: CSWSH needs a browser, and a browser
+   * always sends one.  Unset → same-origin only.
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
   /** Per-panel switches; unset panels default to enabled. */

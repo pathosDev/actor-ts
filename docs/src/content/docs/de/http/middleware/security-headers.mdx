@@ -1,11 +1,29 @@
 ---
 title: Security-Header
-description: securityHeaders() ist ein kleines Helmet-artiges Bündel (nosniff, X-Frame-Options, Referrer-Policy, COOP/CORP, …), jeder Header überschreibbar oder abschaltbar. strictTransportSecurity() sendet HSTS.
+description: securityHeaders() ist ein kleines Helmet-artiges Bündel (nosniff, X-Frame-Options, Referrer-Policy, COOP/CORP, …), jeder Header überschreibbar oder weglassbar. strictTransportSecurity() sendet HSTS.
 ---
 
 `securityHeaders()` ergänzt ein sinnvolles Set an Security-Response-Headern.
-Jeder Header ist einzeln überschreibbar, `false` schaltet einen ab, und ein
+Jeder Header ist einzeln überschreibbar, `false` lässt einen weg, und ein
 vom Handler bereits gesetzter Header gewinnt immer.
+
+<Aside type="caution" title="`false` lässt einen Header weg, es entfernt ihn nicht">
+  Das Bündel **ergänzt** nur. Als Middleware läuft es auf dem auf, was das
+  Backend ohnehin schreibt — `false` heißt also "diese Middleware fügt ihn
+  nicht hinzu", nicht "diese Response trägt ihn nicht".
+
+  Sichtbar wird der Unterschied heute an genau einer Stelle.
+  `X-Content-Type-Options: nosniff` schreibt jedes Backend vor jede Response,
+  die es ausliefert; `securityHeaders({ contentTypeOptions: false })` lässt
+  den Header also stehen. Um ihn nicht mehr zu senden, ersetzt du die
+  Defaults des Backends serverweit:
+  `newServerAt(…).withSecurityHeaders({ contentTypeOptions: false })` — oder
+  `withSecurityHeaders(false)` für gar keinen davon.
+
+  Ein Opt-out pro Teilbaum gibt es bewusst nicht: Die Kopie des Backends hat
+  das letzte Wort, gerade damit auch die 404s, Body-Parse-413s und
+  Error-Kurzschlüsse abgedeckt sind, die nie eine Middleware erreichen.
+</Aside>
 
 ```ts
 import { securityHeaders, withMiddleware } from 'actor-ts/http';

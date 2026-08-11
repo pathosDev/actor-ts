@@ -36,14 +36,29 @@ export class Find<T = unknown> {
 }
 
 /**
+ * What a subscriber can be sent by the receptionist: listings, plus the
+ * refusal it gets when a subscriber cap is already full.
+ *
+ * The union is the whole reason {@link SubscribeRejected} exists — a
+ * `Subscribe` that is silently discarded leaves the caller waiting for a
+ * first `Listing` that never arrives, which is indistinguishable from "the
+ * key has no registrations yet".
+ */
+export type ReceptionistSubscriberRef<T = unknown> = ActorRef<Listing<T> | SubscribeRejected<T>>;
+
+/**
  * Continuous subscription: `replyTo` receives a Listing now AND every time
  * the set of refs for this key changes (register, deregister, cluster
  * gossip, node leaving).
+ *
+ * The receptionist watches `replyTo` for the lifetime of the subscription,
+ * so a subscriber that stops without unsubscribing is dropped rather than
+ * pinned forever (#137).
  */
 export class Subscribe<T = unknown> {
   constructor(
     public readonly key: ServiceKey<T>,
-    public readonly replyTo: ActorRef<Listing<T>>,
+    public readonly replyTo: ReceptionistSubscriberRef<T>,
   ) {}
 }
 
@@ -51,8 +66,33 @@ export class Subscribe<T = unknown> {
 export class Unsubscribe<T = unknown> {
   constructor(
     public readonly key: ServiceKey<T>,
-    public readonly replyTo: ActorRef<Listing<T>>,
+    public readonly replyTo: ReceptionistSubscriberRef<T>,
   ) {}
+}
+
+/** Which cap refused a {@link Subscribe} — named after the option that set it. */
+export type ReceptionistSubscribeRejectionReason =
+  | 'maxSubscribersPerKey'
+  | 'maxSubscribersTotal';
+
+/**
+ * Refusal sent to a `Subscribe`'s `replyTo` when a subscriber cap is full.
+ *
+ * Answering is the point: the subscriber set is bounded so a buggy or
+ * hostile actor cannot grow it without limit, and a bound that drops
+ * requests silently would turn that protection into a debugging puzzle.
+ * `limit` is the configured value of `reason`, so the recipient can log
+ * what it was up against without reading the operator's config.
+ */
+export class SubscribeRejected<T = unknown> {
+  constructor(
+    public readonly key: ServiceKey<T>,
+    public readonly reason: ReceptionistSubscribeRejectionReason,
+    public readonly limit: number,
+  ) {}
+  toString(): string {
+    return `SubscribeRejected(${this.key.id}, ${this.reason}=${this.limit})`;
+  }
 }
 
 /**
@@ -69,7 +109,7 @@ export class Listing<T = unknown> {
 
 /** Wire message gossiped between receptionists. */
 export type ReceptionistGossipMessage = {
-  readonly t: 'receptionist-gossip';
+  readonly kind: 'receptionist-gossip';
   readonly from: import('../cluster/NodeAddress.js').NodeAddressData;
   /** key-id → list of actor paths on the sender node */
   readonly entries: Record<string, string[]>;

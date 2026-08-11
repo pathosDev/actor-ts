@@ -165,6 +165,56 @@ An incompatible registration throws immediately, so wiring the
 registry up at startup is your safety net: bump a version but
 forget the upcaster and registration fails loud.
 
+## A binary wire format per version
+
+A `codec` does not have to be a validator.  `serializerCodec`
+wraps any [`Serializer`](/serialization/custom/) — including the
+shipped `AvroSerializer` and `ProtobufSerializer` — so each
+version can use a **different wire format**:
+
+```ts
+import { serializerCodec } from 'actor-ts';
+
+registry.register('BankAccount.Deposited', 1, {
+  codec: serializerCodec(avroSerializer),
+});
+
+registry.register('BankAccount.Deposited', 2, {
+  codec:          serializerCodec(protobufSerializer),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+  compatibility:  'backward',
+});
+```
+
+New events are written at v2 as Protobuf; the Avro rows already on
+disk keep decoding through the v1 codec and are upcast forward on
+read.  Both formats coexist in one stream.
+
+This is the **only** place that works.  A store's
+`withSerializer(...)` is store-wide — one format for every payload
+it writes — so a per-version switch has to happen at the codec
+layer.
+
+**What goes on disk.**  `serializerCodec` encodes to
+`{ serializerId, manifest, bytes }` and stops there: the journal's
+own payload codec already carries a `Uint8Array` as tagged JSON, so
+the bytes are base64'd exactly once.  The `serializerId` travels
+with the row, which is what makes a mismatch loud —
+
+```
+serializer:avro: payload was written by serializer id 101
+(manifest '.bank.DepositedV2'), but this codec holds 'avro' (id 100)
+```
+
+— rather than silently decoding into nonsense, which is the normal
+outcome for Avro (no field tags) and Protobuf (no message name)
+when they are handed foreign bytes.
+
+Pair it with `compatibility: 'sample'` and the register call runs
+the whole Avro → upcast → Protobuf hop at startup, so a v2 schema
+your upcaster cannot actually satisfy fails on deploy instead of
+on the first replay.
+
 ## Tooling
 
 A few common tooling shapes that benefit from the registry:
@@ -232,6 +282,8 @@ import { Aside } from '@astrojs/starlight/components';
   the chained alternative.
 - **[Envelope format](/persistence/migration/envelope-format/)** —
   the on-disk shape with `_v` / `_t` / `_e`.
+- **[Custom serializers](/serialization/custom/)** — the Avro and
+  Protobuf serializers `serializerCodec` wraps.
 
 The [`SchemaRegistry`](/api/classes/schemaregistry/) API
 reference covers the full surface.

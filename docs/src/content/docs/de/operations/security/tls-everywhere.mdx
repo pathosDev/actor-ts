@@ -32,6 +32,21 @@ Mutually authenticated TLS zwischen Cluster-Nodes. Siehe
 [Cluster-Sicherheit](/de/operations/security/cluster-security/)
 für die vollständige Diskussion.
 
+Jedes Feld hier nimmt **das Zertifikatsmaterial selbst** entgegen,
+niemals einen Pfad darauf — deshalb liest das Beispiel die Dateien
+selbst ein. Nichts im Transport greift auf das Dateisystem zu, und
+weder Bun noch Node noch Deno akzeptiert in diesen Feldern einen
+Dateinamen.
+
+`cert` und `key` sind auf einem Listener **nur gemeinsam** gültig.
+Ein `tls`-Objekt mit nur einem von beiden brachte den Listener
+bisher zu dem Schluss „kein TLS", und er lauschte im **Klartext** —
+während dieselbe Konfiguration weiterhin über TLS hinauswählte. Der
+Cluster bildete sich also, und nichts sah falsch aus. Diese
+Kombination wird jetzt beim Bind abgelehnt; ein so
+fehlkonfigurierter Knoten degradiert damit nicht mehr still,
+sondern scheitert laut.
+
 **Nicht überspringen** — auch in internen Netzwerken gilt Defense
 in Depth.
 

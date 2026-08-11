@@ -22,6 +22,7 @@ export type Behavior<T> =
   | WithTimersBehavior<T>
   | WithStashBehavior<T>
   | SuperviseBehavior<T>
+  | InterceptBehavior<T>
   | SameBehavior
   | StoppedBehavior
   | UnhandledBehavior
@@ -54,6 +55,48 @@ export type SuperviseBehavior<T> = {
   readonly kind: 'supervise';
   readonly child: Behavior<T>;
   readonly strategy: SupervisorStrategy;
+};
+
+/**
+ * Hands a message on to the behavior an interceptor wraps, and answers what
+ * that behavior returned.  Calling it *is* the delegation; not calling it
+ * short-circuits, and the wrapped behavior never sees the message.
+ *
+ * Both arguments are the interceptor's to choose: pass a different message to
+ * transform it on the way in, or a decorated context to change what the inner
+ * handler sees.  Passing them through unchanged is the plain "observe, then
+ * delegate" case.
+ */
+export type BehaviorInterceptorTarget<T> = (
+  context: TypedActorContext<T>,
+  message: T,
+) => Behavior<T>;
+
+/**
+ * Runs on every message before the wrapped behavior does.  Whatever it returns
+ * becomes the wrapped behavior's next behavior — the interceptor itself stays
+ * installed across that transition, so `next(...)`'s result can simply be
+ * returned as-is.
+ *
+ * `T → T` only: an interceptor observes, transforms, or drops messages, it
+ * does not change the actor's message type.
+ */
+export type BehaviorInterceptor<T> = (
+  context: TypedActorContext<T>,
+  message: T,
+  next: BehaviorInterceptorTarget<T>,
+) => Behavior<T>;
+
+/**
+ * A behavior wrapped in an interceptor.  Unlike the other wrappers this one is
+ * *not* collapsed away when the behavior tree is resolved: it has to be there
+ * on every message, and it has to survive the inner behavior swapping itself
+ * out.  See `TypedActor`'s `ConcreteInterceptBehavior` for the resolved form.
+ */
+export type InterceptBehavior<T> = {
+  readonly kind: 'intercept';
+  readonly inner: Behavior<T>;
+  readonly interceptor: BehaviorInterceptor<T>;
 };
 
 export type SameBehavior = { readonly kind: 'same'; };

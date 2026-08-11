@@ -211,16 +211,20 @@ describe('supervisor strategy in the spawn options', () => {
 });
 
 /**
- * `Actor.preRestart`'s JSDoc and the `onRecreate` call site both used to claim
- * the default stops children.  It never did — it only calls `postStop()` — and
- * the docs said otherwise for long enough that these pin the real behaviour.
- * If someone makes `preRestart` stop children, both of these fail and force the
- * documentation to move with the code (#899).
+ * `Actor.preRestart`'s default stops this actor's children and then calls
+ * `postStop()` (#634).  It used to call `postStop()` alone, which meant a
+ * restarted instance inherited the previous incarnation's children — and an
+ * actor that spawned a *named* child in `preStart` could not survive a restart
+ * at all, because the second `preStart` hit the uniqueness check.
+ *
+ * An override that does not call `super.preRestart(...)` keeps the children,
+ * which is the escape hatch for a parent whose children are expensive to
+ * rebuild.  Both directions are pinned below.
  */
 describe('restart and children', () => {
   const sys = systemFixture('restart-children-tests');
 
-  test('children survive their parent restarting', async () => {
+  test('children are stopped when their parent restarts', async () => {
     const events: string[] = [];
     class Child extends Actor<string> {
       override postStop(): void { events.push('child:postStop'); }
@@ -230,10 +234,51 @@ describe('restart and children', () => {
       private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
       override preStart(): void {
         events.push('parent:preStart');
-        // Anonymous, so the second preStart cannot collide — see the named
-        // case below for what happens when it can.
+        this.child = this.context.spawnAnonymous(Child);
+      }
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        this.child?.tell(m);
+      }
+    }
+
+    const parent = sys().spawn(Parent, 'stops-children');
+    parent.tell('boom');
+    await awaitCondition(
+      () => events.filter((e) => e === 'parent:preStart').length >= 2,
+      { label: 'the parent restarted' },
+    );
+
+    // The outgoing instance's child was stopped, and the restart waited for
+    // it before running preStart again — otherwise a named child could not
+    // reclaim its name.
+    expect(events).toContain('child:postStop');
+    expect(events.indexOf('child:postStop'))
+      .toBeLessThan(events.lastIndexOf('parent:preStart'));
+
+    // The fresh instance's own child answers.
+    parent.tell('still-here');
+    await awaitCondition(
+      () => events.includes('child:still-here'),
+      { label: "the new incarnation's child received a message" },
+    );
+  });
+
+  test('stopChildrenOnRestart() === false keeps the children', async () => {
+    // The escape hatch: a parent whose children are expensive to rebuild, or
+    // which are supervised independently, opts out.
+    const events: string[] = [];
+    class Child extends Actor<string> {
+      override postStop(): void { events.push('child:postStop'); }
+      override onReceive(m: string): void { events.push(`child:${m}`); }
+    }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override preStart(): void {
+        events.push('parent:preStart');
         this.child ??= this.context.spawnAnonymous(Child);
       }
+      override stopChildrenOnRestart(): boolean { return false; }
       override onReceive(m: string): void {
         if (m === 'boom') throw new FooError();
         this.child?.tell(m);
@@ -247,7 +292,6 @@ describe('restart and children', () => {
       { label: 'the parent restarted' },
     );
 
-    // The child was never stopped, and the same instance still answers.
     expect(events).not.toContain('child:postStop');
     parent.tell('still-here');
     await awaitCondition(
@@ -256,42 +300,84 @@ describe('restart and children', () => {
     );
   });
 
-  test('a named child spawned in preStart collides on the restart', async () => {
-    // The sharp edge the supervision docs now call out: preStart runs again
-    // while the previous incarnation's children are still in the child map, so
-    // the second spawn hits the uniqueness check and the restart fails.
-    const failures: string[] = [];
-    class Child extends Actor<string> { override onReceive(_: string): void {} }
-    class Parent extends Actor<string> {
-      override preStart(): void {
-        this.context.spawn(Child, 'fixed-name');
-      }
-      override onReceive(m: string): void { if (m === 'boom') throw new FooError(); }
+  test('a named child spawned in preStart survives a restart', async () => {
+    // The defect this replaces: preStart ran again while the previous
+    // incarnation's children were still in the child map, so the second spawn
+    // hit the uniqueness check and the restart failed with
+    // ActorInitializationError.  Now the restart waits for the old children
+    // to go before rebuilding, so the name is free (#634).
+    const events: string[] = [];
+    class Child extends Actor<string> {
+      override onReceive(m: string): void { events.push(`child:${m}`); }
     }
-    class Guardian extends Actor<string> {
-      override supervisorStrategy(): SupervisorStrategy {
-        // Restart on the original failure — that is what re-runs preStart and
-        // triggers the collision.  The collision then arrives as a *second*
-        // failure, wrapped in ActorInitializationError, which we stop on so the
-        // test does not loop.
-        return new OneForOneStrategy((error) => {
-          if (!(error instanceof ActorInitializationError)) return Directive.Restart;
-          const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
-          failures.push(cause);
-          return Directive.Stop;
-        });
-      }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
       override preStart(): void {
-        this.context.spawn(Parent, 'collides').tell('boom');
+        events.push('parent:preStart');
+        this.child = this.context.spawn(Child, 'fixed-name');
       }
-      override onReceive(_: string): void {}
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        this.child?.tell(m);
+      }
     }
 
-    sys().spawn(Guardian, 'collision-guardian');
+    const parent = sys().spawn(Parent, 'named-child-restart');
+    parent.tell('boom');
     await awaitCondition(
-      () => failures.length > 0,
-      { label: 'the restart failed on the duplicate child name' },
+      () => events.filter((e) => e === 'parent:preStart').length >= 2,
+      { label: 'the parent restarted without a name collision' },
     );
-    expect(failures[0]).toContain('is not unique');
+
+    parent.tell('ping');
+    await awaitCondition(
+      () => events.includes('child:ping'),
+      { label: 'the re-spawned named child is reachable' },
+    );
+  });
+});
+
+// #635 — a failure suspends the failing actor's subtree so nothing in it runs
+// while the supervisor decides.  `Directive.Resume` then only ever reached the
+// actor that failed, so its children stayed suspended for good: mailboxes
+// filled, nothing was processed, and there was no error and no dead letter to
+// notice it by.
+describe('resume after a failure', () => {
+  const sys = systemFixture('resume-subtree-tests');
+
+  test("a resumed actor's children are resumed with it", async () => {
+    const events: string[] = [];
+    class Grandchild extends Actor<string> {
+      override onReceive(m: string): void { events.push(`grandchild:${m}`); }
+    }
+    class Child extends Actor<string> {
+      private grandchild: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override preStart(): void { this.grandchild = this.context.spawnAnonymous(Grandchild); }
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        events.push(`child:${m}`);
+        this.grandchild?.tell(m);
+      }
+    }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override supervisorStrategy(): SupervisorStrategy {
+        return new OneForOneStrategy(() => Directive.Resume);
+      }
+      override preStart(): void { this.child = this.context.spawnAnonymous(Child); }
+      override onReceive(m: string): void { this.child?.tell(m); }
+    }
+
+    const parent = sys().spawn(Parent, 'resume-subtree');
+    parent.tell('boom');
+    await Bun.sleep(60);
+
+    // The whole branch must still be live — child *and* grandchild.
+    parent.tell('after');
+    await awaitCondition(
+      () => events.includes('grandchild:after'),
+      { label: 'the grandchild processed a message after the resume' },
+    );
+    expect(events).toContain('child:after');
   });
 });

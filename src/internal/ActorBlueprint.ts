@@ -38,7 +38,7 @@ export function actorBlueprintOf<TMessage>(
  *
  * Classes have a `.prototype` whose `constructor` is the class itself.  Arrow
  * functions have no `prototype`; regular non-class functions do (with
- * `.prototype.constructor === fn`), so anything `new`-able is treated the same
+ * `.prototype.constructor === theFunction`), so anything `new`-able is treated the same
  * way a class is, and the closure form (`() => new X(deps)`) falls into the
  * factory branch.  There is no reliable way to tell a `class` from a
  * `function` at runtime beyond this, and none is needed — both are

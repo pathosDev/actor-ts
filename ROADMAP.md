@@ -4,22 +4,64 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- Post-v0.11.0, preparing the next minor (`[Unreleased]` window): the naming
-  sweep extended to every identifier (locals, generic parameters, the `kind`
-  discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
-  (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.  The window's headline additions
-  are the **DevTools suite** (#445), **five more persistence backends** (#438)
-  on the new relational base layer (#389), and a **cluster-addressing pass** —
-  a shard is a real actor with introspection (#511, #512, #151), singletons and
-  sharded types carry typed keys behind `cluster.singleton` / `cluster.sharding`
-  (#523), and framework actors moved to grouped `/system` paths (#509) — plus a
-  **core-correctness pass** over the 2026 audit's findings.  See *Done*, below.
-- ~3 586 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- **v0.14.0 is out** — the *caps, codecs and lifecycle* release, and the
+  largest window so far: 106 issues and eighteen breaking changes.  Three
+  threads carry it.  **Caps**: the cluster-wide registries, the member map and
+  the metric label space are all bounded now, gossiped records are held to
+  those bounds rather than trusted (#131, #137, #139, #841), and the wire
+  discriminator is one spelling (#494).  **Codecs**: CBOR reaches rich-type
+  parity with the JSON tree and changes four encodings to get there (#1036),
+  Avro and Protobuf ship as serializers, and `BidirectionalMap` /
+  `BidirectionalMultiMap` round-trip through every store (#1033, #1035).
+  **Lifecycle**: a restart stops the actor's children (#634) and a resumed
+  actor brings its subtree back with it (#635).  New building blocks:
+  `TcpServerActor` (#158), the scatter/gather router (#153), the three
+  persistence-id queries (#156), JetStream KV and Object-Store, and gRPC
+  client-streaming (#5).  Every `severity: high` finding from both audit
+  passes is closed.  See `CHANGELOG.md` — the breaking changes each carry a
+  migration note.
+- Next window is open (`[Unreleased]`).
+
+  The obvious heads from here: the `reference.conf` expansion tracked in
+  #887, the remaining `severity: medium` security catalogue, and #766 — whose
+  titled fix turns out to be insufficient on its own, see the issue.
+- ~5 100 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- **Current `[Unreleased]` window:**
+- **v0.14.0 — caps, codecs and lifecycle:**
+  - **`allPersistenceIds` + `currentPersistenceIdsPaginated` (#156)** — the
+    read side can now enumerate entities as a live fan-out stream and as a
+    cursor-paginated walk, instead of only as one materialised array.  Paging
+    is pushed into the backend wherever a sorted key over ids exists —
+    `ORDER BY … LIMIT` on SQLite and the SQL dialects, an
+    `all_persistence_ids` clustering range on Cassandra
+
+- **v0.13.0 — names and lifecycle:**
+  - **`Props` removed (#547)** — `spawn(MyActor, name)`; per-actor
+    configuration is `ActorOptions`, a regular `XOptions` family.  The one
+    place in the framework that did not follow that convention
+  - **Sharding lifecycle (#892)** — idle entities passivate after 5 minutes by
+    default, empty shards stop with them, `shardPassivationIdleMs`;
+    plus `ShardInfo.resident` (#901)
+  - **`Actor.displayName()` (#891)** — a readable name in log lines and the
+    DevTools tree, settable from the spawn site or at runtime; the path stays
+    the identity everywhere it is an address
+  - **Generated names hardened** — anonymous actors (#895), reliable-delivery
+    controllers (#897), the reserved `$` prefix (#900), DistributedData quorum
+    ids (#896), object-storage temp paths (#898), `ClusterClient` identity
+    (#910)
+  - **Cluster correctness** — a crossing dial no longer partitions two healthy
+    nodes forever (#697), `rememberEntities` survives a rebalance handoff
+    (#632), handoff buffers are replayed (#893), remembered entities return
+    after an unexpected shard death (#894), remote shard refs route through the
+    owning region (#901)
+  - **The TLS listener actually requests a client certificate (#565)** — the
+    documented mTLS recipe had been server-authenticated only, and the `hello`
+    handshake carries no credential of its own
+
+- **v0.12.x window:**
   - **DevTools suite (#445)** — embeddable web UI for a running system, seven
     panels on one versioned tap protocol behind a `./devtools` export.  Absorbed
     the separately-listed live cluster visualizer (#204)
@@ -84,7 +126,6 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Feature-parity quick wins
 
 - `Inbox` — synchronous adapter for non-actor callers — #181
-- PersistenceQuery `AllPersistenceIds` live + cursor-paginated `currentPersistenceIds` — #156
 - `DeathWatch.watchWith` — custom termination message — #159
 - `ShardCommand` types — `StartEntity`, `GetShardStats`, `GetClusterShardingStats` — #151
 

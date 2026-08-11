@@ -1,18 +1,19 @@
 ---
 title: Router
-description: Der lokale Pool-Router — `Router.roundRobin`, `.random`, `.broadcast`, `.custom` produzieren eine Actor-Factory, die du wie jeden anderen Actor spawnst. Plus `Broadcast`, um die Strategie pro Nachricht zu überschreiben.
+description: Der lokale Pool-Router — `Router.roundRobin`, `.random`, `.broadcast`, `.smallestMailbox`, `.custom` produzieren eine Actor-Factory, die du wie jeden anderen Actor spawnst. Plus `Broadcast`, um die Strategie pro Nachricht zu überschreiben.
 ---
 
 `Router` ist der lokale Pool-Router — die Routees sind Kinder des
 Router-Actors, beim Spawnen des Routers erstellt und von ihm
 supervised.
 
-Die API hat vier Factories:
+Die API hat fünf One-Shot-Factories:
 
 ```ts
 Router.roundRobin(size, routee)
 Router.random(size, routee)
 Router.broadcast(size, routee)
+Router.smallestMailbox(size, routee)
 Router.custom(size, routee, strategy)
 ```
 
@@ -20,6 +21,17 @@ Jede gibt eine `ActorFactory<TMessage | Broadcast<TMessage>>` zurück —
 übergib sie an `system.spawn` oder `context.spawn` wie jeden anderen Actor.
 Der Typ-Parameter von `routee` fließt durch, die resultierende
 Ref ist also typisiert.
+
+Eine sechste Factory passt nicht in diese Form, weil sie die Antworten
+der Routees abfängt, statt weiterzuleiten und zu vergessen:
+
+```ts
+Router.scatterGatherFirstCompleted(size, routee, options?, routeeOptions?)
+```
+
+Sie fragt *jeden* Routee und antwortet dem Aufrufer mit der ersten
+Antwort — das Hedged-Request-Pattern.  Sie hat eine eigene Seite:
+[Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Ein minimales Beispiel
 
@@ -85,6 +97,43 @@ Routine-Routing-Pattern passen.
 
 Der Router akzeptiert sowohl `TMessage` als auch `Broadcast<TMessage>` —
 der Typ-Parameter auf der zurückgegebenen Factory reflektiert das.
+
+## `Router.smallestMailbox` — nach Rückstau balancieren
+
+```ts
+const pool = system.spawn(
+  Router.smallestMailbox(4, Worker),
+  'workers',
+);
+```
+
+Jede Nachricht geht an den Routee mit der **kürzesten Queue** in
+diesem Moment.  Greif dazu, wenn die Kosten pro Nachricht stark
+schwanken: Round-Robin füttert einen Routee weiter, der noch an einem
+schweren Job kaut, Smallest-Mailbox überspringt ihn, bis er aufgeholt
+hat.
+
+Drei Dinge, die du wissen solltest, bevor du den Default wechselst:
+
+- **Es kostet eine Tiefenabfrage pro Routee pro Nachricht.**  Bei
+  einem 4er-Pool sind das vier Abfragen, bei einem 200er-Pool
+  zweihundert.  Round-Robin ist ein Modulo.  Bei uniformen Workloads
+  kauft die Mehrarbeit nichts.
+- **Gleichstände rotieren.**  In einem leerlaufenden Pool steht jede
+  Mailbox auf null, die Strategie fällt also auf die
+  Round-Robin-Reihenfolge zurück, statt alles auf `routee-1` zu
+  pinnen.
+- **Ein voller Pool ist nur ein weiterer Gleichstand.**  Wenn jede
+  begrenzte Mailbox an ihrer Kapazität steht, sind alle Tiefen wieder
+  gleich — der Überlauf verteilt sich also gleichmäßig, statt sich bei
+  einem Routee aufzutürmen.  Die Strategie verweigert das Routen
+  nicht: Was mit einer Nachricht passiert, die nicht mehr passt,
+  entscheidet die Overflow-Policy der Mailbox (`drop-head` /
+  `drop-new` / `reject`), nicht der Router.
+
+Nur lokal.  Die Mailbox-Tiefe ist In-Process-Zustand, `ClusterRouter`
+hat deshalb keinen Smallest-Mailbox-Modus — siehe
+[Cluster-Router](/de/cluster/cluster-router/).
 
 ## `Router.custom` — eigene Strategie mitbringen
 
@@ -182,8 +231,10 @@ import { Aside } from '@astrojs/starlight/components';
 ## Wie es weitergeht
 
 - **[Strategien](/de/routing/strategies/)** — Round-Robin,
-  Random, Broadcast, Custom; plus das cluster-only
+  Random, Broadcast, Smallest-Mailbox, Custom; plus das cluster-only
   Consistent-Hashing.
+- **[Scatter/Gather](/de/routing/scatter-gather/)** — die sechste
+  Factory: jeden Routee fragen, mit der ersten Antwort antworten.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wenn du
   bestehende Routees statt pool-gespawnte willst.
 - **[Cluster-Router](/de/cluster/cluster-router/)** — das

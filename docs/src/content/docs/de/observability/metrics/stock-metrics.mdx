@@ -55,6 +55,7 @@ ab. Das `reason`-Label hält die ausgelöste Overflow-Policy fest
 | --- | --- | --- | --- |
 | `cluster_members_up` | gauge | — | Mitglieder aktuell im Zustand `up` (Sicht dieses Knotens). |
 | `cluster_gossip_rounds_total` | counter | — | Von diesem Knoten initiierte Gossip-Push-Runden. |
+| `cluster_gossip_records_refused_total` | counter | `reason` | Von einer Merge-Pfad-Wache abgelehnte gegossipte Member-Records. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -64,6 +65,43 @@ Zum Monitoring der Cluster-Gesundheit:
 - Die Rate von `cluster_gossip_rounds_total` bestätigt, dass Gossip
   fließt — eine flache Linie heißt, dieser Knoten hat aufgehört zu
   gossippen.
+- `cluster_gossip_records_refused_total` sollte bei null liegen.
+  Bewegung auf `reason="version-skew"` heißt, gegossipte Versionen
+  liegen weiter vor der Uhr dieses Knotens als `maxVersionSkewMs` —
+  entweder ist die Uhr eines Peers abgedriftet, oder jemand versucht,
+  eine Adresse vorab zu beanspruchen. Bewegung auf `reason="map-cap"`
+  heißt, `max-members` / `max-tombstones` ist voll. Der Zähler wird
+  einmal pro Frame um dessen Anzahl erhöht, und die Label-Menge ist
+  auf diese zwei Werte geschlossen.
+
+## DistributedData-Metriken
+
+Der Quorum-Pfad des CRDT-Replikators — `updateAsync` / `getAsync` — und
+sein Wire-Decoder. Jede Label-Menge hier ist fest und winzig, die vier
+Familien tragen also insgesamt sechs Serien bei:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `distributed_data_quorum_pending` | gauge | — | Quorum-Reads und -Writes, die auf dieser Replika gerade auf Peer-Antworten warten. |
+| `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum-Requests, die ihre Deadline erreichten, bevor genug Replikas antworteten. |
+| `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum-Requests, die abgelehnt wurden, weil `max-pending-quorum-requests` erreicht war. |
+| `distributed_data_dropped_values_total` | counter | — | Von Peers gelieferte CRDT-Werte, die diese Replika nicht dekodieren wollte. |
+
+`operation` ist `write` oder `read` — diese beiden Werte und keine
+anderen.
+
+- `distributed_data_quorum_pending` dicht an deinem konfigurierten
+  `max-pending-quorum-requests` heißt, dass der nächste Aufrufer gleich
+  abgelehnt wird; entweder haben Peers aufgehört zu acken oder das Cap
+  ist für die Last zu niedrig.
+- `distributed_data_quorum_rejected_total` und `..._timeouts_total`
+  trennen die beiden Fehlerformen: abgelehnt heißt, der Request hat nie
+  begonnen; Timeout heißt, er hat begonnen und niemand antwortete
+  rechtzeitig. Siehe
+  [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+- `distributed_data_dropped_values_total` ist gar kein Tuning-Signal —
+  ein Peer schickt Payloads, die diese Replika nicht dekodieren kann,
+  also ein kaputter oder feindlicher Knoten.
 
 ## Overhead
 
@@ -85,10 +123,15 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   `actor_mailbox_dropped_total` trägt ein `path`-Label, das für
   sharded Entities hoch-kardinal sein kann (ein Pfad pro Actor).
-  Das Framework deckelt oder aggregiert diese Serien **nicht** —
-  Kardinalitäts-Disziplin liegt vollständig in deiner
-  Verantwortung. Aggregiere neu oder strippe das Label downstream,
-  wenn die Serien-Anzahl unbeschränkt wächst.
+  Die Serien-Anzahl ist **beschränkt, aber nicht klein**: die
+  [Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
+  der Registry stoppt die Familie bei 10 000 Serien und faltet den
+  Rest in `path="__overflow__"` — der Prozess lässt sich über dieses
+  Label also nicht mehr speicher-erschöpfen, aber 10 000 Serien in
+  einer Familie sind immer noch viel zum Scrapen. Aggregiere neu
+  oder strippe das Label downstream, wenn du genug Entities
+  betreibst, um dort hinzukommen, und werte das Auftauchen einer
+  `__overflow__`-Serie als genau dieses Signal.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">

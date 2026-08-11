@@ -19,8 +19,8 @@ export class BasicAuthOptionsBuilder extends OptionsBuilder<BasicAuthOptionsType
   withUsers(users: Readonly<Record<string, string>>): this {
     return this.set('users', users);
   }
-  withValidate(fn: (user: string, pass: string) => boolean | Promise<boolean>): this {
-    return this.set('validate', fn);
+  withValidate(validate: (user: string, pass: string) => boolean | Promise<boolean>): this {
+    return this.set('validate', validate);
   }
   withRealm(realm: string): this {
     return this.set('realm', realm);

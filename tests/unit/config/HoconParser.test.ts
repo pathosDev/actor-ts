@@ -213,6 +213,85 @@ describe('isPlainObject', () => {
   });
 });
 
+describe('include directives (#135)', () => {
+  // The parser never ignored `include` — it read the keyword as an ordinary key
+  // and then failed on the string after it with `Expected '=' or ':' after key
+  // "include"`, which names the keyword but not the reason.  These pin the
+  // replacement diagnostic, and just as importantly the keys it must not claim.
+
+  test('a plain include is refused with its reason and its target', () => {
+    expect(() => parseHocon('include "shared-cluster.conf"\na = 1'))
+      .toThrow(/`include "shared-cluster\.conf"` is not supported/);
+    expect(() => parseHocon('include "shared-cluster.conf"\na = 1'))
+      .toThrow(/Merge the sources in code instead/);
+  });
+
+  test('the message no longer reads as a syntax error', () => {
+    expect(() => parseHocon('include "x.conf"')).not.toThrow(/Expected '=' or ':'/);
+  });
+
+  test('file, url, classpath and required forms all get the same refusal', () => {
+    for (const source of [
+      'include file("base.conf")',
+      'include url("https://example.com/base.conf")',
+      'include classpath("base.conf")',
+      'include required(file("base.conf"))',
+    ]) {
+      expect(() => parseHocon(source)).toThrow(/`include ".+"` is not supported/);
+    }
+  });
+
+  test('the suggested snippet names the real target so it can be pasted as-is', () => {
+    expect(() => parseHocon('include file("base.conf")'))
+      .toThrow(/Config\.parseFile\("base\.conf"\)\.merge\(/);
+  });
+
+  test('a url target is echoed but never suggested to parseFile', () => {
+    // `parseFile` reads from disk, so proposing it for an http target would be
+    // advice that fails when followed — the failure mode this message replaces.
+    expect(() => parseHocon('include url("https://example.com/base.conf")'))
+      .toThrow(/`include "https:\/\/example\.com\/base\.conf"`/);
+    expect(() => parseHocon('include url("https://example.com/base.conf")'))
+      .toThrow(/Config\.parseFile\("base\.conf"\)/);
+  });
+
+  test('an include carries a source position like every other parse error', () => {
+    expect(() => parseHocon('a = 1\nb = 2\ninclude "late.conf"')).toThrow(/line 3/);
+  });
+
+  test('an include nested in an object is refused too', () => {
+    // Real HOCON allows the directive in any object body, so the check sits
+    // where the directive is recognised rather than at the top level only.
+    expect(() => parseHocon('app {\n  include "base.conf"\n  a = 1\n}'))
+      .toThrow(/`include "base\.conf"` is not supported/);
+  });
+
+  test('an include without a quoted target still explains itself', () => {
+    expect(() => parseHocon('include base.conf')).toThrow(/`include` is not supported/);
+  });
+
+  test('a key legitimately named include keeps working', () => {
+    // The refusal fires only where neither `=`/`:` nor `{` follows — the
+    // directive position — so every ordinary use of the word is untouched.
+    expect(parseHocon('app { include = "x" }')).toEqual({ app: { include: 'x' } });
+    expect(parseHocon('include = "x"')).toEqual({ include: 'x' });
+    expect(parseHocon('include : 7')).toEqual({ include: 7 });
+    expect(parseHocon('include { a = 1 }')).toEqual({ include: { a: 1 } });
+    expect(parseHocon('include.a = 1')).toEqual({ include: { a: 1 } });
+    expect(parseHocon('"include" = 5')).toEqual({ include: 5 });
+    expect(parseHocon('a.include.b = 1')).toEqual({ a: { include: { b: 1 } } });
+  });
+
+  test('a comment that mentions include is still just a comment', () => {
+    expect(parseHocon('# include "base.conf" is unsupported\na = 1')).toEqual({ a: 1 });
+    expect(parseHocon('// include "base.conf"\na = 1')).toEqual({ a: 1 });
+  });
+
+  test('other keys still get the generic missing-assignment error', () => {
+    expect(() => parseHocon('imports "base.conf"')).toThrow(/Expected '=' or ':' after key "imports"/);
+  });
+});
+
 describe('prototype pollution (#406)', () => {
   // Every case asserts on a freshly built object rather than a captured one:
   // pollution shows up as an inherited property, so a fresh `{}` is the probe.

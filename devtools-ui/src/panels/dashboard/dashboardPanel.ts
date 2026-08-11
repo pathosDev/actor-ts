@@ -236,6 +236,14 @@ function renderCommon(
   const latest = history.latest();
   replaceChildren(host,
     tile('Actor system', welcome.systemName, { accent: true }),
+    // Beside the system name, because the two together are the identity
+    // — *what* this is and *which* version of it — while uptime, runtime
+    // and cluster below are all state.  The badge tooltip carries the
+    // version too, but a screenshot of the overview is what people paste
+    // into a bug report, and a tooltip does not survive one.
+    tile('actor-ts', welcome.serverVersion, {
+      title: `Tap protocol v${welcome.protocolVersion}`,
+    }),
     tile('Uptime', uptimeMs === null ? '—' : formatDuration(uptimeMs), frozenAtMs === null
       ? {}
       // The one tile whose stillness needs explaining: the others plainly

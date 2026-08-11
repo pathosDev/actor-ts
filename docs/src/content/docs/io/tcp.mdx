@@ -1,12 +1,23 @@
 ---
 title: TCP
-description: Raw TCP socket actor — `TcpSocketActor` for outbound clients. Per-connection child actors for inbound (via a separate listener pattern). The right tool when you need to talk a custom binary protocol and none of the higher-level options fit.
+description: Raw TCP actors — `TcpSocketActor` dials out, `TcpServerActor` listens. Shared framing, shared broker lifecycle. The right tool when you need to talk a custom binary protocol and none of the higher-level options fit.
 ---
 
-`TcpSocketActor` wraps a **client-side** TCP connection.  For
-**listening** on a port (accepting inbound TCP connections), the
-framework's pattern is "spawn one client-actor per incoming
-connection from a listener actor."
+import { Aside } from '@astrojs/starlight/components';
+
+Two actors, one protocol:
+
+| Actor | Direction | Owns |
+| --- | --- | --- |
+| `TcpSocketActor` | outbound — dials a remote host | one connection |
+| `TcpServerActor` | inbound — binds a local port | the listener + every connection it accepts |
+
+Both extend [`BrokerActor`](/io/broker-actor-base/), so they share the
+lifecycle, the reconnect policy and the `BrokerConnected` /
+`BrokerDisconnected` events, and both cut inbound bytes with the same
+[framing](#framing) strategies.
+
+## Dialing out — `TcpSocketActor`
 
 ```ts
 import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
@@ -15,12 +26,7 @@ const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
   .withPort(8125)
   .withTarget(protocolHandler);   // required: where inbound frames go
-const tcp = system.spawn(
-  () => new TcpSocketActor(
-    tcpSocketOptions,
-  ),
-  'tcp-client',
-);
+const tcp = system.spawn(() => new TcpSocketActor(tcpSocketOptions), 'tcp-client');
 
 // Send raw bytes:
 tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
@@ -29,7 +35,7 @@ tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
 tcp.tell({ kind: 'send', payload: 'PING\n' });
 ```
 
-## Settings
+### Settings
 
 ```ts
 interface TcpSocketOptionsType extends BrokerCommonOptionsType {
@@ -40,7 +46,7 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
-## Inbound messages
+### Inbound messages
 
 Inbound frames are pushed straight to the `target` actor you wire
 in through `.withTarget(..)` — there is no `subscribe` command and
@@ -105,26 +111,147 @@ type TcpFraming =
 With `lines` or `length-prefixed`, each message the target receives
 is **one full frame**, not an arbitrary chunk.
 
-## Listener pattern for inbound
+Both actors read the same strategies from the same code — on
+`TcpServerActor` the chosen framing is applied **per accepted
+connection**, each with its own re-assembly buffer, so two clients
+mid-frame never splice into one another.
 
-The framework doesn't ship a "TCP listener actor" — write one
-that spawns `TcpSocketActor`-like handlers per accepted
-connection:
+## Listening — `TcpServerActor`
+
+`TcpServerActor` binds a port and serves every connection that
+arrives.  It is built on the same cross-runtime TCP layer the
+cluster transport uses, so Bun, Node and Deno — and TLS — come
+from one place.
 
 ```ts
-// In an init actor:
-import net from 'node:net';
+import { ActorSystem, TcpServerActor, TcpServerOptions } from 'actor-ts';
 
-const server = net.createServer((socket) => {
-  const handler = system.spawn(
-    () => new IncomingConnectionActor(socket),
-  );
-});
-server.listen(port, host);
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindHost('0.0.0.0')
+  .withBindPort(9000)
+  .withFraming({ kind: 'lines' })
+  .withTarget(connectionHandler);   // required: where events + frames go
+const server = system.spawn(() => new TcpServerActor(tcpServerOptions), 'tcp-server');
+
+// Write to one connection, addressed by the id you were handed:
+server.tell({ kind: 'send', connectionId, payload: 'PONG\n' });
+
+// Hang up on one connection.  The listener keeps serving the rest:
+server.tell({ kind: 'close', connectionId });
 ```
 
-For most use cases, **don't roll your own TCP server** — use
-HTTP, WebSocket, or a higher-level protocol instead.
+### Settings
+
+```ts
+interface TcpServerOptionsType extends BrokerCommonOptionsType {
+  bindHost?:       string;                     // default '0.0.0.0'
+  bindPort?:       number;                     // required; 0 = let the OS pick
+  framing?:        TcpFraming;                 // per connection; default { kind: 'bytes' }
+  target?:         ActorRef<TcpServerMessage>; // required
+  tls?:            TlsTransportOptionsType;    // serve TLS instead of plaintext
+  maxConnections?: number;                     // admission cap; default Infinity
+}
+```
+
+With `bindPort: 0` the OS picks the port — read it back from the
+actor's `boundPort` once it is bound.  `connectionCount` reports
+the live connections.
+
+### Inbound messages
+
+The `target` receives a **kind-tagged** union, not bare frames —
+a listener has many connections, so every message names the one
+it belongs to:
+
+```ts
+type TcpServerMessage =
+  | { kind: 'connectionOpened'; connectionId: string; remoteAddress?: string }
+  | { kind: 'frame';            connectionId: string; payload: Uint8Array | string }
+  | { kind: 'connectionClosed'; connectionId: string };
+```
+
+The union and each of its variants are importable, so a handler can
+take the variant it is about rather than narrowing the union at
+every arm:
+
+```ts
+import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts';
+```
+
+An echo server is then the obvious three lines:
+
+```ts
+class EchoHandler extends Actor<TcpServerMessage> {
+  constructor(private readonly server: ActorRef<TcpServerCommand>) { super(); }
+
+  override onReceive(message: TcpServerMessage): void {
+    match(message)
+      .with({ kind: 'connectionOpened' }, (m) => this.onConnectionOpened(m))
+      .with({ kind: 'frame' }, (m) => this.onFrame(m))
+      .with({ kind: 'connectionClosed' }, (m) => this.onConnectionClosed(m))
+      .exhaustive();
+  }
+
+  private onFrame(message: FrameMessage): void {
+    this.server.tell({ kind: 'send', connectionId: message.connectionId, payload: message.payload });
+  }
+  // …
+}
+```
+
+`connectionClosed` arrives for every ending: the peer hung up, the
+connection errored, you sent `close`, a frame breached its size cap,
+or the actor stopped and unbound the port.  One signal, one code path.
+
+### Serving TLS
+
+`tls` carries the certificate **material** — PEM contents or DER
+bytes, never a path.  Supplying `ca` turns on client-certificate
+verification (mTLS); set `requestClientCert: false` for one-way TLS.
+
+```ts
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindPort(9443)
+  .withTls({ cert: readFileSync('server.pem', 'utf8'), key: readFileSync('server.key', 'utf8') })
+  .withTarget(connectionHandler);
+```
+
+A half-configured credential — a `cert` with no `key`, or a `ca`
+alone — is **rejected when the actor starts**, not quietly bound in
+plaintext.  There is deliberately no HOCON leaf for `tls`: a config
+file is the wrong place for a private key.
+
+<Aside type="tip" title="One actor, not one actor per connection">
+  Connections are addressed by an opaque `connectionId` rather than
+  each getting an actor, because an actor's restart semantics don't
+  apply to a socket — a restarted connection actor can't resurrect
+  the peer's TCP connection.  Your `target` is free to spawn a child
+  per `connectionOpened` when it wants per-connection state; nothing
+  forces the allocation.
+</Aside>
+
+### Bounds
+
+- **`maxConnections`** caps simultaneously accepted connections.  A
+  connection arriving at the cap is **aborted** immediately instead of
+  being registered — refusing at the door, rather than accepting a
+  socket nobody reads from.  Aborted, not ended: an orderly close only
+  sends a FIN, and a peer that never answers it keeps the socket, and
+  its file descriptor, alive.  Since that socket was never registered
+  the cap does not count it either, so a half-close would bound only
+  peers that cooperate.  The refused peer therefore sees a connection
+  error rather than a clean close — which is what being turned away at
+  capacity looks like at the TCP level.
+- **A frame past its `framing` cap drops only that connection.**  On
+  the client actor the same breach takes the whole actor down,
+  because there it *is* the whole transport; a listener that did the
+  same would let any single client take the service down for everyone.
+- **`outboundBuffer` defaults to `0`** here, unlike every other broker
+  actor.  Buffering while disconnected exists so a message survives a
+  reconnect — but "disconnected" for a listener means the port is
+  down, which means every connection it accepted is already gone, so a
+  buffered write names an id that can never come back.  A
+  `BrokerNotConnected` event says that; a replay would not.
 
 ## When to use TCP
 
@@ -140,8 +267,6 @@ Three legitimate uses:
 For new application protocols, **don't reach for raw TCP first**.
 HTTP, WebSocket, or gRPC are better starting points for almost
 everything.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="TCP gives you bytes, not messages">
   ```ts

@@ -163,6 +163,80 @@ Drei Kategorien:
    MultiNodeSpec einen „real genug"-Cluster, um Sharding-
    Placement, Singleton-Failover usw. zu testen.
 
+## Auf Zustand warten, nicht auf verstrichene Zeit
+
+Fast jeder flakige Actor-Test hat dieselbe Form: ein fester Sleep als
+Platzhalter für einen Hintergrundschritt, danach eine Assertion auf den
+Zustand, den dieser Schritt erzeugt.
+
+```ts
+// ✗ 100 ms ist die Latenz einer unbelasteten Maschine
+await new Promise((resolve) => setTimeout(resolve, 100));
+expect(store.saved).toEqual(['a', 'b']);
+```
+
+Die Zahl stammt aus einem Lauf, der grün war — sie kodiert also eine Maschine
+an einem Tag. Unter Last dauert der Schritt länger, und die Assertion liest
+einen Zustand, den das System noch gar nicht erreicht hat — gemeldet als
+*falscher* Wert statt als verspäteter. Die Zahl zu erhöhen versteckt den Flake
+und verlängert jeden Lauf, auch die überwältigende Mehrheit, der ein Bruchteil
+gereicht hätte.
+
+Stattdessen den beobachtbaren Zustand pollen:
+
+```ts
+// ✓ kehrt zurück, sobald die Bedingung hält; das Timeout begrenzt nur den defekten Fall
+await awaitCondition(() => store.saved.length === 2, {
+  timeoutMs: 5_000,
+  label: 'both events were written',
+});
+expect(store.saved).toEqual(['a', 'b']);
+```
+
+Daraus folgen zwei Dinge:
+
+- **Das Timeout ist ein Fehlerbudget, keine erwartete Dauer.** Ein grüner Test
+  kehrt nach einem Poll-Intervall zurück, also setze es komfortabel über die
+  schlimmste plausible Latenz unter Last. Es zu erreichen bedeutet dann, dass
+  die Bedingung wirklich nie wahr wurde — das macht es zur Diagnose statt zum
+  Münzwurf.
+- **Warte auf die stärkste Bedingung, die der Test beobachten kann** — eine
+  Probe-Antwort, ein Recovery-Callback, ein Spy-Array — nie auf einen Stellvertreter,
+  den ein halb fertiger Schritt schon erfüllt. Ein Stellvertreter, der bereits
+  bei der *ersten* Hälfte eines Schritts umschlägt, ist schlechter als der
+  Sleep, den er ersetzt hat.
+
+Greif zum passenden Werkzeug, bevor du selbst pollst:
+
+| Statt zu schlafen auf… | nimm |
+| --- | --- |
+| das Eintreffen einer Nachricht | [`TestProbe.expectMessage`](/de/testing/test-probe/) |
+| das Feuern eines Timers oder Retrys | [`ManualScheduler`](/de/testing/manual-scheduler/) |
+| die Konvergenz eines Clusters | `spec.awaitMembers` / `awaitLeader` / `awaitMemberStatus` |
+| mehrere Nodes am selben Punkt | [`spec.enterBarrier`](/de/testing/multi-node-spec/) |
+
+Für alles, was die nicht abdecken, genügt ein eigenes `awaitCondition` von
+einem Dutzend Zeilen — `actor-ts` hält eines in `tests/util/AwaitCondition.ts`.
+
+### Wann ein fester Sleep weiterhin richtig ist
+
+Warten ist korrekt, wenn die verstrichene Zeit *selbst* das Prüfobjekt ist oder
+wenn es überhaupt keinen Zustandsübergang gibt, auf den man warten könnte:
+
+- **Es darf nichts passieren.** `expectNoMessage(150)`, oder „das Heilen einer
+  Partition erweckt einen heruntergefahrenen Node nicht wieder" — man kann dem
+  Falschen nur ein Zeitfenster geben, in dem es eintreten könnte.
+- **Eine Dauer ist die Assertion.** Ein Debounce-Fenster, das Ablaufen einer
+  Lease-TTL, die Schwelle eines Failure Detectors, eine Gossip-Kadenz.
+- **Ein Szenario braucht eine bestimmte Verschränkung.** „Crashe einen Node
+  20 ms nach dem Start eines Ask-Batches" legt den Crash mitten in den Flug;
+  diese Verzögerung *ist* das Experiment.
+- **Das Warten ist ein Warm-up, auf das nichts assertet**, und die folgende
+  Operation bringt ihr eigenes Timeout mit, das einen langsamen Start abfängt.
+
+Schreib in einem Kommentar dazu, welcher der Fälle es ist. Ein Sleep mit
+Begründung ist Dokumentation; ein Sleep ohne ist eine Wette.
+
 ## Was nicht testen
 
 import { Aside } from '@astrojs/starlight/components';
@@ -194,7 +268,8 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   „Lang genug" zu schlafen macht Tests langsam und flakey. Nutze
   `await probe.expectMessage(...)` (es wartet-dann-assertet) oder
-  `ManualScheduler` (er bringt virtuelle Zeit voran).
+  `ManualScheduler` (er bringt virtuelle Zeit voran) — siehe
+  [Auf Zustand warten, nicht auf verstrichene Zeit](#auf-zustand-warten-nicht-auf-verstrichene-zeit).
 </Aside>
 
 ## TestKit vs rohes ActorSystem in Tests
@@ -202,7 +277,7 @@ import { Aside } from '@astrojs/starlight/components';
 Beides funktioniert. `TestKit` ist Convenience:
 
 - Default ist `NoopLogger` — kein Konsolen-Spam.
-- Bietet `createTestProbe()`, `within(ms, fn)`, `shutdown()`.
+- Bietet `createTestProbe()`, `within(ms, callback)`, `shutdown()`.
 - One-Liner-Setup via `TestKit.create()`.
 
 Für komplexe Test-Setups (eigener Logger, mehrere Systeme,

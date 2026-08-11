@@ -222,3 +222,58 @@ describe('CoordinatedShutdown — removing tasks', () => {
     void system.terminate();
   });
 });
+
+// #644 / #764 — `removeProcessHooks()` called `process.removeAllListeners(sig)`,
+// so detaching one ActorSystem's shutdown hooks tore out the application's
+// own SIGTERM handling, every other library's, and any second system's.
+describe('CoordinatedShutdown process hooks', () => {
+  test('removing hooks leaves other listeners alone', () => {
+    const applicationHandler = (): void => {};
+    const before = process.listenerCount('SIGTERM');
+    process.on('SIGTERM', applicationHandler);
+
+    const system = newSystem('hooks-isolation');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.installProcessHooks(['SIGTERM']);
+    expect(process.listenerCount('SIGTERM')).toBe(before + 2);
+
+    shutdown.removeProcessHooks();
+
+    // The application's handler survives; only ours went.
+    expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    expect(process.listeners('SIGTERM')).toContain(applicationHandler);
+
+    process.off('SIGTERM', applicationHandler);
+    void system.terminate();
+  });
+
+  test('two systems detach independently', () => {
+    // The second ActorSystem in a process used to be collateral damage.
+    const before = process.listenerCount('SIGINT');
+    const first = newSystem('hooks-first');
+    const second = newSystem('hooks-second');
+    first.extension(CoordinatedShutdownId).installProcessHooks(['SIGINT']);
+    second.extension(CoordinatedShutdownId).installProcessHooks(['SIGINT']);
+    expect(process.listenerCount('SIGINT')).toBe(before + 2);
+
+    first.extension(CoordinatedShutdownId).removeProcessHooks();
+
+    expect(process.listenerCount('SIGINT')).toBe(before + 1);
+
+    second.extension(CoordinatedShutdownId).removeProcessHooks();
+    expect(process.listenerCount('SIGINT')).toBe(before);
+
+    void first.terminate();
+    void second.terminate();
+  });
+
+  test('removing twice is harmless', () => {
+    const before = process.listenerCount('SIGTERM');
+    const system = newSystem('hooks-idempotent');
+    system.extension(CoordinatedShutdownId).installProcessHooks(['SIGTERM']);
+    system.extension(CoordinatedShutdownId).removeProcessHooks();
+    system.extension(CoordinatedShutdownId).removeProcessHooks();
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+    void system.terminate();
+  });
+});

@@ -70,6 +70,21 @@ import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
 
+/**
+ * Key a death-watch registration by incarnation, not by address.
+ *
+ * `ActorPath.toString()` is the canonical *address* and deliberately omits the
+ * uid — location transparency depends on it staying stable across a restart.
+ * Watch bookkeeping needs the opposite: a name that is re-spawned (a restarted
+ * parent recreating a named child, a router pool rebuilding its routees) must
+ * be a *different* subject, or the previous incarnation's pending `Terminated`
+ * is delivered against its successor and the successor is never registered at
+ * all, because the address is already in the map.
+ */
+function watchKeyOf(ref: ActorRef): string {
+  return `${ref.path.toString()}#${ref.path.uid}`;
+}
+
 /** Messages kept by an explain plan when the caller names no capacity. */
 const DEFAULT_EXPLAIN_CAPACITY = 100;
 
@@ -86,6 +101,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
+  /**
+   * A restart waiting for the outgoing instance's children to finish
+   * stopping.  See {@link onRecreate} for why this cannot simply be awaited.
+   */
+  private _pendingRecreate: RecreateCommand | null = null;
   private _anonChildCounter = 0;
   private _childUidCounter = 0;
 
@@ -96,6 +116,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private _watchers = new Set<ActorRef>();
   private _watching = new Map<string, ActorRef>();
+  /**
+   * Per-registration replacement for the `Terminated` a death would otherwise
+   * deliver — see {@link watchWith}.  Keyed like `_watching`, so a re-spawned
+   * name is a distinct subject here too and cannot inherit the predecessor's
+   * message.
+   */
+  private _watchWithMessages = new Map<string, TMessage>();
 
   private _failureTimes: number[] = [];
 
@@ -352,6 +379,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
+   * @internal Pending user messages, without building a whole snapshot.
+   *
+   * `_inspect()` already reports this number, but it allocates a full
+   * `CellInspection` to do so — far too much for `smallestMailboxStrategy`,
+   * which reads the depth of every routee on every routed message.  This is
+   * the cheap read; `_inspect` reuses it so the two cannot drift apart.
+   *
+   * Deliberately *not* lifted onto `ActorRef` or `ActorContext`: mailbox depth
+   * is a property of the runtime's queueing, and a public accessor would turn
+   * it into a permanent API promise about a number callers would branch on.
+   * Only code that lives inside the framework may look.
+   */
+  get mailboxSize(): number { return this.mailbox.size; }
+
+  /**
    * @internal Describe this cell for introspection tooling.
    *
    * A snapshot of what a debugger wants to show, taken from fields that
@@ -367,7 +409,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       className: this.actor?.constructor.name ?? '?',
       displayName: this._customDisplayName(),
       cellState: this.state,
-      mailboxSize: this.mailbox.size,
+      mailboxSize: this.mailboxSize,
       stashSize: this._stashBuffer.length,
       suspended: this.mailbox.suspended,
       dispatcher: this.blueprint.dispatcher?.id ?? null,
@@ -492,7 +534,29 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   watch(ref: ActorRef): ActorRef {
-    const key = ref.path.toString();
+    const key = watchKeyOf(ref);
+    // Last call wins, so watching plainly after a `watchWith` really does go
+    // back to `Terminated` rather than silently keeping the older intent.
+    this._watchWithMessages.delete(key);
+    return this.registerWatch(ref, key);
+  }
+
+  watchWith(ref: ActorRef, message: TMessage): ActorRef {
+    const key = watchKeyOf(ref);
+    // Recorded before the registration, because `_addWatcher` on an
+    // already-dead target answers immediately: the `Terminated` it enqueues
+    // has to find the replacement already in place.
+    this._watchWithMessages.set(key, message);
+    return this.registerWatch(ref, key);
+  }
+
+  /**
+   * The half `watch` and `watchWith` share: record the subject and, for a
+   * local target, tell its cell to notify us.  Re-registering an existing
+   * watch is deliberately a no-op here — only the message differs between the
+   * two entry points, and each has already written it.
+   */
+  private registerWatch(ref: ActorRef, key: string): ActorRef {
     if (this._watching.has(key)) return ref;
     this._watching.set(key, ref);
     if (ref instanceof LocalActorRef) {
@@ -502,7 +566,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   unwatch(ref: ActorRef): ActorRef {
-    const key = ref.path.toString();
+    const key = watchKeyOf(ref);
+    this._watchWithMessages.delete(key);
     if (!this._watching.delete(key)) return ref;
     if (ref instanceof LocalActorRef) {
       ref.getCell()._removeWatcher(this.self);
@@ -768,14 +833,34 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       .exhaustive();
   }
 
+  /**
+   * Suspend this cell and everything under it.
+   *
+   * The cascade is what makes {@link onResume} able to be symmetric.  A
+   * failure suspends the failing actor's subtree so nothing in it processes
+   * a message while the supervisor decides; the decision then has to be able
+   * to undo exactly that, and it can only do so if both directions walk the
+   * same tree (#635).
+   */
   private onSuspend(): void {
     this.mailbox.suspend();
     if (this.state === 'running') this.state = 'suspended';
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'suspend' });
   }
 
+  /**
+   * Resume this cell and everything under it.
+   *
+   * Resuming only this cell left the failed actor's children suspended for
+   * good: `failToParent` suspends the subtree, but `Directive.Resume` only
+   * ever reached the actor that failed.  Their mailboxes then filled and
+   * nothing was ever processed again — no error, no dead letters, just a
+   * silently dead branch of the tree (#635).
+   */
   private onResume(): void {
     this.mailbox.resume();
     if (this.state === 'suspended') this.state = 'running';
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
   }
 
   private onWatchNotify(signal: WatchNotifyCommand): void {
@@ -885,6 +970,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     this.state = 'terminated';
 
+    // Drop this actor's event-stream subscriptions.  Nothing else did:
+    // `unsubscribe` had exactly one caller in the whole framework, so a
+    // subscriber that stopped stayed on the list forever — the list grew
+    // without bound and every publish paid an O(N) walk that ended in a
+    // dead letter per departed subscriber (#645).  Before the ActorStopped
+    // publish below, so a stopping actor is not handed its own stop event.
+    this.system.eventStream.unsubscribe(this.self);
+
     // Stock metric: count terminations (clean stop OR post-failure path).
     metricsOf(this.system).counter(
       'actor_terminated_total', {},
@@ -902,6 +995,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
     }
     this._watching.clear();
+    this._watchWithMessages.clear();
 
     // Notify parent so it can remove us and run its own supervision hooks
     if (this._parent) {
@@ -922,16 +1016,38 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.timers.cancelAll();
     this.deadLetterStash();
 
-    // Let the old instance clean up.  The default is `postStop()` only —
-    // children are NOT stopped here; they hang off this cell, which outlives
-    // the instance being replaced.  See `Actor.preRestart` for why that matters
-    // to anyone spawning named children in `preStart`.
+    // Let the old instance clean up.  The default is `postStop()`.
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
       this.log.error('preRestart threw', e);
     }
 
+    // Tear the children down unless the actor opted out.  This lives here
+    // rather than in `preRestart` because it has to be *awaited*: the new
+    // instance cannot be built while the old children still hold their names,
+    // and an override has no way to tell the cell it started something worth
+    // waiting for (#634).
+    if (this.actor.stopChildrenOnRestart() && this._children.size > 0) {
+      for (const child of Array.from(this._children.values())) {
+        child.enqueueSystem({ kind: 'terminate' });
+      }
+      // Children report back with `childTerminated`, which THIS loop
+      // delivers — `run()` drains system messages one at a time and awaits
+      // each, so awaiting them here would block the very message that would
+      // unblock it.  Park instead; `onChildTerminated` resumes the restart
+      // once the last one is gone.
+      this._pendingRecreate = signal;
+      return;
+    }
+    await this.completeRecreate(cause);
+  }
+
+  /**
+   * Second half of a restart: everything that must happen after the outgoing
+   * instance's children are gone.
+   */
+  private async completeRecreate(cause: Error): Promise<void> {
     // Build a new instance.
     try {
       const next = this.blueprint.factory();
@@ -942,6 +1058,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
       this.mailbox.resume();
+      // `failToParent` suspended this cell's children along with it.  On the
+      // stop-children path they are gone by now and this is a no-op; on the
+      // `stopChildrenOnRestart() === false` path they are still here and still
+      // suspended, and nothing else would ever resume them — the opt-out would
+      // keep the child alive but frozen, with its mailbox filling.
+      for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
       this.state = 'running';
       // Stock metric: count restarts.
       metricsOf(this.system).counter(
@@ -1008,22 +1130,37 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const startNs = performance.now();
       const startedAtMs = Date.now();
       let failure: Error | null = null;
+      // What the behavior actually sees.  Differs from `message` only for a
+      // `watchWith` registration, which swaps the signal for the watcher's
+      // own domain message just below.
+      let delivered = message;
       try {
         if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
-          const key = message.actor.path.toString();
+          const key = watchKeyOf(message.actor);
           if (!this._watching.has(key)) {
             this._currentSender = null;
             this._currentEnvelope = null;
             return;
           }
           this._watching.delete(key);
+          // The substitution belongs on the watcher, not on the dying cell:
+          // that one notifies through `_watchers`, a set of *refs*, and has no
+          // way to reach the per-watcher map.  Doing it here also covers the
+          // immediate `Terminated` that `_addWatcher` sends when the target is
+          // already gone, because `watchWith` records the message before it
+          // registers.  The envelope keeps the original signal, so a trace or
+          // an explain plan still shows the death that caused this dispatch.
+          if (this._watchWithMessages.has(key)) {
+            delivered = this._watchWithMessages.get(key) as TMessage;
+            this._watchWithMessages.delete(key);
+          }
         }
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         if (span) {
-          await tracer.withActiveSpan(span, () => behavior(message));
+          await tracer.withActiveSpan(span, () => behavior(delivered));
         } else {
-          await behavior(message);
+          await behavior(delivered);
         }
         this._resetReceiveTimer();
         if (span) span.setStatus('ok');
@@ -1034,7 +1171,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           span.recordException(err);
           span.setStatus('error', err.message);
         }
-        this.failToParent(err, message);
+        // The message supervision is told about is the one the handler
+        // actually choked on — under `watchWith` that is the domain message,
+        // not the `Terminated` it replaced.
+        this.failToParent(err, delivered);
       } finally {
         if (span) span.end();
         const elapsedMs = performance.now() - startNs;
@@ -1192,6 +1332,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
 
+    // A restart parked here waiting for exactly this.  Checked before the
+    // `terminating` guard below: a restarting cell is `restarting`, not
+    // `terminating`, so the guard would return first and the restart would
+    // never resume.
+    if (this._pendingRecreate !== null && this._children.size === 0) {
+      const parked = this._pendingRecreate;
+      this._pendingRecreate = null;
+      // A `terminate` that arrived while the restart was parked wins.  Both
+      // halves of that matter: rebuilding here revives an actor that has been
+      // ordered to stop, and — because `onTerminate` returns early on a cell
+      // that is already `terminating` — the final stop then becomes a no-op,
+      // so `finalizeTermination` never runs and `terminate()` never settles.
+      if (this.state !== 'terminating' && this.state !== 'terminated') {
+        await this.completeRecreate(parked.cause);
+        return;
+      }
+    }
+
     if (this.state !== 'terminating') return;
     if (this._terminationOrder) {
       await this.terminateNextGroup();
@@ -1251,9 +1409,11 @@ class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   cancel(key: string): boolean {
     const handle = this.handles.get(key);
     if (!handle) return false;
-    handle.cancel();
     this.handles.delete(key);
-    return true;
+    // The handle's own answer, not `true` unconditionally: a one-shot that
+    // already fired has nothing left to cancel, and reporting otherwise made
+    // "did I get there in time?" unanswerable (#642).
+    return handle.cancel();
   }
 
   cancelAll(): void {
@@ -1262,11 +1422,28 @@ class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   }
 
   isTimerActive(key: string): boolean {
-    const handle = this.handles.get(key);
-    return !!handle && !handle.isCancelled;
+    this.pruneSettled();
+    return this.handles.has(key);
   }
 
   activeKeys(): string[] {
+    this.pruneSettled();
     return Array.from(this.handles.keys());
+  }
+
+  /**
+   * Drop handles whose schedule is over.
+   *
+   * A fired one-shot leaves its entry behind — nothing calls back into this
+   * map when a timer runs — so `activeKeys()` listed timers that were long
+   * gone and, for an actor that cycles through timer keys, the map grew for
+   * the life of the actor.  Pruning on read rather than on a timer callback
+   * keeps the scheduler unaware of its callers; the map is small and these
+   * are not hot paths.
+   */
+  private pruneSettled(): void {
+    for (const [key, handle] of this.handles) {
+      if (handle.isCancelled) this.handles.delete(key);
+    }
   }
 }

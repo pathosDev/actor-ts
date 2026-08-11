@@ -142,7 +142,7 @@ class Account extends PersistentActor<Command, Event, State> {
 Three methods do all the work:
 
 - **`onCommand`** — validates the request.  Decides what event(s) to
-  persist via `this.persist(event, cb)`.  Side effects go in `cb`.
+  persist via `this.persist(event, afterPersist)`.  Side effects go in `afterPersist`.
 - **`onEvent`** — pure function from state + event to new state.
   **No side effects** here — this function runs during recovery to
   replay the journal, possibly many times.
@@ -320,6 +320,16 @@ type SnapshotStore = {
 Built-in implementations live under
 [`persistence/journals/*`](/persistence/journals/in-memory/)
 and [`persistence/snapshot-stores/*`](/persistence/snapshot-stores/in-memory/).
+
+Writing your own?  `Journal.read()` is the method replay holds to
+its contract: the events it returns must be ascending by sequence
+number, contiguous, and inside the requested window.  `delete()`
+compacts a *prefix*, never a hole in the middle, so a gap can
+only mean a defect — a missing `ORDER BY`, a half-written append,
+a store someone else can write.  Replay raises
+`JournalIntegrityError` instead of folding it; see [what replay
+refuses to
+fold](/persistence/persistent-actor/#what-replay-refuses-to-fold).
 
 For production, the **SQLite** journal+snapshot combo
 covers single-node deployments; the **Cassandra** journal covers

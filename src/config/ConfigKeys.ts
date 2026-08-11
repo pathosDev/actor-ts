@@ -57,12 +57,26 @@ export const ConfigKeys = {
         server: 'actor-ts.io.broker.grpc.server',
       },
       jetstream: 'actor-ts.io.broker.jetstream',
+      /**
+       * JetStream's KV and Object-Store views (#74) are separate actors on
+       * separate roots, not sub-blocks of `jetstream`: they configure a
+       * *bucket*, not a stream + consumer, and nesting them would put keys
+       * like `history` under a block whose reader never looks at them.
+       */
+      jetstreamKeyValue: 'actor-ts.io.broker.jetstream-key-value',
+      jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
       kafka: 'actor-ts.io.broker.kafka',
       mqtt: 'actor-ts.io.broker.mqtt',
       nats: 'actor-ts.io.broker.nats',
       redisStreams: 'actor-ts.io.broker.redis-streams',
       sse: 'actor-ts.io.broker.sse',
       tcp: 'actor-ts.io.broker.tcp',
+      /**
+       * The TCP *listener* (`TcpServerActor`), on its own root rather than a
+       * sub-block of `tcp`: it configures a bind address and an admission
+       * cap, not a remote endpoint, so the two blocks share only `framing`.
+       */
+      tcpServer: 'actor-ts.io.broker.tcp-server',
       udp: 'actor-ts.io.broker.udp',
       websocket: 'actor-ts.io.broker.websocket',
     },
@@ -107,11 +121,98 @@ export const ConfigKeys = {
   cluster: {
     gossipInterval: 'actor-ts.cluster.gossip-interval',
     seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
+    weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
+    /**
+     * The two membership caps (#138).  They bound what unauthenticated gossip
+     * can make the local member map hold — `maxFrameBytes` bounds one frame,
+     * these bound what a sequence of well-formed frames accumulates.  `0`
+     * disables either.
+     */
+    maxMembers: 'actor-ts.cluster.max-members',
+    maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Tombstone housekeeping — `actor-ts.cluster.tombstone.*` (#841).  Grouped
+     * in HOCON because an operator tunes the three together; the matching
+     * `ClusterOptions` fields stay flat (`tombstoneTtlMs`, …), the same
+     * translation `remote.tcp.host` → `host` already makes.
+     */
+    tombstone: {
+      timeToLive: 'actor-ts.cluster.tombstone.time-to-live',
+      pruneInterval: 'actor-ts.cluster.tombstone.prune-interval',
+      minRetention: 'actor-ts.cluster.tombstone.min-retention',
+    },
     failureDetector: {
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
     },
+
+    /**
+     * Stable-observation bootstrap — `actor-ts.cluster.bootstrap.*` (#148).
+     * Read once per `bootstrapCluster` call with `stableObservation` enabled,
+     * which layers them under the explicit tuning.
+     *
+     * Timing only.  The election's *outcome* (`ClusterOptions.selfElection`)
+     * is deliberately not configurable here: it differs per node by
+     * construction, and one shared value would either stop every node from
+     * starting or have all of them self-elect at once.
+     */
+    bootstrap: {
+      stableMargin: 'actor-ts.cluster.bootstrap.stable-margin',
+      pollInterval: 'actor-ts.cluster.bootstrap.poll-interval',
+      maxWait: 'actor-ts.cluster.bootstrap.max-wait',
+      requiredContactPoints: 'actor-ts.cluster.bootstrap.required-contact-points',
+      selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
+    },
+
+    /**
+     * DistributedPubSub mediator tuning — `actor-ts.cluster.pub-sub.*`.
+     * Read once per `DistributedPubSub.start`, which layers them under the
+     * explicit options.  The three caps bound what one mediator can be made
+     * to hold; they are config rather than constants because the right value
+     * depends on the deployment's subscriber-to-node ratio (#139, #857).
+     */
+    pubSub: {
+      gossipInterval: 'actor-ts.cluster.pub-sub.gossip-interval',
+      maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
+      maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
+      maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      sendToDeadLettersWhenNoSubscribers:
+        'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
+    },
+
+    /**
+     * Receptionist tuning — `actor-ts.cluster.receptionist.*`.  Read once per
+     * `ReceptionistExtension.start`, which layers them under the explicit
+     * options (#137, #857).
+     */
+    receptionist: {
+      gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
+      maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
+      maxSubscribersTotal: 'actor-ts.cluster.receptionist.max-subscribers-total',
+    },
+  },
+
+  /**
+   * DistributedData tuning — `actor-ts.distributed-data.*`.  Read once per
+   * `DistributedData.start`, which layers them under the explicit options
+   * (#140, #856).
+   *
+   * Top-level rather than under `cluster.*` (where `pub-sub` and
+   * `receptionist` sit) because the module is: `DistributedData` ships from
+   * `src/crdt/`, and its options type carries no `cluster` field — the
+   * cluster is a positional argument to `start`, not a tunable.
+   *
+   * The two caps bound what one replica can be made to hold *and* how long
+   * it holds it.  The mailbox already bounds the queue; these bound the
+   * unsettled promises behind it, which the mailbox's `drop-head` policy
+   * would otherwise strand rather than reject.
+   */
+  distributedData: {
+    gossipInterval: 'actor-ts.distributed-data.gossip-interval',
+    maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
+    maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
   },
 
   /**

@@ -4,6 +4,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Terminated } from '../../SystemMessages.js';
+import { BidirectionalMap } from '../../util/BidirectionalMap.js';
 import { Passivate } from './Passivate.js';
 import type {
   EntityEnvelope,
@@ -61,6 +62,19 @@ type EntityState = {
  */
 export class Shard extends Actor<ShardInbox> {
   private readonly entities = new Map<string, EntityState>();
+  /**
+   * Entity id ↔ the entity's actor path.
+   *
+   * `Passivate` and `Terminated` arrive carrying a ref and nothing else, so
+   * both used to find their entity by scanning every entry in `entities` —
+   * O(n) per stop, and therefore O(n²) to drain a shard during handoff, on
+   * the one path that runs once per entity rather than once per system.
+   *
+   * The path *string* is indexed rather than the ref, because that is what
+   * `ActorRef.equals` compares: two refs to the same entity are equal without
+   * being the same object, so a ref-keyed map would miss.
+   */
+  private readonly entityPaths = new BidirectionalMap<string, string>();
 
   constructor(public readonly config: ShardConfig) { super(); }
 
@@ -71,11 +85,11 @@ export class Shard extends Actor<ShardInbox> {
    */
   override onReceive(message: ShardInbox): void {
     match(message)
-      .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
-      .with({ $t: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
-      .with({ $t: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
-      .with({ $t: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
-      .with({ $t: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
+      .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
+      .with({ kind: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
+      .with({ kind: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
+      .with({ kind: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
+      .with({ kind: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .otherwise(() => this.onUnhandled());
@@ -113,7 +127,7 @@ export class Shard extends Actor<ShardInbox> {
 
   private onGetShardStats(message: GetShardStats): void {
     message.replyTo.tell({
-      $t: 'sharding.ShardStats',
+      kind: 'sharding.ShardStats',
       shardId: this.config.shardId,
       entityCount: this.entities.size,
       entityIds: Array.from(this.entities.keys()),
@@ -124,25 +138,22 @@ export class Shard extends Actor<ShardInbox> {
   private onPassivate(message: Passivate): void {
     const candidate = message.entity ?? this.sender.toNullable();
     if (!candidate) return;
-    for (const state of this.entities.values()) {
-      if (!state.ref.equals(candidate)) continue;
-      state.passivating = [];
-      candidate.tell(message.stopMessage as never);
-      return;
-    }
+    const state = this.entityFor(candidate);
+    if (!state) return;
+    state.passivating = [];
+    candidate.tell(message.stopMessage as never);
   }
 
   private onEntityTerminated(message: Terminated): void {
-    for (const [entityId, state] of this.entities) {
-      if (!state.ref.equals(message.actor)) continue;
-      const buffered = state.passivating ?? [];
-      this.entities.delete(entityId);
-      this.notifyRegion({ $t: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
-      // Recreates the entity and hands it everything that arrived while it
-      // was shutting down — same contract the region used to provide.
-      for (const pending of buffered) this.deliver(entityId, pending, null);
-      return;
-    }
+    const entityId = this.entityPaths.getKey(message.actor.path.toString());
+    if (entityId === undefined) return;
+    const buffered = this.entities.get(entityId)?.passivating ?? [];
+    this.entities.delete(entityId);
+    this.entityPaths.delete(entityId);
+    this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
+    // Recreates the entity and hands it everything that arrived while it
+    // was shutting down — same contract the region used to provide.
+    for (const pending of buffered) this.deliver(entityId, pending, null);
   }
 
   private onUnhandled(): void {
@@ -150,6 +161,12 @@ export class Shard extends Actor<ShardInbox> {
   }
 
   /* ------------------------------ Internals ------------------------------ */
+
+  /** The entity a ref belongs to, or null — `Passivate` and `Terminated` only carry a ref. */
+  private entityFor(ref: ActorRef): EntityState | null {
+    const entityId = this.entityPaths.getKey(ref.path.toString());
+    return entityId === undefined ? null : this.entities.get(entityId) ?? null;
+  }
 
   private deliver(entityId: string, message: unknown, sender: ActorRef | null): void {
     const existing = this.entities.get(entityId);
@@ -175,7 +192,8 @@ export class Shard extends Actor<ShardInbox> {
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);
-    this.notifyRegion({ $t: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });
+    this.entityPaths.set(entityId, ref.path.toString());
+    this.notifyRegion({ kind: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });
     return state;
   }
 
@@ -190,10 +208,47 @@ export class Shard extends Actor<ShardInbox> {
 }
 
 /**
+ * Characters an entity id may carry into a child name unchanged.  Everything
+ * an actor name forbids is excluded (`/`, `\`, control characters), as is `~`,
+ * which introduces an escape below.  The set is otherwise deliberately wide:
+ * ordinary ids — `user-42`, `a.b@x.com`, `tenant:eu` — should read as
+ * themselves in the DevTools tree and in log lines.
+ */
+const NAME_LITERAL = /[A-Za-z0-9_\-.@:+]/;
+
+/**
  * Child name of the entity actor for `entityId` under its shard.  Entity ids
- * are user-supplied and actor names are not allowed to be, so anything outside
- * `[A-Za-z0-9_-]` is folded to `_`.
+ * are user-supplied; actor names are not allowed to be, so the id is escaped.
+ *
+ * The escape is **injective**, and that is the whole point.  This used to fold
+ * everything outside `[A-Za-z0-9_-]` to `_`, which is many-to-one: `user!31`
+ * and `user#31` produced the same name, and — when they also hashed to the
+ * same shard — the second one missed the shard's id-keyed `entities` map,
+ * called `createEntity`, and `_createChild` threw `Child name … is not
+ * unique`.  That throw takes down the Shard actor and every unrelated entity
+ * living under it.  No attacker required: `a.b@x.com` and `a-b@x.com` collided
+ * the same way (#568).
+ *
+ * A code unit outside {@link NAME_LITERAL} becomes `~` followed by four hex
+ * digits.  Escaping per UTF-16 code unit rather than percent-encoding UTF-8
+ * keeps the function **total**: `encodeURIComponent` throws `URIError` on a
+ * lone surrogate, and a throw here lands inside `createEntity` — the very
+ * failure this fix exists to remove.
+ *
+ * Nothing decodes this.  The path is a label; `entityId` on the entity context
+ * is the value (see `EntityContext`).  That matters for more than style:
+ * `parsePathSegments` deliberately does not percent-decode, and every remote
+ * path consumer goes through it, so the name survives a round trip over the
+ * wire byte-for-byte.  A future "improvement" that decodes a path segment
+ * would reintroduce the collision.
  */
 export function entityName(entityId: string): string {
-  return `entity-${entityId.replace(/[^A-Za-z0-9_\-]/g, '_')}`;
+  let escaped = '';
+  for (let i = 0; i < entityId.length; i++) {
+    const char = entityId[i]!;
+    escaped += NAME_LITERAL.test(char)
+      ? char
+      : `~${entityId.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')}`;
+  }
+  return `entity-${escaped}`;
 }

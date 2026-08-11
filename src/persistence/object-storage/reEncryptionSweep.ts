@@ -17,6 +17,11 @@
  * skipped on the fast path (one GET, no PUT), so the sweep is idempotent
  * — re-running it after a successful run is a no-op.
  *
+ * The same machinery rotates the HKDF `info` context (#108) via
+ * `newInfo`.  That axis is invisible on the wire — no manifest byte
+ * records it — so the version fast-path cannot be trusted while it is
+ * in play; see `ReEncryptOptions.newInfo`.
+ *
  * The helper operates one level below `ObjectStorageSnapshotStore` /
  * `ObjectStorageDurableStateStore` because per-pid HKDF salting means
  * the pid must be known at decrypt + re-encrypt time.  The default
@@ -30,8 +35,10 @@ import {
   encodeBody,
   FLAG_ENCRYPTED,
   FLAG_KEY_VERSIONED,
+  type DecodedBody,
+  type SubKeyResolver,
 } from './BodyCodec.js';
-import { deriveSubkey } from './Encryption.js';
+import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
 
@@ -94,12 +101,28 @@ export type ReEncryptOptions = {
    */
   readonly keyring: MasterKeyRing;
   /**
-   * HKDF `info` string — must match the one the encrypting store used
-   * (defaults to `actor-ts/snapshot/v1`, identical to {@link deriveSubkey}'s
-   * default).  Override if you customised it at the original encrypt
-   * site.
+   * HKDF `info` string the corpus was **written** under — it must match
+   * the encrypting store's `EncryptionConfig.info` exactly, or every
+   * decrypt in the sweep fails.  Required since #108: there is no
+   * framework-wide default to fall back on any more, and guessing one
+   * would silently produce the wrong subkey.
    */
-  readonly info?: string;
+  readonly info: string;
+  /**
+   * HKDF `info` to **re-encrypt** under.  Unset (the normal case) means
+   * "same as {@link info}" — a pure master-key rotation.  Set it to
+   * rotate the derivation context itself, e.g. when splitting a shared
+   * `'actor-ts/snapshot/v1'` into per-environment contexts (#108).
+   *
+   * Rotating `info` changes what the sweep can skip.  The key version
+   * is stamped in the body manifest; the `info` is not, so a body at
+   * the active key version may still be at the *old* context and there
+   * is no cheap way to tell.  The version fast-path is therefore
+   * disabled while `newInfo` differs from `info`, and every object is
+   * decrypted to find out — slower, but the alternative is a sweep that
+   * reports success having rewritten nothing.
+   */
+  readonly newInfo?: string;
   /**
    * Extracts the `persistenceId` from a backend key.  HKDF uses the
    * pid as a per-pid salt, so the sweep needs to recover it from the
@@ -206,9 +229,21 @@ export type ReEncryptResult = {
  *     keyPrefix: 'snapshots/',
  *     keyring: { active: { version: 2, key: newKey },
  *                retired: [{ version: 1, key: oldKey }] },
+ *     info: 'acme/prod/snapshot/v1',
  *     onProgress: (e) => process.stderr.write(`${e.index}/${e.total} ${e.key}\n`),
  *   });
  *   console.log(`re-encrypted ${result.rewrote} of ${result.scanned}`);
+ *
+ * Rotating the HKDF context instead of (or alongside) the key adds
+ * `newInfo`; the sweep then decrypts under `info` and writes under
+ * `newInfo`:
+ *
+ *   await reEncryptObjectStorage(backend, {
+ *     keyPrefix: 'snapshots/',
+ *     keyring,
+ *     info:    'actor-ts/snapshot/v1',    // the shared legacy context
+ *     newInfo: 'acme/prod/snapshot/v1',   // per-environment from now on
+ *   });
  */
 export async function reEncryptObjectStorage(
   backend: ObjectStorageBackend,
@@ -228,12 +263,20 @@ export async function reEncryptObjectStorage(
     skippedNonAts1: 0,
     skippedMalformedKey: 0,
   };
+  // Validates the whole ring, not just `active` (#111).  The sweep's own
+  // resolver below matches `active` before `retired`, so a version that
+  // appears on both would decide silently which key a historical body is
+  // read with — and the sweep then *rewrites* that body, turning a bad
+  // read into a bad write.
+  validateMasterKeyRing(options.keyring, 'reEncryptObjectStorage');
   const activeVersion = options.keyring.active.version;
-  if (!Number.isInteger(activeVersion) || activeVersion < 0 || activeVersion > 255) {
-    throw new Error(
-      `reEncryptObjectStorage: keyring.active.version must be an integer in [0, 255], got ${activeVersion}`,
-    );
-  }
+
+  // Decrypt under the corpus's current context, re-encrypt under the
+  // target one.  They coincide for a plain key rotation (#70/#109); they
+  // differ when the operator is also rotating the HKDF context (#108).
+  const decryptInfo = options.info;
+  const encryptInfo = options.newInfo ?? options.info;
+  const rotatingInfo = encryptInfo !== decryptInfo;
 
   // Pre-sweep keyring-completeness check (#109).  Sample some bodies,
   // gather their key versions, fail fast if any version isn't in the
@@ -322,34 +365,63 @@ export async function reEncryptObjectStorage(
     }
     const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
     const bodyVersion = versioned ? framed[5]! : 0;
-    if (bodyVersion === activeVersion && versioned) {
+    const atActiveVersion = bodyVersion === activeVersion && versioned;
+    if (atActiveVersion && !rotatingInfo) {
       // Already at the active version with the new framing — nothing
       // to do.  Bodies in the legacy unversioned format are NOT
       // considered "at version 0" for skip purposes — we still rewrite
       // them so the corpus ends up uniformly versioned.
+      //
+      // The `!rotatingInfo` guard is load-bearing: the manifest records
+      // the key version but not the HKDF context, so during an `info`
+      // rotation this condition is true for every not-yet-rewritten
+      // body.  Skipping on it would make the whole sweep a silent no-op
+      // that reports `skippedCurrent === scanned` and looks successful.
       result.skippedCurrent += 1;
       options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
       continue;
     }
 
     const persistenceId = persistenceIdFromKey(item.key, options.keyPrefix);
-    const info = options.info ?? 'actor-ts/snapshot/v1';
+    const subKeyResolverFor = (hkdfInfo: string): SubKeyResolver =>
+      async (keyVersion: number): Promise<Uint8Array | null> => {
+        if (options.keyring.active.version === keyVersion) {
+          return deriveSubkey(options.keyring.active.key, persistenceId, hkdfInfo);
+        }
+        const retired = options.keyring.retired?.find((r) => r.version === keyVersion);
+        return retired ? deriveSubkey(retired.key, persistenceId, hkdfInfo) : null;
+      };
 
     // Decrypt with whatever retired/active key matches the body's version.
-    const decoded = await decodeBody(framed, {
-      encryption: {
-        subKeyFor: async (v: number): Promise<Uint8Array | null> => {
-          if (options.keyring.active.version === v) {
-            return deriveSubkey(options.keyring.active.key, persistenceId, info);
-          }
-          const retired = options.keyring.retired?.find((r) => r.version === v);
-          return retired ? deriveSubkey(retired.key, persistenceId, info) : null;
-        },
-      },
-    });
+    let decoded: DecodedBody;
+    let alreadyAtNewInfo = false;
+    try {
+      decoded = await decodeBody(framed, { encryption: { subKeyFor: subKeyResolverFor(decryptInfo) } });
+    } catch (decryptError) {
+      // An `info` rotation is the one situation where a well-formed body
+      // legitimately fails to decrypt under the configured context: it
+      // may have been rewritten by an earlier run of this same sweep.
+      // Probe the target context before giving up, so that re-running an
+      // interrupted info rotation stays idempotent instead of aborting on
+      // the first already-converted object.  Anything else re-throws
+      // unchanged.
+      if (!rotatingInfo) throw decryptError;
+      try {
+        decoded = await decodeBody(framed, { encryption: { subKeyFor: subKeyResolverFor(encryptInfo) } });
+      } catch {
+        throw decryptError;
+      }
+      alreadyAtNewInfo = true;
+    }
+    if (alreadyAtNewInfo && atActiveVersion) {
+      // Converged on both axes — the previous run already did this one.
+      result.skippedCurrent += 1;
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
+      continue;
+    }
 
     // Re-encrypt with the active key + active version stamp.
-    const activeSubkey = await deriveSubkey(options.keyring.active.key, persistenceId, info);
+    const activeSubkey = await deriveSubkey(options.keyring.active.key, persistenceId, encryptInfo);
     const rewritten = await encodeBody(decoded.payload, {
       compression: decoded.compression,
       encryption: { subKey: activeSubkey, keyVersion: activeVersion },

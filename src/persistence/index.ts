@@ -12,6 +12,10 @@ export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
 export type { PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
+// The two integrity failures a recovery can raise.  Exported because
+// `onRecoveryFailure` is documented as discriminating on them, which needs the
+// classes themselves — `reason.name === '…'` breaks on any rewording (#1053).
+export { SnapshotIntegrityError, JournalIntegrityError } from './Replay.js';
 export type {
   CompressionAlgo,
   CompressionConfig,
@@ -21,16 +25,32 @@ export type {
   MasterKeyRingEntry,
 } from './PersistenceOptions.js';
 export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
+// Exported so an application can check its ids against the same rules the
+// framework enforces — the one thing that makes the #133 tightening safe
+// to adopt without a trial run against production data.
+export {
+  assertValidPersistenceId,
+  persistenceIdRejection,
+  MAX_PERSISTENCE_ID_LENGTH,
+} from './storage/PersistenceIdValidator.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';
-export { SqliteJournalOptions, SqliteJournalOptionsBuilder } from './journals/SqliteJournalOptions.js';
+export {
+  SqliteJournalOptions,
+  SqliteJournalOptionsBuilder,
+  SqliteJournalOptionsValidator,
+} from './journals/SqliteJournalOptions.js';
 export type { SqliteJournalOptionsType } from './journals/SqliteJournalOptions.js';
 export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
-export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
+export {
+  SqliteSnapshotStoreOptions,
+  SqliteSnapshotStoreOptionsBuilder,
+  SqliteSnapshotStoreOptionsValidator,
+} from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 
 export { SqliteDurableStateStore } from './durable-state-stores/SqliteDurableStateStore.js';
@@ -40,7 +60,12 @@ export {
   SqliteDurableStateStoreOptionsValidator,
 } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
 export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
-export { adaptSqliteDatabase, buildSqliteDatabase } from './journals/SqliteClient.js';
+export {
+  adaptSqliteDatabase,
+  applySqliteBusyTimeout,
+  buildSqliteDatabase,
+  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+} from './journals/SqliteClient.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
@@ -387,7 +412,11 @@ export type {
 
 // Durable State (state-oriented alternative to Event Sourcing).
 export { DurableStateActor } from './DurableStateActor.js';
-export { DurableStateOptions, DurableStateOptionsBuilder } from './DurableStateOptions.js';
+export {
+  DurableStateOptions,
+  DurableStateOptionsBuilder,
+  DurableStateOptionsValidator,
+} from './DurableStateOptions.js';
 export type { DurableStateOptionsType } from './DurableStateOptions.js';
 export {
   DurableStateConcurrencyError,
@@ -446,6 +475,8 @@ export {
   jsonCodec,
   zodCodec,
   composeCodecs,
+  // #73 — a byte-native Serializer (Avro, Protobuf) as a per-version codec.
+  serializerCodec,
   validatedEventAdapter,
   validatedSnapshotAdapter,
   InMemorySchemaRegistry,
@@ -460,6 +491,7 @@ export type {
   PersistenceQuery,
   LiveQueryOptions,
   Offset,
+  PaginationOptions,
   TaggedEvent,
   TagFilter,
   TagFilterSpec,
@@ -473,7 +505,12 @@ export {
   normalizeTagFilter,
   eventMatchesTagFilter,
   tagFilterCursorKey,
+  defaultPersistenceIdPageSize,
 } from './query/PersistenceQuery.js';
+// #156 — the paging semantics `Journal.persistenceIdsPaginated` has to match,
+// exported so an out-of-tree journal can implement the optional method against
+// the same definition the in-repo backends are checked against.
+export { persistenceIdPage } from './Journal.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';

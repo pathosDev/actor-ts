@@ -246,8 +246,10 @@ Für Integrationstests gegen eine echte K8s-API (kind, minikube,
 ephemere CI-Cluster):
 
 ```ts
+import { randomUuid } from 'actor-ts';
+
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
-  .withName('test-lease-' + crypto.randomUUID())
+  .withName('test-lease-' + randomUuid())
   .withOwner('test-runner')
   .withTtlMs(5_000)
   .withApiServerUrl('https://localhost:8443')

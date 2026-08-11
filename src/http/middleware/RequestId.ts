@@ -4,24 +4,55 @@
  * incoming id is accepted only if it is well-formed — never echo raw
  * client bytes back into a header.
  */
-import { randomUUID } from 'node:crypto';
 import type { Middleware } from '../Route.js';
+import type { HttpRequest } from '../types.js';
+import { randomUuid } from '../../util/RandomString.js';
 import { applyHeaders } from './headers.js';
 import type { RequestIdOptions, RequestIdOptionsType } from './RequestIdOptions.js';
 
 /** Conservative id shape — enough for UUIDs, ULIDs, and trace ids; caps length. */
 const VALID_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
+/**
+ * Header the middleware reads and echoes unless configured otherwise, and
+ * the one {@link requestIdOf} looks at by default.  A single spelling so
+ * the middleware and the framework's own error log cannot drift apart.
+ */
+export const DEFAULT_REQUEST_ID_HEADER = 'x-request-id';
+
+/**
+ * The request id `request` carries, or `undefined` when it carries none —
+ * or when what it carries is not a well-formed id.
+ *
+ * The check is the reason this is a function rather than a header read at
+ * the call site: the value is client-controlled, and raw client bytes on a
+ * log line can forge whole log records through an embedded newline.  It is
+ * the same check the middleware applies before echoing an incoming id into
+ * a response header, deliberately shared rather than re-derived.
+ *
+ * What comes back is what the *request* claimed, which is what correlation
+ * needs — with `trustIncoming: false` the middleware will have generated a
+ * different id for everything downstream of it, so a caller that logs this
+ * should name the header it came from rather than present it as the id.
+ */
+export function requestIdOf(
+  request: HttpRequest,
+  headerName: string = DEFAULT_REQUEST_ID_HEADER,
+): string | undefined {
+  const value = request.headers[headerName.toLowerCase()];
+  return value !== undefined && VALID_ID.test(value) ? value : undefined;
+}
+
 /** Build a middleware that assigns/propagates a request id. */
 export function requestId(options: RequestIdOptions = {}): Middleware {
   const resolvedOptions = options as Partial<RequestIdOptionsType>;
-  const headerName = (resolvedOptions.headerName ?? 'x-request-id').toLowerCase();
+  const headerName = (resolvedOptions.headerName ?? DEFAULT_REQUEST_ID_HEADER).toLowerCase();
   const trustIncoming = resolvedOptions.trustIncoming ?? true;
-  const generate = resolvedOptions.generate ?? ((): string => randomUUID());
+  const generate = resolvedOptions.generate ?? randomUuid;
 
   return async (request, next) => {
-    const incoming = trustIncoming ? request.headers[headerName] : undefined;
-    const id = incoming && VALID_ID.test(incoming) ? incoming : generate();
+    const incoming = trustIncoming ? requestIdOf(request, headerName) : undefined;
+    const id = incoming ?? generate();
     const response = await next({ ...request, headers: { ...request.headers, [headerName]: id } });
     return applyHeaders(response, { [headerName]: id });
   };

@@ -47,6 +47,20 @@ import type { GetShardLocation, GetShards } from './ShardingProtocol.js';
  */
 export class ClusterSharding {
   private readonly regionsByPath = new Map<string, ActorRef<unknown>>();
+  /**
+   * Type name → region path.  `regionsByPath` is a dispatch registry keyed on
+   * the exact path and holds coordinators as well as regions, so resolving a
+   * region by type used to mean suffix-matching every entry in it — O(n) in
+   * the number of started types, on a path `start` takes for every message
+   * send through {@link entityRefFor}.
+   *
+   * Deliberately a plain `Map` and not a `BidirectionalMap`: nothing here
+   * needs to go from a region path back to a type name, and an index nobody
+   * reads is one more thing to keep in step.  (The coordinator side does need
+   * that direction, but it parses the path rather than looking it up, which
+   * also answers for coordinators this node never registered.)
+   */
+  private readonly regionPathsByType = new Map<string, string>();
   private readonly coordinators = new Map<string, ActorRef<unknown>>();
   /** Shard count per started type — the entity→shard hash needs it. */
   private readonly numShardsByType = new Map<string, number>();
@@ -138,7 +152,12 @@ export class ClusterSharding {
       SystemGroups.clusterSharding,
       shardRegionName(options.typeName),
     );
-    this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
+    const regionPath = ref.path.toString();
+    this.regionsByPath.set(regionPath, ref as ActorRef<unknown>);
+    // Regions only — a coordinator also lands in `regionsByPath` (see
+    // `ensureCoordinator`), and letting one in here would make
+    // `findRegionByType` hand back a coordinator ref.
+    this.regionPathsByType.set(options.typeName, regionPath);
     return ref;
   }
 
@@ -353,7 +372,7 @@ export class ClusterSharding {
     // Leave the coordinator's fan-out a shorter fuse than our own ask, so a
     // slow region degrades into a partial answer instead of no answer at all.
     const fanOutTimeoutMs = Math.max(250, Math.floor(timeoutMs * 0.6));
-    const query: GetShards = { $t: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
+    const query: GetShards = { kind: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
     return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, timeoutMs);
   }
 
@@ -378,7 +397,7 @@ export class ClusterSharding {
     timeoutMs = 5_000,
   ): Promise<ActorRef<ShardMessage<TMessage>>> {
     const region = this.regionOrThrow(typeName);
-    const query: GetShardLocation = { $t: 'sharding.GetShardLocation', shardId };
+    const query: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
     return await region.ask<ActorRef<ShardMessage<TMessage>>>(query as never, timeoutMs);
   }
 
@@ -401,6 +420,7 @@ export class ClusterSharding {
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
       .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
+      .withNumShards(this.numShardsByType.get(options.typeName) ?? DEFAULT_NUM_SHARDS)
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')
@@ -460,11 +480,8 @@ export class ClusterSharding {
   }
 
   private findRegionByType(typeName: string): ActorRef<unknown> | null {
-    const suffix = `/${SystemGroups.clusterSharding}/${shardRegionName(typeName)}`;
-    for (const [path, ref] of this.regionsByPath) {
-      if (path.endsWith(suffix)) return ref;
-    }
-    return null;
+    const path = this.regionPathsByType.get(typeName);
+    return path === undefined ? null : this.regionsByPath.get(path) ?? null;
   }
 
   private dispatchEnvelope(env: EnvelopeMessage): void {

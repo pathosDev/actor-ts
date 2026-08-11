@@ -3,6 +3,8 @@ title: Quorum Reads und Writes
 description: Wenn Eventual Consistency nicht reicht — `updateAsync` und `getAsync` mit expliziten Konsistenz-Leveln (local / majority / all) geben dir synchrone Garantien darüber, wie viele Replikas einen Wert gesehen oder dazu beigetragen haben.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Die Default-Operationen `update` / `get` von DistributedData sind
 **nur lokal** — sie werden sofort auf die lokale Replika
 angewendet; die Propagation passiert via Gossip.  Für Workloads,
@@ -191,9 +193,78 @@ try {
 }
 ```
 
-## Was Quorum nicht garantiert
+## Die Pending-Menge begrenzen
 
-import { Aside } from '@astrojs/starlight/components';
+Jeder Quorum-Call, der sich nicht schon mit dem Self-ACK auflösen kann,
+parkt einen Eintrag — ein Promise, einen Timer, die Menge der Peers, auf
+die er wartet — bis genug Antworten da sind oder die Deadline abläuft.
+Zwei Settings begrenzen diese Menge, im Code oder über
+[`actor-ts.distributed-data`](/de/reference/configuration/#actor-tsdistributed-data):
+
+```ts
+import { DistributedDataId, DistributedDataOptions } from 'actor-ts';
+
+const distributedDataOptions = DistributedDataOptions.create()
+  .withMaxPendingQuorumRequests(1_000)
+  .withMaxQuorumTimeout(30_000);
+
+const dd = system.extension(DistributedDataId).start(cluster, distributedDataOptions);
+```
+
+| Option | Default | Wirkung |
+| --- | --- | --- |
+| `maxPendingQuorumRequests` | `1000` | Maximal offene Quorum-Requests gleichzeitig.  `updateAsync` und `getAsync` teilen sich das Budget.  `0` deaktiviert es. |
+| `maxQuorumTimeout` | `30000` | Obergrenze in ms für das `timeoutMs` eines Calls; ein größerer Wert wird heruntergeschnitten.  `0` deaktiviert sie. |
+
+Über dem Cap lehnt der Call sofort mit einem Fehler ab, der das Setting
+beim Namen nennt — er wird **nicht** eingereiht und wartet **nicht**:
+
+```ts
+try {
+  await dd.updateAsync('x', ..., { consistency: 'majority' });
+} catch (e) {
+  // "DistributedData refused a quorum write on "x": 1000 quorum requests
+  //  are already pending (max-pending-quorum-requests = 1000)"
+}
+```
+
+Wie beim Timeout macht eine Ablehnung den **lokalen Write nicht
+rückgängig** — der Wert ist vor dem Quorum angewandt und gossipt normal
+weiter.
+
+<Aside type="tip" title="Warum der Default 1000 ist und nicht 10 000">
+  Der Replikator läuft auf der bounded Default-Mailbox — 10 000 Einträge,
+  `drop-head`.  Bei Sättigung verwirft diese Policy den **ältesten**
+  wartenden Envelope, und ein wartender `updateAsync`-Envelope nimmt dein
+  `resolve` und `reject` mit: das Promise, auf das du wartest, kann dann nie
+  mehr settlen, und geloggt wird nichts.  Ein Cap von 10 000 würde nie
+  erreicht, bevor die Mailbox zuerst dort ankommt — es würde also nichts
+  umwandeln.  Eine Größenordnung darunter gesetzt, besteht der ganze Wert
+  des Caps darin, aus diesem stillen Drop einen expliziten, fangbaren
+  Fehler zu machen.
+</Aside>
+
+## In Produktion beobachten
+
+Mit aktivierten [Metriken](/de/observability/metrics/core-metrics/) veröffentlicht der
+Replikator vier Serien — die Label-Mengen sind fest, sie kosten also eine
+Handvoll Serien und nicht mehr:
+
+| Metrik | Art | Labels |
+| --- | --- | --- |
+| `distributed_data_quorum_pending` | Gauge | — |
+| `distributed_data_quorum_timeouts_total` | Counter | `operation` = `write` \| `read` |
+| `distributed_data_quorum_rejected_total` | Counter | `operation` = `write` \| `read` |
+| `distributed_data_dropped_values_total` | Counter | — |
+
+Alarmierungswürdig ist vor allem das letzte Paar.  Ein steigendes
+`..._rejected_total` heißt, dass Aufrufer dem Cap davonlaufen — entweder
+ein durchgegangener Producer oder ein für die Last zu niedriges Cap.  Ein
+steigendes `..._dropped_values_total` heißt, dass ein Peer CRDT-Payloads
+schickt, die diese Replika nicht dekodieren kann — ein kaputter oder
+feindlicher Peer, kein Tuning-Problem.
+
+## Was Quorum nicht garantiert
 
 <Aside type="caution" title="`'majority'` ist nicht Linearisierbarkeit">
   Ein Majority Write + ein Majority Read geben dir **keine**

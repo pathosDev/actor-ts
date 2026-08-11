@@ -597,16 +597,16 @@ export type MqttInboundPacketLike = {
  * the same shape without the real peer-dep.
  */
 export interface MqttClientLike {
-  on(event: 'message', cb: (topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike) => void): void;
-  on(event: 'error', cb: (err: Error) => void): void;
-  on(event: 'close', cb: () => void): void;
-  once(event: 'connect', cb: () => void): void;
-  once(event: 'error', cb: (err: Error) => void): void;
+  on(event: 'message', listener: (topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike) => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  on(event: 'close', listener: () => void): void;
+  once(event: 'connect', listener: () => void): void;
+  once(event: 'error', listener: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
-  publish(topic: string, payload: string | Uint8Array, options: MqttPubOpts, cb?: (err?: Error) => void): void;
-  subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void;
-  unsubscribe(topic: string, options: undefined, cb?: (err?: Error) => void): void;
-  end(force?: boolean, options?: object, cb?: () => void): void;
+  publish(topic: string, payload: string | Uint8Array, options: MqttPubOpts, callback?: (err?: Error) => void): void;
+  subscribe(topic: string, options: { qos: MqttQos }, callback?: (err?: Error) => void): void;
+  unsubscribe(topic: string, options: undefined, callback?: (err?: Error) => void): void;
+  end(force?: boolean, options?: object, callback?: () => void): void;
 }
 
 /** The `mqtt` module surface we use.  Exported as a test seam. */

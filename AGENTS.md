@@ -342,17 +342,56 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   first** — for traceability — using the matching template in
   `.github/ISSUE_TEMPLATE/` (bug / feature / documentation / security).
 - **Close via the commit body:** when the work lands, close the issue
-  with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. (It
-  resolves once the commit reaches `main` on push.)
+  with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. GitHub
+  resolves it once the commit reaches the repository's **default** branch
+  — here `develop`, not `main` — so the issue closes on the next
+  `develop` push rather than at release time. There is no release-window
+  in which to reconsider: only add the line when the issue is genuinely
+  finished.
 - Open an issue before non-trivial work to align on the approach first.
+- **Comment on the issue whenever the work changes course.** If something
+  you find while working changes the diagnosis, the approach, the scope,
+  or your confidence in any of them, say so on the issue *as you find it*
+  — a new comment, not an edit to the body, so the sequence stays
+  readable.
+
+  The commit message records what was done and why; it is a poor place
+  for what turned out to be wrong on the way there, and it is invisible
+  to anyone reading the issue later. What is worth a comment:
+
+  - **The report is inaccurate or stale.** The defect is already fixed,
+    half-fixed, differently caused than described, or reproduces only
+    under a precondition the report omits. Say which part still stands.
+  - **The obvious fix does not work.** Record the attempt and why it
+    failed, so the next person does not spend the same hour. (`Object.assign`
+    reintroducing a prototype-pollution bug verbatim, because it is
+    `[[Set]]` too, is exactly this.)
+  - **A chosen bound, default or name changed after measuring.** Give the
+    numbers that moved it.
+  - **The scope moved.** The fix turns out to need a different layer, a
+    new seam, or an API change the issue never mentioned — or part of it
+    belongs in another issue. Note the split and where the rest went.
+  - **A verification step proved nothing.** If a check you relied on was
+    invalid, that matters more than the result it produced.
+
+  This is the same reasoning as *Issue-first*: the value is traceability
+  for whoever picks the thread up next, including you in six months. A
+  duplicate, a wrong severity, or a fix that was tried and abandoned is
+  worth more written down than re-derived.
 
 ## Labels & security
 
 - Label taxonomy: `priority: {high,medium,low}`,
   `severity: {critical,high,medium,low}`, `security`, `i18n`,
-  `infrastructure`, `dependencies`, plus the standard `bug` /
-  `enhancement` / `documentation`. Audit-catalog items use the title
-  prefixes `[Security] ` / `[Feature] `.
+  `infrastructure`, `dependencies`, `production-goal`, plus the standard
+  `bug` / `enhancement` / `documentation`. Audit-catalog items use the
+  title prefixes `[Security] ` / `[Feature] `.
+- **`production-goal` marks the path to production readiness** — it is a
+  gate, not a batch marker, so it belongs on any issue that blocks or
+  defines that path regardless of which review found it, including ones
+  filed long before. Filtering on it should answer "what is still between
+  us and running this for real", which is why it is applied to existing
+  issues rather than duplicating them.
 - **Security-first posture:** cap untrusted input (e.g. WebSocket /
   wire-frame size limits), never trust client-supplied integrity fields,
   use crypto-grade randomness for wire identifiers. A security-relevant

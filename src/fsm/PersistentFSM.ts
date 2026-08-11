@@ -62,12 +62,13 @@ import { PersistentActor } from '../persistence/PersistentActor.js';
  * one-shot timer when the FSM enters the state.  If `afterMs` elapses
  * before any command transitions out, the FSM auto-fires the timeout
  * event through the same persist-then-apply pipeline.  See
- * {@link FsmStateTimeout}.  Fresh-armed on every state transition;
- * cancelled when the FSM transitions away (or stops).  Recovery
- * re-arms the timer relative to the wall-clock at recovery
- * completion — i.e., a long-stopped FSM gets a fresh `afterMs`
- * window after restart, deliberately conservative to avoid spurious
- * "already-expired" fires.
+ * {@link FsmStateTimeout}.  Fresh-armed on **every** transition —
+ * including one that stays in the same state, so a heartbeat command
+ * renews an idle timeout rather than racing it (#143); cancelled when
+ * the FSM transitions away (or stops).  Recovery re-arms the timer
+ * relative to the wall-clock at recovery completion — i.e., a
+ * long-stopped FSM gets a fresh `afterMs` window after restart,
+ * deliberately conservative to avoid spurious "already-expired" fires.
  *
  * **Snapshots / event adapter / encryption.**  Inherited from
  * `PersistentActor` — override `snapshotPolicy`, `eventAdapter`,
@@ -139,10 +140,15 @@ export type FsmTransition<
  * real command kind because `kind: '_timeout'` is reserved.
  *
  * On entering the state the FSM arms a one-shot timer for `afterMs`.
- * If the timer fires while still in the state (no command transitioned
- * the FSM out in the meantime, and the optional `guard` accepts), the
- * declared `event` is persisted and `applyEvent` runs as if a real
- * command had triggered it.
+ * If the timer fires while that arming is still the current one (no
+ * transition re-armed it in the meantime, and the optional `guard`
+ * accepts), the declared `event` is persisted and `applyEvent` runs as
+ * if a real command had triggered it.
+ *
+ * "Re-armed" and not "transitioned out" is the operative test: any
+ * transition renews the window, so a command that stays in the same
+ * state — a heartbeat against an idle timeout — postpones the fire
+ * instead of leaving it to land anyway (#143).
  */
 export type FsmStateTimeout<SName extends string, Event, Data> = {
   /** How long to wait before auto-firing the event.  Required. */
@@ -187,13 +193,24 @@ export type FsmTransitionMap<
 /**
  * Magic self-tell payload used to route a fired timeout back through
  * the actor mailbox so it serialises cleanly with concurrent commands.
- * Carries `stateAtArm` so the handler can confirm the FSM is still in
- * the same state — a command that snuck in between the timer firing
- * and the message being processed must cancel the timeout.
+ *
+ * Carries `generationAtArm` — the arm counter this fire was scheduled
+ * under — because the fire becomes irrevocable the moment the timer
+ * callback hands it to the mailbox: `cancel()` can no longer reach it,
+ * and the FSM may process any number of commands before it is dequeued.
+ * Comparing the generation is what tells a live fire from one a re-arm
+ * already superseded (#143).
+ *
+ * `stateAtArm` stays as a second layer.  It is the weaker of the two —
+ * a transition that stays in the *same* state (a heartbeat renewing an
+ * idle timeout, the archetypal `_timeout` use case) leaves the name
+ * unchanged — but it still catches a subclass that moves the state
+ * without going through the re-arm path.
  */
 type FsmTimeoutFire<SName extends string> = {
   readonly kind: '__fsm_state_timeout__';
   readonly stateAtArm: SName;
+  readonly generationAtArm: number;
 };
 
 /* ============================== base class ============================== */
@@ -260,6 +277,20 @@ export abstract class PersistentFSM<
   /** Currently-armed timer, if any.  Cancelled on transition or stop. */
   private _timeoutTimer: Cancellable | null = null;
 
+  /**
+   * Arm counter for the state timeout — bumped by every {@link cancelTimer},
+   * and therefore by every re-arm.  A fire carries the value it was armed
+   * under; anything below the current one was superseded while it sat in
+   * the mailbox and must be dropped (#143).
+   *
+   * Deliberately **not** reset by the timer callback: the callback nulls
+   * `_timeoutTimer` because that handle is spent, but the generation it
+   * armed under is exactly what the fire it is about to enqueue still has
+   * to match.  Clearing it there would suppress every fire and the
+   * timeout would never fire again.
+   */
+  private _timeoutGeneration = 0;
+
   /* --------------- PersistentActor hooks (implemented for you) --------------- */
 
   initialState(): FsmStateData<SName, Data> {
@@ -291,7 +322,7 @@ export abstract class PersistentFSM<
   override async onReceive(message: Command): Promise<void> {
     const tagged = message as unknown as FsmTimeoutFire<SName>;
     if (tagged.kind === '__fsm_state_timeout__') {
-      await this.fireTimeoutTransition(tagged.stateAtArm);
+      await this.fireTimeoutTransition(tagged);
       return;
     }
     await super.onReceive(message);
@@ -350,20 +381,24 @@ export abstract class PersistentFSM<
    * transition (forward, recovery, and timeout-driven).
    */
   private armTimerForCurrentState(): void {
-    this.cancelTimer();
+    this.cancelTimer();   // bumps `_timeoutGeneration`
     const state = this.currentFsmState;
     const timeout = this.transitions[state]?.[FSM_TIMEOUT_KEY];
     if (!timeout) return;
     const stateAtArm = state;
+    const generationAtArm = this._timeoutGeneration;
     this._timeoutTimer = this.system.scheduler.scheduleOnceFunction(
       timeout.afterMs,
       () => {
+        // Only the handle is spent — `_timeoutGeneration` stays put, or the
+        // fire below could never match it (see the field's note).
         this._timeoutTimer = null;
         // Route through the mailbox so the fire interleaves cleanly
         // with regular commands — `onReceive` intercepts it.
         const fire: FsmTimeoutFire<SName> = {
           kind: '__fsm_state_timeout__',
           stateAtArm,
+          generationAtArm,
         };
         (this.self as ActorRef<unknown>).tell(fire);
       },
@@ -371,6 +406,12 @@ export abstract class PersistentFSM<
   }
 
   private cancelTimer(): void {
+    // Bump unconditionally.  When the callback has already run there is no
+    // handle left to cancel, yet that is precisely the case worth
+    // invalidating: the fire is in the mailbox, past the reach of
+    // `cancel()`, and the generation is the only thing that can still stop
+    // it (#143).
+    this._timeoutGeneration++;
     if (this._timeoutTimer) {
       this._timeoutTimer.cancel();
       this._timeoutTimer = null;
@@ -383,7 +424,7 @@ export abstract class PersistentFSM<
    * persist + re-arm.  Same shape as {@link onCommand}'s persist
    * dance — keeps the post-apply state-name verification.
    */
-  private async fireTimeoutTransition(stateAtArm: SName): Promise<void> {
+  private async fireTimeoutTransition(fire: FsmTimeoutFire<SName>): Promise<void> {
     // `onReceive` routes the timeout fire here *before* delegating to the
     // base class, so it bypasses the `_recovering` guard that gates every
     // ordinary command — and `this.state` is unassigned until replay
@@ -392,8 +433,25 @@ export abstract class PersistentFSM<
     // `onRecoveryComplete` arms a fresh timer for the recovered state, so
     // a pre-restart fire has nothing left to say.
     if (this.recovering) return;
+    if (fire.generationAtArm !== this._timeoutGeneration) {
+      // Something re-armed after this fire was already in the mailbox, so
+      // it speaks for a window that no longer exists.  The commonest case
+      // is a transition that stays in the same state — a heartbeat
+      // renewing an idle timeout — which `stateAtArm` below cannot see
+      // (#143).
+      //
+      // Dropped without re-arming, deliberately: whoever bumped the
+      // generation armed the timer for the window that replaced this one,
+      // and re-arming here would push that deadline back out by however
+      // long the stale fire sat in the mailbox.
+      this.log.debug(
+        `PersistentFSM: state-timeout fire from generation ${fire.generationAtArm} superseded by `
+        + `generation ${this._timeoutGeneration} — dropped`,
+      );
+      return;
+    }
     const curr = this.state;
-    if (curr.state !== stateAtArm) {
+    if (curr.state !== fire.stateAtArm) {
       // A command transitioned us out before the timer message landed
       // in the mailbox — the user's command takes precedence.  Re-arm
       // for the new state (in case the new state itself has a timeout

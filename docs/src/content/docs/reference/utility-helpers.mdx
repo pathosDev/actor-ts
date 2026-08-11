@@ -1,0 +1,445 @@
+---
+title: Utilities
+description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+---
+
+The framework solves a handful of problems for itself that turn up again in the
+code you write on top of it: representing "there might be no value" without
+`null`, carrying a failure without throwing, computing something once on first
+use, looking a pair up from either end, naming something unguessably, printing a
+value on a path where throwing would replace the error you were reporting, and
+depending on a package you do not want to make mandatory.
+
+These are the answers it already uses, exported from the root entry point. None
+of them are required to use `actor-ts` — reach for one when you have the problem
+it solves.
+
+```ts
+import {
+  BidirectionalMap,
+  BidirectionalMultiMap,
+  Lazy,
+  none,
+  safeStringify,
+  some,
+  tryOf,
+} from 'actor-ts';
+```
+
+## Option — a value that might not be there
+
+`Option<T>` is `Some<T> | None`. Prefer it over `T | null` in domain-API
+returns and long-lived fields: the type forces the empty case to be handled at
+the point of use rather than remembered.
+
+```ts
+import { fromNullable, none, some, type Option } from 'actor-ts';
+
+const leader: Option<string> = some('node-a');
+leader.map((address) => address.toUpperCase()).getOrElse('<none>'); // 'NODE-A'
+none.getOrElse('<none>');                                          // '<none>'
+
+fromNullable(process.env.SEED_NODE);   // Some | None, from a nullable
+```
+
+| Export | What it does |
+| --- | --- |
+| `some(value)` / `none` | Build one. `none` is a shared instance, not a factory. |
+| `fromNullable(value)` | `null` / `undefined` → `None`, anything else → `Some`. |
+| `fromPredicate(value, pred)` | `Some` when the predicate holds, else `None`. |
+| `firstSome(...options)` | The first `Some`, or `None`. |
+
+The API mirrors Scala's where practical: `map`, `flatMap`, `filter`,
+`filterNot`, `fold`, `getOrElse`, `orElse`, `exists`, `forall`, `contains`,
+`forEach`, `toArray`, `toNullable`, `isSome`, `isNone`. `isSome()` and
+`isNone()` are type guards, and both classes work with `ts-pattern`'s
+`P.instanceOf(Some)`.
+
+Nullable is still the right choice in three places, and the framework uses it
+there on purpose: hot-path internal fields where the wrapper would show up in a
+profile, serialization boundaries that have to round-trip through `null`, and
+optional parameters with ergonomic defaults.
+
+## Try — a computation that may have thrown
+
+`Try<T>` is `Success<T> | Failure`. It turns a `throw` into a value you can pass
+around, which is what you want when the failure has to travel — into a message,
+across an `ask`, into a state machine.
+
+```ts
+import { tryOf } from 'actor-ts';
+
+const parsed = tryOf(() => JSON.parse(payload));
+
+parsed
+  .map((body) => body.userId)
+  .recover(() => 'anonymous')
+  .getOrElse('anonymous');
+```
+
+`tryOf(compute)` runs the function and captures whatever it throws;
+`success(value)` and `failure(error)` build one directly. Beyond the shared
+`map` / `flatMap` / `fold` / `getOrElse` / `orElse` / `filter` / `forEach`,
+`Try` adds `recover` (map the error to a value), `recoverWith` (map it to
+another `Try`), `get` (rethrow), `toNullable` and `toError`.
+`trySequence(tries)` turns an array of `Try<T>` into a `Try<T[]>` that fails on
+the first failure.
+
+## Either — two outcomes, neither of them an error
+
+`Either<L, R>` is `Left<L> | Right<R>`, right-biased: `map` and `flatMap` work
+on the right. Reach for it over `Try` when the failure side is a *domain value*
+you want typed — a validation report, a rejection reason — rather than a thrown
+error.
+
+```ts
+import { left, right, type Either } from 'actor-ts';
+
+function parseAge(raw: string): Either<string, number> {
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? right(value) : left(`not an age: ${raw}`);
+}
+
+parseAge('42').fold((reason) => `rejected: ${reason}`, (age) => `age ${age}`);
+```
+
+`mapLeft`, `bimap` and `swap` work the other side; `isLeft()` and `isRight()`
+are type guards. `eitherOf(compute)` catches a throw into `Left<Error>`, and
+`eitherSequence` collects an array the way `trySequence` does.
+
+## Lazy — compute once, on first use
+
+`Lazy<T>` is Scala's `lazy val`: the computation runs on the first `get()` and
+the result is memoised, including a thrown failure, so an expensive or
+side-effecting setup happens exactly once no matter how many callers ask.
+
+```ts
+import { Lazy, lazyImportModule } from 'actor-ts';
+
+const redisLazy = Lazy.of(() => lazyImportModule<typeof import('ioredis')>('ioredis'));
+
+// First call imports; every later one returns the same promise.
+const redis = await redisLazy.get();
+```
+
+`Lazy.of(compute)` (aliased as `lazy`) and `Lazy.evaluated(value)` build one.
+`get()` forces it, `peek()` returns the value only if it has already been
+computed, `getSync()` unwraps a resolved async cell, and `map` / `flatMap` /
+`forEach` compose without forcing. `reset()` and `setOverride(value)` exist for
+tests — they are the reason a lazily-imported backend can be swapped for a fake
+without touching the production path.
+
+## BidirectionalMap — a map with a maintained inverse
+
+`BidirectionalMap<K, V>` is a `Map<K, V>` that also answers `value → key`. It
+exists because a reverse index written by hand is two maps that have to be
+updated in lockstep, and the failure mode when they drift is silent: a stale
+entry keeps answering for a pair that is already gone.
+
+```ts
+import { BidirectionalMap } from 'actor-ts';
+
+const seats = new BidirectionalMap<string, number>();
+seats.set('ada', 1);
+seats.set('grace', 2);
+
+seats.get('ada');     // 1
+seats.getKey(2);      // 'grace'   ← the direction a Map cannot answer
+seats.deleteValue(1); // removes the pair from both sides
+```
+
+It implements `Map<K, V>` in full, so it drops into anything that takes one —
+`new Map(bidirectionalMap)`, spreading, `for…of`, `forEach`.
+
+| Beyond `Map` | What it does |
+| --- | --- |
+| `getKey(value)` / `hasValue(value)` / `deleteValue(value)` | The reverse direction. |
+| `trySet(key, value)` | Binds only if that removes nothing; `false` otherwise. |
+| `inverse()` | The same map read the other way round — a view, not a copy. |
+| `reverseEntries()` | `[value, key]` pairs. |
+| `getOrInsertKey(value, defaultKey)` | Like `getOrInsert`, from the value side; returns a **key**. |
+| `getOrInsertComputedKey(value, callback)` | The same, minting the key on demand. `callback` runs at most once. |
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="set() displaces, it does not throw">
+  Values are unique, so binding a value that is already taken evicts the key
+  that held it: after `set('a', 1)` then `set('b', 1)`, the map has size 1 and
+  `'a'` is gone. This is the one place the type departs from the `Map` contract
+  it implements, and it is deliberate — it keeps the map usable wherever a `Map`
+  is expected. Use `trySet` when you want the collision reported instead of
+  absorbed.
+</Aside>
+
+Both directions are backed by `Map`, so both compare by **SameValueZero**:
+`NaN` works as a key and as a value, `0` and `-0` are the same, and two
+structurally equal objects are two different values. When you need structural
+identity, index a derived string — that is what the framework's own shard does,
+keying on `ref.path.toString()` rather than on the ref.
+
+### It can live in persistent state
+
+Unlike an ordinary class, a `BidirectionalMap` survives a journal, snapshot or
+durable-state round-trip **as a real instance** — no
+[event adapter](/persistence/migration/overview/), no serializer registration,
+nothing at the boundary. The tagged JSON tree knows it the way it knows `Map`
+and `Set`.
+
+```ts
+type State = { seats: BidirectionalMap<string, number> };
+
+class SeatingPlan extends PersistentActor<Command, Event, State> {
+  initialState(): State {
+    return { seats: new BidirectionalMap() };
+  }
+  // After a restart, state.seats is a BidirectionalMap again — and
+  // state.seats.getKey(2) works, even though only the forward pairs
+  // were ever written.
+}
+```
+
+Only the forward pairs go to disk; the inverse is rebuilt on decode. See
+[what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain)
+for the full round-trip table.
+
+A store configured with `withSerializer(new CborSerializer())` carries it too,
+under CBOR tag 27. That was not always so — until
+[#1036](https://github.com/pathosDev/actor-ts/issues/1036) the CBOR codec
+dropped it, along with `Map` and `Set`, without raising anything.
+
+## BidirectionalMultiMap — the same for a many-to-many relation
+
+`BidirectionalMultiMap<L, R>` relates many lefts to many rights and answers in
+both directions. It exists for the shape a subscription registry has: one
+subscriber holds many topics, one topic has many subscribers, and the message
+telling you a subscriber is gone carries only the subscriber.
+
+```ts
+import { BidirectionalMultiMap } from 'actor-ts';
+
+const subscriptions = new BidirectionalMultiMap<string, string>();
+subscriptions.add('news', 'ada');
+subscriptions.add('news', 'grace');
+subscriptions.add('sport', 'ada');
+
+subscriptions.get('news');        // Set { 'ada', 'grace' }
+subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← the reverse direction
+subscriptions.size;               // 3 — pairs, not participants
+
+subscriptions.deleteRight('ada'); // ada leaves every topic at once
+subscriptions.hasLeft('sport');   // false — sport held only ada, so it is gone too
+```
+
+That last line is the invariant worth knowing: **there is no such thing as an
+empty participant.** Removing the last partner removes the participant from
+both directions. A topic left behind holding an empty subscriber set is
+invisible to a pair count, keeps occupying whatever cap bounds your topics, and
+would let `inverse()` hand back something related to nothing.
+
+| Beyond a pair of maps | What it does |
+| --- | --- |
+| `add(left, right)` / `delete(left, right)` | One pair, both directions. `add` is idempotent. |
+| `get(left)` / `getKeys(right)` | Everything one side is related to. Empty set when absent — never `undefined`, so you can iterate without a guard. |
+| `deleteLeft(left)` / `deleteRight(right)` | Drop one participant entirely — the `Terminated` case. |
+| `hasLeft(left)` / `hasRight(right)` | Whether that participant has at least one partner. |
+| `lefts()` / `rights()` | The participants, each listed once. |
+| `inverse()` | The relation read the other way round — a view, not a copy. `size` stays true on both. |
+
+Equality is **SameValueZero**, as with `BidirectionalMap`, and for the same
+reason: both directions are backed by `Map` and `Set`. Two structurally equal
+objects are two different participants, so index a derived string when you need
+structural identity — which is what the framework's own call sites do, keying
+subscribers on `ref.path.toString()` rather than on the ref. A `Terminated`
+carries the cell's own `self` ref, which need not be the object that
+subscribed; the path is the identity both sides agree on.
+
+<Aside type="caution" title="get() hands back the live set">
+  The `ReadonlySet` you get is the internal one, not a copy — casting it back to
+  `Set` and mutating it corrupts the inverse. This is the one place the type is
+  less defensive than `BidirectionalMap`, and it is a deliberate trade: the
+  relation is read on fan-out paths, once per published message, where an O(n)
+  copy per read is not payable. Treat it as a window, and go through `add` /
+  `delete` to change anything.
+</Aside>
+
+### It can live in persistent state too
+
+Like its 1:1 sibling, it survives a journal, snapshot or durable-state
+round-trip **as a real instance** — no adapter, no registration. Only the
+forward direction is written, as an adjacency list; the inverse is rebuilt on
+decode, so the two halves cannot come back disagreeing. The same
+[CBOR caveat](#bidirectionalmap--a-map-with-a-maintained-inverse) applies.
+
+## Random strings and identifiers
+
+| Export | What it does |
+| --- | --- |
+| `randomString(length, options?)` | `length` characters from the enabled classes. Default: alphanumeric. |
+| `randomHex(length)` | `length` lowercase hex characters — for wire formats that mandate `[0-9a-f]`. |
+| `randomId(length)` | `length` characters for something you have to name yourself. |
+| `randomUuid()` | A version-4 UUID — for an identifier that must not collide with one minted elsewhere. |
+| `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — each defaults to `true`. |
+
+The first three draw from `globalThis.crypto`, correct the modulo bias that a
+plain `byte % alphabet.length` introduces, and return exactly the length you
+asked for — never fewer. `randomUuid` delegates to
+`globalThis.crypto.randomUUID()`.
+
+```ts
+import { randomId, randomString, randomUuid } from 'actor-ts';
+
+const sessionId = randomId(12);                                  // '9f3c1ab0e7d2'
+const coupon = randomString(8, { lowerCase: false, digits: true }); // 'K7Q2XP4M'
+const persistenceId = randomUuid();  // 'f81d4fae-7dec-41d0-a765-00a0c91e6bf6'
+```
+
+`randomId` is the one to reach for when naming an actor. An actor name ends up
+in an actor path, and a path is an address: on the cluster wire, anything that
+can render one can send to it. A counter makes that address guessable — knowing
+one hands you the next — which is why the framework names anonymous actors and
+`ask` reply refs from here rather than from `$1`, `$2`, `$3`.
+
+`randomHex` exists separately because some alphabets are not a style choice.
+W3C trace-context mandates `[0-9a-f]{32}` and `[0-9a-f]{16}` for a
+`traceparent` header, and a peer rejects anything else.
+
+`randomUuid` sits at the other end of the entropy scale from `randomId`, and the
+split between the two is worth getting right. `randomId(12)` is ~48 bits: unguessable among
+the names one process holds live at once, which is the only uniqueness an actor
+name has to carry. `randomUuid()` is 122 random bits, which is what it takes for
+an identifier to stay distinct from one minted in another process, on another
+machine, years later, with nothing coordinating them — a `PersistenceId` for a
+new aggregate, a correlation id crossing a broker, a key another system will
+read.
+
+<Aside type="caution" title="Unguessable is not globally unique">
+  Do not reach for `randomHex(32)` and insert dashes. Six of a UUID's 128 bits
+  are the version and variant fields RFC 9562 fixes, so a hex string with dashes
+  in the right places only *looks* like one, and anything that parses a version
+  out of it reads garbage. Nor should you slice a UUID down to length —
+  `randomHex` and `randomId` already answer "*n* characters", and a slice throws
+  away the entropy you asked for the UUID to get.
+</Aside>
+
+## Stringifying a value that already went wrong
+
+`safeStringify(value, maxLength?)` renders any value as a string and never
+throws.
+
+```ts
+import { Actor, safeStringify } from 'actor-ts';
+
+class Worker extends Actor<unknown> {
+  onReceive(message: unknown) {
+    this.log.warn(`unhandled message: ${safeStringify(message)}`);
+  }
+}
+```
+
+`JSON.stringify` throws on a circular structure and on a `BigInt`. Using it to
+build a log line or an error message therefore risks replacing the problem you
+were reporting with a different one — thrown from inside the reporting code,
+where a caller is least likely to be handling it. An `onReceive` that logs a
+message it did not expect is exactly that situation: the message is
+unrecognised, so nothing is known about its shape.
+
+Cycles collapse to `[Circular]`, `BigInt` renders with an `n` suffix, functions
+and symbols are named, and the result is capped (8 KiB by default) rather than
+allowed to grow into a multi-megabyte string that blocks the event loop while
+being built.
+
+<Aside type="caution" title="Lossy on purpose">
+  The output is for a human reading a message, not for a parser. It is not
+  valid JSON in the general case and nothing should try to read it back. When
+  you need a value to survive a round-trip, use a
+  [serializer](/serialization/overview/).
+</Aside>
+
+## Optional peer dependencies
+
+`lazyImportModule(name, options?)` imports a module dynamically and, when it is
+missing, throws an error that names the package and the command that installs
+it.
+
+```ts
+import { Lazy, lazyImportModule } from 'actor-ts';
+
+const redisLazy = Lazy.of(() =>
+  lazyImportModule<typeof import('ioredis')>('ioredis', { context: 'MyCacheActor' }),
+);
+
+// MyCacheActor requires the 'ioredis' package.  Install it with: npm install ioredis
+// Original error: Cannot find module 'ioredis'
+```
+
+| Export | What it does |
+| --- | --- |
+| `lazyImportModule<T>(name, options?)` | `import(name)`, or throw a "missing peer dependency" error. |
+| `LazyImportOptions` | `{ context?, installHint? }` — who needed it, and how to install it. |
+
+This is the pattern the framework's own brokers, caches and persistence
+backends are built on, and the reason every one of them fails the same way: the
+module must not be a hard dependency, so the import has to be dynamic, so the
+default failure mode is a bare `Cannot find module` that says nothing about
+which package is missing or what to do about it. Pairing it with `Lazy` — also
+exported from the root entry point — means the import happens once, on first
+use, rather than at construction.
+
+<Aside type="note" title="It imports, nothing more">
+  Normalising a default export is deliberately left to the caller. Some
+  packages ship CommonJS, some ESM, some both, and the right unwrapping differs
+  per module — so this helper owns only the "import it, or explain why not"
+  boundary.
+</Aside>
+
+## Options builders and validators
+
+`OptionsBuilder` and `OptionsValidator` are the two base classes behind every
+`XOptions` family in the framework — `MqttOptions`, `SqliteJournalOptions`,
+`ActorSystemOptions` and the rest. You do not need them to *use* those options;
+you need them to write your own in the same shape.
+
+```ts
+import { OptionsBuilder, OptionsValidator } from 'actor-ts';
+
+type MyOptionsType = { readonly port?: number; readonly host?: string };
+
+class MyOptionsBuilder extends OptionsBuilder<MyOptionsType> {
+  withPort(port: number): this { return this.set('port', port); }
+  withHost(host: string): this { return this.set('host', host); }
+}
+
+class MyOptionsValidator extends OptionsValidator<MyOptionsType> {
+  constructor() { super('MyOptions'); }
+
+  protected rules(_settings: Partial<MyOptionsType>): void {
+    this.port('port');           // no-op when unset; throws OptionsError otherwise
+    this.nonEmptyString('host');
+  }
+}
+```
+
+A builder *is* its settings: the protected `set` writes each field as an own
+enumerable property, so an instance is structurally a bag of the fields you set
+and a plain object is interchangeable with it.
+
+The check helpers (`port`, `positiveNumber`, `positiveInt`, `nonNegativeInt`,
+`numberInRange`, `oneOf`, `nonEmptyString`, `nonEmptyArray`, `url`, and `fail`
+for bespoke rules) take **only the field name** — it is typo-checked against
+your options type, and a helper on a field of the wrong type is a compile
+error. Every one is a no-op when the field is `undefined`, so an unset optional
+always passes and required-ness stays wherever you enforce it. A rejected value
+throws `OptionsError`, exported alongside so you can catch it specifically.
+
+Validation runs once, at consume time, on the merged settings — so the builder,
+a plain object and HOCON are all covered, and cross-field rules see the final
+values. See [configuration](/reference/configuration/) for how the layers
+resolve.
+
+## Where to next
+
+- **[Logging](/fundamentals/logging/)** — where `safeStringify` usually ends up.
+- **[Spawning actors](/fundamentals/spawning/)** — naming, and what an actor path exposes.
+- **[Persistent actors](/persistence/persistent-actor/)** — what state may contain, and how it round-trips.
+- **[Configuration](/reference/configuration/)** — how options, HOCON and defaults layer.
+- **[Installation](/intro/installation/)** — which of the framework's own dependencies are optional.

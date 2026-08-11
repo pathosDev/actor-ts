@@ -14,8 +14,11 @@ import { GrpcClientActor, type GrpcInbound } from '../../../../src/io/broker/Grp
 import { GrpcClientOptions } from '../../../../src/io/broker/GrpcClientOptions.js';
 import {
   GrpcServerActor,
+  type GrpcChunkMessage,
+  type GrpcRequestStreamInbound,
   type GrpcUnaryCall,
   type GrpcServerStreamCall,
+  type GrpcClientStreamCall,
   type GrpcBidiCall,
 } from '../../../../src/io/broker/GrpcServerActor.js';
 import { GrpcServerOptions } from '../../../../src/io/broker/GrpcServerOptions.js';
@@ -24,6 +27,7 @@ import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '.
 import { scenario as unaryScenario } from './scenarios/01-unary.js';
 import { scenario as serverStreamScenario } from './scenarios/02-server-stream.js';
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';
+import { scenario as clientStreamScenario } from './scenarios/04-client-stream.js';
 
 export interface GrpcContext extends BrokerScenarioContext {
   readonly endpoint: string;
@@ -57,30 +61,45 @@ class ServerStreamHandler extends Actor<GrpcServerStreamCall> {
   }
 }
 
-type ChunkMessage = { kind: 'chunk'; chunk: unknown };
-type EndMessage = { kind: 'end' };
-type BidiSinkMessage = ChunkMessage | EndMessage;
+/**
+ * Wrap two callbacks in the `ActorRef` shape `onData` subscribes.
+ * `m` is annotated because the `as unknown as` erases the contextual
+ * type that would otherwise infer it.
+ */
+function requestStreamSink(
+  onChunk: (m: GrpcChunkMessage) => void,
+  onEnd: () => void,
+): ActorRef<GrpcRequestStreamInbound> {
+  return {
+    tell: (m: GrpcRequestStreamInbound): void => {
+      match(m)
+        .with({ kind: 'chunk' }, (c) => onChunk(c))
+        .with({ kind: 'end' }, () => onEnd())
+        .exhaustive();
+    },
+  } as unknown as ActorRef<GrpcRequestStreamInbound>;
+}
+
+class ClientStreamHandler extends Actor<GrpcClientStreamCall> {
+  override onReceive(call: GrpcClientStreamCall): void {
+    // Count the request chunks, answer once when the client closes.
+    let count = 0;
+    let lastText = '';
+    call.onData(requestStreamSink(
+      (m) => { lastText = (m.chunk as { text?: string }).text ?? ''; count += 1; },
+      () => call.respond({ text: lastText, sequence: count }),
+    ));
+  }
+}
 
 class BidiHandler extends Actor<GrpcBidiCall> {
   override onReceive(call: GrpcBidiCall): void {
     // Echo every chunk back, then complete when the client closes.
-    let seq = 0;
-    const onChunk = (m: ChunkMessage): void => {
-      const chunk = m.chunk as { text?: string };
-      call.send({ text: chunk.text ?? '', sequence: seq++ });
-    };
-    const onEnd = (): void => call.complete();
-    // `m` is annotated because the `as unknown as` below erases the
-    // contextual type that would otherwise infer it.
-    const sink: ActorRef<BidiSinkMessage> = {
-      tell: (m: BidiSinkMessage): void => {
-        match(m)
-          .with({ kind: 'chunk' }, (c) => onChunk(c))
-          .with({ kind: 'end' }, () => onEnd())
-          .exhaustive();
-      },
-    } as unknown as ActorRef<BidiSinkMessage>;
-    call.onData(sink);
+    let sequence = 0;
+    call.onData(requestStreamSink(
+      (m) => call.send({ text: (m.chunk as { text?: string }).text ?? '', sequence: sequence++ }),
+      () => call.complete(),
+    ));
   }
 }
 
@@ -96,6 +115,7 @@ async function main(): Promise<void> {
   // Spawn the server-side handlers and the server actor.
   const unaryHandler = system.spawnAnonymous(UnaryEchoHandler);
   const streamHandler = system.spawnAnonymous(ServerStreamHandler);
+  const clientStreamHandler = system.spawnAnonymous(ClientStreamHandler);
   const bidiHandler = system.spawnAnonymous(BidiHandler);
 
   const server = system.spawnAnonymous(
@@ -108,6 +128,10 @@ async function main(): Promise<void> {
         .withHandlers({
           Unary: { kind: 'unary', target: unaryHandler as unknown as ActorRef<GrpcUnaryCall> },
           ServerStream: { kind: 'serverStream', target: streamHandler as unknown as ActorRef<GrpcServerStreamCall> },
+          ClientStream: {
+            kind: 'clientStream',
+            target: clientStreamHandler as unknown as ActorRef<GrpcClientStreamCall>,
+          },
           Bidi: { kind: 'bidi', target: bidiHandler as unknown as ActorRef<GrpcBidiCall> },
         }),
     ),
@@ -143,6 +167,7 @@ async function main(): Promise<void> {
       unaryScenario,
       serverStreamScenario,
       bidiScenario,
+      clientStreamScenario,
     ];
     await runScenarios(scenarios, context);
   } finally {
@@ -150,6 +175,7 @@ async function main(): Promise<void> {
     server.stop();
     unaryHandler.stop();
     streamHandler.stop();
+    clientStreamHandler.stop();
     bidiHandler.stop();
     await system.terminate();
   }

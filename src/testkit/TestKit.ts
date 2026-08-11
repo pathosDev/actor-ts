@@ -47,10 +47,10 @@ export class TestKit {
     return new TestProbe(this.system, options);
   }
 
-  /** Run `fn` with a soft deadline; throws if it takes longer than `durationMs`. */
-  async within<T>(durationMs: number, fn: () => Promise<T>): Promise<T> {
+  /** Run `callback` with a soft deadline; throws if it takes longer than `durationMs`. */
+  async within<T>(durationMs: number, callback: () => Promise<T>): Promise<T> {
     const started = Date.now();
-    const value = await fn();
+    const value = await callback();
     const elapsed = Date.now() - started;
     if (elapsed > durationMs) {
       throw new Error(`within(${durationMs}ms) exceeded — actual ${elapsed}ms`);

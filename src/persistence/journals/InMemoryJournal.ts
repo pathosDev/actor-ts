@@ -1,10 +1,12 @@
 import { InProcessJournalEventBus, type JournalEventBus } from '../JournalEventBus.js';
+import { persistenceIdPage } from '../Journal.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
@@ -39,6 +41,7 @@ export class InMemoryJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidPersistenceId(persistenceId, 'InMemoryJournal.append');
     assertValidTags(tags);
     // Nothing is being written, so there is nothing to conflict over — an
     // empty append is a no-op, and notably does NOT run the optimistic-
@@ -102,6 +105,20 @@ export class InMemoryJournal implements Journal {
 
   async persistenceIds(): Promise<string[]> {
     return Array.from(this.streams.keys());
+  }
+
+  /**
+   * Implemented even though nothing is saved on the read — a `Map` has every
+   * key in memory already — because it is what makes the *ordering* half of
+   * the contract observable in tests: this journal is the reference
+   * implementation the SQL and CQL push-downs are checked against, and an
+   * oracle that skips the method proves nothing about the ones that don't.
+   */
+  async persistenceIdsPaginated(
+    afterPersistenceId: string | undefined,
+    limit: number,
+  ): Promise<string[]> {
+    return persistenceIdPage(Array.from(this.streams.keys()), afterPersistenceId, limit);
   }
 
   async close(): Promise<void> { this.streams.clear(); this.highWater.clear(); }

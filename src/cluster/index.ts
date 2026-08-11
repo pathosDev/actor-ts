@@ -2,11 +2,28 @@
 export { Cluster, inMemoryTransport } from './Cluster.js';
 export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtension.js';
 export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
-export type { ClusterOptionsType } from './ClusterOptions.js';
+export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
 export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
 export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
+
+// Stable-observation bootstrap (#148).
+export {
+  StableObservation,
+  StableObservationError,
+  StableObservationOptions,
+  StableObservationOptionsBuilder,
+  StableObservationOptionsValidator,
+  readStableObservationOptionsFromConfig,
+  isWildcardHost,
+} from './bootstrap/index.js';
+export type {
+  JoinTargets,
+  StableObservationOptionsType,
+  StableObservationTuning,
+  StableObservationConfigDefaults,
+} from './bootstrap/index.js';
 
 export { NodeAddress } from './NodeAddress.js';
 export type { NodeAddressData } from './NodeAddress.js';
@@ -18,17 +35,20 @@ export {
   SelfUp,
   SelfRemoved,
   LeaderChanged,
+  CurrentClusterState,
   MemberJoined,
   MemberUp,
   MemberWeaklyUp,
   MemberUnreachable,
   MemberReachable,
+  ReachabilityChanged,
   MemberDown,
   MemberLeft,
   MemberRemoved,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';
+export type { ClusterSubscriptionReplayMode } from './Cluster.js';
 
 export { RemoteActorRef } from './RemoteActorRef.js';
 
@@ -118,11 +138,17 @@ export {
   Publish,
   Subscribe,
   SubscribeAcknowledgment,
+  SubscribeRejected,
   Unsubscribe,
   UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './pubsub/index.js';
-export type { DistributedPubSubOptionsType } from './pubsub/index.js';
+export type {
+  DistributedPubSubOptionsType,
+  PubSubDelivery,
+  PubSubSubscriberRef,
+  PubSubSubscribeRejectionReason,
+} from './pubsub/index.js';
 
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';
@@ -180,10 +206,21 @@ export {
 export type { ShardAllocator } from './sharding/ShardAllocator.js';
 
 // Cluster-aware routing.
-export { ClusterRouter, pickRendezvous, ClusterRouterOptions, ClusterRouterOptionsBuilder, ClusterRouterOptionsValidator } from './router/index.js';
+export {
+  ClusterRouter,
+  pickRendezvous,
+  ClusterRouterOptions,
+  ClusterRouterOptionsBuilder,
+  ClusterRouterOptionsValidator,
+  ClusterMailboxDepthAgent,
+  MAILBOX_DEPTH_AGENT_PATH,
+} from './router/index.js';
 export type {
   ClusterRouterOptionsType,
   ClusterRouterType,
+  MailboxDepthMessage,
+  MailboxDepthQueryMessage,
+  MailboxDepthReportMessage,
 } from './router/index.js';
 
 // Outside-in client (#86).

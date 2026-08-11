@@ -19,6 +19,7 @@
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
 import {
+  CurrentClusterState,
   LeaderChanged,
   MemberDown,
   MemberJoined,
@@ -28,6 +29,7 @@ import {
   MemberUnreachable,
   MemberUp,
   MemberWeaklyUp,
+  ReachabilityChanged,
   SelfRemoved,
   SelfUp,
   ShardMapChanged,
@@ -95,16 +97,15 @@ export class ClusterTap implements DevToolsTap {
       SWEEP_INTERVAL_MS,
       () => this.sweep(),
     );
-    // Subscribing replays the current membership, which would otherwise
-    // be re-emitted to every client as events.  Swallow that initial
-    // burst: `snapshot()` already gives a new subscriber the same
-    // information in one frame.
-    let replaying = true;
-    this.unsubscribe = this.cluster.subscribe((event) => {
-      if (replaying) return;
-      this.onClusterEvent(event);
-    });
-    replaying = false;
+    // Snapshot replay, so the current membership arrives as one event this tap
+    // discards rather than as a burst of member events it would forward to
+    // every client (#161).  This used to be a `replaying` flag around the
+    // subscribe call — correct only because the replay happens to be
+    // synchronous, and silently wrong the day it stops being.
+    this.unsubscribe = this.cluster.subscribe(
+      (event) => this.onClusterEvent(event),
+      { replayMode: 'snapshot' },
+    );
   }
 
   uninstall(): void {
@@ -142,6 +143,8 @@ export class ClusterTap implements DevToolsTap {
     match(event)
       .with(P.instanceOf(LeaderChanged), (e) => this.onLeaderChanged(e))
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .with(P.instanceOf(CurrentClusterState), () => this.onCurrentClusterState())
+      .with(P.instanceOf(ReachabilityChanged), (e) => this.onReachabilityChanged(e))
       .otherwise((e) => this.onMemberEvent(e));
   }
 
@@ -151,7 +154,12 @@ export class ClusterTap implements DevToolsTap {
    * tell them apart in the union, and only the constructor identity
    * carries the distinction.  Hence a lookup rather than ten arms.
    */
-  private onMemberEvent(event: Exclude<ClusterEvent, LeaderChanged | ShardMapChanged>): void {
+  private onMemberEvent(
+    event: Exclude<
+      ClusterEvent,
+      LeaderChanged | ShardMapChanged | CurrentClusterState | ReachabilityChanged
+    >,
+  ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);
     if (name === undefined) {
       this.onUnknownEvent();
@@ -167,6 +175,35 @@ export class ClusterTap implements DevToolsTap {
   private onLeaderChanged(event: LeaderChanged): void {
     const leader = event.leader.fold(() => null as string | null, (m) => m.address.toString());
     this.emit?.(clusterEventPayload(Date.now(), 'leader-changed', undefined, leader));
+  }
+
+  /**
+   * The subscription's own replay.  Nothing to forward: no client is attached
+   * when `install` runs, and every one that attaches later is handed the same
+   * membership by {@link snapshot}, read from the cluster at that moment rather
+   * than from whatever it looked like when the server started.
+   */
+  private onCurrentClusterState(): void {}
+
+  /**
+   * The serving node's failure detector gained or lost sight of a peer.
+   *
+   * Carried with the member so the panel has a subject to name, and because the
+   * pair is the point: `status` is what the cluster agrees on, `reachable` is
+   * what this node sees, and the two disagreeing is what a partition looks like
+   * from inside one.
+   */
+  private onReachabilityChanged(event: ReachabilityChanged): void {
+    const member = this.cluster
+      .getMembers()
+      .find((candidate) => candidate.address.equals(event.address));
+    this.emit?.(clusterEventPayload(
+      Date.now(),
+      'reachability-changed',
+      member === undefined ? undefined : this.toMemberInfo(member),
+      undefined,
+      event.reachable,
+    ));
   }
 
   private onShardMapChanged(event: ShardMapChanged): void {

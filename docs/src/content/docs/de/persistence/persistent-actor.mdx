@@ -154,7 +154,7 @@ erst nach einem Neustart um — die teuerste Art, das herauszufinden.
 Validiert das Command gegen den aktuellen State und entscheidet,
 welche Events persistiert werden.  Drei gültige Ergebnisse:
 
-- **`this.persist(event, cb)`** — ein Event persistieren.  Der
+- **`this.persist(event, afterPersist)`** — ein Event persistieren.  Der
   Callback läuft mit dem neuen State, sobald das Event angehängt
   und per `onEvent` angewendet ist.  Seiteneffekte gehören hierher.
 - **Antworten ohne Persist** — für Read-only-Commands (z. B.
@@ -236,7 +236,8 @@ Recovery-Fehler, denn der State wurde einwandfrei wiederhergestellt.
 ### Wenn die Recovery fehlschlägt
 
 Ein korruptes Event, ein fehlender Upcaster, ein Snapshot, den die
-Integritätsprüfung ablehnt — die Recovery kann werfen, und dann wird
+Integritätsprüfung ablehnt, ein Journal, das seine Events in falscher
+Reihenfolge zurückgibt — die Recovery kann werfen, und dann wird
 `onRecoveryFailure` aufgerufen.
 
 **Das ist eine Benachrichtigung, keine Entscheidung.** Ein
@@ -255,12 +256,64 @@ override onRecoveryFailure(reason: Error): void {
 }
 ```
 
+Die beiden Integritätsfehler sind exportierte Klassen, der Hook
+kann sie also auseinanderhalten.  Welcher der beiden Stores seinen
+Vertrag gebrochen hat, ist das Erste, was ein Betreiber wissen
+muss, und beide tragen die `persistenceId` und die betroffene
+`sequenceNr`:
+
+```ts
+import { JournalIntegrityError, SnapshotIntegrityError } from 'actor-ts';
+
+override onRecoveryFailure(reason: Error): void {
+  if (reason instanceof JournalIntegrityError) {
+    this.log.error(`journal broke at ${reason.sequenceNr} for ${reason.persistenceId}`);
+  } else if (reason instanceof SnapshotIntegrityError) {
+    this.log.error(`snapshot ${reason.sequenceNr} of ${reason.persistenceId} is not trustworthy`);
+  }
+}
+```
+
 Weitermachen kann der Actor in keinem der beiden Fälle: `state`
 wurde nie zugewiesen und `lastSequenceNr` ist unbekannt, es gibt
 also keinen Zustand, in dem er ein Command beantworten könnte.  Das
 Stoppen ist es, was das sichtbar hält — bereits wartende Commands
 werden zu **Dead Letters**, statt im Stash zu verschwinden, und der
 Stopp wird auf dem Event-Stream veröffentlicht.
+
+### Was der Replay ablehnt
+
+Bevor ein einziges Event `onEvent` erreicht, prüft der Replay, ob
+das, was `journal.read()` zurückgegeben hat, dem
+[Journal-Vertrag](/de/persistence/overview/#austauschbare-backends)
+entspricht: Sequenznummern aufsteigend, lückenlos und innerhalb des
+angefragten Fensters.  Alles andere wirft `JournalIntegrityError`.
+
+Endgültig statt nur eine Warnung, denn die Faltung *ist* die
+Recovery.  Ein durcheinandergeratener Stream spielt die Historie in
+einer Reihenfolge ab, in der sie nie stattgefunden hat — ein
+`disableAccount` landet vor dem `setPassword`, auf das es folgen
+sollte — und er lässt die Sequenz des Actors auf dem zuletzt
+*gelieferten* Event statt auf dem höchsten stehen.  Danach scheitert
+jedes `persist` an einem `JournalConcurrencyError`, der auf ein
+kerngesundes Journal zeigt und einen Neustart von seiner Ursache
+entfernt ist.
+
+Dieselbe Prüfung lehnt eine Historie ab, deren *Anfang* fehlt:
+wegkompaktierte Events, die kein Snapshot abdeckt.  Dieser Zustand
+lässt sich nicht rekonstruieren, und den überlebenden Rest auf
+`initialState()` zu falten würde einen erfinden.  **Kompaktiere nur
+über einen Snapshot hinaus** — genau dafür behält
+`deleteHistory(seq)` den Snapshot bei `seq`.
+
+Das [Time-Travel-Panel](/de/observability/devtools/time-travel/) der
+DevTools teilt sich diesen Replay-Code, klinkt sich beim letzten
+Punkt aber aus.  Es fragt, wie der State *in der Vergangenheit*
+aussah, und greift dafür zum neuesten Snapshot *vor* dem Zielpunkt —
+es landet also regelmäßig in einem Fenster, dessen abdeckender
+Snapshot inzwischen weggeräumt wurde.  Dort zeigt es eine
+unvollständige Faltung — mit der erreichten Sequenz und der Zahl der
+angewendeten Events —, statt sich zu weigern, überhaupt zu öffnen.
 
 ## Persistenz-ID
 
@@ -289,6 +342,53 @@ class Account extends PersistentActor<...> {
 Für [sharded Entities](/de/cluster/sharding/overview/) übergibt
 die Shard-Region typischerweise die Entity-ID per Konstruktor, und
 die Persistenz-ID leitet sich daraus ab.
+
+### Was eine Persistenz-ID enthalten darf
+
+Eine ID ist selten eine Konstante — meist wird sie aus User-Input
+gebaut (`` `account-${request.params.id}` ``, eine Sharding-Entity-ID).
+Sie wird immer als Query-Parameter *gebunden*, SQL-Injection ist
+also nicht erreichbar.  Aber die ID ist mehr als ein Wert: sie
+**benennt einen Stream**, und mehrere Backends bauen daraus einen
+strukturierten Storage-Key.  `preStart` weist deshalb eine ID
+zurück, die keiner sein kann — bevor das Journal überhaupt
+angefasst wird:
+
+| Zurückgewiesen | Warum |
+| --- | --- |
+| leer | jedes Backend würde bereitwillig unter `''` schreiben — eine ID, die irgendein Code-Pfad zu füllen vergessen hat, teilt sich dann still einen Stream mit jedem anderen Actor, der dasselbe vergessen hat |
+| länger als **255** Zeichen | die Breite der Spalte `persistence_id` im DDL jedes relationalen Dialekts, und Teil ihres Primärschlüssels — eine längere ID wird abgeschnitten (zwei IDs fallen auf einen Stream zusammen) oder tief im Treiber abgelehnt |
+| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix><persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`: `loadLatest` von `a` liefert dann den Snapshot von `a/b`, und `delete` von `a` löscht ihn |
+| `.` oder `..` (als ganze ID) | Traversal-Bedeutung, eine Ebene höher, mit derselben Konsequenz |
+| Control-Zeichen | IDs werden bei jeder Recovery und jedem Persist in eine Logzeile interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
+
+Alles andere ist bewusst erlaubt.  Ein Komma ist in Ordnung — die
+kommaseparierte Spalte im SQLite-Journal führt *Tags*, und die ID
+ist eine eigene gebundene Spalte.  Ein `|` ist es ebenfalls, und
+das Chat-Beispiel lebt davon: ein DM-Kanal heißt
+`dm-channel-alice|bob`.  Der Offset-Store der Projektionen setzt
+Keys als `<projection>|seq|<persistenceId>` zusammen — mit der ID
+**am Ende**.  Ein `|` darin kann also kein zusätzliches Feld
+abspalten, und nirgends wird eine ID wieder zerlegt.
+
+Dieselben Regeln laufen noch einmal in `journal.append()` —
+Defence-in-Depth für ein Journal, das ohne Actor erreicht wird —
+und bei [`DurableStateActor`](/de/persistence/durable-state/) im
+Options-Validator, wo ein Verstoß ein `OptionsError` auf dem Feld
+`persistenceId` ist.
+
+Prüfe deine eigenen IDs dagegen, ohne einen Actor zu starten:
+
+```ts
+import { assertValidPersistenceId } from 'actor-ts';
+
+assertValidPersistenceId(`account-${userId}`);
+```
+
+**Lesen wird nie verweigert.**  Nur Schreibpfade validieren —
+Events, die bereits unter einer nun ungültigen ID liegen, bleiben
+über `journal.read(oldId, 1)` erreichbar: kopiere sie auf eine
+korrigierte ID und lösche den alten Stream.
 
 ## Snapshots
 
@@ -383,6 +483,8 @@ funktioniert, funktioniert in Produktion und umgekehrt.
 | --- | --- |
 | Plain-Objekte, Arrays, Strings, endliche Zahlen, Booleans, `null` | Als plain JSON gespeichert — byte-identisch zu vorher. |
 | `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trippen als echte Instanzen** über Type-Tags. |
+| [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung) | **Round-trippt als echte Instanz** — eine von zwei Framework-Klassen mit eigenem Tag (#1035).  Gespeichert wird nur die Vorwärtsrichtung; die Umkehrung wird beim Dekodieren rekonstruiert. |
+| [`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation) | **Round-trippt als echte Instanz** (#1037).  Gespeichert als Vorwärts-Adjazenzliste; die Umkehrung wird beim Dekodieren rekonstruiert, und ein Teilnehmer ohne Partner wird gar nicht erst gespeichert. |
 | `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trippen exakt** — kein `null` / `0` mehr (#889). |
 | `RegExp` (Source + Flags), `URL` | **Round-trippen als echte Instanzen.** |
 | `Error` (inkl. Subklassen, `cause`, `AggregateError`) | **Round-trippt** Name + Message + Cause — bewusst ohne Stack: ein persistierter Stack würde Dateisystempfade in langlebige Rows leaken. |
@@ -401,6 +503,12 @@ nutzen.  Siehe
 [einen eigenen Serializer für die Persistenz nutzen](/de/serialization/custom/#einen-eigenen-serializer-für-die-persistenz-nutzen)
 für das Framing, das Mixed-History-Verhalten und die
 In-Memory-Ausnahme.
+
+[`CborSerializer`](/de/serialization/cbor/) trägt die gesamte Tabelle
+oben, ein Wechsel dorthin aus Gründen der Row-Größe kostet dich aus
+dieser Liste also nichts.  Jeder *andere* Serializer trägt, was er
+eben trägt — ein schemagetriebener (Avro, Protobuf) kennt nur die
+Felder seines Schemas.
 
 Rows aus früheren actor-ts-Versionen nutzten rohes
 `JSON.stringify`; sie dekodieren unverändert weiter — die Tags

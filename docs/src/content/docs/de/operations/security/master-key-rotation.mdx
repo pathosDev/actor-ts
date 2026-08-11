@@ -32,6 +32,19 @@ der für **neue Writes** genutzt wird. Reads dispatchen anhand des
 Version-Bytes im Manifest jedes Blobs und matchen es gegen `active`
 oder einen der `retired`-Einträge.
 
+Weil dieses Byte der einzige Anhaltspunkt des Lesers ist, braucht
+**jeder Eintrag seine eigene Versionsnummer**. Ein Ring mit
+derselben Version auf zwei Einträgen wird abgelehnt — bei der
+Registrierung, am Store und beim Start eines Sweeps — statt über
+die Lookup-Reihenfolge aufgelöst zu werden. Siehe
+[jede Version kommt genau einmal vor](/de/persistence/object-storage/key-rotation/#jede-version-kommt-genau-einmal-vor).
+
+Das Ein-Byte-Feld begrenzt, wie viele Versionen *gleichzeitig
+leben* dürfen, nicht wie oft du rotieren darfst: sobald ein Sweep
+den ganzen Bestand auf die active-Version gezogen hat, fallen die
+`retired`-Einträge weg und ihre Nummern werden wieder nutzbar. Ab
+Version 240 warnt die Registrierung, damit dafür noch Zeit bleibt.
+
 ## Wann rotieren
 
 Drei Auslöser:
@@ -107,12 +120,19 @@ import { reEncryptObjectStorage } from 'actor-ts';
 // `backend` ist das ObjectStorageBackend, durch das dein Store
 // schreibt (ein FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).
 const result = await reEncryptObjectStorage(backend, {
-  keyPrefix: 'snapshots/',   // welche Objekte gesweept werden
-  keyring:   keyRing,        // active = v2, retired = [v1]
+  keyPrefix: 'snapshots/',            // welche Objekte gesweept werden
+  keyring:   keyRing,                 // active = v2, retired = [v1]
+  info:      'acme/prod/snapshot/v1', // der HKDF-Kontext des Stores
 });
 
 console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
 ```
+
+`info` ist Pflicht und muss exakt der Wert sein, den der
+schreibende Store verwendet.  Es ist der HKDF-Kontext, also die
+Hälfte dessen, woraus der Subkey abgeleitet wird — ein falscher
+Wert lässt jede Entschlüsselung fehlschlagen, statt still
+falsche Ausgaben zu erzeugen.
 
 Der Sweep listet jedes Objekt unter `keyPrefix` und entschlüsselt +
 verschlüsselt jedes, das noch nicht auf der `active`-Version des Rings
@@ -132,6 +152,9 @@ Nützliche Optionen:
 - **`verifyKeyringCompleteness`** — standardmäßig an: sampelt einige
   Blobs und verweigert den Start, wenn eines eine Version referenziert,
   die im Ring fehlt.
+- **`newInfo`** — rotiert den HKDF-Kontext statt (oder zusätzlich zu)
+  dem Schlüssel; siehe
+  [HKDF-Kontext rotieren](/de/persistence/object-storage/key-rotation/#hkdf-kontext-rotieren).
 
 Der Sweep ist **idempotent + wiederaufnehmbar** — ein Objekt, das
 bereits auf der `active`-Version ist, wird ohne Write übersprungen,
@@ -195,6 +218,20 @@ import { Aside } from '@astrojs/starlight/components';
   Version vor dem Start ab, aber nichts schützt den Live-Read-Pfad —
   erst den Sweep beenden + den alten Schlüssel ein Rollback-Fenster
   lang behalten, dann ausmustern.
+</Aside>
+
+<Aside type="caution" title="Eine noch lebende Versionsnummer wiederverwenden">
+  ```ts
+  // neuen Schlüssel promotet, aber die alte Nummer behalten
+  // active: { version: 1, key: v2 }, retired: [{ version: 1, key: v1 }]
+  ```
+  Zwei Einträge auf einer Version machen das Manifest
+  mehrdeutig, deshalb wird der Ring vorab abgelehnt. Behebe es,
+  indem du dem promoteten Schlüssel die nächste freie Nummer
+  gibst — nicht, indem du den `retired`-Eintrag entfernst: alles,
+  was darunter geschrieben wurde, wäre dann unlesbar. Eine Nummer
+  wird erst wieder frei, nachdem ein Sweep jeden Blob von ihr
+  weggezogen hat.
 </Aside>
 
 <Aside type="caution" title="Der Sweep hat keine eingebaute Drossel">

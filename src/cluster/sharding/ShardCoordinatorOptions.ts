@@ -11,6 +11,18 @@ export type ShardCoordinatorOptionsType = {
   readonly typeName: string;
   readonly cluster: Cluster;
   readonly allocationStrategy: AllocationStrategy;
+  /**
+   * Number of shards for this entity type — the bound the coordinator checks
+   * an incoming `GetShardHome` against.
+   *
+   * A shard id is `hash(entityId) % numShards`, so no honest region can ever
+   * ask for one outside `0 .. numShards - 1`.  Without the bound the
+   * coordinator allocated, recorded and *persisted* whatever id it was asked
+   * for, and the allocation map is durable state that is replayed at every
+   * coordinator start — so a peer could grow it without limit and the growth
+   * survived restarts (#583).
+   */
+  readonly numShards: number;
   readonly role?: string;
   readonly rebalanceIntervalMs?: number;
   readonly handOffTimeoutMs?: number;
@@ -93,6 +105,11 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
   /** Strategy used to allocate and rebalance shards across regions. */
   withAllocationStrategy(allocationStrategy: AllocationStrategy): this {
     return this.set('allocationStrategy', allocationStrategy);
+  }
+
+  /** Shard count for this entity type — the bound a `GetShardHome` must fall inside. */
+  withNumShards(numShards: number): this {
+    return this.set('numShards', numShards);
   }
 
   /** Only members carrying this role are candidates for hosting shards. */

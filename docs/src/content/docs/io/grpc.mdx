@@ -81,7 +81,7 @@ const server = system.spawn(
 The bind address is a single `host:port` string via `withBind`;
 `packageName` and `serviceName` are set separately.  Each handler
 descriptor is `{ kind, target }` where `kind` is `'unary'`,
-`'serverStream'`, or `'bidi'`.
+`'serverStream'`, `'clientStream'`, or `'bidi'`.
 
 ### Handler call shapes
 
@@ -92,12 +92,16 @@ handler a typed call object:
 | --- | --- | --- |
 | `unary` | `GrpcUnaryCall` | `respond(res)` / `respondError(message, code?)` |
 | `serverStream` | `GrpcServerStreamCall` | `send(chunk)` / `complete()` / `fail(message, code?)` |
+| `clientStream` | `GrpcClientStreamCall` | `onData(target)` / `respond(res)` / `respondError(message, code?)` |
 | `bidi` | `GrpcBidiCall` | `onData(target)` / `send(chunk)` / `complete()` |
 
 Every call carries `method`, the deserialized `request` (except the
-bidi call, which streams its requests), and a `metadata` record.
-`respondError` / `fail` take an optional numeric status code that
-defaults to `13` (INTERNAL).
+client-stream and bidi calls, which stream their requests), and a
+`metadata` record.  `respondError` / `fail` take an optional numeric
+status code that defaults to `13` (INTERNAL).
+
+An `onData` subscriber receives `GrpcRequestStreamInbound` — either
+`{ kind: 'chunk', chunk }` or `{ kind: 'end' }`.
 
 ## Client
 
@@ -112,6 +116,7 @@ import {
   type RpcErrorMessage,
   type StreamDataMessage,
   type StreamErrorMessage,
+  type StreamStartedMessage,
 } from 'actor-ts';
 
 const grpcClientOptions = GrpcClientOptions.create()
@@ -131,6 +136,7 @@ class ReplyCollector extends Actor<GrpcInbound> {
   override onReceive(message: GrpcInbound): void {
     match(message)
       .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-started' }, (m) => this.onStreamStarted(m))
       .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
       .with({ kind: 'stream-end' }, () => this.onStreamEnd())
       // Unary and streaming failures are reported the same way.
@@ -140,6 +146,11 @@ class ReplyCollector extends Actor<GrpcInbound> {
 
   private onReply(message: ReplyMessage): void {
     console.log('unary reply:', message.response);
+  }
+
+  // A client stream is open — `message.handle` addresses its writes.
+  private onStreamStarted(message: StreamStartedMessage): void {
+    console.log('client stream open:', message.handle.streamId);
   }
 
   private onStreamData(message: StreamDataMessage): void {
@@ -173,7 +184,8 @@ Replies and stream frames arrive at the `target` actor as a
 
 | `kind` | Fields | Meaning |
 | --- | --- | --- |
-| `reply` | `response` | Unary completion. |
+| `reply` | `response` | Unary **or client-stream** completion. |
+| `stream-started` | `handle` | A client stream is open — see below. |
 | `stream-data` | `streamId`, `chunk` | One stream chunk. |
 | `stream-end` | `streamId` | Stream closed cleanly. |
 | `stream-error` | `streamId`, `error` | Stream failed. |
@@ -181,18 +193,17 @@ Replies and stream frames arrive at the `target` actor as a
 
 ## Streaming modes
 
-gRPC supports four call types; the framework handles all:
+gRPC has four call types, and the framework covers all four:
 
-| Type | Client sends | Server returns |
-| --- | --- | --- |
-| **Unary** | One request | One response |
-| **Server-streaming** | One request | Stream of responses |
-| **Client-streaming** | Stream of requests | One response |
-| **Bi-directional streaming** | Stream of requests | Stream of responses |
+| Type | Client sends | Server returns | Client-side `kind`s |
+| --- | --- | --- | --- |
+| **Unary** | One request | One response | `unary` |
+| **Server-streaming** | One request | Stream of responses | `serverStream` |
+| **Client-streaming** | Stream of requests | One response | `clientStreamStart` / `clientStreamSend` / `clientStreamClose` |
+| **Bi-directional streaming** | Stream of requests | Stream of responses | `bidiStart` / `bidiSend` / `bidiClose` |
 
-Each client-side call is a command you `tell` the client actor.
-The `kind` selects the call type — exactly `unary`, `serverStream`,
-`bidiStart`, `bidiSend`, or `bidiClose`:
+Each client-side call is a command you `tell` the client actor; the
+`kind` selects the call type.
 
 ```ts
 // Server-streaming: one request, N chunks routed to `target`.
@@ -203,14 +214,72 @@ client.tell({
   target: collector,
 });
 
-// Bi-directional: open a stream, then push chunks into it.
+// Client-streaming: open a stream, then push requests into it.
+client.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: collector });
+```
+
+### Client streaming and the stream handle
+
+`clientStreamStart` returns nothing directly.  The actor delivers a
+`stream-started` frame to `target` carrying a **`GrpcStreamHandle`**,
+and that handle is what addresses every subsequent write:
+
+```ts
+// Inside the collector, on the `stream-started` frame:
+const handle = message.handle;
+
+client.tell({ kind: 'clientStreamSend', handle, chunk: { value: 21.5 } });
+client.tell({ kind: 'clientStreamClose', handle });
+```
+
+`clientStreamClose` half-closes the request stream; the server's
+single response then arrives as an ordinary **`reply`**, and a
+failure as `rpc-error`.
+
+The handle has two fields, with two different jobs.  `streamId` is
+the correlation id — the same number this stream's frames carry, so
+one collector can multiplex several concurrent streams.  `token` is
+the capability: a `tell` carries no verified sender, so a *sequential
+id* would let anything that can reach the client actor write into a
+stream it never opened.  The token is 64 bits of crypto-grade
+randomness, which makes the lookup itself the ownership check — pass
+the handle around exactly as carefully as you would a write handle.
+
+On the server, a client-streaming method is registered with
+`kind: 'clientStream'` and its handler consumes the request stream
+via `onData`, answering once:
+
+```ts
+class ReportReadingsHandler extends Actor<GrpcClientStreamCall> {
+  override onReceive(call: GrpcClientStreamCall): void {
+    let count = 0;
+    const sink = { tell: (m: GrpcRequestStreamInbound): void => {
+      match(m)
+        .with({ kind: 'chunk' }, () => { count++; })
+        .with({ kind: 'end' }, () => call.respond({ count }))
+        .exhaustive();
+    } } as unknown as ActorRef<GrpcRequestStreamInbound>;
+    call.onData(sink);
+  }
+}
+```
+
+Chunks that arrive before the handler subscribes are held and
+replayed on the first `onData`, so nothing is lost in the turn
+between the call landing in the handler's mailbox and the handler
+running.
+
+### Bi-directional streaming
+
+Bidi opens the same way but keeps both directions open:
+
+```ts
 client.tell({ kind: 'bidiStart', method: 'Chat', target: collector });
 ```
 
-`bidiStart` returns nothing directly.  Instead the actor delivers a
-first `stream-data` frame to `target` whose chunk carries the
-generated stream id as `{ __streamId }`.  Read that id, then
-address subsequent sends and the close to it:
+It still uses the **older in-band handshake**: the actor delivers a
+first `stream-data` frame whose chunk is `{ __streamId }`, and
+`bidiSend` / `bidiClose` address that bare number.
 
 ```ts
 // Inside the collector, after receiving the streamId hint:
@@ -219,6 +288,13 @@ const streamId = (message.chunk as { __streamId: number }).__streamId;
 client.tell({ kind: 'bidiSend', streamId, chunk: { text: 'hello' } });
 client.tell({ kind: 'bidiClose', streamId });
 ```
+
+That handshake is a known weakness — the hint is indistinguishable
+from real stream data, and the id is guessable — tracked as
+[#788](https://github.com/pathosDev/actor-ts/issues/788).  The
+`stream-started` frame and the capability handle above are what it
+will adopt; write new code against the client-stream shape where you
+have the choice.
 
 Server-stream calls also carry a `streamId` on their `stream-data`
 / `stream-end` frames, so a single collector can multiplex several
@@ -268,6 +344,54 @@ new GrpcClientActor(
 
 For mutual TLS (mTLS), add the peer's `cert` + `key` to the
 credentials object.
+
+## Health checking
+
+The server can host the standard **`grpc.health.v1.Health`**
+service next to yours, so `grpc_health_probe`, the Kubernetes gRPC
+probe and gRPC load balancers can ask the node whether it is ready.
+
+The status is **not a second notion of "healthy"**: it comes from
+the same [`HealthCheckRegistry`](/observability/management/health-checks/)
+that feeds the management server's `/ready` endpoint.  Pass the
+registry to `withHealth` — that *is* the opt-in:
+
+```ts
+import { HealthCheckRegistry } from 'actor-ts';
+
+const health = new HealthCheckRegistry();
+health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));
+
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withHealth(health);
+```
+
+`Check` answers `SERVING` only while **every** readiness check
+passes, and `NOT_SERVING` as soon as one fails — the same rule
+`/ready` applies.  It is re-evaluated per call, so nothing is
+cached.  If you already run the management server, hand it the
+registry `managementRoutes(...)` returned and both endpoints stay
+in lockstep.
+
+The `HealthCheckRequest.service` field selects what is being asked
+about:
+
+| `service` | Answer |
+| --- | --- |
+| `''` (empty) | The whole server — the usual probe. |
+| `sensor.v1.SensorService` | The served service, fully qualified. |
+| `SensorService` | Same, bare name accepted as a convenience. |
+| `grpc.health.v1.Health` | The health service itself. |
+| anything else | `NOT_FOUND` (status code 5). |
+
+Only `Check` is implemented; `Watch` answers `UNIMPLEMENTED`, which
+is the documented signal for a client to fall back to polling
+`Check`.
 
 ## Configuration
 
@@ -344,6 +468,17 @@ import { Aside } from '@astrojs/starlight/components';
   Streams **don't survive** a reconnect — the cycle re-establishes
   the underlying connection but doesn't restart in-flight
   streams.  Re-issue the call after a `BrokerConnected` event.
+</Aside>
+
+<Aside type="caution" title="No registry, no health service">
+  ```ts
+  // Without withHealth(...) the server hosts only your service
+  ```
+  There is deliberately no boolean toggle and no HOCON leaf for
+  health checking.  A health service that answers `SERVING`
+  unconditionally is worse than none at all — a Kubernetes probe
+  would keep the pod in rotation straight through an outage — so
+  enabling it requires naming where the status comes from.
 </Aside>
 
 ## Where to next

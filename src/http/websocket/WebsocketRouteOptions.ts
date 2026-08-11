@@ -46,6 +46,25 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * auth is ambient (cookie / `IpAllowlist`).
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
+  /**
+   * Accept an upgrade whose `Origin` names this same server, without having
+   * to enumerate the origins up front.  Use it when the page driving the
+   * socket is served by the server itself and you cannot know the host in
+   * advance — behind a port-forward, a container hostname or a developer's
+   * `localhost` on an arbitrary port.
+   *
+   * Combines with {@link allowedOrigins}: an upgrade passes when the
+   * `Origin` matches the request's own `Host` **or** appears in the list.  A
+   * missing `Origin` is allowed for the same reason it is there — CSWSH
+   * needs a browser, and a browser always sends one.
+   *
+   * The comparison is host-only, because `Host` carries no scheme to
+   * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
+   * will therefore fail the check; list the real origins instead.
+   *
+   * Default: `false` (unset → no origin check, as before).
+   */
+  readonly requireSameOrigin?: boolean;
 }
 
 /** Fluent builder for {@link WebsocketRouteOptionsType}. */
@@ -68,6 +87,15 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
    */
   withAllowedOrigins(origins: ReadonlyArray<string>): this {
     return this.set('allowedOrigins', origins);
+  }
+
+  /**
+   * Accept an upgrade whose `Origin` names this same server, so a page the
+   * server itself serves works without knowing the host in advance.
+   * Combines with `withAllowedOrigins`; a missing `Origin` stays allowed.
+   */
+  withRequireSameOrigin(enabled: boolean): this {
+    return this.set('requireSameOrigin', enabled);
   }
 
   /** Inbound frame size cap in bytes.  Default 1 MiB. */

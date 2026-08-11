@@ -11,6 +11,7 @@ import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterShar
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
 type EchoCommand = { id: string; kind: 'echo'; payload?: string };
@@ -233,6 +234,19 @@ interface LruNode extends Node {
   region: ActorRef<{ id: string; kind: 'ping' }>;
 }
 
+const LRU_TYPE_NAME = 'lru-entity';
+
+/**
+ * Entities resident on this node.  Eviction is asynchronous — the region
+ * passivates and then waits for the cell's `Terminated` — so the count
+ * dropping back to the cap is the observable that the fixed "let the
+ * Terminated messages drain" sleeps were standing in for (#418).
+ */
+async function residentEntities(node: LruNode): Promise<number> {
+  const shards = await node.cluster.sharding.shards(LRU_TYPE_NAME);
+  return shards.reduce((sum, shard) => sum + shard.entityCount, 0);
+}
+
 async function startLruNode(
   sysName: string, p: number, maxEntities: number,
 ): Promise<LruNode> {
@@ -246,7 +260,7 @@ async function startLruNode(
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<{ id: string; kind: 'ping' }>()
-    .withTypeName('lru-entity')
+    .withTypeName(LRU_TYPE_NAME)
     .withEntityActor(TaggedEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
@@ -275,7 +289,9 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       expect(firstTags.size).toBe(5);
 
       // Let any outstanding Terminated messages drain.
-      await sleep(50);
+      await awaitCondition(async () => (await residentEntities(node)) <= 3, {
+        timeoutMs: 4_000, intervalMs: 20, label: 'the LRU evicted back down to the cap of 3',
+      });
 
       // 'a' and 'b' were the oldest — eviction should have replaced
       // them with fresh instances on subsequent activity.  We re-ping
@@ -306,7 +322,11 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
         const tag = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
         firstTags.set(id, tag);
       }
-      await sleep(50);
+      // The claim is that nothing was evicted, so the observable is the full
+      // set still being resident — not a wall-clock margin.
+      await awaitCondition(async () => (await residentEntities(node)) === 5, {
+        timeoutMs: 4_000, intervalMs: 20, label: 'all five entities stayed resident',
+      });
       for (const id of ids) {
         const same = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
         expect(same).toBe(firstTags.get(id));
@@ -329,7 +349,9 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
         await sleep(5);
         await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
       }
-      await sleep(50);
+      await awaitCondition(async () => (await residentEntities(node)) <= 2, {
+        timeoutMs: 4_000, intervalMs: 20, label: 'the LRU evicted back down to the cap of 2',
+      });
       const t2 = await node.region.ask<string>({ id: 'evictee', kind: 'ping' }, 3_000,);
       // Different tag confirms re-creation; second ask succeeding at
       // all confirms re-spawn went through cleanly.

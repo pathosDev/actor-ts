@@ -119,7 +119,7 @@ export class Failure {
   map<U>(_f: (value: never) => U): Try<U> { return this as Try<U>; }
   flatMap<U>(_f: (value: never) => Try<U>): Try<U> { return this as Try<U>; }
 
-  /** Apply the recovery fn; returned value is wrapped in Success.  `null` keeps the Failure. */
+  /** Apply the recovery function; returned value is wrapped in Success.  `null` keeps the Failure. */
   recover<U>(f: (err: unknown) => U | null): Try<U> {
     try {
       const recovered = f(this.error);
@@ -127,7 +127,7 @@ export class Failure {
     } catch (e) { return new Failure(e); }
   }
 
-  /** Apply the recovery fn; its Try return value wholesale replaces this Failure. */
+  /** Apply the recovery function; its Try return value wholesale replaces this Failure. */
   recoverWith<U>(f: (err: unknown) => Try<U>): Try<U> {
     try { return f(this.error); }
     catch (e) { return new Failure(e); }

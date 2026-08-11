@@ -11,6 +11,8 @@ import {
   type DurableStateStore,
 } from '../../../../src/persistence/index.js';
 
+import { awaitCondition } from '../../../util/AwaitCondition.js';
+
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type KV = { readonly map: Record<string, string>; };
@@ -97,13 +99,20 @@ describe('DurableStateActor', () => {
 
     const ref = sys.spawnAnonymous(kvActor(store, 'user-1'));
     ref.tell({ kind: 'set', key: 'name', value: 'alice', replyTo: sink });
-    await sleep(40);
+    // The `ok` reply is sent *after* `persist` resolves, so it is exactly the
+    // "the write is durable" marker the restart depends on (#418).
+    await awaitCondition(() => reply.length === 1, {
+      timeoutMs: 4_000, label: 'the set was acknowledged after persisting',
+    });
     ref.stop();
+    // Precondition only — nothing reads what postStop produces.
     await sleep(30);
 
     const restarted = sys.spawnAnonymous(kvActor(store, 'user-1'));
     restarted.tell({ kind: 'get', key: 'name', replyTo: sink });
-    await sleep(40);
+    await awaitCondition(() => reply.length === 2, {
+      timeoutMs: 4_000, label: 'the restarted actor answered the get',
+    });
 
     // Last reply should be the 'alice' value.
     const found = reply.some((m) => (m as { kind: string; value?: string }).value === 'alice');

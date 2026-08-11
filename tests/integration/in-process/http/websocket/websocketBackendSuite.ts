@@ -25,6 +25,7 @@ import { WebsocketServerActor } from '../../../../../src/http/websocket/Websocke
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketRouteOptions } from '../../../../../src/http/websocket/WebsocketRouteOptions.js';
 import type { WebsocketConnection } from '../../../../../src/http/websocket/WebsocketConnection.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };
 type SOut = { kind: 'pong'; n: number } | { kind: 'bcast'; text: string };
@@ -199,9 +200,52 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const { base } = await bindServer(events, (s) => websocket('/ws', s));
       const ws = await wsOpen(`${base}/ws`);
       ws.close();
-      await sleep(200);
+      await awaitCondition(
+        () => events.some((e) => e.startsWith('connect:'))
+          && events.some((e) => e.startsWith('disconnect:')),
+        { timeoutMs: 4_000, intervalMs: 10, label: 'the server saw both connect and disconnect' },
+      );
       expect(events.some((e) => e.startsWith('connect:'))).toBe(true);
       expect(events.some((e) => e.startsWith('disconnect:'))).toBe(true);
+    });
+
+    test('a burst of open-then-close connections all disconnect (#570)', async () => {
+      // The connection actor attaches its socket listeners from preStart —
+      // two mailbox hops after the upgrade returns — and a client may close
+      // inside that window.  An adapter that buffers messages but drops
+      // close never stops the actor, never frees its maxConnections slot,
+      // and reports one disconnect for the whole burst.
+      //
+      // The sequential test above cannot catch that: `await wsOpen(...)`
+      // hands the server enough time to attach before the close arrives, so
+      // it wins the race every time.  Concurrency is what widens the window.
+      const events: string[] = [];
+      const { base } = await bindServer(events, (s) => websocket('/ws', s));
+      const burst = 20;
+
+      await Promise.all(
+        Array.from({ length: burst }, () => new Promise<void>((resolve) => {
+          const ws = new WebSocket(`${base}/ws`);
+          const done = (): void => { ws.onopen = null; ws.onerror = null; resolve(); };
+          ws.onopen = () => { ws.close(); done(); };
+          ws.onerror = () => done();
+        })),
+      );
+      // The bug this guards is *missing* disconnects, so wait for them: a
+      // fixed second is both slower than the healthy case and, on a loaded
+      // runner, not necessarily longer than the unhealthy one.
+      await awaitCondition(
+        () => events.filter((e) => e.startsWith('disconnect:')).length >= burst,
+        { timeoutMs: 4_000, intervalMs: 10, label: `all ${burst} bursted connections disconnected` },
+      );
+      // Both counts are exact, and a poll returns on the event that reaches
+      // the target — so leave a beat for a surplus to show up.
+      await sleep(50);
+
+      const connects = events.filter((e) => e.startsWith('connect:')).length;
+      const disconnects = events.filter((e) => e.startsWith('disconnect:')).length;
+      expect(connects).toBe(burst);
+      expect(disconnects).toBe(connects);
     });
 
     test('unbind with open connections resolves promptly (no hang)', async () => {

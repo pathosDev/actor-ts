@@ -1,6 +1,6 @@
 ---
 title: Behaviors
-description: Das funktionale DSL — `Behaviors.setup`, `receive`, `receiveMessage`, `withTimers`, `withStash`, `supervise`, plus die Sentinels (same/stopped/unhandled/empty/ignore). Komponiere Actors als Werte, nicht als Klassen.
+description: Das funktionale DSL — `Behaviors.setup`, `receive`, `receiveMessage`, `withTimers`, `withStash`, `supervise`, `intercept`, `monitor`, `logMessages`, plus die Sentinels (same/stopped/unhandled/empty/ignore). Komponiere Actors als Werte, nicht als Klassen.
 ---
 
 Der **`Behaviors`**-Namespace ist eine Sammlung von Kombinatoren,
@@ -130,8 +130,11 @@ dasselbe, ohne das Behavior zu betreten.
 
 ## Die Dekoratoren
 
-Drei Kombinatoren wickeln ein anderes Behavior mit zusätzlichen
-Fähigkeiten:
+Sechs Kombinatoren wickeln ein anderes Behavior mit zusätzlichen
+Fähigkeiten.  Die ersten drei geben dem inneren Behavior etwas, das es
+allein nicht erreichen könnte — einen Timer-Scheduler, einen
+Stash-Puffer, einen Supervisor.  Die letzten drei sitzen *davor*, auf dem
+Weg, den jede Nachricht nimmt.
 
 ### `withTimers`
 
@@ -200,6 +203,85 @@ Stop terminiert, Resume überspringt die fehlschlagende Nachricht.
 
 Siehe [Supervision](/de/fundamentals/supervision/) für die
 Direktiven-Semantik; sie gelten in der typed-Form identisch.
+
+### `intercept`
+
+```ts
+const guarded = Behaviors.intercept<Message>(inner, (context, message, next) => {
+  if (message.kind === 'ping') return Behaviors.same;   // verwerfen — inner sieht sie nie
+  return next(context, message);                        // oder delegieren
+});
+```
+
+Der Interceptor läuft bei jeder Nachricht zuerst und entscheidet, was
+danach passiert: `next(context, message)` aufrufen, um zu delegieren, eine
+andere Nachricht übergeben, um sie auf dem Weg hinein zu transformieren,
+oder ein Behavior zurückgeben, ohne `next` überhaupt aufzurufen, um sie zu
+verwerfen.  Was er zurückgibt, wird zum nächsten Behavior des **inneren**
+Behaviors.
+
+Der Wrapper überlebt die Übergänge des inneren Behaviors.  Das ist der
+Teil, den man sich merken sollte: ein inneres `Behaviors.receive`, das bei
+jeder Nachricht ein frisches Behavior zurückgibt — die normale Form einer
+Zustandsmaschine — wird auch bei der nächsten abgefangen, und bei jeder
+danach.  Der einzige Weg hinaus ist `Behaviors.stopped`, wo es nichts mehr
+abzufangen gibt.
+
+Vom Interceptor geworfene Fehler werden genau wie Fehler des inneren
+Handlers behandelt: sie erreichen ein umschließendes `supervise`.  Das
+Abfangen erfasst nur User-Nachrichten; Lifecycle-Signale gehen direkt an
+den Handler von `receiveWithSignal`.
+
+Der Typ ist `T → T` — ein Interceptor beobachtet, transformiert oder
+verwirft, er ändert nie den Nachrichtentyp des Actors.
+
+### `monitor`
+
+```ts
+const audit = system.spawnTyped(auditBehavior, 'audit');
+const monitored = Behaviors.monitor(audit, orders);
+```
+
+Leitet jede Nachricht an `audit` weiter, **bevor** `orders` sie behandelt.
+Nützlich für Audit-Trails und, in Tests, für eine Probe, die auf den vom
+Actor empfangenen Verkehr prüft:
+
+```ts
+const probe = kit.createTestProbe();
+const ref = kit.system.spawnTypedAnonymous(Behaviors.monitor(probe, orders));
+```
+
+Erst weiterleiten, dann zustellen ist die bewusste Reihenfolge: der Monitor
+sieht eine Nachricht auch dann, wenn ihre Behandlung den Actor zum Absturz
+bringt — genau der Fall, für den man die Spur am dringendsten will.  Die
+Zustellung ist Fire-and-Forget und ihre Fehler werden geschluckt: ein
+kaputter Abgriff darf den Actor nicht mit sich reißen.
+
+### `logMessages`
+
+```ts
+const traced = Behaviors.logMessages(orders);
+
+const audited = Behaviors.logMessages(orders, {
+  level: 'info',
+  formatter: (message) => `order ${message.orderId}`,
+});
+```
+
+| Option | Default | Bedeutung |
+| --- | --- | --- |
+| `level` | `'debug'` | `'debug'` oder `'info'`.  Jede Nachricht zu loggen ist eine Diagnose; sie auf `warn` oder `error` zu melden würde genau das Signal vergiften, nach dem ein Operator filtert — deshalb gibt es die nicht. |
+| `formatter` | eingebaut | Rendert die ganze Zeile.  Darf nicht werfen — tut er es doch, wird stattdessen die eingebaute Zeile ausgegeben, denn eine Diagnose, die den beobachteten Actor umbringt, ist schlimmer als eine, die sich etwas schlechter liest. |
+
+Die eingebaute Zeile ist `received <kind>` und benennt die Nachricht über
+ihre Diskriminante.  Bei einer Klasseninstanz fällt sie auf den
+Klassennamen zurück, danach auf `typeof` — ein blankes Objektliteral meldet
+`Object` als Konstruktor, was nichts aussagen würde.
+
+Die Zeile wird nur gebaut, wenn der Logger des Actors sie tatsächlich
+ausgeben würde; das Ganze in einem System stehen zu lassen, das auf `warn`
+loggt, kostet also einen Vergleich pro Nachricht statt eines formatierten
+Strings.
 
 ## Die fünf Sentinels
 
@@ -287,6 +369,34 @@ const supervised = Behaviors
 `supervise` ist *außen* um das `withTimers`, die Strategie
 überwacht also die ganze Konstruktion.  Das ist fast immer die
 richtige Verschachtelung.
+
+Interceptoren liest man genauso, und weil sie bei jeder Nachricht laufen,
+ist die Reihenfolge direkt beobachtbar:
+
+```ts
+const traced = Behaviors.logMessages(Behaviors.monitor(auditRef, inner));
+```
+
+`logMessages` ist ganz außen, loggt also zuerst, dann leitet der Monitor
+weiter, dann behandelt `inner`.  Jeder Wrapper entscheidet, ob der nächste
+weiter innen die Nachricht überhaupt bekommt — ein Interceptor, der ohne
+Aufruf von `next` zurückkehrt, stoppt alles darunter.
+
+Eine Asymmetrie ist wissenswert.  Die anderen Dekoratoren werden beim Start
+des Actors aufgelöst: sie steuern ihren Seiteneffekt bei (Timer einfangen,
+Strategie installieren) und kollabieren in das Behavior, das sie erzeugt
+haben.  Ein Interceptor kann das nicht, denn er muss auch bei der
+*nächsten* Nachricht da sein — er bleibt also um das gewickelt, was das
+innere Behavior wird.
+
+Dieselbe Unterscheidung entscheidet, was ein **Restart** neu aufbaut.
+`supervise` startet das neu, was es umschließt: ein Interceptor *innerhalb*
+des Wrappers gehört damit zum frischen Behavior und wird mit ihm neu
+aufgebaut; einer *außerhalb* nicht — er beobachtet über den Restart hinweg
+weiter.  In beiden Verschachtelungen bleibt er danach genau einmal
+installiert: ein crash-loopender Actor sammelt keine Kopien seines eigenen
+Monitors an, und `monitor` fängt nicht an, eine Nachricht doppelt
+zuzustellen, weil der Actor vorher neu gestartet ist.
 
 import { Aside } from '@astrojs/starlight/components';
 

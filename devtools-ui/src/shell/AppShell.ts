@@ -154,9 +154,12 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
   effect(() => {
     const welcome = tap.welcome.get();
     systemName.textContent = welcome?.systemName ?? '…';
-    // Versions matter when something looks wrong and never otherwise, so
-    // they live on the badge you are already hovering rather than taking
-    // a tile on the overview.
+    // The framework version now also has a tile on the overview (#911) —
+    // it is the first thing a bug report quotes, and a tooltip does not
+    // survive the screenshot.  It stays here as well because this badge
+    // is on every panel, and the PROTOCOL version has no tile: it only
+    // matters when the two sides disagree, which is not a glanceable
+    // figure.
     statusBadge.title = welcome === null
       ? ''
       : `actor-ts ${welcome.serverVersion} · tap protocol v${DEVTOOLS_PROTOCOL_VERSION}`;

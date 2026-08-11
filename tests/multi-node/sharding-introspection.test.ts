@@ -20,7 +20,9 @@ import { Actor } from '../../src/Actor.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
+import type { ShardInfo } from '../../src/cluster/sharding/ShardInfo.js';
 
 type PingCommand = { id: string; kind: 'ping' };
 
@@ -71,7 +73,10 @@ describe('multi-node shard introspection', () => {
         b: spec.clusterFor('b').sharding.start<Command>(shardingOptions),
         c: spec.clusterFor('c').sharding.start<Command>(shardingOptions),
       };
-      await Bun.sleep(300);
+      // Nothing is asserted on this one and the asks below carry a 5 s
+      // budget of their own, so a still-running initial allocation is
+      // absorbed rather than misread.  It stays a fixed sleep.
+      await sleep(300);
 
       // Touch every id so each one has a live entity somewhere.
       const replies = await Promise.all(
@@ -115,15 +120,18 @@ describe('multi-node shard introspection', () => {
       // Poll the list itself — "no shard is still homed on the dead node" is
       // exactly the condition the next round of asks depends on, so waiting
       // for it beats waiting for a fixed number of milliseconds.
-      let survivors = await spec.clusterFor('a').sharding.shards<Command>(TYPE_NAME, 5_000);
-      const deadline = Date.now() + 10_000;
-      while (
-        Date.now() < deadline
-        && survivors.some((shard) => shard.node.toString() === crashedAddress)
-      ) {
-        await Bun.sleep(50);
-        survivors = await spec.clusterFor('a').sharding.shards<Command>(TYPE_NAME, 5_000);
-      }
+      let survivors: ReadonlyArray<ShardInfo<Command>> = [];
+      await awaitCondition(
+        async () => {
+          survivors = await spec.clusterFor('a').sharding.shards<Command>(TYPE_NAME, 5_000);
+          return !survivors.some((shard) => shard.node.toString() === crashedAddress);
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 50,
+          label: 'no shard is still homed on the crashed node',
+        },
+      );
       expect(survivors.length).toBeGreaterThan(0);
       for (const shard of survivors) {
         expect(shard.node.toString()).not.toBe(crashedAddress);

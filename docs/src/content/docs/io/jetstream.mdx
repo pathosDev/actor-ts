@@ -201,15 +201,16 @@ import { Aside } from '@astrojs/starlight/components';
   operator concern, not a runtime one.
 </Aside>
 
-<Aside type="caution" title="KV and Object Store are separate">
+<Aside type="caution" title="KV and Object Store are separate actors">
   JetStream's Key-Value and Object-Store sub-APIs have different
-  semantics and are not covered by this actor
-  ([roadmap #74](https://github.com/pathosDev/actor-ts/issues/74)).
+  semantics, so they are separate actors —
+  [`JetStreamKeyValueActor` / `JetStreamObjectStoreActor`](/io/jetstream-kv/).
   This actor is stream publish/consume only.
 </Aside>
 
 ## Where to next
 
+- **[JetStream KV + Object Store](/io/jetstream-kv/)** — the bucket sub-APIs.
 - **[NATS](/io/nats/)** — core (non-durable) pub/sub + request-reply.
 - **[Kafka](/io/kafka/)** — heavier durable streaming at massive scale.
 - **[BrokerActor base](/io/broker-actor-base/)** — the shared reconnect / buffer / circuit-breaker lifecycle.

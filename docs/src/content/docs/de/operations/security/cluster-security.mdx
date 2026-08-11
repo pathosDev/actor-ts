@@ -52,6 +52,12 @@ await Cluster.join(system, clusterOptions);
 Die TLS-Einstellungen:
 
 - **`cert`** + **`key`** — Zertifikat + Private Key dieses Nodes.
+  Beide tragen **das Material selbst**, keinen Pfad darauf: nichts
+  im Transport liest von der Platte, und auch keine der drei
+  Runtimes akzeptiert in diesen Feldern einen Dateinamen. Lies es
+  selbst ein, so wie es das Beispiel oben tut. Auf einem Listener
+  sind beide Hälften nur gemeinsam gültig — siehe die Ablehnungen
+  weiter unten.
 - **`ca`** — vertrauenswürdiges CA-Bundle. Nutze, um die
   Zertifikate der Peers zu verifizieren.
 - **`rejectUnauthorized: true`** — Handshakes scheitern lassen,
@@ -65,6 +71,47 @@ Mit einer geteilten `ca` ist der Cluster **mutually
 authenticated** — jede Verbindung verlangt ein Peer-Cert, das von
 der vertrauenswürdigen CA signiert ist, in beide Richtungen.
 
+### Das Zertifikat entscheidet auch, *welcher* Knoten
+
+mTLS beantwortet „darf dieser Peer in den Cluster". Für sich
+genommen hat es nie beantwortet „ist dieser Peer der Knoten, für
+den er sich ausgibt": das `hello`-Frame trägt eine Adresse und
+kein Credential, ein CA-signierter Knoten konnte sich also unter
+der Adresse eines anderen Mitglieds ankündigen. Das ist deshalb
+relevant, weil die Gossip-Autoritätsregeln weiter unten allesamt
+am Peer der Verbindung hängen — sie sind genau so stark wie die
+Identität darunter.
+
+Legt ein Peer also ein Zertifikat vor, muss die im `hello`
+beanspruchte Adresse eine sein, für die das Zertifikat bürgt. Ein
+Anspruch wird akzeptiert, wenn CN oder ein SAN eines von beidem
+abdeckt:
+
+- den **Host** der Adresse — der Normalfall, in dem das
+  Zertifikat jedes Knotens seinen eigenen Hostnamen oder seine IP
+  trägt, oder
+- das vollständige **`systemName@host`** — für Deployments, die
+  eine Identität pro Knoten ausstellen und die engere Bindung
+  wollen.
+
+Wildcards gelten für den Host, nur im äußersten linken Label —
+genau wie bei der TLS-Hostnamensprüfung.
+
+<Aside type="note" title="Was ein geteiltes Zertifikat nicht kann">
+  Zwei Knoten, die dasselbe Host-Zertifikat vorlegen, sind für
+  diese Prüfung nicht unterscheidbar, und keine
+  zertifikatsbasierte Regel könnte sie trennen. Wenn du Identität
+  auf Knotenebene brauchst — damit ein kompromittiertes `node-a`
+  sich nicht als `node-b` auf demselben Host ausgeben kann —
+  stelle Zertifikate pro Knoten aus, die `systemName@host` nennen.
+</Aside>
+
+Für einen Cluster ohne lesbares Peer-Zertifikat ändert sich
+nichts: einfaches TCP, einseitiges TLS und ein Deno-Listener (der
+gar keins melden kann) verhalten sich exakt wie vorher. Die
+Prüfung stärkt mTLS-Deployments, statt einen Schalter
+hinzuzufügen, den man vergessen kann.
+
 <Aside type="caution" title="Einseitiges TLS authentifiziert niemanden">
   Der `hello`-Handshake trägt selbst keinerlei Credential, also
   *ist* auf einem TLS-Cluster das Peer-Zertifikat die
@@ -75,15 +122,49 @@ der vertrauenswürdigen CA signiert ist, in beide Richtungen.
   Service-Mesh, ein privates L2) die Authentifizierung übernimmt.
 </Aside>
 
-Zwei Konfigurationen werden beim Bind abgelehnt, statt in einem
+Drei Konfigurationen werden beim Bind abgelehnt, statt in einem
 schwächeren Zustand zu starten, als sie sich lesen:
 
+- **Ein unvollständiges Server-Credential** — `cert` ohne `key`,
+  `key` ohne `cert`, oder ein `tls`-Objekt, das keines von beidem
+  trägt (eine `ca` allein sagt, welchen Peers beim *Wählen* zu
+  trauen ist; dem Listener gibt sie nichts zum Vorzeigen). Leer
+  zählt als nicht gesetzt — genau so sieht eine nicht gesetzte
+  Umgebungsvariable oder ein falsch gemountetes Secret aus, wenn es
+  hier ankommt.
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
-- Mutual TLS **auf Deno** — `Deno.listenTls` kann kein
-  Client-Zertifikat anfordern und der Deno-Dialer sendet keines,
-  Peers blieben also in beide Richtungen unauthentifiziert.  Für
-  mTLS den Cluster auf Node.js oder Bun betreiben.
+- Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
+  Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
+  anfordern noch prüfen; der Listener würde also niemanden
+  authentifizieren.
+
+<Aside type="caution" title="Das unvollständige Credential lauschte bisher im Klartext">
+  Dieser Fall war kein Fehler, sondern eine **stille Degradierung**.
+  Der Listener entschied anhand von „habe ich Zertifikat *und*
+  Key?", ob er TLS spricht; mit nur einem von beidem schloss er auf
+  „kein TLS" und lauschte im **Klartext** — während dieselbe
+  Konfiguration weiterhin über TLS *hinaus*wählte, der Cluster sich
+  also bildete und der Knoten TLS-konfiguriert aussah. Eine halb
+  angewendete Secret-Rotation genügte dafür.
+
+  Jetzt wirft er beim Bind. Das heißt: ein Knoten, der bislang
+  unbemerkt Klartext ausgeliefert hat, **startet nach dieser
+  Änderung nicht mehr**, statt fehlgesichert hochzukommen — so
+  gewollt, aber vor einem Rolling Restart gut zu wissen.
+</Aside>
+
+Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
+er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
+Listener (auf Node.js oder Bun) authentifiziert ihn wie jeden
+anderen Peer.  Nur das *Hosten* des Listeners fällt aus — halte in
+einem gemischten Deployment die Seed-Knoten auf Node.js oder Bun.
+
+Ein Deno-Unterschied, den man kennen sollte: `rejectUnauthorized`
+hat dort kein Äquivalent und wird nicht abgebildet.  Deno prüft
+die Kette immer; einen self-signed Peer erreicht man also, indem
+man dessen signierende CA in `ca` mitgibt — die Form, die hier
+ohnehin empfohlen wird.
 
 ## Zertifikatsmanagement
 
@@ -180,12 +261,318 @@ erreichen.
 | Man-in-the-Middle | TLS + Zertifikatsprüfung |
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
+| Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
+| Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
+| Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
+| Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
 Application-Level-Anliegen (Auth zwischen spezifischen Actors,
 Per-Tenant-Isolation) bleiben dein Job — der Cluster-Transport
 ist **in sich selbst vertrauenswürdig**.
+
+### Woher die Seeds kommen
+
+Ein Seed-Provider fragt eine Gegenstelle außerhalb — DNS, die
+K8s-API —, mit welchen Adressen zu reden ist, und diese Antwort
+trifft ein, bevor irgendein Zertifikat geprüft wurde.  Sie kann
+einem Angreifer nicht den *Join* verschaffen: die Adresse, die ein
+Peer beansprucht, muss von seinem Zertifikat gedeckt sein, ein
+gefälschter Seed erzeugt also eine Verbindung, die am Handshake
+stirbt.
+
+Diese Garantie ist **konfigurationsabhängig**, und genau das gehört
+klar gesagt.  Ein Node verlangt nur dann ein Peer-Zertifikat, wenn
+sein Listener so konfiguriert wurde, eines anzufordern; wo TLS aus
+ist oder wo ein halb konfigurierter Listener nie danach fragt, gibt
+es nichts, wogegen die beanspruchte Adresse geprüft werden könnte —
+und eine vergiftete Discovery-Antwort wird befolgt, wie sie kommt.
+
+Pinne also, was der Resolver sagen darf:
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.0.0.0/8'])
+  .withLog((message) => logger.warn(message));
+```
+
+Adressen außerhalb der Liste werden nie zu Seeds.  Details —
+einschließlich des SRV-Vorbehalts (Ziele sind dort Hostnames, Pins
+also Suffixe, und der spätere A-Lookup bleibt ungepinnt) — stehen
+auf den Seiten zum
+[DNS Seed Provider](/de/discovery/seed-providers/dns/) und zum
+[Kubernetes-API Seed Provider](/de/discovery/seed-providers/kubernetes-api/).
+
+Das ist Defense-in-Depth: es senkt, was eine DNS- oder
+Endpoints-Kompromittierung einbringt, und es ist die einzige
+Kontrolle auf der Discovery-Ebene, die übrig bleibt, wenn mTLS
+nicht eingerichtet ist.
+
+## Was der Wire-Rand abweist
+
+Frames kommen als JSON an und wurden früher auf den
+Protokolltyp *gecastet* statt gegen ihn geprüft — ein Peer
+konnte einem Knoten also einen Wert reichen, den der Code
+anschließend las, als stimmte der Typ. Jeder Frame wird jetzt
+geprüft, bevor ihn irgendein Handler sieht:
+
+- Der Frame muss ein Objekt mit einem String-`kind` sein.
+  `null`, ein nackter String und eine Zahl werden abgewiesen —
+  vorher war allein `null` ein Acht-Byte-Remote-Prozesskill,
+  und zwar ohne abgeschlossenen Handshake.
+- Knotenadressen brauchen ein nicht-leeres `systemName` und
+  `host` plus einen positiven ganzzahligen `port`. Der
+  lohnende Fall: ein Port, der als *String* `"2552"` ankommt.
+  Er sieht in jeder Logzeile identisch aus und keyt jede Map
+  gleich, vergleicht sich aber nie gleich — ein Knoten, der
+  seine eigene Adresse in dieser Form mergte, erkannte sich
+  selbst nicht mehr wieder.
+- Der `status` eines gegossipten Members muss einer der sieben
+  legalen Werte sein. Ein unbekannter erreichte ein
+  exhaustives `match`, das warf — *nachdem* der Member schon
+  gespeichert war. Der Knoten stürzte also ab **und**
+  gossipte den vergifteten Eintrag an seine Peers weiter.
+- Ein Gossip-Batch wird als Ganzes geprüft. Ein fehlerhafter
+  Member weist den Frame ab, damit sich ein schlechter
+  Eintrag nicht hinter einem guten einschleichen kann.
+
+Bewusst zwei Stufen: ein Frame, der die Prüfung nicht besteht,
+wird verworfen und die Verbindung bleibt stehen — ein einzelner
+kaputter Frame soll einen gesunden Peer nicht seine Leitung
+kosten. Ein Handler, der *wirft*, kappt die Verbindung: das ist
+der Fall, den niemand versteht, und er darf nicht in den
+Socket-Callback des Runtimes entkommen.
+
+Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
+Receptionist, DistributedData, DevTools), passieren diese
+Schicht und prüfen ihr eigenes Payload selbst.
+
+Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
+geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
+eine Versionsabweichung und ein feindlicher Peer sehen im Log
+unterschiedlich aus.
+
+## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
+
+Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,
+dass es umsonst ist, auf ihn zu reagieren. PubSub-Gossip ist das
+saubere Beispiel: ein Peer, der 100 000 Topics nennt, für die er
+Subscriber beansprucht, schickt einen völlig legalen Frame, und
+der Empfänger legte dafür früher 100 000 Map-Einträge an — kein
+lokales `Subscribe`, kein fehlerhaftes Feld, keine Logzeile. Der
+Receptionist hatte auf seinem eigenen Gossip-Pfad dieselbe Form.
+
+**Die Mitgliedschaft selbst hatte dieselbe Form** — und sie ist
+die eine Registry, in die niemand erst hineinoptieren muss: jeder
+geclusterte Knoten hält eine Mitgliederkarte, und Gossip ist das,
+was sie füllt. Die Regeln weiter unten entscheiden, ob ein
+Anspruch *glaubhaft* ist; keine von ihnen begrenzte, wie viele
+glaubhafte Ansprüche ein Peer erheben darf. Ein Sender, der seine
+eigene Adresse ankündigt, wird bewusst durchgewunken — das zu
+verweigern hieße, dass kein Knoten je joinen könnte — also legte
+eine frisch benannte Adresse pro Frame einen Eintrag pro Namen an.
+
+Diese Registries sind jetzt begrenzt, und die Grenzen gelten für
+den Gossip-Pfad genauso wie für lokale Aufrufe:
+
+| Registry | Begrenzt durch | Default |
+| --- | --- | --- |
+| Lebende Cluster-Mitglieder | `cluster.max-members` | `1000` |
+| `removed`-Tombstones | `cluster.max-tombstones` | `10000` |
+| PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
+| PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
+| PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
+| Receptionist-Subscriber insgesamt | `cluster.receptionist.max-subscribers-total` | `10000` |
+
+Ein Anspruch über einer Grenze wird verworfen und geloggt, statt
+auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
+und die Verbindung deswegen zu kappen ließe einen lauten Peer
+eine gesunde Leitung kosten. Ein *lokales* `Subscribe` über einer
+Grenze wird stattdessen mit `SubscribeRejected` beantwortet, denn
+der Aufrufer kann etwas dagegen tun. Beide PubSub-Registries
+watchen außerdem ihre Subscriber, sodass die andere Hälfte des
+alten Wachstums — Refs, die stoppten, ohne je zu unsubscriben —
+zurückgewonnen statt begrenzt wird.
+
+Senke die Defaults für ein Deployment, dessen legitime Zahlen
+weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
+und eine weit über der echten Nutzung begrenzt sehr wenig.
+
+### Warum die Mitgliedschaft zwei Grenzen braucht — und warum die zweite die eigentliche ist
+
+Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe. Ein
+Phantom-Mitglied in `up` / `joining` / `unreachable` ist ein
+Mitglied, das der Failure Detector beobachtet: es wird
+`failure-detector.down-after` nach dem letzten Nachschub gedownt
+und gelöscht — im Default fünf Sekunden. Ein als **`removed`**
+gegossipter Eintrag wird von nichts beobachtet; nur
+`cluster.tombstone.time-to-live` holt ihn zurück, einen Tag
+später. Die Flut, die bleibt, ist also die Tombstone-Flut, und
+`max-tombstones` ist die Grenze, die die Arbeit macht. Einen
+solchen Eintrag abzulehnen kostet auch nichts: ein Tombstone für
+eine Adresse, zu der dieser Knoten keinen Eintrag hat, unterdrückt
+nichts, was existiert — während ein abgelehnter *lebender*
+Eintrag ein legitimes Mitglied eine Gossip-Runde kostet und mit
+einem `WARN` samt Namen der Grenze kommt.
+
+Beide Grenzen werden auf den **Topf abgerechnet, in den ein
+Record wandert**, nicht darauf, ob er einen Eintrag neu anlegt.
+Ein gegossipter Record, der einen Eintrag dort lässt, wo er schon
+ist — `up` → `unreachable`, oder ein neuerer Tombstone über einen
+älteren —, ist ein kostenloses In-Place-Update. Einer, der
+zwischen den Töpfen wechselt, wird dem Topf angerechnet, den er
+betritt: ein als `up` wiedergeborener Tombstone braucht Platz bei
+den lebenden Mitgliedern, ein als `removed` gegossiptes lebendes
+Mitglied braucht Platz bei den Tombstones. Nur das Anlegen zu
+berechnen ließ die beiden Grenzen kostenlos Spielraum
+untereinander tauschen — eine Wiedergeburt räumte den
+Tombstone-Topf, ohne einen Map-Slot herzugeben, sodass die
+nächste Tombstone-Flut ebenfalls durchging; im Wechsel wuchs die
+Map unbegrenzt, obwohl beide Grenzen bei jedem einzelnen Schritt
+eingehalten wurden. Eine abgelehnte *Umwandlung* lässt das
+Mitglied lebendig, wo der Failure Detector es auf dem langsameren
+Weg einsammelt.
+
+Tombstones, die der Knoten selbst erzeugt — das `leave` eines
+Peers, eine Downing-Entscheidung, ein `down()` des Operators —
+wandeln einen Eintrag um, den er ohnehin schon hält, und
+unterliegen der Grenze nie. Die eigene Buchführung zu begrenzen
+würde die Unterdrückung wegnehmen, die verhindert, dass altes
+Gossip eine geräumte Adresse wiederbelebt — ein Liveness-Bug im
+Kostüm eines Security-Fixes.
+
+Die Decke, die man kennen sollte, ist nicht der Heap. Gossip
+trägt die vollständige Mitgliederliste, also überschreitet der
+eigene Frame eines Knotens bei rund 110 000 Einträgen
+`remote.max-frame-bytes`, und jeder Peer beendet die Verbindung
+schon am Längen-Präfix — der Knoten wirft sich selbst aus dem
+Cluster, während er noch läuft, lange bevor irgendwo der
+Speicher ausgeht.
+
+:::note[Die Reihenfolge, in der das gelandet ist, zählt]
+Heute ist die `down → delete`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden
+begrenzt. Eine Downing-Strategie, die dieses Löschen hinter einen
+konfigurierten `DowningProvider` hängt, nähme diese implizite
+Schranke weg und ließe die 24-Stunden-Rechnung für *jeden* Status
+gelten, nicht nur für Tombstones — diese Grenzen sind also eine
+Voraussetzung für jene Änderung und keine unabhängige Härtung.
+:::
+
+## Wer was sagen darf
+
+Die Shape-Prüfung zu bestehen macht einen Frame noch nicht
+glaubwürdig. Gossip-Merges entschied früher allein die
+Versionsgröße, und Versionen werden aus `Date.now()` gesät —
+ein Angreifer konnte sich also immer eine Gewinnerzahl
+aussuchen und jeden Member-Status umschreiben, **auch den des
+empfangenden Knotens selbst**. Vor dem Merge stehen jetzt zwei
+Regeln:
+
+- **Niemand stuft uns herab.** Eine Aussage über die eigene
+  Adresse dieses Knotens wird abgewiesen. Die einzige Ausnahme
+  ist die Beförderung von `joining`/`weakly-up` nach `up` — die
+  muss von außen kommen, weil sie die Entscheidung des Leaders
+  ist, und sie anzunehmen ist harmlos, denn ein joinender
+  Knoten will ohnehin `up` werden. Alles andere über den
+  eigenen Record entscheiden wir selbst.
+- **Aussagen über Dritte brauchen einen Absender mit Standing.**
+  Etwas über einen *anderen* Knoten zu behaupten setzt voraus,
+  dass der Peer der Verbindung ein Member ist, den dieser
+  Knoten bereits als aktiv führt. Seinen eigenen Record darf
+  ein Absender immer ankündigen — so funktioniert der Join.
+
+Beide Regeln hängen am Peer der **Verbindung**, nicht am
+`from`-Feld des Payloads: genau dieses Feld kontrolliert ein
+Angreifer vollständig. Dieselbe Überlegung deckt zwei Nachbarn
+mit ab: ein `leave` wird nur vom scheidenden Knoten selbst
+akzeptiert, und ein Heartbeat frischt den Failure Detector für
+den *sendenden* Peer auf statt für die Adresse, die er nennt —
+letzteres ließ vorher einen Peer einen toten Knoten dauerhaft
+gesund erscheinen und brachte den Empfänger dazu, einen
+angreiferbestimmten Host anzuwählen.
+
+Unerreichbarkeit ist bewusst **nicht** von diesen Regeln
+erfasst: „Ich erreiche C nicht" ist naturgemäß eine
+Drittbeobachtung, und alle Knoten müssen auf dieselbe Sicht
+konvergieren, bevor ein Downing-Provider entscheidet. Solche
+Aussagen abzuweisen ließe jedem Knoten nur sein eigenes
+Erreichbarkeitsbild.
+
+:::caution[Das ist keine Authentifizierung]
+Die Regeln nehmen die Beliebigkeit heraus — eine Aussage
+braucht jetzt Standing, das dieser Knoten vergeben hat, statt
+einer großen Zahl. Sie machen einen unauthentifizierten Peer
+nicht harmlos: auf einem Cluster ohne Peer-Zertifikate trägt der
+`hello`-Handshake kein Credential, ein Angreifer kann sich also
+ankündigen, die Beförderung abwarten und danach die zweite Regel
+erfüllen. Fahre mTLS, wenn das Netz nicht vollständig
+vertrauenswürdig ist — unter mTLS muss die beanspruchte Adresse
+zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
+ein echtes Subjekt.
+:::
+
+### Eine Version kann keine Adresse im Voraus beanspruchen
+
+Die Version ist eine logische Uhr, gesät aus `Date.now()` — und
+„höchste Version gewinnt" entscheidet damit auch, was beim
+*ersten* Auftauchen einer Adresse überhaupt passiert. Genau das
+machte eine Adresse beanspruchbar, bevor der Knoten existiert,
+dem sie gehört. Ein Fremder kündigt sich unter der Adresse an,
+die der nächste Pod bekommen wird — den eigenen Record
+anzukündigen ist die eine Aussage, die die Regeln oben nie
+abweisen —, datiert sie dicht an die 24-h-Skew-Grenze und hängt
+beliebige Rollen daran. Die Beförderungsschleife des Leaders hebt
+den Record in die aktive Menge, und der Knoten, dem die Adresse
+wirklich gehört, verliert danach jeden Merge: er sät seine
+Version aus der eigenen Uhr, und die ist niedriger. Aus Rollen
+werden Routing, Sharding-Platzierung, Singleton-Hosting und
+Downing-Quoren berechnet — das Phantom ist also keine kosmetische
+Zeile in einer Member-Liste.
+
+Eine gegossipte Member-Version unterliegt deshalb einem engen
+Uhrabweichungs-Budget — standardmäßig **5 Minuten**:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.5')
+  .withPort(2552)
+  .withMaxVersionSkewMs(30 * 60 * 1000);
+```
+
+Das Budget gilt für **jeden** Merge, nicht nur für den Record,
+der eine Adresse einführt. Ursprünglich war es die engere Regel —
+enge Grenze bei der Erstsichtung, großzügige 24 h bei jedem
+Update —, und diese Aufteilung ließ sich umgehen, indem man die
+Adresse zuerst einführte: zwei Records für dieselbe Adresse in
+einem Frame, oder ein Frame ganz ohne Member-Records, der den
+Empfänger trotzdem die Absenderadresse eintragen lässt. Jede
+Regel, die einen Record das weitere Budget *verdienen* lässt,
+scheitert einen Schritt später genauso — ohne Peer-Zertifikate
+kann der Angreifer jeden Schritt des Verdienens selbst erzeugen.
+
+Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
+lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
+einer einzigen Grenze wieder her. Eine Abweisung ist kein
+Ausschluss — ein Knoten, der sich selbst ankündigt, wird trotzdem
+erfasst, mit Version 1 und ohne Rollen —, aber sie ist *dauerhaft*:
+Ein Knoten, dessen Uhr weiter vorgeht als das Budget, bleibt ohne
+Rollen in der Member-Liste, bis seine Uhr zurückkommt. Das war
+immer schon das Urteil dieser Grenze über einen solchen Knoten;
+geändert hat sich, dass es jetzt bestehen bleibt, statt vom
+zweiten Gossip-Frame des Knotens aufgehoben zu werden.
+
+Abgewiesene Records werden einmal pro Frame gemeldet, nicht
+einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
+Zähler `cluster_gossip_records_refused_total{reason}` mit `reason`
+gleich `version-skew` oder `map-cap`. Pro Record zu loggen würde
+einem Peer Log-Verstärkung schenken statt des Wachstums, das er
+gerade verloren hat.
 
 ## Per-Deployment-Rezept
 

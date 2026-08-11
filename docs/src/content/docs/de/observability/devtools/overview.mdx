@@ -58,9 +58,12 @@ seine eigene öffnet.
 Die Übersicht selbst besteht aus drei Abschnitten, in der Reihenfolge,
 in der man die Fragen tatsächlich stellt:
 
-- **Common** — Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime
-  ist die *des Systems*, vom Server gelesen — sie übersteht damit einen
-  Reload der Seite und eine abgerissene Verbindung.
+- **Common** — Actor-System, actor-ts-Version, Uptime, Runtime,
+  Cluster-Status. Die Uptime ist die *des Systems*, vom Server gelesen —
+  sie übersteht damit einen Reload der Seite und eine abgerissene
+  Verbindung. Die Version ist die des laufenden Frameworks, direkt aus
+  dem Handshake; beim Überfahren erscheint die Version des
+  Tap-Protokolls.
 - **Numbers** — Aktoren, Nachrichten pro Sekunde, verarbeitete
   Nachrichten, Spawn- und Stop-Raten, Restarts, Mailbox-Rückstau,
   gestashte Nachrichten, suspendierte Aktoren, Dead Letters,
@@ -174,9 +177,19 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   umschließen die UI, die JSON-Endpunkte *und* das WebSocket-Upgrade —
   eine Absicherung nur auf dem JSON würde den eigentlichen Datenkanal
   offen lassen.
-- **Same-Origin-Sockets.** Der Tap lehnt ein WebSocket-Upgrade von einer
-  nicht gelisteten Origin ab; eine besuchte Seite kann deine lokalen
-  DevTools also nicht anwählen.
+- **Same-Origin-Sockets.** Der Tap akzeptiert ein WebSocket-Upgrade,
+  dessen `Origin` auf den Tap selbst zeigt, und lehnt jedes andere ab —
+  eine besuchte Seite kann deine lokalen DevTools also nicht anwählen.
+  Das ist standardmäßig aktiv und braucht keine Konfiguration: die UI
+  wird vom Tap selbst ausgeliefert, ihre Origin passt also immer.
+  `allowedOrigins` *erweitert* die Regel für eine anderswo
+  ausgelieferte UI, es ersetzt sie nicht.  Eine Anfrage ganz ohne
+  `Origin` ist erlaubt, denn CSWSH braucht einen Browser — und ein
+  Browser schickt immer eine.
+
+  Die Bindung an Loopback ersetzt das nicht. Ein WebSocket-Handshake
+  unterliegt nicht der Same-Origin-Policy, jede Seite im Browser der
+  entwickelnden Person erreicht also `127.0.0.1`.
 
 Wenn du sie doch exponierst, hänge sie hinter dieselbe Auth wie deine
 Management-Endpunkte und behandle die Credentials als Produktivgeheimnis:

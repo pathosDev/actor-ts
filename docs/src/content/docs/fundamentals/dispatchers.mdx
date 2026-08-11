@@ -81,7 +81,7 @@ The `Dispatcher` interface is tiny:
 ```ts
 interface Dispatcher {
   readonly id: string;
-  execute(fn: () => void | Promise<void>): void;
+  execute(task: () => void | Promise<void>): void;
 }
 ```
 
@@ -103,8 +103,8 @@ import type { Dispatcher } from 'actor-ts';
 class TracingDispatcher implements Dispatcher {
   readonly id = 'tracing-dispatcher';
   constructor(private readonly inner: Dispatcher) {}
-  execute(fn: () => void | Promise<void>): void {
-    this.inner.execute(() => withTraceContext(fn));
+  execute(task: () => void | Promise<void>): void {
+    this.inner.execute(() => withTraceContext(task));
   }
 }
 ```
@@ -115,7 +115,7 @@ behavior, just add cross-cutting concerns.
 <Aside type="caution" title="Don't write a synchronous dispatcher in production">
   ```ts
   class SyncDispatcher implements Dispatcher {
-    execute(fn: () => void): void { fn(); }
+    execute(task: () => void): void { task(); }
   }
   ```
   Synchronous execution defeats the actor-model invariants: an actor

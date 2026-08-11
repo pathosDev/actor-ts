@@ -96,14 +96,21 @@ wieder hinzufügt.
 
 ### Tag-Generierung
 
-Tags sind `replicaId × per-replica-counter`.  Jede Replika hält
-einen monotonen Counter; jedes `add` erhöht ihn.  Das garantiert
-eindeutige Tags selbst innerhalb derselben Millisekunde, über
-den ganzen Cluster.
+Tags sind `replicaId × 96 Zufallsbits`, gezogen aus der
+kryptografischen Zufallsquelle der Plattform.  Das macht sie
+eindeutig selbst innerhalb derselben Millisekunde und über den
+ganzen Cluster — und im Gegensatz zum abgelösten Per-Replika-Zähler
+lassen sie sich nicht im Voraus berechnen.
 
-Der Counter ist **Teil des CRDT-State** — Gossipen macht es
-korrekt.  Du siehst und manipulierst Tags nicht direkt; sie sind
-intern.
+Diese zweite Eigenschaft ist eine Frage der Korrektheit, nicht nur
+der Härtung.  Tombstones vetoen beim Merge anhand des Tags und
+werden nie aufgeräumt.  Ein Peer, der die nächsten Tags einer
+Replika *vorhersagen* könnte, könnte sie also vorab tombstonen —
+die nächsten Writes dieser Replika verschwänden dann beim
+folgenden Merge, lautlos und ohne API, mit der sich ein Tombstone
+zurücknehmen ließe.
+
+Du siehst und manipulierst Tags nicht direkt; sie sind intern.
 
 ### Element-Identität (wie bei GSet)
 

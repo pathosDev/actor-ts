@@ -5,6 +5,7 @@ import {
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import { expandPlaceholders, type JournalTableNames } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
@@ -105,6 +106,7 @@ export class RelationalJournal extends RelationalStore implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidPersistenceId(persistenceId, 'RelationalJournal.append');
     assertValidTags(tags);
     const pool = await this.ensureOpen();
     const now = Date.now();
@@ -216,7 +218,47 @@ export class RelationalJournal extends RelationalStore implements Journal {
     }
   }
 
+  async persistenceIdsPaginated(
+    afterPersistenceId: string | undefined,
+    limit: number,
+  ): Promise<string[]> {
+    const pool = await this.ensureOpen();
+    try {
+      const result = await pool.query(
+        this.persistenceIdPageSql(afterPersistenceId !== undefined, limit),
+        afterPersistenceId === undefined ? [] : [afterPersistenceId],
+      );
+      return (result.rows as ReadonlyArray<{ persistence_id: string }>).map((row) => row.persistence_id);
+    } catch (e) {
+      this.fail('persistenceIdsPaginated', e);
+    }
+  }
+
   /* --------------------------- internals -------------------------------- */
+
+  /**
+   * One ascending page of persistence ids, with or without the cursor
+   * predicate.
+   *
+   * Built per call rather than expanded once in the constructor like every
+   * other statement here, because the row cap is *part of the statement text*:
+   * `SqlDialect.rowLimit` returns a clause, not a parameter, since T-SQL caps
+   * rows with `OFFSET … FETCH NEXT` where the others use `LIMIT` and there is
+   * no single placeholder shape spanning both.  `resolvePageSize` is what
+   * makes that safe — the count is floored to an integer before it ever
+   * reaches here — and the persistence id itself stays bound.
+   *
+   * `ORDER BY` is required, not cosmetic: without it the cursor comparison
+   * and the row order are two different orders and the walk skips ids.
+   */
+  private persistenceIdPageSql(hasCursor: boolean, limit: number): string {
+    const cursor = hasCursor ? 'WHERE persistence_id > ? ' : '';
+    return expandPlaceholders(
+      `SELECT DISTINCT persistence_id FROM ${this.tables.events} ${cursor}`
+      + `ORDER BY persistence_id ASC ${this.dialect.rowLimit(limit)}`,
+      this.dialect,
+    );
+  }
 
   /** Highest sequence number ever written — the events head or the compaction mark. */
   private async readHead(runner: SqlExecutor, persistenceId: string): Promise<number> {

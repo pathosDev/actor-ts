@@ -30,6 +30,7 @@ import {
   type BackoffOptions,
 } from '../../../src/pattern/BackoffSupervisor.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -50,8 +51,11 @@ type FlakyMessage =
   | { kind: 'echo'; value: number };
 
 let crashesObserved = 0;
+/** Counts child incarnations, so a test can wait for a respawn to complete. */
+let flakyStarts = 0;
 
 class Flaky extends Actor<FlakyMessage> {
+  override preStart(): void { flakyStarts += 1; }
   override onReceive(message: FlakyMessage): void {
     if (message.kind === 'crash') {
       crashesObserved += 1;
@@ -103,7 +107,7 @@ function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {
 
 describe('BackoffSupervisor — restart cadence', () => {
   test('first crash waits the first policy delay; second crash waits the next', async () => {
-    crashesObserved = 0;
+    crashesObserved = 0; flakyStarts = 0;
     const sys = newSystem('backoff-cadence');
     const policy = new RecordingPolicy([40, 80, 160]);
     const supervisor = sys.spawn(
@@ -116,12 +120,21 @@ describe('BackoffSupervisor — restart cadence', () => {
       'sup-cadence',
     );
     try {
-      // First crash → policy.delayFor(0) → 40ms wait, then respawn.
+      // First crash → policy.delayFor(0) → 40ms wait, then respawn.  The
+      // second crash has to land on a *live* child for the counter to advance,
+      // so the wait is on the replacement having started rather than on 120 ms
+      // being enough room for the 40 ms backoff plus a spawn.
       supervisor.tell({ kind: 'crash' });
-      await sleep(120);
+      await awaitCondition(() => flakyStarts === 2, {
+        timeoutMs: 4_000,
+        label: 'the child was respawned after the first crash',
+      });
       // Second crash → policy.delayFor(1) → 80ms wait.
       supervisor.tell({ kind: 'crash' });
-      await sleep(160);
+      await awaitCondition(() => flakyStarts === 3, {
+        timeoutMs: 4_000,
+        label: 'the child was respawned after the second crash',
+      });
 
       expect(crashesObserved).toBe(2);
       // Two scheduling decisions, with restart-counts 0 then 1.
@@ -133,7 +146,7 @@ describe('BackoffSupervisor — restart cadence', () => {
   }, 5_000);
 
   test('after a stable run >= minBackoff, the counter resets to 0', async () => {
-    crashesObserved = 0;
+    crashesObserved = 0; flakyStarts = 0;
     const sys = newSystem('backoff-reset');
     const policy = new RecordingPolicy([20, 40, 80, 160]);
     const supervisor = sys.spawn(
@@ -148,11 +161,19 @@ describe('BackoffSupervisor — restart cadence', () => {
     );
     try {
       supervisor.tell({ kind: 'crash' });
-      await sleep(80);                        // wait past the 20ms backoff
-      // Child now alive; let it stay alive past minBackoff so the reset triggers.
+      await awaitCondition(() => flakyStarts === 2, {
+        timeoutMs: 4_000,
+        label: 'the child was respawned after the 20 ms backoff',
+      });
+      // Child now alive; let it stay alive past minBackoff so the reset
+      // triggers.  This one stays a sleep — the elapsed stable time *is* what
+      // the reset rule keys on, so it is the subject and not a proxy for it.
       await sleep(120);
       supervisor.tell({ kind: 'crash' });
-      await sleep(80);
+      await awaitCondition(() => policy.calls.length === 2, {
+        timeoutMs: 4_000,
+        label: 'the second crash was scheduled for restart',
+      });
 
       // Two `delayFor` calls — both at index 0 because the counter reset
       // before the second crash.
@@ -166,24 +187,30 @@ describe('BackoffSupervisor — restart cadence', () => {
 
 describe('BackoffSupervisor — message forwarding', () => {
   test('stash mode buffers messages during backoff and forwards them with original senders', async () => {
-    crashesObserved = 0;
+    crashesObserved = 0; flakyStarts = 0;
     const sys = newSystem('backoff-stash');
+    // Slow the respawn down so we have a clear backoff window.
+    const policy = new RecordingPolicy([120]);
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
         child: Flaky,
-        // Slow the respawn down so we have a clear backoff window.
-        policy: new RecordingPolicy([120]),
+        policy,
         forward: 'stash',
         resetCounter: 'never',
       })),
       'sup-stash',
     );
     try {
-      // Crash the child, then wait briefly for the Terminated event
-      // to reach the supervisor — only after that does an ask actually
-      // land in the stash (rather than forwarded to the dying child).
+      // Crash the child, then wait for the Terminated event to reach the
+      // supervisor — only after that does an ask actually land in the stash
+      // (rather than being forwarded to the dying child).  `delayFor` being
+      // called is that event: the supervisor calls it when it schedules the
+      // respawn, so it is a direct signal rather than 30 ms of hoping.
       supervisor.tell({ kind: 'crash' });
-      await sleep(30);
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
       // Now the supervisor is in its backoff window; ask sits in the
       // stash, gets drained when the new child spawns, and replies.
       const reply = await supervisor.ask<number>({ kind: 'echo', value: 42 }, 1_000);
@@ -195,12 +222,13 @@ describe('BackoffSupervisor — message forwarding', () => {
   }, 5_000);
 
   test('drop mode discards messages during the backoff window', async () => {
-    crashesObserved = 0;
+    crashesObserved = 0; flakyStarts = 0;
     const sys = newSystem('backoff-drop');
+    const policy = new RecordingPolicy([100]);
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
         child: Flaky,
-        policy: new RecordingPolicy([100]),
+        policy,
         forward: 'drop',
         resetCounter: 'never',
       })),
@@ -209,7 +237,10 @@ describe('BackoffSupervisor — message forwarding', () => {
     try {
       supervisor.tell({ kind: 'crash' });
       // Wait for the supervisor to enter backoff (currentChild = null).
-      await sleep(30);
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
       // Now: this ask hits drop mode and never reaches a child.
       let timedOut = false;
       try { await supervisor.ask<number>({ kind: 'echo', value: 1 }, 50); }
@@ -217,7 +248,10 @@ describe('BackoffSupervisor — message forwarding', () => {
       expect(timedOut).toBe(true);
 
       // After the backoff completes, a fresh ask gets through.
-      await sleep(120);
+      await awaitCondition(() => flakyStarts === 2, {
+        timeoutMs: 4_000,
+        label: 'the replacement child started',
+      });
       const reply = await supervisor.ask<number>({ kind: 'echo', value: 99 }, 500);
       expect(reply).toBe(99);
     } finally {
@@ -241,9 +275,13 @@ describe('BackoffSupervisor — preStart failures', () => {
       'sup-prestart',
     );
     try {
-      // Two preStart failures with delays 40 + 80 ms — give the cycle
-      // time to land on the third child before asking.
-      await sleep(200);
+      // Two preStart failures with delays 40 + 80 ms.  Waiting for the crash
+      // budget to be spent *and* both restarts to have been scheduled says the
+      // cycle reached the third child; 200 ms said it probably had.
+      await awaitCondition(() => preStartCrashCounter.left === 0 && policy.calls.length === 2, {
+        timeoutMs: 4_000,
+        label: 'both preStart failures were absorbed by the backoff',
+      });
       const reply = await supervisor.ask<number>({ kind: 'echo', value: 7 }, 500,);
       expect(reply).toBe(7);
       // Two restarts were scheduled: first at count=0, second at count=1.
@@ -270,9 +308,15 @@ describe('BackoffSupervisor — lifecycle', () => {
 
     supervisor.tell({ kind: 'crash' });
     // Mid-backoff: stop the supervisor.  The respawn timer should be
-    // cancelled — no new child spawn should happen.
-    await sleep(50);
+    // cancelled — no new child spawn should happen.  "Mid-backoff" means
+    // after the respawn was scheduled, which `delayFor` having been called
+    // says exactly; the 300 ms delay leaves ample room after that.
+    await awaitCondition(() => policy.calls.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the respawn was scheduled',
+    });
     supervisor.stop();
+    // Outliving the 300 ms backoff is the point — a plain sleep is correct.
     await sleep(400);
     // policy.delayFor was called exactly once (for the very first
     // scheduled respawn) and no second respawn ever happened.
@@ -309,6 +353,8 @@ type SelfStopMessage = { kind: 'stop' } | { kind: 'crash' } | { kind: 'echo'; va
 
 let lifecycleStops = 0;
 let lifecycleSpawns = 0;
+/** Lets the negative "did NOT respawn" assertions anchor on the crash itself. */
+let lifecycleCrashes = 0;
 
 class SelfStopChild extends Actor<SelfStopMessage> {
   constructor() { super(); lifecycleSpawns += 1; }
@@ -322,6 +368,7 @@ class SelfStopChild extends Actor<SelfStopMessage> {
       return;
     }
     if (m.kind === 'crash') {
+      lifecycleCrashes += 1;
       throw new Error('intentional crash');
     }
     this.sender.toNullable()?.tell(m.value);
@@ -345,13 +392,23 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     try {
       // 1) Crash the child — supervisor must respawn (failure matches).
       supervisor.tell({ kind: 'crash' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleSpawns >= 2, {
+        timeoutMs: 4_000,
+        label: 'the crashed child was respawned',
+      });
       expect(lifecycleSpawns).toBeGreaterThanOrEqual(2); // initial + at least 1 respawn
 
-      // 2) Clean self-stop — supervisor must stop itself, no respawn.
+      // 2) Clean self-stop — supervisor must stop itself, no respawn.  The
+      // "no respawn" half needs the stop to have been *handled* first: the old
+      // 120 ms could expire before the message was dequeued, and the spawn
+      // count would then match for the wrong reason.
       const spawnsBeforeStop = lifecycleSpawns;
       supervisor.tell({ kind: 'stop' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleStops === 1, {
+        timeoutMs: 4_000,
+        label: 'the child stopped itself cleanly',
+      });
+      await sleep(60);
       expect(lifecycleStops).toBe(1);
       // No respawn happened: spawn count stays put.
       expect(lifecycleSpawns).toBe(spawnsBeforeStop);
@@ -377,14 +434,24 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     try {
       // 1) Clean self-stop — must respawn.
       supervisor.tell({ kind: 'stop' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleSpawns >= 2, {
+        timeoutMs: 4_000,
+        label: 'the cleanly-stopped child was respawned',
+      });
       expect(lifecycleStops).toBe(1);
       expect(lifecycleSpawns).toBeGreaterThanOrEqual(2);
 
-      // 2) Crash — supervisor must stop itself, no respawn.
+      // 2) Crash — supervisor must stop itself, no respawn.  Anchored on the
+      // crash actually being handled, then a short settle for the respawn
+      // that must not come.
       const spawnsBeforeCrash = lifecycleSpawns;
+      const crashesBefore = lifecycleCrashes;
       supervisor.tell({ kind: 'crash' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleCrashes > crashesBefore, {
+        timeoutMs: 4_000,
+        label: 'the child handled the crash message',
+      });
+      await sleep(60);
       expect(lifecycleSpawns).toBe(spawnsBeforeCrash);
     } finally {
       supervisor.stop();
@@ -470,10 +537,16 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     );
     try {
       supervisor.tell({ kind: 'crash' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleSpawns >= 2, {
+        timeoutMs: 4_000,
+        label: 'the crashed child was respawned',
+      });
       const afterCrash = lifecycleSpawns;
       supervisor.tell({ kind: 'stop' });
-      await sleep(120);
+      await awaitCondition(() => lifecycleSpawns > afterCrash, {
+        timeoutMs: 4_000,
+        label: 'the cleanly-stopped child was respawned too',
+      });
       // Both terminations triggered respawns: spawn count grew twice.
       expect(afterCrash).toBeGreaterThanOrEqual(2);
       expect(lifecycleSpawns).toBeGreaterThan(afterCrash);

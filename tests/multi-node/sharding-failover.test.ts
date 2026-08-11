@@ -29,7 +29,8 @@ import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonPr
 import { ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
+import { coordinatorSegments } from '../util/systemPaths.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
@@ -59,6 +60,47 @@ const TIGHT_FD = {
   unreachableAfterMs: 200,
   downAfterMs: 400,
 } as const;
+
+/**
+ * Whether `region` still caches a shard home on `node`.
+ *
+ * A region routes from a cached shard→node map and only drops the entries for
+ * a node once it has processed that node's `MemberRemoved`.  Until then a
+ * message for such a shard is sent at a node that is gone and sits in the
+ * region's buffer.  `awaitMembers` returns strictly earlier than that — it
+ * watches the cluster view, not the region — so this is the condition a
+ * post-failover ask actually depends on.
+ *
+ * Test-only reach into a private map, for want of a public surface.  It is
+ * still the better probe: `ClusterSharding.shards()` blocks the region's
+ * mailbox for the length of its fan-out fuse, so polling *that* starves the
+ * very asks these tests are about.
+ */
+function cachesShardHomeOn(region: ActorRef<Command>, node: string): boolean {
+  const internal = region as unknown as {
+    getCell?: () => { actor?: { shardHomeNodes: Map<number, { toString(): string }> } };
+  };
+  const homes = internal.getCell?.().actor?.shardHomeNodes;
+  if (!homes) return true;                    // not materialised yet — not ready
+  return [...homes.values()].some((address) => address.toString() === node);
+}
+
+/**
+ * How many regions the local ShardCoordinator has on record, or `-1` when this
+ * node hosts no coordinator actor.  Same test-only hop as
+ * `sharding-coordinator-recovery.test.ts`: "the coordinator has seen the node
+ * leave" decides which candidates it may allocate to, and has no public
+ * surface.
+ */
+function registeredRegionCount(spec: MultiNodeSpec, role: string, typeName: string): number {
+  const system = spec.systemFor(role);
+  const refOption = system._resolvePath(coordinatorSegments(system.name, typeName));
+  if (refOption.isNone()) return -1;
+  const internal = refOption.value as unknown as {
+    getCell?: () => { actor?: { regions: Map<string, unknown> } };
+  };
+  return internal.getCell?.().actor?.regions.size ?? -1;
+}
 
 function startRegion(
   spec: MultiNodeSpec, role: string,
@@ -95,7 +137,9 @@ describe('multi-node sharding failover', () => {
       };
 
       // Warm up: ensure every shard has a home before crashing the leader.
-      await Bun.sleep(300);
+      // Nothing is asserted on the wait itself — the asks that follow carry
+      // their own 3 s budget — so a fixed sleep is honest here.
+      await sleep(300);
       for (let i = 0; i < 16; i++) {
         const result = await regions.b.ask<string>({ id: `pre-${i}`, kind: 'ping' }, 3_000);
         expect(result).toBe('pong');
@@ -105,14 +149,28 @@ describe('multi-node sharding failover', () => {
       // Verify that's actually true, then crash.
       const leaderRole = spec.clusterFor('a').leader().toNullable()!.address.systemName;
       expect(leaderRole).toBe('a');
+      const crashedAddress = spec.addressFor('a').toString();
       await spec.crash('a');
 
       await Promise.all([
         spec.awaitMembers('b', 2, 5_000),
         spec.awaitMembers('c', 2, 5_000),
       ]);
-      // Give the new coordinator time to absorb re-registrations.
-      await Bun.sleep(500);
+      // Wait for the querying region to have dropped the homes it cached on
+      // the dead leader — the state the round below actually needs, and the
+      // one the 500 ms sleep was standing in for.  Measured at ~230 ms on an
+      // idle box, so the old budget was both a guess and mostly waste; when
+      // it fell short the first `post-` ask timed out at 5 s while the other
+      // fifteen answered in under a millisecond, which reads as a
+      // re-allocation bug rather than as a test that resumed too early.
+      await awaitCondition(
+        () => !cachesShardHomeOn(regions.b, crashedAddress),
+        {
+          timeoutMs: 15_000,
+          intervalMs: 10,
+          label: 'the querying region dropped every shard home on the crashed leader',
+        },
+      );
 
       // Asks on the survivors must continue to succeed.  Some shards
       // may have been homed on the dead leader and need re-allocation —
@@ -147,7 +205,7 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
-      await Bun.sleep(300);
+      await sleep(300);
 
       // Start a batch of 32 asks against region 'a', then crash 'c' during
       // the batch.  Expectation: every ask eventually returns 'pong'.
@@ -156,8 +214,10 @@ describe('multi-node sharding failover', () => {
       );
 
       // Crash 'c' shortly after issuing — some asks land on shards that
-      // were homed on c, and must be re-routed by the survivors.
-      await Bun.sleep(20);
+      // were homed on c, and must be re-routed by the survivors.  The delay
+      // is the scenario, not a stand-in for one: it puts the crash inside the
+      // batch's flight window rather than before or after it.
+      await sleep(20);
       await spec.crash('c');
 
       const replies = await Promise.all(inflight);
@@ -188,7 +248,7 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
-      await Bun.sleep(300);
+      await sleep(300);
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
       // tight FD options (downAfterMs = 400) the cluster declares c
@@ -202,8 +262,21 @@ describe('multi-node sharding failover', () => {
         spec.awaitMembers('a', 2, 5_000),
         spec.awaitMembers('b', 2, 5_000),
       ]);
-      // Brief settle so the new allocations propagate.
-      await Bun.sleep(300);
+      // Here the shards are allocated *after* the partition — nothing was
+      // asked before it — so the condition is on the coordinator, not on a
+      // region's cache: until it has dropped c's registration it can still
+      // allocate a shard to the node we just cut off, and the asks below then
+      // wait on a home that cannot answer.  Cluster convergence
+      // (`awaitMembers`) is strictly earlier than the coordinator's own
+      // `MemberRemoved` handling, which is the gap the 300 ms covered.
+      await awaitCondition(
+        () => registeredRegionCount(spec, 'a', 'entity') === 2,
+        {
+          timeoutMs: 15_000,
+          intervalMs: 10,
+          label: 'the coordinator dropped the partitioned node from its region table',
+        },
+      );
 
       // Survivors continue to serve.
       for (let i = 0; i < 8; i++) {
@@ -218,7 +291,10 @@ describe('multi-node sharding failover', () => {
       // the survivors stay healthy.
       spec.heal('a', 'c');
       spec.heal('b', 'c');
-      await Bun.sleep(200);
+      // A fixed sleep is the right tool here: the assertion is that healing
+      // does *not* bring the downed node back, and there is no state
+      // transition to wait for — only a window in which one must not happen.
+      await sleep(200);
       expect(spec.clusterFor('a').upMembers().length).toBe(2);
     } finally {
       await spec.stop();
@@ -246,7 +322,7 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
-      await Bun.sleep(300);
+      await sleep(300);
 
       // A burst of asks while the cluster topology shifts.  Bounded by a
       // *count*, not by a wall-clock window: how many asks a window fits is a
@@ -266,7 +342,7 @@ describe('multi-node sharding failover', () => {
             replies++;
           } catch { failures++; }
           issued++;
-          await Bun.sleep(5);
+          await sleep(5);
         }
       })();
 
@@ -292,8 +368,9 @@ describe('multi-node sharding failover', () => {
       // Exact, not a throughput guess: the burst is a fixed size, so this says
       // the driver ran to completion instead of exiting early.
       expect(replies + failures).toBe(totalAsks);
-      // …and after the churn settles, asks succeed again.
-      await Bun.sleep(300);
+      // …and after the churn settles, asks succeed again.  The ask carries a
+      // 5 s budget of its own, so this settle only shortens it.
+      await sleep(300);
       const finalReply = await regions.a.ask<string>({ id: `final`, kind: 'ping' }, 5_000);
       expect(finalReply).toBe('pong');
     } finally {
@@ -345,10 +422,10 @@ describe('multi-node sharding failover', () => {
       }
 
       // Wait for all 6 to fire preStart somewhere.
-      const initialDeadline = Date.now() + 5_000;
-      while (startsByIndex.size < 6 && Date.now() < initialDeadline) {
-        await Bun.sleep(50);
-      }
+      await awaitCondition(
+        () => startsByIndex.size === 6,
+        { timeoutMs: 10_000, intervalMs: 25, label: 'all six daemons fired preStart' },
+      );
       expect(startsByIndex.size).toBe(6);
 
       // Snapshot which indices are hosted where, then crash 'c'.
@@ -365,22 +442,24 @@ describe('multi-node sharding failover', () => {
       ]);
 
       // The daemons that lived on 'c' must reappear on a survivor.
-      // Allow up to 5 s — that's the rebalance + handoff timeout window.
-      const failoverDeadline = Date.now() + 8_000;
-      while (Date.now() < failoverDeadline) {
-        const allRespawned = onC.every((index) => {
-          const hosts = startsByIndex.get(index) ?? [];
-          // hosts[0] was the original; we want a later entry on a or b.
-          return hosts.slice(1).some((h) => h === 'a' || h === 'b');
-        });
-        if (allRespawned) break;
-        await Bun.sleep(100);
-      }
+      // The budget covers the rebalance + handoff window; a healthy run
+      // returns as soon as the last one respawns.
+      const respawnedOnSurvivor = (index: number): boolean => {
+        const hosts = startsByIndex.get(index) ?? [];
+        // hosts[0] was the original; we want a later entry on a or b.
+        return hosts.slice(1).some((h) => h === 'a' || h === 'b');
+      };
+      await awaitCondition(
+        () => onC.every((index) => respawnedOnSurvivor(index)),
+        {
+          timeoutMs: 8_000,
+          intervalMs: 50,
+          label: 'every daemon hosted on the crashed node respawned on a survivor',
+        },
+      );
 
       for (const index of onC) {
-        const hosts = startsByIndex.get(index) ?? [];
-        const respawnedOnSurvivor = hosts.slice(1).some((h) => h === 'a' || h === 'b');
-        expect(respawnedOnSurvivor).toBe(true);
+        expect(respawnedOnSurvivor(index)).toBe(true);
       }
     } finally {
       await spec.stop();

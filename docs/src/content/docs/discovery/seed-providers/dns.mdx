@@ -41,6 +41,8 @@ type DnsSeedProviderOptionsType = {
   port:        number;   // paired with each IP in A-record mode
   useSrv?:     boolean;  // prefer SRV records (which carry a port) over A
   cacheTtlMs?: number;   // in-process TTL cache; default 60_000 ms, 0 disables
+  pinnedAddresses?: readonly string[];  // accept only these; unset = accept all
+  log?: (message: string, error?: unknown) => void;  // reports pinned-out addresses
   // Override the DNS functions (default: node:dns/promises) — mainly for tests:
   resolve?:    (hostname: string) => Promise<string[]>;
   resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
@@ -93,6 +95,106 @@ queries A records and pairs each with the configured port.
 A records typically point at a load balancer or a round-robin
 DNS list; multiple A entries mean multiple seed candidates.
 
+## Pinning resolved addresses
+
+Whatever DNS returns is an answer from a party the node never
+authenticated.  `pinnedAddresses` bounds what that answer is
+allowed to say: addresses outside the list are discarded before
+they are offered to the cluster as seeds.
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.0.0.0/8'])
+  .withLog((message) => logger.warn(message));
+```
+
+**Entry shape depends on the mode**, because the two modes resolve
+to different things:
+
+| Mode | Resolves to | Pin with |
+| --- | --- | --- |
+| A records | IP addresses | CIDRs — `'10.0.0.0/8'`, `'2001:db8::/32'` |
+| SRV records | Target **hostnames** | Host suffixes — `'svc.cluster.local'` |
+
+A suffix matches on a label boundary, so `svc.cluster.local`
+admits `pod-1.svc.cluster.local` and the apex itself, but not
+`evilsvc.cluster.local`.  A CIDR is never consulted for a
+hostname and a suffix is never consulted for an IP, so mixing
+both shapes in one list is fine — useful when the same config
+serves both modes.
+
+A list that cannot match anything in the configured mode is
+**rejected at construction** rather than silently discarding every
+record:
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv()
+  .withPinnedAddresses(['10.0.0.0/8']);
+// Throws OptionsError — SRV targets are hostnames, so this list
+// would drop every record and look like an empty DNS answer.
+new DnsSeedProvider(dnsSeedProviderOptions);
+```
+
+The same guard rejects a bare `'10.0.0.1'` (write `'10.0.0.1/32'`),
+an empty list, and a malformed CIDR.
+
+### Addresses are compared in canonical form only
+
+Both sides of the comparison — the CIDRs you pin and the addresses
+the resolver hands back — must be **canonical**: decimal octets
+with no leading zero, no `0x`, no exponent, no whitespace, and a
+plain decimal prefix length.
+
+This is not pedantry.  `1e1.0.0.1`, `010.0.0.1` and `0x0a.0.0.1`
+all read as `10.0.0.1` to a lenient number parser, but the socket
+layer scores them as *not an IP* and resolves them through DNS
+instead — so an answer in one of those spellings would clear a
+`10.0.0.0/8` pin and then connect wherever the attacker's resolver
+pointed.  Anything non-canonical is now treated as a hostname, and
+a hostname is never matched against a CIDR pin.
+
+Two consequences worth knowing when upgrading:
+
+- A pin entry written non-canonically (`'010.0.0.0/8'`) throws at
+  construction instead of pinning a network you did not write.
+- A trailing-slash typo (`'10.0.0.0/'`) throws as well.  It used to
+  parse as `/0` — a pin meant to admit one network admitting the
+  entire address space.
+
+An all-numeric host suffix (`'0.1'`) is rejected too: suffix
+matching is string comparison, so such an entry would match the
+tail of unrelated addresses.  Pin a CIDR instead.
+
+Dropped addresses are **filtered, not fatal** — one stale record
+costs that record, not the whole bootstrap.  Each drop goes to
+`log`, which is worth wiring up: an over-tight pin list and an
+empty DNS answer look identical from the outside, and an empty
+seed list means the node forms its own single-node cluster.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="This is defence in depth, not the primary control">
+  The control that actually decides who may join is **mTLS**: a
+  peer's certificate has to vouch for the address it claims, so a
+  spoofed seed address gets a connection that is then refused at
+  the handshake.  Pinning matters where mTLS is *not* configured
+  — and as a second layer where it is, since a node whose TLS is
+  only half-configured falls back to accepting any peer.  See
+  [Cluster security](/operations/security/cluster-security/).
+
+  In SRV mode a suffix pin is weaker still: it constrains the
+  namespace a record may point into, but the A lookup of that
+  target is itself unpinned.  It stops an injected record aimed
+  at an unrelated domain; it does not stop an attacker who owns
+  the resolver outright.
+</Aside>
+
 ## When to use it
 
 | Environment | Use |
@@ -135,8 +237,6 @@ means:
   steady-state runtime.
 
 ## When NOT
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Slow / unreliable DNS">
   ```ts

@@ -69,6 +69,16 @@ stalled join progresses within reasonable time.
 slow gossip rounds; more and the stalled-join recovery is
 sluggish.
 
+The delay is also settable from config, for a deployment that
+would rather tune it per environment than per build:
+
+```hocon
+actor-ts.cluster.weakly-up-after = 3s   # 0 disables
+```
+
+`withWeaklyUpAfterMs(…)` still wins where both are set — the
+usual **explicit options > HOCON > built-in defaults** order.
+
 ## What weakly-up members can and can't do
 
 | Capability | `weakly-up` |

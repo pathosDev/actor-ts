@@ -7,13 +7,15 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { WebsocketListeners, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
+import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
@@ -39,10 +41,10 @@ export function contentLengthExceeds(header: string | undefined, cap: number): b
 }
 
 /** Standard 413 response used by the body-size guards. */
-function payloadTooLarge(): Response {
+function payloadTooLarge(defaultHeaders: Readonly<Record<string, string>>): Response {
   return new Response('Payload Too Large', {
     status: 413,
-    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    headers: { ...defaultHeaders, 'content-type': 'text/plain; charset=utf-8' },
   });
 }
 
@@ -137,6 +139,7 @@ export class HonoBackend implements HttpServerBackend {
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   // Runtime-neutral server handle; the per-runtime adapter supplies a
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
@@ -175,6 +178,10 @@ export class HonoBackend implements HttpServerBackend {
     this.errorHandler = handler;
   }
 
+  setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
+    this.defaultResponseHeaders = headers;
+  }
+
   async listen(host: string, port: number): Promise<ServerBinding> {
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
@@ -187,7 +194,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return payloadTooLarge();
+        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return payloadTooLarge(this.defaultResponseHeaders);
         const request = await this.adaptRequest(context);
         const response = await handler(request);
         return this.writeResponse(response);
@@ -205,13 +212,13 @@ export class HonoBackend implements HttpServerBackend {
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
           status: err.status,
-          headers: { 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
+          headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
       // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
         JSON.stringify({ error: 'Internal Server Error' }),
-        { status: 500, headers: { 'content-type': 'application/json; charset=utf-8' } },
+        { status: 500, headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8' } },
       );
     });
 
@@ -281,9 +288,9 @@ export class HonoBackend implements HttpServerBackend {
       // body was materialised via arrayBuffer() before any size check,
       // making the 10 MiB cap cosmetic against the runtime's much larger
       // native default.
-      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge();
+      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge(this.defaultResponseHeaders);
       const request = await this.adaptRequest(c);
-      if (request.body && request.body.byteLength > this.maxBodyBytes) return payloadTooLarge();
+      if (request.body && request.body.byteLength > this.maxBodyBytes) return payloadTooLarge(this.defaultResponseHeaders);
       // Wildcard contract: expose the matched remainder as params['*'].
       const finalRequest = wildcard
         ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
@@ -327,19 +334,17 @@ export class HonoBackend implements HttpServerBackend {
       const context = raw as HonoContextLike;
       const adapted = this.adaptUpgradeContext(context);
       let ws: WSContextLike | null = null;
-      let listeners: WebsocketListeners | null = null;
-      // Frames that arrive before setListeners runs (defensive — Hono
-      // dispatches onOpen before onMessage, but the buffer makes it
-      // unconditional).
-      const pending: Array<string | Uint8Array> = [];
+      // Events that arrive before setListeners runs.  The connection actor
+      // attaches its listeners from preStart, two mailbox hops after the
+      // upgrade returns, and a client is free to close inside that window —
+      // so close and error have to be held exactly like messages, or the
+      // connection actor never stops and its maxConnections slot never
+      // comes back (#570).
+      const events = bufferWebsocketEvents();
       const adapter: WebsocketSocketAdapter = {
         send: (data) => ws?.send(data),
         close: (code, reason) => ws?.close(code, reason),
-        setListeners: (incoming) => {
-          listeners = incoming;
-          const buffered = pending.splice(0);
-          for (const data of buffered) incoming.onMessage(data);
-        },
+        setListeners: (incoming) => events.attach(incoming),
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
         },
@@ -358,12 +363,10 @@ export class HonoBackend implements HttpServerBackend {
         },
         onMessage: (evt, wsContext) => {
           ws = wsContext;
-          const data = coerceWebsocketData(evt.data);
-          if (listeners) listeners.onMessage(data);
-          else pending.push(data);
+          events.onMessage(coerceWebsocketData(evt.data));
         },
-        onClose: (evt) => listeners?.onClose(evt.code ?? 1005, evt.reason ?? ''),
-        onError: () => listeners?.onError(new Error('websocket error')),
+        onClose: (evt) => events.onClose(evt.code ?? 1005, evt.reason ?? ''),
+        onError: () => events.onError(new Error('websocket error')),
       };
     };
 
@@ -435,6 +438,9 @@ export class HonoBackend implements HttpServerBackend {
 
   private writeResponse(response: HttpResponse): Response {
     const headers = new Headers();
+    // Server-wide defaults go in first; `Headers.set` is case-insensitive, so
+    // whatever the response carries itself replaces them.
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) headers.set(key, value);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) headers.set(key, value);
     if (response.contentType) headers.set('content-type', response.contentType);
 

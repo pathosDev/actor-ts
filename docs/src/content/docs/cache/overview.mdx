@@ -3,6 +3,8 @@ title: Cache overview
 description: A small, opportunistic cache abstraction — seven core operations (get / set / incr / setIfAbsent / delete / mget / mset). Three backends ship — in-memory, Redis, Memcached. Consumed by HTTP middleware and the cached-snapshot-store decorator.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 The `Cache` interface is the framework's **opportunistic
 key/value cache**.  Seven operations cover ~95 % of real cases:
 get, set, atomic increment, set-if-absent, delete, bulk get,
@@ -116,6 +118,66 @@ if (got) {
 Atomic CAS-style write.  Used by idempotency-key middleware to
 detect "I'm the first request with this key."
 
+**Atomicity is a guarantee, not best effort.**  Every backend maps
+this onto a single native compare-and-set — Redis `SET … NX`,
+Memcached `ADD`, and on `InMemoryCache` a `Map` read/write pair the
+single-threaded event loop cannot interleave.  With N concurrent
+callers, exactly one sees `true`.  No backend implements it as
+`get`-then-`set`, which would have a window where two callers both
+observe the key absent and both write.
+
+`ttlMs` applies **only to the write that wins** — a losing call
+leaves the incumbent entry's expiry alone, so a retry loop can
+never extend someone else's hold.  Sub-second precision is
+backend-dependent: Memcached rounds up to whole seconds with a 1 s
+floor.
+
+## Locks
+
+`setIfAbsent` gives you the *acquire* half of a lock.  The
+*release* half is where hand-rolled versions go wrong, so the
+framework ships one:
+
+```ts
+import { acquireLock } from 'actor-ts';
+
+const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
+if (lock.isNone()) return;              // someone else is on it
+
+try {
+  await generateReport();
+} finally {
+  const released = await lock.value.release();
+  if (!released) log.warn('report ran past its 30s lock TTL');
+}
+```
+
+`acquireLock` writes a random 128-bit token as the value and
+`release()` deletes the key **only if that token is still there**.
+The naive version — `cache.delete(key)` in a `finally` — is wrong
+the moment a holder overruns its TTL: its entry is already gone,
+someone else has written their own, and the unconditional delete
+evicts the new owner while they are still working.  That is what
+the `false` return reports: the lock had lapsed, so the section
+just executed may not have been exclusive after all.
+
+`ttlMs` is required, deliberately.  Expiry is the *only* recovery
+path from a holder that crashed or stalled — a lock with no TTL
+wedges forever the first time a process dies at the wrong moment.
+
+<Aside type="caution" title="Not a distributed-consensus lock">
+  The compare-and-delete in `release()` is a `get` followed by a
+  `delete`, not one atomic step — the `Cache` surface has no
+  compare-and-delete, and a Redis Lua script would have no
+  Memcached equivalent.  The residual window is narrow (the lock
+  must lapse *and* be re-acquired between our own `get` and
+  `delete`), but it is not zero, and correctness still rests on
+  one logical keyspace and on clocks that don't drift.  Where two
+  concurrent holders would be a correctness bug rather than
+  duplicated work, guard the resource with a fencing token
+  instead.
+</Aside>
+
 ## Bulk operations
 
 ```ts
@@ -137,8 +199,6 @@ await cache.mset(new Map([
 ```
 
 ## When NOT to use the cache
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't cache user-facing critical state">
   ```ts

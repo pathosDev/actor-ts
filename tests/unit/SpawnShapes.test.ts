@@ -11,6 +11,7 @@ import type { ActorSystem } from '../../src/ActorSystem.js';
 import { Mailbox } from '../../src/internal/Mailbox.js';
 import { BoundedMailbox } from '../../src/mailbox/BoundedMailbox.js';
 import { createTestActorSystem } from '../util/TestActorSystem.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 class Greeter extends Actor<string> {
   static seen: string[] = [];
@@ -45,7 +46,10 @@ describe('spawn shapes', () => {
     const ref = system.spawn(Greeter, 'greeter');
     expect(ref.path.toString()).toContain('/user/greeter');
     ref.tell('world');
-    await Bun.sleep(20);
+    await awaitCondition(() => Greeter.seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the greeter handled its message',
+    });
     expect(Greeter.seen).toEqual(['world']);
   });
 
@@ -55,7 +59,10 @@ describe('spawn shapes', () => {
     system.spawn(() => new Worker('postgres'), 'worker');
     // The factory runs on the cell's `create` system message, not at the
     // spawn call.
-    await Bun.sleep(20);
+    await awaitCondition(() => Worker.built.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the cell ran the factory',
+    });
     expect(Worker.built).toEqual(['postgres']);
   });
 
@@ -100,7 +107,10 @@ describe('spawn shapes', () => {
       'cart-7',
       ActorOptions.create<string>().withEntity({ entityId: 'cart-7', typeName: 'cart', shardId: 3 }),
     );
-    await Bun.sleep(20);
+    await awaitCondition(() => CartEntity.identity !== null, {
+      timeoutMs: 4_000,
+      label: 'the entity actor started and read its identity',
+    });
     expect(CartEntity.identity).toBe('cart-7');
   });
 
@@ -118,7 +128,10 @@ describe('spawn shapes', () => {
     system = createTestActorSystem();
     Parent.childNames = [];
     system.spawn(Parent, 'parent');
-    await Bun.sleep(20);
+    await awaitCondition(() => Parent.childNames.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the parent spawned all three children',
+    });
     expect(Parent.childNames.slice(0, 2)).toEqual(['from-class', 'from-factory']);
     expect(Parent.childNames[2]).toMatch(/^\$anonymous-\d+-[0-9a-f]+$/);
   });

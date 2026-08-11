@@ -29,8 +29,23 @@ import type {
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/**
+ * Both partition tests assert that the seed *saw* the peer go
+ * unreachable.  That transition is driven by the failure detector's
+ * `unreachableAfterMs`, which the tests explicitly say they are not
+ * measuring — so wait for the status rather than for a wall clock that
+ * has to out-run a loaded event loop (#418).
+ */
+function awaitUnreachable(node: Node, what: string): Promise<void> {
+  return awaitCondition(
+    () => node.cluster.getMembers().some((m) => m.status === 'unreachable'),
+    { timeoutMs: 4_000, intervalMs: 25, label: `${what}: the peer was marked unreachable` },
+  );
+}
 
 async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -84,7 +99,7 @@ describe('Cluster + DowningProvider — wiring', () => {
     await peer.cluster.transport.shutdown();
     // With downAfterMs = 4s this is slow on purpose — we're not testing
     // the timeout itself, just that nothing throws.
-    await sleep(300);
+    await awaitUnreachable(seed, 'no downing provider');
     expect(seed.cluster.getMembers().some((m) => m.status === 'unreachable')).toBe(true);
 
     await stop(seed);
@@ -179,7 +194,7 @@ describe('Cluster + DowningProvider — wiring', () => {
     await peer.cluster.transport.shutdown();
     // Even though provider throws, the cluster keeps running — peer
     // stays unreachable but is not force-downed (no decision applied).
-    await sleep(400);
+    await awaitUnreachable(seed, 'throwing downing provider');
     expect(seed.cluster.getMembers().some((m) => m.status === 'unreachable')).toBe(true);
     // We're still alive.
     expect(seed.cluster.upMembers().length).toBeGreaterThanOrEqual(1);

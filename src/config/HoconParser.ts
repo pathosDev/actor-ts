@@ -17,7 +17,10 @@
  * Features intentionally left out (rare in practice, can be added later):
  *   - Array and string concatenation (`a += [x]`, `"hi " ${name}`).
  *   - Triple-quoted multi-line strings.
- *   - `include` directives.
+ *
+ * `include` is a different case from those two: it is not merely unimplemented
+ * but deliberately refused, and it says so — see `includeNotSupported`.  Compose
+ * several sources in code instead, with `Config.parseFile(…).merge(…)`.
  */
 import { match } from 'ts-pattern';
 
@@ -113,6 +116,12 @@ class HoconParser {
       } else if (char === '{') {
         // Key followed directly by an object literal — HOCON shorthand.
         value = this.parseValue();
+      } else if (keyPath.length === 1 && keyPath[0] === 'include') {
+        // Reaching here means `include` was followed by neither `=`/`:` nor `{`,
+        // which is exactly the directive position — and only that position, so
+        // `app { include = "x" }` and `include { a = 1 }` stay ordinary keys and
+        // need no top-level restriction.
+        throw this.includeNotSupported();
       } else {
         throw this.error(`Expected '=' or ':' after key "${keyPath.join('.')}"`);
       }
@@ -348,6 +357,51 @@ class HoconParser {
   }
   private expect(char: string): void { this.consumeChar(char); }
   private isAtEnd(): boolean { return this.pos >= this.src.length; }
+
+  /**
+   * `include` gets its own refusal rather than the loop's generic
+   * `Expected '=' or ':'`, which names the keyword but not the reason — and so
+   * sends anyone porting an Akka or Pekko `application.conf` hunting through
+   * this file for the answer.
+   *
+   * The refusal is a decision, not a gap.  Resolving an include lets a config
+   * source name the next file to read, relative to a root the parser has no
+   * way to know, so whoever can write the config chooses which paths and URLs
+   * get pulled into the process.  Merging the sources in code leaves that
+   * choice with the caller, where it belongs.
+   */
+  private includeNotSupported(): Error {
+    const target = this.peekIncludeTarget();
+    const directive = target === null ? '`include`' : `\`include ${JSON.stringify(target)}\``;
+    // The suggestion names the real target so it can be pasted as-is — except
+    // for `url(…)`, the one form `parseFile` cannot honour.  Advice that fails
+    // when followed is the very thing this message exists to stop.
+    const base = target !== null && !target.includes('://') ? JSON.stringify(target) : '"base.conf"';
+    return this.error(
+      `${directive} is not supported — actor-ts resolves no include targets, so a config `
+      + 'source can never name another file or URL to pull into the process. Merge the '
+      + `sources in code instead: Config.parseFile(${base}).merge(Config.parseFile`
+      + '("application.conf")). Pasting the included content in here works too.',
+    );
+  }
+
+  /**
+   * Best-effort echo of what was being included, so the message quotes a line
+   * the reader recognises.  Every include form wraps its target in double
+   * quotes — `"x.conf"`, `file("x.conf")`, `required(url("…"))` — so the first
+   * quoted run on the line is it.  `null` when there is none, or when it is
+   * long enough that repeating it would bury the rest of the message.
+   */
+  private peekIncludeTarget(): string | null {
+    const lineEnd = this.src.indexOf('\n', this.pos);
+    const line = this.src.slice(this.pos, lineEnd < 0 ? this.src.length : lineEnd);
+    const opening = line.indexOf('"');
+    if (opening < 0) return null;
+    const closing = line.indexOf('"', opening + 1);
+    if (closing < 0) return null;
+    const target = line.slice(opening + 1, closing);
+    return target === '' || target.length > 200 ? null : target;
+  }
 
   private error(message: string): Error {
     const lineStart = this.src.lastIndexOf('\n', this.pos - 1) + 1;

@@ -183,6 +183,47 @@ verdrahte das in Metriken — ein Histogramm der
 "unreachable-Dauern" zeigt, ob der Schwellwert dem tatsächlichen
 Aussetzerprofil deines Netzwerks entspricht.
 
+### `ReachabilityChanged` — was *diese* Node sieht
+
+`MemberUnreachable` ist ein Mitgliedschaftsübergang, und das macht es
+zum falschen Signal für zwei Fragen, die es zu beantworten scheint:
+
+- **Es muss nicht die Beobachtung dieser Node sein.** Der
+  Member-Status wandert per Gossip, also feuert `MemberUnreachable`
+  auch für einen Peer, von dem *jemand anderes* nichts mehr hört,
+  während die eigenen Heartbeats dorthin normal ankommen.
+- **Es feuert nur für ein Member, das `up` war.** Ein Peer, der
+  während `joining`, `weakly-up` oder `leaving` verstummt, erzeugt gar
+  kein Reachability-Event — das Nächste, was du von ihm hörst, ist die
+  Entfernung.
+
+`ReachabilityChanged` ist das eigene Urteil des lokalen Detectors, ohne
+beide Einschränkungen:
+
+```ts
+import { ReachabilityChanged } from 'actor-ts';
+
+cluster.subscribe((evt) => {
+  if (evt instanceof ReachabilityChanged) {
+    peerHealth.gauge({ peer: evt.address.toString() }).set(evt.reachable ? 1 : 0);
+  }
+});
+```
+
+Es feuert **nur bei Übergängen** — einmal, wenn der Detector einen Peer
+aus den Augen verliert, einmal, wenn er ihn wiedersieht — und nie für
+einen Peer, der seit dem ersten Kontakt gesund war. Das Urteil wird
+einmal pro `heartbeatIntervalMs` neu berechnet und kippt bei
+`unreachableAfterMs`, ist also die früheste Warnung des Detectors,
+lange vor jeder Downing-Entscheidung.
+
+Dieses Urteil gegen den gegossipten `status` des Members zu halten, ist
+der Weg, eine Partition von einem toten Peer zu unterscheiden: eine
+Node, die alle anderen noch erreichen, ist ein Leitungs- und kein
+Host-Problem. Das Event trägt keine Observer-Menge — *"welche anderen
+Nodes erreichen X ebenfalls nicht"* bräuchte eine Observer-zu-Subjekt-
+Tabelle auf dem Draht, und Gossip trägt eine flache Member-Liste.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Defaults sind LAN-Defaults">

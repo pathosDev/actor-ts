@@ -3,8 +3,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'pp-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -24,7 +24,12 @@ describe('PoisonPill', () => {
     ref.tell('a'); ref.tell('b');
     ref.stop();          // PoisonPill
     ref.tell('c');       // should not be delivered
-    await sleep(50);
+    // `stopped` is the terminal event, so waiting on it also covers both
+    // handlers; `recv:c` never arriving is what the assertion then pins.
+    await awaitCondition(() => trace.includes('stopped'), {
+      timeoutMs: 4_000,
+      label: 'the actor stopped after draining its mailbox',
+    });
     expect(trace).toEqual(['recv:a', 'recv:b', 'stopped']);
     await sys.terminate();
   });
@@ -38,7 +43,10 @@ describe('PoisonPill', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.stop();
-    await sleep(30);
+    await awaitCondition(() => stopped, {
+      timeoutMs: 4_000,
+      label: 'postStop ran for an actor with an empty mailbox',
+    });
     expect(stopped).toBe(true);
     await sys.terminate();
   });
@@ -53,9 +61,17 @@ describe('Kill', () => {
     }
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
-    await sleep(20);
+    // Kill has to land on a started actor for the restart to be the thing
+    // observed, so the precondition is `starts`, not 20 ms.
+    await awaitCondition(() => starts >= 1, {
+      timeoutMs: 4_000,
+      label: 'the actor started',
+    });
     ref.kill();
-    await sleep(60);
+    await awaitCondition(() => starts >= 2, {
+      timeoutMs: 4_000,
+      label: 'supervision restarted the killed actor',
+    });
     expect(starts).toBeGreaterThanOrEqual(2);
     await sys.terminate();
   });

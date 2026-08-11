@@ -34,6 +34,11 @@ Three patterns:
    (cluster only) puts every message with the same key on the same
    routee — useful when each routee maintains per-key state
    (a cache, a session, a counter).
+4. **Race N routees for the same answer.**  Scatter/gather asks every
+   routee the same question and returns whichever replies first,
+   trading N times the work for the *minimum* of N latencies.  That is
+   a different goal from the other three — tail latency, not
+   throughput.  See [Scatter/gather](/routing/scatter-gather/).
 
 ## A minimal example
 
@@ -63,22 +68,45 @@ pool.tell({ payload: 'e' });   // → worker-1 (round-robin wraps)
 The `pool` ref looks like a single actor to callers; under the hood
 the routing actor cycles through four `Worker` children.
 
-## The four strategies
+## The five strategies
 
 | Strategy | What it does | Best for |
 | --- | --- | --- |
 | **`round-robin`** | One routee per message, cycling.  Even distribution by message count. | Homogeneous workloads. |
 | **`random`** | One routee per message, uniformly random. | Same as round-robin, but stateless. |
 | **`broadcast`** | Every routee gets every message. | Notifications, cache invalidations. |
+| **`smallest-mailbox`** | One routee per message, the one with the shortest queue. | Uneven per-message cost. |
 | **`consistent-hashing`** *(cluster only)* | One routee per message, key-pinned. | Per-key state (sharding-lite). |
 
-A fifth "smallest-mailbox" strategy (route to the routee with the
-shortest queue) is **not** implemented in the local router; it's a
-roadmap item for the cluster router.
+`smallest-mailbox` is the one that balances by **backlog** instead of
+by message count.  Round-robin hands out turns blindly, so a routee
+that drew an expensive message still gets its next 1-in-N on schedule
+and falls behind; smallest-mailbox reads each routee's queue depth and
+picks the shallowest, so a busy routee stops being chosen until it
+catches up.  It pays for that with one depth read per routee per
+message, which is why round-robin remains the default.
+
+Both routers have it, but they learn the depth differently.  The
+local one reads its routees' mailboxes directly — they are its own
+children, in the same process.  The cluster one cannot: a remote
+mailbox is on another node, and asking per message would park the
+router behind a network round-trip.  It routes on a **cached** depth
+instead, refreshed on a background tick, which trades a little
+freshness for a routing decision that stays synchronous.  See
+[Cluster router](/cluster/cluster-router/) for what that lag
+can and cannot cost.
 
 See [Strategies](/routing/strategies/) for the deep dive,
 plus the `Broadcast` message wrapper that overrides the strategy
 per-message.
+
+All five are **one-shot**: the router picks routees, forwards, and is
+done — the reply, if there is one, is between the routee and the
+original sender.  `Router.scatterGatherFirstCompleted` is the one
+router that does not fit that shape: it *asks* every routee and answers
+the caller itself with the first reply that arrives.  It is therefore
+not a strategy you can hand to `Router.custom`, but its own factory —
+see [Scatter/gather](/routing/scatter-gather/).
 
 ## Pool vs group
 
@@ -148,9 +176,12 @@ reach for something else.
 ## Where to next
 
 - **[Router](/routing/router/)** — the `Router.roundRobin(...)`,
-  `.random(...)`, `.broadcast(...)`, `.custom(...)` factories.
+  `.random(...)`, `.broadcast(...)`, `.smallestMailbox(...)`,
+  `.custom(...)` factories.
 - **[Strategies](/routing/strategies/)** — what each
   strategy does, plus writing your own.
+- **[Scatter/gather](/routing/scatter-gather/)** — ask every
+  routee at once and answer with the first reply.
 - **[Pool vs group](/routing/pool-vs-group/)** — when to
   use a router that spawns its routees vs one that finds them.
 - **[Cluster router](/cluster/cluster-router/)** — the

@@ -92,7 +92,8 @@ The receptionist does **not** watch registered refs — if an actor
 stops, its registration lingers until you send `Deregister` (or,
 in a cluster, until its whole node leaves — see below).  So a
 `find` can return a ref to a stopped actor; guard for that on the
-consumer side.
+consumer side.  (*Subscribers* are watched; see
+[Subscriptions are bounded and watched](#subscriptions-are-bounded-and-watched).)
 
 ## Finding
 
@@ -144,6 +145,59 @@ incoming gossip and node departures.
 
 Use for **dynamic routing**: an actor that subscribes to a key
 and updates its routing decisions when refs appear / disappear.
+
+## Subscriptions are bounded and watched
+
+Two things keep the subscriber set from growing without end.
+
+**Death watch.** The receptionist watches every subscriber. When
+one stops without sending `Unsubscribe` — a crash, a forgotten
+cleanup, an actor spawned per request — its slot is released as
+soon as the `Terminated` lands. You do not have to unsubscribe in
+`postStop`, though it is still the faster path.
+
+**Caps.** Two limits bound what is left, the live subscribers:
+
+| Option | HOCON leaf | Default |
+| --- | --- | --- |
+| `maxSubscribersPerKey` | `cluster.receptionist.max-subscribers-per-key` | `1000` |
+| `maxSubscribersTotal` | `cluster.receptionist.max-subscribers-total` | `10000` |
+
+```ts
+const receptionistOptions = ReceptionistOptions.create()
+  .withMaxSubscribersPerKey(200)
+  .withMaxSubscribersTotal(2_000);
+const receptionist = system.extension(ReceptionistId).start(cluster, receptionistOptions);
+```
+
+A `Subscribe` over either cap is **refused, not dropped**: the
+`replyTo` receives a `ReceptionistSubscribeRejected` instead of the
+first `Listing`, and no further listings follow.
+
+```ts
+import { ReceptionistSubscribeRejected } from 'actor-ts';
+
+class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
+  override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {
+    if (message instanceof ReceptionistSubscribeRejected) {
+      // message.reason: 'maxSubscribersPerKey' | 'maxSubscribersTotal'
+      // message.limit:  the value that cap is set to
+      this.log.warn(`discovery refused: ${message.reason} (${message.limit})`);
+      return;
+    }
+    // …use message.refs
+  }
+}
+```
+
+Answering matters more than it looks: a silently discarded
+`Subscribe` is indistinguishable from a key that simply has no
+registrations yet, and the two are a long afternoon apart.
+
+The class is exported from the package root as
+`ReceptionistSubscribeRejected` — `SubscribeRejected` unqualified is
+DistributedPubSub's, exactly as `Subscribe` is aliased to
+`ReceptionistSubscribe`.
 
 ## Cluster-aware vs single-node
 

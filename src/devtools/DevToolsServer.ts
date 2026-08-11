@@ -58,8 +58,24 @@ import { DevToolsNodeAgent } from './cluster/NodeAgent.js';
 import { DevToolsFederation } from './cluster/Federation.js';
 import { ClusterMembership } from './internal/ClusterMembership.js';
 
-/** Version reported in the handshake; kept in step with `package.json`. */
-const DEVTOOLS_SERVER_VERSION = '0.11.0';
+/**
+ * Version reported in the handshake, and shown on the overview's
+ * `actor-ts` tile (#911).
+ *
+ * Hand-maintained, because nothing else in the build can supply it:
+ * `tsc` copies no JSON, and importing `package.json` would drag the
+ * repository root into `rootDir` and rearrange the whole of `dist/`.
+ * It therefore drifted, silently, for two minor releases (#657) — the
+ * field you trust most when triaging a bug report was the one field
+ * nobody was checking.
+ *
+ * `DevToolsServerVersion.test.ts` now asserts it against `package.json`,
+ * so a release that forgets it fails the suite instead of shipping a
+ * lie.  **Bump this together with `package.json` when cutting one.**
+ *
+ * @internal
+ */
+export const DEVTOOLS_SERVER_VERSION = '0.14.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{
@@ -278,11 +294,15 @@ export class DevToolsServer implements DevToolsHubContext {
     if (this.hubRef === null) {
       throw new Error('DevToolsServer.routes() called before start()');
     }
+    // Same-origin is the floor, always — a WebSocket upgrade is not subject
+    // to the same-origin policy, so binding to loopback keeps the tap off
+    // the network but does nothing about the page the developer is browsing.
+    // `allowedOrigins` widens this; it does not replace it.
     const socket = websocket(
       this.hubRef as never,
       this.settings.allowedOrigins === undefined
-        ? {}
-        : { allowedOrigins: this.settings.allowedOrigins },
+        ? { requireSameOrigin: true }
+        : { requireSameOrigin: true, allowedOrigins: this.settings.allowedOrigins },
     );
 
     const api = path('api', concat(

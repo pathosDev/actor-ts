@@ -1,5 +1,7 @@
 export { CacheError } from './Cache.js';
 export type { Cache } from './Cache.js';
+export { acquireLock } from './CacheLock.js';
+export type { CacheLock } from './CacheLock.js';
 export { InMemoryCache } from './InMemoryCache.js';
 export { InMemoryCacheOptions, InMemoryCacheOptionsBuilder, InMemoryCacheOptionsValidator } from './InMemoryCacheOptions.js';
 export type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';

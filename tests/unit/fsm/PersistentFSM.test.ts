@@ -23,6 +23,7 @@ import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExte
 import type { Journal } from '../../../src/persistence/Journal.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import {
   PersistentFSM,
   type FsmStateData,
@@ -51,6 +52,25 @@ type OrderData = {
 };
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/**
+ * Wait until the journal holds exactly `count` events for `persistenceId`.
+ *
+ * The journal is the strongest thing these tests can observe: a transition is
+ * not complete until its events are written, and every assertion here reads
+ * either the journal or a state derived from it.  A `getState` ask is ordered
+ * behind the tells that precede it, so where the *only* assertion is on state
+ * the ask is itself the synchronisation point and no wait is needed at all.
+ */
+const awaitJournalLength = (
+  journal: InMemoryJournal,
+  persistenceId: string,
+  count: number,
+): Promise<void> =>
+  awaitCondition(async () => (await journal.read(persistenceId, 0)).length === count, {
+    timeoutMs: 4_000,
+    label: `${persistenceId} reached ${count} persisted event(s)`,
+  });
 
 class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId: string;
@@ -145,7 +165,7 @@ describe('PersistentFSM — happy path', () => {
       const ref = sys.spawn(() => new OrderFsm('order-1'), 'order');
       ref.tell({ kind: 'pay', amount: 100 });
       ref.tell({ kind: 'ship', carrier: 'fedex' });
-      await sleep(50);
+      await awaitJournalLength(journal, 'order-1', 2);
 
       const finalState = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(finalState.state).toBe('shipped');
@@ -165,7 +185,9 @@ describe('PersistentFSM — happy path', () => {
       const ref1 = sys1.spawn(() => new OrderFsm('order-2'), 'order');
       ref1.tell({ kind: 'pay', amount: 250 });
       ref1.tell({ kind: 'ship', carrier: 'ups' });
-      await sleep(50);
+      // The events have to be on disk before the system goes away — a
+      // terminate that races the persist drains the mailbox to dead letters.
+      await awaitJournalLength(journal, 'order-2', 2);
     } finally {
       await sys1.terminate();
     }
@@ -196,7 +218,8 @@ describe('PersistentFSM — invalid transitions', () => {
       const ref = sys.spawn(() => new OrderFsm('order-3'), 'order');
       // `ship` is not a valid transition from `'pending'`.
       ref.tell({ kind: 'ship', carrier: 'fedex' });
-      await sleep(40);
+      // No wait: the ask below is queued behind the tell, so it cannot answer
+      // before the command has been through the FSM.
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('pending');     // unchanged
       expect(after.data.carrier).toBeNull();   // unchanged
@@ -214,7 +237,6 @@ describe('PersistentFSM — invalid transitions', () => {
       ref.tell({ kind: 'ship', carrier: 'dhl' });
       ref.tell({ kind: 'ship', carrier: 'second-attempt' }); // invalid in 'shipped'
       ref.tell({ kind: 'cancel', reason: 'too late' });      // also invalid
-      await sleep(60);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('shipped');
       expect(after.data.carrier).toBe('dhl');
@@ -231,7 +253,6 @@ describe('PersistentFSM — invalid transitions', () => {
       const ref = sys.spawn(() => new OrderFsm('order-5'), 'order');
       // Amount = 0 → guard returns false.
       ref.tell({ kind: 'pay', amount: 0 });
-      await sleep(40);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('pending');
       expect(await journal.read('order-5', 0)).toHaveLength(0);
@@ -247,7 +268,7 @@ describe('PersistentFSM — function-style transition events', () => {
     try {
       const ref = sys.spawn(() => new OrderFsm('order-6'), 'order');
       ref.tell({ kind: 'pay', amount: 333 });
-      await sleep(40);
+      await awaitJournalLength(journal, 'order-6', 1);
       const events = await journal.read('order-6', 0);
       expect(events).toHaveLength(1);
       expect(events[0]!.event).toEqual({ kind: 'paid', amount: 333 });
@@ -263,7 +284,6 @@ describe('PersistentFSM — alternate paths', () => {
     try {
       const ref = sys.spawn(() => new OrderFsm('order-7'), 'order');
       ref.tell({ kind: 'cancel', reason: 'changed-mind' });
-      await sleep(40);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('cancelled');
       expect(after.data.cancelReason).toBe('changed-mind');
@@ -278,7 +298,6 @@ describe('PersistentFSM — alternate paths', () => {
       const ref = sys.spawn(() => new OrderFsm('order-8'), 'order');
       ref.tell({ kind: 'pay', amount: 99 });
       ref.tell({ kind: 'cancel', reason: 'refund' });
-      await sleep(50);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('cancelled');
       expect(after.data.amountPaid).toBe(99);     // preserved across transition
@@ -375,8 +394,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     try {
       const ref = sys.spawn(() => new PaymentFsm('pay-1', 80), 'pay');
       ref.tell({ kind: 'authorize', amount: 100 });
-      // Wait > afterMs so the armed timer fires.
-      await sleep(200);
+      // The 80 ms window is the FSM's to honour; what this waits for is the
+      // 'expired' event it produces.
+      await awaitJournalLength(journal, 'pay-1', 2);
 
       const final = await ref.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('expired');
@@ -397,7 +417,6 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
       ref.tell({ kind: 'authorize', amount: 50 });
       // Capture before the timer fires — the FSM must transition to
       // 'captured' and the armed timer must be cancelled.
-      await sleep(20);
       ref.tell({ kind: 'capture' });
       // Wait long enough that the original 80ms timer would have
       // fired if it weren't cancelled.
@@ -422,7 +441,10 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
       const ref = sys.spawn(() => new PaymentFsm('pay-3', 60), 'pay');
       ref.tell({ kind: 'authorize', amount: 10 });
       ref.tell({ kind: 'capture' });
-      await sleep(200);
+      await awaitJournalLength(journal, 'pay-3', 2);
+      // The 60 ms timer must not refire on top of the terminal state, so the
+      // settle outlives it — that half cannot be expressed by polling.
+      await sleep(100);
 
       const events = await journal.read('pay-3', 0);
       expect(events).toHaveLength(2);
@@ -465,7 +487,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     try {
       const ref1 = sys1.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
       ref1.tell({ kind: 'authorize', amount: 200 });
-      await sleep(20);
+      await awaitJournalLength(journal, 'pay-5', 1);
       // Stop before the timer fires — the persisted state is 'authorized'.
     } finally {
       await sys1.terminate();
@@ -479,8 +501,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
       const ref2 = sys2.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
-      // After recovery, the timer arms fresh.  Wait > afterMs.
-      await sleep(200);
+      // After recovery the timer arms fresh; the 'expired' event is what says
+      // it fired, and the journal length says it fired exactly once.
+      await awaitJournalLength(journal, 'pay-5', 2);
       const final = await ref2.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('expired');
 
@@ -587,7 +610,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 250 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-1', 2);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('paid');
@@ -611,7 +634,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 0 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-2', 2);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('paid');
@@ -631,7 +654,6 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 99 }); // resolves to []
-      await sleep(50);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       // Stayed in 'pending' — no events persisted.
@@ -654,7 +676,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref1.tell({ kind: 'pay', amount: 500 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-4', 2);
     } finally {
       await sys1.terminate();
     }
@@ -800,6 +822,248 @@ describe('PersistentFSM — a state-timeout fire during recovery', () => {
       const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 2_000);
       expect(state.state).toBe('pending');
       expect(incarnations).toBe(1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ============================================================== */
+/* State-timeout superseded by a re-arm (#143)                    */
+/* ============================================================== */
+
+/**
+ * Idle-session domain — the canonical `_timeout` use case.  The FSM sits
+ * in `active` with an idle timeout and a `heartbeat` that keeps it there.
+ * The heartbeat staying in the *same* state is the whole point: it is the
+ * shape a `_timeout` typically guards, and the one where confirming the
+ * state name cannot tell a live fire from a superseded one.
+ */
+type SessionState = 'active' | 'paused' | 'expired';
+type SessionCommand =
+  | { kind: 'heartbeat' }
+  | { kind: 'pause' }
+  | { kind: 'resume' }
+  | { kind: 'getState' };
+type SessionEvent =
+  | { kind: 'touched' }
+  | { kind: 'paused' }
+  | { kind: 'resumed' }
+  | { kind: 'timedOut' };
+type SessionData = { touches: number };
+
+class SessionFsm extends PersistentFSM<SessionCommand, SessionEvent, SessionState, SessionData> {
+  readonly persistenceId: string;
+  private readonly afterMs: number;
+
+  constructor(persistenceId: string, afterMs: number) {
+    super();
+    this.persistenceId = persistenceId;
+    this.afterMs = afterMs;
+  }
+
+  initialFsmState(): SessionState { return 'active'; }
+  initialData(): SessionData { return { touches: 0 }; }
+
+  get transitions(): FsmTransitionMap<SessionState, SessionCommand, SessionEvent, SessionData> {
+    return {
+      active: {
+        // Same-state transition — "keep the session alive".
+        heartbeat: { event: { kind: 'touched' } as const, next: 'active' },
+        pause: { event: { kind: 'paused' } as const, next: 'paused' },
+        _timeout: {
+          afterMs: this.afterMs,
+          event: { kind: 'timedOut' } as const,
+          next: 'expired',
+        },
+      },
+      // A paused session does not idle out — no `_timeout` here, which is
+      // what lets the A→B→A round trip leave the state name untouched.
+      paused: {
+        resume: { event: { kind: 'resumed' } as const, next: 'active' },
+      },
+    };
+  }
+  set transitions(_v: FsmTransitionMap<SessionState, SessionCommand, SessionEvent, SessionData>) { /* noop — getter is canonical */ }
+
+  applyEvent(state: SessionState, data: SessionData, event: SessionEvent): FsmStateData<SessionState, SessionData> {
+    if (event.kind === 'touched') return { state: 'active', data: { touches: data.touches + 1 } };
+    if (event.kind === 'paused')  return { state: 'paused', data };
+    if (event.kind === 'resumed') return { state: 'active', data };
+    return { state: 'expired', data };
+  }
+
+  override async onCommand(curr: FsmStateData<SessionState, SessionData>, command: SessionCommand): Promise<void> {
+    if (command.kind === 'getState') {
+      this.sender.toNullable()?.tell(curr);
+      return;
+    }
+    return super.onCommand(curr, command);
+  }
+}
+
+describe('PersistentFSM — a state-timeout fire superseded by a re-arm (#143)', () => {
+  /**
+   * Parks the actor inside one chosen `append` so the timer can be fired
+   * while a command is provably mid-persist.  The fire then queues up
+   * *behind* that command — the ordering the race needs, and the one
+   * thing a sleep cannot pin down.
+   */
+  class AppendGatedJournal implements Journal {
+    private release: (() => void) | null = null;
+    private gate: Promise<void> | null = null;
+    /** True once an append has actually parked — the point of no ambiguity. */
+    parked = false;
+    constructor(private readonly inner: InMemoryJournal) {}
+
+    /** Arm the gate: the next `append` blocks until `open()` releases it. */
+    parkNextAppend(): void {
+      this.gate = new Promise<void>((resolve) => { this.release = resolve; });
+    }
+
+    open(): void {
+      this.release?.();
+      this.release = null;
+      this.gate = null;
+    }
+
+    async append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
+      const gate = this.gate;
+      if (gate) {
+        this.parked = true;
+        await gate;
+      }
+      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+    }
+    read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
+      return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    }
+    highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+    delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+    persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+  }
+
+  test('a same-state heartbeat invalidates the fire already sitting in the mailbox', async () => {
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-race', sysOptions);
+    const inner = new InMemoryJournal();
+    const gated = new AppendGatedJournal(inner);
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-1', 1_000), 'session');
+      // Stashed until recovery completes, so an answer proves
+      // `onRecoveryComplete` ran — i.e. the first timer is armed.
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // Park the heartbeat inside its persist.  While it sits there the
+      // actor dequeues nothing, so whatever arrives next stacks up behind
+      // it instead of racing it.
+      gated.parkNextAppend();
+      ref.tell({ kind: 'heartbeat' });
+      await awaitCondition(() => gated.parked, { label: 'the heartbeat parked inside journal.append' });
+
+      // Virtual time crosses afterMs right here: the armed timer fires and
+      // self-tells, so the fire is in the mailbox behind the heartbeat.
+      scheduler.advance(1_000);
+
+      // Heartbeat completes → same state, timer re-armed → the queued fire
+      // is stale.  Pre-fix the fire carried only `stateAtArm`, so
+      // `curr.state === stateAtArm` still held (both 'active') and the
+      // session expired despite the heartbeat.
+      gated.open();
+
+      // Queued behind the fire, so an answer proves the fire was handled.
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('active');
+      expect(after.data.touches).toBe(1);
+
+      const events = await inner.read('session-1', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind)).toEqual(['touched']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an A→B→A round trip invalidates it too, though the state name comes back', async () => {
+    // The reproduction the issue reports.  `pause` then `resume` puts the
+    // FSM back in 'active', so `stateAtArm` matches again by the time the
+    // fire is dequeued — the state name simply cannot express "this
+    // window was replaced".
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-roundtrip', sysOptions);
+    const inner = new InMemoryJournal();
+    const gated = new AppendGatedJournal(inner);
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-3', 1_000), 'session');
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // Park inside `pause`'s persist; `resume` then queues behind it, and
+      // the fire behind that — so both commands are processed before the
+      // fire is ever looked at.
+      gated.parkNextAppend();
+      ref.tell({ kind: 'pause' });
+      await awaitCondition(() => gated.parked, { label: 'the pause parked inside journal.append' });
+      ref.tell({ kind: 'resume' });
+      scheduler.advance(1_000);
+      gated.open();
+
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('active');
+      const events = await inner.read('session-3', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['paused', 'resumed']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an undisturbed fire still fires — the generation check is not a blanket suppressor', async () => {
+    // The mirror image of the test above, and the one that would catch a
+    // fix that invalidates the generation from inside the timer callback:
+    // nothing supersedes this fire, so it must go through.
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-clean', sysOptions);
+    const journal = new InMemoryJournal();
+    sys.extension(PersistenceExtensionId).setJournal(journal);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-2', 1_000), 'session');
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // One heartbeat, fully settled — the re-arm it triggers is the
+      // generation the next fire must be measured against.
+      ref.tell({ kind: 'heartbeat' });
+      await awaitJournalLength(journal, 'session-2', 1);
+
+      scheduler.advance(1_000);
+      await awaitJournalLength(journal, 'session-2', 2);
+
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('expired');
+      const events = await journal.read('session-2', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['touched', 'timedOut']);
     } finally {
       await sys.terminate();
     }

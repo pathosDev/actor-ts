@@ -93,7 +93,13 @@ async function serveResolvedFile(
   // header — otherwise the backends' Uint8Array path overrides it with
   // application/octet-stream (they gate the default on `contentType`).
   const contentType = settings.contentType ?? contentTypeFor(servedName, settings.contentTypes);
-  const headers: Record<string, string> = {};
+  // `nosniff` is not optional here: the content-type above is derived from a
+  // file *name*, so an upload endpoint that stores `evil.html` under an
+  // image extension would otherwise let the browser sniff the bytes, decide
+  // they are HTML, and execute them in this origin (#127).  The directory
+  // listing next door has always sent it; a served file is the far more
+  // exposed of the two.
+  const headers: Record<string, string> = { 'x-content-type-options': 'nosniff' };
   if (settings.cacheControl) headers['cache-control'] = settings.cacheControl;
   if (etag) headers['etag'] = etag;
   if (lastModified) headers['last-modified'] = lastModified;

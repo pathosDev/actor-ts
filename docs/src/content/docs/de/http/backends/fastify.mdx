@@ -43,6 +43,25 @@ Die meisten Settings werden an Fastifys `FastifyServerOptions`
 durchgereicht.  Das Framework konfiguriert die Routen-
 Registrierung; du drehst an Fastifys eigenen Reglern.
 
+## Security-Header
+
+Jede Response, die dieses Backend schreibt, trägt
+`X-Content-Type-Options: nosniff` — inklusive seines Fehler-Mappings, des
+`fallback`-404 und des 413 bei zu großem Body, die keine Middleware sieht.
+Ein Header aus der Response selbst gewinnt weiterhin.
+
+Konfiguriert wird das **pro Server, nicht pro Backend** — eine Oberfläche
+statt dreier:
+
+```ts
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new FastifyBackend())
+  .withSecurityHeaders(false)      // oder ein SecurityHeadersOptions-Bündel
+  .bind(routes);
+```
+
+Siehe [Sicherheit](/de/http/security/).
+
 ## TLS
 
 ```ts

@@ -1,6 +1,6 @@
 ---
 title: Behaviors
-description: The functional DSL — `Behaviors.setup`, `receive`, `receiveMessage`, `withTimers`, `withStash`, `supervise`, plus the sentinels (same/stopped/unhandled/empty/ignore). Compose actors as values, not classes.
+description: The functional DSL — `Behaviors.setup`, `receive`, `receiveMessage`, `withTimers`, `withStash`, `supervise`, `intercept`, `monitor`, `logMessages`, plus the sentinels (same/stopped/unhandled/empty/ignore). Compose actors as values, not classes.
 ---
 
 The **`Behaviors`** namespace is a collection of combinators that
@@ -127,7 +127,10 @@ does the same without entering the behavior.
 
 ## The decorators
 
-Three combinators wrap another behavior with extra capabilities:
+Six combinators wrap another behavior with extra capabilities.  The first
+three hand the inner behavior something it could not reach on its own — a
+timer scheduler, a stash buffer, a supervisor.  The last three sit *in front
+of* it, on the path every message takes.
 
 ### `withTimers`
 
@@ -196,6 +199,81 @@ terminates, Resume skips the failing message.
 
 See [Supervision](/fundamentals/supervision/) for the
 directive semantics; they apply identically in the typed form.
+
+### `intercept`
+
+```ts
+const guarded = Behaviors.intercept<Message>(inner, (context, message, next) => {
+  if (message.kind === 'ping') return Behaviors.same;   // drop — inner never sees it
+  return next(context, message);                        // or delegate
+});
+```
+
+The interceptor runs first on every message and decides what happens next:
+call `next(context, message)` to delegate, pass a different message to
+transform it on the way in, or return a behavior without calling `next` at
+all to drop it.  Whatever it returns becomes the **inner** behavior's next
+behavior.
+
+The wrapper survives the inner behavior's transitions.  That is the part
+worth remembering: an inner `Behaviors.receive` that returns a fresh
+behavior on every message — the normal shape of a state machine — is still
+intercepted on the next one, and on every one after that.  The only way out
+is `Behaviors.stopped`, where there is nothing left to intercept.
+
+Errors thrown by the interceptor are treated exactly like errors from the
+inner handler: they reach an enclosing `supervise`.  Interception covers
+user messages only; lifecycle signals go straight to `receiveWithSignal`'s
+handler.
+
+The type is `T → T` — an interceptor observes, transforms, or drops, it
+never changes the actor's message type.
+
+### `monitor`
+
+```ts
+const audit = system.spawnTyped(auditBehavior, 'audit');
+const monitored = Behaviors.monitor(audit, orders);
+```
+
+Forwards every message to `audit` **before** `orders` handles it.  Useful
+for audit trails and, in tests, for a probe that asserts on traffic the
+actor received:
+
+```ts
+const probe = kit.createTestProbe();
+const ref = kit.system.spawnTypedAnonymous(Behaviors.monitor(probe, orders));
+```
+
+Forward-then-deliver is the deliberate order: the monitor sees a message
+even if handling it crashes the actor, which is the case you most want the
+trace for.  Delivery is fire-and-forget and its failures are swallowed — a
+broken tap must not take the actor down with it.
+
+### `logMessages`
+
+```ts
+const traced = Behaviors.logMessages(orders);
+
+const audited = Behaviors.logMessages(orders, {
+  level: 'info',
+  formatter: (message) => `order ${message.orderId}`,
+});
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `level` | `'debug'` | `'debug'` or `'info'`.  Logging every message is a diagnostic; reporting it at `warn` or `error` would poison the signal an operator filters on, so those are not offered. |
+| `formatter` | built-in | Renders the whole line.  Must not throw — if it does, the built-in line is emitted instead, because a diagnostic that kills the actor it observes is worse than one that reads a little worse. |
+
+The built-in line is `received <kind>`, naming the message by its
+discriminant.  For a class instance it falls back to the class name, and
+then to `typeof` — a bare object literal reports `Object` as its
+constructor, which would say nothing.
+
+The line is only built when the actor's logger would actually emit it, so
+leaving this in place on a system logging at `warn` costs one comparison
+per message rather than a formatted string.
 
 ## The five sentinels
 
@@ -276,6 +354,32 @@ const supervised = Behaviors
 `supervise` is *outside* the `withTimers`, so the strategy
 oversees the whole construction.  This is almost always the right
 nesting.
+
+Interceptors read the same way, and because they run on every message the
+order is directly observable:
+
+```ts
+const traced = Behaviors.logMessages(Behaviors.monitor(auditRef, inner));
+```
+
+`logMessages` is outermost, so it logs first, then the monitor forwards,
+then `inner` handles.  Each wrapper decides whether the next one downwards
+gets the message at all — an interceptor that returns without calling
+`next` stops everything below it.
+
+One asymmetry is worth knowing.  The other decorators are resolved away
+once the actor starts: they contribute their side effect (capturing timers,
+installing a strategy) and collapse into the behavior they produced.  An
+interceptor cannot, because it has to be there on the *next* message too —
+so it stays wrapped around whatever the inner behavior becomes.
+
+That same distinction decides what a **restart** rebuilds.  `supervise`
+restarts what it wraps, so an interceptor *inside* the wrapper is part of
+the fresh behavior and is rebuilt along with it; one *outside* is not, and
+keeps observing across the restart.  Either nesting leaves it installed
+exactly once — a crash-looping actor does not accumulate copies of its own
+monitor, and `monitor` does not start delivering a message twice because
+the actor restarted earlier.
 
 import { Aside } from '@astrojs/starlight/components';
 

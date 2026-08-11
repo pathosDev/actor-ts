@@ -4,11 +4,11 @@ import type { NodeAddressData } from '../NodeAddress.js';
 /**
  * Message types exchanged between ShardRegions and the ShardCoordinator.
  * They travel as plain actor messages (delivered locally or over the wire
- * as EnvelopeMessage.body) so the discriminator is a string `$t` property.
+ * as EnvelopeMessage.body) so the discriminator is a string `kind` property.
  */
 
 export type RegisterRegion = {
-  readonly $t: 'sharding.Register';
+  readonly kind: 'sharding.Register';
   readonly region: string; // full path of the sender region
   readonly node: NodeAddressData;
   readonly proxy: boolean;
@@ -16,66 +16,66 @@ export type RegisterRegion = {
 };
 
 export type RegisterAcknowledgment = {
-  readonly $t: 'sharding.RegisterAcknowledgment';
+  readonly kind: 'sharding.RegisterAcknowledgment';
   readonly coordinator: string;
 };
 
 export type GetShardHome = {
-  readonly $t: 'sharding.GetShardHome';
+  readonly kind: 'sharding.GetShardHome';
   readonly shardId: number;
   readonly requester: string; // region path of the caller
   readonly requesterNode: NodeAddressData;
 };
 
 export type ShardHome = {
-  readonly $t: 'sharding.ShardHome';
+  readonly kind: 'sharding.ShardHome';
   readonly shardId: number;
   readonly region: string;
   readonly node: NodeAddressData;
 };
 
 export type BeginHandOff = {
-  readonly $t: 'sharding.BeginHandOff';
+  readonly kind: 'sharding.BeginHandOff';
   readonly shardId: number;
 };
 
 export type BeginHandOffAcknowledgment = {
-  readonly $t: 'sharding.BeginHandOffAcknowledgment';
+  readonly kind: 'sharding.BeginHandOffAcknowledgment';
   readonly shardId: number;
 };
 
 export type HandOff = {
-  readonly $t: 'sharding.HandOff';
+  readonly kind: 'sharding.HandOff';
   readonly shardId: number;
 };
 
 export type HandOffComplete = {
-  readonly $t: 'sharding.HandOffComplete';
+  readonly kind: 'sharding.HandOffComplete';
   readonly shardId: number;
   readonly region: string;
   readonly node: NodeAddressData;
 };
 
 export type RegionTerminated = {
-  readonly $t: 'sharding.RegionTerminated';
+  readonly kind: 'sharding.RegionTerminated';
   readonly region: string;
   readonly node: NodeAddressData;
 };
 
 export type EntityStarted = {
-  readonly $t: 'sharding.EntityStarted';
+  readonly kind: 'sharding.EntityStarted';
   readonly shardId: number;
   readonly entityId: string;
 };
 
 export type EntityStopped = {
-  readonly $t: 'sharding.EntityStopped';
+  readonly kind: 'sharding.EntityStopped';
   readonly shardId: number;
   readonly entityId: string;
 };
 
 export type RememberedEntities = {
-  readonly $t: 'sharding.RememberedEntities';
+  readonly kind: 'sharding.RememberedEntities';
   readonly shardId: number;
   readonly entityIds: string[];
 };
@@ -93,7 +93,7 @@ export type RememberedEntities = {
  * it, and a region that has since lost the shard drops the reply anyway.
  */
 export type GetRememberedEntities = {
-  readonly $t: 'sharding.GetRememberedEntities';
+  readonly kind: 'sharding.GetRememberedEntities';
   readonly shardId: number;
 };
 
@@ -109,7 +109,7 @@ export type GetRememberedEntities = {
  * inside a {@link ShardEnvelope} routes exactly like a locally created one.
  */
 export type EntityEnvelope<TMessage = unknown> = {
-  readonly $t: 'sharding.EntityEnvelope';
+  readonly kind: 'sharding.EntityEnvelope';
   readonly entityId: string;
   readonly message: TMessage;
 };
@@ -121,7 +121,7 @@ export type EntityEnvelope<TMessage = unknown> = {
  * and executed by the shard that owns the entity.
  */
 export type PassivateEntity = {
-  readonly $t: 'sharding.PassivateEntity';
+  readonly kind: 'sharding.PassivateEntity';
   readonly entityId: string;
 };
 
@@ -137,14 +137,14 @@ export type PassivateEntity = {
  * to the entity itself.
  */
 export type ToShard = {
-  readonly $t: 'sharding.ToShard';
+  readonly kind: 'sharding.ToShard';
   readonly shardId: number;
   readonly message: unknown;
 };
 
 /** Pre-create remembered entities in a shard after it has been allocated here. */
 export type StartEntities = {
-  readonly $t: 'sharding.StartEntities';
+  readonly kind: 'sharding.StartEntities';
   readonly entityIds: string[];
 };
 
@@ -156,7 +156,7 @@ export type StartEntities = {
  * `preStart`.
  */
 export type StartEntity = {
-  readonly $t: 'sharding.StartEntity';
+  readonly kind: 'sharding.StartEntity';
   readonly entityId: string;
 };
 
@@ -167,12 +167,12 @@ export type StartEntity = {
  * `ClusterSharding.shards()`, which routes its reply through the region.
  */
 export type GetShardStats = {
-  readonly $t: 'sharding.GetShardStats';
+  readonly kind: 'sharding.GetShardStats';
   readonly replyTo: ActorRef<ShardStats>;
 };
 
 export type ShardStats = {
-  readonly $t: 'sharding.ShardStats';
+  readonly kind: 'sharding.ShardStats';
   readonly shardId: number;
   readonly entityCount: number;
   readonly entityIds: ReadonlyArray<string>;
@@ -180,14 +180,14 @@ export type ShardStats = {
 
 /** Coordinator → region leg of a cluster-wide stats query. */
 export type GetShardRegionStats = {
-  readonly $t: 'sharding.GetShardRegionStats';
+  readonly kind: 'sharding.GetShardRegionStats';
   readonly queryId: number;
   readonly requester: string; // coordinator path
   readonly requesterNode: NodeAddressData;
 };
 
 export type ShardRegionStats = {
-  readonly $t: 'sharding.ShardRegionStats';
+  readonly kind: 'sharding.ShardRegionStats';
   readonly queryId: number;
   readonly region: string;
   readonly node: NodeAddressData;
@@ -206,7 +206,7 @@ export type ShardRegionStats = {
  * why the correlation machinery exists.
  */
 export type GetClusterShardingStats = {
-  readonly $t: 'sharding.GetClusterShardingStats';
+  readonly kind: 'sharding.GetClusterShardingStats';
   readonly correlationId: number;
   readonly requester: string; // region path of the caller
   readonly requesterNode: NodeAddressData;
@@ -230,7 +230,7 @@ export type ShardLocation = {
 };
 
 export type ClusterShardingStats = {
-  readonly $t: 'sharding.ClusterShardingStats';
+  readonly kind: 'sharding.ClusterShardingStats';
   readonly correlationId: number;
   readonly shards: ReadonlyArray<ShardLocation>;
 };
@@ -246,13 +246,13 @@ export type ClusterShardingStats = {
 
 /** `ClusterSharding.shards()` — answered with `ReadonlyArray<ShardInfo>`. */
 export type GetShards = {
-  readonly $t: 'sharding.GetShards';
+  readonly kind: 'sharding.GetShards';
   readonly timeoutMs: number;
 };
 
 /** `ClusterSharding.shardRefFor()` — answered with the shard's `ActorRef`. */
 export type GetShardLocation = {
-  readonly $t: 'sharding.GetShardLocation';
+  readonly kind: 'sharding.GetShardLocation';
   readonly shardId: number;
 };
 
@@ -264,7 +264,7 @@ export type GetShardLocation = {
  * leader, and a listener that only fires there is no use to a per-node panel.
  */
 export type ShardMapUpdate = {
-  readonly $t: 'sharding.ShardMapUpdate';
+  readonly kind: 'sharding.ShardMapUpdate';
   readonly typeName: string;
   readonly version: number;
   /** `[shardId, regionKey][]` — a Map's wire shape. */
@@ -288,7 +288,7 @@ export type ShardMapUpdate = {
  * reply from the entity flows back as a `ShardReply`.
  */
 export type ShardEnvelope = {
-  readonly $t: 'sharding.Envelope';
+  readonly kind: 'sharding.Envelope';
   readonly message: unknown;
   readonly originNode: NodeAddressData | null;
   readonly originRegion: string | null;
@@ -297,7 +297,7 @@ export type ShardEnvelope = {
 
 /** Reply counterpart to {@link ShardEnvelope} — delivers a response to the asker. */
 export type ShardReply = {
-  readonly $t: 'sharding.Reply';
+  readonly kind: 'sharding.Reply';
   readonly correlationId: number;
   readonly message: unknown;
 };
@@ -335,6 +335,6 @@ export type ShardingMessage =
 export function isShardingMessage(message: unknown): message is ShardingMessage {
   return typeof message === 'object'
     && message !== null
-    && typeof (message as { $t?: unknown }).$t === 'string'
-    && (message as { $t: string }).$t.startsWith('sharding.');
+    && typeof (message as { kind?: unknown }).kind === 'string'
+    && (message as { kind: string }).kind.startsWith('sharding.');
 }

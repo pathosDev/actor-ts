@@ -5,6 +5,7 @@ import { FSM, type FsmResult } from '../../../src/fsm/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 type DoorState = 'closed' | 'open';
 type DoorData = { readonly openedAt: number | null; readonly opens: number; };
@@ -38,12 +39,18 @@ describe('FSM', () => {
     const ref = sys.spawnAnonymous(() => new Door((e) => events.push(e)));
 
     ref.tell('open');
-    await Bun.sleep(20);
+    await awaitCondition(() => events.includes('closed->open'), {
+      timeoutMs: 4_000,
+      label: 'the door transitioned to open',
+    });
     expect(events).toContain('enter:open');
     expect(events).toContain('closed->open');
 
     ref.tell('close');
-    await Bun.sleep(20);
+    await awaitCondition(() => events.includes('open->closed'), {
+      timeoutMs: 4_000,
+      label: 'the door transitioned back to closed',
+    });
     expect(events).toContain('exit:open');
     expect(events).toContain('open->closed');
 
@@ -63,7 +70,10 @@ describe('FSM', () => {
     ref.tell('open');
     ref.tell('close');
     ref.tell('count'); // count is handled in 'closed'
-    await Bun.sleep(30);
+    await awaitCondition(() => events.some((e) => e.startsWith('opens=')), {
+      timeoutMs: 4_000,
+      label: 'the door reported its open count',
+    });
     expect(events.some((e) => e === 'opens=2')).toBe(true);
 
     await sys.terminate();

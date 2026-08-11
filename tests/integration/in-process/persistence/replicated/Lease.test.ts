@@ -20,8 +20,18 @@ import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/Repl
 import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { type Lease } from '../../../../../src/coordination/Lease.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * `ReplicatedEventSourcedActor._isLeaseHolder` starts **true** and only
+ * flips on the `acquire` outcome, so "the actor reports it holds the
+ * lease" is not evidence that acquisition ran — an actor whose preStart
+ * has not reached `acquire()` yet reports exactly the same thing.  Waits
+ * for acquisition therefore poll the lease itself (`checkAlive()` / the
+ * shared store), and waits for *refusal* poll the true→false transition,
+ * which only the failed acquire can produce (#418).
+ */
+const WAIT = { timeoutMs: 4_000 } as const;
 
 type Command = { kind: 'add'; n: number } | { kind: 'getValue' };
 type Event = { kind: 'added'; n: number };
@@ -100,14 +110,16 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'a',
       );
-      await sleep(80);
+      await awaitCondition(() => actor !== null, { ...WAIT, label: 'the actor was constructed' });
       expect(actor!.isLeaseHolder).toBe(true);
 
       // Drive a few persists straight through.
       const ref = actor!.self;
       ref.tell({ kind: 'add', n: 5 } as Command);
       ref.tell({ kind: 'add', n: 7 } as Command);
-      await sleep(50);
+      await awaitCondition(() => actor!.state.value === 12, {
+        ...WAIT, label: 'both adds folded into the replicated state',
+      });
       expect(actor!.state.value).toBe(12);
       expect(actor!.lastPersistError).toBeNull();
     } finally {
@@ -142,7 +154,11 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'a',
       );
-      await sleep(60);
+      // a must actually hold the lease before b races for it, or the test
+      // proves nothing about contention.
+      await awaitCondition(() => leaseA.checkAlive(), {
+        ...WAIT, label: 'replica a holds the shared lease',
+      });
       sys.spawn(
         () => {
           b = new LeasedCounter('lease-b', 'r-b', leaseB);
@@ -150,20 +166,28 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'b',
       );
-      await sleep(60);
+      // The true→false flip is the refusal itself — the only thing that
+      // produces it is `acquire()` coming back false.
+      await awaitCondition(() => b !== null && !b.isLeaseHolder, {
+        ...WAIT, label: 'replica b was refused and dropped to observer mode',
+      });
 
       expect(a!.isLeaseHolder).toBe(true);
       expect(b!.isLeaseHolder).toBe(false);
 
       // Holder writes → state advances.
       a!.self.tell({ kind: 'add', n: 10 } as Command);
-      await sleep(40);
+      await awaitCondition(() => a!.state.value === 10, {
+        ...WAIT, label: 'the holder persisted its add',
+      });
       expect(a!.state.value).toBe(10);
       expect(a!.lastPersistError).toBeNull();
 
       // Observer writes → onCommand catches a throw, state stays put.
       b!.self.tell({ kind: 'add', n: 99 } as Command);
-      await sleep(40);
+      await awaitCondition(() => b!.lastPersistError !== null, {
+        ...WAIT, label: 'the observer\'s persist threw',
+      });
       expect(b!.state.value).toBe(0);
       expect(b!.lastPersistError).not.toBeNull();
       expect(b!.lastPersistError!.message).toMatch(/observer mode/);
@@ -192,7 +216,9 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'a',
       );
-      await sleep(60);
+      await awaitCondition(() => lease.checkAlive(), {
+        ...WAIT, label: 'the actor acquired the losable lease',
+      });
       expect(a!.isLeaseHolder).toBe(true);
 
       // Wipe the store — InMemoryLease's renewal loop will hit
@@ -200,14 +226,21 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       // `onLost` exactly like a real backend would on a fence/TTL
       // expiry.
       inMemoryLeaseStore._clear();
-      await sleep(200); // > renewalInterval (≈ ttlMs/3 = ~70 ms)
+      // The renewal tick is ~70 ms on an idle machine; the old 200 ms budget
+      // was under three of them.  What the test is about is the *reaction* to
+      // loss, not the cadence, so wait for the callback.
+      await awaitCondition(() => a!.leaseLossEvents.length > 0, {
+        ...WAIT, intervalMs: 20, label: 'the renewal loop reported the lost lease',
+      });
 
       expect(a!.isLeaseHolder).toBe(false);
       expect(a!.leaseLossEvents).toEqual(['lease lost during renewal']);
 
       // Persist now throws.
       a!.self.tell({ kind: 'add', n: 1 } as Command);
-      await sleep(40);
+      await awaitCondition(() => a!.lastPersistError !== null, {
+        ...WAIT, label: 'the persist after the loss threw',
+      });
       expect(a!.lastPersistError).not.toBeNull();
       expect(a!.state.value).toBe(0);
     } finally {
@@ -233,12 +266,18 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'a1',
       );
-      await sleep(60);
+      await awaitCondition(() => first.checkAlive(), {
+        ...WAIT, label: 'the first actor acquired the handover lease',
+      });
       expect(ref1!.isLeaseHolder).toBe(true);
 
-      // Stop the holder cleanly — postStop releases the lease.
+      // Stop the holder cleanly — postStop releases the lease.  The released
+      // record disappearing from the store is the handover itself; a fixed
+      // wait here is what made this test a coin flip under load.
       a1.stop();
-      await sleep(80);
+      await awaitCondition(() => inMemoryLeaseStore.peek('handover') === undefined, {
+        ...WAIT, label: 'postStop released the handover lease',
+      });
 
       // Fresh actor with a different owner can immediately acquire
       // the same lease name.
@@ -255,7 +294,9 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         },
         'a2',
       );
-      await sleep(60);
+      await awaitCondition(() => second.checkAlive(), {
+        ...WAIT, label: 'the second actor acquired the released lease',
+      });
       expect(ref2!.isLeaseHolder).toBe(true);
     } finally {
       await cluster.leave();

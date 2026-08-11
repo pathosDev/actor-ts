@@ -185,10 +185,31 @@ authorized: {
 },
 ```
 
-The timer is re-armed on every transition and cancelled when the FSM
-leaves the state (or stops).  On recovery it is **re-armed relative to
-the wall-clock at recovery completion** — a long-stopped FSM gets a
-fresh `afterMs` window rather than an immediate "already expired" fire.
+The timer is re-armed on **every** transition — including one that stays
+in the same state — and cancelled when the FSM leaves the state (or
+stops).  That is what makes the idle-session shape work:
+
+```ts
+active: {
+  // Each heartbeat renews the window instead of racing it.
+  heartbeat: { event: { kind: 'touched' }, next: 'active' },
+  _timeout: {
+    afterMs: 30 * 60 * 1000,
+    event: { kind: 'timedOut' },
+    next: 'expired',
+  },
+},
+```
+
+A fired timeout travels through the mailbox like any other message, so
+it can already be queued behind a command that has not run yet.
+Re-arming invalidates such a queued fire: the command is processed
+first, renews the window, and the superseded fire is dropped instead of
+expiring the session anyway (#143).
+
+On recovery the timer is **re-armed relative to the wall-clock at
+recovery completion** — a long-stopped FSM gets a fresh `afterMs` window
+rather than an immediate "already expired" fire.
 
 ## Side effects
 

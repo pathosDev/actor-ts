@@ -30,9 +30,14 @@
 export const DEFAULT_GOSSIP_INTERVAL_MS = 1_000;
 
 /**
- * Default ask-reply timeout.  Used by `ClusterClient`,
- * `ClusterClientReceptionist`, and `DistributedData` quorum
- * read/write.  Per-call `timeoutMs` overrides at every site.
+ * Default ask-reply timeout.  Used by `ActorRef.ask` itself, and by
+ * `ClusterClient`, `ClusterClientReceptionist` and `DistributedData`
+ * quorum read/write.  Per-call `timeoutMs` overrides at every site.
+ *
+ * `ActorRef.ask` carried its own `5_000` literal until #1088, where the
+ * cost of that showed up: `ScatterGatherRouter` has to stay *below* this
+ * value to report before the caller gives up, and a duplicated literal is
+ * a coupling nothing can check.
  */
 export const DEFAULT_ASK_TIMEOUT_MS = 5_000;
 

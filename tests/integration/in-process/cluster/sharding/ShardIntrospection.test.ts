@@ -248,14 +248,14 @@ describe('ClusterSharding.shardRefFor', () => {
     const shardId = hashShardId(entityId, NUM_SHARDS);
     const shard = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId);
 
-    const empty = await shard.ask<{ entityCount: number }>({ $t: 'sharding.GetShardStats' }, 3_000);
+    const empty = await shard.ask<{ entityCount: number }>({ kind: 'sharding.GetShardStats' }, 3_000);
     expect(empty.entityCount).toBe(0);
 
-    shard.tell({ $t: 'sharding.StartEntity', entityId });
+    shard.tell({ kind: 'sharding.StartEntity', entityId });
     await waitFor(() => nodesHosting([seed], entityId).length === 1);
 
     const filled = await shard.ask<{ entityCount: number; entityIds: ReadonlyArray<string> }>(
-      { $t: 'sharding.GetShardStats' }, 3_000,
+      { kind: 'sharding.GetShardStats' }, 3_000,
     );
     expect(filled.entityCount).toBe(1);
     expect(filled.entityIds).toEqual([entityId]);
@@ -286,7 +286,7 @@ describe('ClusterSharding.shardRefFor', () => {
     );
 
     shard.tell({
-      $t: 'sharding.EntityEnvelope',
+      kind: 'sharding.EntityEnvelope',
       entityId: remoteId,
       message: { id: remoteId, kind: 'increment' },
     });

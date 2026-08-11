@@ -25,6 +25,9 @@ import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor as ActorBase } from '../../../../../src/Actor.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
+/** HKDF context — required on every client-side encryption config (#108). */
+const info = 'acme/test/snapshot/v1';
+
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
 
@@ -114,7 +117,7 @@ describe('PersistentActor — actor-level compression hook', () => {
 describe('PersistentActor — actor-level encryption hook', () => {
   test('client-side AES round-trip via actor hooks (no plugin config)', async () => {
     const masterKey = new Uint8Array(32).fill(0xab);
-    const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey };
+    const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey, info };
     // Plugin has neither compression nor encryption set — purely actor-driven.
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend);
@@ -216,7 +219,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
 
   test('encryption hook round-trips state without leaking plaintext', async () => {
     const masterKey = new Uint8Array(32).fill(0xcd);
-    const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey };
+    const enc: EncryptionConfig = { mode: 'client-aes256-gcm', masterKey, info };
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend);
     const store = new ObjectStorageDurableStateStore(storeOptions);

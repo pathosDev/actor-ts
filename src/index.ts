@@ -50,8 +50,32 @@ export {
   eitherSequence,
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
+
+// BidirectionalMap<K, V> — a Map that also answers value → key, keeping the
+// inverse index in step for you.  Persists as a real instance.
+export { BidirectionalMap } from './util/BidirectionalMap.js';
+export type { BidirectionalMapJson } from './util/BidirectionalMap.js';
+
+// BidirectionalMultiMap<L, R> — the same idea for a many-to-many relation:
+// drop a participant on one side and it leaves no trace on the other.
+export { BidirectionalMultiMap } from './util/BidirectionalMultiMap.js';
+export type { BidirectionalMultiMapJson } from './util/BidirectionalMultiMap.js';
+
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
+
+// Random strings — crypto entropy, no modulo bias, exact length.  The same
+// source the framework names its own actors and reply refs from.
+export { randomString, randomHex, randomId, randomUuid } from './util/RandomString.js';
+export type { RandomStringOptions } from './util/RandomString.js';
+
+// safeStringify — JSON.stringify for log and error paths, which cannot throw.
+export { safeStringify } from './util/SafeStringify.js';
+
+// lazyImportModule — import an optional peer dependency, or fail with a message
+// that names the package and how to install it.
+export { lazyImportModule } from './util/LazyImport.js';
+export type { LazyImportOptions } from './util/LazyImport.js';
 
 // Core API
 export { Actor } from './Actor.js';
@@ -96,23 +120,31 @@ export { EventStream } from './EventStream.js';
 export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } from './Logger.js';
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
-export type { LogContextData } from './LogContext.js';
+export type { LogContextData, LogContextEntry } from './LogContext.js';
 
 // Metrics — Counter / Gauge / Histogram + Prometheus exposition (#11).
 export {
   DefaultMetricsRegistry,
   NoopMetricsRegistry,
   DEFAULT_HISTOGRAM_BUCKETS,
+  DEFAULT_MAX_SERIES_PER_FAMILY,
+  METRICS_OVERFLOW_LABEL_VALUE,
+  bucketize,
   MetricsExtension,
   MetricsExtensionId,
+  MetricsRegistryOptions,
+  MetricsRegistryOptionsBuilder,
+  MetricsRegistryOptionsValidator,
   metricsOf,
   exportPrometheus,
   prometheusHandler,
   promClientRegistry,
   PromClientAdapterOptions,
+  PromClientAdapterOptionsValidator,
 } from './metrics/index.js';
 export type {
   MetricsRegistry,
+  MetricsRegistryOptionsType,
   Counter,
   Gauge,
   Histogram,
@@ -223,8 +255,15 @@ export {
   roundRobinStrategy,
   randomStrategy,
   broadcastStrategy,
+  smallestMailboxStrategy,
 } from './Router.js';
 export type { RoutingStrategy, RouterState } from './Router.js';
+export {
+  ScatterGatherOptions,
+  ScatterGatherOptionsBuilder,
+  ScatterGatherOptionsValidator,
+} from './ScatterGatherOptions.js';
+export type { ScatterGatherOptionsType } from './ScatterGatherOptions.js';
 
 // Cluster (multi-node: membership, gossip, sharding, rebalance).
 export * from './cluster/index.js';
@@ -242,7 +281,8 @@ export {
 } from './config/index.js';
 export type { LoadOptions, ConfigObject, ConfigValue } from './config/index.js';
 
-// Serialization (pluggable, JSON + CBOR built-in).
+// Serialization (pluggable, JSON + CBOR built-in; Avro + Protobuf take a
+// compiled schema the user brings).
 export {
   SerializationExtension,
   SerializationExtensionId,
@@ -253,8 +293,26 @@ export {
   CborEncodeError,
   CborDecodeError,
   SerializationError,
+  RESERVED_SERIALIZER_IDS_BELOW,
+  AvroSerializer,
+  AvroSerializerOptions,
+  AvroSerializerOptionsBuilder,
+  AvroSerializerOptionsValidator,
+  ProtobufSerializer,
+  ProtobufSerializerOptions,
+  ProtobufSerializerOptionsBuilder,
+  ProtobufSerializerOptionsValidator,
 } from './serialization/index.js';
-export type { Serializer, SerializedValue } from './serialization/index.js';
+export type {
+  Serializer,
+  SerializedValue,
+  AvroSerializerOptionsType,
+  AvroType,
+  ProtobufSerializerOptionsType,
+  ProtobufMessageType,
+  ProtobufWriter,
+  ProtobufConversionOptions,
+} from './serialization/index.js';
 
 // Extensions mechanism.
 export { Extensions, extensionId } from './Extension.js';
@@ -287,8 +345,16 @@ export {
   InMemorySnapshotStore,
   SqliteJournal,
   SqliteSnapshotStore,
+  // The lock-wait budget every SQLite handle gets, and the seam that opens
+  // one.  Both were reachable only through the internal barrel, which left
+  // the `busyTimeoutMs` default unobservable from outside the package and the
+  // documented "share ONE handle across stores" route unusable (#124).
+  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+  buildSqliteDatabase,
   JournalConcurrencyError,
   JournalError,
+  SnapshotIntegrityError,
+  JournalIntegrityError,
   everyNEvents,
   DurableStateActor,
   InMemoryDurableStateStore,
@@ -380,6 +446,7 @@ export {
   jsonCodec,
   zodCodec,
   composeCodecs,
+  serializerCodec,
   validatedEventAdapter,
   validatedSnapshotAdapter,
   InMemorySchemaRegistry,
@@ -394,6 +461,8 @@ export {
   normalizeTagFilter,
   eventMatchesTagFilter,
   tagFilterCursorKey,
+  defaultPersistenceIdPageSize,
+  persistenceIdPage,
   ProjectionActor,
   InMemoryOffsetStore,
   DurableStateOffsetStore,
@@ -440,6 +509,10 @@ export {
   ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
   DurableStateOptions,
+  DurableStateOptionsValidator,
+  assertValidPersistenceId,
+  persistenceIdRejection,
+  MAX_PERSISTENCE_ID_LENGTH,
   ReplicatedEventSourcedActor,
   VectorClock,
   LastWriterWinsResolver,
@@ -573,6 +646,7 @@ export type {
   PersistenceQuery,
   LiveQueryOptions,
   Offset,
+  PaginationOptions,
   TaggedEvent,
   TagFilter,
   TagFilterSpec,
@@ -641,6 +715,7 @@ export * from './io/index.js';
 // Cache abstraction (in-memory / Redis / Memcached) + extension.
 export {
   CacheError,
+  acquireLock,
   InMemoryCache,
   InMemoryCacheOptions,
   RedisCache,
@@ -655,6 +730,7 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
+  CacheLock,
   InMemoryCacheOptionsType,
   RedisCacheOptionsType,
   RedisClientLike,
@@ -741,6 +817,10 @@ export {
   Find,
   Subscribe as ReceptionistSubscribe,
   Unsubscribe as ReceptionistUnsubscribe,
+  // The cluster block above re-exports pub-sub's own `SubscribeRejected`
+  // with `export *`; both refusals carry a different payload (`key` vs
+  // `topic`), so the discovery one is aliased exactly like `Subscribe` is.
+  SubscribeRejected as ReceptionistSubscribeRejected,
   Listing,
   ConfigSeedProvider,
   ConfigSeedProviderOptions,
@@ -758,6 +838,8 @@ export {
 export type {
   ReceptionistOptionsType,
   ReceptionistGossipMessage,
+  ReceptionistSubscriberRef,
+  ReceptionistSubscribeRejectionReason,
   SeedProvider,
   ConfigSeedProviderOptionsType,
   DnsSeedProviderOptionsType,
@@ -778,6 +860,8 @@ export {
 } from './typed/index.js';
 export type {
   Behavior,
+  BehaviorInterceptor,
+  BehaviorInterceptorTarget,
   Signal,
   StashBuffer,
   TypedActorContext,
@@ -786,12 +870,14 @@ export type {
   WithTimersBehavior,
   WithStashBehavior,
   SuperviseBehavior,
+  InterceptBehavior,
   SameBehavior,
   StoppedBehavior,
   UnhandledBehavior,
   EmptyBehavior,
   IgnoreBehavior,
   SuperviseBuilder,
+  LogMessagesOptions,
 } from './typed/index.js';
 
 // Worker-Cluster (multi-core via Bun/Web-Workers).

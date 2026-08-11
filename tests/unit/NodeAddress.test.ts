@@ -80,3 +80,40 @@ describe('NodeAddress', () => {
     expect(NodeAddress.fromJSON(data).equals(addressA)).toBe(true);
   });
 });
+
+describe('NodeAddress.fromJSON — the wire cannot keep the declared type (#571)', () => {
+  test('rejects a port that arrived as a string', () => {
+    // Why this one matters more than it looks: `toString()` renders `"2552"`
+    // and `2552` identically, so the bad address keys every map exactly like
+    // the good one — but `equals()` compares `===` and never matches. A node
+    // that merges its own address back in this shape stops recognising itself,
+    // and nothing ever repairs it.
+    expect(() => NodeAddress.fromJSON({ systemName: 'app', host: 'h', port: '2552' as unknown as number }))
+      .toThrow(/Invalid node address/);
+  });
+
+  test('rejects missing, empty and non-string identity fields', () => {
+    expect(() => NodeAddress.fromJSON({ systemName: 'app', host: '', port: 1 })).toThrow(/Invalid node address/);
+    expect(() => NodeAddress.fromJSON({ host: 'h', port: 1 } as unknown as never)).toThrow(/Invalid node address/);
+    expect(() => NodeAddress.fromJSON(null as unknown as never)).toThrow(/Invalid node address/);
+  });
+
+  test('rejects non-integer and non-positive ports', () => {
+    for (const port of [0, -1, 1.5, NaN, Infinity]) {
+      expect(() => NodeAddress.fromJSON({ systemName: 'app', host: 'h', port }))
+        .toThrow(/Invalid node address/);
+    }
+  });
+
+  test('accepts a synthetic port above the TCP range', () => {
+    // Deliberate, and stated the same way by ClusterOptionsValidator: under
+    // InMemoryTransport the port is a node discriminator, not something anyone
+    // dials. Capping at 65535 here would reject addresses the framework mints.
+    expect(NodeAddress.fromJSON({ systemName: 'app', host: 'h', port: 89_001 }).port).toBe(89_001);
+  });
+
+  test('round-trips a well-formed address', () => {
+    const original = new NodeAddress('demo', '10.0.0.1', 2552);
+    expect(NodeAddress.fromJSON(original.toJSON()).equals(original)).toBe(true);
+  });
+});

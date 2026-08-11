@@ -7,7 +7,7 @@ export interface Serializer<T = unknown> {
   /**
    * Stable identifier that is embedded in every frame.  Numbers 1..99 are
    * reserved for the actor-ts built-ins (JSON=1, CBOR=2).  User-defined
-   * serializers SHOULD use IDs ≥ 100.
+   * serializers SHOULD use IDs ≥ {@link RESERVED_SERIALIZER_IDS_BELOW}.
    */
   readonly id: number;
 
@@ -34,6 +34,15 @@ export interface Serializer<T = unknown> {
    */
   fromBinary(bytes: Uint8Array, manifest: string): T;
 }
+
+/**
+ * First id a user-defined serializer may claim; 1..99 belong to the
+ * built-ins.  The shipped schema serializers reject anything below it at
+ * construction: an id is a wire contract that outlives the process, so a
+ * collision with JSON or CBOR would only surface when stored rows stop
+ * decoding.
+ */
+export const RESERVED_SERIALIZER_IDS_BELOW = 100;
 
 /**
  * Marker payload emitted whenever a serializer round-trips a value through

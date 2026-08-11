@@ -14,6 +14,7 @@ import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
@@ -129,6 +130,7 @@ export class CassandraJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidPersistenceId(persistenceId, 'CassandraJournal.append');
     assertValidTags(tags);
     await this.ensureStarted();
 
@@ -318,6 +320,48 @@ export class CassandraJournal implements Journal {
       return (response.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
     } catch (e) {
       throw new JournalError(`CassandraJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
+  }
+
+  /**
+   * A clustering-column range over the `all_persistence_ids` partition.
+   *
+   * `PRIMARY KEY (tag, persistence_id)` makes `persistence_id` the clustering
+   * column of the single `'_all'` partition, so `AND persistence_id > ?
+   * LIMIT ?` is a seek into that partition's sorted run — not the
+   * `token(persistence_id)` scan over `events` an earlier sketch of this
+   * called for, which would have paid a coordinator fan-out per page and
+   * handed back ids in ring order, in which no cursor is monotonic.
+   *
+   * The single partition is itself a scaling limit at very large id counts —
+   * one replica set owns every id — but that is the shape `persistenceIds()`
+   * already had, and bucketing it is a schema migration rather than a paging
+   * concern.
+   */
+  async persistenceIdsPaginated(
+    afterPersistenceId: string | undefined,
+    limit: number,
+  ): Promise<string[]> {
+    await this.ensureStarted();
+    const table = this.qualified(this.allIdsTable);
+    try {
+      const response = afterPersistenceId === undefined
+        ? await this.client.execute(
+          `SELECT persistence_id FROM ${table} WHERE tag = ? LIMIT ?`,
+          ['_all', limit],
+          this.readOptions(),
+        )
+        : await this.client.execute(
+          `SELECT persistence_id FROM ${table} WHERE tag = ? AND persistence_id > ? LIMIT ?`,
+          ['_all', afterPersistenceId, limit],
+          this.readOptions(),
+        );
+      return (response.rows as unknown as Array<{ persistence_id: string }>)
+        .map(r => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(
+        `CassandraJournal.persistenceIdsPaginated failed: ${(e as Error).message}`, e,
+      );
     }
   }
 

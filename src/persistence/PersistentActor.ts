@@ -9,6 +9,7 @@ import type {
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { replayState } from './Replay.js';
+import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
   decodeEvent,
@@ -81,7 +82,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   abstract onEvent(state: State, event: Event): State;
 
-  /** Handle an incoming command — typically calls `persist(event, cb)`. */
+  /** Handle an incoming command — typically calls `persist(event, afterPersist)`. */
   abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Called once recovery finishes, with the final replayed state. */
@@ -163,6 +164,14 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /* ----------------------------- Lifecycle API ----------------------------- */
 
   override async preStart(): Promise<void> {
+    // Before the journal is even resolved, and deliberately OUTSIDE the
+    // recovery guard below: an id that cannot be a storage key is a
+    // programming error in this class, not a journal failure, so it must
+    // not reach `onRecoveryFailure` — an override that swallows recovery
+    // errors would otherwise swallow this one and leave the actor running
+    // against a key nobody can address.  It surfaces as an
+    // `ActorInitializationError` and supervision decides.
+    assertValidPersistenceId(this.persistenceId, 'PersistentActor');
     const ext = this.system.extension(PersistenceExtensionId);
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
@@ -213,11 +222,21 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
-    // The fold, the snapshot fast-path and the snapshot-integrity
-    // checks all live in `replayState`, shared with the DevTools
-    // time-travel panel (#201).  One implementation means a debugger
-    // reconstructing state cannot quietly disagree with what the actor
-    // itself recovers — which is the whole reason to look at it.
+    // The fold, the snapshot fast-path and the two integrity checks —
+    // snapshot (#100) and journal (#122) — all live in `replayState`,
+    // shared with the DevTools time-travel panel (#201).  One
+    // implementation means a debugger reconstructing state cannot
+    // quietly disagree with what the actor itself recovers — which is
+    // the whole reason to look at it.
+    //
+    // Recovery takes the strict end of the journal check: no
+    // `allowCompactedPrefix`.  A hole between the starting point and the
+    // first surviving event means this entity's *current* state is not
+    // reconstructible, and folding the tail onto `initialState()` would
+    // hand `onCommand` a state that never existed.  A loud
+    // `JournalIntegrityError` through `onRecoveryFailure` is the only
+    // honest answer; the panel, which asks about the past rather than
+    // the present, opts out of that half.
     const result = await replayState<Event, State>({
       journal: this._journal,
       snapshotStore: this._snapshotStore,
@@ -230,6 +249,23 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     });
     this._state = result.state;
     this._seq = result.sequenceNr;
+    if (this._seq === 0) {
+      // Replay found nothing — either a brand-new actor, or a journal
+      // compacted past everything it held.  Only the journal's high-water
+      // mark tells those apart, and `replayState` cannot do it for us: it is
+      // shared with DevTools time travel, where the sequence must stay at
+      // whatever the requested point in history was.
+      //
+      // Getting it wrong is permanent.  Since #379 a backend remembers what
+      // it deleted, so `highestSeq` still reports N after a full compaction
+      // while recovery reported 0 — and the next `persist` sends
+      // expectedSeq=0 into a journal that has seen N, failing with
+      // `JournalConcurrencyError` on every attempt, forever (#628).
+      //
+      // For a new actor `highestSeq` is 0, so this costs one query only when
+      // there was nothing to replay anyway.
+      this._seq = await this._journal.highestSeq(this.persistenceId);
+    }
     if (result.fromSnapshotSequenceNr !== null) {
       this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
@@ -253,17 +289,17 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   protected async persist(
     event: Event,
-    cb?: (state: State) => void | Promise<void>,
+    afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
-    await this.persistAll([event], cb);
+    await this.persistAll([event], afterPersist);
   }
 
   /** Persist several events atomically.  Must also be awaited in onCommand. */
   protected async persistAll(
     events: ReadonlyArray<Event>,
-    cb?: (state: State) => void | Promise<void>,
+    afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
-    if (events.length === 0) { await cb?.(this._state); return; }
+    if (events.length === 0) { await afterPersist?.(this._state); return; }
     this._persisting = true;
     try {
       // Collect tags from the first event — tags are per-event but a single
@@ -293,7 +329,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         if (policy(pe.sequenceNr, this._state, domainEvent)) shouldSnapshot = true;
       }
       if (shouldSnapshot) await this.saveSnapshotNow();
-      await cb?.(this._state);
+      await afterPersist?.(this._state);
       // Drain any callbacks queued while we were busy (nested persists).
       while (this._pendingCallbacks.length > 0) {
         const next = this._pendingCallbacks.shift()!;
@@ -333,9 +369,22 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     return { compression, encryption };
   }
 
-  /** Delete snapshots and events up to `toSeq` for compaction. */
+  /**
+   * Compact past `toSeq`: drop the events up to and including it, and the
+   * snapshots that came *before* it.
+   *
+   * The snapshot at `toSeq` is deliberately kept.  `SnapshotStore.delete` is
+   * documented as inclusive, so deleting up to `toSeq` destroyed the very
+   * snapshot the compaction is compacting *past* — leaving an actor with no
+   * snapshot and no events, and, before #628, a recovered sequence of 0 that
+   * blocked every later `persist` (#629).
+   *
+   * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
+   * should mean.
+   */
   protected async deleteHistory(toSeq: number): Promise<void> {
-    await this._snapshotStore.delete(this.persistenceId, toSeq);
+    if (toSeq <= 0) return;
+    await this._snapshotStore.delete(this.persistenceId, toSeq - 1);
     await this._journal.delete(this.persistenceId, toSeq);
   }
 

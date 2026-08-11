@@ -153,7 +153,7 @@ match(command)
   .otherwise((m) => this.onUnhandled(m));   // runtime fallback
 ```
 
-`.otherwise(fn)` catches anything not matched.  Use it for actors
+`.otherwise(handler)` catches anything not matched.  Use it for actors
 that handle a *subset* of a wider message type — e.g. a
 `PersistentActor` that intentionally ignores commands it can't
 yet handle.

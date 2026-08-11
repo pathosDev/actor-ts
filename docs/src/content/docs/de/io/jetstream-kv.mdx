@@ -1,0 +1,293 @@
+---
+title: JetStream KV + Object Store
+description: JetStreams Key-Value- und Object-Store-Buckets als Actors — revisionierte Keys mit Compare-and-Swap und Change-Feed sowie Blob-Speicher für ganze Objekte. Request/Reply-Kommandos, beantwortet an eine Target-Ref.
+---
+
+JetStream sind drei APIs, nicht eine.  [`JetStreamActor`](/de/io/jetstream/)
+deckt **Streams und Consumer** ab; diese Seite behandelt die beiden
+anderen:
+
+- **`JetStreamKeyValueActor`** — ein KV-Bucket: revisionierte Keys,
+  Compare-and-Swap-Schreibvorgänge und ein `watch`-Change-Feed.
+- **`JetStreamObjectStoreActor`** — ein Object-Bucket: benannte Blobs
+  mit Metadaten.
+
+Beide sind eigene Actors, weil es eigene Sub-APIs mit eigener Semantik
+sind — ein Bucket ist kein Stream + Consumer, und sie in den
+Stream-Actor zu falten hätte ihm einen sechsten Modus verpasst, den
+niemand will.
+
+## Key-Value
+
+```ts
+import { ActorSystem, Actor, JetStreamKeyValueActor, JetStreamKeyValueOptions } from 'actor-ts';
+import type { ActorRef, JetStreamKeyValueMessage } from 'actor-ts';
+
+const sessionOptions = JetStreamKeyValueOptions.create()
+  .withServers(['nats://localhost:4222'])
+  .withBucket('sessions')
+  .withHistory(5)
+  .withTimeToLive(3_600_000);
+const sessions = system.spawn(() => new JetStreamKeyValueActor(sessionOptions), 'sessions');
+
+// Fire-and-forget write:
+sessions.tell({ kind: 'put', key: 'user.42', value: JSON.stringify(session) });
+
+// Read — the answer arrives at `reader` as a kind-tagged message:
+sessions.tell({ kind: 'get', key: 'user.42', target: reader });
+```
+
+Der Builder ist der primäre Stil; ein einfaches Objekt geht ebenso.  Die
+gemeinsamen Broker-Felder — `withReconnect`, `withCircuitBreaker`,
+`withOutboundBuffer` — kommen von der gemeinsamen
+[BrokerActor-Basis](/de/io/broker-actor-base/).  `servers` und `bucket`
+sind Pflicht.
+
+### Kommandos
+
+| `kind` | Felder | Zweck |
+| --- | --- | --- |
+| `put` | `key`, `value`, `expectedRevision?`, `target?` | Wert schreiben; mit `expectedRevision` als Compare-and-Swap. |
+| `get` | `key`, `target` | Aktuellen Wert lesen. |
+| `delete` | `key`, `target?` | Key entfernen; ein Tombstone bleibt in der Historie. |
+| `purge` | `key`, `target?` | Key **und** seine Historie entfernen. |
+| `keys` | `filter?`, `target` | Lebende Keys auflisten, optional per Subject-Filter eingegrenzt. |
+| `watch` | `key?`, `target` | Jede Änderung unter `key` streamen (Default `'>'` — das ganze Bucket). |
+| `unwatch` | `key?` | Diesen Watch beenden. |
+
+`target` ist **Pflicht**, wo die Antwort der Zweck ist (`get`, `keys`,
+`watch`), und **optional**, wo sie eine Quittung ist (`put`, `delete`,
+`purge`) — lass es für Fire-and-forget-Schreibvorgänge weg, dann werden
+Fehler stattdessen geloggt.
+
+### Antworten
+
+Jede Antwort ist eine `JetStreamKeyValueMessage`, diskriminiert über
+`kind`:
+
+| `kind` | Felder | Wann |
+| --- | --- | --- |
+| `keyValueEntry` | `key`, `value`, `revision`, `createdAt` | Ein `get`-Treffer und jedes `watch`-Update. |
+| `keyValueNotFound` | `key` | Ein `get` auf einen fehlenden oder gelöschten Key. |
+| `keyValueRemoved` | `key`, `purged` | Quittung für `delete` / `purge` und jede beobachtete Entfernung. |
+| `keyValueRevision` | `key`, `revision` | Quittung für ein erfolgreiches `put`. |
+| `keyValueKeys` | `keys` | Antwort auf `keys`. |
+| `keyValueOperationFailed` | `operation`, `key?`, `reason` | Die Operation ist fehlgeschlagen — meist ein Compare-and-Swap-Konflikt. |
+
+```ts
+class SessionReader extends Actor<JetStreamKeyValueMessage> {
+  override onReceive(message: JetStreamKeyValueMessage): void {
+    if (message.kind === 'keyValueEntry') {
+      this.log.info(`${message.key} @ rev ${message.revision}`);
+    }
+  }
+}
+```
+
+### Compare-and-Swap
+
+`revision` ist das Concurrency-Token.  Lies es, berechne den neuen Wert
+und schreibe ihn mit `expectedRevision` zurück — der Server weist den
+Schreibvorgang ab, falls jemand anderes den Key zwischenzeitlich bewegt
+hat, und der Actor antwortet mit `keyValueOperationFailed`, sodass der
+Aufrufer gegen den frischen Wert erneut versuchen kann:
+
+```ts
+// after a `get` answered with { revision: 7 }
+sessions.tell({
+  kind:             'put',
+  key:              'user.42',
+  value:            JSON.stringify(next),
+  expectedRevision: 7,
+  target:           reader,
+});
+```
+
+`expectedRevision: 0` bedeutet „nur, wenn der Key noch nicht
+existiert".
+
+### Watch
+
+Ein `watch` ist **Soll-Zustand**, kein einmaliges Abonnement: Er wird
+bei jedem Reconnect wiederhergestellt, und einer, der während einer
+Trennung abgesetzt wird, landet beim nächsten Connect, statt verworfen
+zu werden.  Das ist dieselbe Zusage, die [`NatsActor`](/de/io/nats/)
+einer Subscription gibt — und sie wiegt hier schwerer: Ein
+Change-Feed, der still stehenbleibt, sieht genauso aus wie ein Bucket,
+das sich nicht mehr ändert.
+
+```ts
+sessions.tell({ kind: 'watch', key: 'user.>', target: reader });
+// … later
+sessions.tell({ kind: 'unwatch', key: 'user.>' });
+```
+
+Ein erneutes `watch` auf einen laufenden Key tauscht das Target aus.
+
+### Key-Value-Einstellungen
+
+```ts
+interface JetStreamKeyValueOptionsType extends BrokerCommonOptionsType {
+  servers?:  string[] | string;   // NATS server URLs (required)
+  token?:    string;
+  user?:     string;
+  password?: string;
+  name?:     string;              // client identifier
+  bucket?:   string;              // bucket name (required)
+  history?:  number;              // revisions kept per key (create-time)
+  timeToLive?:    number;         // per-key TTL in ms (create-time)
+  storage?:       'memory' | 'file';  // create-time
+  replicas?:      number;             // create-time
+  maxValueBytes?: number;             // server-side cap on one value (create-time)
+  create?:        boolean;        // create the bucket when missing; default true
+}
+```
+
+Die Create-Time-Felder werden nur gesendet, wenn der Actor das Bucket
+anlegt.  Mit `create: false` **bindet** der Actor an ein vorhandenes
+Bucket und lässt den Connect scheitern, wenn es fehlt — die richtige
+Einstellung, wenn der Betrieb das Bucket bereitstellt und ein Tippfehler
+nicht stillschweigend ein leeres erzeugen soll.
+
+HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-key-value`:
+
+```hocon
+actor-ts.io.broker.jetstream-key-value {
+  servers = ["nats://localhost:4222"]
+  bucket  = "sessions"
+  history = 5
+}
+```
+
+## Object Store
+
+```ts
+import { JetStreamObjectStoreActor, JetStreamObjectStoreOptions } from 'actor-ts';
+
+const assetOptions = JetStreamObjectStoreOptions.create()
+  .withServers(['nats://localhost:4222'])
+  .withBucket('assets');
+const assets = system.spawn(() => new JetStreamObjectStoreActor(assetOptions), 'assets');
+
+assets.tell({ kind: 'put', name: 'report.pdf', payload: bytes, target: uploader });
+assets.tell({ kind: 'get', name: 'report.pdf', target: reader });
+```
+
+### Object-Store-Kommandos
+
+| `kind` | Felder | Zweck |
+| --- | --- | --- |
+| `put` | `name`, `payload`, `description?`, `headers?`, `target?` | Body speichern und einen vorherigen ersetzen. |
+| `get` | `name`, `target` | Den ganzen Body lesen. |
+| `delete` | `name`, `target?` | Objekt entfernen. |
+| `info` | `name`, `target` | Nur Metadaten — keine Body-Übertragung, unabhängig von der Größe. |
+| `list` | `target` | Metadaten aller lebenden Objekte im Bucket. |
+
+### Object-Store-Antworten
+
+| `kind` | Felder | Wann |
+| --- | --- | --- |
+| `objectStored` | `name`, `info` | Quittung für `put`. |
+| `objectBody` | `name`, `payload`, `info` | Antwort auf `get`. |
+| `objectInfo` | `name`, `info` | Antwort auf `info`. |
+| `objectList` | `objects` | Antwort auf `list`. |
+| `objectDeleted` | `name` | Quittung für `delete`. |
+| `objectNotFound` | `name` | Das Objekt fehlt oder ist gelöscht. |
+| `objectStoreOperationFailed` | `operation`, `name?`, `reason` | Die Operation ist fehlgeschlagen, auch bei einem Body über der Grenze. |
+
+`info` trägt `name`, `size`, `chunks`, `digest`, `modifiedAt` sowie die
+optionalen `description` / `headers`, mit denen das Objekt gespeichert
+wurde.
+
+### Object-Store-Einstellungen
+
+```ts
+interface JetStreamObjectStoreOptionsType extends BrokerCommonOptionsType {
+  servers?:  string[] | string;   // NATS server URLs (required)
+  token?:    string;
+  user?:     string;
+  password?: string;
+  name?:     string;              // client identifier
+  bucket?:   string;              // bucket name (required)
+  description?: string;           // create-time
+  storage?:     'memory' | 'file';  // create-time
+  replicas?:    number;             // create-time
+  maxObjectBytes?: number;        // whole-object ceiling; default 1 MiB
+  create?:      boolean;          // create the bucket when missing; default true
+}
+```
+
+HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-object-store`:
+
+```hocon
+actor-ts.io.broker.jetstream-object-store {
+  servers        = ["nats://localhost:4222"]
+  bucket         = "assets"
+  maxObjectBytes = 4M
+}
+```
+
+## Die Ganzobjekt-Grenze
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="v1 bewegt ein Objekt in einer Nachricht">
+  Ein Objekt-Body reist über den **Outbound-Puffer** von `BrokerActor`
+  — eine beschränkte FIFO, bemessen in *Nachrichten* (Default 1000),
+  nicht in Bytes, und bei Überlauf verdrängt sie den **ältesten**
+  Eintrag.  Ein mehrere Megabyte großer Body in diesem Puffer bedeutet
+  bis zu `outboundBuffer × Body` im Speicher, solange die Verbindung
+  weg ist, und ein Überlauf verwirft still einen Upload.  Deshalb
+  begrenzt v1 Bodies auf `maxObjectBytes` (Default 1 MiB), statt etwas
+  anderes vorzugeben: Ein `put` über der Grenze wird abgewiesen,
+  **bevor** der Body in den Puffer gelangt, und ein `get` über der
+  Grenze wird anhand der Objekt-Metadaten abgewiesen, bevor der Body
+  geholt wird.  Beide antworten mit `objectStoreOperationFailed` und
+  nennen die Grenze.
+</Aside>
+
+Erhöhe `maxObjectBytes` nur so weit, wie `outboundBuffer ×
+maxObjectBytes` ein Speicherwert bleibt, den du über einen Ausfall
+hinweg halten willst; setze `outboundBuffer` auf `0`, wenn dir
+Fail-fast lieber ist als Blobs zu puffern.  `info` und `list` sind
+davon nicht betroffen — Metadaten tragen keinen Body und antworten für
+Objekte jeder Größe.
+
+Für wirklich große Objekte nutze die gechunkten `put`/`get`-Streams des
+`nats`-Clients direkt.  Sie durch den Actor zu führen braucht einen
+Dispatch-Pfad außerhalb der Verbindungs-Zustandsmaschine — eine größere
+Änderung als dieser Actor.
+
+## Peer-Dependency
+
+```bash
+npm install nats
+# or: bun add nats
+```
+
+Dasselbe `nats`-Paket, das [NATS](/de/io/nats/) und
+[JetStream](/de/io/jetstream/) trägt — die KV- und
+Object-Store-Views kommen mit.
+
+<Aside type="caution" title="Eine fehlgeschlagene Operation trennt die Verbindung nicht">
+  Ein Fehler pro Key oder pro Objekt (ein Compare-and-Swap-Konflikt, ein
+  Name, den der Server ablehnt) wird an `target` als
+  `keyValueOperationFailed` / `objectStoreOperationFailed` gemeldet.
+  Nur „nicht verbunden" wirft, denn ein Wurf aus dem Dispatch-Pfad ist
+  genau das Signal, an dem die Basisklasse den Transportverlust erkennt
+  — ein abgelehnter Key ist das nicht.
+</Aside>
+
+<Aside type="caution" title="`keys` und `list` materialisieren die ganze Antwort">
+  Beide sammeln das vollständige Ergebnis in einer einzigen Nachricht.
+  Für ein Konfigurations-Bucket ist das in Ordnung, für ein Bucket mit
+  einer Million Keys falsch — grenze `keys` mit einem `filter` ein oder
+  lies das Bucket direkt mit dem `nats`-Client.
+</Aside>
+
+## Wie geht es weiter
+
+- **[NATS JetStream](/de/io/jetstream/)** — dauerhafte Streams und Consumer, die dritte Sub-API.
+- **[NATS](/de/io/nats/)** — Core-(nicht-dauerhaftes)-Pub/Sub + Request-Reply.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der gemeinsame Reconnect-/Buffer-/Circuit-Breaker-Lebenszyklus.
+- **[I/O-Überblick](/de/io/overview/)** — das große Ganze.

@@ -36,10 +36,13 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 const v0 = new Uint8Array(32).fill(0xa0);
 const v1 = new Uint8Array(32).fill(0xa1);
+/** HKDF context — required on every client-side encryption config (#108). */
+const info = 'acme/test/snapshot/v1';
 
 const ringV0Only: EncryptionConfig = {
   mode: 'client-aes256-gcm',
   masterKeys: { active: { version: 0, key: v0 } },
+  info,
 };
 const ringV1ActiveV0Retired: EncryptionConfig = {
   mode: 'client-aes256-gcm',
@@ -47,10 +50,12 @@ const ringV1ActiveV0Retired: EncryptionConfig = {
     active: { version: 1, key: v1 },
     retired: [{ version: 0, key: v0 }],
   },
+  info,
 };
 const ringV1Only: EncryptionConfig = {
   mode: 'client-aes256-gcm',
   masterKeys: { active: { version: 1, key: v1 } },
+  info,
 };
 
 describe('reEncryptObjectStorage', () => {
@@ -75,6 +80,7 @@ describe('reEncryptObjectStorage', () => {
         && 'masterKeys' in ringV1ActiveV0Retired
           ? ringV1ActiveV0Retired.masterKeys
           : (null as never),
+      info,
     });
     expect(result.scanned).toBe(3);
     expect(result.rewrote).toBe(3);
@@ -108,12 +114,12 @@ describe('reEncryptObjectStorage', () => {
     >).masterKeys;
 
     const first = await reEncryptObjectStorage(backend, {
-      keyPrefix: '', keyring: ringV1V0Retired,
+      keyPrefix: '', keyring: ringV1V0Retired, info,
     });
     expect(first.rewrote).toBe(2);
 
     const second = await reEncryptObjectStorage(backend, {
-      keyPrefix: '', keyring: ringV1V0Retired,
+      keyPrefix: '', keyring: ringV1V0Retired, info,
     });
     expect(second.scanned).toBe(2);
     expect(second.rewrote).toBe(0);
@@ -128,7 +134,7 @@ describe('reEncryptObjectStorage', () => {
     // Write under the legacy single-masterKey shape (no version byte
     // in the manifest — pre-#8 wire format).
     const legacyConfig: EncryptionConfig = {
-      mode: 'client-aes256-gcm', masterKey: v0,
+      mode: 'client-aes256-gcm', masterKey: v0, info,
     };
     const legacyStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
@@ -142,7 +148,7 @@ describe('reEncryptObjectStorage', () => {
       EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
     >).masterKeys;
     const result = await reEncryptObjectStorage(backend, {
-      keyPrefix: '', keyring: ring,
+      keyPrefix: '', keyring: ring, info,
     });
     expect(result.rewrote).toBe(1);
 
@@ -174,6 +180,7 @@ describe('reEncryptObjectStorage', () => {
     await reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ring,
+      info,
       onProgress: (e) => events.push(`${e.action}:${e.key.split('/')[0]}`),
     });
     expect(events.length).toBe(3);
@@ -199,6 +206,7 @@ describe('reEncryptObjectStorage', () => {
     const result = await reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ring,
+      info,
       skip: (k) => k.startsWith('skip/'),
     });
     expect(result.scanned).toBe(1);
@@ -212,7 +220,121 @@ describe('reEncryptObjectStorage', () => {
     await expect(reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: { active: { version: 999, key: v0 } },
+      info,
     })).rejects.toThrow(/version must be an integer in/);
+  });
+});
+
+/* ========================= #108 — HKDF context rotation ========================= */
+
+/**
+ * `info` is the HKDF context.  Unlike the master-key version it is NOT
+ * recorded in the body manifest, so the sweep's version fast-path is
+ * blind to it — the reason `newInfo` has to switch that fast-path off.
+ * These tests pin both halves: that a context rotation actually rewrites
+ * the corpus, and that it does not quietly report success having done
+ * nothing.
+ */
+describe('reEncryptObjectStorage — #108 info rotation', () => {
+  const oldInfo = 'actor-ts/snapshot/v1';
+  const newInfo = 'acme/prod/snapshot/v1';
+
+  /** Ring whose active version equals the one the corpus was written under. */
+  const sameVersionRing = { active: { version: 1, key: v1 } };
+
+  async function writeCorpus(
+    backend: FilesystemObjectStorageBackend, hkdfInfo: string,
+  ): Promise<void> {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({
+        mode: 'client-aes256-gcm',
+        masterKeys: sameVersionRing,
+        info: hkdfInfo,
+      });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('user-1', 1, { balance: 100 });
+    await store.save('user-2', 1, { balance: 200 });
+  }
+
+  test('rotates the context even when the key version does not change', async () => {
+    const backendOptions = FilesystemObjectStorageOptions.create().withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    await writeCorpus(backend, oldInfo);
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: sameVersionRing,
+      info: oldInfo,
+      newInfo,
+    });
+
+    // The trap: the version fast-path would call every one of these
+    // 'skipped-current' and the sweep would be a no-op.
+    expect(result.scanned).toBe(2);
+    expect(result.rewrote).toBe(2);
+    expect(result.skippedCurrent).toBe(0);
+
+    // The corpus now reads under the new context only.
+    const newContextOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: sameVersionRing, info: newInfo });
+    const newContextStore = new ObjectStorageSnapshotStore(newContextOptions);
+    const loaded = await newContextStore.loadLatest<{ balance: number }>('user-1');
+    expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
+
+    const oldContextOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: sameVersionRing, info: oldInfo });
+    const oldContextStore = new ObjectStorageSnapshotStore(oldContextOptions);
+    await expect(oldContextStore.loadLatest<{ balance: number }>('user-1')).rejects.toThrow();
+  });
+
+  test('re-running a completed info rotation stays idempotent', async () => {
+    const backendOptions = FilesystemObjectStorageOptions.create().withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    await writeCorpus(backend, oldInfo);
+
+    const options = { keyPrefix: '', keyring: sameVersionRing, info: oldInfo, newInfo };
+    const first = await reEncryptObjectStorage(backend, options);
+    expect(first.rewrote).toBe(2);
+
+    // Second pass: every body is already under `newInfo`, so decrypting
+    // with `info` fails.  Without the probe-the-target-context fallback
+    // this run would abort on the first object.
+    const second = await reEncryptObjectStorage(backend, options);
+    expect(second.scanned).toBe(2);
+    expect(second.rewrote).toBe(0);
+    expect(second.skippedCurrent).toBe(2);
+  });
+
+  test('a body decryptable under neither context still raises the original error', async () => {
+    // The fallback must not turn a genuinely broken corpus into a skip.
+    const backendOptions = FilesystemObjectStorageOptions.create().withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    await writeCorpus(backend, 'some/third/context/v1');
+
+    await expect(reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: sameVersionRing,
+      info: oldInfo,
+      newInfo,
+    })).rejects.toThrow();
+  });
+
+  test('newInfo equal to info leaves the fast-path intact', async () => {
+    const backendOptions = FilesystemObjectStorageOptions.create().withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    await writeCorpus(backend, oldInfo);
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: sameVersionRing,
+      info: oldInfo,
+      newInfo: oldInfo,
+    });
+    expect(result.rewrote).toBe(0);
+    expect(result.skippedCurrent).toBe(2);
   });
 });
 
@@ -240,6 +362,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     await reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ringV1V0Retired,
+      info,
       progress,
       saveProgressEveryN: 2,
     });
@@ -276,6 +399,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     const result = await reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ringV1V0Retired,
+      info,
       progress,
     });
     // Only the last 3 keys should have been touched.
@@ -304,6 +428,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     await expect(reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ringV1NoRetired,
+      info,
     })).rejects.toThrow(/keyring is incomplete/);
   });
 
@@ -327,6 +452,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     await expect(reEncryptObjectStorage(backend, {
       keyPrefix: '',
       keyring: ringV1NoRetired,
+      info,
       verifyKeyringCompleteness: false,
     })).rejects.toThrow(/no master key registered for version 0/);
   });
@@ -372,7 +498,7 @@ describe('reEncryptObjectStorage — malformed keys from list() (#123)', () => {
     // the default extractor.
     const backend = new MalformedKeyBackend(['', '/', 'prefix/']);
     const result = await reEncryptObjectStorage(backend, {
-      keyPrefix: 'prefix/', keyring, verifyKeyringCompleteness: false,
+      keyPrefix: 'prefix/', keyring, info, verifyKeyringCompleteness: false,
     });
 
     expect(result.skippedMalformedKey).toBe(3);
@@ -385,7 +511,7 @@ describe('reEncryptObjectStorage — malformed keys from list() (#123)', () => {
   test('a key carrying control characters is skipped', async () => {
     const backend = new MalformedKeyBackend([`pid${String.fromCharCode(0)}x/snap`, `pid${String.fromCharCode(10)}y/snap`]);
     const result = await reEncryptObjectStorage(backend, {
-      keyPrefix: '', keyring, verifyKeyringCompleteness: false,
+      keyPrefix: '', keyring, info, verifyKeyringCompleteness: false,
     });
 
     expect(result.skippedMalformedKey).toBe(2);
@@ -396,7 +522,7 @@ describe('reEncryptObjectStorage — malformed keys from list() (#123)', () => {
     // The guard must not turn into a blanket refusal.
     const backend = new MalformedKeyBackend(['user-1/snap-1', 'user-2/snap-1']);
     const result = await reEncryptObjectStorage(backend, {
-      keyPrefix: '', keyring, verifyKeyringCompleteness: false,
+      keyPrefix: '', keyring, info, verifyKeyringCompleteness: false,
     });
 
     expect(result.skippedMalformedKey).toBe(0);

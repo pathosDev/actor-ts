@@ -110,9 +110,9 @@ The four methods are pairs of "send a message" / "run a function":
 | Method | What it does |
 | --- | --- |
 | `scheduleOnce(delayMs, target, message, sender?)` | Send `message` to `target` once, after `delayMs`. |
-| `scheduleOnceFunction(delayMs, fn)` | Run `fn` once after `delayMs`. |
+| `scheduleOnceFunction(delayMs, task)` | Run `task` once after `delayMs`. |
 | `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Send `message` repeatedly. |
-| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, fn)` | Run `fn` repeatedly. |
+| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task)` | Run `task` repeatedly. |
 
 Every method returns a `Cancellable`:
 

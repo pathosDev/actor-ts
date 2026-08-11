@@ -15,6 +15,7 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -45,7 +46,10 @@ describe('Stock actor metrics', () => {
       sys.spawn(Echo, 'a');
       sys.spawn(Echo, 'b');
       sys.spawn(Echo, 'c');
-      await sleep(20);
+      await awaitCondition(() => (valueFor(reg, 'actor_created_total') ?? 0) - baseline >= 3, {
+        timeoutMs: 4_000,
+        label: 'all three spawns were counted',
+      });
       expect((valueFor(reg, 'actor_created_total') ?? 0) - baseline).toBe(3);
     } finally {
       await sys.terminate();
@@ -61,7 +65,10 @@ describe('Stock actor metrics', () => {
     try {
       const actorRef = sys.spawn(Echo, 'a');
       actorRef.tell('1'); actorRef.tell('2'); actorRef.tell('3');
-      await sleep(30);
+      await awaitCondition(() => (valueFor(reg, 'actor_messages_delivered_total') ?? 0) >= 3, {
+        timeoutMs: 4_000,
+        label: 'all three deliveries were counted',
+      });
       expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(3);
     } finally {
       await sys.terminate();
@@ -77,7 +84,10 @@ describe('Stock actor metrics', () => {
     try {
       const actorRef = sys.spawn(Echo, 'a');
       actorRef.stop();
-      await sleep(40);
+      await awaitCondition(() => (valueFor(reg, 'actor_terminated_total') ?? 0) >= 1, {
+        timeoutMs: 4_000,
+        label: 'the termination was counted',
+      });
       expect((valueFor(reg, 'actor_terminated_total') ?? 0)).toBeGreaterThanOrEqual(1);
     } finally {
       await sys.terminate();
@@ -93,7 +103,13 @@ describe('Stock actor metrics', () => {
     try {
       const actorRef = sys.spawn(Echo, 'a');
       actorRef.tell('1'); actorRef.tell('2');
-      await sleep(40);
+      const handlerSample = (): { count?: number } | undefined => reg.collect().find(
+        (s) => s.name === 'actor_message_handler_seconds' && s.sum !== undefined,
+      );
+      await awaitCondition(() => (handlerSample()?.count ?? 0) >= 2, {
+        timeoutMs: 4_000,
+        label: 'both handler runs were observed by the histogram',
+      });
       const sumSample = reg.collect().find(
         (s) => s.name === 'actor_message_handler_seconds' && s.sum !== undefined,
       );
@@ -122,7 +138,10 @@ describe('Stock cluster metrics', () => {
     );
     try {
       // Single-node cluster — self is up, gauge = 1.
-      await sleep(60);
+      await awaitCondition(() => valueFor(reg, 'cluster_members_up') === 1, {
+        timeoutMs: 4_000,
+        label: 'the single-node cluster reported one member up',
+      });
       expect(valueFor(reg, 'cluster_members_up')).toBe(1);
       // Note: gossip rounds is initiated only when peers exist —
       // a single-node cluster doesn't tick the counter.  The presence

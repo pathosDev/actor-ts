@@ -16,32 +16,32 @@ export class HealthCheckRegistry {
   private readonly liveness: HealthCheckFunction[] = [];
   private readonly readiness: HealthCheckFunction[] = [];
 
-  addLiveness(fn: HealthCheckFunction): () => void {
-    this.liveness.push(fn);
+  addLiveness(check: HealthCheckFunction): () => void {
+    this.liveness.push(check);
     return () => {
-      const i = this.liveness.indexOf(fn);
+      const i = this.liveness.indexOf(check);
       if (i >= 0) this.liveness.splice(i, 1);
     };
   }
 
-  addReadiness(fn: HealthCheckFunction): () => void {
-    this.readiness.push(fn);
+  addReadiness(check: HealthCheckFunction): () => void {
+    this.readiness.push(check);
     return () => {
-      const i = this.readiness.indexOf(fn);
+      const i = this.readiness.indexOf(check);
       if (i >= 0) this.readiness.splice(i, 1);
     };
   }
 
   async checkLiveness(): Promise<HealthCheckResult[]> {
-    return Promise.all(this.liveness.map(async (fn) => {
-      try { return await fn(); }
+    return Promise.all(this.liveness.map(async (check) => {
+      try { return await check(); }
       catch (err) { return { name: 'unknown', status: false, detail: String(err) }; }
     }));
   }
 
   async checkReadiness(): Promise<HealthCheckResult[]> {
-    return Promise.all(this.readiness.map(async (fn) => {
-      try { return await fn(); }
+    return Promise.all(this.readiness.map(async (check) => {
+      try { return await check(); }
       catch (err) { return { name: 'unknown', status: false, detail: String(err) }; }
     }));
   }

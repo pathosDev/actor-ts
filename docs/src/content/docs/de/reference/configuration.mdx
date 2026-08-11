@@ -5,8 +5,9 @@ description: Jeder HOCON-Key, den das Framework liest, gruppiert nach Modul — 
 
 actor-ts verwendet **HOCON** zur Konfiguration — eine Obermenge von
 JSON, die in JVM-Config-Dateien üblich ist, mit Substitutionen,
-Durations, Sizes und Includes.  Drei Schichten, von oben nach unten
-aufgelöst:
+Durations und Sizes.  ([`include`-Direktiven werden
+abgelehnt](#includes-werden-nicht-unterstützt) — setze die Quellen im
+Code zusammen.)  Drei Schichten, von oben nach unten aufgelöst:
 
 1. **Konstruktor-Argumente** an `ActorSystem.create(name, settings)`
    — explizite Code-Overrides.
@@ -39,11 +40,37 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    weakly-up-after     = 0s      # 0 = opt-in only
+    max-members         = 1000
+    max-tombstones      = 10000
+    tombstone {
+      time-to-live   = 24h
+      prune-interval = 5m
+      min-retention  = 0s         # 0 = derive from down-after
+    }
     failure-detector {
       heartbeat-interval = 500ms
       unreachable-after  = 2s
       down-after         = 5s
     }
+    pub-sub {
+      gossip-interval            = 1s
+      max-subscribers-per-topic  = 10000
+      max-topics                 = 10000
+      max-remote-nodes-per-topic = 1000
+      send-to-dead-letters-when-no-subscribers = on
+    }
+    receptionist {
+      gossip-interval         = 1s
+      max-subscribers-per-key = 1000
+      max-subscribers-total   = 10000
+    }
+  }
+
+  distributed-data {
+    gossip-interval             = 1s
+    max-pending-quorum-requests = 1000    # 0 = kein Cap
+    max-quorum-timeout          = 30s     # 0 = keine Obergrenze
   }
 
   remote {
@@ -101,6 +128,12 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
+| `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
+| `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
+| `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
 | `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein. |
@@ -110,10 +143,88 @@ ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
 Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
 `down-after`, bleiben die beiden anderen aus der Datei erhalten.
 
+HOCON-Baum und `ClusterOptions`-Felder sind bewusst nicht deckungsgleich:
+die drei Tombstone-Stellschrauben stehen unter `tombstone`, weil man sie so
+einstellt, während die Felder flach bleiben (`withTombstoneTtlMs(…)`, …).
+`remote.tcp.host` → `host` macht dieselbe Übersetzung schon länger.
+
+`min-retention = 0s` heißt *leite die Untergrenze aus dem Failure Detector
+ab*, nicht *keine Untergrenze* — also genau das, was ein ungesetztes Feld
+bedeutet.  Eine Datei, die den Default ausschreibt, verhält sich damit wie
+eine, die ihn wegläßt.
+
+Die beiden `max-*`-Grenzen begrenzen die lokale Mitgliederkarte.
+`remote.max-frame-bytes` begrenzt *einen* Gossip-Frame; diese begrenzen,
+was eine Folge wohlgeformter Frames ansammeln kann — eine andere Größe,
+siehe [Cluster-Sicherheit](/de/operations/security/cluster-security/).
+
 `seeds`, `roles`, der Transport und der Downing Provider haben keine
 HOCON-Form — die ersten beiden sind Deployment-Identität, die an die
 Join-Stelle gehört, die letzten beiden sind Objekte, die eine
 Config-Datei nicht ausdrücken kann.
+
+### `actor-ts.cluster.pub-sub`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.pub-sub.gossip-interval` | `1s` | Wie oft ein Mediator seine Topic-Menge an einen zufälligen Peer schickt. |
+| `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Obergrenze für lokale Subscriber eines Topics.  Ein `Subscribe` darüber wird mit `SubscribeRejected` beantwortet. |
+| `cluster.pub-sub.max-topics` | `10000` | Obergrenze für verschiedene Topics eines Mediators — gilt für gegossipte Topic-Ansprüche genauso wie für lokale Subscribes. |
+| `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Obergrenze für Peers, die Subscriber für ein Topic beanspruchen dürfen. |
+| `cluster.pub-sub.send-to-dead-letters-when-no-subscribers` | `on` | Ein Publish, das niemanden erreicht hat, geht an `system.deadLetters`, statt verworfen zu werden. |
+
+Die drei Obergrenzen begrenzen, was ein Mediator überhaupt halten kann,
+und der Publish-Fan-out läuft über alle — sie sind also ebenso sehr eine
+Latenz- wie eine Speichergrenze.  Die Gossip-Hälfte ist die, die man
+kennen sollte: ein Peer, der Topics ankündigt, für die er Subscriber
+beansprucht, hat früher auf jedem Empfänger einen Eintrag pro Namen
+angelegt — ganz ohne lokales `Subscribe`.  Siehe
+[DistributedPubSub](/de/cluster/pubsub/).
+
+### `actor-ts.cluster.receptionist`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.receptionist.gossip-interval` | `1s` | Wie oft der Receptionist seine lokalen Registrierungen gossipt. |
+| `cluster.receptionist.max-subscribers-per-key` | `1000` | Obergrenze für Subscriber eines Service Keys.  Ein `Subscribe` darüber wird mit `ReceptionistSubscribeRejected` beantwortet. |
+| `cluster.receptionist.max-subscribers-total` | `10000` | Obergrenze für Subscriber über alle Keys dieses Nodes. |
+
+Beide Blöcke liegen unter dem, was dem `start(...)` der Extension
+übergeben wurde — ein explizites `withMaxTopics(…)` gewinnt also
+weiterhin.  Gestoppte Subscriber werden vom Death Watch freigegeben und
+zählen gegen keine der Grenzen.
+
+### `actor-ts.distributed-data`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren kompletten Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
+| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+
+Der Block liegt auf oberster Ebene statt unter `cluster.*` (wo `pub-sub`
+und `receptionist` wohnen), weil das Modul dort liegt: `DistributedData`
+kommt aus `src/crdt/`, und der Cluster ist ein positionales Argument von
+`start(cluster)`, kein Tunable davon.  `durableStore` hat hier keinen Key —
+es ist eine `DurableStateStore`-Instanz, die eine Config-Datei nicht
+ausdrücken kann.
+
+Beide Caps gibt es, weil die Mailbox des Replikators schon eines hat — und
+ihres hier schlecht ausgeht.  Der Replikator läuft auf der bounded
+Default-Mailbox (10 000 Einträge, `drop-head`), bei Sättigung wird also der
+*älteste* Envelope verworfen — und ein wartender `ddata-update` trägt
+`resolve` / `reject` des Aufrufers in sich.  Ihn zu verwerfen lässt
+`updateAsync` auf ein Promise warten, das nie settlet, ohne jeden Logeintrag.
+Deutlich unter der Mailbox-Kapazität gesetzt, macht
+`max-pending-quorum-requests` aus diesem stillen Drop einen expliziten
+Fehler, der den Knopf beim Namen nennt; auf 10 000 gesetzt griffe es nie
+zuerst und würde nichts umwandeln.  Siehe
+[Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+
+`max-quorum-timeout` begrenzt die andere Achse.  Ein offener Request hält
+seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
+stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
+spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 
 ### `actor-ts.remote`
 
@@ -291,7 +402,9 @@ per-Protokoll-Seiten für die Keys:
 | `io.broker.mqtt` | [MQTT](/de/io/mqtt/) |
 | `io.broker.amqp` | [AMQP](/de/io/amqp/) |
 | `io.broker.nats` | [NATS](/de/io/nats/) |
-| `io.broker.jetstream` | [JetStream](/de/io/nats/) *(gleiche Seite, JetStream-Variante)* |
+| `io.broker.jetstream` | [NATS JetStream](/de/io/jetstream/) |
+| `io.broker.jetstream-key-value` | [JetStream KV + Object Store](/de/io/jetstream-kv/) |
+| `io.broker.jetstream-object-store` | [JetStream KV + Object Store](/de/io/jetstream-kv/) |
 | `io.broker.redis-streams` | [Redis Streams](/de/io/redis-streams/) |
 | `io.broker.grpc.{client,server}` | [gRPC](/de/io/grpc/) |
 | `io.broker.websocket` | [WebSocket Client](/de/io/websocket/) |
@@ -336,16 +449,34 @@ fallback-port = ${fallback-port:-2552}  # default-if-empty Syntax
 
 Verwende `${?ENV}` für optional, `${ENV}` für required.
 
-### Includes
+### Includes werden nicht unterstützt
 
 ```hocon
-include "shared-cluster.conf"
-
-actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
+include "shared-cluster.conf"   # Fehler: `include` wird nicht unterstützt
 ```
 
-Lädt `shared-cluster.conf` und legt Deinen lokalen Abschnitt
-darüber.
+Eine Config-Quelle kann keine weitere Datei und keine URL benennen, die
+hinzugeladen wird.  Das ist eine Entscheidung, keine Lücke: ein
+aufgelöstes `include` überließe demjenigen, der die Config schreibt, die
+Wahl, welche Pfade der Prozess liest — relativ zu einer Wurzel, die der
+Parser gar nicht kennen kann.  Das Zusammenführen im Code belässt diese
+Wahl beim Aufrufer.
+
+```ts
+import { Config } from 'actor-ts';
+
+const shared = Config.parseFile('shared-cluster.conf');
+const application = Config.parseFile('application.conf');
+const config = shared.merge(application);
+```
+
+`merge` legt sein Argument obenauf, die lokale Datei gewinnt also — genau
+die Reihenfolge, auf die das `include` oben hinauswollte.  Den geteilten
+Inhalt in eine Datei zu kopieren funktioniert ebenfalls.
+
+Der Parser sagt all das, wenn er auf ein `include` trifft, und zitiert
+dabei Zeile und Ziel — eine aus Akka oder Pekko portierte Config
+scheitert damit mit einer Antwort statt mit einem Rätsel.
 
 ### Reservierte Schlüssel
 

@@ -70,9 +70,9 @@ describe('Extensions registry', () => {
   test('separate ActorSystems have independent extension instances', async () => {
     const first = newSystem('ext-a');
     const second = newSystem('ext-b');
-    const ca = first.extensions.get(CounterId);
-    const cb = second.extensions.get(CounterId);
-    expect(ca).not.toBe(cb);
+    const counterA = first.extensions.get(CounterId);
+    const counterB = second.extensions.get(CounterId);
+    expect(counterA).not.toBe(counterB);
     await first.terminate(); await second.terminate();
   });
 

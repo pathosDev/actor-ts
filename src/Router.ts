@@ -1,6 +1,9 @@
 import { Actor, type ActorClassOrFactory, type ActorFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
 import type { ActorRef } from './ActorRef.js';
+import { LocalActorRef } from './internal/LocalActorRef.js';
+import type { ScatterGatherOptions } from './ScatterGatherOptions.js';
+import { scatterGatherRouterFactory } from './ScatterGatherRouter.js';
 import { Terminated } from './SystemMessages.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -38,6 +41,103 @@ export function randomStrategy(): RoutingStrategy {
 /** Broadcast: every routee gets every message. */
 export function broadcastStrategy(): RoutingStrategy {
   return (routees) => routees;
+}
+
+/**
+ * The depth at which a routee competes for the next message, or `null` when
+ * it must not compete at all.
+ *
+ * The two ways a depth can be missing are *not* the same case and deliberately
+ * do not share a return value:
+ *
+ * - **Unreadable — weighed as empty (`0`).**  Only a locally-hosted actor has
+ *   a mailbox this process can look into, and the depth lives on the cell
+ *   rather than on `ActorRef` on purpose (see `ActorCell.mailboxSize`).  A
+ *   remote or otherwise foreign ref is therefore unmeasurable, and the honest
+ *   assumption about something we cannot measure is that it is not backed up.
+ *   Skipping it instead would starve it for as long as *any* local routee has
+ *   a backlog — in a mixed pool, permanently — which is the one thing a
+ *   load-balancer must never do.  The cost is the mirror image: while the
+ *   local routees are busy, an unreadable one looks like the shallowest and
+ *   takes the traffic.  That is a balance error and it is recoverable; the
+ *   starvation was not.  Several unreadable routees tie at `0` and so rotate
+ *   among themselves.
+ * - **Terminated — never (`null`).**  `ActorCell.postUserEnvelope` dead-letters
+ *   instead of enqueueing once the cell is `terminated`, so its `mailboxSize`
+ *   is pinned at `0` for good.  Read as a plain depth that makes a dead routee
+ *   the permanently most attractive member of the pool: it wins every message
+ *   until the router's `Terminated` — a *user* message, queued behind whatever
+ *   the router had already accepted — finally prunes it, and every one of
+ *   those messages is lost.  Under load that window is the router's own queue
+ *   depth, so the strategy turned a routee death into a far larger loss than
+ *   round-robin's 1-in-N share of the same window (#154).
+ */
+function routableDepthOf(routee: ActorRef): number | null {
+  if (!(routee instanceof LocalActorRef)) return 0;
+  const cell = routee.getCell();
+  return cell.isTerminated() ? null : cell.mailboxSize;
+}
+
+/**
+ * Smallest mailbox: one routee per message, the one with the shortest queue.
+ *
+ * Balances by *backlog* instead of by message count, which is the thing
+ * round-robin cannot do — one expensive message no longer parks the next
+ * 1-in-N arrivals behind it, because a routee that is still working stops
+ * being the shallowest and drops out of the running until it catches up.
+ * The cost is a read of every routee's depth per message, so the pool size
+ * is now a per-message factor; round-robin remains the cheaper default for
+ * workloads whose per-message cost is roughly uniform.
+ *
+ * **Ties rotate.**  An idle pool has every depth at `0`, so a plain
+ * "first minimum wins" scan would pin every message to `routee-1` whenever
+ * the pool drains between arrivals.  Starting the scan at
+ * `messageIndex % routees.length` and keeping the comparison strict (`<`)
+ * makes an all-equal pool behave exactly like round-robin.
+ *
+ * That is also the answer for a **saturated** pool: when every bounded
+ * mailbox sits at its capacity the depths are equal again, so the rotation
+ * takes over and the overflow spreads evenly rather than piling onto one
+ * routee.  The strategy has no notion of "full" and deliberately does not
+ * grow one — refusing to route would invent back-pressure the caller never
+ * configured, and what should happen to a message that does not fit is
+ * already decided by the mailbox's own overflow policy (`drop-head` /
+ * `drop-new` / `reject`).
+ *
+ * **A terminated routee is skipped outright**, whatever its depth reads as —
+ * see {@link routableDepthOf} for why that is not the same case as a depth
+ * nobody can read.  If *every* routee is terminated the scan falls back to
+ * the rotation and routes into a dead cell anyway: the message is lost either
+ * way, and losing it as a `DeadLetter` is at least observable, where returning
+ * nothing would drop it without a trace.
+ *
+ * The scan stops at the first empty mailbox, which is what keeps the `O(N)`
+ * worst case off the healthy path: a pool that is keeping up with its load
+ * hits a zero on the first routee it looks at, so the common case is one read
+ * regardless of pool size.  Only a pool that is genuinely behind pays for the
+ * full sweep — and that is the pool the strategy exists for.
+ */
+export function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    const start = state.messageIndex % routees.length;
+    let shallowest: ActorRef | null = null;
+    let shallowestDepth = 0;
+    for (let offset = 0; offset < routees.length; offset++) {
+      const routee = routees[(start + offset) % routees.length];
+      const depth = routableDepthOf(routee);
+      if (depth === null) continue;
+      if (shallowest === null || depth < shallowestDepth) {
+        shallowest = routee;
+        shallowestDepth = depth;
+        // A depth is never negative, so nothing later in the scan could win
+        // under the strict `<` above.  Breaking here is an optimisation, not
+        // a behaviour change — the rotation already picked this routee.
+        if (depth === 0) break;
+      }
+    }
+    return [shallowest ?? routees[start]];
+  };
 }
 
 type RouterConfig<TMessage> = {
@@ -94,7 +194,13 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
    * so a routee never saw its sibling's.
    */
   private onTerminated(message: Terminated): void {
-    const index = this.routees.findIndex(routee => routee.equals(message.actor));
+    // Identity, not `equals`.  `ActorRef.equals` compares addresses, and a
+    // restarted pool re-spawns its routees at exactly the same addresses — so
+    // an address match lets the *previous* incarnation's notification, still
+    // queued from before the restart, prune the live routee that now occupies
+    // that name, leaving the pool silently empty.  The router owns the refs it
+    // spawned, so the ref it was handed is the one that actually died.
+    const index = this.routees.indexOf(message.actor as ActorRef<TMessage>);
     if (index >= 0) this.routees.splice(index, 1);
   }
 
@@ -131,8 +237,8 @@ function assertPoolSize(size: number): void {
 }
 
 /**
- * Shared by all four factories, so the size guard cannot be forgotten by a
- * fifth.  The guard runs *here* and not inside the returned closure: it has
+ * Shared by the five strategy factories, so the size guard cannot be forgotten
+ * by a sixth.  The guard runs *here* and not inside the returned closure: it has
  * always thrown at the `Router.roundRobin(...)` call that got the size wrong,
  * and deferring it into the factory would move the failure into `preStart`.
  *
@@ -169,7 +275,40 @@ export const Router = {
     return routerFactory({ size, routee, routeeOptions, strategy: broadcastStrategy() });
   },
 
+  smallestMailbox<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy: smallestMailboxStrategy() });
+  },
+
   custom<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, strategy: RoutingStrategy, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
     return routerFactory({ size, routee, routeeOptions, strategy });
+  },
+
+  /**
+   * Send every message to **all** routees and answer the caller with the
+   * **first** reply — Akka's `ScatterGatherFirstCompletedPool`, the hedged-request
+   * pattern:
+   *
+   *     const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
+   *     const replicas = system.spawn(
+   *       Router.scatterGatherFirstCompleted(3, Replica, hedgeOptions),
+   *       'replicas',
+   *     );
+   *     const value = await replicas.ask<string>({ kind: 'read', key: 'a' });
+   *
+   * Unlike the five strategy factories this one is *reply-shaped*: the router
+   * intercepts the routee replies to pick a winner, so it has to be asked (or
+   * `tell`'d with an explicit sender).  It returns `ActorFactory<TMessage>`
+   * rather than `ActorFactory<TMessage | Broadcast<TMessage>>` — a `Broadcast`
+   * wrapper would mean nothing to a router that already broadcasts.
+   *
+   * The scatter/gather settings take the third argument and per-routee spawn
+   * options move to the fourth, the same shape `Router.custom` already has:
+   * the two configure different things — how the router behaves, and how each
+   * routee is spawned — so folding them into one bag would make a single
+   * argument mean two scopes.
+   */
+  scatterGatherFirstCompleted<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, options?: ScatterGatherOptions, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage> {
+    assertPoolSize(size);
+    return scatterGatherRouterFactory(size, routee, options, routeeOptions);
   },
 };

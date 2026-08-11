@@ -13,6 +13,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -196,7 +197,12 @@ describe('ClusterSingleton — two nodes', () => {
       .withActor(() => new Echo('b'));
     const bRef = nodeB.cluster.singleton.start(bSingletonOptions);
 
-    await sleep(150);
+    // Everything below reads `leader()`, so wait for both nodes to have one
+    // rather than betting 150 ms on the election (#418).
+    await awaitCondition(
+      () => nodeA.cluster.leader().nonEmpty && nodeB.cluster.leader().nonEmpty,
+      { timeoutMs: 4_000, intervalMs: 20, label: 'both nodes elected a leader' },
+    );
 
     // Whichever node is leader is the one actually running the child.
     const leaderOption = nodeA.cluster.leader();
@@ -366,9 +372,15 @@ describe('ClusterSingleton — role filter', () => {
       .withActor(() => new Marker('b'));
     nodeB.cluster.singleton.start(bSingletonOptions);
 
-    // Allow time: if the leader is B (no role), it shouldn't spawn; wait a
-    // long beat to confirm no unwanted host appears.
-    await sleep(300);
+    // Two claims here, and only one of them can be polled.  "A hosts it" is
+    // positive, so wait for it — the 300 ms budget was the flake, since a
+    // loaded run can miss the election entirely and then read an empty array.
+    await awaitCondition(() => hosts.includes('a'), {
+      timeoutMs: 4_000, intervalMs: 20, label: 'the role-tagged node started hosting',
+    });
+    // "B does not host it" is the negative half; that one genuinely needs a
+    // window in which nothing else appears.
+    await sleep(150);
 
     // The singleton must only exist on node A (the role-tagged one).
     expect(hosts).toEqual(['a']);

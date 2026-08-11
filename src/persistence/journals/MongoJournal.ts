@@ -5,6 +5,7 @@ import {
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import {
   buildMongoResource,
@@ -110,6 +111,7 @@ export class MongoJournal extends MongoStore implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidPersistenceId(persistenceId, 'MongoJournal.append');
     assertValidTags(tags);
     const { database } = await this.ensureOpen();
     const now = Date.now();
@@ -198,6 +200,16 @@ export class MongoJournal extends MongoStore implements Journal {
     }
   }
 
+  /**
+   * No `persistenceIdsPaginated` counterpart, deliberately.  `distinct` is the
+   * only way to reach the id set through this driver shim and it has no
+   * cursor, so a "page" would still be the whole `distinct` result sliced in
+   * JS — the fallback in the query layer already does exactly that, and doing
+   * it here would only hide that no work was pushed down.  A real push-down
+   * wants a `$group`/`$sort`/`$limit` pipeline, which means widening
+   * `MongoCollectionLike` with `aggregate`; that is a change worth making on
+   * its own evidence, not as a side effect of #156.
+   */
   async persistenceIds(): Promise<string[]> {
     const { database } = await this.ensureOpen();
     try {

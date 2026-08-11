@@ -37,7 +37,7 @@ Vier Methoden:
   nicht gehalten.
 - **`checkAlive()`** — billiger, lokaler "halte ich diesen Lease
   noch?"-Check.
-- **`onLost(cb)`** — Registriere einen Callback, der feuert, wenn
+- **`onLost(handler)`** — Registriere einen Callback, der feuert, wenn
   das Eigentum unerwartet verloren geht (TTL ohne Renewal
   abgelaufen, ein anderer Halter hat übernommen).
 

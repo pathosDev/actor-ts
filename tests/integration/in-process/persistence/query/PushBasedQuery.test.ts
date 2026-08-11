@@ -21,6 +21,15 @@ import { offsetStart } from '../../../../../src/persistence/query/PersistenceQue
 import type { Journal } from '../../../../../src/persistence/Journal.js';
 import type { PersistentEvent } from '../../../../../src/persistence/JournalTypes.js';
 
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
+
+/**
+ * Most sleeps here are the fixture, not a wait: the suite measures push
+ * *latency*, so the producer closures deliberately append after a beat so
+ * the consumer is already parked, and test 2's `sleep(50)` is the
+ * "nothing further arrives" window.  Only the subscribe/unsubscribe
+ * bookkeeping in test 4 is sleep-then-assert (#418).
+ */
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('Push-based PersistenceQuery — InMemoryJournal', () => {
@@ -109,11 +118,15 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     // in the iterator factory itself, so by the time we call next()
     // the listener is registered.
     void it.next();
-    await sleep(10);
+    await awaitCondition(() => journal.events!.subscriberCount!() === initialCount + 1, {
+      timeoutMs: 4_000, label: 'the iterator subscribed to the event bus',
+    });
     expect(journal.events!.subscriberCount!()).toBe(initialCount + 1);
 
     await it.return!();
-    await sleep(10);
+    await awaitCondition(() => journal.events!.subscriberCount!() === initialCount, {
+      timeoutMs: 4_000, label: 'the iterator unsubscribed from the event bus',
+    });
     expect(journal.events!.subscriberCount!()).toBe(initialCount);
   });
 });

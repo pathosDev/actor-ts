@@ -213,7 +213,7 @@ interface AmqpChannelLike {
   assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
   consume(
-    queue: string, cb: (message: AmqpRawMessage | null) => void,
+    queue: string, onMessage: (message: AmqpRawMessage | null) => void,
     options: { noAck?: boolean },
   ): Promise<unknown>;
   publish(
@@ -222,14 +222,14 @@ interface AmqpChannelLike {
   ): boolean;
   ack(message: AmqpRawMessage): void;
   nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
-  once(event: 'drain', cb: () => void): void;
+  once(event: 'drain', listener: () => void): void;
   close(): Promise<void>;
 }
 
 interface AmqpConnectionLike {
   createChannel(): Promise<AmqpChannelLike>;
-  on(event: 'error', cb: (err: Error) => void): void;
-  on(event: 'close', cb: () => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  on(event: 'close', listener: () => void): void;
   close(): Promise<void>;
 }
 

@@ -92,13 +92,20 @@ another party concurrently re-added it.
 
 ### Tag generation
 
-Tags are `replicaId × per-replica-counter`.  Each replica keeps a
-monotonic counter; every `add` bumps it.  This guarantees unique
-tags even within the same millisecond, across the cluster.
+Tags are `replicaId × 96 random bits`, drawn from the platform's
+cryptographic random source.  That makes them unique even within
+the same millisecond, across the cluster — and, unlike the
+per-replica counter they replaced, impossible to compute ahead of
+being issued.
 
-The counter is **part of the CRDT state** — gossiping is what
-makes it correct.  You don't see or manipulate tags directly;
-they're internal.
+That second property is a correctness matter, not just a
+hardening one.  Tombstones veto by tag on merge and are never
+pruned, so a peer able to *predict* a replica's next tags could
+tombstone them in advance and make that replica's next writes
+disappear on the following merge — silently, and with no API to
+take a tombstone back.
+
+You don't see or manipulate tags directly; they're internal.
 
 ### Element identity (same as GSet)
 

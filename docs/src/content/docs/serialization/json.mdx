@@ -39,6 +39,15 @@ covers it.
 - `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
   back into real instances via type tags (`__date__`, `__bytes__`,
   `__map__`, `__set__`, `__bigint__`).
+- [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse)
+  and
+  [`BidirectionalMultiMap`](/reference/utility-helpers/#bidirectionalmultimap--the-same-for-a-many-to-many-relation)
+  — the two framework classes with tags of their own
+  (`__bidirectionalmap__`, #1035; `__bidirectionalmultimap__`,
+  #1037), so they can be held in persistent state without an
+  adapter.  Only the forward direction is written — pairs for the
+  first, an adjacency list for the second; the inverse is rebuilt on
+  decode.
 - `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (source + flags),
   `URL`, `Error` (name + message + cause — no stack), and every typed
   array / `DataView` / `ArrayBuffer` — round-tripped via type tags
@@ -60,7 +69,7 @@ What needs **care**:
 
 | Type | Behavior |
 | --- | --- |
-| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead drops `undefined` object properties like `JSON.stringify` and **preserves** `undefined` in value positions (array slots, `Set` members, `Map` entries) via a tag (#889). |
+| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead drops `undefined` object properties like `JSON.stringify` and **preserves** `undefined` in value positions (array slots, `Set` members, `Map` entries) via a tag (#889).  [`CborSerializer`](/serialization/cbor/) carries it natively everywhere, keys included — the one place the two codecs differ (#1036). |
 | `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Throw** a `SerializationError` — inherently non-serialisable. |
 | Circular references | **Throw** a `SerializationError` naming the key path (instead of overflowing the stack). |
 | Class instances | `toJSON()` is used when present; otherwise decoded as plain `{ ...fields }` — methods + class identity lost. |

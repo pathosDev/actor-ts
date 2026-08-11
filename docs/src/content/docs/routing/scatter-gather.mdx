@@ -1,0 +1,233 @@
+---
+title: Scatter/gather
+description: Router.scatterGatherFirstCompleted — ask every routee at once and answer with the first reply. The hedged-request pattern for tail latency, its N-fold cost, and what happens to the losers.
+---
+
+`Router.scatterGatherFirstCompleted` sends every message to **all** of
+its routees and answers the caller with the **first** reply.  The
+losers keep running; their replies are discarded.
+
+```ts
+import { ActorSystem, Router, ScatterGatherOptions, Actor } from 'actor-ts';
+
+class Replica extends Actor<string> {
+  override onReceive(key: string): void {
+    this.sender.toNullable()?.tell(`${this.self.path.name}:${key}`);
+  }
+}
+
+const system = ActorSystem.create('demo');
+
+const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
+const replicas = system.spawn(
+  Router.scatterGatherFirstCompleted(3, Replica, hedgeOptions),
+  'replicas',
+);
+
+const value = await replicas.ask<string>('user-42');
+```
+
+Three replicas are asked in parallel; whichever answers first decides
+the value.
+
+## What it buys, and what it costs
+
+This is the **hedged request** pattern.  It does not increase
+throughput — it lowers the *tail*.  N routees each do the whole job,
+so you pay N times the work and receive the **minimum** of N latencies
+instead of a random one.
+
+That trade pays when the slow tail is much slower than the median:
+
+- **Redundant replica reads** — three caches, first answer wins.
+- **Multi-source lookup** — several indexes, take whoever responds.
+- **Speculative execution** — the same job on N workers, first result
+  counts.
+
+It is a straight N-fold waste otherwise.  For spreading *different*
+work over a pool, use [`Router.roundRobin`](/routing/router/) or
+`Router.smallestMailbox`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Losing routees are not cancelled">
+  There is no cancel message.  A routee that loses the race runs to
+  completion and answers into a reply ref that has already been
+  discarded.  If your routees do expensive, side-effecting work, N-fold
+  means N side effects — scatter/gather is for **idempotent reads**,
+  not for writes.
+</Aside>
+
+## The reply contract
+
+The router has to intercept the routee replies to pick a winner, so it
+needs somewhere to send the winning one.  Two shapes work:
+
+```ts
+// 1. ask — the usual one.
+const value = await replicas.ask<string>('user-42');
+
+// 2. tell with an explicit sender — inside an actor.
+replicas.tell('user-42', this.self);
+```
+
+A bare `replicas.tell('user-42')` has no reply target.  Nothing is
+scattered, the message is dropped, and the router logs a warning —
+fanning N ways out for an answer nobody would receive is exactly the
+waste the pattern is supposed to buy something for.  It does **not**
+throw: a throw would fail the router through supervision, and the
+restart would take every *other* in-flight scatter down with it.
+
+The reply is attributed to the routee that produced it, not to the
+router.  A caller reading `this.sender` sees what it would have seen
+asking that routee directly — and for hedged reads that answers the
+question the pattern raises: which replica won.
+
+## Failures
+
+Every failure rejects with an **`AggregateError`**.  Its `errors` array
+holds one error per routee, in scatter order, and the message names the
+cause:
+
+| Situation | `message` says | `errors` holds |
+| --- | --- | --- |
+| Nobody replied in time | `none of N routees replied within …ms` | N `AskTimeoutError`s |
+| Every routee failed | `all N routees failed` | what each routee returned |
+| Every routee has stopped | `no routees left to scatter to` | empty |
+| Router stopped mid-scatter | `stopped while the scatter was still open` | empty |
+
+```ts
+try {
+  await replicas.ask<string>('user-42');
+} catch (e) {
+  const aggregate = e as AggregateError;
+  console.error(aggregate.message, aggregate.errors);
+}
+```
+
+One type for every failure, on purpose: a caller that had to branch on
+the error *type* to find out how many routees failed would learn
+nothing the `errors` array does not already carry.  To test
+specifically for "too slow", check the members:
+
+```ts
+const allTimedOut = aggregate.errors.every((e) => e instanceof AskTimeoutError);
+```
+
+`AggregateError` survives the cluster wire — the built-in serializer
+encodes its member errors — so a scatter behind a `ClusterRouter` fails
+the same way on the calling node.
+
+A routee that *throws* rather than replying does not produce an error
+here directly: its supervisor restarts it and the router's ask for that
+routee simply times out.  To report a failure as a failure, reply with
+an `Error` — that rejects the ask immediately, and the scatter can move
+on to the next-fastest routee instead of waiting out the clock.
+
+<Aside type="note" title="Losing replies do not reach dead letters">
+  The router asks each routee, so a losing reply is addressed to the
+  router's own one-shot reply ref.  That ref is not an actor; once it
+  has settled it drops what arrives, silently.  Nothing shows up in
+  dead letters, and no metric counts it.  If you need to see how often
+  a given routee loses, instrument the routee.
+</Aside>
+
+## Timeout
+
+`withTimeoutMs` is the deadline for one whole scatter — Akka spells the
+same knob `within`.  It becomes the timeout on each routee's `ask`, so
+it is enforced per routee and the scatter fails once the last one has
+expired.  Default: `4_500` — just under the `5_000` of `ActorRef.ask`.
+
+The gap is the point.  The router can only report *which* routees failed
+after its own deadline has passed and it has collected their errors, so
+if its budget matched the caller's, the caller's `ask` would already have
+given up and raised `AskTimeoutError` instead.  Whatever you set here,
+keep the caller's `ask` timeout above it — otherwise you get your own
+timeout rather than the `AggregateError` this router exists to produce.
+
+```ts
+const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
+```
+
+A plain object works too — `{ timeoutMs: 250 }` — and both go through
+the same validation: a present `timeoutMs` must be a positive finite
+number, checked at the `Router.scatterGatherFirstCompleted(...)` call so
+the stack still points at you.
+
+Sizing it is most of the point.  Set it **below** the caller's own ask
+timeout: a stalled replica should cost a fraction of the caller's
+budget, not all of it, and the caller needs to still be listening when
+the router reports which routees failed.
+
+Note that in-flight routee asks are not cancelled when a scatter ends
+early — their reply refs simply expire on their own timers.  A long
+`timeoutMs` therefore keeps a few timers alive past the answer.
+
+## Stopping the pool
+
+`postStop` fails every scatter that is still open, rather than leaving
+its caller to discover the router is gone when the ask eventually times
+out.  The routees are already stopped by then, so their replies can no
+longer arrive; waiting out `timeoutMs` would only make shutdown as slow
+as the longest configured deadline.
+
+A restart does the same thing, for the same reason — `preRestart`
+defaults to `postStop`, and the routees a restarting router asked are
+being torn down and re-spawned.
+
+## Concurrency
+
+The fan-out is fired **without** `await`ing it in the handler, and the
+continuation replies from outside the mailbox turn.  That is not a
+detail: the runtime awaits an actor's handler before dequeuing the next
+message, so an `async onReceive` around `Promise.any(...)` would park
+the router's whole mailbox for the duration of one scatter.  A single
+stalled routee would then hold up every other caller for the full
+`timeoutMs`, and concurrent asks would run one after another rather
+than in parallel.
+
+As written, hundreds of scatters overlap freely.
+
+## Metrics
+
+Two families, emitted when the metrics extension is enabled:
+
+| Metric | Kind | Labels |
+| --- | --- | --- |
+| `router_scatter_gather_resolved_total` | counter | `outcome` |
+| `router_scatter_gather_latency_seconds` | histogram | — |
+
+`outcome` is one of `first`, `timeout`, `all-failed`, `stopped`,
+`no-reply-target`.  `timeout` and `all-failed` are split because they
+call for different responses: the first says the routees are too slow
+for the configured budget, the second that they are broken.
+
+The latency histogram observes the time from scattering to answering
+the caller, so it is the *winner's* latency — the distribution you are
+trying to move.  Nothing is observed for `no-reply-target`, where no
+scatter ran.
+
+Neither family carries a router path.  With several scatter/gather
+routers in one system the series aggregate; the actor path in the log
+lines is what tells them apart.
+
+## Pool only
+
+Like the rest of the local `Router`, this is a **pool** — it spawns and
+owns its routees.  There is no group variant that scatters to
+already-existing actors; see
+[Pool vs group](/routing/pool-vs-group/) for why the local router
+is pool-shaped, and
+[Cluster router](/cluster/cluster-router/) for the group-shaped
+cluster equivalent.
+
+## Where to next
+
+- **[Router](/routing/router/)** — the five one-shot strategy
+  factories this one sits next to.
+- **[Strategies](/routing/strategies/)** — how the other routers
+  pick a routee.
+- **[Circuit breaker](/patterns/circuit-breaker/)** — the other
+  tail-latency tool: stop calling a dependency that is failing, rather
+  than calling it N times.

@@ -2,8 +2,9 @@ import { detectRuntime, type RuntimeKind } from '../detect.js';
 import type { TcpBackend } from './TcpBackend.js';
 
 export type {
-  TcpBackend, TcpListener, TcpSocketLike, TcpSocketHandlers, TlsTransportOptionsType,
+  PeerCertificate, TcpBackend, TcpListener, TcpSocketLike, TcpSocketHandlers, TlsTransportOptionsType,
 } from './TcpBackend.js';
+export { toPeerCertificate } from './TcpBackend.js';
 export { BunTcpBackend } from './BunTcpBackend.js';
 export { NodeTcpBackend } from './NodeTcpBackend.js';
 export { DenoTcpBackend } from './DenoTcpBackend.js';

@@ -3,7 +3,11 @@ import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
 import { probeCompressionAvailability } from './Compression.js';
-import { probeEncryptionAvailability } from './Encryption.js';
+import {
+  keyVersionExhaustionWarning,
+  probeEncryptionAvailability,
+  validateMasterKeyRing,
+} from './Encryption.js';
 import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
@@ -95,6 +99,8 @@ export async function registerObjectStoragePlugins(
 ): Promise<ObjectStoragePluginHandles> {
   const resolvedOptions = (options as ObjectStoragePluginOptionsType);
   if (resolvedOptions.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
+  assertEncryptionInfo(resolvedOptions);
+  assertMasterKeyRings(resolvedOptions);
   await validateObjectStoragePeerDeps(resolvedOptions);
 
   const backend = buildBackend(resolvedOptions.backend);
@@ -159,6 +165,64 @@ export async function validateObjectStoragePeerDeps(
   const encConfigs = collectEncryptionConfigs(resolvedOptions.encryption);
   if (encConfigs.some((c) => c.mode === 'client-aes256-gcm')) {
     await probeEncryptionAvailability();
+  }
+}
+
+/**
+ * Reject a client-side encryption config whose HKDF `info` is missing or
+ * blank (#108).
+ *
+ * The type already requires it, so in TypeScript this never fires.  It
+ * exists for the paths the type does not reach: JavaScript consumers,
+ * `as any` call sites, and configs deserialised from a JSON/YAML blob at
+ * runtime.  There it matters a great deal — a subkey derived from
+ * `"undefined"` is a deployment-wide constant, which is precisely the
+ * failure mode #108 removed, and it would only ever surface as data that
+ * two environments can read from each other.
+ *
+ * Checked here rather than only in `deriveSubkey` so the error lands at
+ * registration, in the same place and for the same reason the peer-dep
+ * probes do (#18, #59) — configs behind `encryptionByPrefix` resolvers
+ * included, via `knownConfigsOf`.
+ */
+function assertEncryptionInfo(options: ObjectStoragePluginOptionsType): void {
+  for (const config of collectEncryptionConfigs(options.encryption)) {
+    if (config.mode !== 'client-aes256-gcm') continue;
+    if (typeof config.info === 'string' && config.info.length > 0) continue;
+    throw new Error(
+      'registerObjectStoragePlugins: encryption info is required for '
+      + "mode 'client-aes256-gcm' and must be a non-empty string.  It is the "
+      + 'HKDF context that keeps one deployment\'s subkeys separate from '
+      + "another's — set it explicitly, e.g. info: 'acme/prod/snapshot/v1'.",
+    );
+  }
+}
+
+/**
+ * Reject a structurally broken `MasterKeyRing`, and warn when the
+ * version space is nearly spent (#111).
+ *
+ * Same placement argument as {@link assertEncryptionInfo}: the ring's own
+ * entry points validate too, but a duplicate version is a config typo,
+ * and a config typo should surface at registration rather than on the
+ * first snapshot — by which point the process is live and the operator is
+ * reading an authentication-tag error instead of a message naming the
+ * duplicate.  `encryptionByPrefix` resolvers are covered as well, since
+ * `collectEncryptionConfigs` unpacks their known configs.
+ *
+ * The warning goes to `console.warn` because nothing here can reach the
+ * system logger — `PersistenceExtension` keeps its `ActorSystem` private,
+ * and threading a logger through this call for one advisory line is a
+ * worse trade than matching what the rest of `src/persistence/` already
+ * does.
+ */
+function assertMasterKeyRings(options: ObjectStoragePluginOptionsType): void {
+  for (const config of collectEncryptionConfigs(options.encryption)) {
+    if (config.mode !== 'client-aes256-gcm') continue;
+    if (!('masterKeys' in config)) continue;
+    validateMasterKeyRing(config.masterKeys, 'registerObjectStoragePlugins');
+    const warning = keyVersionExhaustionWarning(config.masterKeys);
+    if (warning !== undefined) console.warn(warning);
   }
 }
 

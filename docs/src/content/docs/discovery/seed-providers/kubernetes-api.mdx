@@ -43,6 +43,8 @@ type KubernetesApiSeedProviderOptionsType = {
   systemName:      string;
   port:            number;
   fetchEndpoints?: () => Promise<string[]>;  // override the in-cluster API
+  pinnedAddresses?: readonly string[];       // CIDRs the pod IPs must fall inside
+  log?: (message: string, error?: unknown) => void;
 };
 ```
 
@@ -53,11 +55,42 @@ type KubernetesApiSeedProviderOptionsType = {
 | `systemName` | The actor-system name stamped on each discovered address. |
 | `port` | The cluster-transport port on each backing pod. |
 | `fetchEndpoints` | Override the Endpoints-fetch function — defaults to the in-cluster API. |
+| `pinnedAddresses` | CIDRs the discovered pod IPs must fall inside.  Unset means no pinning. |
+| `log` | Reports addresses dropped by `pinnedAddresses`.  Default: no-op. |
 
-For pods running in-cluster, only `fetchEndpoints` is optional —
-the framework reads the Endpoints from the standard API at
-`https://kubernetes.default.svc` using the mounted ServiceAccount
-token.  The other four fields are required.
+For pods running in-cluster, only the last three fields are
+optional — the framework reads the Endpoints from the standard API
+at `https://kubernetes.default.svc` using the mounted
+ServiceAccount token.  The other four fields are required.
+
+## Pinning the pod CIDR
+
+An `Endpoints` object may name **any** IP, including one no pod in
+the cluster owns.  `pinnedAddresses` bounds what a write to that
+object can redirect the bootstrap towards:
+
+```ts
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.244.0.0/16'])
+  .withLog((message) => logger.warn(message));
+```
+
+Entries here are **CIDRs only** — Endpoints always resolve to IPs,
+so a host suffix could never match and is rejected at
+construction, as are an empty list and a malformed CIDR.  Addresses
+outside the list are filtered out and reported through `log`, one
+message per dropped address.
+
+This provider is already the better-defended of the two: the
+default fetcher pins TLS to the ServiceAccount CA, so it does not
+inherit DNS's trust problem the way the
+[DNS provider](/discovery/seed-providers/dns/) does.  RBAC that can
+write Endpoints is still a much cheaper find than a CA key, which
+is what this pin costs an attacker.
 
 ## RBAC
 

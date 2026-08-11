@@ -70,7 +70,7 @@ Drei Teile:
 - **`when(state, handler)`** — registriert den Handler für
   diesen Zustand.  Gibt `goto(...)` oder `stay(...)` zurück, um
   den Übergang zu bestimmen.
-- **`onEnter(state, fn)`** / **`onExit(state, fn)`** —
+- **`onEnter(state, hook)`** / **`onExitState(state, hook)`** —
   optionale Callbacks, die beim Eintritt / Austritt eines
   Zustands gefeuert werden.
 - **`goto(state, data)`** / **`stay(data)`** —

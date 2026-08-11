@@ -84,7 +84,8 @@ const server = system.spawn(
 Die Bind-Adresse ist ein einzelner `host:port`-String über
 `withBind`; `packageName` und `serviceName` werden separat gesetzt.
 Jeder Handler-Deskriptor ist `{ kind, target }`, wobei `kind`
-entweder `'unary'`, `'serverStream'` oder `'bidi'` ist.
+entweder `'unary'`, `'serverStream'`, `'clientStream'` oder `'bidi'`
+ist.
 
 ### Call-Formen der Handler
 
@@ -95,12 +96,16 @@ Handler ein typisiertes Call-Objekt:
 | --- | --- | --- |
 | `unary` | `GrpcUnaryCall` | `respond(res)` / `respondError(message, code?)` |
 | `serverStream` | `GrpcServerStreamCall` | `send(chunk)` / `complete()` / `fail(message, code?)` |
+| `clientStream` | `GrpcClientStreamCall` | `onData(target)` / `respond(res)` / `respondError(message, code?)` |
 | `bidi` | `GrpcBidiCall` | `onData(target)` / `send(chunk)` / `complete()` |
 
 Jeder Call trägt `method`, den deserialisierten `request` (außer
-der Bidi-Call, der seine Requests streamt) und ein
-`metadata`-Record.  `respondError` / `fail` nehmen einen optionalen
-numerischen Status-Code, der auf `13` (INTERNAL) fällt.
+den Client-Stream- und Bidi-Calls, die ihre Requests streamen) und
+ein `metadata`-Record.  `respondError` / `fail` nehmen einen
+optionalen numerischen Status-Code, der auf `13` (INTERNAL) fällt.
+
+Ein `onData`-Subscriber erhält `GrpcRequestStreamInbound` — entweder
+`{ kind: 'chunk', chunk }` oder `{ kind: 'end' }`.
 
 ## Client
 
@@ -115,6 +120,7 @@ import {
   type RpcErrorMessage,
   type StreamDataMessage,
   type StreamErrorMessage,
+  type StreamStartedMessage,
 } from 'actor-ts';
 
 const grpcClientOptions = GrpcClientOptions.create()
@@ -134,6 +140,7 @@ class ReplyCollector extends Actor<GrpcInbound> {
   override onReceive(message: GrpcInbound): void {
     match(message)
       .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-started' }, (m) => this.onStreamStarted(m))
       .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
       .with({ kind: 'stream-end' }, () => this.onStreamEnd())
       // Unary and streaming failures are reported the same way.
@@ -143,6 +150,11 @@ class ReplyCollector extends Actor<GrpcInbound> {
 
   private onReply(message: ReplyMessage): void {
     console.log('unary reply:', message.response);
+  }
+
+  // A client stream is open — `message.handle` addresses its writes.
+  private onStreamStarted(message: StreamStartedMessage): void {
+    console.log('client stream open:', message.handle.streamId);
   }
 
   private onStreamData(message: StreamDataMessage): void {
@@ -177,7 +189,8 @@ Antworten und Stream-Frames treffen beim `target`-Actor als
 
 | `kind` | Felder | Bedeutung |
 | --- | --- | --- |
-| `reply` | `response` | Unärer Abschluss. |
+| `reply` | `response` | Unärer **oder Client-Stream-**Abschluss. |
+| `stream-started` | `handle` | Ein Client-Stream ist offen — siehe unten. |
 | `stream-data` | `streamId`, `chunk` | Ein Stream-Chunk. |
 | `stream-end` | `streamId` | Stream sauber geschlossen. |
 | `stream-error` | `streamId`, `error` | Stream fehlgeschlagen. |
@@ -185,18 +198,17 @@ Antworten und Stream-Frames treffen beim `target`-Actor als
 
 ## Streaming-Modi
 
-gRPC unterstützt vier Call-Typen; das Framework deckt alle ab:
+gRPC hat vier Call-Typen, und das Framework deckt alle vier ab:
 
-| Typ | Client sendet | Server liefert |
-| --- | --- | --- |
-| **Unär** | Einen Request | Eine Response |
-| **Server-Streaming** | Einen Request | Stream von Responses |
-| **Client-Streaming** | Stream von Requests | Eine Response |
-| **Bidirektionales Streaming** | Stream von Requests | Stream von Responses |
+| Typ | Client sendet | Server liefert | Clientseitige `kind`s |
+| --- | --- | --- | --- |
+| **Unär** | Einen Request | Eine Response | `unary` |
+| **Server-Streaming** | Einen Request | Stream von Responses | `serverStream` |
+| **Client-Streaming** | Stream von Requests | Eine Response | `clientStreamStart` / `clientStreamSend` / `clientStreamClose` |
+| **Bidirektionales Streaming** | Stream von Requests | Stream von Responses | `bidiStart` / `bidiSend` / `bidiClose` |
 
 Jeder clientseitige Call ist ein Kommando, das du dem Client-Actor
-per `tell` schickst.  Das `kind` wählt den Call-Typ — exakt
-`unary`, `serverStream`, `bidiStart`, `bidiSend` oder `bidiClose`:
+per `tell` schickst; das `kind` wählt den Call-Typ.
 
 ```ts
 // Server-streaming: one request, N chunks routed to `target`.
@@ -207,15 +219,76 @@ client.tell({
   target: collector,
 });
 
-// Bi-directional: open a stream, then push chunks into it.
+// Client-streaming: open a stream, then push requests into it.
+client.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: collector });
+```
+
+### Client-Streaming und das Stream-Handle
+
+`clientStreamStart` liefert nichts direkt zurück.  Der Actor stellt
+dem `target` einen `stream-started`-Frame zu, der ein
+**`GrpcStreamHandle`** trägt — und dieses Handle adressiert jeden
+weiteren Schreibvorgang:
+
+```ts
+// Inside the collector, on the `stream-started` frame:
+const handle = message.handle;
+
+client.tell({ kind: 'clientStreamSend', handle, chunk: { value: 21.5 } });
+client.tell({ kind: 'clientStreamClose', handle });
+```
+
+`clientStreamClose` schließt den Request-Stream halbseitig; die
+einzelne Server-Response trifft danach als ganz normaler **`reply`**
+ein, ein Fehlschlag als `rpc-error`.
+
+Das Handle hat zwei Felder mit zwei verschiedenen Aufgaben.
+`streamId` ist die Korrelations-ID — dieselbe Zahl, die die Frames
+dieses Streams tragen, sodass ein Collector mehrere gleichzeitige
+Streams multiplexen kann.  `token` ist die Capability: ein `tell`
+trägt keinen verifizierten Absender, eine *fortlaufende ID* würde
+also jedem, der den Client-Actor erreicht, das Schreiben in einen
+nie selbst geöffneten Stream erlauben.  Der Token besteht aus 64 Bit
+kryptografischer Zufälligkeit — damit ist der Map-Lookup selbst die
+Ownership-Prüfung.  Gib das Handle genauso sorgsam weiter, wie du es
+mit einem Schreib-Handle tätest.
+
+Serverseitig wird eine Client-Streaming-Methode mit
+`kind: 'clientStream'` registriert; ihr Handler konsumiert den
+Request-Stream über `onData` und antwortet einmal:
+
+```ts
+class ReportReadingsHandler extends Actor<GrpcClientStreamCall> {
+  override onReceive(call: GrpcClientStreamCall): void {
+    let count = 0;
+    const sink = { tell: (m: GrpcRequestStreamInbound): void => {
+      match(m)
+        .with({ kind: 'chunk' }, () => { count++; })
+        .with({ kind: 'end' }, () => call.respond({ count }))
+        .exhaustive();
+    } } as unknown as ActorRef<GrpcRequestStreamInbound>;
+    call.onData(sink);
+  }
+}
+```
+
+Chunks, die eintreffen, bevor der Handler subscribed hat, werden
+gepuffert und beim ersten `onData` nachgeliefert — in dem Turn
+zwischen "Call landet in der Mailbox" und "Handler läuft" geht also
+nichts verloren.
+
+### Bidirektionales Streaming
+
+Bidi öffnet genauso, hält aber beide Richtungen offen:
+
+```ts
 client.tell({ kind: 'bidiStart', method: 'Chat', target: collector });
 ```
 
-`bidiStart` liefert nichts direkt zurück.  Stattdessen stellt der
-Actor dem `target` einen ersten `stream-data`-Frame zu, dessen
-Chunk die generierte Stream-ID als `{ __streamId }` trägt.  Lies
-diese ID aus und adressiere damit anschließende Sends und den
-Close:
+Es benutzt weiterhin den **älteren In-Band-Handshake**: der Actor
+stellt einen ersten `stream-data`-Frame zu, dessen Chunk
+`{ __streamId }` ist, und `bidiSend` / `bidiClose` adressieren diese
+nackte Zahl.
 
 ```ts
 // Inside the collector, after receiving the streamId hint:
@@ -224,6 +297,14 @@ const streamId = (message.chunk as { __streamId: number }).__streamId;
 client.tell({ kind: 'bidiSend', streamId, chunk: { text: 'hello' } });
 client.tell({ kind: 'bidiClose', streamId });
 ```
+
+Dieser Handshake ist eine bekannte Schwachstelle — der Hinweis ist
+von echten Stream-Daten nicht unterscheidbar, und die ID ist
+erratbar — nachverfolgt als
+[#788](https://github.com/pathosDev/actor-ts/issues/788).  Der
+`stream-started`-Frame und das Capability-Handle von oben sind das,
+was er übernehmen wird; schreib neuen Code gegen die
+Client-Stream-Form, wo du die Wahl hast.
 
 Server-Stream-Calls tragen ebenfalls eine `streamId` auf ihren
 `stream-data`- / `stream-end`-Frames, sodass ein einzelner
@@ -274,6 +355,56 @@ new GrpcClientActor(
 
 Für Mutual TLS (mTLS) füge dem Credentials-Objekt `cert` + `key`
 der Gegenseite hinzu.
+
+## Health-Checking
+
+Der Server kann den Standard-Dienst **`grpc.health.v1.Health`**
+neben deinem eigenen bereitstellen, sodass `grpc_health_probe`, die
+gRPC-Probe von Kubernetes und gRPC-Load-Balancer den Knoten fragen
+können, ob er bereit ist.
+
+Der Status ist **kein zweiter Begriff von „gesund“**: er stammt aus
+derselben [`HealthCheckRegistry`](/de/observability/management/health-checks/),
+die auch den `/ready`-Endpunkt des Management-Servers speist.  Reiche
+die Registry an `withHealth` — genau das *ist* das Opt-in:
+
+```ts
+import { HealthCheckRegistry } from 'actor-ts';
+
+const health = new HealthCheckRegistry();
+health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));
+
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withHealth(health);
+```
+
+`Check` antwortet nur dann `SERVING`, wenn **jeder**
+Readiness-Check besteht, und `NOT_SERVING`, sobald einer
+fehlschlägt — dieselbe Regel, die `/ready` anwendet.  Ausgewertet
+wird pro Aufruf, es wird also nichts zwischengespeichert.  Wenn du
+ohnehin den Management-Server betreibst, gib ihm die Registry, die
+`managementRoutes(...)` zurückgegeben hat — dann bleiben beide
+Endpunkte im Gleichschritt.
+
+Das Feld `HealthCheckRequest.service` wählt aus, wonach gefragt
+wird:
+
+| `service` | Antwort |
+| --- | --- |
+| `''` (leer) | Der ganze Server — die übliche Probe. |
+| `sensor.v1.SensorService` | Der bereitgestellte Dienst, voll qualifiziert. |
+| `SensorService` | Dasselbe; der bloße Name wird der Bequemlichkeit halber akzeptiert. |
+| `grpc.health.v1.Health` | Der Health-Dienst selbst. |
+| alles andere | `NOT_FOUND` (Statuscode 5). |
+
+Implementiert ist nur `Check`; `Watch` antwortet mit
+`UNIMPLEMENTED` — das dokumentierte Signal für einen Client, auf
+das Pollen von `Check` zurückzufallen.
 
 ## Konfiguration
 
@@ -355,6 +486,18 @@ import { Aside } from '@astrojs/starlight/components';
   die darunterliegende Verbindung neu auf, startet aber keine
   In-Flight-Streams neu.  Setze den Call nach einem
   `BrokerConnected`-Event erneut ab.
+</Aside>
+
+<Aside type="caution" title="Keine Registry, kein Health-Dienst">
+  ```ts
+  // Without withHealth(...) the server hosts only your service
+  ```
+  Für das Health-Checking gibt es bewusst weder einen
+  Boolean-Schalter noch ein HOCON-Blatt.  Ein Health-Dienst, der
+  bedingungslos `SERVING` antwortet, ist schlimmer als gar keiner —
+  eine Kubernetes-Probe würde den Pod mitten in einem Ausfall im
+  Verkehr halten.  Deshalb setzt das Aktivieren voraus, dass du
+  benennst, woher der Status kommt.
 </Aside>
 
 ## Wohin als Nächstes

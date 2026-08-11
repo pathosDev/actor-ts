@@ -32,6 +32,15 @@ export class SqliteDurableStateStoreOptionsBuilder extends StoreSerializerOption
     return this.set('database', database);
   }
 
+  /**
+   * Lock-wait budget for a blocked writer, in milliseconds; `0` fails fast.
+   * Default: `DEFAULT_SQLITE_BUSY_TIMEOUT_MS`.  Ignored when a pre-opened
+   * `database` is supplied — that handle's pragma belongs to its opener.
+   */
+  withBusyTimeoutMs(busyTimeoutMs: number): this {
+    return this.set('busyTimeoutMs', busyTimeoutMs);
+  }
+
   /** Durable-state table name.  Default: `durable_state`. */
   withTable(table: string): this {
     return this.set('table', table);
@@ -61,6 +70,10 @@ export class SqliteDurableStateStoreOptionsValidator
   protected rules(s: Partial<SqliteDurableStateStoreOptionsType>): void {
     this.nonEmptyString('path');
     this.nonEmptyString('table');
+    // Negative is SQLite's "retry forever", and the driver is synchronous —
+    // that is an unbounded event-loop freeze, not a long wait.  `0` is legal
+    // and means "fail fast instead of waiting".
+    this.nonNegativeInt('busyTimeoutMs');
     // The mirror image of the libSQL rule.  That backend rejects a local URL
     // because its HTTP driver cannot open one; this one rejects a remote path
     // because the local driver cannot either — and a `libsql://` path silently

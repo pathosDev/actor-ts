@@ -8,9 +8,10 @@ import { FastifyBackend } from '../../../../src/http/backend/FastifyBackend.js';
 import { ExpressBackend } from '../../../../src/http/backend/ExpressBackend.js';
 import { HonoBackend } from '../../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../../src/http/HttpExtension.js';
-import { concat, type Route } from '../../../../src/http/Route.js';
-import { getFromBrowseableDirectory, getFromDirectory } from '../../../../src/http/static/StaticFiles.js';
+import { compile, concat, type CompiledRoute, type Route } from '../../../../src/http/Route.js';
+import { getFromBrowseableDirectory, getFromDirectory, getFromFile } from '../../../../src/http/static/StaticFiles.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
+import type { HttpRequest, HttpResponse } from '../../../../src/http/types.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 let root: string;
@@ -138,5 +139,53 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
     const html = await response.text();
     expect(html).toContain('page.txt');
     expect(html).toContain('href="../"'); // parent link (not at mount root)
+  });
+});
+
+/*
+ * Directive-level, deliberately NOT through a backend: the backends stamp
+ * `nosniff` on every response of their own accord, which would make a
+ * live-server assertion pass even with the directive broken.  Calling the
+ * compiled handler proves the static-file response carries it itself.
+ */
+describe('static files — nosniff on the served file', () => {
+  const requestFor = (headers: Readonly<Record<string, string>> = {}): HttpRequest => ({
+    method: 'GET', path: '/', headers, query: {}, params: {}, body: null,
+  });
+
+  async function serveStyleCss(headers?: Readonly<Record<string, string>>): Promise<HttpResponse> {
+    const compiled = compile(getFromFile(join(root, 'style.css')));
+    const route = compiled[0] as CompiledRoute;
+    return await route.handler(requestFor(headers));
+  }
+
+  test('a 200 file response carries nosniff', async () => {
+    const response = await serveStyleCss();
+    expect(response.status).toBe(200);
+    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('the conditional 304 carries it too', async () => {
+    const etag = (await serveStyleCss()).headers?.['etag']!;
+    const response = await serveStyleCss({ 'if-none-match': etag });
+    expect(response.status).toBe(304);
+    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('a range 206 and an unsatisfiable 416 carry it too', async () => {
+    const partial = await serveStyleCss({ range: 'bytes=0-3' });
+    expect(partial.status).toBe(206);
+    expect(partial.headers?.['x-content-type-options']).toBe('nosniff');
+    const unsatisfiable = await serveStyleCss({ range: 'bytes=99999-' });
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers?.['x-content-type-options']).toBe('nosniff');
+  });
+
+  test('HEAD carries it as well', async () => {
+    const compiled = compile(getFromFile(join(root, 'style.css')));
+    const route = compiled[0] as CompiledRoute;
+    const response = await route.handler({ ...requestFor(), method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
   });
 });

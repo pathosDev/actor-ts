@@ -113,9 +113,9 @@ Funktion aus":
 | Methode | Was sie tut |
 | --- | --- |
 | `scheduleOnce(delayMs, target, message, sender?)` | Sende `message` einmal an `target`, nach `delayMs`. |
-| `scheduleOnceFunction(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
+| `scheduleOnceFunction(delayMs, task)` | Führe `task` einmal aus, nach `delayMs`. |
 | `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Sende `message` wiederholt. |
-| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
+| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task)` | Führe `task` wiederholt aus. |
 
 Jede Methode gibt ein `Cancellable` zurück:
 

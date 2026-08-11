@@ -20,13 +20,16 @@ const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 bytes
 
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
-  .withEncryption({ mode: 'client-aes256-gcm', masterKey });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/durable-state/v1' });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
 Now every persisted state is AES-GCM-encrypted before upload —
 under a per-`persistenceId` subkey derived from the master key.
 Reads transparently decrypt.
+
+`info` is **required** and deployment-specific.  It is not
+decoration — see [Choosing `info`](#choosing-info) below.
 
 ## Why client-side encryption
 
@@ -52,8 +55,8 @@ type EncryptionConfig =
   | { mode: 'none' }
   | { mode: 'sse-s3' }                                    // server-side, S3-managed
   | { mode: 'sse-kms'; kmsKeyId: string }                // server-side, KMS-managed
-  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info?: string }
-  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info?: string };
+  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info: string }
+  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info: string };
 
 type MasterKeyRing = {
   active: MasterKeyRingEntry;                // new writes encrypt under this
@@ -76,6 +79,44 @@ Each entry's **`version`** byte travels in the body manifest so
 decrypt can pick the matching key.  Carrying the active key plus
 retired keys is the foundation of
 [key rotation](/persistence/object-storage/key-rotation/).
+
+## Choosing `info`
+
+`info` is HKDF's **context-binding** input (RFC 5869 §3.2).  The
+subkey for a blob is derived from three things: the master key,
+the `persistenceId` (as HKDF salt), and `info`.  Change any one
+and you get an unrelated key.
+
+It is required, and there is no default, deliberately.  A shared
+default would mean any two deployments holding the same master
+key derive **byte-for-byte the same subkey** for the same
+`persistenceId` — so a staging environment restored from a
+production dump, or a DR region, could read production's blobs
+and nothing in the config would say so.  That is a decision only
+the operator can make, so the framework insists you make it.
+
+Encode **environment + purpose + version**, most specific first:
+
+```ts
+'acme/prod/snapshot/v1'
+'acme/staging/snapshot/v1'
+'acme/prod/durable-state/v1'
+```
+
+- **Different environments MUST differ**, even on the same master
+  key.  This is the whole point.
+- **Different payload kinds SHOULD differ** (snapshots vs.
+  durable state), so one compromised derivation context does not
+  extend to the other.
+- **A trailing version** gives a future context rotation
+  somewhere to go.
+
+**`info` is not recorded on the wire.**  Unlike the key version,
+no manifest byte records which `info` a blob was written under.
+Changing it makes every existing blob undecryptable until a sweep
+rewrites them — see
+[rotating the context](/persistence/object-storage/key-rotation/#rotating-the-hkdf-context).
+Pick the value **before the first write**.
 
 ## How it works
 
@@ -117,7 +158,7 @@ The master key bytes come from somewhere.  Common patterns:
 
 ```ts
 const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 bytes
-// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' })
 ```
 
 Simplest.  Each key is a 32-byte buffer (for AES-256-GCM),
@@ -139,7 +180,7 @@ const decrypted = await kms.decrypt({
 });
 
 const masterKey = decrypted.Plaintext!; // 32 bytes, held in memory
-// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' })
 ```
 
 Master key is **stored encrypted** under a cloud KMS key.  The
@@ -214,9 +255,9 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="tip" title="Per-tenant keys map to persistenceId">
   ```ts
   .withEncryption(encryptionByPrefix({
-    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA },
-    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB },
-    default:     { mode: 'client-aes256-gcm', masterKey: keyShared },
+    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA, info },
+    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB, info },
+    default:     { mode: 'client-aes256-gcm', masterKey: keyShared, info },
   }))
   ```
   `withEncryption` accepts a **per-`persistenceId` resolver**, not

@@ -1,3 +1,5 @@
+import { match } from 'ts-pattern';
+
 /**
  * Backend-agnostic socket surface.  Each HTTP backend maps its native
  * WebSocket (the `ws` package's socket for Fastify/Express, Hono's
@@ -53,9 +55,9 @@ export interface WebsocketPackageSocket {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   terminate?(): void;
-  on(event: 'message', cb: (data: unknown, isBinary: boolean) => void): void;
-  on(event: 'close', cb: (code: number, reason: unknown) => void): void;
-  on(event: 'error', cb: (err: unknown) => void): void;
+  on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): void;
+  on(event: 'close', listener: (code: number, reason: unknown) => void): void;
+  on(event: 'error', listener: (err: unknown) => void): void;
   readonly bufferedAmount?: number;
   readonly readyState?: number;
   readonly protocol?: string;
@@ -84,10 +86,60 @@ function coerceText(data: unknown): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
-type BufferedEvent =
-  | { readonly t: 'message'; readonly data: string | Uint8Array }
-  | { readonly t: 'close'; readonly code: number; readonly reason: string }
-  | { readonly t: 'error'; readonly err: Error };
+type BufferedMessageEvent = { readonly kind: 'message'; readonly data: string | Uint8Array };
+type BufferedCloseEvent = { readonly kind: 'close'; readonly code: number; readonly reason: string };
+type BufferedErrorEvent = { readonly kind: 'error'; readonly error: Error };
+type BufferedEvent = BufferedMessageEvent | BufferedCloseEvent | BufferedErrorEvent;
+
+/**
+ * A {@link WebsocketListeners} that holds events until the real listeners
+ * arrive, then replays them in order.
+ */
+export interface BufferedWebsocketEvents extends WebsocketListeners {
+  /** Attach the real listeners and flush whatever arrived before them. */
+  attach(listeners: WebsocketListeners): void;
+}
+
+/**
+ * The buffer every backend adapter needs between the native socket going
+ * live and `setListeners` running — the window the
+ * {@link WebsocketListeners} contract talks about.  It is one function
+ * rather than a per-adapter array because an adapter that buffers only
+ * *some* event kinds is worse than one that buffers none: a dropped
+ * `close` never stops the connection actor, never removes it from the
+ * hub, and never returns its `maxConnections` slot, so the leak is
+ * permanent and silent.  That is what happened on Hono (#570), which
+ * hand-rolled a message-only queue.
+ */
+export function bufferWebsocketEvents(): BufferedWebsocketEvents {
+  let listeners: WebsocketListeners | null = null;
+  const pending: BufferedEvent[] = [];
+
+  return {
+    onMessage: (data) => {
+      if (listeners) listeners.onMessage(data);
+      else pending.push({ kind: 'message', data });
+    },
+    onClose: (code, reason) => {
+      if (listeners) listeners.onClose(code, reason);
+      else pending.push({ kind: 'close', code, reason });
+    },
+    onError: (error) => {
+      if (listeners) listeners.onError(error);
+      else pending.push({ kind: 'error', error });
+    },
+    attach: (incoming) => {
+      listeners = incoming;
+      for (const event of pending.splice(0)) {
+        match(event)
+          .with({ kind: 'message' }, (e) => incoming.onMessage(e.data))
+          .with({ kind: 'close' }, (e) => incoming.onClose(e.code, e.reason))
+          .with({ kind: 'error' }, (e) => incoming.onError(e.error))
+          .exhaustive();
+      }
+    },
+  };
+}
 
 /**
  * Adapt a `ws`-package socket (already upgraded) to a
@@ -102,38 +154,23 @@ export function websocketPackageAdapter(
   socket: WebsocketPackageSocket,
   options: { readonly remoteAddress?: string; readonly protocol?: string } = {},
 ): WebsocketSocketAdapter {
-  let listeners: WebsocketListeners | null = null;
-  const pending: BufferedEvent[] = [];
+  const events = bufferWebsocketEvents();
 
   socket.on('message', (data, isBinary) => {
-    const norm = isBinary ? coerceBinary(data) : coerceText(data);
-    if (listeners) listeners.onMessage(norm);
-    else pending.push({ t: 'message', data: norm });
+    events.onMessage(isBinary ? coerceBinary(data) : coerceText(data));
   });
   socket.on('close', (code, reason) => {
-    const closeCode = typeof code === 'number' ? code : 1005;
-    const reasonText = reason == null ? '' : String(reason);
-    if (listeners) listeners.onClose(closeCode, reasonText);
-    else pending.push({ t: 'close', code: closeCode, reason: reasonText });
+    events.onClose(typeof code === 'number' ? code : 1005, reason == null ? '' : String(reason));
   });
   socket.on('error', (err) => {
-    const error = err instanceof Error ? err : new Error(String(err));
-    if (listeners) listeners.onError(error);
-    else pending.push({ t: 'error', err: error });
+    events.onError(err instanceof Error ? err : new Error(String(err)));
   });
 
   return {
     send: (data) => socket.send(data),
     close: (code, reason) => socket.close(code, reason),
     terminate: socket.terminate ? () => socket.terminate!() : undefined,
-    setListeners: (l) => {
-      listeners = l;
-      for (const ev of pending.splice(0)) {
-        if (ev.t === 'message') l.onMessage(ev.data);
-        else if (ev.t === 'close') l.onClose(ev.code, ev.reason);
-        else l.onError(ev.err);
-      }
-    },
+    setListeners: (l) => events.attach(l),
     get readyState() {
       return (socket.readyState ?? WebsocketReadyState.OPEN) as 0 | 1 | 2 | 3;
     },

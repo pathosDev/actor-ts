@@ -232,10 +232,12 @@ import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-
 const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...) etc.
   .withEncryption({
-    keys: {
+    mode: 'client-aes256-gcm',
+    masterKeys: {
       active:  { version: 2, key: NEW_32_BYTES },
       retired: [{ version: 1, key: OLD_32_BYTES }],
     },
+    info: 'acme/prod/snapshot/v1',
   });
 ```
 
@@ -265,6 +267,7 @@ const result = await reEncryptObjectStorage(backend, {
     active:  { version: 2, key: NEW },
     retired: [{ version: 1, key: OLD }],
   },
+  info: 'acme/prod/snapshot/v1',
   onProgress: (e) => process.stderr.write(
     `${e.index}/${e.total} ${e.action} ${e.key}\n`),
 });
@@ -324,6 +327,7 @@ const result = await reEncryptObjectStorage(backend, {
       { version: 1, key: OLDEST },
     ],
   },
+  info: 'acme/prod/snapshot/v1',
   // — Completeness-Check —
   // Default true. Sampelt die ersten 100 verschlüsselten Bodies
   // und weigert sich zu starten, wenn ein Body eine Key-Version
@@ -402,8 +406,8 @@ wiederherstellbar.
 | `migratingAdapter(chain, { writeVersion })` | Adapter, der die Chain zum Journal exponiert |
 | `chain.manifestFor(value, version)`       | Lower-Level-Envelope-Builder                |
 | `wrapEventAsEnvelope(event, manifestFor)` | One-Shot-Rewrite für Pre-Envelope-Daten     |
-| `migrateInMemoryJournal(journal, fn)`     | Bulk-Rewrite jedes Events unter einem Journal |
-| `migrateSnapshotStore(store, pids, fn)`   | Dito für Snapshots                          |
+| `migrateInMemoryJournal(journal, manifestFor)` | Bulk-Rewrite jedes Events unter einem Journal |
+| `migrateSnapshotStore(store, persistenceIds, manifestFor)` | Dito für Snapshots             |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-Version-Encryption-Key-Ring           |
 | `reEncryptObjectStorage(backend, options)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable Resume-Tokens für den Sweep (#109) — plug eine Datei-/Redis-/Object-Storage-backed Implementation für Millionen-Objekt-Buckets |

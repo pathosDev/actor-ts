@@ -18,6 +18,7 @@ import {
 } from './replicated/ConflictResolver.js';
 import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
 import type { SnapshotStore } from './SnapshotStore.js';
+import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
 
 /**
@@ -244,6 +245,10 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   protected get isLeaseHolder(): boolean { return this._isLeaseHolder; }
 
   override async preStart(): Promise<void> {
+    // Ahead of the live-id registration below, so an id that can never be
+    // a storage key does not first claim the single-writer slot and then
+    // block a corrected restart from taking it.
+    assertValidPersistenceId(this.persistenceId, 'ReplicatedEventSourcedActor');
     // Single-writer-per-pid invariant (#58).  Two ReplicatedEventSourcedActors
     // with the same persistenceId on the same node race their
     // `_appendOne` calls; the second silently drops via
@@ -391,7 +396,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * route to the holder.  Users that don't want the throw can gate
    * on `isLeaseHolder` before calling `persist`.
    */
-  protected async persist(event: Event, cb?: (state: State) => void): Promise<void> {
+  protected async persist(event: Event, afterPersist?: (state: State) => void): Promise<void> {
     if (this._lease && !this._isLeaseHolder) {
       throw new Error(
         `ReplicatedEventSourcedActor '${this.persistenceId}': cannot persist — ` +
@@ -411,7 +416,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     };
     await this._appendOne(envelope);
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
-    cb?.(this._state);
+    afterPersist?.(this._state);
   }
 
   /**

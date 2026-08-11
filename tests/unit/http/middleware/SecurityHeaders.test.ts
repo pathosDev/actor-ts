@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { securityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS } from '../../../../src/http/backend/HttpServerBackend.js';
+import { resolveSecurityHeaders, securityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
 import { SecurityHeadersOptions } from '../../../../src/http/middleware/SecurityHeadersOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
@@ -29,6 +30,26 @@ describe('securityHeaders', () => {
     expect(headers['x-frame-options']).toBeUndefined();
     expect(headers['referrer-policy']).toBeUndefined();
     expect(headers['x-content-type-options']).toBe('nosniff'); // others untouched
+  });
+
+  test('contentTypeOptions: false omits nosniff from the map but not from the response (#1060)', async () => {
+    // Two seams apply this bundle and `false` means different things in each.
+    // Every test above drives the middleware alone, which is why the docs
+    // could claim the header was disable-able for as long as they did: in
+    // isolation the map really does lose it.
+    const options = SecurityHeadersOptions.create().withContentTypeOptions(false);
+
+    // The server-wide seam replaces the backend's default map, so `false`
+    // there does turn the header off.
+    const serverWide = resolveSecurityHeaders(options);
+    expect(serverWide['x-content-type-options']).toBeUndefined();
+
+    // As a middleware the same map is layered *over* what the backend has
+    // already written, and a middleware can only add.
+    const fromMiddleware = (await run(securityHeaders(options))).headers ?? {};
+    expect(fromMiddleware['x-content-type-options']).toBeUndefined();
+    const asSent = { ...DEFAULT_RESPONSE_SECURITY_HEADERS, ...fromMiddleware };
+    expect(asSent['x-content-type-options']).toBe('nosniff');
   });
 
   test('withHsts includes STS; withHsts(false) suppresses it', async () => {

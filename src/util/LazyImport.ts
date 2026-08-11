@@ -1,23 +1,14 @@
 /**
- * Lazy-import helper for optional peer dependencies.
+ * Import an optional peer dependency, or fail with an error that names the
+ * package and the command that installs it.
  *
- * Most of the framework's brokers + caches + persistence backends
- * depend on optional peer-deps (`mqtt`, `kafkajs`, `memjs`, …).
- * Before this helper existed, every site had its own try/catch around
- * `import(name)` with a bespoke error message:
- *
- *   try {
- *     const name = 'mqtt';
- *     return (await import(name)) as unknown as MqttModule;
- *   } catch (e) {
- *     throw new Error('MqttActor requires the "mqtt" package.  ' +
- *       'Install it with: npm install mqtt\nOriginal error: ' +
- *       (e instanceof Error ? e.message : String(e)));
- *   }
- *
- * ~7 lines per site, repeated ~10× across brokers + caches + journals,
- * with subtle differences in wording.  This helper collapses each
- * site to a single line.
+ * The framework's brokers, caches and persistence backends all sit
+ * behind optional peers (`mqtt`, `kafkajs`, `memjs`, …), and a
+ * user-written integration is built the same way: the module must not
+ * be a hard dependency, so the import has to be dynamic, so the
+ * failure mode is a bare `Cannot find module` that says nothing about
+ * which package is missing or what to do about it.  This helper owns
+ * that one boundary, so every site words it the same way.
  *
  * Usage:
  *
@@ -29,15 +20,15 @@
  *   npm install mqtt
  *   Original error: Cannot find module 'mqtt'
  *
- * **Why this isn't auto-applied to every `await import(...)` site**:
- * built-in Node modules (`node:dns`, `node:fs`) never produce this
- * error in practice; wrapping them adds noise without benefit.  The
- * helper is intended for actual peer-deps where "module not found"
- * is the expected failure mode.
+ * **Why this isn't for every `await import(...)` site**: built-in
+ * Node modules (`node:dns`, `node:fs`) never produce this error in
+ * practice; wrapping them adds noise without benefit.  The helper is
+ * intended for actual peer-deps where "module not found" is the
+ * expected failure mode.
  *
  * **ESM default-export normalisation is intentionally NOT in this
- * helper**.  Some peer-deps ship CJS (`module.exports = fn`), others
- * ESM (`export default fn`), and some both — the right normalisation
+ * helper**.  Some peer-deps ship CJS (`module.exports = value`), others
+ * ESM (`export default value`), and some both — the right normalisation
  * varies per module.  Callers handle that explicitly at their site;
  * this helper only owns the "import it OR throw a helpful error"
  * boundary.

@@ -114,5 +114,17 @@ export const sqliteDialect: SqlDialect = {
   // deadlock victim to classify.  `SQLITE_BUSY` is the closest relative, but
   // it means "the lock did not free in time", not "you lost a race", and the
   // head will not have moved — so translating it would be a lie either way.
+  //
+  // Revised for #124: the "waits and then proceeds" half is not something
+  // SQLite does on its own, it is something this package now arranges.  A
+  // handle with `busy_timeout = 0` — which was `bun:sqlite`'s and
+  // `node:sqlite`'s default, and therefore what two of the three supported
+  // runtimes actually ran — never waits at all, so `SQLITE_BUSY` arrived on
+  // the first tick of contention.  `applySqliteBusyTimeout` now sets a
+  // non-zero timeout on every handle opened here, which is what makes the
+  // sentence above true across all three runtimes.  The conclusion is
+  // unchanged and better founded: past that budget the lock genuinely did not
+  // free, and a retry-the-read-and-recompute translation would still be
+  // wrong.
   isSerializationConflictError: () => false,
 };

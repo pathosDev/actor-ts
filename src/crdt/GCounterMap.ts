@@ -1,5 +1,9 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
+import {
+  assertPlainObject,
+  safeEntries,
+} from './CrdtWireValidation.js';
 
 /**
  * Map of grow-only counters — `Map<K, GCounter>` with a CRDT merge
@@ -97,13 +101,19 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   }
 
   toJSON(): GCounterMapJson {
-    const counters: Record<string, GCounterJson> = {};
-    const keyValues: Record<string, string> = {};
-    for (const [id, entry] of this.entries) {
-      counters[id] = entry.counter.toJSON();
-      keyValues[id] = JSON.stringify(entry.key);
-    }
-    return { kind: 'GCounterMap', counters, keyValues };
+    // `Object.fromEntries`, not assignment: entry ids are identity-function output,
+    // so a custom identity can yield `__proto__`, which an assignment feeds to
+    // the inherited setter instead of storing — the entry then leaves the
+    // replica's state invisibly on the way out (#767).
+    return {
+      kind: 'GCounterMap',
+      counters: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, entry.counter.toJSON()] as const),
+      ),
+      keyValues: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, JSON.stringify(entry.key)] as const),
+      ),
+    };
   }
 
   static fromJSON<K>(
@@ -113,11 +123,16 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
       throw new Error(`GCounterMap.fromJSON: unexpected kind ${json.kind}`);
     }
     const identity = options.identity ?? (defaultIdentity as (k: K) => string);
+    assertPlainObject(json.counters, 'GCounterMap.counters');
     const entries = new Map<string, { key: K; counter: GCounter }>();
-    for (const [id, counterJson] of Object.entries(json.counters)) {
+    for (const [id, counterJson] of safeEntries(json.counters, 'GCounterMap.counters')) {
       const raw = json.keyValues?.[id];
       const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
-      entries.set(id, { key, counter: GCounter.fromJSON(counterJson) });
+      // Shape-check before handing it on: `GCounter.fromJSON` reads `.kind`
+      // off it, which throws a bare TypeError on `null` rather than the
+      // decode error the caller can act on.
+      assertPlainObject(counterJson, `GCounterMap.counters['${id}']`);
+      entries.set(id, { key, counter: GCounter.fromJSON(counterJson as unknown as GCounterJson) });
     }
     return new GCounterMap<K>(entries, identity);
   }
@@ -135,7 +150,7 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
 
 export type GCounterMapJson = {
   readonly kind: 'GCounterMap';
-  /** Per-key counter state, keyed by identity-fn output. */
+  /** Per-key counter state, keyed by identity-function output. */
   readonly counters: Record<string, GCounterJson>;
   /** Per-key JSON-stringified original key.  Optional for backwards
    *  compat — when missing, `JSON.parse(identity-string)` is used. */

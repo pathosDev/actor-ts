@@ -10,9 +10,9 @@ import { Lazy } from '../../util/Lazy.js';
 
 /** Minimal surface of a client WebSocket the client actor depends on. */
 export interface WebsocketLike {
-  addEventListener(event: 'open' | 'close', cb: () => void): void;
-  addEventListener(event: 'error', cb: (ev: unknown) => void): void;
-  addEventListener(event: 'message', cb: (ev: { data: unknown }) => void): void;
+  addEventListener(event: 'open' | 'close', listener: () => void): void;
+  addEventListener(event: 'error', listener: (ev: unknown) => void): void;
+  addEventListener(event: 'message', listener: (ev: { data: unknown }) => void): void;
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   ping?(): void;

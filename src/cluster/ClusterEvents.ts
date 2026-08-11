@@ -1,4 +1,5 @@
 import { Member } from './Member.js';
+import type { NodeAddress } from './NodeAddress.js';
 import type { Option } from '../util/Option.js';
 
 /* -------------------------------- Self events ------------------------------ */
@@ -21,6 +22,42 @@ export class LeaderChanged {
   constructor(public readonly leader: Option<Member>) {}
 }
 
+/* --------------------------- Subscription snapshot ------------------------- */
+
+/**
+ * The cluster as it stands at the moment of subscription — the single event a
+ * `replayMode: 'snapshot'` subscriber receives before the live stream starts
+ * (#161).
+ *
+ * The other replay form (`'events'`, still the default) states the same
+ * membership as the events that would have produced it: one `MemberJoined` per
+ * member plus the status event each has already reached.  That form suits a
+ * listener that only reacts to deltas, because it needs no separate
+ * initial-state branch; it costs one callback per member, and it never says
+ * where the replay ends.  This one is the opposite trade, and the reason it
+ * exists.
+ *
+ * `unreachable` is a **subset** of `members`, not a disjoint set: an
+ * unreachable peer is still a member, and excluding it would make
+ * `members.length` mean something different depending on the cluster's health.
+ *
+ * There is no `seenBy`.  Akka's is the set of members that have observed the
+ * current gossip version, which presumes a versioned whole; gossip here merges
+ * member records individually, so there is no such version to have been seen.
+ *
+ * Never published on the event stream: it describes one subscriber's starting
+ * point, not something that happened to the cluster.
+ */
+export class CurrentClusterState {
+  constructor(
+    /** Every current member — tombstones excluded — in address order. */
+    public readonly members: ReadonlyArray<Member>,
+    /** The members of {@link members} whose status is `unreachable`. */
+    public readonly unreachable: ReadonlyArray<Member>,
+    public readonly leader: Option<Member>,
+  ) {}
+}
+
 /* ------------------------------- Member events ----------------------------- */
 
 /** A member was added to the cluster (first time we see it). */
@@ -37,6 +74,39 @@ export class MemberUnreachable { constructor(public readonly member: Member) {} 
 
 /** Previously-unreachable member responded again. */
 export class MemberReachable { constructor(public readonly member: Member) {} }
+
+/**
+ * This node's own failure detector changed its verdict about one peer (#161).
+ *
+ * Two things separate it from {@link MemberUnreachable} / {@link
+ * MemberReachable}, and both matter when the question is *what can this node
+ * actually see*:
+ *
+ * - **It is always a local observation.**  Member status travels in gossip, so
+ *   `MemberUnreachable` also fires for a peer that *someone else* has stopped
+ *   hearing from while this node's own heartbeats to it arrive normally.
+ * - **It does not depend on the member's status.**  `MemberUnreachable` is
+ *   only emitted for a member that was `up`; a peer that falls silent while
+ *   `joining`, `weakly-up` or `leaving` produces no reachability event at all,
+ *   it simply gets downed later.
+ *
+ * Emitted on transition only, and never for a peer that has been healthy since
+ * this node first saw it — the interesting edges are the fall and every
+ * recovery after it.  The verdict is recomputed once per detector tick
+ * (`heartbeatIntervalMs`) and turns negative at `unreachableAfterMs`, so this
+ * fires well ahead of any downing decision.
+ *
+ * It carries no observer set.  *"Which other nodes also cannot reach X"* would
+ * need an observer→subject table on the wire, and gossip carries a flat member
+ * list — see #161 for the follow-up that would have to add one.
+ */
+export class ReachabilityChanged {
+  constructor(
+    public readonly address: NodeAddress,
+    /** `true` when the detector has started hearing from the peer again. */
+    public readonly reachable: boolean,
+  ) {}
+}
 
 /** Confirmed down — taken out of the cluster and shards re-assigned. */
 export class MemberDown { constructor(public readonly member: Member) {} }
@@ -106,11 +176,13 @@ export type ClusterEvent =
   | SelfUp
   | SelfRemoved
   | LeaderChanged
+  | CurrentClusterState
   | MemberJoined
   | MemberUp
   | MemberWeaklyUp
   | MemberUnreachable
   | MemberReachable
+  | ReachabilityChanged
   | MemberDown
   | MemberLeft
   | MemberRemoved

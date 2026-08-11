@@ -16,14 +16,28 @@
  * labels has one series; with `{node: 'n-1'}` you get one series per
  * distinct value of `node`.
  *
- * Cardinality discipline is the user's responsibility — high-cardinality
- * labels (request id, user id, …) will OOM your monitoring system.  The
- * registry doesn't enforce limits; it'll happily create one series per
- * combo you ask for.
+ * Cardinality is **capped, not unbounded** (#131).  A label value that
+ * reaches the registry from user-controlled input — a URL path, a header,
+ * an id — would otherwise mint one series per distinct value and take the
+ * monitoring backend down with it.  `DefaultMetricsRegistry` therefore
+ * stops minting new series per family at
+ * {@link DEFAULT_MAX_SERIES_PER_FAMILY} and folds everything past it into
+ * a single {@link METRICS_OVERFLOW_LABEL_VALUE} series.  The cap is a
+ * backstop, not a licence: it bounds the blast radius, it does not make
+ * a high-cardinality label correct.  Keep label values bounded at the
+ * source — {@link bucketize} is the helper for the common "known values
+ * plus everything else" shape.
  *
  * Exposition format is decoupled — see {@link PrometheusExporter} for
  * the Prometheus 0.0.4 text format implementation.
  */
+
+import {
+  DEFAULT_MAX_SERIES_PER_FAMILY,
+  MetricsRegistryOptionsValidator,
+  type MetricsRegistryOptions,
+  type MetricsRegistryOptionsType,
+} from './MetricsRegistryOptions.js';
 
 export type LabelValue = string | number | boolean;
 export type Labels = Readonly<Record<string, LabelValue>>;
@@ -168,22 +182,31 @@ class HistogramImplementation implements Histogram {
 /**
  * Metric family metadata.  One family produces N series indexed by
  * label-tuple; series are created lazily on first label access.
+ *
+ * `overflowKey` is the series key of this family's single overflow child,
+ * set the first time the cardinality cap bites.  Holding the key (rather
+ * than recomputing it) is what guarantees a family can only ever gain
+ * *one* extra series no matter how many distinct tuples arrive after the
+ * cap, and doubles as the one-shot flag for the warning.
  */
 type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
+  overflowKey?: string;
 };
 type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
+  overflowKey?: string;
 };
 type HistogramFamily = {
   readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
+  overflowKey?: string;
 };
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
@@ -226,20 +249,33 @@ export interface MetricsRegistry {
  */
 export class DefaultMetricsRegistry implements MetricsRegistry {
   private readonly families = new Map<string, Family>();
+  /** Distinct label tuples one family may mint; `0` disables the cap. */
+  private readonly maxSeriesPerFamily: number;
+
+  constructor(options: MetricsRegistryOptions = {}) {
+    // Destructuring default rather than a spread: `undefined` on the way
+    // in means "not set" and must fall through to the default, never
+    // shadow it.
+    const {
+      maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
+    } = options as MetricsRegistryOptionsType;
+    new MetricsRegistryOptionsValidator().validate({ maxSeriesPerFamily });
+    this.maxSeriesPerFamily = maxSeriesPerFamily;
+  }
 
   counter(name: string, labels: Labels = {}, options: CounterOptions = {}): Counter {
     const family = this.familyOf(name, 'counter', options.help);
-    return this.childOf<CounterImplementation>(family, labels, () => new CounterImplementation());
+    return this.childOf<CounterImplementation>(name, family, labels, () => new CounterImplementation());
   }
 
   gauge(name: string, labels: Labels = {}, options: GaugeOptions = {}): Gauge {
     const family = this.familyOf(name, 'gauge', options.help);
-    return this.childOf<GaugeImplementation>(family, labels, () => new GaugeImplementation());
+    return this.childOf<GaugeImplementation>(name, family, labels, () => new GaugeImplementation());
   }
 
   histogram(name: string, labels: Labels = {}, options: HistogramOptions = {}): Histogram {
     const family = this.familyOf(name, 'histogram', options.help, options.buckets);
-    return this.childOf<HistogramImplementation>(family, labels,
+    return this.childOf<HistogramImplementation>(name, family, labels,
       () => new HistogramImplementation((family as HistogramFamily).buckets));
   }
 
@@ -317,14 +353,44 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   }
 
   private childOf<M>(
-    family: Family, labels: Labels, factory: () => M,
+    name: string, family: Family, labels: Labels, factory: () => M,
   ): M {
     const key = labelKey(labels);
     const existing = family.children.get(key);
     if (existing) return existing.metric as unknown as M;
+    if (this.maxSeriesPerFamily > 0 && family.children.size >= this.maxSeriesPerFamily) {
+      return this.overflowChildOf<M>(name, family, labels, factory);
+    }
     const metric = factory();
     family.children.set(key, { labels: { ...labels }, metric: metric as never });
     return metric;
+  }
+
+  /**
+   * The family is at its cap: hand back its single overflow child,
+   * creating it (and warning once) on the first tuple that overflows.
+   *
+   * The overflow tuple reuses the *label names* of that first rejected
+   * tuple with every value replaced by {@link METRICS_OVERFLOW_LABEL_VALUE},
+   * so the series stays shaped like its siblings and a dashboard grouping
+   * on those labels still sees it.  A synthetic label *name* would not
+   * work: Prometheus reserves `__`-prefixed names and strips them at
+   * ingestion, which would silently merge the overflow series into the
+   * family's unlabeled one.
+   */
+  private overflowChildOf<M>(
+    name: string, family: Family, labels: Labels, factory: () => M,
+  ): M {
+    if (family.overflowKey === undefined) {
+      const overflowLabels = overflowLabelsOf(Object.keys(labels));
+      const key = labelKey(overflowLabels);
+      family.overflowKey = key;
+      if (!family.children.has(key)) {
+        family.children.set(key, { labels: overflowLabels, metric: factory() as never });
+      }
+      warnCardinalityOverflow(name, this.maxSeriesPerFamily, labels);
+    }
+    return family.children.get(family.overflowKey)!.metric as unknown as M;
   }
 }
 
@@ -333,6 +399,67 @@ function labelKey(labels: Labels): string {
   const keys = Object.keys(labels).sort();
   if (keys.length === 0) return '';
   return keys.map((k) => `${k}=${String(labels[k])}`).join('\x1f');
+}
+
+/* --------------------------- Cardinality cap ------------------------- */
+
+/**
+ * Label **value** every dimension of an overflow series carries, e.g.
+ * `actor_mailbox_dropped_total{path="__overflow__",reason="__overflow__"}`.
+ *
+ * A value, deliberately, not a label name: Prometheus reserves label
+ * names beginning with `__` for its own use and drops them after
+ * relabeling, so an `__overflow__="1"` *name* would vanish on ingestion
+ * and collapse the overflow series onto a real one.  Label values are
+ * unrestricted, so the marker survives the scrape and stays greppable in
+ * an alert rule (`{path="__overflow__"}`).
+ */
+export const METRICS_OVERFLOW_LABEL_VALUE = '__overflow__';
+
+/** The overflow tuple for a family whose series carry `labelNames`. */
+export function overflowLabelsOf(labelNames: ReadonlyArray<string>): Labels {
+  const out: Record<string, LabelValue> = {};
+  for (const labelName of labelNames) out[labelName] = METRICS_OVERFLOW_LABEL_VALUE;
+  return out;
+}
+
+/**
+ * One-shot warning when a family hits its cap.  Deliberately a bare
+ * `console.warn` rather than a `Logger`: a registry is a standalone
+ * primitive with no `ActorSystem` behind it (the prom-client bridge is
+ * built by a free function), and the alternative — threading a logger
+ * through the options — would put a hard dependency on the logging
+ * subsystem into the one place that has to stay allocation-cheap.
+ * Callers guarantee the once-per-family part.
+ */
+export function warnCardinalityOverflow(
+  name: string, maxSeriesPerFamily: number, rejected: Labels,
+): void {
+  console.warn(
+    `metrics: family '${name}' reached maxSeriesPerFamily=${maxSeriesPerFamily}; ` +
+    `further label tuples are folded into a single ${METRICS_OVERFLOW_LABEL_VALUE} series. ` +
+    `A user-controlled label value is the usual cause — bound it at the source ` +
+    `(see bucketize) or raise the cap. First rejected tuple: ${JSON.stringify(rejected)}`,
+  );
+}
+
+/**
+ * Map a possibly-unbounded value onto a bounded label domain: `value` if
+ * it is one of `allowed`, `'other'` otherwise.
+ *
+ *     const ALLOWED_ROUTES = ['/orders', '/users/:id', '/health'] as const;
+ *     metrics.counter('http_requests_total', {
+ *       route: bucketize(routeTemplateOf(request), ALLOWED_ROUTES),
+ *     }).inc();
+ *
+ * This is the fix for high-cardinality labels; the registry's cap is only
+ * the backstop for when nobody applied one.  Keep `allowed` small — it is
+ * scanned linearly, and its length *is* the family's series count.
+ */
+export function bucketize<T extends string>(
+  value: string, allowed: ReadonlyArray<T>,
+): T | 'other' {
+  return (allowed as ReadonlyArray<string>).includes(value) ? (value as T) : 'other';
 }
 
 /* ------------------------------ Noop ------------------------------- */

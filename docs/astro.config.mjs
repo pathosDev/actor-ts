@@ -422,6 +422,7 @@ export default defineConfig({
                 { label: 'Overview',      slug: 'routing/overview',      translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Router',        slug: 'routing/router',        translations: { de: 'Router', es: 'Router', fr: 'Router', ja: 'Router', ko: 'Router', 'pt-BR': 'Router', ru: 'Router', 'zh-CN': 'Router' } },
                 { label: 'Strategies',    slug: 'routing/strategies',    translations: { de: 'Strategien', es: 'Estrategias', fr: 'Stratégies', ja: '戦略', ko: '전략', 'pt-BR': 'Estratégias', ru: 'Стратегии', 'zh-CN': '策略' } },
+                { label: 'Scatter/gather', slug: 'routing/scatter-gather', translations: { de: 'Scatter/Gather', es: 'Scatter/gather', fr: 'Scatter/gather', ja: 'スキャッター/ギャザー', ko: '스캐터/개더', 'pt-BR': 'Scatter/gather', ru: 'Scatter/gather', 'zh-CN': '分散/聚合' } },
                 { label: 'Pool vs group', slug: 'routing/pool-vs-group', translations: { de: 'Pool vs. Group', es: 'Pool vs group', fr: 'Pool vs groupe', ja: 'プール vs グループ', ko: '풀 vs 그룹', 'pt-BR': 'Pool vs grupo', ru: 'Pool против group', 'zh-CN': 'Pool 与 Group' } },
               ],
             },
@@ -451,6 +452,7 @@ export default defineConfig({
               items: [
                 { label: 'Overview',           slug: 'cluster/overview',           translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Joining and seeds',  slug: 'cluster/joining-and-seeds',  translations: { de: 'Beitritt und Seeds', es: 'Joining y seeds', fr: 'Adhésion et seeds', ja: '参加とシード', ko: '조인과 시드', 'pt-BR': 'Joining e seeds', ru: 'Присоединение и seeds', 'zh-CN': '加入集群与种子节点' } },
+                { label: 'Cluster bootstrap',  slug: 'cluster/cluster-bootstrap',  translations: { de: 'Cluster-Bootstrap', es: 'Cluster bootstrap', fr: 'Bootstrap du cluster', ja: 'クラスタブートストラップ', ko: '클러스터 부트스트랩', 'pt-BR': 'Cluster bootstrap', ru: 'Бутстрап кластера', 'zh-CN': '集群引导' } },
                 { label: 'Failure detector',   slug: 'cluster/failure-detector',   translations: { de: 'Failure Detector', es: 'Failure detector', fr: 'Failure detector', ja: 'Failure detector', ko: 'Failure detector', 'pt-BR': 'Failure detector', ru: 'Failure detector', 'zh-CN': 'Failure detector' } },
                 { label: 'Downing strategies', slug: 'cluster/downing-strategies', translations: { de: 'Downing-Strategien', es: 'Estrategias de downing', fr: 'Stratégies de downing', ja: 'ダウン戦略', ko: '다운 전략', 'pt-BR': 'Estratégias de downing', ru: 'Стратегии downing', 'zh-CN': '下线策略' } },
                 { label: 'Transports',         slug: 'cluster/transports',         translations: { de: 'Transporte', es: 'Transportes', fr: 'Transports', ja: 'トランスポート', ko: '트랜스포트', 'pt-BR': 'Transportes', ru: 'Транспорты', 'zh-CN': '传输层' } },
@@ -671,6 +673,7 @@ export default defineConfig({
                 { label: 'AMQP',             slug: 'io/amqp',              translations: { de: 'AMQP', es: 'AMQP', fr: 'AMQP', ja: 'AMQP', ko: 'AMQP', 'pt-BR': 'AMQP', ru: 'AMQP', 'zh-CN': 'AMQP' } },
                 { label: 'NATS',             slug: 'io/nats',              translations: { de: 'NATS', es: 'NATS', fr: 'NATS', ja: 'NATS', ko: 'NATS', 'pt-BR': 'NATS', ru: 'NATS', 'zh-CN': 'NATS' } },
                 { label: 'NATS JetStream',   slug: 'io/jetstream',         translations: { de: 'NATS JetStream', es: 'NATS JetStream', fr: 'NATS JetStream', ja: 'NATS JetStream', ko: 'NATS JetStream', 'pt-BR': 'NATS JetStream', ru: 'NATS JetStream', 'zh-CN': 'NATS JetStream' } },
+                { label: 'JetStream KV + Object Store', slug: 'io/jetstream-kv', translations: { de: 'JetStream KV + Object Store', es: 'JetStream KV + Object Store', fr: 'JetStream KV + Object Store', ja: 'JetStream KV + Object Store', ko: 'JetStream KV + Object Store', 'pt-BR': 'JetStream KV + Object Store', ru: 'JetStream KV + Object Store', 'zh-CN': 'JetStream KV + Object Store' } },
                 { label: 'Redis Streams',    slug: 'io/redis-streams',     translations: { de: 'Redis Streams', es: 'Redis Streams', fr: 'Redis Streams', ja: 'Redis Streams', ko: 'Redis Streams', 'pt-BR': 'Redis Streams', ru: 'Redis Streams', 'zh-CN': 'Redis Streams' } },
                 { label: 'gRPC',             slug: 'io/grpc',              translations: { de: 'gRPC', es: 'gRPC', fr: 'gRPC', ja: 'gRPC', ko: 'gRPC', 'pt-BR': 'gRPC', ru: 'gRPC', 'zh-CN': 'gRPC' } },
                 { label: 'SSE',              slug: 'io/sse',               translations: { de: 'SSE', es: 'SSE', fr: 'SSE', ja: 'SSE', ko: 'SSE', 'pt-BR': 'SSE', ru: 'SSE', 'zh-CN': 'SSE' } },
@@ -906,6 +909,7 @@ export default defineConfig({
           items: [
             { label: 'Configuration',  slug: 'reference/configuration',  translations: { de: 'Konfiguration', es: 'Configuración', fr: 'Configuration', ja: '設定', ko: '설정', 'pt-BR': 'Configuração', ru: 'Конфигурация', 'zh-CN': '配置' } },
             { label: 'Full reference.conf', slug: 'reference/reference-conf', translations: { de: 'Vollständige reference.conf', es: 'reference.conf completo', fr: 'reference.conf complet', ja: '完全な reference.conf', ko: '전체 reference.conf', 'pt-BR': 'reference.conf completo', ru: 'Полный reference.conf', 'zh-CN': '完整 reference.conf' } },
+            { label: 'Utilities', slug: 'reference/utility-helpers', translations: { de: 'Utilities', es: 'Utilidades', fr: 'Utilitaires', ja: 'ユーティリティ', ko: '유틸리티', 'pt-BR': 'Utilitários', ru: 'Утилиты', 'zh-CN': '实用工具' } },
             { label: 'Version policy', slug: 'reference/version-policy', translations: { de: 'Versionsrichtlinie', es: 'Política de versiones', fr: 'Politique de versions', ja: 'バージョンポリシー', ko: '버전 정책', 'pt-BR': 'Política de versionamento', ru: 'Политика версионирования', 'zh-CN': '版本策略' } },
             { label: 'FAQ',            slug: 'reference/faq',            translations: { de: 'FAQ', es: 'FAQ', fr: 'FAQ', ja: 'FAQ', ko: 'FAQ', 'pt-BR': 'FAQ', ru: 'FAQ', 'zh-CN': 'FAQ' } },
             { label: 'Glossary',       slug: 'reference/glossary',       translations: { de: 'Glossar', es: 'Glosario', fr: 'Glossaire', ja: '用語集', ko: '용어집', 'pt-BR': 'Glossário', ru: 'Глоссарий', 'zh-CN': '术语表' } },

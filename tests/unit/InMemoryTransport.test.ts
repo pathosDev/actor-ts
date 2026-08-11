@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import type { HelloMessage, WireMessage } from '../../src/cluster/Protocol.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -10,7 +11,7 @@ function newTransport(port: number): InMemoryTransport {
 }
 
 function helloFrom(port: number): HelloMessage {
-  return { t: 'hello', self: new NodeAddress('imt', 'localhost', port).toJSON() };
+  return { kind: 'hello', self: new NodeAddress('imt', 'localhost', port).toJSON() };
 }
 
 describe('InMemoryTransport', () => {
@@ -38,10 +39,13 @@ describe('InMemoryTransport', () => {
     await transportB.start();
     try {
       transportA.send(transportB.self, helloFrom(40101));
-      await sleep(20);
+      await awaitCondition(() => receivedOnB.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the peer handler received the frame',
+      });
       expect(receivedOnB.length).toBe(1);
       expect(receivedOnB[0]!.from.equals(transportA.self)).toBe(true);
-      expect(receivedOnB[0]!.message.t).toBe('hello');
+      expect(receivedOnB[0]!.message.kind).toBe('hello');
     } finally {
       await transportA.shutdown(); await transportB.shutdown();
     }

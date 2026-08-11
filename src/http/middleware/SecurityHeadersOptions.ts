@@ -1,13 +1,34 @@
 /**
  * Options for the {@link securityHeaders} bundle.  Every header is
- * individually overridable, and `false` disables it.  Options-only.
+ * individually overridable, and `false` leaves it out of the resolved map.
+ * Options-only.
+ *
+ * Leaving a header *out* is not the same as switching it off: the bundle only
+ * adds.  Which one you get depends on the seam — see the note on
+ * {@link securityHeaders}, and {@link SecurityHeadersOptionsType.contentTypeOptions}
+ * for the one header this actually bites on today.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { HstsOptionsType } from './HstsOptions.js';
 
 /** Plain settings shape for the security-headers bundle. */
 export type SecurityHeadersOptionsType = {
-  /** `X-Content-Type-Options: nosniff`.  Default true. */
+  /**
+   * `X-Content-Type-Options: nosniff`.  Default true.
+   *
+   * `false` is honoured **server-wide only** —
+   * `newServerAt(…).withSecurityHeaders({ contentTypeOptions: false })`
+   * replaces the backend's default header map, so the header stops being
+   * written.  On the `securityHeaders()` middleware it has no visible effect:
+   * since #127 every backend writes `nosniff` ahead of every response it
+   * emits, and a middleware can only add headers, never take one away.  So
+   * the response still carries it (#1060).
+   *
+   * There is no route to "nosniff off for this subtree" — deliberately.  The
+   * header is per-response and the backend's copy is the last word, which is
+   * the point of putting it there: the backend's own 404, its body-parse 413
+   * and every error short-circuit never pass through a middleware at all.
+   */
   readonly contentTypeOptions?: boolean;
   /** `X-Frame-Options`.  Default `'DENY'`; `false` omits it. */
   readonly frameOptions?: 'DENY' | 'SAMEORIGIN' | false;

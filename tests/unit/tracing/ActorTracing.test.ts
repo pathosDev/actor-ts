@@ -22,6 +22,7 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -44,7 +45,10 @@ describe('Actor tracing — auto-instrumentation', () => {
       tracer.withActiveSpan(client, () => {
         actorRef.tell('hello');
       });
-      await sleep(40);
+      await awaitCondition(() => tracer.recorded().some((s) => s.name === 'actor.receive'), {
+        timeoutMs: 4_000,
+        label: 'the receive span was recorded',
+      });
       client.end();
 
       const recorded = tracer.recorded();
@@ -83,7 +87,12 @@ describe('Actor tracing — auto-instrumentation', () => {
       const actorA = sys.spawn(A, 'a');
       const client = tracer.startSpan('client');
       tracer.withActiveSpan(client, () => actorA.tell({ message: 'forward', next: actorB }));
-      await sleep(60);
+      // Two hops, so two receive spans — waiting for both means the second
+      // actor's span exists before its parent is looked up.
+      await awaitCondition(
+        () => tracer.recorded().filter((s) => s.name === 'actor.receive').length === 2,
+        { timeoutMs: 4_000, label: 'both receive spans were recorded' },
+      );
       client.end();
 
       const all = tracer.recorded();
@@ -119,7 +128,10 @@ describe('Actor tracing — auto-instrumentation', () => {
       const actorB = sys.spawn(Bomb, 'b');
       const root = tracer.startSpan('client');
       tracer.withActiveSpan(root, () => actorB.tell('boom'));
-      await sleep(50);
+      await awaitCondition(() => tracer.recorded().some((s) => s.name === 'actor.receive'), {
+        timeoutMs: 4_000,
+        label: 'the failing receive span was recorded',
+      });
       root.end();
       const recv = tracer.recorded().find((s) => s.name === 'actor.receive');
       expect(recv?.status).toBe('error');
@@ -172,7 +184,14 @@ describe('Actor tracing — tooling actors', () => {
       tooling.tell('b');
     });
     span.end();
-    await sleep(60);
+    // The application span appearing is the positive half; the tooling span
+    // *not* appearing is the negative one, which the settle covers.
+    await awaitCondition(
+      () => tracer.recorded().some((recorded) =>
+        String(recorded.attributes['actor.path'] ?? '').endsWith('/application')),
+      { timeoutMs: 4_000, label: 'the application actor was traced' },
+    );
+    await sleep(40);
 
     const paths = tracer.recorded()
       .map((recorded) => recorded.attributes['actor.path'])
@@ -201,7 +220,10 @@ describe('Actor tracing — tooling actors', () => {
       override onReceive(message: string): void { this.child.tell(message); }
     }
     system.spawn(Root, 'root', { internal: true });
-    await sleep(60);
+    await awaitCondition(
+      () => system._inspectTree().filter((cell) => cell.internal).length === 2,
+      { timeoutMs: 4_000, label: 'the root and its child were both marked internal' },
+    );
 
     const marked = system._inspectTree()
       .filter((cell) => cell.internal)

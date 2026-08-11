@@ -9,6 +9,1774 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-11
+
+### Added
+
+- **`randomUuid()`** (#1109).  A random version-4 UUID, exported from
+  `src/util/RandomString.ts` next to `randomId` and re-exported from the root
+  barrel alongside it.  It closes the one identifier question that module could
+  not answer with an alphabet and a length: `randomId(12)` is ~48 bits and only
+  has to be unguessable among the names one process holds live at once, while a
+  `PersistenceId`, a correlation id crossing a broker, or a key another system
+  will read later has to stay distinct from identifiers minted in other
+  processes, on other machines, years apart, with nothing coordinating them —
+  122 random bits are what makes that hold.  Until now the docs answered it by
+  sending the reader out of the framework to `crypto.randomUUID()`, which is
+  also what three call sites in `src/` do, in two different spellings.  It
+  delegates to `globalThis.crypto.randomUUID()` rather than dashing up a
+  `randomHex(32)`: six of the 128 bits are the version and variant fields RFC
+  9562 fixes, so a hex string with dashes in the right places only looks like a
+  UUID and anything parsing a version out of it reads garbage.  No `length`
+  parameter — slicing a UUID down is the mistake the module exists to make
+  unnecessary.  Smoke-tested on Bun, Node and Deno, since `crypto.randomUUID` is
+  a second Web API off the same object as `getRandomValues` and a runtime can
+  carry one without the other.  Migrating the existing call sites onto it is not
+  part of this change.
+
+- **`CborSerializer` carries the same rich types as the JSON tree** (#1036).
+  `Map`, `Set`, `BidirectionalMap` and `BidirectionalMultiMap` used to fall
+  into the CBOR encoder's generic object branch, where `Object.entries` is
+  `[]` or near enough: they encoded as an empty `{}` and every entry was
+  lost, with nothing raised.
+  Anyone who set `withSerializer(new CborSerializer())` on a store — for row
+  size or for speed — silently lost data the default codec kept.  `RegExp`,
+  `URL`, `Error` and the typed arrays were flattened the same way, and `-0`
+  came back as `+0`.
+
+  All of them now round-trip as real instances.  Registered CBOR tags are
+  used wherever one fits the type faithfully — 258 for `Set`, 259 for `Map`
+  (over a native CBOR map, so the entries cost what a plain object's would),
+  32 for `URL` — and everything else goes under tag 27, the IANA
+  "serialised language-independent object with type name and constructor
+  arguments", decoded through a fixed name allow-list.  `Map` needs its tag
+  despite CBOR having a native map type: that is exactly what a plain object
+  encodes to, so the two would be indistinguishable coming back.
+
+  A shared suite (`tests/unit/serialization/RichTypeParity.test.ts`) runs one
+  value table through both codecs and asserts they agree, guarded by the JSON
+  tree's `TYPE_TAGS` — a new type tag with no CBOR counterpart fails the
+  suite rather than shipping as silent data loss.  It earned its keep
+  immediately: `BidirectionalMultiMap` (#1037) landed on `develop` while this
+  was in flight and the guard caught the missing CBOR side on the merge.
+
+  RFC 8746 registers typed arrays as tags 64–87 and this deliberately does
+  not use them: `DataView` and `ArrayBuffer` have no tag there, `Uint8Array`
+  already travels as a bare byte string, and 8746 would force a CBOR-only
+  endianness table with no counterpart on the JSON side.  Both codecs now
+  read one shared binary-kind table instead.  Non-`Uint8Array` binary is
+  little-endian, which the JSON tree has quietly assumed since #889 and which
+  is now written down.
+
+- **`cluster_gossip_records_refused_total{reason}`** (#114, #138).  Counts
+  gossiped member records a merge-path guard turned away.  `reason` is closed to
+  `version-skew`, `map-cap` and `timestamp-skew` so the series count cannot
+  follow an attacker's record count — the cardinality lesson from #131 applied at
+  the point where it would have hurt most.
+
+- **Utility helpers on the public surface** (#1034).  `randomString`,
+  `randomHex`, `randomId`, `safeStringify` and `lazyImportModule` are now
+  re-exported from the root barrel, together with the `RandomStringOptions`
+  and `LazyImportOptions` types.  All five already existed under `src/util/`
+  and the framework runs on them; nothing but the barrel kept them from
+  consumers, since `package.json` ships only `dist/` and its `exports` map has
+  no wildcard.  Each answers a problem that does not stop at the framework
+  boundary: `randomId` names something so the name cannot be guessed — an
+  actor name ends up in an actor path, and a path is an address that anything
+  on the cluster wire can send to, which is why a counter is the wrong shape;
+  `safeStringify` renders a value on a path where `JSON.stringify` would throw
+  on a cycle or a `BigInt` and so replace the error being reported with one
+  thrown from inside the reporting code; `lazyImportModule` imports an
+  optional peer dependency or fails with a message naming the package and the
+  install command — the pattern the docs already recommend for user-written
+  integrations.  `wrapError`, `mergeOptions`, `CidrMatch` and the shared
+  `Constants` stay internal, and `TokenBucket` deliberately so: #636 is an
+  open bug in it and #666 changes its options shape, so exporting it now would
+  turn both into breaking changes to a published API.  Documented on the new
+  bilingual `reference/utility-helpers` page.
+
+- **`actor-ts.distributed-data` HOCON block** (#856).  DistributedData read
+  no configuration at all before this; it now layers `gossip-interval`,
+  `max-pending-quorum-requests` and `max-quorum-timeout` under the explicit
+  options in the documented precedence (options > HOCON > built-in
+  defaults).  The block is top-level rather than under `cluster.*` because
+  the module ships from `src/crdt/` and takes its cluster as a positional
+  argument to `start`.  Only keys something actually reads are shipped, so
+  the delta-CRDT, pruning and subscriber-notification keys the issue lists
+  stay out until the features behind them exist.
+
+- **Scatter/gather router** (#153).
+  `Router.scatterGatherFirstCompleted(size, routee, options?,
+  routeeOptions?)` asks every routee at once and answers the caller with the
+  first reply — Akka's `ScatterGatherFirstCompletedPool`, the hedged-request
+  pattern for tail latency.  The fan-out is fired without being awaited in
+  the handler, so concurrent scatters overlap instead of serialising the
+  router's mailbox; every failure rejects with an `AggregateError` carrying
+  one error per routee (the message distinguishes "nobody replied in time"
+  from "everyone failed"); the winning reply is attributed to the routee
+  that produced it; and stopping or restarting the router fails its open
+  scatters immediately rather than running out the configured clock.
+  Configured through the new `ScatterGatherOptions` (`withTimeoutMs`,
+  default 4 500 ms — deliberately under the 5 000 ms `ActorRef.ask`
+  defaults to, because the router can only name the failing routees after
+  its own deadline has passed and it has collected their errors.  At an
+  equal 5 000 the caller's own `ask` won that race, so on the documented
+  entry point — `scatterGatherFirstCompleted(n, R)` plus a bare
+  `pool.ask(msg)` — you got `AskTimeoutError` and never the
+  `AggregateError` the router exists to produce (#1088).  Validated at the
+  factory call), instrumented with
+  `router_scatter_gather_resolved_total{outcome}` and
+  `router_scatter_gather_latency_seconds`, and documented on the new
+  bilingual `routing/scatter-gather` page.
+- **TCP listener actor** (#158).  `TcpServerActor` binds a port and serves
+  every connection it accepts, closing the one half of the raw-TCP API that
+  was genuinely missing — framing applied per accepted connection with its
+  own re-assembly buffer, TLS and mTLS through the same cross-runtime TCP
+  layer the cluster transport uses, and a `maxConnections` admission cap
+  that refuses at the door rather than accepting a socket nobody reads from.
+  Connections are addressed by an opaque `connectionId` instead of getting
+  an actor each, because an actor's restart semantics cannot resurrect a
+  peer's TCP connection; the configured `target` receives one kind-tagged
+  union (`connectionOpened` / `frame` / `connectionClosed`) and the actor
+  takes `send` and `close` for a single connection.  A frame past its size
+  cap drops only the offending connection, a half-configured `tls`
+  credential fails the actor's start instead of retrying forever behind the
+  reconnect policy (#144), and `outboundBuffer` defaults to `0` because a
+  write buffered while the port is down names a connection id that can never
+  come back.  Configurable under `actor-ts.io.broker.tcp-server`; `tls` is
+  code-only on purpose, since a config file is the wrong place for a private
+  key.
+- **`TcpFraming` moved to its own module** (#158).  The three framing
+  strategies and their two size caps are now shared by `TcpSocketActor` and
+  `TcpServerActor` rather than copied, so the parsing that four open
+  security issues hang off exists once.  Behaviour is unchanged and the
+  package-root export is unchanged; only a deep import of `TcpFraming` from
+  `io/broker/TcpSocketActor.js` has to move to `io/broker/TcpFraming.js`.
+- **Cluster subscriptions: `CurrentClusterState` snapshot replay +
+  `ReachabilityChanged`** (#161).  `cluster.subscribe(listener, {
+  replayMode: 'snapshot' })` replaces the per-member replay burst with one
+  `CurrentClusterState` carrying the members, the unreachable subset and the
+  leader — one callback instead of one per member, and it marks where the
+  replay ends, which the event form cannot; the default stays `'events'`,
+  unchanged for every existing subscriber.  The same change fixes what that
+  replay used to say: it walked the raw member map and stopped after `up`,
+  so a `removed` tombstone — kept for up to `tombstoneTtlMs`, a day by
+  default — was replayed as `MemberJoined` for that whole day, and an
+  `unreachable`, `leaving` or `down` member reached a late subscriber as
+  nothing but `joined`.  The replay now follows `getMembers()` in address
+  order and announces each member in the status it actually holds.
+  `ReachabilityChanged(address, reachable)` is new alongside it:
+  `MemberUnreachable` is a membership transition, so it also fires for a
+  peer that *someone else* stopped hearing from — status travels in gossip —
+  and it is only ever emitted for a member that was `up`, leaving a peer
+  that falls silent while `joining` or `leaving` with no reachability signal
+  at all; the new event is strictly the local failure detector's verdict,
+  emitted on transition.  It carries no observer set — that needs an
+  observer-to-subject table on the wire.  `MockCluster.subscribe` mirrors
+  the real replay event for event, and the DevTools `cluster` stream gains a
+  `reachability-changed` payload.
+
+- **JetStream Key-Value actor** (#74).  `JetStreamKeyValueActor` +
+  `JetStreamKeyValueOptions` bring JetStream's KV view into the actor
+  system: `put` (with an optional `expectedRevision` for compare-and-swap
+  writes), `get`, `delete`, `purge`, `keys`, and a `watch` / `unwatch`
+  change feed.  Replies are `kind`-tagged messages delivered to the `target`
+  the command carries, the same request/reply seam `GrpcClientActor` uses; a
+  `watch` is held as desired state by `BrokerActor`, so it survives a
+  reconnect and one issued during an outage lands on the next connect.  A
+  per-key failure — a compare-and-swap conflict, say — is reported as
+  `keyValueOperationFailed` rather than thrown, because throwing out of the
+  dispatch path is how the base class learns the transport died.
+  Configurable under `actor-ts.io.broker.jetstream-key-value`.
+- **JetStream Object Store actor** (#74).  `JetStreamObjectStoreActor` +
+  `JetStreamObjectStoreOptions` cover the object-bucket view with `put`,
+  `get`, `delete`, `info` and `list`.  v1 moves an object as a **single
+  message** and enforces that with `maxObjectBytes` (1 MiB by default): an
+  oversized `put` is refused before the body enters the bounded outbound
+  buffer, and an oversized `get` is refused from the object's metadata
+  before the body is fetched — the buffer is sized in messages, not bytes,
+  and evicts oldest-first, so a multi-megabyte body riding it would mean
+  unbounded resident memory and silently discarded uploads.  Both refusals
+  answer `objectStoreOperationFailed` naming the limit; `info` and `list`
+  are unaffected.  Configurable under
+  `actor-ts.io.broker.jetstream-object-store`.
+- **DistributedPubSub anycast** (#155).  `Publish` takes a third argument,
+  `delivery`, and `'one-subscriber'` hands the message to exactly one
+  subscriber cluster-wide instead of all of them — the work-queue shape,
+  where N workers share a topic and every task is handled once, and the one
+  thing a broadcast bus cannot do without the workers coordinating among
+  themselves.  Selection rotates a per-topic cursor over the local
+  subscribers and the remote nodes claiming the topic, so ten tasks over
+  three workers land 4/3/3 rather than "probably roughly even"; a remote
+  node counts as one candidate however many subscribers sit behind it,
+  because the gossip frame deliberately carries topic names and not
+  subscriber counts (#80), which is also the granularity Akka routes at.
+  `ClusterRouter` has load-balanced across cluster members since 216db160,
+  but only over routees it spawns or looks up — anycast is for a recipient
+  set that registers and leaves at runtime and that the publisher never
+  names.  An anycast with no candidate, and one that crossed a hop to find
+  the far side's subscribers gone, both go to dead letters; the second is
+  not re-routed, which would trade the at-most-one-hop guarantee for a race
+  against the gossip round about to correct the sender.  **BREAKING:** the
+  third constructor slot used to be `sendOneMessageToEachGroup`, Akka's
+  per-consumer-group anycast flag, which nothing ever read because this
+  mediator has no groups for it to range over — `new Publish(topic, message,
+  true)` broadcast to every subscriber, exactly as `false` did.  Migrate by
+  **dropping the argument**: `new Publish(topic, message)` keeps the
+  behaviour both values actually had.  Do **not** rewrite `true` to
+  `'one-subscriber'` — the old flag was a no-op and the new value is not, so
+  the swap silently turns a fan-out to every subscriber into a delivery to
+  exactly one.  Reach for `'one-subscriber'` only where anycast is what you
+  want.
+- **Live and cursor-paginated persistence-id queries** (#156).
+  `PersistenceQuery` gains `allPersistenceIds()` — a live stream of every
+  persistence id the journal has seen plus each new one as it first appears,
+  the fan-out primitive for starting a per-entity consumer as its entity
+  shows up — and `currentPersistenceIdsPaginated()`, which walks the same
+  ids a page at a time (`pageSize`, default 256; `afterPersistenceId` to
+  resume) instead of materialising all of them into one array.  The cursor
+  is a persistence id rather than an opaque token, so a checkpoint stays
+  readable and reconstructible.  Paging is pushed into the backend wherever
+  a sorted key over ids exists — `ORDER BY … LIMIT` on SQLite and on all six
+  relational backends via `SqlDialect.rowLimit`, a clustering-column range
+  over the `all_persistence_ids` partition on Cassandra — through a new
+  **optional** `Journal.persistenceIdsPaginated`, which no journal
+  implementer has to add; MongoDB (`distinct` has no cursor) and DynamoDB (a
+  `Scan` has no order across partition keys) have no such index and fall
+  back to an in-process page.  **BREAKING:** the two query methods are
+  required on `PersistenceQuery`, so an out-of-tree `implements
+  PersistenceQuery` must add them — extend `InMemoryQuery` to inherit both,
+  or implement them over `Journal.persistenceIdsPaginated` and the exported
+  `persistenceIdPage` helper.  `currentPersistenceIds()` is unchanged and
+  deliberately not deprecated: a small journal is a permanent case, not a
+  legacy one.
+
+- **gRPC client-streaming as its own call mode** (#5).  `GrpcClientCommand`
+  gains `clientStreamStart` / `clientStreamSend` / `clientStreamClose`, and
+  `GrpcHandler` a fourth `clientStream` kind carrying a
+  `GrpcClientStreamCall` (consume the request stream via `onData`, answer
+  once via `respond` / `respondError`) — so all four gRPC call classes are
+  now genuinely covered, which the documentation had already claimed in both
+  languages while the mode was simply absent.  The handshake deliberately
+  does **not** copy bidi's: `clientStreamStart` answers with a new
+  `stream-started` inbound frame carrying a `GrpcStreamHandle` whose `token`
+  is 64 bits of crypto-grade randomness, so the registry lookup is itself
+  the ownership check rather than a guessable sequential id — bidi keeps its
+  in-band `{ __streamId }` handshake until #788 migrates it onto the same
+  seam.  **BREAKING:** `GrpcInbound` gains `stream-started`, so an
+  exhaustive `match` over it needs one more arm.
+- **Request-stream chunks are no longer lost before the handler subscribes**
+  (#5).  `handler.target.tell(call)` only enqueues, so a `clientStream` or
+  `bidi` handler cannot have called `onData` by the time grpc-js starts
+  pushing — the opening chunks were silently dropped, which for a
+  client-streaming call is the entire request.  Both modes now hold what
+  arrives early and replay it on the first subscribe.
+- **`buildGrpcMethodImplementation` exported from `src/io/broker`** (#5).
+  The server's method-implementation builder is now a free function over a
+  handler descriptor, the same seam `grpcHealthCheckImplementation` already
+  uses, so all four call shapes are exercisable without `@grpc/grpc-js`, a
+  bound socket or an actor system; its four arms dispatch through
+  `match(...).exhaustive()`, so a fifth call class cannot be added without
+  handling it.
+- **Avro and Protobuf serializers** (#73).  `AvroSerializer` and
+  `ProtobufSerializer` take a compiled schema you bring — an `avsc` type, a
+  `protobufjs` reflection type, a JSON descriptor, or generated static code
+  from pbjs / ts-proto — so neither library becomes a dependency of
+  actor-ts, the same call `zodCodec` makes with `ParserLike`.  They own the
+  parts that are easy to get wrong by hand: the `Buffer` coercion `avsc`
+  needs on the read path (a plain `Uint8Array`, which is what base64 framing
+  yields, throws deep inside its decoder on every runtime), detaching
+  protobufjs's pooled writer output before it reaches a journal row, running
+  `verify()` before encoding, converting a decoded `Message` to a plain
+  object with defaults filled in, and refusing a payload written under a
+  different manifest — which is the only guard, since Avro carries no field
+  tags and Protobuf no message name.  Wire ids below 100 are rejected at
+  construction.  Round-trip and byte hygiene are verified on Bun, Node and
+  Deno.
+- **`serializerCodec(serializer)`** (#73).  Adapts any byte-native
+  `Serializer` into a migration `Codec`, so a `SchemaRegistry` can hold a
+  different wire format per `(manifest, version)` — a v1 already on disk in
+  Avro and a v2 written in Protobuf coexist in one stream, which a
+  store-wide `withSerializer(...)` cannot express.  The bytes ride the
+  journal's existing tagged-JSON framing instead of a second base64 layer,
+  and the `serializerId` travels with the row so reading it back with the
+  wrong serializer is a named error rather than silent nonsense.
+- **Stable-observation cluster bootstrap** (#148).  `StableObservation` in
+  `src/cluster/bootstrap/` polls a `SeedProvider` until the contact-point
+  set has been unchanged for `stableMarginMs`, then elects the
+  lowest-addressed node as the initial seed and returns both the seed list
+  and the `selfElection` policy to hand to `Cluster.join`; a failed lookup
+  counts as *no* observation rather than an empty set, and a set that never
+  settles throws a `StableObservationError` instead of joining anyway.  Opt
+  in with `ClusterBootstrapOptions.withStableObservation(...)`, tune it
+  under `actor-ts.cluster.bootstrap.*`.  It closes the cold-start split
+  brain (each node forming a cluster out of the subset discovery happened to
+  show it) and the symmetric-seed-list deadlock, where every node listing
+  every node left no node with the empty seed list ordinary self-election
+  requires, so no member ever reached `up`.
+- **`ClusterOptions.selfElection`** (#148).  Decides whether — and when — a
+  node may declare itself the first member of a new cluster: `'immediate'`
+  (the unchanged default, self-elect only on an empty seed list), `'never'`,
+  or a millisecond grace after which it self-elects if no peer has promoted
+  it.  The grace is what makes an address-ordered election safe against a
+  cluster that is already running: the elected node dials its seeds like
+  everybody else and forms a cluster only if that produced nothing, so a
+  scaled-up pod whose address happens to sort first joins instead of
+  splitting.
+- **`CLUSTER_HOST` environment variable** (#944).  `bootstrapCluster` reads
+  it ahead of `POD_IP` / `HOSTNAME` as the host a node advertises, and the
+  stable-observation phase refuses a wildcard advertised host outright — an
+  election ordered on `0.0.0.0` puts every node first, so every node would
+  believe it won.
+
+- **gRPC health checking** (#4).  `GrpcServerActor` can now host the
+  standard `grpc.health.v1.Health` service alongside your own, so
+  `grpc_health_probe`, the Kubernetes gRPC probe and gRPC load balancers can
+  ask a node whether it is ready.  Enable it with
+  `GrpcServerOptions.create().withHealth(registry)`, handing it the same
+  `HealthCheckRegistry` that feeds the management server's `/ready` endpoint
+  — `Check` answers `SERVING` only while every readiness check passes, is
+  re-evaluated per call, and returns `NOT_FOUND` for an unknown service
+  name; `Watch` stays `UNIMPLEMENTED`, the documented signal for clients to
+  poll `Check`.  There is deliberately no boolean toggle and no HOCON leaf:
+  a health service that answers `SERVING` unconditionally would keep a pod
+  in rotation straight through an outage, so switching it on requires naming
+  where the status comes from.  No new peer dependency — the service
+  definition is generated through the `@grpc/proto-loader` the actor already
+  requires.  Server reflection, the other half of #4, is not included and
+  the issue stays open for it.
+- **`smallest-mailbox` for the cluster router** (#69).  `ClusterRouter`
+  gains the load-aware strategy the local `Router` already had: each message
+  goes to the node whose routee last reported the shortest queue.  Routees
+  are ordinary user actors that cannot be made to answer a framework
+  question, so a responder on the fixed envelope path
+  `/cluster/mailbox-depth-agent` answers for them — and because the routing
+  path is synchronous, the readings are cached and refreshed on a background
+  tick rather than asked for per message, which keeps the decision as cheap
+  as round-robin's modulo.  A node with no usable reading is skipped rather
+  than assumed idle, and a cold or fully expired cache degrades to
+  round-robin order instead of dropping anything.  Tune it with
+  `mailboxDepthRefreshMs` (default 200 ms) and `mailboxDepthStaleAfterMs`
+  (default 1000 ms, `0` disables the expiry); a window shorter than the
+  refresh that refills it is rejected at construction.  A router serves
+  depths on its own node, so a single node and the homogeneous deployment
+  need nothing extra — nodes that host routees but no router call
+  `ClusterMailboxDepthAgent.serve(cluster)`.
+
+- **Smallest-mailbox router** (#154).  `Router.smallestMailbox(size, routee,
+  routeeOptions?)` and the exported `smallestMailboxStrategy()` send each
+  message to the routee with the shortest queue, so one expensive message no
+  longer parks the next 1-in-N arrivals behind it — the load-balancing
+  round-robin structurally cannot do.  Ties rotate, which makes an idle pool
+  behave exactly like round-robin and makes a saturated one spread its
+  overflow evenly instead of piling onto a single routee; the scan stops at
+  the first empty mailbox, so a pool that is keeping up costs one depth read
+  per message regardless of its size.  A routee that has stopped is skipped
+  rather than chosen: a terminated cell dead-letters instead of enqueueing,
+  so its depth would otherwise read `0` forever and make the dead routee the
+  permanently emptiest one in the pool.  A routee whose depth cannot be read
+  — one that is not locally hosted — is weighed as empty instead of being
+  passed over, so a mixed pool cannot starve it.  Local only in the sense
+  that matters: mailbox depth is in-process state, and it stays internal to
+  the runtime rather than becoming a public `ActorRef.mailboxSize`.
+
+- **Death watch with a custom termination message** (#159).
+  `context.watchWith(ref, message)` — and its `TypedActorContext`
+  counterpart — registers a death watch that delivers a message of the
+  watcher's own protocol instead of `Terminated(ref)`, so an actor that
+  watches several kinds of actor no longer has to carry the signal in its
+  message union and tell the deaths apart by ref identity.  Last call wins
+  over a previous `watch`/`watchWith` of the same ref, `unwatch` removes
+  either, and the registration is keyed by incarnation — a re-spawned name
+  is a fresh subject that needs its own call.
+
+- **Typed `Behaviors.intercept` / `monitor` / `logMessages`** (#152).  Three
+  combinators for the concerns that cut across an actor's own logic: a
+  generic interceptor that observes, transforms, drops or short-circuits
+  every message before the wrapped behavior sees it; a tap that forwards
+  each message to another actor (a probe, an audit trail) first, swallowing
+  that delivery's failures; and per-message logging at `debug` or `info`
+  with an optional formatter.  Unlike the other decorators an interceptor is
+  not resolved away at startup — it stays wrapped around whatever the inner
+  behavior becomes, so a behavior that returns a fresh `Behaviors.receive`
+  on every message is still intercepted on the next one.
+
+- **`acquireLock(cache, key, ttlMs)` — mutual exclusion over any `Cache`
+  backend** (#141).  Exported from the package root.  It writes a random
+  128-bit token and releases only while that token is still in place, so a
+  holder that overran its TTL cannot evict its successor mid-critical-section;
+  `release()` returning `false` reports exactly that overrun.  `ttlMs` is
+  required — expiry is the only recovery path from a crashed holder.
+
+- **The `Cache.setIfAbsent` atomicity contract is written down** (#141).  It
+  was previously unstated: a hard per-key guarantee on every backend (Redis
+  `SET … NX`, Memcached `ADD`, and a `Map` read/write pair the single-threaded
+  event loop cannot interleave), the rule that `ttlMs` applies only to the
+  write that wins, and the limit that matters — the scope is one key on one
+  server, so a Memcached topology change can rehash a key onto a node that has
+  never seen it and hand the same lock out twice.
+
+- **`LogContext.runFresh(fn)` and `LogContext.runEach(entries, fn)`** (#129).
+  MDC primitives for work that outlives the turn that started it.
+  `AsyncLocalStorage` binds a store when an async resource is *created*, not
+  when it runs, so an un-awaited promise, a later-flushed buffer or a batched
+  queue drain keeps whatever context was ambient at creation time and stamps it
+  onto every `tell` its continuation makes; across a tenant boundary that is a
+  data leak rather than a confusing log line.  `runFresh` runs with the context
+  emptied — for deferred work that belongs to nobody.  `runEach` runs each
+  entry sequentially under the context captured when that entry was enqueued,
+  ignoring the context ambient at drain time — for batches that mix principals.
+
+- **Logging docs cover deferred work, tenant isolation and
+  `LogContext.snapshot()`** (#129).  `snapshot()` was missing from the
+  operations table despite being the only safe way to carry a context across a
+  boundary — `get()` returns the live readonly reference for the whole scope,
+  `snapshot()` copies afresh on every call.  The same page carried an inverted
+  warning claiming raw `setTimeout` loses the MDC while `context.timers`
+  preserves it; both halves were wrong — both paths propagate — and the
+  corrected text names the real failure mode.
+
+- **DevTools overview: an `actor-ts` tile in the Common section** (#911).
+  The running framework version now sits beside the actor system's name —
+  together they are the identity of what you are looking at — instead of
+  living only in the connection badge's tooltip.  It is the first thing a
+  bug report quotes, and a tooltip does not survive the screenshot people
+  actually paste.  Hovering the tile still gives the tap protocol
+  version.  Read from the existing `welcome.serverVersion`, so no
+  protocol change.
+
+- **`BidirectionalMap<K, V>`** (#1035).  A `Map` that also answers
+  `value → key`.  It exists because a reverse index written by hand is two
+  maps that have to be updated in lockstep, and the failure mode when they
+  drift is silent: a stale entry keeps answering for a pair that is already
+  gone.  Values back the reverse map, so they are unique and the relation is
+  1:1 in both directions.  `set` binds the pair unconditionally, evicting
+  whatever held either side before — the one departure from the `Map`
+  contract it implements, deliberate so the type stays usable wherever a
+  `Map` is expected, with `trySet` for callers that want the collision
+  reported instead of absorbed.  Both directions compare by SameValueZero, so
+  `NaN` works as a key and a value and two structurally equal objects are two
+  different values.  `inverse()` is a view over the same storage rather than
+  a copy.
+
+- **`BidirectionalMap` round-trips through every store** (#1035).  It is the
+  first framework class the tagged JSON tree knows about, under
+  `__bidirectionalmap__` alongside `__map__` and `__set__`, so it can be held
+  in an actor's state directly — no snapshot adapter, no serializer
+  registration, nothing at the boundary.  Only the forward pairs are written;
+  the inverse is rebuilt on decode, which also means a row carrying a
+  duplicate value resolves last-wins rather than restoring a map whose halves
+  disagree.  A store configured with `withSerializer(new CborSerializer())`
+  carries it too, since #1036.
+
+- **`JournalIntegrityError` and `SnapshotIntegrityError` on the public
+  surface** (#1053).  Both live in `src/persistence/Replay.ts`, which neither
+  barrel re-exported — so the two classes the recovery documentation tells you
+  to branch on could not be named from outside the package.  Since #122 the
+  *Persistent actor* page states that a journal breaking its contract raises
+  `JournalIntegrityError`, which reads as an invitation to discriminate on it
+  in `onRecoveryFailure`; what was actually reachable was
+  `reason.name === 'JournalIntegrityError'` or a regex over the message, and
+  both break on any rewording.  They are two classes rather than one precisely
+  so that a caller can tell a journal apart from a snapshot store — separate
+  trust domains, and which of them broke its contract is the first thing an
+  operator needs — and that distinction was the part the barrel dropped.  The
+  #122 integration test had been reaching straight into
+  `src/persistence/Replay.js` to get at the class; it now imports from the
+  barrel, so the export has a test that fails if it goes missing again.
+
+- **`LogContextEntry` on the public surface** (#1062).  `LogContext.runEach`
+  takes `Iterable<LogContextEntry<TItem>>`, but the type could not be named
+  from outside: `src/index.ts` exported `LogContext` and `LogContextData` and
+  stopped there, and `package.json` has no wildcard subpath to reach the module
+  directly.  Its own JSDoc argued the export was unnecessary because callers
+  build an entry inline — which is true only for a queue that never leaves the
+  turn it was built in.  `runEach` exists for the opposite case: work deferred
+  to a *later* turn, where the entries live in a field between the enqueue and
+  the drain, and a field has to be typed.  The project's own test typed one
+  that way (`Array<LogContextEntry<string>>`) by importing out of `src/`, which
+  is the route an application does not have.  The *Logging* page (EN + DE) now
+  shows the field and its import instead of starting at the `push`.
+
+- **`TcpServerActor`'s message variants on the public surface** (#1095).
+  `SendCommand`, `CloseCommand`, `ConnectionOpenedMessage`, `FrameMessage` and
+  `ConnectionClosedMessage` were module-local; only the unions
+  `TcpServerCommand` / `TcpServerMessage` left the file.  That is the right
+  default — a variant type belongs next to its union — but it does not survive
+  the union crossing the package boundary: the configured `target` handles the
+  variants one at a time, and a handler takes the **named variant type**.  The
+  echo server on the *TCP* page types `onFrame(message: FrameMessage)` for
+  exactly that reason, so anyone copying it got `TS2304`, with the only way out
+  being `Extract<TcpServerMessage, { kind: 'frame' }>` — the spelling the
+  project's own conventions rule out for a handler parameter.  Both language
+  versions of the page now show the import.
+
+### Changed
+
+- **The `cb` short form is spelled out** (#1113).  152 occurrences across 34
+  files, the sibling of #1112 — and unlike `fn`, `cb` carried **two
+  unrelated meanings**, so it could not be renamed on the string alone.  105
+  occurrences meant *callback*; **42 meant `CircuitBreaker`** (`const cb =
+  new CircuitBreaker(…)` in the pattern tests and the example, `const cb =
+  common.circuitBreaker` in `BrokerOptions`), and a further two were a
+  paired `ca`/`cb` standing for "counter A"/"counter B" in
+  `Extension.test.ts`.  Those became `breaker` / `circuitBreaker` /
+  `counterA`+`counterB`; nothing there is a callback.
+
+  The public surface this reaches is larger than #1112's: `persist(event,
+  cb)` and `persistAll(events, cb)` on `PersistentActor` — the call every
+  persistence page leads with — plus `ReplicatedEventSourcedActor.persist`
+  and `FSM.onTransition`.  The persistence parameter is now `afterPersist`,
+  naming what it is *for* rather than what type it is; `onTransition` takes
+  `listener`, matching the `transitionListeners` it lands in.  In the ~12
+  vendor-shape declarations (mqtt.js, `net.Socket`, `dgram`, gRPC, amqplib,
+  `ws`, Express `listen`) the split is by role: event registration
+  (`on`/`once`/`addEventListener`) takes `listener`, completion callbacks
+  (`publish`, `write`, `end`, `close`, `listen`, `bindAsync`) take
+  `callback`, and amqplib's `consume` takes `onMessage`, the name amqplib
+  itself uses.  Member names are untouched.  **Not breaking** — arguments
+  are positional and no exported shape moved.
+
+  Two spellings deliberately survive: the left column of the
+  `migration/from-akka-jvm` table, which is Akka's own curried
+  `persist(event)(cb)` and is the whole point of the page, and the
+  `'cb-realistic'` actor-system name in an example, which is string data.
+
+- **Documentation corrected where it named a parameter that never
+  existed** (#1113).  `coordination/overview` and the JSDoc on
+  `src/coordination/Lease.ts` both documented `onLost(cb)`; the parameter is
+  and was named `handler`.  Pre-existing drift, fixed in EN and DE together
+  — the same class of error #1112 found on the FSM pages.
+
+- **BREAKING — `CborSerializer` encodes several values differently** (#1036).
+  All of these previously produced something wrong rather than something
+  different, so the migration is usually "delete the workaround":
+
+  - `Map`, `Set`, `BidirectionalMap`, `RegExp`, `Error` and the typed arrays
+    no longer encode as `{}` (or, for a numeric view, as an index-keyed
+    object).  *Migration:* drop any conversion to arrays or plain objects you
+    were doing before encoding.
+  - `undefined` encodes as CBOR simple value 23 and decodes back as
+    `undefined`, not `null` — including as an object property, where the key
+    is kept.  This makes `CborSerializer` the more permissive of the two
+    codecs, since `JsonSerializer` rejects `undefined` outright.
+    *Migration:* write `null` explicitly where the coercion was relied on.
+  - `-0` encodes as a float64 rather than the single byte `0x00`, so it keeps
+    its sign.
+  - A plain object with a `toJSON()` method now encodes as that method's
+    result, matching `JSON.stringify` and the JSON tree.  The same HTTP
+    endpoint answering `application/json` and `application/cbor` no longer
+    returns two different shapes.  *Migration:* none, unless you relied on
+    CBOR ignoring `toJSON`.
+  - Encoding a `Promise`, `WeakMap` or `WeakSet` throws a `CborEncodeError`
+    instead of writing `{}`.  Nothing that relied on the encode succeeding
+    could have been reading entries back — there were never any.
+
+- **`BidirectionalMultiMap<L, R>`** (#1037).  The many-to-many sibling of
+  `BidirectionalMap`, for the shape a subscription registry has: one
+  subscriber holds many topics, one topic has many subscribers, and the
+  message telling you a subscriber is gone carries only the subscriber.
+  Written by hand that is two maps of sets, re-derived at every site, where
+  dropping a participant means reaching into every set it appears in.  The
+  invariant it adds over the 1:1 version is that **there is no such thing as
+  an empty participant** — losing your last partner removes you from both
+  directions.  That is where the leak lives in a many-to-many relation: a
+  topic left holding an empty subscriber set is invisible to a pair count,
+  keeps occupying whatever cap bounds the topics, and would let `inverse()`
+  hand back something related to nothing.  `size` counts pairs rather than
+  participants, since that is what a cap is usually written against.
+  Equality is SameValueZero, as with the sibling.  Two deliberate
+  departures from it, both documented on the class: `get()` returns the
+  **live** internal set typed `ReadonlySet`, not a copy, because the
+  relation is read on fan-out paths once per published message where an
+  O(n) copy is not payable — so casting it back to `Set` and mutating it
+  corrupts the inverse; and it does not implement `Map`, which it could not
+  honour anyway since `get` returns a set.
+
+- **`BidirectionalMultiMap` round-trips through every store** (#1037).  The
+  second framework class the tagged JSON tree knows, under
+  `__bidirectionalmultimap__`, so a many-to-many relation can be held in an
+  actor's state with no adapter and no registration.  It needs the tag more
+  than its sibling did: a `BidirectionalMap` falling through to the plain
+  object encoder would at least come back with its data intact and only its
+  class gone, where this one holds both directions as `Map<_, Set<_>>`
+  behind private fields the walker never reaches — the row would be a pair
+  count and no pairs.  Written as a forward adjacency list rather than a
+  flat pair list, because one participant with many partners is the shape
+  every call site has; the inverse is rebuilt on decode, so the two halves
+  cannot be restored disagreeing.  The `CborSerializer` exception applies
+  here too (#1036).
+
+- **UUIDs in `src/` are minted through `randomUuid()`** (#1110).  Three call
+  sites still called the platform primitive themselves, in two different
+  spellings: `ClusterClient.nextAskId` and
+  `ClusterClientReceptionist.onAskFailure` used `globalThis.crypto.randomUUID()`,
+  while the `requestId` middleware imported `randomUUID` from `node:crypto`.
+  All three now go through the helper #1109 added, which puts the choice of
+  primitive back in the one module that owns where identifiers come from —
+  relevant the day it has to change (a runtime without `crypto.randomUUID`, or
+  UUIDv7 for a lexicographically ordered persistence key), since a `grep` for
+  `randomUuid` previously found none of them.  The middleware change also
+  removes the last `node:crypto` import in `src/` that had a Web Crypto
+  equivalent; the three remaining ones (`timingSafeEqual`, `createHmac`,
+  `randomBytes` in `BasicAuth`, `BearerToken` and `Csrf`) do not, so they stay.
+  No behaviour or API change — both spellings return a lowercase v4 UUID, and
+  the middleware's `VALID_ID` guard already had to accept one, since it also
+  vets client-supplied ids.  Docs samples that predated the helper (the K8s
+  lease test name, the `LogContext` correlation id, the `requestId` default)
+  now show `randomUuid` instead of sending the reader to the raw primitive.
+
+- **The receptionist, the pub-sub mediator and the broker base index their
+  subscribers through `BidirectionalMultiMap`** (#1037).  All three kept the
+  same relation by hand, each with a comment explaining why it had to, and
+  all three now converge on the same pair: the relation plus a
+  `path → ActorRef` map for the fan-out target and the unwatch handle.
+  Behaviour is unchanged; what goes away is the lockstep discipline and one
+  latent defect with it.  `Receptionist.totalSubscribers` no longer exists —
+  it was exactly the pair count, so it is `subscriptions.size`, and with it
+  goes a counter that decremented *before* its own "did this subscriber
+  exist" guard.  Today's single caller happened to guard it, so the count
+  stayed right; a second one that did not would have drifted the subscriber
+  cap downward permanently, and a derived value cannot drift.  In the
+  mediator, `SubscriberSet` becomes `TopicState` — what a topic holds
+  besides its subscribers — and the four hand-written copies of the
+  empty-topic guard become one `maybeDropTopic`.  The fan-out paths there
+  gain one map lookup per local subscriber per publish, the price of keying
+  on paths rather than on ref identity — identity keying is what does not
+  survive death watch.  Measured on `benchmarks/cluster/pubsub-fanout.ts`
+  at 1000 local subscribers, three runs each, it does not show: 63.3 / 61.5
+  / 61.9 µs per delivery before against 60.0 / 62.8 / 55.9 µs after.  The
+  lookup is inside the noise of the mailbox hop it sits next to.
+
+- **The `fn` parameter name is spelled out across the API** (#1112).  136
+  sites in 34 files under `src/` still used `fn`, the short form `AGENTS.md`
+  bans by name alongside `Cmd`/`Msg`/`Ctx`/`Impl`/`Ctor`.  Parameter names
+  reach users — they are part of the published `.d.ts`, the generated
+  TypeDoc and IDE signature help — so this touches public surface:
+  `Dispatcher.execute(task)`, `Scheduler.scheduleOnceFunction(delayMs,
+  task)`, `LogContext.run/with/runFresh/runEach(…, callback)`,
+  `Tracer.withActiveSpan(span, callback)`, `TestKit.within(durationMs,
+  callback)`, `SqliteDb.transaction(body)`,
+  `HealthCheckRegistry.addLiveness/addReadiness(check)`,
+  `DistributedData.update/updateAsync(key, factory, mutator)`,
+  `ORMap.updateWith(…, mutator)`, `EventDispatcherBuilder.on(kind,
+  handler)`, and the four HTTP middleware builders, where the new name is
+  the field the builder writes (`withGenerate(generate)`,
+  `withValidate(validate)`, `withOnTimeout(onTimeout)`,
+  `withOriginPredicate(predicate)`).  **Not breaking:** arguments are
+  positional, and every type whose *field* was renamed (`ManualScheduler`'s
+  task record, DistributedData's update message, the Node worker adapter's
+  listener map) is module-local or private.  No behaviour change.
+
+  Three declarations that transcribe a vendor shape — better-sqlite3's
+  `transaction`, `@opentelemetry/api`'s `context.with`, and the
+  `bun:test`/Vitest/Jest `beforeAll`/`afterAll` hooks — were renamed too:
+  structural assignability ignores parameter names, so only the *member*
+  names have to stay verbatim, and those did.
+
+- **Documentation corrected where it named parameters that no longer
+  existed** (#1112).  `persistence/fsm/*` documented `onEnter(state, fn)` /
+  `onExit(state, fn)` / `onTransition(fn)` where the source says `hook` /
+  `hook` / `cb` and the method is `onExitState` (`onExit` is a private
+  field); `fundamentals/event-stream` documented `cluster.subscribe(fn, …)`
+  against a parameter named `listener`; and the
+  `operations/upgrades/rolling-migration` helper table listed
+  `migrateSnapshotStore(store, pids, fn)` for `(store, persistenceIds,
+  manifestFor)`.  All pre-existing drift, fixed in EN and DE together.
+
+- **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
+  `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
+  → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
+  had a HOCON key, so `reference.conf` is unchanged.  The old name stopped being
+  true once the cap applied to every merge rather than to a first sighting.
+  Behaviour changes with it: a refusal is now permanent — a node whose clock runs
+  further ahead than the budget stays in the member list without roles until its
+  clock comes back, instead of getting through on its own second frame.  That was
+  always this cap's verdict; the second frame was the bypass.
+
+- **Sharding resolves entities and regions by index instead of scanning**
+  (#1035).  `Passivate` and `Terminated` arrive carrying a ref and nothing
+  else, so `Shard` found the entity they refer to by walking every entry in
+  its entity map — O(n) per entity stop, and therefore O(n²) to drain a shard
+  during handoff, on the one path that runs once per entity and precisely
+  when a shard is at its largest.  It now keeps a `BidirectionalMap` of
+  entity id ↔ actor path; the path *string* is indexed rather than the ref,
+  because that is what `ActorRef.equals` compares.  `ClusterSharding`
+  likewise suffix-matched every registered path to resolve a region by type
+  name, on a path reached for every message sent through a sharded type, and
+  now keeps a direct index.  No behavior change.
+
+- **A resumed actor's children are resumed with it** (#635).  A failure
+  suspends the failing actor's subtree so nothing in it runs while the
+  supervisor decides, but `Directive.Resume` only ever reached the actor that
+  failed.  Its children stayed suspended permanently: mailboxes filled,
+  nothing was processed, and there was no error and no dead letter to notice
+  it by.  `suspend` and `resume` now walk the same tree.
+
+- **BREAKING — a restart stops the actor's children** (#634).  A restart
+  replaces the `Actor` instance while the cell, and with it the child map,
+  survives.  Children were therefore inherited by the new incarnation — which
+  made an ordinary pattern impossible: `postRestart` re-runs `preStart`, so an
+  actor that spawned a *named* child there hit `Child name … is not unique` on
+  its first restart and never recovered.
+
+  The children are now stopped after `preRestart` and **before** the
+  replacement is built, and the restart waits for them, so the fresh instance
+  starts from an empty child map.
+
+  **Migration:** an actor whose children should outlive a restart overrides
+  the new `Actor.stopChildrenOnRestart()` to return `false`, and adopts the
+  survivor in `preStart` — `this.child = this.context.child('name')
+  .toNullable() ?? this.context.spawn(Child, 'name')`.  An instance field
+  cannot carry that across a restart: `preStart` runs on a fresh instance, so
+  `this.child ??= …` is always unset and re-spawns into the name the surviving
+  child still holds.  It is a hook rather than a
+  `preRestart` override because the teardown has to be awaited, and
+  `preRestart` cannot tell the framework it started something worth waiting
+  for.
+
+- **BREAKING — a sharded entity's child name escapes its id injectively**
+  (#568).  `entityName()` folded every character outside `[A-Za-z0-9_-]` to
+  `_`, which is many-to-one.  Two ids that differed only in punctuation
+  produced the same child name, and when they also hashed into the same
+  shard the second one missed the shard's id-keyed map, called
+  `createEntity`, and `_createChild` threw `Child name … is not unique`.
+  That throw kills the Shard actor — and with it every unrelated entity
+  living in that shard, including other tenants'.  It needed no attacker:
+  `a.b@x.com` and `a-b@x.com` collided, and `extractEntityId` is documented
+  as reading the id straight off an inbound message.
+
+  A code unit outside `[A-Za-z0-9_-.@:+]` is now escaped as `~` plus four
+  hex digits.  Ordinary ids are unchanged — `user-42`, `a.b@x.com` and
+  `tenant:eu` all read as themselves — and the escape works per UTF-16 code
+  unit rather than percent-encoding UTF-8, so it is total: a lone surrogate
+  cannot make it throw inside the shard, which would recreate the very
+  failure being fixed.
+
+  **Migration:** entity actor *paths* change shape for ids containing
+  escaped characters — visible in the DevTools tree, in log lines, and in
+  remote path rendering.  Nothing persists a path (remembered entities store
+  ids), so there is no data migration.  Code that recovered an id by slicing
+  the `entity-` prefix off `context.path.name` must read `this.entityId`
+  instead; that accessor has existed since #832 and is the supported route.
+  Nothing decodes a path segment, and `parsePathSegments` now says so — the
+  escape is injective only while it stays escaped end to end.
+
+- **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
+  The framework had three spellings for the same concept: `t` on the cluster
+  wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal
+  coordinator/singleton event unions, `$t` on the sharding protocol
+  (`sharding.Register`, `sharding.ShardHome`, …), and `kind` everywhere else —
+  which is the one AGENTS.md prescribes. All three are now `kind`.
+
+  **Migration:** a rolling upgrade is not possible. A v0.13.0 node and a
+  v0.14.0 node cannot talk to each other — the discriminator they read is
+  absent in the other's frames, so every frame is unrecognised. Stop the
+  whole cluster, then start it again on the new version. Nothing in the
+  public API changes; this affects only the bytes on the wire between nodes
+  (and anything speaking that protocol directly, e.g. a hand-rolled
+  `ClusterClient` peer or a test that constructs raw frames).
+
+  The DevTools tap protocol already used `kind` and is untouched, so the
+  embedded UI bundle and any tap client keep working across the upgrade.
+
+### Fixed
+
+- **The CBOR encoder no longer overflows the stack, or writes bytes it
+  cannot read back** (#1036).  `encode()` on a cyclic object and on a
+  deeply nested one both died with `RangeError: Maximum call stack size
+  exceeded`: the decoder has capped nesting since #618, the encoder had no
+  bound at all.  It now refuses a cycle with a `CborEncodeError` (a shared
+  reference still duplicates, as `JSON.stringify` does) and measures depth in
+  the levels the *decoder* will spend, so "the encoder accepts it" and "the
+  decoder accepts it" are the same statement.  That distinction is not
+  academic: a `Set` costs two decode levels where a `Map` costs one, and the
+  tagged forms put their payload two or three levels down, so an empty `Set`,
+  a `RegExp` or an `Error` near the limit used to encode fine and then fail to
+  decode — a snapshot the node could never read back.
+
+- **An unbuildable rich-type payload reports as a `SerializationError`**
+  (#1036).  A `__regexp__` with an unbalanced source or bad flags, a `__url__`
+  holding a relative reference, and a `__typedarray__` whose byte length is
+  not a whole number of elements all escaped as a raw `SyntaxError`,
+  `TypeError` or `RangeError` naming neither the tag nor the value.  HTTP hid
+  it, because `Marshalling.entity()` catches everything and answers 400; a
+  journal replay did not.  The check lives in the codec-independent module, so
+  CBOR inherits it.
+
+- **`BrokerActor` now actually prunes a subscriber that stops** (#1111).
+  `subscribeRef` death-watched the ref and its documentation — the class
+  JSDoc and `docs/io/broker-actor-base` alike — promised the subscription
+  was removed automatically when it stopped.  Nothing implemented it.
+  `Actor.onReceive` is abstract, so the base class never sees a message,
+  and the reverse index commented "for O(1) cleanup on Terminated" had no
+  reader on that path at all; a stopped subscriber stayed in every topic it
+  held and cost a dead-lettered `tell` on each fan-out.  Sealing
+  `onReceive` in the base class would have taken the dispatch table away
+  from all thirteen subclasses for the sake of one hook, so the seam is
+  explicit: **subclasses call `pruneTerminatedSubscriber(ref)` from their
+  `Terminated` arm**, as the corrected docs now show.  It deliberately does
+  not `unwatch` — the cell has already dropped the watch by the time it
+  delivers `Terminated`.  The index is also keyed by path now rather than
+  by ref object, which is what makes it work on that path at all: a
+  `Terminated` carries the cell's own `self` ref, which need not be the
+  object that subscribed.  `postStop` clears the ref sidecar too, which the
+  old pair left behind.
+
+- **SQLite persistence now sets an explicit `busy_timeout` on every
+  connection it opens** (#124).  Until now no `busy_timeout` was set
+  anywhere in the tree, so the value in force was whatever the driver
+  happened to default to — and the drivers disagree: measured, `bun:sqlite`
+  0, `node:sqlite` 0, `better-sqlite3` 5000.  The identical journal
+  therefore failed a contended write on the first tick under Bun and Deno
+  but blocked for five seconds under Node, which makes this a break of the
+  project's identical-behaviour-on-Bun/Node/Deno promise rather than merely
+  an unset knob.  Every handle now gets 1000 ms by default, settable per
+  store through `busyTimeoutMs` (`0` disables the wait, a negative value is
+  rejected because SQLite reads it as "retry forever"); the default stays
+  well below the failure detector's 2000 ms unreachable threshold on
+  purpose, because `SqliteDriver` is synchronous and the whole wait is
+  event-loop freeze — inheriting `better-sqlite3`'s 5000 would let one
+  contended write stall a node long enough for its own cluster to evict it.
+  `SqliteJournal.append` additionally takes its write lock up front (`BEGIN
+  IMMEDIATE`) instead of using the driver's deferred `transaction()` helper,
+  because a transaction that reads before it writes makes SQLite return
+  `SQLITE_BUSY` without ever consulting the busy handler — measured at 1 ms
+  to failure with an 800 ms timeout configured, against 956 ms for the same
+  statements under `BEGIN IMMEDIATE`.
+- **`DEFAULT_SQLITE_BUSY_TIMEOUT_MS` and `buildSqliteDatabase` are exported
+  from the package root** (#124).  The root barrel is the only published
+  entry point, so both were previously reachable only through the internal
+  `src/persistence/index.ts` — which left the new default unobservable from
+  outside the package and made the documented "share ONE handle across
+  stores" route unusable.
+
+- **HOCON `include` now refuses itself with an explanation instead of a
+  syntax error** (#135).  `include "base.conf"` reported `Expected '=' or
+  ':' after key "include"`, which names the keyword but not the reason and
+  left the reader to discover from the parser source that the omission was
+  deliberate.  The parser now states that the directive is refused, quotes
+  line, column and the include target, and points at the composition that
+  does work — `Config.parseFile(base).merge(Config.parseFile(app))`.  All
+  forms are covered (`"…"`, `file(`, `url(`, `classpath(`, `required(`), at
+  any nesting depth, while a key legitimately named `include` — `app {
+  include = "x" }`, `include { a = 1 }`, `include.a = 1` — keeps parsing
+  untouched.
+- **The configuration reference no longer documents `include` as a working
+  feature** (#135).  `reference/configuration.mdx` advertised HOCON "with …
+  includes" and carried an active "Includes" section describing the
+  directive as supported, and `extras/design-decisions.mdx` listed "File
+  includes" among the reasons to prefer HOCON over YAML/TOML — so following
+  our own reference led straight into the parse error.  Both pages now state
+  the refusal and its rationale and show the in-code merge instead (EN +
+  DE).
+
+- **A `PersistentFSM` state timeout could fire after a transition had already
+  renewed it** (#143).  A `_timeout` fire travels through the mailbox, so it
+  becomes irrevocable the moment the timer callback enqueues it — `cancel()`
+  can no longer reach it, and the FSM may process any number of commands
+  before it is dequeued.  `fireTimeoutTransition` compared only the state
+  name, which cannot express "this window was replaced": a heartbeat command
+  transitioning `active → active` — the archetypal idle-session timeout —
+  re-armed the timer, and the queued fire still expired the session.  A fire
+  now carries the arm generation it was scheduled under and is dropped once a
+  re-arm has superseded it; the state-name check remains as a second layer.
+
+- **A fully compacted journal no longer blocks every later `persist`**
+  (#628).  Recovery raised its sequence only from a snapshot or from
+  replayed events, so an actor whose journal had been compacted past
+  everything recovered at 0.  That used to be harmless, because the journal
+  said 0 too — but since #379 the backends remember what they deleted, so
+  `highestSeq` correctly reports N while recovery reported 0, and the next
+  `persist` sent `expectedSeq=0` into a journal that had seen N.  The result
+  was a `JournalConcurrencyError` on every attempt, permanently, with no way
+  out short of editing the store.  Recovery now falls back to the journal's
+  high-water mark when there was nothing to replay — one extra query only in
+  that case, and a no-op for a brand-new actor.
+
+- **`deleteHistory(toSeq)` keeps the snapshot it compacts past** (#629).
+  `SnapshotStore.delete` is documented as inclusive, so compacting past a
+  snapshot deleted that snapshot along with the events it replaced — leaving
+  an actor with neither.  It now prunes snapshots strictly before `toSeq`,
+  and `toSeq <= 0` prunes nothing.  This is the first test the method has
+  ever had; it had no caller in the repo either.
+
+- **A terminated `ActorSystem` no longer keeps the process alive** (#641,
+  #762).  `Scheduler.shutdown()` set a flag, which suppresses the scheduled
+  callbacks but leaves the underlying `setTimeout` / `setInterval` handles
+  armed — and an armed interval holds the event loop open.  A flag could
+  never have fixed it: each handle lives inside the closure that created it.
+  Schedules now register with the scheduler, so `shutdown()` has something to
+  clear.
+
+- **A fired one-shot timer reports itself finished** (#642).  `Cancellable`
+  only flipped its flag on an explicit `cancel()`, so a timer that simply ran
+  claimed to be pending for the rest of the process: `isCancelled` stayed
+  false, `cancel()` returned `true` for a schedule that had already fired,
+  and `context.timers` listed dead keys as active while its map grew by one
+  entry per key for an actor that cycles through them.  A repeating schedule
+  still ends only when cancelled.
+
+- **`CoordinatedShutdown.removeProcessHooks()` removes only its own
+  listeners** (#644, #764).  It called `process.removeAllListeners(signal)` —
+  every SIGTERM/SIGINT listener in the process, including the application's
+  own graceful shutdown, other libraries', and a second `ActorSystem`'s.
+  `installProcessHooks` recorded only the signal name, so the handler it had
+  just installed was unreachable; the pair is now kept and removed with
+  `process.off`.
+
+- **A stopping actor releases its event-stream subscriptions** (#645, #763).
+  `unsubscribe` had one caller in the entire framework, so the subscriber
+  list only grew — every publish walked entries for long-gone actors and
+  turned each into a dead letter.  `publish` also iterated the live array
+  while a synchronous `tell` could mutate it; it now iterates a snapshot, so
+  the recipient set is fixed when `publish` is called.  The docs' advice to
+  "rely on the dead-letter cleanup" described something that never existed,
+  and is corrected in both languages.
+
+- **A Deno node can join an mTLS cluster** (#576).  `Deno.connectTls` accepts
+  a client `key`/`cert` pair, but `DenoTcpBackend.connect` never passed them —
+  so a Deno node could not answer a listener that (correctly, since #565)
+  demands a certificate, and could not join at all.  The same call passed the
+  SNI override as `hostname_`, which is not a Deno option; the adapter's
+  hand-written `DenoGlobal` interface declared the typo, so the compiler could
+  not see it and the value was silently dropped.  Deno takes the SNI name from
+  `hostname`.
+
+  Hosting an mTLS *listener* on Deno remains impossible — `Deno.listenTls`
+  takes only a cert and key, with no way to request or verify a peer
+  certificate — and is still refused at bind time rather than started in a
+  state weaker than it reads as.  The error now says which half is
+  unavailable.  `rejectUnauthorized` has no Deno equivalent and is documented
+  as unmapped rather than silently ignored.
+
+- **The DevTools handshake reported the wrong framework version** (#657).
+  `DEVTOOLS_SERVER_VERSION` is hand-maintained and had said `0.11.0`
+  since that release, so every DevTools session misreported the version
+  through `0.12.0` and `0.13.0` — in the one field you trust when
+  triaging.  It is now correct, and a test asserts it against
+  `package.json`, so a release that forgets the bump fails the suite
+  instead of shipping the lie.
+
+- **Anycast stopped leaving the node in the topology it exists for** (#155,
+  #1091).  The two `'one-subscriber'` paths shared one rotation cursor but
+  rotated over different candidate lists: an originated publish walks local
+  subscribers *plus* remote claimants, an anycast that already crossed a hop
+  walks local subscribers only.  Since `rotate` writes the cursor back modulo
+  the count it was handed, every inbound frame left the cursor below the local
+  subscriber count and the next publish this node originated was guaranteed to
+  pick a local subscriber again.  A symmetric work queue — every node both
+  hosting workers and publishing — alternates the two paths, so nothing ever
+  crossed: measured at eight bodies delivered locally and zero frames sent.
+  The two paths now have a cursor each.  Two more defects in the same
+  rotation: remote candidates were walked in `Set` insertion order, which the
+  gossip round re-draws (a claimant moved to the end merely by gossiping, so a
+  peer could be served twice running or skipped for a full turn on timing
+  alone) — they are now sorted by address, which also makes every mediator
+  agree on the order; and an unroutable frame was dropped in `otherwise` with
+  no delivery, no dead letter and no log, which is the silent direction of
+  version skew.  It now warns and dead-letters.
+
+  **Rolling upgrade:** a peer that predates `pubsub-publish-one` still cannot
+  *deliver* an anycast that reaches it — it can only now say so.  The frame
+  becomes a dead letter on that node and a warning naming the kind, instead of
+  a task disappearing.  Nothing is re-routed, deliberately: re-routing would
+  trade the at-most-one-hop guarantee for a race against the gossip round
+  about to correct the sender.
+
+- **`TcpServerActor` refuses at the cap by aborting, not half-closing**
+  (#1096).  `onSocketOpened` turned an over-cap connection away with
+  `socket.end()`, which is a FIN and nothing more: a peer that does not answer
+  it keeps the socket — and its file descriptor — alive, still writable from
+  its side.  That socket was never registered, so `connections` never counted
+  it and the cap did not bound it either; the limit held only against peers
+  that cooperate, which is not what a limit is for.  The refusal now calls a
+  new `TcpSocketLike.destroy()`, implemented per runtime (`socket.destroy()`
+  on Node, `socket.terminate()` on Bun; Deno's `Conn.close()` already tears
+  down both halves, so its `end()` was never the half-close the other two
+  had).  **The refused peer now sees a connection error rather than a clean
+  close** — which is what being turned away at capacity looks like at the TCP
+  level, and the *TCP* page says so in both languages.
+
+  Worth recording for whoever writes the next one of these: the client cannot
+  tell the two apart.  Measured against a plain Node listener with an
+  `allowHalfOpen: true` peer, `end()` and `destroy()` leave it in exactly the
+  same state — `end` fired, `close` did not, `writable` still true, and a
+  further `write()` succeeds either way.  The only signal that separates them
+  is the *server* socket's `close`, which never fires for `end()`.  The
+  regression test therefore asserts the refusal path's choice rather than the
+  client's view, because a client-side assertion passes with the defect in
+  place.
+
+- **`securityHeaders()` says what `false` actually does** (#1060).  The bundle
+  documented every header as "disable-able", and the `securityHeaders()`
+  middleware cannot disable one: it only ever adds — `applyHeaders` merges in
+  and never deletes.  Since #127 every backend writes
+  `x-content-type-options: nosniff` ahead of every response it emits, so
+  `securityHeaders({ contentTypeOptions: false })` leaves the header exactly
+  where it was, on all three backends.  No behaviour change here; the option,
+  its type and both language versions of the *Security headers* page now say
+  which seam `false` bites on.  It is honoured server-wide —
+  `newServerAt(…).withSecurityHeaders({ contentTypeOptions: false })` replaces
+  the backend's default map — and inert as a middleware.  There is no
+  per-subtree opt-out on purpose: the backend's copy is the last word so that
+  the 404s, body-parse 413s and error short-circuits which never reach a
+  middleware are covered too.  The suite drove the middleware in isolation,
+  where the resolved map really does lose the header, which is how the claim
+  survived; a test now composes the two layers the way a response meets them.
+
+- **The `runFresh` / `runEach` examples no longer discard their rejection**
+  (#1063).  Both showed `void LogContext.run…(…)` as the recommended shape,
+  directly above an aside explaining that an error *propagates immediately* —
+  which is exactly what makes the `void` dangerous.  Nothing awaits that
+  promise, so the rejection is unhandled, and on Node an unhandled rejection
+  has been fatal by default since v15: reproduced on node 26.7, the process
+  exits 1 rather than losing one batch item.  Both examples now end in
+  `.catch`, the aside says why, and the framework's own precedent is named —
+  `Scheduler.scheduleOnceFunction` wraps its task in `runGuarded` instead of
+  firing it bare.  `tests/unit/MdcPropagation.test.ts` had copied the same
+  `void`; it now follows what the page teaches.
+
+### Security
+
+- **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).
+  `ipv4ToBigInt` parsed every octet with `Number()`, which understands far
+  more than a dotted quad — `Number('1e1')`, `Number('010')` and
+  `Number('0x0a')` are all `10` — so `1e1.0.0.1`, `010.0.0.1`, `0x0a.0.0.1`,
+  `0xa.0.0.1` and `10.0.0.0x1` all matched `10.0.0.0/8`.  That is a bypass
+  rather than a cosmetic flaw because `net.isIP` scores each of them `0`:
+  the transport hands the same string to `net.connect({ host, port })`,
+  which resolves it through DNS, so a `pinnedAddresses` check that concluded
+  "inside the pinned network" produced a connection to wherever the
+  attacker's resolver pointed.  The same primitive backs the HTTP
+  `IpAllowlist`, which carried the identical bypass since #312 — a spoofed
+  `X-Forwarded-For: 1e1.0.0.1` walked through a `10.0.0.0/8` allowlist via
+  the extractor its own JSDoc recommends.  Octets are now decimal-canonical
+  only (no leading zero, no `0x`, no exponent, no sign, no whitespace), and
+  `ipv6ToBigInt` was audited and does not share the weakness.
+  **Migration:** a pin or allow entry written non-canonically
+  (`'010.0.0.0/8'`) now throws at construction instead of silently pinning a
+  different network — rewrite it in canonical form.
+- **Prefix lengths are decimal-only, so a trailing-slash typo no longer
+  means `/0`** (#145).  `parseCidr` read the prefix with `Number()` too, and
+  `Number('')` is `0`, so `'10.0.0.0/'` parsed as `/0` — a pin meant to
+  admit a single network admitting the entire address space instead.
+  `'/0x8'`, `'/8e0'`, `'/ 8'`, `'/+8'` and `'/010'` were accepted just as
+  loosely; all of them now throw `invalid prefix length`.
+- **An all-numeric host-suffix pin is rejected** (#145).  Suffix matching is
+  string comparison, so an entry like `'0.1'` matched the tail of any
+  address ending `.0.1`.  No DNS zone is all digits; write a CIDR instead.
+  This closes the path by which a non-canonical address — now classified as
+  a hostname rather than an IP — could otherwise have reached the suffix
+  pins.
+
+- **Every gossiped record is held to the merge-path caps, not just the first**
+  (#114, #138).  The version cap was split in two — tight where a record
+  *introduces* an address, 24 h where it updates one — and both halves were
+  reachable with the same move, because "already on the list" is a property of a
+  map the attacker can write to first: two records for one address inside a
+  single frame (`mergeMember` re-reads the map per record), or a frame carrying
+  no member records at all, whose sender fallback enters the address itself.
+  Either one then pushed through attacker-chosen roles and a version dated 23 h
+  ahead, which the address's real owner could no longer outbid.  There is now one
+  cap, `maxVersionSkewMs`, for every gossiped member version; the flat 24 h
+  remains only for the two fields that are timestamps rather than versions,
+  `removedAt` and the heartbeat `ts`.  `maxMembers` / `maxTombstones` are
+  likewise charged to the bucket a record moves *into* rather than only when an
+  entry is created: a tombstone reborn as `up` otherwise cleared the tombstone
+  bucket without giving back a map slot, and alternating that with a fresh
+  tombstone flood grew the member map without bound while every single step
+  honoured both caps — measured at 6, 11, 16, 21, 26, 31 entries against a
+  ceiling of 11.  The mirror direction (a live member gossiped as `removed`)
+  pumped the tombstone bucket the same way and is closed with it.
+
+- **A refused gossip record is reported once per frame, not once per record**
+  (#114, #138).  The version guard and the `removedAt` guard each wrote a WARN
+  line per record — precisely the log amplification the memory caps were meant to
+  remove, reachable by anyone able to send one large frame.
+
+- **BREAKING: `persistenceId` is validated before it becomes a storage key**
+  (#133).  The new `PersistenceIdValidator` rejects an empty id, one longer
+  than 255 characters, a `/` or `\` path separator, a whole-id `.` / `..`,
+  and control characters — the rules `assertValidName` (#134) already
+  applies to actor names, mirrored onto the one identifier in the
+  persistence layer that had no validator at all.  It runs in
+  `PersistentActor.preStart` and `ReplicatedEventSourcedActor.preStart`
+  (both ahead of any journal access), in the new
+  `DurableStateOptionsValidator` where a violation is an `OptionsError` on
+  the `persistenceId` field, and again in the `append` of all six journals
+  as defence in depth.  Banning the separators also closes an object-storage
+  collision: the stores lay an id out as a directory
+  (`<prefix><persistenceId>/<seq>.json`) and read it back by listing that
+  prefix, so `a/b` nested inside `a` — `a`'s `loadLatest` returned `a/b`'s
+  snapshot and its `delete` pruned it.  Commas and `|` stay legal on
+  purpose: the comma-separated journal column carries tags rather than ids,
+  and the projection offset store puts the id last in
+  `<projection>|seq|<persistenceId>`, which is what keeps the chat example's
+  `dm-channel-alice|bob` working.  Migration: read paths are deliberately
+  not validated, so `journal.read(oldId, 1)` still returns data stored under
+  a now-invalid id and it can be copied to a corrected one; check your ids
+  ahead of the upgrade with the newly exported `assertValidPersistenceId`.
+
+- **Replay refuses a journal that breaks its read contract** (#122).
+  `replayState` folded whatever `journal.read()` returned and took
+  `sequenceNr` from the last entry *delivered*, so a shuffled stream
+  replayed history in an order it never happened in — non-commutative events
+  landing the wrong way round — and left recovery one sequence short, after
+  which every `persist` failed with a `JournalConcurrencyError` pointing at
+  a perfectly healthy journal, one restart away from its cause.  The
+  returned slice is now checked before the fold, so a rejected stream never
+  reaches user code: sequence numbers must be safe integers ≥ 1, strictly
+  ascending, contiguous and inside the requested window, otherwise
+  `JournalIntegrityError`.  The ordering half has no in-tree trigger — all
+  eight journals sort, Cassandra explicitly — and defends the plugin
+  contract against third-party journals and store manipulation; the
+  contiguity half does fire on shipped code, through
+  `CassandraJournal.append`'s claim-then-write window.  DevTools time travel
+  opts out of the compacted-prefix part, so the panel still opens on
+  entities whose history was compacted.
+- **BREAKING — recovery over a journal compacted without a covering snapshot
+  now fails instead of inventing a state** (#122).  It previously folded the
+  surviving tail onto `initialState()` and handed that to `onCommand` as the
+  current state.  Reachable through the public API, not just through
+  tampering: `deleteHistory(n)` on an actor that never snapshotted.
+  Migration: compact only past a snapshot — `deleteHistory(seq)` keeps the
+  snapshot at `seq` for exactly this reason — or take one before compacting.
+- **Seed providers can pin the addresses they accept** (#145).
+  `DnsSeedProvider` and `KubernetesApiSeedProvider` gained `pinnedAddresses`
+  plus a `log` callback that reports every drop, so a spoofed DNS answer or
+  a written-to `Endpoints` object can no longer steer the bootstrap at an
+  arbitrary peer.  Entries are CIDRs for resolved IPs and host suffixes —
+  matched on a label boundary, so `svc.cluster.local` never admits
+  `evilsvc.cluster.local` — for the target hostnames SRV records carry; a
+  list that cannot match anything in the configured mode is rejected at
+  construction rather than silently discarding every seed, and non-matching
+  addresses are filtered and logged rather than failing the whole lookup.
+  This is defence in depth behind mTLS (#565, #912) and the only
+  discovery-layer control left standing where mTLS is not configured.
+- **CIDR matching moved to `util/CidrMatch`** (#145).  Extracted verbatim
+  from the `IpAllowlist` HTTP middleware (#312) so the cluster bootstrap and
+  the HTTP edge share one IPv4/IPv6 implementation instead of growing a
+  second hand-rolled parser that drifts; `IpAllowlist` behaviour and error
+  messages are byte-identical and its test file is unchanged.
+
+- **AES-GCM IVs are generated inside the encrypt call** (#110).
+  `aesGcmEncryptSafe(subkey, plaintext)` derives a fresh IV per call and
+  returns it beside the ciphertext, so the object-storage body codec no
+  longer holds an IV it could recycle; the IV-taking `aesGcmEncrypt` and
+  `randomIv` remain for that wrapper and the decrypt-side tests but are
+  marked `@internal`.  No IV was ever actually reused — `aesGcmEncrypt` is
+  re-exported from no `index.ts` and the package `exports` map has no
+  wildcard subpath, so this was in-tree misuse potential rather than
+  anything a consumer could reach — but nothing asserted IV freshness
+  either, and regression tests now do at both the primitive and the manifest
+  layer.
+- **`X-Content-Type-Options: nosniff` on every response** (#127).  All three
+  HTTP backends now write the header before a response's own headers — an
+  explicit header from a handler still wins — so it also reaches what no
+  middleware ever sees: the backend's own error mapping, the `fallback()`
+  404 and the body-too-large 413.  Static files get it too; until now only
+  the directory listing sent it while the served file right beside it did
+  not, which is exactly the upload-echo case the header exists for.  **The
+  response headers of every endpoint change**;
+  `newServerAt(…).withSecurityHeaders(false)` opts out.
+- **`newServerAt(…).withSecurityHeaders(…)` applies the security-header
+  bundle server-wide** (#127).  Passing `SecurityHeadersOptions` (or a plain
+  object) stamps the full `securityHeaders()` set — its own defaults
+  included — at the backend chokepoint instead of as a middleware, which is
+  the only way to cover the error, not-found and upgrade-reject paths;
+  `false` disables the mechanism.  Only `nosniff` is on without
+  configuration: `X-Frame-Options` and `Cross-Origin-Resource-Policy` would
+  break iframes, cross-origin embedding and OAuth popups, so they stay
+  opt-in.
+- **A ClusterClient no longer learns why an ask failed inside the cluster**
+  (#130).  A ClusterClient is not a peer — it never joined the membership
+  ring, carries no gossip or heartbeat duty, and a contact point is by
+  design reachable from outside whatever boundary protects the cluster's own
+  links — so the receptionist stopped forwarding the rejection text, which
+  is authored by arbitrary actor code and routinely carries file paths, SQL
+  fragments, driver internals or a stack.  The client gets a fixed sentence
+  plus a correlation id drawn on the node, and the full text is logged there
+  under that id at `warn`, so an outside caller quotes the id and an
+  operator greps for it.  The unknown-path reply also drops the node's own
+  `selfAddress`, which behind a load balancer or NAT is not the address the
+  client dialled.  **BREAKING:** `ClusterClient.ask()` rejects with the
+  generic message; model a failure a client must act on as a reply the actor
+  authors (`{ kind: 'rejected', reason: 'out-of-stock' }`), which is still
+  passed through untouched.
+- **An HTTP throw that becomes a redacted 500 is now logged where operators
+  actually look** (#130).  Redaction only works if the detail survives on
+  the server, and it did not: the escaped-throw branch logged `err.message`
+  at `debug`, a level nothing runs at in production, so the generic 500 was
+  the sole trace of the failure anywhere.  It now logs at `error` and passes
+  the error *value* through so a sink that formats stacks still gets one,
+  excludes a deliberate `HttpError` such as a 404 (a response the handler
+  chose does not belong in the error log), and covers `fallback()`, which
+  maps to a 500 without re-throwing.  The line carries the caller's
+  `x-request-id` when it is well-formed, read through the newly exported
+  `requestIdOf(request)` — the same shape check the `requestId` middleware
+  applies, which is what stops a client-controlled string from forging a log
+  record through an embedded newline.
+- **DistributedData bounds its pending quorum requests** (#140).
+  `updateAsync` / `getAsync` now share a `maxPendingQuorumRequests` budget
+  (default `1000`, `0` disables) and a `maxQuorumTimeout` ceiling on the
+  caller-supplied `timeoutMs` (default `30s`, `0` disables); a request past
+  the cap is rejected outright instead of tracked, and an oversized deadline
+  is clamped.  The default is deliberately an order of magnitude below the
+  replicator's mailbox (10 000, `drop-head`): at mailbox saturation the
+  oldest queued envelope is discarded together with the caller's
+  `resolve`/`reject`, so the `updateAsync` promise never settles and nothing
+  is logged — a cap set at 10 000 would never fire first and would convert
+  nothing, while a cap of 1000 turns that silent drop into an explicit
+  rejection naming the knob.  Four bounded-cardinality metrics come with it:
+  `distributed_data_quorum_pending`,
+  `distributed_data_quorum_timeouts_total`,
+  `distributed_data_quorum_rejected_total` and
+  `distributed_data_dropped_values_total`.
+
+- **Ambiguous master-key rings are now rejected** (#111).  A `MasterKeyRing`
+  whose `active` and `retired` entries claimed the same version was accepted
+  and then resolved silently in favour of `active` — bodies written under
+  the older of the two keys decrypted with the newer one and failed on the
+  AES-GCM authentication tag with an error that named nothing.
+  `validateMasterKeyRing` refuses duplicate versions, versions outside `[0,
+  255]`, and keys that are not 32 bytes, at plugin registration, at the
+  store's own encrypt/decrypt entry points, and at the start of
+  `reEncryptObjectStorage` (where it replaces a range check that covered
+  only `active`).  Reaching this state needed no exotic key history —
+  promoting a key without renumbering it is enough — so a deployment
+  carrying such a ring today will now fail loudly at startup instead of
+  corrupting reads.
+- **Warning when the master-key version space runs low** (#111).  From
+  active version 240 on, `registerObjectStoragePlugins` warns and points at
+  the remedy.  The single manifest byte is not a cap on how often a
+  deployment may rotate: it caps how many versions may be live in one corpus
+  at once, and a completed re-encryption sweep frees every other number for
+  reuse.  The proposed wide-version wire flag was deliberately not reserved
+  — bit 4 is `FLAG_INTEGRITY_HMAC` since #116, and the case it would address
+  is one the sweep already resolves.
+- **Prometheus cardinality is capped per metric family** (#131).  A label
+  value derived from user-controlled input — a URL path, a header, an id —
+  used to mint one time series per distinct value with nothing bounding it,
+  growing the exposing process's resident memory (prom-client never expires
+  a series) until the Prometheus server OOMed ingesting them.
+  `DefaultMetricsRegistry` and the `promClientRegistry` bridge now stop
+  minting at `maxSeriesPerFamily` (default 10 000, `0` disables) and fold
+  every further tuple into a single overflow series, so a family gains at
+  most one extra series no matter how many distinct tuples arrive; the first
+  overflow logs one warning naming the family and the rejected tuple.
+  Configure it with
+  `MetricsRegistryOptions.create().withMaxSeriesPerFamily(n)` passed to
+  `MetricsExtension.enable(...)`, or `withMaxSeriesPerFamily(n)` on
+  `PromClientAdapterOptions`.  The default is 10 000 rather than a lower
+  round number because `actor_mailbox_dropped_total` carries a
+  per-actor-path label, so a node hosting a few thousand sharded entities
+  under back-pressure legitimately crosses 1 000 series and a tighter cap
+  would discard real operating data.  Deployments already producing more
+  than 10 000 tuples in one family see those folded into the overflow series
+  — raise the cap or bound the label to keep them separate.
+- **`bucketize(value, allowed)` exported** (#131).  Maps a
+  possibly-unbounded label value onto a fixed allow-list, returning
+  `'other'` for anything outside it, so a family can never hold more than
+  `allowed.length + 1` series.  This is the fix for a high-cardinality
+  label; the registry cap is only the backstop for the labels nobody
+  bounded.
+- **Cluster membership is capped** (#138).  The local member map grew
+  without bound from gossip: both paths that create an entry —
+  `mergeMember`'s first-sighting branch and the sender fallback in
+  `onGossip` — set unconditionally, and every guard in front of them decides
+  whether a claim is *believable*, never how many believable claims one peer
+  may make.  Two caps now bound it, `actor-ts.cluster.max-members` (default
+  `1000`) and `actor-ts.cluster.max-tombstones` (default `10000`), settable
+  in code as `withMaxMembers(…)` / `withMaxTombstones(…)` and disabled with
+  `0`.  The tombstone cap is the load-bearing one, which inverts how the
+  issue ranked its tracks: a phantom in an active status is reclaimed by the
+  failure detector within `down-after`, while a gossiped `removed` record is
+  reclaimed by nothing until `tombstone.time-to-live` a day later — so it is
+  the only variant that accumulates.  The practical damage arrives well
+  before an out-of-memory kill: gossip carries the whole member list, so at
+  roughly 110 000 entries a node's own frame outgrows the 16 MiB wire cap
+  and every peer terminates the connection on the length prefix.  Tombstones
+  a node mints itself (`leave`, a downing decision, `down()`) convert an
+  existing entry and bypass the cap, and the failure detector's sample map
+  is bounded on the same path so the leak does not simply move one map to
+  the left.
+
+- **Membership housekeeping is configurable from HOCON** (#841).
+  `weakly-up-after` and `tombstone.{time-to-live, prune-interval,
+  min-retention}` under `actor-ts.cluster` were code-only `ClusterOptions`
+  fields with no config form at all; a deployment can now move them into
+  `application.conf`, where they layer under explicit options as usual.
+  `min-retention = 0s` means *derive the floor from
+  `failure-detector.down-after`* — the same thing an unset field means — so
+  a file that spells the default out behaves like one that omits it, and
+  `ClusterOptionsValidator` accepts `0` where it used to reject it.
+- **A TLS cluster listener no longer binds in plaintext when only half the
+  credential is configured** (#144).  All three TCP adapters decided for
+  themselves whether to bind TLS by testing `cert && key`, so a `tls` option
+  carrying only one of the two made the listener conclude "no TLS" and bind
+  **in the clear** — while the dialing half of the very same options object
+  treats any `tls` value as TLS, so the cluster still formed and the node
+  still looked TLS-configured.  A half-applied secret rotation or one typo'd
+  environment variable was enough.  The rule now sits in
+  `assertListenerTlsIsCoherent` beside the existing #565/#576 guards, and
+  every adapter reaches it through a new `listenerUsesTls` that welds the
+  check to the decision — after this, "plaintext" can only mean "no `tls`
+  was supplied at all"; anything else either binds TLS or throws.  Empty
+  material counts as absent, since that is what an unset variable or a
+  mis-mounted secret looks like on arrival.  The dial path is deliberately
+  untouched: `{ ca }` with no client certificate is ordinary one-way TLS and
+  `ClusterClient`, which never listens, depends on it.  **Operator note:** a
+  node that has been quietly serving plaintext this way now fails at bind
+  instead of starting mis-secured, so a rolling restart can take such a node
+  down — intended, but check for a half-set `cert`/`key` before rolling.
+
+- **BREAKING — the HKDF `info` parameter is now required for client-side
+  encryption** (#108).  `EncryptionConfig.info` was optional and
+  `deriveSubkey` substituted the constant `'actor-ts/snapshot/v1'`.  HKDF's
+  `info` is its context binding (RFC 5869 §3.2), so a framework-wide
+  constant meant any two deployments holding the same master key derived
+  byte-for-byte the same subkey for the same `persistenceId` — a staging
+  environment restored from a production dump, or a DR region, could read
+  production's blobs, and nothing in the config or docs said so.  `info` is
+  now mandatory on both `client-aes256-gcm` arms of the exported
+  `EncryptionConfig`, and `deriveSubkey` takes it positionally without a
+  default.  *Migration:* add `info` to every client-side encryption config,
+  encoding environment + purpose + version (`info:
+  'acme/prod/snapshot/v1'`); to keep an existing corpus readable without a
+  sweep, pass the old default `'actor-ts/snapshot/v1'` verbatim.
+- **HKDF context rotation for the re-encryption sweep** (#108).
+  `reEncryptObjectStorage` gains `newInfo`: bodies are decrypted under
+  `info` and rewritten under `newInfo`, so a deployment can move off a
+  shared derivation context without a second tool.  Because the key version
+  is stamped in the body manifest but the context is not, the version
+  fast-path is disabled while `newInfo` differs from `info` — without that
+  the sweep would report every object as `skipped-current` and change
+  nothing.  Re-runs stay idempotent: a body that fails to decrypt under
+  `info` is retried under `newInfo` and counted as skipped, while failure
+  under both re-raises the original decrypt error.
+- **Eager rejection of a missing or blank `info` at plugin registration**
+  (#108).  `registerObjectStoragePlugins` now validates every reachable
+  client-side encryption config — including ones behind `encryptionByPrefix`
+  resolvers — and `deriveSubkey` guards at the call itself.  The type
+  already covers TypeScript callers; these guard JavaScript consumers, `as
+  any` call sites and configs deserialised at runtime, where a missing
+  `info` would otherwise be encoded as the literal string `"undefined"` —
+  the same deployment-wide constant, only invisible.
+- **A first-sight gossip record is held to a tight version-skew cap**
+  (#114).  Versions are seeded from `Date.now()`, so "highest version wins"
+  also decided what happened the *first* time an address was mentioned at
+  all — and a self-announcement is the one claim the authority rules from
+  #562 never refuse.  A stranger could therefore claim an address before the
+  node that owns it exists, date the claim up to a day ahead and attach
+  roles of its choosing; the leader's promotion loop then lifted the phantom
+  into the active set, where roles decide routing, sharding placement,
+  singleton hosting and downing quorums, and the real node's own record —
+  versioned from its own clock, therefore lower — lost every merge
+  afterwards.  A record that *introduces* an address must now be within
+  `firstSightMaxVersionSkewMs` (default 5 min,
+  `ClusterOptions.withFirstSightMaxVersionSkewMs`) of the local clock,
+  against the 24 h that still governs every later merge.  A rejection is not
+  exclusion: a self-announcing node is still recorded and its next frame
+  merges through the normal path, so the cost is one gossip round.
+- **BREAKING — `redirect()` now rejects off-origin targets** (#125).  The
+  helper wrote the caller's URL into the `location` header unchecked, and
+  `location` is set nowhere else in `src/http/`, so nothing behind it caught
+  a bad target.  Forwarding a `?next=` parameter into it was therefore a
+  textbook open redirect: a phishing link bounced a freshly authenticated
+  victim to a look-alike host.  `redirect` now accepts same-origin targets
+  only (a relative reference); an absolute URL, a protocol-relative `//host`
+  target, or a control character throws `HttpError(400)`.  Classification
+  mirrors the browser — leading whitespace is ignored and backslashes read
+  as slashes, so `/\host`, `\/host` and `\\host` are caught too — and the
+  rejection never echoes the target back to the client.  *Migration:*
+  replace a deliberate off-origin `redirect(...)` with
+  `redirectExternal(...)`, or compute a relative target.
+- **`redirectExternal(url, status?)` for the deliberate off-origin hop**
+  (#125).  Same signature as `redirect`, minus the origin rule.  A separate
+  function rather than a flag on purpose: `grep redirectExternal` enumerates
+  every off-origin redirect in a codebase, which a boolean in a third
+  argument never could.  Control characters stay rejected on both helpers —
+  measured on Bun and Node, CR/LF/NUL are already refused at header-write
+  time (so the check only trades an opaque 500 for a 400 that names the
+  reason), but a TAB is *accepted* by both `fetch` Headers and Node's
+  `setHeader` while browsers strip it before parsing, which let a TAB hidden
+  inside `javascript:` reach the browser as a working scheme.
+
+- **BREAKING — the two cluster-wide subscriber registries are bounded and
+  watched** (#137, #139).  `Receptionist` gained `maxSubscribersPerKey` /
+  `maxSubscribersTotal`, `DistributedPubSubMediator` gained
+  `maxSubscribersPerTopic` / `maxTopics` / `maxRemoteNodesPerTopic`, and both
+  now watch their subscribers — one that stops without `Unsubscribe` releases
+  its slot instead of being pinned forever.  The topic caps also apply to
+  **gossip**, which is the axis worth naming: a peer claiming 100 000 topics
+  allocated an entry per name on every receiving node, with no local
+  `Subscribe` involved.
+  **BREAKING:** a refused `Subscribe` is answered rather than discarded, so
+  `Receptionist`'s `Subscribe.replyTo` / `Unsubscribe.replyTo` widen from
+  `ActorRef<Listing<T>>` to `ActorRef<Listing<T> | SubscribeRejected<T>>` — a
+  subscriber that matches its inbox exhaustively has to handle the new variant
+  (exported from the package root as `ReceptionistSubscribeRejected`).
+
+- **BREAKING — `DistributedPubSub`'s `Subscribe` takes an optional `replyTo`**
+  (#139).  It names where the `SubscribeAcknowledgment`, or the new
+  `SubscribeRejected`, is delivered.  The acknowledgment used to run through
+  `context.sender`, which is empty for the documented
+  `mediator.tell(new Subscribe(…))` call from outside an actor — the caller
+  most in need of a refusal was the one that could not receive it.  Existing
+  calls compile unchanged and keep following the sender; pass `replyTo` where
+  you want to observe the answer.
+
+- **An unbounded `keys` map in the `Receptionist` gossip path** (#137).  A
+  peer's contribution is replaced wholesale on every round, but `maybeDrop`
+  never ran afterwards, so a key that existed only because that peer named it
+  left an empty entry nothing removed.
+
+- **`actor-ts.cluster.pub-sub.*` and `actor-ts.cluster.receptionist.*` HOCON
+  sections** (#857).  Gossip intervals, every cap above, and
+  `send-to-dead-letters-when-no-subscribers`.  With the toggle on (the
+  default), a publish that reached nobody goes to `system.deadLetters` instead
+  of vanishing, so a mistyped topic is distinguishable from one whose
+  subscribers have not gossiped in yet.  `routing-logic` and
+  `removed-time-to-live` from the original proposal are deliberately absent
+  rather than shipped inert — the first needs a send-to-one protocol this
+  implementation does not have, the second the tombstones its gossip model
+  does not use — so #857 stays open for them.
+
+- **DistributedData credits the connection, not the payload** (#719, #723,
+  #768).  `Cluster._onWire` has always handed its handlers the peer whose
+  connection a frame arrived on; this extension registered a one-parameter
+  arrow and dropped it, then read the payload's self-declared `from`.  So a
+  write- or read-request naming a third party made the node dial that
+  address and queue a full CRDT snapshot in a buffer that is never drained;
+  a quorum counted votes by self-declared name, letting one member ack under
+  every other member's and have its own state accepted as agreed; and a
+  reply was matched on its correlation id alone, with no check that it
+  concerned the same key or came from a node that was asked.  Frames now
+  travel with the authenticated peer, and the handlers take it as a
+  parameter rather than being free to read `from` by accident.
+
+- **A failed durable load no longer wipes the persisted replica** (#725).
+  `DurableDistributedDataStore.load()` adopted the stored revision before
+  decoding, so a decode that threw left the caller with no state and the
+  store holding a valid concurrency token — the next save of the empty view
+  then passed the check and replaced the record.  Since the load failure is
+  only logged as a warning, one undecodable entry silently destroyed the
+  whole durable replica.  The revision is adopted only after every entry has
+  decoded; a save then fails loudly instead of overwriting.
+
+- **CRDT payloads are validated before they are merged** (#699, #720, #722,
+  #724, #767).  `src/cluster/WireValidation.ts` forwards frame kinds it does
+  not know, on the stated grounds that the extension validates its own
+  payload — and DistributedData did not.  Every `fromJSON` checked `kind`
+  and trusted the rest, so whatever `JSON.parse` produced went into the
+  merge machinery.
+
+  That is worse than a handler throwing, because absorbing a peer's state
+  and keeping it is what a CRDT is for.  Each decoder now checks the shape,
+  the types and the plausibility of what it is handed: a `GCounter` slot must
+  be a non-negative safe integer, so `value(): number` can no longer return a
+  string (#720); `ORSet` tombstone and element lists must be bounded arrays
+  of strings (#722); an `LWWRegister` timestamp must be finite,
+  non-negative and within five minutes of local time, so a year-3000 stamp
+  no longer beats every honest write from then on (#724); and the
+  CRDT-internal maps — the replica-id and tag keyed ones — reject a
+  `__proto__` key rather than accept one no re-encode can carry (#767).
+
+  What validation does **not** settle is a defect whose payload is
+  well-formed, and three of the issues above are exactly that.  Each needed a
+  second change, listed separately below: a value that will not decode has to
+  be *dropped* rather than thrown out of a wire handler (#699); an `ORSet`
+  tag has to be unguessable, because a forged tombstone is a well-formed
+  string and passes every check here (#722); and a store key has to survive
+  re-encoding, which is a defect in the encoder that no decoder can reject
+  its way out of (#767).
+
+  Still open, and deliberately not claimed here: `Number.MAX_SAFE_INTEGER`
+  *is* a non-negative safe integer, so a peer can still write it into another
+  replica's `GCounter` slot and pin it there, since max never decreases
+  (#720).  The own-slot authority rule that issue proposes is not the answer
+  — a replica legitimately relearns its own slot from peers after restarting
+  without a durable store, and refusing that leaves two replicas permanently
+  disagreeing about the same key.  Nor does it close the inflation itself: a
+  peer can reach the same ceiling through `increment` on its own slot, which
+  is a legal local operation.
+
+  **BREAKING:** previously-accepted frames are now rejected — in practice,
+  malformed or hostile ones.
+
+- **A malformed peer value is dropped, not escalated** (#699, #721).
+  Validating means `decodeCrdt` *throws*, and every call site is a wire
+  handler — so the checks above made the reachable throw paths more numerous
+  rather than fewer, and an exception out of one is an actor failure: twelve
+  of them exhausted the DistributedData actor's restart budget and terminated
+  it for the life of the process, taking every unsettled read and write
+  promise with it.  A value that will not decode is now dropped and logged
+  with the peer and the key it came from, per entry rather than per frame —
+  entries that travel in one frame are independent CRDTs that merely share a
+  ride, and a state-based replica re-sends everything on the next tick, so a
+  dropped entry costs a gossip round and nothing else.
+
+- **A `__proto__` store key gossips and persists like any other** (#767).
+  `JSON.parse` makes `__proto__` an own enumerable property and every decode
+  target is a `Map`, so the key went in fine — but every re-encode built an
+  object literal and assigned into it, and for that one key an assignment
+  invokes `Object.prototype`'s inherited setter instead of creating a
+  property.  The entry vanished from every outbound frame and every durable
+  snapshot while `get`/`keys` still reported it locally, with nothing logged
+  anywhere; when it was the only key, the empty-payload short-circuit
+  suppressed the gossip tick outright.  Store keys are the exposed layer
+  because they are raw application strings — a key derived from untrusted
+  input, a username or a tenant id, is the realistic trigger rather than a
+  planted frame.  Payloads are now built with `Object.fromEntries`, which
+  defines the property, in `gossipTick`, in the durable save, and in the four
+  collection encoders whose keys are identity-fn output.  Same remedy as the
+  CBOR map decoder under #581.
+
+- **A decoded `LWWRegister` replica id must be a string** (#724).  `ReplicaId`
+  is a bare `type ReplicaId = string`, so nothing at runtime kept the wire
+  from carrying something `assign` could never produce — and the field is
+  compared, not merely carried.  `>` between a string and a number is false
+  in *both* directions, so a numeric replica id makes a same-timestamp merge
+  non-commutative and the two replicas never converge on that key; an array
+  is the mirror image, coercing to its single element so that one holding a
+  high code point wins every tie while not being a string at all.  A
+  legitimately typed id that sorts above every real `system@host:port` still
+  wins those ties — that is what a deterministic tie-break costs, and the
+  timestamp bound is what keeps it from mattering.
+
+- **A gossip frame cannot exhaust the stack or freeze the event loop**
+  (#698, #721).  `decodeCrdt` recursed once per nested `ORMap` level with no
+  depth bound, and `MVRegister.merge` scanned every entry against every
+  other over an unbounded, peer-supplied array: a 442 KiB frame — far under
+  the 16 MiB frame cap — froze the loop for ~33 s, and since none of the
+  entries dominated another they were all kept, so every later merge was
+  slower than the last.  Nesting is capped at 32; multi-value registers get
+  their own tighter entry cap, since an entry there is a concurrent write
+  nobody has superseded rather than ordinary collection data.  Merge also
+  skips already-dominated entries as dominators, which makes the common
+  causal-chain case linear.
+
+- **A cluster `hello` identity is bound to the TLS peer certificate** (#912).
+  mTLS decided *whether* a peer belonged in the cluster; nothing decided
+  *which* member it was.  The `hello` frame carries a `NodeAddress` and no
+  credential, so a single CA-signed node could announce itself under another
+  member's address — and since the gossip-authority rules from #562, #564
+  and #572 all key off the connection's peer, it inherited that member's
+  standing along with the traffic addressed to it.  The duplicate-identity
+  guard did not cover it: a fresh claim, or one made after the real holder's
+  connection dropped, is not a duplicate.
+
+  When a peer presents a certificate, the claimed address must now be one
+  the certificate vouches for — its host, or the full `systemName@host` for
+  deployments that mint per-node identities — with leftmost-label wildcards
+  honoured for the host, as in TLS hostname verification.  Two nodes sharing
+  one host certificate remain indistinguishable, which is documented rather
+  than papered over.
+
+  Clusters with no certificate to read are untouched: plain TCP, one-way
+  TLS, and Deno (whose `TlsConn` exposes no peer certificate at all) behave
+  exactly as before.  There is no new configuration key, so the check cannot
+  be left switched off on a deployment that thinks it has mTLS.
+
+- **The DevTools WebSocket enforces the same-origin default it documented**
+  (#566).  `DevToolsOptions` and the DevTools page both promised
+  "same-origin only", but `routes()` passed no origin rules when
+  `allowedOrigins` was unset, and an empty allowlist built no upgrade guard
+  at all — so the tap accepted a handshake from any origin.  A WebSocket
+  upgrade is not subject to the same-origin policy, so the loopback bind
+  that makes the default feel private stops nothing: any page the developer
+  visited could open `ws://127.0.0.1:9333/api/ws`, complete the
+  unauthenticated handshake and read the actor tree, mailboxes, spans and —
+  time-travel being on by default — raw persisted events and reconstructed
+  actor state.  `DevTools.mount()` put the same socket on an application's
+  own server, behind whatever ambient auth that server had.
+
+  The tap now always requires the upgrade's `Origin` to name the tap
+  itself.  `allowedOrigins` widens that rule instead of replacing it, so
+  configuring one cannot lock out the tap's own UI, and a request with no
+  `Origin` is still allowed — CSWSH needs a browser, and a browser always
+  sends one.
+
+  Routes get `requireSameOrigin` for the same purpose.  It belongs on the
+  route's upgrade `authorize` rather than in middleware: an upgrade is a
+  GET, and `requireSameOrigin` from `Csrf.ts` waves safe methods through.
+
+- **A CBOR map key can no longer pick the decoded object's prototype**
+  (#581).  Map decoding assigned each pair with `out[key] = value`, and
+  assignment consults the prototype chain — so a 21-byte payload whose key
+  is `"__proto__"` reached `Object.prototype`'s setter and re-parented the
+  decoded object instead of adding a field to it.  Keys are now defined
+  rather than assigned, which ignores setters: `__proto__` becomes an
+  ordinary own property, so the value survives the round-trip instead of
+  being rejected or silently dropped.
+
+- **A CBOR body can no longer stall the event loop** (#567, #618).  Two
+  unbounded paths in `CborDecoder`, both reachable from an ordinary
+  `entity()` route: `Content-Type` alone selects the codec, so an
+  application that only ever meant to accept JSON still handed an
+  attacker's `application/cbor` body to the CBOR decoder.
+
+  Tag 2 / tag 3 bignums were rebuilt one byte at a time with
+  `value = (value << 8n) | BigInt(byte)`, which reallocates the whole
+  accumulated bignum per iteration — quadratic in the declared length, and
+  the only ceiling was the 10 MB body limit.  A few hundred KB bought
+  seconds to tens of seconds of blocked event loop, during which no other
+  request, actor message or cluster heartbeat is served.  The magnitude is
+  now parsed in one pass, and capped at 1024 bytes (8192-bit) as a
+  backstop.
+
+  Separately, `readValue` recursed once per array, map and tag level with
+  no depth bound, so a couple of hundred KB of `0x81` bytes exhausted the
+  JS stack.  Nesting is now capped at 256.
+
+  Journals and snapshots are unaffected — nothing under `src/persistence/`
+  serializes through this codec.
+
+- **A socket that closes during the upgrade window is no longer lost on Hono**
+  (#570).  The per-connection actor attaches its socket listeners from
+  `preStart`, two mailbox hops after the upgrade returns.  The `ws`-package
+  adapter buffers everything that arrives in that window; the Hono adapter
+  buffered messages only, so `close` and `error` hit a null listener and
+  vanished.  Nothing else stops the connection actor — the hub's `_clients`
+  entry, the `ConnectionTracker` entry and the `maxConnections` decrement all
+  hang off that one dropped callback — so every client that closed inside the
+  window leaked an actor and a connection slot for the life of the process.
+  With `maxConnections` configured, the hardening knob became the denial of
+  service: a burst of open-then-close connections exhausted the budget
+  permanently.  Sequential clients almost never hit it, which is why it
+  survived a green suite; concurrency is what widens the window.
+
+  The buffer is now one function, `bufferWebsocketEvents()`, that both
+  adapters share, rather than a per-adapter array each is free to get
+  half-right.  A burst test in the shared backend suite covers all three
+  backends.
+
+- **Extension wire handlers credit the connection, not the payload** (#574,
+  #582, #711).  `Cluster._onWire` has always passed the connection's peer to
+  every handler; the receptionist, the pub-sub mediator and the
+  cluster-client receptionist each ignored it and read the payload's
+  self-declared `from` instead.  Both gossip handlers *replace* a sender's
+  contribution wholesale — that is how deregistrations propagate — so any peer
+  could name another node and wipe what that node had registered cluster-wide.
+  The cluster-client receptionist additionally threw a `TypeError` out of the
+  frame-dispatch loop when `from` was absent, and sent its reply to whatever
+  address the payload named.
+
+- **Shard ids are bounded by `numShards`** (#583, #569).  A shard id is
+  `hash(entityId) % numShards`, so no honest region can ask for one outside the
+  range — but neither side checked.  The coordinator allocated, recorded and
+  *persisted* whatever id it was handed, and the allocation map is durable
+  state replayed at every coordinator start, so the growth survived restarts.
+  On the region side the id becomes a **child actor name**, minting a permanent
+  child under an attacker-chosen name.  `ShardCoordinatorOptions` gained
+  `numShards` (`withNumShards`) for the coordinator half.
+
+- **Two `.exhaustive()` matchers no longer fail their actor on an unrecognised
+  message** (#713).  `Receptionist` and `ClusterSingletonManager` both sit at
+  resolvable paths, so anything a peer addresses to them lands in their
+  matcher.  The receptionist's arms all match on `instanceof`, and a body
+  delivered over the wire arrives as a plain JSON object — so one remotely
+  delivered envelope failed the actor holding the node's whole service
+  registry.  Both now drop the message through an `otherwise` arm and log it.
+
+- **Gossip claims need authority, not just a high version number** (#562,
+  #564, #572, #573).  The merge was decided purely by version magnitude, and
+  versions are seeded from `Date.now()` — so an attacker could always pick a
+  winning number.  Nothing checked *who* was entitled to say what:
+
+  - One frame set the receiving node's **own** record to `removed`, which
+    dropped it out of its own active set and flipped `isLeader()` to false, so
+    the cluster stopped admitting new members (#562).
+  - `onLeave` read the departing node from `message.node` instead of the
+    connection, and writes a tombstone at `version + 2` — above anything the
+    victim can say about itself.  One 120-byte frame evicted any member
+    cluster-wide for the 24-hour tombstone TTL (#564).
+  - `onHeartbeat` credited liveness to `message.from` and sent the
+    acknowledgment there, so a peer could keep a dead node looking healthy —
+    blocking singleton and shard failover — and make the receiver dial an
+    attacker-chosen `host:port` (#572).
+  - The envelope's MDC went unfiltered into `LogContext.run`, letting a peer
+    overwrite `JsonLogger`'s own `ts`/`level`/`source`/`msg` (its record
+    spreads the context last) and inject newlines into `ConsoleLogger`'s
+    one-line-per-record output, forging whole log lines (#573).
+
+  Claims are now keyed on the **connection's** peer rather than the payload's
+  self-declared `from`.  A node is the author of its own status — except for
+  promotion into `up`, which is the leader's call and is therefore carved out
+  explicitly.  Claims about a *third* node require the sender to be a member
+  this node already considers active.
+
+  Unreachability is deliberately still merged from third parties: "I cannot
+  reach C" is inherently a third-party observation, and every node must
+  converge on the same view before a downing provider decides.
+
+  This is not authentication — `hello` still carries no credential, so an
+  unauthenticated peer can announce itself and wait to be promoted.  It removes
+  the free-for-all; mTLS remains the control for untrusted networks.
+
+- **Wire frames are validated before anything reads them** (#563, #571,
+  #705, #587).  `FrameDecoder` ended in `JSON.parse(json) as WireMessage` —
+  a cast, not a check — and every layer downstream read the frame as if the
+  type were true.  Three things followed from that, all remotely reachable:
+
+  - A `null` frame (8 bytes, `JSON.parse('null')`) was dereferenced by
+    `TcpTransport.onMessage` above the handshake gate, so **no `hello` was
+    needed**: an unauthenticated remote process kill on Node.
+  - A gossiped member `status` outside the seven legal values reached
+    `emitStatusTransition`'s `match(...).exhaustive()`, which throws — from
+    a socket callback, and *after* the member had been written to the map.
+    The node died **and** re-gossiped the poisoned entry, so one frame at one
+    reachable node propagated to the whole cluster.
+  - A `port` arriving as the string `"2552"` keyed every map identically to
+    the number but never compared equal, permanently desyncing a node's view
+    of its own identity.
+
+  Frames now pass shape validation at the decode boundary (`WireValidation.ts`),
+  `NodeAddress.fromJSON` and `Member.fromData` reject impossible values rather
+  than constructing from them, and the frame-dispatch loop is wrapped: a
+  malformed frame is dropped and the connection survives, while a handler that
+  throws drops the connection instead of escaping into the runtime's socket
+  callback.  `ClusterClient` got the same treatment — its `decoder.push` call
+  was unguarded, so one malformed frame from a contact point killed the client
+  process (#587).
+
+  `MemberStatus` is now *derived* from a runtime `MEMBER_STATUSES` list, so the
+  type and the values it is checked against cannot drift apart.
+
+  Extension frame kinds (sharding, pub-sub, receptionist, DistributedData,
+  DevTools) deliberately pass this layer and validate their own payloads.
+
+- **`ORSet` tags are minted from entropy instead of a counter** (#722).  A tag
+  was `${replica}#${seq}` off a per-replica sequence that travelled in the
+  payload, so both halves were readable from any gossip frame and the tags a
+  replica had not issued yet were arithmetic.  Tombstones veto by tag on
+  merge, are unioned unconditionally and are never pruned — so one frame of
+  forged tombstones made a victim's next writes vanish on the following merge,
+  indistinguishable from a concurrent remove and with no API to take a
+  tombstone back.  Tags now carry 96 bits from the platform's cryptographic
+  random source, which is the conclusion #120 already reached for
+  `ClusterClient` ask ids and #896 for quorum correlation ids.
+
+  The two other parts of the reported fix are deliberately not implemented:
+  requiring a tombstone's tag to name the sending peer stops removes from
+  propagating at all, because `remove` legitimately tombstones tags other
+  replicas minted; and dropping tombstones for tags no side has observed
+  resurrects removed elements under out-of-order gossip.
+
+  **BREAKING:** the `counters` field is gone from the `ORSet` wire shape,
+  since nothing mints from it any more.  A frame — or a durable record — from
+  an older peer still carries it and is accepted; an older peer *requires* it
+  and rejects one without it.
+
+  **Migration:** upgrade every node.  During a rolling upgrade `ORSet` values
+  flow only from old nodes to new ones, and the not-yet-upgraded side logs one
+  dropped value per gossip round; nothing is lost, because a dropped entry
+  does not mutate state and state-based gossip re-sends everything, so
+  convergence resumes once the last node is up.  Tags minted by either version
+  keep working on both — a tag is an opaque string to every comparison it
+  takes part in, and the two formats cannot collide.
+
 ## [0.13.0] — 2026-08-05
 
 ### Removed

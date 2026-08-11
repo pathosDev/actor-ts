@@ -7,7 +7,7 @@ export type RequestIdOptionsType = {
   readonly headerName?: string;
   /** Accept a well-formed incoming id instead of always generating.  Default true. */
   readonly trustIncoming?: boolean;
-  /** Id generator.  Default `crypto.randomUUID()`. */
+  /** Id generator.  Default `randomUuid`, exported from the root entry point. */
   readonly generate?: () => string;
 };
 
@@ -22,8 +22,8 @@ export class RequestIdOptionsBuilder extends OptionsBuilder<RequestIdOptionsType
   withTrustIncoming(flag = true): this {
     return this.set('trustIncoming', flag);
   }
-  withGenerate(fn: () => string): this {
-    return this.set('generate', fn);
+  withGenerate(generate: () => string): this {
+    return this.set('generate', generate);
   }
 }
 

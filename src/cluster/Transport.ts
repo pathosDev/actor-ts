@@ -7,6 +7,7 @@ import {
   type TlsTransportOptionsType,
 } from '../runtime/tcp/index.js';
 import { NodeAddress } from './NodeAddress.js';
+import { certificateVouchesFor } from './PeerIdentity.js';
 import {
   encodeFrame,
   FrameDecoder,
@@ -15,6 +16,7 @@ import {
   type HelloAcknowledgmentMessage,
   type WireMessage,
 } from './Protocol.js';
+import { validateWireFrame } from './WireValidation.js';
 
 export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
 export type { TlsTransportOptionsType };
@@ -227,7 +229,7 @@ export class TcpTransport implements Transport {
           handlers: {
             onOpen: (s) => {
               // Send hello; remote will ack and we'll flush `pending` then.
-              const hello: HelloMessage = { t: 'hello', self: this.self.toJSON() };
+              const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
             },
             onData: (s, chunk) => this.onData(s, chunk),
@@ -272,12 +274,38 @@ export class TcpTransport implements Transport {
       this.dropConnection(connection);
       return;
     }
-    for (const message of frames) this.onMessage(connection, message);
+    for (const frame of frames) {
+      // Two tiers, because the two failures mean different things.  A frame
+      // that fails its shape check is *this frame's* problem — skip it and
+      // keep the connection, so one bad frame cannot cost a healthy peer its
+      // link (#705, #711).  A handler that throws is a problem we do not
+      // understand, and until #563 this loop had no guard at all: the throw
+      // left `onData`, left the runtime's socket callback, and took the
+      // process with it.
+      const checked = validateWireFrame(frame);
+      if ('problem' in checked) {
+        this.log.warn(
+          `rejecting malformed frame from ${connection.peer ?? '<unknown peer>'}: ${checked.problem}`,
+        );
+        continue;
+      }
+      try {
+        this.onMessage(connection, checked.message);
+      } catch (err) {
+        this.log.warn(
+          `wire handler threw on a frame from ${connection.peer ?? '<unknown peer>'}; closing`,
+          err as Error,
+        );
+        this.dropConnection(connection);
+        return;
+      }
+    }
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
-    if (message.t === 'hello') {
+    if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (!this.certificateAdmits(connection, peer, 'hello')) return;
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
       // socket.  Without this, a second connection claiming the
@@ -313,12 +341,13 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.byPeer.set(peerKey, connection);
-      const ack: HelloAcknowledgmentMessage = { t: 'hello-ack', self: this.self.toJSON() };
+      const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
       connection.socket?.write(encodeFrame(ack));
       return;
     }
-    if (message.t === 'hello-ack') {
+    if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
@@ -343,6 +372,47 @@ export class TcpTransport implements Transport {
       return;
     }
     this.handler(connection.peer, message);
+  }
+
+  /**
+   * Whether the peer's TLS certificate vouches for the identity it just
+   * claimed in its handshake frame (#912).
+   *
+   * mTLS decides *whether* a peer belongs in the cluster; nothing decided
+   * *which* member it is.  Every gossip-authority rule since #562 keys off
+   * the connection's peer, so a CA-signed node that announced itself under
+   * another member's address inherited that member's standing — and, because
+   * `byPeer` is keyed on the claimed address, its traffic too.  The
+   * duplicate-identity guard below does not cover it: a fresh claim, or one
+   * made after the real holder's connection dropped, is not a duplicate.
+   *
+   * Skipped entirely when there is no certificate to check.  A plaintext
+   * cluster is documented as unauthenticated, one-way TLS has no client
+   * certificate by design, and Deno cannot report one — in all three the
+   * transport has nothing to verify against, and rejecting on that basis
+   * would break every one of them rather than harden anything.  The check
+   * therefore strengthens mTLS deployments without introducing a new
+   * configuration knob that could be left off.
+   */
+  private certificateAdmits(
+    connection: Connection,
+    claimed: NodeAddress,
+    frame: 'hello' | 'hello-ack',
+  ): boolean {
+    const certificate = connection.socket?.peerCertificate?.();
+    if (certificate === undefined) return true;
+    if (certificateVouchesFor(certificate, claimed)) return true;
+
+    const vouchedFor = [
+      ...(certificate.commonName === undefined ? [] : [certificate.commonName]),
+      ...certificate.subjectAlternativeNames,
+    ].join(', ');
+    this.log.warn(
+      `${frame} rejected: peer claims ${claimed.toString()} but its certificate names `
+      + `${vouchedFor.length === 0 ? '(nothing)' : vouchedFor} — closing the connection`,
+    );
+    this.dropConnection(connection);
+    return false;
   }
 
   private onClose(sock: TcpSocketLike, fallback?: Connection): void {
@@ -458,7 +528,23 @@ export class InMemoryTransport implements Transport {
     const from = this.self;
     // Decouple sender and receiver via microtask so ordering mirrors TCP.
     queueMicrotask(() => {
-      if (!peer.stopped) peer.handler(from, message);
+      if (peer.stopped) return;
+      // The same two tiers as `TcpTransport.onData`, because the guarantee
+      // belongs to the `Transport` contract and not to one implementation of
+      // it.  Skipping this here would also make it untestable: the cluster's
+      // security tests inject their hostile frames through this transport, so
+      // an unguarded path would report the exploits as still open (#563, #705).
+      //
+      // A microtask has no caller to unwind into — an escaping throw is an
+      // unhandled top-level error, which is how one poisoned gossip frame took
+      // down a second node after the first had re-gossiped it.
+      const checked = validateWireFrame(message);
+      if ('problem' in checked) return;
+      try {
+        peer.handler(from, checked.message);
+      } catch {
+        /* Mirrors dropping the connection; there is no socket to close. */
+      }
     });
   }
 

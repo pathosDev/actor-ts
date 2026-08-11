@@ -23,11 +23,27 @@ export {
 export { TcpSocketActor } from './TcpSocketActor.js';
 export type {
   TcpSocketCommand,
-  TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
 export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
+// Framing is shared by the client and the listener, so it lives on its own.
+export type { TcpFraming, TcpFrame } from './TcpFraming.js';
+export { TcpServerActor } from './TcpServerActor.js';
+export type {
+  TcpServerCommand,
+  TcpServerMessage,
+  TcpConnectionId,
+  // The variants too, not just the unions: the `target` actor handles them
+  // one by one, and a handler takes the named variant type (#1095).
+  SendCommand,
+  CloseCommand,
+  ConnectionOpenedMessage,
+  FrameMessage,
+  ConnectionClosedMessage,
+} from './TcpServerActor.js';
+export { TcpServerOptions, TcpServerOptionsBuilder, TcpServerOptionsValidator } from './TcpServerOptions.js';
+export type { TcpServerOptionsType } from './TcpServerOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
   UdpSocketCommand,
@@ -88,12 +104,14 @@ export type {
 } from './AmqpActor.js';
 export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
-export { GrpcClientActor } from './GrpcClientActor.js';
+export { GrpcClientActor, createGrpcStreamHandle } from './GrpcClientActor.js';
 export type {
   GrpcClientCommand,
   GrpcInbound,
   GrpcCredentials,
+  GrpcStreamHandle,
   ReplyMessage,
+  StreamStartedMessage,
   StreamDataMessage,
   StreamEndMessage,
   StreamErrorMessage,
@@ -101,12 +119,30 @@ export type {
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
-export { GrpcServerActor } from './GrpcServerActor.js';
+export {
+  GrpcServerActor,
+  GRPC_HEALTH_SERVICE_NAME,
+  buildGrpcMethodImplementation,
+  grpcHealthCheckImplementation,
+  isKnownGrpcServiceName,
+  servingStatusOf,
+} from './GrpcServerActor.js';
 export type {
   GrpcHandler,
   GrpcUnaryCall,
   GrpcServerStreamCall,
+  GrpcClientStreamCall,
   GrpcBidiCall,
+  GrpcChunkMessage,
+  GrpcEndMessage,
+  GrpcRequestStreamInbound,
+  GrpcServingStatus,
+  // Health-service seams (exported so a caller can host `grpc.health.v1.Health`
+  // on a server it builds itself, and so the handler is testable standalone).
+  GrpcHealthImplementation,
+  GrpcServerUnaryRequest,
+  GrpcServerReadableCall,
+  GrpcUnaryCallback,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';
 export type { GrpcServerOptionsType } from './GrpcServerOptions.js';
@@ -137,6 +173,58 @@ export type {
 } from './JetStreamActor.js';
 export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';
 export type { JetStreamOptionsType } from './JetStreamOptions.js';
+// JetStream KV + Object Store (#74) — separate sub-APIs, separate actors.
+export { JetStreamKeyValueActor } from './JetStreamKeyValueActor.js';
+export type {
+  JetStreamKeyValueCommand,
+  JetStreamKeyValueMessage,
+  KeyValueEntryMessage,
+  KeyValueNotFoundMessage,
+  KeyValueRemovedMessage,
+  KeyValueRevisionMessage,
+  KeyValueKeysMessage,
+  KeyValueOperationFailedMessage,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  KeyValueNatsConnectionLike,
+  KeyValueJetStreamClientLike,
+  KeyValueBucketOptionsLike,
+  KeyValueStoreLike,
+  KeyValueWatchLike,
+  KeyValueEntryLike,
+} from './JetStreamKeyValueActor.js';
+export {
+  JetStreamKeyValueOptions,
+  JetStreamKeyValueOptionsBuilder,
+  JetStreamKeyValueOptionsValidator,
+} from './JetStreamKeyValueOptions.js';
+export type { JetStreamKeyValueOptionsType } from './JetStreamKeyValueOptions.js';
+export { JetStreamObjectStoreActor } from './JetStreamObjectStoreActor.js';
+export type {
+  JetStreamObjectStoreCommand,
+  JetStreamObjectStoreMessage,
+  JetStreamObjectInfo,
+  ObjectStoredMessage,
+  ObjectBodyMessage,
+  ObjectInfoMessage,
+  ObjectListMessage,
+  ObjectDeletedMessage,
+  ObjectNotFoundMessage,
+  ObjectStoreOperationFailedMessage,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  ObjectStoreNatsConnectionLike,
+  ObjectStoreJetStreamClientLike,
+  ObjectStoreBucketOptionsLike,
+  ObjectMetaLike,
+  ObjectStoreLike,
+  ObjectInfoLike,
+} from './JetStreamObjectStoreActor.js';
+export {
+  DEFAULT_MAX_OBJECT_BYTES,
+  JetStreamObjectStoreOptions,
+  JetStreamObjectStoreOptionsBuilder,
+  JetStreamObjectStoreOptionsValidator,
+} from './JetStreamObjectStoreOptions.js';
+export type { JetStreamObjectStoreOptionsType } from './JetStreamObjectStoreOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
   RedisStreamsCommand,

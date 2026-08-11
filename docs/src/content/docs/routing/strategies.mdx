@@ -1,6 +1,6 @@
 ---
 title: Routing strategies
-description: Round-robin, random, broadcast, custom — what the local router ships with. Plus consistent-hashing for cluster routers. How each picks routees, when each fits, and how to write your own.
+description: Round-robin, random, broadcast, smallest-mailbox, custom — what the local router ships with. Plus consistent-hashing, and smallest-mailbox on cached depths, for cluster routers. How each picks routees, when each fits, and how to write your own.
 ---
 
 A **routing strategy** is a function: given the routee list and a
@@ -15,8 +15,9 @@ type RoutingStrategy = (
 ```
 
 Return one ref for single-target routing, multiple for fan-out, or
-nothing to drop.  The local router ships three implementations
-plus a `custom` slot; the cluster router adds consistent-hashing.
+nothing to drop.  The local router ships four implementations
+plus a `custom` slot; the cluster router has a counterpart for each
+of the four and adds consistent-hashing.
 
 ## Round-robin
 
@@ -126,6 +127,141 @@ If you want broadcast for *some* messages but routing for others,
 keep the router non-broadcast and wrap occasional messages in
 `Broadcast<T>` — see [Router](/routing/router/).
 
+## Smallest mailbox
+
+```ts
+Router.smallestMailbox(4, routee);
+```
+
+```ts
+function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    // Start the scan on a different routee each message, so an
+    // all-equal pool rotates instead of pinning routee 1.
+    const start = state.messageIndex % routees.length;
+    let shallowest: ActorRef | null = null;
+    let shallowestDepth = 0;
+    for (let offset = 0; offset < routees.length; offset++) {
+      const routee = routees[(start + offset) % routees.length];
+      // `null` means "do not route here at all" — a stopped routee.
+      // A routee whose depth is merely unreadable comes back as 0.
+      const depth = routableDepthOf(routee);
+      if (depth === null) continue;
+      if (shallowest === null || depth < shallowestDepth) {
+        shallowest = routee;
+        shallowestDepth = depth;
+      }
+    }
+    return [shallowest ?? routees[start]];
+  };
+}
+```
+
+Reads how many messages are queued at each routee and picks the
+shallowest.  This is the only built-in strategy that reacts to what
+the routees are actually doing.
+
+**Picks:**
+
+- **Balance by backlog, not by turn.**  Round-robin gives a routee
+  its next 1-in-N whether or not it is still working on the last
+  one.  Smallest-mailbox stops choosing a routee that has fallen
+  behind, and resumes when it catches up — which is exactly the
+  workload-aware load-balancing round-robin cannot do.
+- **Self-correcting after a stall.**  A routee blocked on a slow
+  downstream call drains no queue, so its depth stays high and it
+  simply stops receiving traffic.  No timer, no health check.
+- **Rotating ties.**  All-equal depths — an idle pool, or a
+  saturated one — fall back to round-robin order rather than
+  hammering the first routee.
+- **Ignore a stopped routee.**  A routee that has terminated is
+  skipped outright rather than measured — see *What counts as a
+  depth* below for why that case cannot be left to the number.
+
+**Doesn't:**
+
+- **Come free.**  One depth read per routee per message: a modulo for
+  round-robin versus an `O(N)` scan here.  For homogeneous workloads
+  that is pure overhead.
+- **Know about cost, only about count.**  Ten trivial messages look
+  deeper than one enormous one.  Queue length is a proxy for load,
+  not a measurement of it.
+- **Apply back-pressure.**  When every bounded mailbox is at capacity
+  the depths tie and the message is routed anyway; what happens to a
+  message that does not fit is the mailbox's overflow policy
+  (`drop-head` / `drop-new` / `reject`).  A strategy that refused to
+  route would be inventing back-pressure the caller never configured.
+- **Read a remote mailbox live.**  Depth is in-process state.  The
+  cluster variant below gets it across nodes, but only as a cached
+  reading.
+
+Right choice when **per-message cost varies widely** — mixed job
+sizes, routees that call out to something slow.
+
+### What counts as a depth
+
+Two kinds of routee have no usable queue length, and they are
+handled as opposites on purpose:
+
+- **A stopped routee is never chosen.**  Its mailbox does not merely
+  look empty — it *is* empty, permanently, because a terminated cell
+  sends straight to dead letters instead of enqueueing.  Read as a
+  plain number, that would make a dead routee the most attractive
+  member of the pool and keep it that way until the router notices
+  the death and prunes it, losing every message routed in between.
+  The router learns of the death by an ordinary message, so under
+  load that window is as deep as the router's own queue.  Termination
+  is therefore checked before the depth is, and a stopped routee
+  drops out of the scan entirely.
+- **A routee whose depth is unreadable counts as empty.**  Only a
+  locally-hosted actor has a mailbox this process can look into, so
+  a remote or otherwise foreign ref is unmeasurable.  The strategy
+  assumes it is not backed up rather than skipping it: skipping
+  would starve it for as long as any local routee has a backlog,
+  which in a mixed pool is forever.  The trade-off runs the other
+  way instead — while the local routees are busy, an unreadable one
+  looks shallowest and takes the traffic.  That is a balance error
+  and it corrects itself; the starvation did not.  Several
+  unreadable routees tie at zero and rotate among themselves.
+
+If *every* routee has stopped, the scan falls back to the rotation
+and routes into a dead cell anyway.  The message is lost either way,
+and losing it as a `DeadLetter` is at least observable, where
+returning no routee at all would drop it without a trace.
+
+### The cluster variant
+
+```ts
+import { ClusterRouter, ClusterRouterOptions } from 'actor-ts';
+
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRouterType('smallest-mailbox')
+  .withRouteePath('/user/worker');
+ClusterRouter.factory(
+  clusterRouterOptions,
+);
+```
+
+`ClusterRouter` has the same strategy, reached the only way it can
+be.  A remote routee's mailbox is not readable from here, and asking
+it per message would park the router's whole mailbox behind a network
+round-trip — so each node's depth is **cached** and refreshed on a
+background tick, and the routing decision reads the cache
+synchronously.
+
+Two consequences worth carrying:
+
+- The depth can be up to one refresh interval old, so a node may be
+  chosen just after it filled up.  The next tick corrects it.
+- A node that has not reported is skipped rather than assumed idle,
+  and a cache with nothing in it falls back to round-robin order.
+
+[Cluster router](/cluster/cluster-router/) covers the refresh
+interval, the staleness bound, and the one-line setup a node needs
+when it hosts routees but no router.
+
 ## Consistent-hashing *(cluster only)*
 
 ```ts
@@ -185,38 +321,35 @@ system.spawnAnonymous(Router.custom(4, Worker, warmupStrategy));
 Anything that satisfies `RoutingStrategy` works.  The state slot
 gets the monotonic message index — that's the only state the local
 router maintains.  For strategies that need *more* state (a hash
-ring, a per-routee load gauge), close over your own state in the
-function:
+ring, a per-routee weight table, a sliding-window latency estimate),
+close over your own state in the function:
 
 ```ts
-function smallestMailboxStrategy(): RoutingStrategy {
-  return (routees) => {
-    // Stub — the framework doesn't expose mailbox-size per routee in v1.
-    // A real implementation would need a side-channel to query each routee.
-    return [routees[0]];
+// Weighted round-robin: routee 1 has twice the capacity of the rest.
+function weightedStrategy(weights: readonly number[]): RoutingStrategy {
+  const slots: number[] = [];
+  weights.forEach((weight, index) => {
+    for (let i = 0; i < weight; i++) slots.push(index);
+  });
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    return [routees[slots[state.messageIndex % slots.length] % routees.length]];
   };
 }
 ```
 
-The framework doesn't expose mailbox-size from the outside, so a
-true "smallest-mailbox" strategy needs side-channel mechanics
-(asking each routee for its current depth).  This is a roadmap
-item; until it ships, custom strategies are limited to
-information available in the router actor itself.
+A custom strategy sees the routee refs and the message index — no
+more.  Anything else it wants to know, it has to carry itself.  Note
+what it *cannot* reach: mailbox depth is runtime-internal state and
+is deliberately not on `ActorRef`, so a load-aware strategy of your
+own would need each routee to report its own load back to a shared
+gauge.  If shortest-queue is what you're after, use the built-in
+`Router.smallestMailbox` — it reads the depth from inside the
+framework, where that state legitimately lives.
 
 ## What's not implemented
 
 import { Aside } from '@astrojs/starlight/components';
-
-<Aside type="caution" title="No smallest-mailbox in v1">
-  A common strategy on other actor toolkits is "smallest mailbox"
-  — pick the routee with the shortest queue.  actor-ts doesn't
-  expose mailbox depth across actor boundaries (it's per-actor
-  state), so this strategy isn't implemented.  For workload-aware load-balancing, the practical
-  pattern is **back-pressure at the boundary** — bound each
-  routee's mailbox with `reject` overflow, let the caller (or a
-  router-side custom strategy) react to rejections.
-</Aside>
 
 <Aside type="caution" title="No scatter-gather">
   Some actor frameworks have "scatter-gather" routers that send

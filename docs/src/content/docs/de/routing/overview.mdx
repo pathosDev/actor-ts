@@ -36,6 +36,12 @@ Drei Patterns:
    Consistent-Hashing (nur Cluster) legt jede Nachricht mit demselben
    Key auf denselben Routee — nützlich, wenn jeder Routee
    Per-Key-Zustand hält (einen Cache, eine Session, einen Zähler).
+4. **N Routees um dieselbe Antwort rennen lassen.**  Scatter/Gather
+   stellt jedem Routee dieselbe Frage und liefert die Antwort dessen,
+   der zuerst antwortet — das N-Fache an Arbeit gegen das *Minimum* aus
+   N Latenzen.  Das ist ein anderes Ziel als die ersten drei: Tail-
+   Latenz, nicht Durchsatz.  Siehe
+   [Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Ein minimales Beispiel
 
@@ -65,22 +71,48 @@ pool.tell({ payload: 'e' });   // → worker-1 (Round-Robin wraps)
 Die `pool`-Ref sieht für Aufrufer wie ein einzelner Actor aus; unter
 der Haube zykelt der Routing-Actor durch vier `Worker`-Kinder.
 
-## Die vier Strategien
+## Die fünf Strategien
 
 | Strategie | Was sie tut | Am besten für |
 | --- | --- | --- |
 | **`round-robin`** | Ein Routee pro Nachricht, zyklisch.  Gleichmäßige Verteilung nach Nachrichten-Count. | Homogene Workloads. |
 | **`random`** | Ein Routee pro Nachricht, gleichverteilt zufällig. | Wie Round-Robin, aber zustandslos. |
 | **`broadcast`** | Jeder Routee bekommt jede Nachricht. | Notifications, Cache-Invalidierungen. |
+| **`smallest-mailbox`** | Ein Routee pro Nachricht, der mit der kürzesten Queue. | Ungleiche Kosten pro Nachricht. |
 | **`consistent-hashing`** *(nur Cluster)* | Ein Routee pro Nachricht, Key-gepinnt. | Per-Key-Zustand (Sharding-Light). |
 
-Eine fünfte "Smallest-Mailbox"-Strategie (an den Routee mit der
-kürzesten Queue routen) ist im lokalen Router **nicht**
-implementiert; es ist ein Roadmap-Item für den Cluster-Router.
+`smallest-mailbox` ist die Strategie, die nach **Rückstau** statt nach
+Nachrichten-Count balanciert.  Round-Robin vergibt Züge blind — ein
+Routee, der eine teure Nachricht gezogen hat, bekommt seinen nächsten
+1-aus-N trotzdem pünktlich und fällt zurück; Smallest-Mailbox liest
+die Queue-Tiefe jedes Routees und wählt den flachsten, ein
+beschäftigter Routee wird also so lange nicht mehr gewählt, bis er
+aufgeholt hat.  Bezahlt wird das mit einer Tiefenabfrage pro Routee
+pro Nachricht — deshalb bleibt Round-Robin der Default.
+
+Beide Router haben sie, aber sie erfahren die Tiefe unterschiedlich.
+Der lokale liest die Mailboxen seiner Routees direkt — sie sind seine
+eigenen Kinder, im selben Prozess.  Der Cluster-Router kann das nicht:
+eine entfernte Mailbox liegt auf einem anderen Node, und pro Nachricht
+zu fragen würde den Router hinter einen Netzwerk-Roundtrip parken.  Er
+routet stattdessen auf einer **gecachten** Tiefe, aufgefrischt auf
+einem Hintergrund-Tick — etwas Aktualität gegen eine
+Routing-Entscheidung eingetauscht, die synchron bleibt.  Siehe
+[Cluster-Router](/de/cluster/cluster-router/) dazu, was dieser
+Nachlauf kosten kann und was nicht.
 
 Siehe [Strategien](/de/routing/strategies/) für den Deep Dive plus
 den `Broadcast`-Nachrichten-Wrapper, der die Strategie pro Nachricht
 überschreibt.
+
+Alle fünf sind **One-Shot**: Der Router wählt Routees, leitet weiter,
+fertig — die Antwort, falls es eine gibt, ist Sache des Routees und des
+ursprünglichen Senders.  `Router.scatterGatherFirstCompleted` ist der
+eine Router, der nicht in diese Form passt: Er *fragt* jeden Routee und
+antwortet dem Aufrufer selbst mit der ersten eintreffenden Antwort.  Er
+ist deshalb keine Strategie, die du `Router.custom` reichen kannst,
+sondern eine eigene Factory — siehe
+[Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Pool vs Group
 
@@ -156,9 +188,11 @@ Werkzeug; wenn nicht, greife zu etwas anderem.
 
 - **[Router](/de/routing/router/)** — die
   `Router.roundRobin(...)`, `.random(...)`, `.broadcast(...)`,
-  `.custom(...)`-Factories.
+  `.smallestMailbox(...)`, `.custom(...)`-Factories.
 - **[Strategien](/de/routing/strategies/)** — was jede
   Strategie tut, plus eigene schreiben.
+- **[Scatter/Gather](/de/routing/scatter-gather/)** — jeden
+  Routee gleichzeitig fragen und mit der ersten Antwort antworten.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wann
   einen Router verwenden, der seine Routees spawnt, vs einen, der
   sie findet.

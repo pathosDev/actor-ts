@@ -35,7 +35,7 @@ const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/l
 const query = new SqliteQuery(journal);
 ```
 
-## Die vier Methoden
+## Die Methoden
 
 ### `currentEventsByPersistenceId`
 
@@ -112,6 +112,95 @@ Live-Stream tag-gematchter Events.  Das ist das, was
 `ProjectionActor.byTag` intern verwendet — der Offset lässt die
 Projektion ihren Fortschritt persistieren und von dort
 fortsetzen.
+
+## Persistence-Ids
+
+Drei Methoden beantworten "welche Entities liegen in diesem
+Journal?", und sie unterscheiden sich darin, was sie kosten und
+wann sie aufhören.
+
+| Methode | Gibt zurück | Hört auf |
+| --- | --- | --- |
+| `currentPersistenceIds()` | `Promise<string[]>` | Sofort — die ganze Liste, ein Array. |
+| `currentPersistenceIdsPaginated()` | `AsyncIterable<string>` | Wenn das Journal erschöpft ist. |
+| `allPersistenceIds()` | `AsyncIterable<string>` | Nie — es kommen weiter neue Ids. |
+
+### `currentPersistenceIds`
+
+```ts
+const ids = await query.currentPersistenceIds();
+```
+
+Die ganze Liste in einem Array.  Bequem, und bei kleiner
+Id-Anzahl die richtige Wahl — ein paar hundert Entities zu
+materialisieren kostet nichts.  Es ist allerdings die einzige
+Methode hier ohne Schranke für das, was sie allokiert: eine
+Million Entities sind eine Million Strings.
+
+### `currentPersistenceIdsPaginated`
+
+```ts
+for await (const persistenceId of query.currentPersistenceIdsPaginated({ pageSize: 500 })) {
+  await backfill(persistenceId);
+}
+```
+
+Dieselben Daten, seitenweise geholt — der Spitzenverbrauch ist
+damit eine Seite statt der gesamten Menge.  Endet, sobald das
+Journal erschöpft ist.
+
+Der Cursor ist **eine Persistence-Id, kein undurchsichtiges
+Token** — setze einen abgebrochenen Durchlauf fort, indem du die
+zuletzt verarbeitete Id übergibst:
+
+```ts
+for await (const persistenceId of query.currentPersistenceIdsPaginated({
+  afterPersistenceId: lastHandled,
+})) {
+  // ... beginnt strikt nach `lastHandled`
+}
+```
+
+| Option | Default | Was |
+| --- | --- | --- |
+| `pageSize` | 256 | Ids pro Round-Trip. |
+| `afterPersistenceId` | — | Fortsetzen nach dieser Id, exklusiv. |
+
+Die Ids kommen in der aufsteigenden Ordnung des Backends zurück —
+bytewise bei SQLite und Cassandra, collation-abhängig bei
+Postgres.  Welche es ist, spielt für den Konsumenten nie eine
+Rolle, weil der Cursor in genau derselben Ordnung verglichen wird,
+nach der die Seite sortiert ist.
+
+### `allPersistenceIds`
+
+```ts
+for await (const persistenceId of query.allPersistenceIds()) {
+  startProjectionFor(persistenceId);   // läuft endlos
+}
+```
+
+Live-Stream: jede Id, die das Journal je gesehen hat, danach jede
+neue, sobald sie zum ersten Mal auftaucht.  Das ist das
+**Fan-out**-Primitiv — starte einen Konsumenten pro Entity, sobald
+diese auftaucht, statt `currentPersistenceIds` zu pollen und das
+Ergebnis selbst zu diffen.
+
+Zwei Eigenschaften, die man kennen sollte, bevor man darauf baut:
+
+- **Einmal pro Stream, nicht einmal pro Journal.**  Eine neue
+  Subscription emittiert wieder jede Id.  Ein Konsument, der über
+  einen Neustart hinweg nicht zweimal handeln darf, braucht seinen
+  eigenen Checkpoint — dieselbe At-least-once-Haltung wie bei den
+  Event-Queries.
+- **Der Stream merkt sich, was er emittiert hat.**  Das ist ein
+  In-Process-Set von Ids; ein Stream über ein Journal mit einer
+  Million Entities hält also eine Million Strings, solange er
+  läuft.  Eine billigere High-Water-Mark wäre falsch: Ids
+  entstehen nicht in sortierter Reihenfolge, eine Entity, deren Id
+  unterhalb der Marke einsortiert, würde also nie emittiert.  Für
+  eine einmalige Aufzählung, die kein solches Set braucht, nimm
+  `currentPersistenceIdsPaginated`.
 
 ## Offsets
 
@@ -211,7 +300,17 @@ Query-API direkt.
   materialisiertes Array zurück.  Für große pids / viele
   Tag-Matches kann das langsam und speicherintensiv sein.
   Verwende die streamenden `events*`-Varianten für unbegrenzte
-  Reads.
+  Reads und `currentPersistenceIdsPaginated` statt
+  `currentPersistenceIds`.
+- **Die Id-Paginierung wird ins Backend geschoben**, wo der Store
+  einen sortierten Schlüssel über den Ids hat: ein
+  `ORDER BY … LIMIT` bei SQLite und den SQL-Backends, ein
+  Clustering-Column-Range über der Cassandra-Tabelle
+  `all_persistence_ids`.  MongoDB und DynamoDB haben keinen
+  solchen Index — `distinct` hat keinen Cursor, und ein
+  DynamoDB-`Scan` hat über Partition-Keys hinweg keine Ordnung —
+  dort wird die Seite in-process geschnitten, und die Paginierung
+  bringt Ergonomie, kein gespartes I/O.
 - **Live-Polling** ist im Idle leicht — leere Queries kehren
   schnell zurück.  Unter hoher Schreiblast kann sich das Polling
   stauen, wenn die Read-Seite langsamer ist als die Write-Seite.

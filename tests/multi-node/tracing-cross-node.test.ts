@@ -20,17 +20,7 @@ import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { RecordingTracer } from '../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../src/tracing/TracingExtension.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(25);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 type Node = {
   readonly sys: ActorSystem;
@@ -66,7 +56,10 @@ describe('Distributed tracing — cross-node propagation', () => {
     const nodeA = await startNode(sysName, 65_001, []);
     const nodeB = await startNode(sysName, 65_002, [`${sysName}@h:65001`]);
     try {
-      await waitFor(() => nodeA.cluster.upMembers().length === 2);
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2,
+        { timeoutMs: 5_000, intervalMs: 25, label: 'both nodes are up in A\'s view' },
+      );
 
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* span recorded automatically */ }
@@ -80,7 +73,23 @@ describe('Distributed tracing — cross-node propagation', () => {
 
       const client = nodeA.tracer.startSpan('client.work');
       nodeA.tracer.withActiveSpan(client, () => echoOnB.tell('hello'));
-      await sleep(80);
+      // `recorded()` only lists *ended* spans, so the two spans B is supposed
+      // to open and close are the observable — and they are exactly what the
+      // assertions below read.  The 80 ms this replaces was a guess at one
+      // in-memory wire hop plus a mailbox turn; when it fell short the
+      // failure was `wireSpan` undefined, which reads as "the traceparent
+      // never crossed the wire".
+      await awaitCondition(
+        () => {
+          const names = nodeB.tracer.recorded().map((s) => s.name);
+          return names.includes('cluster.envelope.received') && names.includes('actor.receive');
+        },
+        {
+          timeoutMs: 5_000,
+          intervalMs: 10,
+          label: 'node B recorded the wire span and the receive span',
+        },
+      );
       client.end();
 
       // Spans recorded on A: client.work.
@@ -129,7 +138,10 @@ describe('Distributed tracing — cross-node propagation', () => {
       .withGossipIntervalMs(30);
     const clusterB = await Cluster.join(sysB, clusterBOptions);
     try {
-      await waitFor(() => nodeA.cluster.upMembers().length === 2);
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2,
+        { timeoutMs: 5_000, intervalMs: 25, label: 'both nodes are up in A\'s view' },
+      );
 
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* */ }
@@ -143,6 +155,10 @@ describe('Distributed tracing — cross-node propagation', () => {
 
       const client = nodeA.tracer.startSpan('client');
       nodeA.tracer.withActiveSpan(client, () => echoOnB.tell('x'));
+      // A fixed sleep is right here: B runs the noop tracer, so there is
+      // nothing on that side to observe — the claim is that the hop happens
+      // *without* an exception, and a window is the only way to give one a
+      // chance to be thrown.
       await sleep(60);
       client.end();
 

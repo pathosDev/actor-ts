@@ -31,7 +31,7 @@ const api = path('api', orders);
 ```
 
 Drei Kern-Kombinatoren (`path`, `concat`, Methoden-Kombinatoren)
-plus drei Response-Helper (`complete*`, `redirect`, `reject`)
+plus drei Familien von Response-Helpern (`complete*`, `redirect*`, `reject`)
 decken ~95 % des Routings ab.
 
 ## Kern-Kombinatoren
@@ -143,6 +143,44 @@ return redirect('/new-home', Status.MovedPermanently);  // 301
 
 Setzt `Location: <url>` und den passenden Status.  Default ist
 `Status.Found` (302).
+
+Das Ziel muss **auf diesem Origin** bleiben — eine relative Referenz wie
+`/dashboard`, `../up`, `?q=1` oder `#top`.  Eine absolute URL, ein
+protokollrelatives `//host`-Ziel oder ein Steuerzeichen wirft
+`HttpError(400)`:
+
+```ts
+redirect('https://elsewhere.example');   // wirft — verlässt den Origin
+redirect('//elsewhere.example');         // wirft — protokollrelativ
+
+const next = queryParam(request, 'next') ?? '/';
+return redirect(next);                   // wirft, wenn `next` off-origin zeigt
+```
+
+Der letzte Fall ist der Grund für die Regel.  Einen `?next=`-Parameter
+ungeprüft in einen Redirect zu reichen, ist der Lehrbuch-**Open-Redirect**:
+Der Angreifer verschickt
+`https://app.example/login?next=https://app-example.evil/`, das Opfer
+meldet sich bei der echten App an, und der Browser landet auf einer
+Nachbildung, die "nochmal" nach dem Passwort fragt.  Das Framework kann
+Handler nicht zur Prüfung zwingen — also prüft der Helper, zu dem sie
+ohnehin greifen.
+
+### `redirectExternal(url, status?)`
+
+```ts
+return redirectExternal('https://payments.example/checkout');
+```
+
+Dieselbe Signatur, ohne die Origin-Regel — der bewusste Sprung
+off-origin.  Eine eigene Funktion ist Absicht: `grep redirectExternal`
+listet jede Stelle auf, an der dein Service den Browser an jemand anderen
+übergibt — genau die Liste, die ein Security-Review sehen will.
+
+Übergib eine Konstante oder einen Wert, den **du** allowlistet hast —
+niemals einen rohen Request-Parameter; genau den lehnt `redirect` ab.
+Steuerzeichen werden weiterhin abgewiesen; einen Response-Header
+aufzuspalten ist nie beabsichtigt.
 
 ### `reject(status, message, extra?)`
 

@@ -132,6 +132,15 @@ export class TimeTravelMethods {
       initialState: () => resolved.initialState(),
       fold: (state, event) => resolved.fold(state, event),
       toSequenceNr: toSequenceNumber,
+      // Browsing runs over `loadBefore`, so a target inside a compacted
+      // range routinely finds no covering snapshot while the events after
+      // the compaction point are still there.  Recovery treats that hole
+      // as fatal — it cannot reconstruct the entity's current state — but
+      // this is a read-only question about the past, and a panel that
+      // refuses to open on a compacted entity would be worse than one
+      // showing a partial fold beside the sequence it actually reached
+      // (which `sequenceNumber` and `eventsApplied` already report).
+      allowCompactedPrefix: true,
       ...(resolved.eventAdapter === undefined ? {} : { eventAdapter: resolved.eventAdapter }),
       ...(resolved.snapshotAdapter === undefined ? {} : { snapshotAdapter: resolved.snapshotAdapter }),
     });

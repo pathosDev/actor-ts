@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
 import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapterOptions.js';
+import { METRICS_OVERFLOW_LABEL_VALUE } from '../../../src/metrics/Metrics.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
  * The bridge is exercised against a hand-rolled `prom-client`-shaped
@@ -9,6 +11,13 @@ import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapter
  * lands on the prom-client side, and the adapter never reads back
  * through prom-client to fulfil framework-side reads (the local
  * mirror does that).
+ *
+ * The fake reproduces one rule of the real library on purpose:
+ * `labels()` rejects a label name outside the set the metric was
+ * constructed with.  That is what forces the cardinality overflow
+ * tuple (#131) to reuse the family's own label names instead of a
+ * synthetic `__overflow__` name — without the rule here, the test
+ * would happily accept a tuple prom-client throws on.
  */
 
 type RecordedCall = {
@@ -38,6 +47,12 @@ function makeFakeClient(reg: FakePromRegistry): {
   Histogram: new (options: FakePromMetric['options']) => Record<string, unknown>;
 } {
   function makeChild(metric: FakePromMetric, labels: Record<string, string | number>, type: RecordedCall['type'][]): Record<string, (v?: number) => void> {
+    const declared = metric.options.labelNames ?? [];
+    for (const labelName of Object.keys(labels)) {
+      if (!declared.includes(labelName)) {
+        throw new Error(`Added label "${labelName}" is not included in initial labelset`);
+      }
+    }
     const out: Record<string, (v?: number) => void> = {};
     if (type.includes('inc')) out.inc = (v = 1) => metric.calls.push({ type: 'inc', labels, value: v });
     if (type.includes('dec')) out.dec = (v = 1) => metric.calls.push({ type: 'dec', labels, value: v });
@@ -202,5 +217,134 @@ describe('promClientRegistry', () => {
     expect(hits[0]!.calls.map((counter) => `${counter.value}@${counter.labels['node']}`)).toEqual([
       '1@a', '2@b', '3@a',
     ]);
+  });
+});
+
+/**
+ * The bridge needs its own label-tuple tally: `families` is keyed by
+ * metric name, and the series itself is minted inside prom-client by
+ * `impl.labels(...)` — where the adapter can neither count nor evict it.
+ * prom-client also never expires a series, so an uncapped bridge is the
+ * more exposed of the two registries (#131).
+ */
+describe('promClientRegistry — cardinality cap', () => {
+  function adaptedRegistryWith(maxSeriesPerFamily: number): {
+    registry: FakePromRegistry;
+    adapted: ReturnType<typeof promClientRegistry>;
+  } {
+    const registry = makeFakeRegistry();
+    const client = makeFakeClient(registry);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(registry)
+      .withMaxSeriesPerFamily(maxSeriesPerFamily);
+    return { registry, adapted: promClientRegistry(promOptions) };
+  }
+
+  /** Distinct label tuples prom-client actually saw for `name`. */
+  function tuplesSeen(registry: FakePromRegistry, name: string): ReadonlyArray<string> {
+    const metric = registry.registered.find((m) => m.options.name === name)!;
+    return [...new Set(metric.calls.map((call) => JSON.stringify(call.labels)))];
+  }
+
+  function withWarningsCaptured<T>(body: () => T): { result: T; warnings: string[] } {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]): void => { warnings.push(args.map((a) => String(a)).join(' ')); };
+    try {
+      return { result: body(), warnings };
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
+
+  test('prom-client sees at most maxSeriesPerFamily + 1 distinct tuples', () => {
+    const { registry, adapted } = adaptedRegistryWith(3);
+    const { warnings } = withWarningsCaptured(() => {
+      for (let i = 0; i < 50; i++) adapted.counter('hits', { path: `/p-${i}` }).inc();
+    });
+
+    const tuples = tuplesSeen(registry, 'hits');
+    expect(tuples).toHaveLength(4);
+    expect(tuples).toContain(JSON.stringify({ path: METRICS_OVERFLOW_LABEL_VALUE }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("family 'hits'");
+  });
+
+  test('the overflow tuple uses the family label names, so prom-client accepts it', () => {
+    // The fake throws on a label name outside the initial labelset — a
+    // synthetic `__overflow__` name would fail right here.
+    const { registry, adapted } = adaptedRegistryWith(1);
+    withWarningsCaptured(() => {
+      adapted.counter('dropped', { path: '/a', reason: 'drop-head' }).inc();
+      adapted.counter('dropped', { path: '/b', reason: 'drop-new' }).inc();
+    });
+
+    const metric = registry.registered.find((m) => m.options.name === 'dropped')!;
+    expect(metric.options.labelNames).toEqual(['path', 'reason']);
+    expect(metric.calls[1]!.labels).toEqual({
+      path: METRICS_OVERFLOW_LABEL_VALUE,
+      reason: METRICS_OVERFLOW_LABEL_VALUE,
+    });
+  });
+
+  test('a tuple minted before the cap keeps its own series afterwards', () => {
+    const { registry, adapted } = adaptedRegistryWith(2);
+    withWarningsCaptured(() => {
+      adapted.counter('hits', { path: '/a' }).inc();
+      adapted.counter('hits', { path: '/b' }).inc();
+      adapted.counter('hits', { path: '/c' }).inc(9);   // overflows
+      adapted.counter('hits', { path: '/a' }).inc(4);   // still its own series
+    });
+
+    const metric = registry.registered.find((m) => m.options.name === 'hits')!;
+    expect(metric.calls.map((call) => `${call.value}@${call.labels['path']}`)).toEqual([
+      '1@/a', '1@/b', `9@${METRICS_OVERFLOW_LABEL_VALUE}`, '4@/a',
+    ]);
+  });
+
+  test('gauges and histograms are capped on the same budget as counters', () => {
+    const { registry, adapted } = adaptedRegistryWith(1);
+    withWarningsCaptured(() => {
+      adapted.gauge('depth', { queue: 'a' }).set(1);
+      adapted.gauge('depth', { queue: 'b' }).set(2);
+      adapted.histogram('latency', { route: 'a' }, { buckets: [1] }).observe(0.5);
+      adapted.histogram('latency', { route: 'b' }, { buckets: [1] }).observe(0.5);
+    });
+
+    expect(tuplesSeen(registry, 'depth')).toContain(JSON.stringify({ queue: METRICS_OVERFLOW_LABEL_VALUE }));
+    expect(tuplesSeen(registry, 'latency')).toContain(JSON.stringify({ route: METRICS_OVERFLOW_LABEL_VALUE }));
+  });
+
+  test('families budget independently', () => {
+    const { registry, adapted } = adaptedRegistryWith(2);
+    withWarningsCaptured(() => {
+      for (let i = 0; i < 3; i++) adapted.counter('foo', { path: `/p-${i}` }).inc();
+      for (let i = 0; i < 2; i++) adapted.counter('bar', { path: `/p-${i}` }).inc();
+    });
+
+    expect(tuplesSeen(registry, 'foo')).toHaveLength(3);   // 2 + overflow
+    expect(tuplesSeen(registry, 'bar')).toHaveLength(2);
+    expect(tuplesSeen(registry, 'bar')).not.toContain(JSON.stringify({ path: METRICS_OVERFLOW_LABEL_VALUE }));
+  });
+
+  test('maxSeriesPerFamily 0 disables the cap', () => {
+    const { registry, adapted } = adaptedRegistryWith(0);
+    const { warnings } = withWarningsCaptured(() => {
+      for (let i = 0; i < 200; i++) adapted.counter('hits', { path: `/p-${i}` }).inc();
+    });
+
+    expect(tuplesSeen(registry, 'hits')).toHaveLength(200);
+    expect(warnings).toHaveLength(0);
+  });
+
+  test('an out-of-domain cap is rejected at construction', () => {
+    const registry = makeFakeRegistry();
+    const client = makeFakeClient(registry);
+    const badOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(registry)
+      .withMaxSeriesPerFamily(-5);
+    expect(() => promClientRegistry(badOptions)).toThrow(OptionsError);
   });
 });

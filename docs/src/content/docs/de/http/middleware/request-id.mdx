@@ -18,8 +18,29 @@ get((req) => completeJson(Status.OK, { id: req.headers['x-request-id'] }));
 
 Eine eingehende ID wird nur übernommen, wenn sie wohlgeformt ist
 (`^[A-Za-z0-9._-]{1,64}$`) — ein bösartiger Wert erreicht nie einen
-Response-Header; andernfalls wird eine frische `crypto.randomUUID()`
-generiert.
+Response-Header; andernfalls wird eine frische ID mit
+[`randomUuid`](/de/reference/utility-helpers/#zufallszeichenketten-und-bezeichner)
+erzeugt.
+
+## Die ID wieder auslesen
+
+`requestIdOf(request)` liefert die ID, die der Request trägt, oder
+`undefined` — wenn er keine trägt oder das Getragene dieselbe Formprüfung
+nicht besteht. Nimm sie überall dort statt eines rohen Header-Zugriffs, wo
+der Wert auf einer Logzeile landet: Ein client-kontrollierter String kann
+über einen eingebetteten Zeilenumbruch ganze Log-Einträge fälschen, und
+genau die Prüfung verhindert das.
+
+```ts
+import { requestIdOf } from 'actor-ts/http';
+
+system.log.error(`[http] ${req.method} ${req.path} (${requestIdOf(req) ?? '-'})`, err);
+```
+
+Zurück kommt, was der *Request* behauptet hat. Bei `trustIncoming: false` —
+wo die Middleware stromabwärts ihre eigene ID einsetzt — nenne daher den
+Header, statt den Wert als *die* ID auszugeben. Einen umbenannten Header
+übergibst du als zweites Argument.
 
 ## Konfiguration
 
@@ -27,7 +48,7 @@ generiert.
 | --- | --- | --- |
 | `withHeaderName(n)` | `headerName` | `'x-request-id'` |
 | `withTrustIncoming(flag?)` | `trustIncoming` | `true` |
-| `withGenerate(fn)` | `generate` | `crypto.randomUUID()` |
+| `withGenerate(generate)` | `generate` | `randomUuid` |
 
 ## Wie weiter
 

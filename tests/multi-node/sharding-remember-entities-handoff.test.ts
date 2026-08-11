@@ -33,6 +33,7 @@ import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtensi
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 import type { AllocationStrategy } from '../../src/cluster/sharding/AllocationStrategy.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
@@ -50,7 +51,9 @@ const startedOn = new Map<string, string[]>();
 
 class Entity extends Actor<Command> {
   override preStart(): void {
-    const id = this.context.path.name.replace(/^entity-/, '');
+    // `this.entityId`, not a slice off the path: the child name escapes the
+    // id (#568), so the path is a label rather than a second spelling of it.
+    const id = this.entityId;
     const seen = startedOn.get(id) ?? [];
     seen.push(this.context.system.name);
     startedOn.set(id, seen);
@@ -117,13 +120,16 @@ describe('Sharding remember-entities — rebalance handoff (#632)', () => {
       spec.systemFor(role).extension(PersistenceExtensionId).setJournal(journal);
     }
 
+    // Kept, not inlined: the registry it writes is the precondition for the
+    // handoff below, and reading it back is how the test waits for it.
+    const rememberStore = new JournalRememberEntitiesStore(journal);
     const shardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('entity')
       .withEntityActor(Entity)
       .withExtractEntityId((m) => m.id)
       .withNumShards(1)                       // one shard, so one handoff moves everything
       .withRememberEntities(true)
-      .withRememberEntitiesStore(new JournalRememberEntitiesStore(journal))
+      .withRememberEntitiesStore(rememberStore)
       .withAllocationStrategy(strategy)
       .withRebalanceIntervalMs(150);
 
@@ -136,8 +142,22 @@ describe('Sharding remember-entities — rebalance handoff (#632)', () => {
     for (const id of ids) {
       expect(await regions.a.ask<string>({ id, kind: 'ping' }, 3_000)).toBe('pong');
     }
-    // Let the coordinator's EntityStarted journal chain settle.
-    await Bun.sleep(250);
+    // Wait for the coordinator's EntityStarted journal chain, which is
+    // fire-and-forget, to have all five entities on record — that registry is
+    // what the handoff is supposed to carry over, so a handoff forced before
+    // it is complete would test nothing.  Reading it back is exact; the 250 ms
+    // it replaces was a guess at five chained journal appends.
+    await awaitCondition(
+      async () => {
+        const started = new Set(
+          (await rememberStore.load('entity'))
+            .filter(event => event.kind === 'started')
+            .map(event => event.entityId),
+        );
+        return ids.every(id => started.has(id));
+      },
+      { timeoutMs: 10_000, intervalMs: 25, label: 'all five entities are in the remembered registry' },
+    );
 
     const firstHosts = new Map(ids.map(id => [id, startedOn.get(id)!.length]));
     expect([...firstHosts.values()]).toEqual([1, 1, 1, 1, 1]);
@@ -148,11 +168,12 @@ describe('Sharding remember-entities — rebalance handoff (#632)', () => {
     // Every entity must come back on the new owner *without* a user message:
     // that is what the remembered registry is for.  Pre-fix the registry was
     // emptied by the handoff, so this count stayed at 5 forever.
-    const deadline = Date.now() + 8_000;
     const respawned = (): number =>
       ids.filter(id => (startedOn.get(id)?.length ?? 0) >= 2).length;
-    while (respawned() < ids.length && Date.now() < deadline) await Bun.sleep(50);
-
+    await awaitCondition(
+      () => respawned() === ids.length,
+      { timeoutMs: 8_000, intervalMs: 25, label: 'all five entities respawned on the new owner' },
+    );
     expect(respawned()).toBe(ids.length);
 
     // …and on the *other* node, not re-created where they already were.

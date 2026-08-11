@@ -113,7 +113,14 @@ Three fields:
 
 - **`persistenceId`** — the key under which the state is stored.
   Like `PersistentActor`, one ID per logical entity (`cart-user-42`,
-  `flags-region-eu`, …).
+  `flags-region-eu`, …), and subject to the same
+  [rules on what an ID may contain](/persistence/persistent-actor/#what-a-persistence-id-may-contain):
+  non-empty, at most 255 characters, no `/` or `\`, no control
+  characters.  `DurableStateOptionsValidator` checks them in the
+  constructor — earlier than `preStart`, because an ID that can
+  never address a record is worth refusing before the actor is
+  wired to a store — and reports a violation as an `OptionsError`
+  on the `persistenceId` field.
 - **`store`** — the `DurableStateStore` implementation
   (in-memory, SQLite, object-storage, custom).
 - **`emptyState()`** — factory invoked when no record exists yet

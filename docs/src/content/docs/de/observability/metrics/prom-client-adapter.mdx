@@ -71,9 +71,10 @@ des Frameworks — keine zusätzliche Dependency.
 
 ```ts
 type PromClientAdapterOptionsType = {
-  client:      PromClientLike;          // der prom-client-Namespace: import client from 'prom-client'
-  registry:    PromClientRegistryLike;  // die Registry, in die publiziert wird — typischerweise client.register
-  namePrefix?: string;                  // Präfix für jeden Metriknamen — Default: ''
+  client:               PromClientLike;          // der prom-client-Namespace: import client from 'prom-client'
+  registry:             PromClientRegistryLike;  // die Registry, in die publiziert wird — typischerweise client.register
+  namePrefix?:          string;                  // Präfix für jeden Metriknamen — Default: ''
+  maxSeriesPerFamily?:  number;                  // Kardinalitätsgrenze pro Familie — Default: 10 000, 0 schaltet ab
 };
 ```
 
@@ -98,6 +99,37 @@ promClientRegistry(prefixedOptions);
 
 // → actorts_messages_delivered_total, actorts_members_up, ...
 ```
+
+## Kardinalitätsgrenze
+
+Die Brücke erzwingt dieselbe Grenze pro Familie wie die
+In-Process-Registry (Default 10 000 Label-Tupel, `0` schaltet ab) —
+und braucht sie dringender: prom-client legt bei jedem
+`.labels(...)`-Aufruf eine Serie in seinem eigenen `Counter` /
+`Gauge` / `Histogram` an und **lässt sie nie verfallen**. Ein
+unbeschränktes Label lässt also den Resident-Speicher deines
+Prozesses wachsen, nicht nur den Scrape-Body.
+
+```ts
+const cappedOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry)
+  .withMaxSeriesPerFamily(50_000);
+promClientRegistry(cappedOptions);
+```
+
+Jenseits der Grenze schreibt die Brücke das Tupel auf die
+Label-Namen der Familie um, alle Werte auf `__overflow__` gesetzt —
+prom-client sieht damit höchstens `maxSeriesPerFamily + 1`
+verschiedene Tupel pro Familie. Die deklarierten Namen
+wiederzuverwenden ist nicht kosmetisch: prom-client legt die
+Label-Namen einer Metrik bei der Konstruktion fest und wirft bei
+einem `.labels(...)` mit irgendetwas anderem — ein synthetischer
+Marker-*Name* würde also genau den Aufruf sprengen, der den Schaden
+begrenzen soll.
+
+Siehe [Kardinalitätsdisziplin](/de/observability/metrics/core-metrics/#kardinalitätsdisziplin)
+für `bucketize`, den Weg, die Grenze gar nicht erst zu erreichen.
 
 ## Peer-Dependency
 

@@ -7,8 +7,20 @@ import {
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/**
+ * `MessagePort` delivery is a task, not a microtask, and under load the
+ * scheduler is free to run it whenever — so a 10 ms budget is a bet, not
+ * a bound.  The collector array is the delivery itself (#418).
+ */
+function awaitDelivered(collected: ReadonlyArray<unknown>, count: number, what: string): Promise<void> {
+  return awaitCondition(() => collected.length === count, {
+    timeoutMs: 4_000, label: `${what}: ${count} message(s) crossed the port`,
+  });
+}
 
 /** Pair two in-process ports that pretend to be a MessageChannel. */
 function makePair(): [PortLike, PortLike] {
@@ -29,9 +41,9 @@ describe('MessageChannelTransport', () => {
     brokerPort.onmessage = (e) => { received.push(e.data as BrokeredMessage); };
     brokerPort.start?.();
 
-    const wire: WireMessage = { t: 'heartbeat', from: nodeA.toJSON(), seq: 1, ts: 0 };
+    const wire: WireMessage = { kind: 'heartbeat', from: nodeA.toJSON(), seq: 1, ts: 0 };
     transport.send(nodeB, wire);
-    await sleep(10);
+    await awaitDelivered(received, 1, 'outbound framing');
 
     expect(received.length).toBe(1);
     const env = received[0]!;
@@ -55,14 +67,14 @@ describe('MessageChannelTransport', () => {
     const env: BrokeredMessage = {
       from: peer.toJSON(),
       to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer.toJSON(), seq: 42, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer.toJSON(), seq: 42, ts: 0 },
     };
     brokerPort.postMessage(env);
-    await sleep(10);
+    await awaitDelivered(seen, 1, 'inbound handler');
 
     expect(seen.length).toBe(1);
     expect(seen[0]!.from).toBe(peer.toString());
-    expect(seen[0]!.payload.t).toBe('heartbeat');
+    expect(seen[0]!.payload.kind).toBe('heartbeat');
 
     await transport.shutdown();
   });
@@ -79,7 +91,8 @@ describe('MessageChannelTransport', () => {
 
     await transport.shutdown();
 
-    transport.send(new NodeAddress('sys', 'h', 2), { t: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
+    transport.send(new NodeAddress('sys', 'h', 2), { kind: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
+    // Fixed wait on purpose: the claim is that nothing crosses the port.
     await sleep(10);
     expect(captured.length).toBe(0);
   });
@@ -90,18 +103,19 @@ describe('MessageChannelTransport', () => {
     const peer2 = new NodeAddress('sys', 'h', 3);
     const [brokerPort, workerPort] = makePair();
     const transport = new MessageChannelTransport(self, workerPort);
-    transport.setHandler(() => {});
+    const handled: unknown[] = [];
+    transport.setHandler(() => { handled.push(null); });
     await transport.start();
 
     brokerPort.postMessage({
       from: peer1.toJSON(), to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer1.toJSON(), seq: 1, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer1.toJSON(), seq: 1, ts: 0 },
     });
     brokerPort.postMessage({
       from: peer2.toJSON(), to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer2.toJSON(), seq: 2, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer2.toJSON(), seq: 2, ts: 0 },
     });
-    await sleep(10);
+    await awaitDelivered(handled, 2, 'peer discovery');
 
     const peers = transport.peers().map(p => p.toString()).sort();
     expect(peers).toEqual([peer1.toString(), peer2.toString()].sort());
@@ -130,11 +144,11 @@ describe('WorkerBroker', () => {
     tA.setHandler(() => {});
     await tA.start(); await tB.start();
 
-    tA.send(addrB, { t: 'heartbeat', from: addrA.toJSON(), seq: 7, ts: 0 });
-    await sleep(15);
+    tA.send(addrB, { kind: 'heartbeat', from: addrA.toJSON(), seq: 7, ts: 0 });
+    await awaitDelivered(seenB, 1, 'broker routing');
 
     expect(seenB.length).toBe(1);
-    expect(seenB[0]!.t).toBe('heartbeat');
+    expect(seenB[0]!.kind).toBe('heartbeat');
 
     await tA.shutdown(); await tB.shutdown();
     broker.close();
@@ -148,7 +162,7 @@ describe('WorkerBroker', () => {
     const tA = new MessageChannelTransport(addrA, wpA);
     await tA.start();
     expect(() => tA.send(new NodeAddress('sys', 'w', 99), {
-      t: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0,
+      kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0,
     })).not.toThrow();
     await tA.shutdown();
     broker.close();
@@ -180,7 +194,7 @@ describe('WorkerBroker', () => {
     await tA.start(); await tB.start();
 
     broker.unregister(addrB);
-    tA.send(addrB, { t: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0 });
+    tA.send(addrB, { kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0 });
     await sleep(10);
     expect(seen.length).toBe(0);
 

@@ -69,9 +69,10 @@ no extra dependency.
 
 ```ts
 type PromClientAdapterOptionsType = {
-  client:      PromClientLike;          // the prom-client namespace: import client from 'prom-client'
-  registry:    PromClientRegistryLike;  // the Registry to publish into — typically client.register
-  namePrefix?: string;                  // prefix applied to every metric name — default: ''
+  client:               PromClientLike;          // the prom-client namespace: import client from 'prom-client'
+  registry:             PromClientRegistryLike;  // the Registry to publish into — typically client.register
+  namePrefix?:          string;                  // prefix applied to every metric name — default: ''
+  maxSeriesPerFamily?:  number;                  // per-family cardinality cap — default: 10 000, 0 disables
 };
 ```
 
@@ -94,6 +95,34 @@ promClientRegistry(prefixedOptions);
 
 // → actorts_messages_delivered_total, actorts_members_up, ...
 ```
+
+## Cardinality cap
+
+The bridge enforces the same per-family cap as the in-process
+registry (default 10 000 label tuples, `0` disables), and it needs
+to more urgently: prom-client mints a series inside its own
+`Counter` / `Gauge` / `Histogram` on every `.labels(...)` call and
+**never expires one**, so an unbounded label grows your process's
+resident memory, not just the scrape body.
+
+```ts
+const cappedOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry)
+  .withMaxSeriesPerFamily(50_000);
+promClientRegistry(cappedOptions);
+```
+
+Past the cap the bridge rewrites the tuple to the family's own
+label names with every value set to `__overflow__`, so prom-client
+sees at most `maxSeriesPerFamily + 1` distinct tuples per family.
+Reusing the declared names is not cosmetic: prom-client fixes a
+metric's label names at construction and throws on a `.labels(...)`
+carrying anything else, so a synthetic marker *name* would fail the
+very call meant to contain the damage.
+
+See [cardinality discipline](/observability/metrics/core-metrics/#cardinality-discipline)
+for `bucketize`, the way to not reach the cap in the first place.
 
 ## Peer dependency
 
