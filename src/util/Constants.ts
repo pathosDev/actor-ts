@@ -94,3 +94,20 @@ export const DEFAULT_EXPLAIN_CAPACITY = 100;
  * worse than two private ones.
  */
 export const PATH_TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
+
+/**
+ * How many times a uniqueness draw may be repeated before it gives up.
+ *
+ * Both sites that redraw against a collision predicate use it: `randomId`
+ * and friends when handed an `exists` callback, and `freeActorName` when a
+ * DevTools actor name is already taken.  Exhausting a thousand draws does
+ * not mean this call was unlucky — it means the space is too small or the
+ * predicate is inverted, and the caller wants an error rather than a
+ * loop.
+ *
+ * Shared because both bounds answer the same question for the same reason.
+ * They were introduced independently and the second one said so in prose
+ * ("the same bound, and the same reasoning, as `freeActorName`"), which is
+ * a coupling a comment cannot keep.
+ */
+export const MAXIMUM_DRAW_ATTEMPTS = 1_000;

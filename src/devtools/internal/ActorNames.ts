@@ -9,7 +9,7 @@
  * to report a port conflict, which is what the caller was usually
  * working around.
  */
-import { MAXIMUM_ATTEMPTS } from '../Constants.js';
+import { MAXIMUM_DRAW_ATTEMPTS } from '../../util/Constants.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { systemGroupPath, type SystemGroup } from '../../internal/SystemPaths.js';
 
@@ -38,7 +38,7 @@ export function freeActorName(
       .map((cell) => cell.name),
   );
   if (!taken.has(base)) return base;
-  for (let attempt = 2; attempt <= MAXIMUM_ATTEMPTS; attempt++) {
+  for (let attempt = 2; attempt <= MAXIMUM_DRAW_ATTEMPTS; attempt++) {
     const candidate = `${base}-${attempt}`;
     if (!taken.has(candidate)) return candidate;
   }

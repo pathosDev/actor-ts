@@ -17,7 +17,7 @@
  * All four take an optional {@link ExistsPredicate} last and draw again while it
  * answers `true`, so "keep going until one is free" is the call itself rather
  * than a `do`/`while` wrapped around it.  It is bounded —
- * {@link MAXIMUM_ATTEMPTS} draws and then a throw — for the same reason an empty
+ * {@link MAXIMUM_DRAW_ATTEMPTS} draws and then a throw — for the same reason an empty
  * alphabet throws: a space with nothing free left in it, and a predicate written
  * the other way round, are both bugs, and failing loudly beats a call that never
  * returns.
@@ -28,12 +28,7 @@ const UPPERCASE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const DIGITS = '0123456789';
 const HEX_DIGITS = '0123456789abcdef';
 
-/**
- * Enough draws that exhausting them means the space is too small or the
- * predicate is inverted — not that this call was unlucky.  The same bound, and
- * the same reasoning, as `freeActorName` in `src/devtools/internal/ActorNames.ts`.
- */
-const MAXIMUM_ATTEMPTS = 1_000;
+import { MAXIMUM_DRAW_ATTEMPTS } from './Constants.js';
 
 /**
  * Which character classes {@link randomString} draws from.  Every class defaults
@@ -189,7 +184,7 @@ export function randomUuid(exists?: ExistsPredicate): string {
 
 /**
  * `generate()` until `exists` stops recognising the result, or
- * {@link MAXIMUM_ATTEMPTS} draws, whichever comes first.
+ * {@link MAXIMUM_DRAW_ATTEMPTS} draws, whichever comes first.
  *
  * Separate from {@link fromAlphabet} because {@link randomUuid} does not go
  * through it: what the four helpers share is "draw, ask, maybe draw again", not
@@ -209,12 +204,12 @@ function drawUntilFree(
   exists: ExistsPredicate | undefined,
 ): string {
   if (exists === undefined) return generate();
-  for (let attempt = 1; attempt <= MAXIMUM_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAXIMUM_DRAW_ATTEMPTS; attempt++) {
     const candidate = generate();
     if (!exists(candidate)) return candidate;
   }
   throw new Error(
-    `${helper} drew ${MAXIMUM_ATTEMPTS} candidates and exists() said every one was taken — `
+    `${helper} drew ${MAXIMUM_DRAW_ATTEMPTS} candidates and exists() said every one was taken — `
     + 'the space may have nothing free left in it, or the predicate may be inverted (true means taken)',
   );
 }

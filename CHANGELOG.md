@@ -214,6 +214,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   pinned to `reference.conf` by a test; the φ-accrual copy was pinned to
   nothing.
 
+- **Two independently-introduced redraw caps** (#1142).  `randomId`'s
+  `exists`-predicate loop and DevTools' `freeActorName` each declared
+  `MAXIMUM_ATTEMPTS = 1_000`, and the second one documented the coupling in
+  prose ("the same bound, and the same reasoning, as `freeActorName`") —
+  which is precisely the kind of coupling a comment cannot hold.  Now one
+  `MAXIMUM_DRAW_ATTEMPTS` in `src/util/Constants.ts`, since both subsystems
+  answer the same question for the same reason.
+
 - **Unnamed literals mirroring `reference.conf`** (#1142): the dispatcher
   throughput was written out as a bare `16` in three places
   (`ActorSystem`, and twice in `Dispatcher`), and `ShardCoordinator`

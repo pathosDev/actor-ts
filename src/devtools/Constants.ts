@@ -36,9 +36,6 @@ export const LOCAL_ADDRESS = 'local';
  */
 export const STALE_AFTER_MS = 5_000;
 
-/** Enough suffixes that exhausting them means something else is wrong. */
-export const MAXIMUM_ATTEMPTS = 1_000;
-
 /** How often departed members are checked for expiry. */
 export const SWEEP_INTERVAL_MS = 30_000;
 

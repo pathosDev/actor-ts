@@ -1,3 +1,4 @@
+import { TAG_ENTROPY_CHARACTERS } from './Constants.js';
 import type { Crdt, ReplicaId } from './Crdt.js';
 import { randomId } from '../util/RandomString.js';
 import {
@@ -44,27 +45,6 @@ export type ORSetOptions<E> = {
 };
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
-
-/**
- * Random hex characters in a tag suffix — 96 bits.
- *
- * A tag used to be `${replica}#${seq}` off a monotonic counter, and the
- * counter travelled in the payload.  Tombstones veto by tag on merge and are
- * never pruned, so a peer that could *predict* a tag could tombstone one the
- * victim had not issued yet: the victim's next adds then vanished on the very
- * next merge, silently, with no API to undo a tombstone (#722).  Guessing a
- * tag is the whole attack, which is why this draws from `crypto` — the same
- * conclusion #120 reached for `ClusterClient` ask ids and #896 for quorum
- * correlation ids.
- *
- * Longer than the 12–16 characters those two use, because the uniqueness that
- * has to hold is different: an ask id only has to be distinct among the
- * requests in flight, whereas a tag is compared against every tag its replica
- * has ever minted for the element and against tombstones that outlive them
- * all.  At 96 bits a replica making 10^9 adds has a collision chance around
- * 6e-12 — below the rate at which the hardware underneath miscounts.
- */
-const TAG_ENTROPY_CHARACTERS = 24;
 
 type ElementEntry<E> = {
   readonly element: E;
