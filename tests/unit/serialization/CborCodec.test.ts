@@ -56,6 +56,24 @@ describe('CBOR floats', () => {
     const bytes = new Uint8Array([0xfa, 0x40, 0x49, 0x0f, 0xdb]);
     expect(dec.decode(bytes) as number).toBeCloseTo(Math.PI, 4);
   });
+
+  test('NaN and the infinities survive; -0 keeps its sign (#1036)', () => {
+    expect(Number.isNaN(rt(NaN))).toBe(true);
+    expect(rt(Infinity)).toBe(Infinity);
+    expect(rt(-Infinity)).toBe(-Infinity);
+    expect(Object.is(rt(-0), -0)).toBe(true);
+    expect(Object.is(rt(0), 0)).toBe(true);
+    // In an array slot and an object property, not just at the root.
+    const nested = rt({ limit: -0, stats: [-0, 0] }) as { limit: number; stats: number[] };
+    expect(Object.is(nested.limit, -0)).toBe(true);
+    expect(Object.is(nested.stats[0], -0)).toBe(true);
+    expect(Object.is(nested.stats[1], 0)).toBe(true);
+  });
+
+  test('a plain zero stays a one-byte integer — only -0 pays for the float', () => {
+    expect(Array.from(enc.encode(0))).toEqual([0x00]);
+    expect(enc.encode(-0).byteLength).toBe(9); // 0xfb + 8 bytes
+  });
 });
 
 describe('CBOR strings & byte strings', () => {

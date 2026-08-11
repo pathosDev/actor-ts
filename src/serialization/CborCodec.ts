@@ -73,6 +73,11 @@ export class CborEncoder {
     if (value === null || value === undefined) return this.writeSimple(22); // null
     if (typeof value === 'boolean') return this.writeSimple(value ? 21 : 20);
     if (typeof value === 'number') {
+      // `-0` ahead of the integer branch: `Number.isInteger(-0)` is true and
+      // `writeInt` masks the sign away, so it used to come back as `+0`.  A
+      // float64 carries the sign bit; the JSON tree carries it as
+      // `{"__number__":"-0"}`, and the two must agree (#1036).
+      if (Object.is(value, -0)) return this.writeDouble(value);
       if (Number.isFinite(value) && Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
         return this.writeInt(value);
       }
