@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { randomHex, randomId, randomString, type RandomStringOptions } from '../../../src/util/RandomString.js';
+import { randomHex, randomId, randomString, randomUuid, type RandomStringOptions } from '../../../src/util/RandomString.js';
 
 /**
  * Every character-class combination that yields a non-empty alphabet, with the
@@ -111,5 +111,42 @@ describe('randomHex / randomId', () => {
     const asNumbers = names.map((name) => parseInt(name, 16));
     const consecutive = asNumbers.every((value, index) => index === 0 || value === asNumbers[index - 1]! + 1);
     expect(consecutive).toBe(false);
+  });
+});
+
+describe('randomUuid (#1109)', () => {
+  // Lowercase, `4` in the version position, `8|9|a|b` in the variant position.
+  // Those six bits are the reason this delegates rather than dashing up a
+  // `randomHex(32)`: a hex string is uniform there, a UUID is not, and a reader
+  // that parses the version out is the one who finds out.
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  test('is a well-formed lowercase v4 UUID', () => {
+    for (let attempt = 0; attempt < 256; attempt++) {
+      const value = randomUuid();
+      expect(value, `attempt ${attempt}`).toMatch(UUID_V4);
+      expect(value).toHaveLength(36);
+    }
+  });
+
+  test('10 000 draws are 10 000 distinct values', () => {
+    // The property the helper exists for.  Within one process this only rules
+    // out a repeat; the cross-process half of the claim rests on the 122 random
+    // bits, which no test can observe from here.
+    const count = 10_000;
+    const values = new Set(Array.from({ length: count }, () => randomUuid()));
+    expect(values.size).toBe(count);
+  });
+
+  test('is not a sliced or dashed randomHex — the fixed fields are actually fixed', () => {
+    // A dashed `randomHex(32)` passes a length check and a lowercase-hex check,
+    // and fails here roughly 15 times in 16 per draw.  Asserting the two nibbles
+    // separately from the regex keeps the failure message pointing at which one
+    // went wrong.
+    for (let attempt = 0; attempt < 256; attempt++) {
+      const value = randomUuid();
+      expect(value[14], `version nibble, attempt ${attempt}`).toBe('4');
+      expect(['8', '9', 'a', 'b'], `variant nibble, attempt ${attempt}`).toContain(value[19]);
+    }
   });
 });

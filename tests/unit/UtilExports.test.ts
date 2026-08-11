@@ -5,6 +5,7 @@ import {
   randomHex,
   randomId,
   randomString,
+  randomUuid,
   safeStringify,
 } from '../../src/index.js';
 import type {
@@ -35,6 +36,12 @@ describe('util helpers are reachable from the barrel (#1034)', () => {
 
     test('randomId is hex too — the distinction is intent, not alphabet', () => {
       expect(randomId(12)).toMatch(/^[0-9a-f]{12}$/);
+    });
+
+    test('randomUuid is a v4 UUID, not a dashed hex string (#1109)', () => {
+      expect(randomUuid()).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
     });
 
     test('randomString honours the character-class options', () => {

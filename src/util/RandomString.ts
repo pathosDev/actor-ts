@@ -8,6 +8,11 @@
  * rather than a best effort.  Deciding those three once is the point — the two
  * shapes a call site reaches for instead, `Math.random()` and a sliced
  * `randomUUID()`, are respectively not random and not the length you asked for.
+ *
+ * The *unsliced* UUID is here as {@link randomUuid}, so that the one identifier
+ * question this file cannot answer with an alphabet and a length — "give me one
+ * that will not collide with an identifier minted in some other process" — does
+ * not have to leave the module either.
  */
 
 const LOWERCASE_LETTERS = 'abcdefghijklmnopqrstuvwxyz';
@@ -81,6 +86,33 @@ export function randomHex(length: number): string {
  */
 export function randomId(length: number): string {
   return randomHex(length);
+}
+
+/**
+ * A random version-4 UUID — `'f81d4fae-7dec-41d0-a765-00a0c91e6bf6'`.
+ *
+ * The counterpart to {@link randomId}.  That one names something *inside* one
+ * process and only has to be unguessable among the names that process holds live
+ * at once, which is why ~48 bits are plenty.  This one has to stay distinct from
+ * identifiers minted by other processes, on other machines, years apart, with
+ * nothing coordinating them: a `PersistenceId` for a new aggregate, a
+ * correlation id carried across a broker, a key some other system will read
+ * later.  122 random bits are what makes that hold without a coordinator.
+ *
+ * Delegates to `globalThis.crypto.randomUUID()` instead of assembling one from
+ * {@link randomHex}, because six of the 128 bits are not entropy: RFC 9562 fixes
+ * a version and a variant field, and a hex string with dashes inserted in the
+ * right places merely *looks* like a UUID — anything that parses a version out
+ * of it reads garbage.  Delegating gets that right by construction, and keeps
+ * the choice of primitive in the one file that owns where identifiers come from
+ * rather than re-made per call site.
+ *
+ * No `length` parameter, deliberately: a UUID is 36 characters, and cutting one
+ * down is the exact mistake this module exists to make unnecessary — reach for
+ * {@link randomHex} or {@link randomId} when you want *n* characters.
+ */
+export function randomUuid(): string {
+  return globalThis.crypto.randomUUID();
 }
 
 function fromAlphabet(length: number, alphabet: string): string {
