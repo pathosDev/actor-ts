@@ -577,6 +577,37 @@ describe('CBOR typed arrays, DataView and ArrayBuffer (tag 27, #1036)', () => {
   });
 });
 
+describe('CBOR toJSON (#1036)', () => {
+  test('a toJSON() result is what gets encoded', () => {
+    class Money {
+      constructor(private readonly cents: number) {}
+      toJSON(): unknown { return { amount: this.cents / 100, currency: 'EUR' }; }
+    }
+    expect(rt({ price: new Money(1250) })).toEqual({ price: { amount: 12.5, currency: 'EUR' } });
+  });
+
+  test('nested values inside a toJSON() result still get the full treatment', () => {
+    const wrapper = { toJSON: (): unknown => ({ at: new Date(0), tags: new Set(['a']) }) };
+    const decoded = rt(wrapper) as { at: Date; tags: Set<string> };
+    expect(decoded.at).toBeInstanceOf(Date);
+    expect(decoded.tags).toBeInstanceOf(Set);
+  });
+
+  // The rich types that define a toJSON of their own are claimed by their
+  // branches before the probe is ever reached — this is what that buys.
+  test('rich types with a toJSON of their own are unaffected', () => {
+    expect(rt(new Date(0))).toBeInstanceOf(Date);
+    expect(rt(new URL('https://example.test/'))).toBeInstanceOf(URL);
+    expect(rt(new BidirectionalMap([['a', 1]]))).toBeInstanceOf(BidirectionalMap);
+  });
+
+  test('toJSON returning this terminates instead of recursing forever', () => {
+    const selfish: Record<string, unknown> = { a: 1 };
+    selfish['toJSON'] = () => selfish;
+    expect(() => enc.encode(selfish)).toThrow(CborEncodeError);
+  });
+});
+
 describe('CBOR encoder limits (#1036)', () => {
   test('a cycle is a CborEncodeError, not a stack overflow', () => {
     const node: Record<string, unknown> = { name: 'root' };

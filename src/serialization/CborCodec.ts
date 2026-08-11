@@ -109,8 +109,11 @@ export class CborEncoder {
    * thing against `MAX_NESTING_DEPTH`, so "the encoder accepts it" and "the
    * decoder accepts it" cannot come apart; without that, a node can write a
    * snapshot it is unable to read back (#1036).
+   *
+   * `allowToJson` is false only for the value a `toJSON()` call returned —
+   * see `writeObject`.
    */
-  private writeValue(value: unknown, depth: number): void {
+  private writeValue(value: unknown, depth: number, allowToJson = true): void {
     if (depth > MAX_NESTING_DEPTH) {
       throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
     }
@@ -167,7 +170,7 @@ export class CborEncoder {
       // Wrapper objects unwrap like `JSON.stringify` does.  Left to the
       // generic branch, `Object.entries(new String('ab'))` would write
       // `{"0":"a","1":"b"}`.
-      return this.writeValue(value.valueOf(), depth);
+      return this.writeValue(value.valueOf(), depth, false);
     }
     if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet) {
       // Inherently non-serialisable — refuse loudly instead of storing `{}`,
@@ -175,7 +178,7 @@ export class CborEncoder {
       throw new CborEncodeError(`Cannot encode a ${value.constructor.name}`);
     }
     if (Array.isArray(value)) return this.writeArray(value, depth);
-    if (typeof value === 'object') return this.writeObject(value, depth);
+    if (typeof value === 'object') return this.writeObject(value, depth, allowToJson);
     throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
   }
 
@@ -360,7 +363,29 @@ export class CborEncoder {
     }
   }
 
-  private writeObject(value: object, depth: number): void {
+  private writeObject(value: object, depth: number, allowToJson: boolean): void {
+    if (allowToJson) {
+      const toJson = (value as { toJSON?: unknown }).toJSON;
+      if (typeof toJson === 'function') {
+        // Honour `toJSON()` the way `JSON.stringify` and the JSON tree do.
+        // The two serializers are interchangeable — the extension default, a
+        // store's `withSerializer`, HTTP content negotiation — so the same
+        // endpoint answering `application/json` and `application/cbor` must
+        // not return two different shapes for a type that defines one.
+        //
+        // Per spec the RESULT is not probed again at this node.  That is what
+        // stops `toJSON: () => this` recursing forever: the second pass falls
+        // through to the loop below, meets the own `toJSON` function property
+        // and refuses it as an unencodable type.  Values nested inside the
+        // result get the normal treatment.
+        //
+        // The probe lives here, dead last in the dispatch, on purpose: every
+        // rich type with a `toJSON` of its own — `Date`, `URL`,
+        // `BidirectionalMap`, `Buffer` — has already been claimed by its own
+        // branch above and is safe by construction.
+        return this.writeValue((value as { toJSON: () => unknown }).toJSON(), depth, false);
+      }
+    }
     this.enterContainer(value);
     try {
       const entries = Object.entries(value as Record<string, unknown>);
