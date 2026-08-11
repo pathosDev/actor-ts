@@ -208,18 +208,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = blueprint.mailbox
-      ? blueprint.mailbox()
-      // #310 — bounded by default.  Unbounded was the pre-#310 default
-      // and is still available via `withMailbox(() => new Mailbox())`
-      // for use-cases that need it (deterministic replay, test setups,
-      // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
-      // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
-      : new BoundedMailbox<TMessage>({
-        capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
-        overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
-        onDrop: (reason) => this._onMailboxDrop(reason),
-      });
+    this.mailbox = this._createMailbox(blueprint);
     this.self = new LocalActorRef<TMessage>(this);
     // Resolved per record rather than bound here: the user's Actor does not
     // exist yet, and once it does its name may change (state, restart).
@@ -1079,6 +1068,32 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
     }
+  }
+
+  /**
+   * The actor's queue.  Three shapes, in precedence order:
+   *
+   *   1. `withMailbox(...)` — the caller owns the whole queue, bound and
+   *      policy included; the cell wires nothing into it.
+   *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
+   *      framework picks an overflow policy on a caller's behalf, and the
+   *      only one whose drops reach `actor_mailbox_dropped_total`.
+   *   3. Nothing — the default, still bounded here.  #310 chose that; #1148
+   *      reverses it in the next commit.
+   *
+   * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
+   * the call sits in the constructor body, and whether the parameter
+   * property is assigned by then depends on the emit order for parameter
+   * properties versus field initializers.  Passing it makes the question
+   * moot.
+   */
+  private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+    if (blueprint.mailbox) return blueprint.mailbox();
+    return new BoundedMailbox<TMessage>({
+      capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
+      overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
+      onDrop: (reason) => this._onMailboxDrop(reason),
+    });
   }
 
   /**
