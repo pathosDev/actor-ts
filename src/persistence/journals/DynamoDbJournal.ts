@@ -1,3 +1,4 @@
+import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_MAX_TRANSACTION_ITEMS } from '../Constants.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -34,12 +35,6 @@ import {
  * with a plain `GetItem` instead of needing a second table.
  */
 const META_SEQ = 0;
-
-/** DynamoDB caps one `TransactWriteItems` call at 100 items. */
-const MAX_TRANSACTION_ITEMS = 100;
-
-/** Batch writes are capped at 25 items per request. */
-const MAX_BATCH_ITEMS = 25;
 
 /**
  * Journal backed by Amazon DynamoDB.
@@ -106,11 +101,11 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
     if (events.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'DynamoDbJournal.append');
     assertValidTags(tags);
-    if (events.length > MAX_TRANSACTION_ITEMS) {
+    if (events.length > DYNAMODB_MAX_TRANSACTION_ITEMS) {
       // Chunking would break atomicity, which is the property this backend's
       // concurrency rests on — so refuse clearly instead of silently degrading.
       throw new JournalError(
-        `DynamoDbJournal.append: DynamoDB caps an atomic transaction at ${MAX_TRANSACTION_ITEMS} items, `
+        `DynamoDbJournal.append: DynamoDB caps an atomic transaction at ${DYNAMODB_MAX_TRANSACTION_ITEMS} items, `
         + `got ${events.length} events.  Persist them in smaller batches.`,
       );
     }
@@ -323,8 +318,8 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
 
   /** Delete items 25 at a time, resubmitting whatever DynamoDB throttles. */
   private async batchDelete(operations: DynamoDbOperations, items: ReadonlyArray<DynamoDbItem>): Promise<void> {
-    for (let offset = 0; offset < items.length; offset += MAX_BATCH_ITEMS) {
-      let requests = items.slice(offset, offset + MAX_BATCH_ITEMS).map((item) => ({
+    for (let offset = 0; offset < items.length; offset += DYNAMODB_MAX_BATCH_ITEMS) {
+      let requests = items.slice(offset, offset + DYNAMODB_MAX_BATCH_ITEMS).map((item) => ({
         DeleteRequest: { Key: { pid: item.pid!, seq: item.seq! } },
       }));
       // `UnprocessedItems` is DynamoDB shedding load, not an error — it has to be

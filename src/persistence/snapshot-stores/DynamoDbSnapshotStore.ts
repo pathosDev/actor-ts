@@ -1,3 +1,4 @@
+import { DYNAMODB_MAX_BATCH_ITEMS } from '../Constants.js';
 import { type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -19,9 +20,6 @@ import {
   type DynamoDbSnapshotStoreOptions,
   type DynamoDbSnapshotStoreOptionsType,
 } from './DynamoDbSnapshotStoreOptions.js';
-
-/** Batch writes are capped at 25 items per request. */
-const MAX_BATCH_ITEMS = 25;
 
 /**
  * SnapshotStore backed by Amazon DynamoDB.
@@ -174,8 +172,8 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
 
   /** Delete items 25 at a time, resubmitting whatever DynamoDB throttles. */
   private async batchDelete(operations: DynamoDbOperations, items: ReadonlyArray<DynamoDbItem>): Promise<void> {
-    for (let offset = 0; offset < items.length; offset += MAX_BATCH_ITEMS) {
-      let requests = items.slice(offset, offset + MAX_BATCH_ITEMS).map((item) => ({
+    for (let offset = 0; offset < items.length; offset += DYNAMODB_MAX_BATCH_ITEMS) {
+      let requests = items.slice(offset, offset + DYNAMODB_MAX_BATCH_ITEMS).map((item) => ({
         DeleteRequest: { Key: { pid: item.pid!, seq: item.seq! } },
       }));
       for (let attempt = 0; requests.length > 0 && attempt < 5; attempt++) {
