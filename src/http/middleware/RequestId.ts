@@ -8,17 +8,11 @@ import type { Middleware } from '../Route.js';
 import type { HttpRequest } from '../types.js';
 import { randomUuid } from '../../util/RandomString.js';
 import { applyHeaders } from './headers.js';
+import { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 import type { RequestIdOptions, RequestIdOptionsType } from './RequestIdOptions.js';
 
 /** Conservative id shape — enough for UUIDs, ULIDs, and trace ids; caps length. */
 const VALID_ID = /^[A-Za-z0-9._-]{1,64}$/;
-
-/**
- * Header the middleware reads and echoes unless configured otherwise, and
- * the one {@link requestIdOf} looks at by default.  A single spelling so
- * the middleware and the framework's own error log cannot drift apart.
- */
-export const DEFAULT_REQUEST_ID_HEADER = 'x-request-id';
 
 /**
  * The request id `request` carries, or `undefined` when it carries none —
