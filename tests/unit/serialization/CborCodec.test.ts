@@ -114,9 +114,27 @@ describe('CBOR booleans, null, undefined', () => {
     expect(rt(null)).toBe(null);
   });
 
-  test('undefined encodes as null', () => {
-    // Encoder writes null for undefined (simple value 22).
-    expect(rt(undefined)).toBeNull();
+  test('undefined round-trips as CBOR simple value 23, distinct from null (#1036)', () => {
+    expect(Array.from(enc.encode(undefined))).toEqual([0xf7]);
+    expect(rt(undefined)).toBeUndefined();
+    expect(rt(null)).toBeNull();
+  });
+
+  // Unlike the JSON tree, which drops the key under its 'omit' policy and
+  // throws under 'reject'.  CBOR keeps it: the key is already present today
+  // (with the wrong value), and skipping an entry mid-loop would falsify the
+  // already-written map header and corrupt the stream rather than lose a key.
+  test('an undefined object property keeps its key', () => {
+    const decoded = rt({ a: undefined, b: 1 }) as Record<string, unknown>;
+    expect('a' in decoded).toBe(true);
+    expect(decoded['a']).toBeUndefined();
+    expect(decoded['b']).toBe(1);
+  });
+
+  test('undefined survives in array slots', () => {
+    const decoded = rt([1, undefined, 3]) as unknown[];
+    expect(decoded.length).toBe(3);
+    expect(decoded[1]).toBeUndefined();
   });
 });
 

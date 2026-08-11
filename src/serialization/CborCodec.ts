@@ -70,7 +70,11 @@ export class CborEncoder {
     if (depth > MAX_NESTING_DEPTH) {
       throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
     }
-    if (value === null || value === undefined) return this.writeSimple(22); // null
+    if (value === null) return this.writeSimple(22); // null
+    // CBOR has a simple value for `undefined` of its own, and the decoder has
+    // always read it — the encoder was the only side flattening it to `null`,
+    // which is a different value (#1036).
+    if (value === undefined) return this.writeSimple(23);
     if (typeof value === 'boolean') return this.writeSimple(value ? 21 : 20);
     if (typeof value === 'number') {
       // `-0` ahead of the integer branch: `Number.isInteger(-0)` is true and
