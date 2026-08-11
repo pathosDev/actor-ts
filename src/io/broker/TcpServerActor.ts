@@ -24,33 +24,39 @@ import type { TcpOutbound } from './TcpSocketActor.js';
  */
 export type TcpConnectionId = string;
 
-/** Write bytes (or a UTF-8-encoded string) to one accepted connection. */
-type SendCommand = {
+/**
+ * Write bytes (or a UTF-8-encoded string) to one accepted connection.
+ *
+ * The five variants below are exported, unlike most variant types in the
+ * project, because this union crosses the package boundary: the `target`
+ * actor handles them, and a handler takes the named variant type (#1095).
+ */
+export type SendCommand = {
   readonly kind: 'send';
   readonly connectionId: TcpConnectionId;
   readonly payload: TcpOutbound;
 };
 /** Close one accepted connection.  The listener keeps serving the rest. */
-type CloseCommand = { readonly kind: 'close'; readonly connectionId: TcpConnectionId };
+export type CloseCommand = { readonly kind: 'close'; readonly connectionId: TcpConnectionId };
 
 /** What a {@link TcpServerActor} accepts. */
 export type TcpServerCommand = SendCommand | CloseCommand;
 
 /** A peer connected and was admitted. */
-type ConnectionOpenedMessage = {
+export type ConnectionOpenedMessage = {
   readonly kind: 'connectionOpened';
   readonly connectionId: TcpConnectionId;
   /** Peer address when the runtime exposes one. */
   readonly remoteAddress?: string;
 };
 /** One inbound frame, as cut by the configured framing. */
-type FrameMessage = {
+export type FrameMessage = {
   readonly kind: 'frame';
   readonly connectionId: TcpConnectionId;
   readonly payload: TcpFrame;
 };
 /** The connection is gone — peer closed, error, cap breach, or unbind. */
-type ConnectionClosedMessage = {
+export type ConnectionClosedMessage = {
   readonly kind: 'connectionClosed';
   readonly connectionId: TcpConnectionId;
 };
