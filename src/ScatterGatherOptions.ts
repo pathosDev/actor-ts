@@ -1,5 +1,31 @@
+import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
+
+/**
+ * Built-in default for {@link ScatterGatherOptionsType.timeoutMs} —
+ * deliberately *under* {@link DEFAULT_ASK_TIMEOUT_MS}, not equal to it.
+ *
+ * The scatter is N asks and must not outlive the ask wrapped around it,
+ * which was the reason for matching 5 s.  Matching does not achieve it:
+ * the router's own deadline has to leave room for the inner asks to
+ * reject, the `AggregateError` to be built and the reply to reach the
+ * caller, and the caller's timer is already running for the same 5 s.
+ * On the documented default path — `scatterGatherFirstCompleted(n, R)`
+ * plus a bare `pool.ask(msg)` — the caller therefore saw its own
+ * `AskTimeoutError` and never the router's diagnosis (#1088).
+ *
+ * The 500 ms is a margin, not a budget cut: the aggregation and reply
+ * hop measured at ~18 ms, and a Windows timer quantum is 15.6 ms, which
+ * Bun can fire a whole one early (#477).  Anything under ~4 980 ms wins
+ * the race on an idle machine; 4 500 ms keeps 90 % of the budget and
+ * still wins it on a loaded one.
+ *
+ * The ordering against `DEFAULT_ASK_TIMEOUT_MS` is the invariant, not the
+ * literal — `Router.test.ts` asserts both that this is smaller and that the
+ * gap is at least 100 ms.
+ */
+export const DEFAULT_SCATTER_GATHER_TIMEOUT_MS = 4_500;
 
 /**
  * Plain options-object shape accepted by
