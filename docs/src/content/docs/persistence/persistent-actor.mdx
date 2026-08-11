@@ -249,6 +249,23 @@ override onRecoveryFailure(reason: Error): void {
 }
 ```
 
+The two integrity failures are exported classes, so the hook can
+tell them apart.  Which of the two stores broke its contract is
+the first thing an operator needs, and both carry the
+`persistenceId` and the offending `sequenceNr`:
+
+```ts
+import { JournalIntegrityError, SnapshotIntegrityError } from 'actor-ts';
+
+override onRecoveryFailure(reason: Error): void {
+  if (reason instanceof JournalIntegrityError) {
+    this.log.error(`journal broke at ${reason.sequenceNr} for ${reason.persistenceId}`);
+  } else if (reason instanceof SnapshotIntegrityError) {
+    this.log.error(`snapshot ${reason.sequenceNr} of ${reason.persistenceId} is not trustworthy`);
+  }
+}
+```
+
 The actor cannot carry on either way: `state` was never assigned
 and `lastSequenceNr` is unknown, so there is no state in which it
 could answer a command.  Stopping is what keeps that visible —
