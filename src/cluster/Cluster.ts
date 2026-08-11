@@ -7,10 +7,7 @@ import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
-import {
-  DEFAULT_GOSSIP_INTERVAL_MS,
-  DEFAULT_SEED_RETRY_INTERVAL_MS,
-} from '../util/Constants.js';
+import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import {
@@ -18,6 +15,7 @@ import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   withClusterConfigDefaults,

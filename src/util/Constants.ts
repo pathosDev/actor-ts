@@ -42,22 +42,6 @@ export const DEFAULT_GOSSIP_INTERVAL_MS = 1_000;
 export const DEFAULT_ASK_TIMEOUT_MS = 5_000;
 
 /**
- * Default seed-retry interval — how long a node waits before
- * re-attempting a failed `Cluster.join`.  3 s balances "give the
- * seed node time to start" with "fail fast on a missing peer".
- */
-export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
-
-/**
- * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
- * A phase that overruns it is abandoned so the next one still gets
- * to run — 5 s balances letting a slow task finish against blocking
- * shutdown indefinitely.  Overridable globally, per phase, or via
- * `actor-ts.coordinated-shutdown.default-phase-timeout`.
- */
-export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
-
-/**
  * Messages an explain plan keeps when the caller names no capacity.
  *
  * There are two doors onto the same ring and they have to resolve

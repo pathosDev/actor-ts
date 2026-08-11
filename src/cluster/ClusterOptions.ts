@@ -8,6 +8,14 @@ import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
 /**
+ * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
+ * long a node waits before re-attempting a failed `Cluster.join`.  3 s
+ * balances "give the seed node time to start" with "fail fast on a missing
+ * peer".
+ */
+export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
+
+/**
  * Built-in default for {@link ClusterOptionsType.maxVersionSkewMs} — how far
  * ahead of the local wall-clock a gossiped member version may be.  The full
  * reasoning for both the rule and the number is on `Cluster.admitsVersion`

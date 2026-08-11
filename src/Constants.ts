@@ -30,3 +30,16 @@
  * event loop between yields.
  */
 export const DEFAULT_DISPATCHER_THROUGHPUT = 16;
+
+/**
+ * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
+ * A phase that overruns it is abandoned so the next one still gets
+ * to run — 5 s balances letting a slow task finish against blocking
+ * shutdown indefinitely.  Overridable globally, per phase, or via
+ * `actor-ts.coordinated-shutdown.default-phase-timeout`.
+ *
+ * Not an options default: `CoordinatedShutdown` has no `XOptions` type —
+ * `defaultPhaseTimeoutMs` is a mutable field on the class, seeded from this
+ * value and then overwritten from HOCON if the key is set.
+ */
+export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;

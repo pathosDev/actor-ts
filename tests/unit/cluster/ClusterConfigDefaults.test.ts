@@ -3,6 +3,7 @@ import { Config } from '../../../src/config/Config.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
   readClusterOptionsFromConfig,
@@ -10,10 +11,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
-import {
-  DEFAULT_GOSSIP_INTERVAL_MS,
-  DEFAULT_SEED_RETRY_INTERVAL_MS,
-} from '../../../src/util/Constants.js';
+import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 
 describe('readClusterOptionsFromConfig', () => {
