@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { MailboxDepthSampler } from './MailboxDepthSampler.js';
 import {
   DefaultMetricsRegistry,
   NoopMetricsRegistry,
@@ -28,6 +29,12 @@ import type { MetricsRegistryOptions } from './MetricsRegistryOptions.js';
  */
 export class MetricsExtension implements Extension {
   private registry: MetricsRegistry = new NoopMetricsRegistry();
+  /**
+   * Feeds `actor_mailbox_size`.  Tied to the registry's lifetime rather
+   * than the system's: it walks the actor tree on a timer, which is pure
+   * overhead for a system that never turns metrics on.
+   */
+  private mailboxDepth: MailboxDepthSampler | null = null;
 
   constructor(private readonly _system: ActorSystem) {}
 
@@ -44,6 +51,7 @@ export class MetricsExtension implements Extension {
   enable(options?: MetricsRegistryOptions): MetricsRegistry {
     if (this.registry instanceof NoopMetricsRegistry) {
       this.registry = new DefaultMetricsRegistry(options);
+      this.startMailboxDepthSampler();
     }
     return this.registry;
   }
@@ -54,7 +62,12 @@ export class MetricsExtension implements Extension {
    * instrument with a third-party Prom client library directly.
    */
   useRegistry(registry: MetricsRegistry): void {
+    this.stopMailboxDepthSampler();
     this.registry = registry;
+    // A custom registry is still a real one, so it gets the stock gauge too
+    // — the alternative is `actor_mailbox_size` silently missing for anyone
+    // who plugged in their own collector.
+    if (!(registry instanceof NoopMetricsRegistry)) this.startMailboxDepthSampler();
   }
 
   /** True if a real (non-noop) registry is installed. */
@@ -69,7 +82,27 @@ export class MetricsExtension implements Extension {
    * found it.
    */
   disable(): void {
+    this.stopMailboxDepthSampler();
     this.registry = new NoopMetricsRegistry();
+  }
+
+  /**
+   * @internal Force a mailbox-depth reading now instead of at the next
+   * tick.  For tests and for an exporter that wants the gauge to be as
+   * fresh as the scrape that asked for it.
+   */
+  _sampleMailboxDepth(): void {
+    this.mailboxDepth?.sample();
+  }
+
+  private startMailboxDepthSampler(): void {
+    this.mailboxDepth = new MailboxDepthSampler(this._system, this.registry);
+    this.mailboxDepth.start();
+  }
+
+  private stopMailboxDepthSampler(): void {
+    this.mailboxDepth?.stop();
+    this.mailboxDepth = null;
   }
 }
 
