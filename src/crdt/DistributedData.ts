@@ -22,6 +22,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
+import { MAX_CRDT_NESTING_DEPTH } from './Constants.js';
 import { CrdtDecodeError } from './CrdtWireValidation.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import { GCounterMap, type GCounterMapJson } from './GCounterMap.js';
@@ -92,16 +93,6 @@ export type CrdtJson =
 export function decodeCrdt(json: CrdtJson): Crdt<any> {
   return decodeCrdtAtDepth(json, 0);
 }
-
-/**
- * Ceiling on nested `ORMap` levels.
- *
- * `decodeCrdt` recurses once per level, so without a bound a few MiB of
- * nested map headers exhausts the JS stack — inside the DistributedData
- * actor, from a single gossip frame (#721).  Real data is shallow; anything
- * approaching this is malformed or hostile.
- */
-const MAX_CRDT_NESTING_DEPTH = 32;
 
 function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
   if (depth > MAX_CRDT_NESTING_DEPTH) {
