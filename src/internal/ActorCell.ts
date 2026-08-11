@@ -52,7 +52,7 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
-import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
+import { DEFAULT_EXPLAIN_CAPACITY, DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -84,9 +84,6 @@ const DEFAULT_STASH_CAPACITY = 1024;
 function watchKeyOf(ref: ActorRef): string {
   return `${ref.path.toString()}#${ref.path.uid}`;
 }
-
-/** Messages kept by an explain plan when the caller names no capacity. */
-const DEFAULT_EXPLAIN_CAPACITY = 100;
 
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /

@@ -77,6 +77,23 @@ export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
 
 /**
+ * Messages an explain plan keeps when the caller names no capacity.
+ *
+ * There are two doors onto the same ring and they have to resolve
+ * "unspecified" identically: `ActorContext.enableExplainPlan()` for code
+ * that switches it on directly, and the DevTools `explain.enable` RPC for
+ * a client that switches it on from outside.  Both land in
+ * `ActorCell._enableExplain`.  Two copies of the number meant the same
+ * feature could answer "how big is the default ring?" two ways depending
+ * on which door you came through.
+ *
+ * The DevTools path additionally *clamps* a caller-supplied capacity; that
+ * ceiling is a guard on untrusted RPC input rather than a property of the
+ * ring, so it stays in `ExplainTap` where the input arrives.
+ */
+export const DEFAULT_EXPLAIN_CAPACITY = 100;
+
+/**
  * Default mailbox capacity for every actor that doesn't pin its own
  * via `withMailbox(...)`.  10 000 is high enough that a
  * well-tuned actor never hits it on a normal traffic spike, low
