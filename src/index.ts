@@ -64,10 +64,11 @@ export type { BidirectionalMultiMapJson } from './util/BidirectionalMultiMap.js'
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
-// Random strings — crypto entropy, no modulo bias, exact length.  The same
-// source the framework names its own actors and reply refs from.
+// Random strings — crypto entropy, no modulo bias, exact length, and an optional
+// collision predicate that redraws for you.  The same source the framework names
+// its own actors and reply refs from.
 export { randomString, randomHex, randomId, randomUuid } from './util/RandomString.js';
-export type { RandomStringOptions } from './util/RandomString.js';
+export type { ExistsPredicate, RandomStringOptions } from './util/RandomString.js';
 
 // safeStringify — JSON.stringify for log and error paths, which cannot throw.
 export { safeStringify } from './util/SafeStringify.js';
