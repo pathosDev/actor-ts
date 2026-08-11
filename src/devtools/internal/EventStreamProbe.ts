@@ -13,15 +13,9 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import type { EventChannel } from '../../EventKey.js';
 import { SystemGroups } from '../../internal/SystemPaths.js';
 import { freeActorName } from './ActorNames.js';
-
-/**
- * Class-channel token accepted by `EventStream.subscribe`.  Abstract
- * bases are allowed on purpose — subscribing to `ActorLifecycleEvent`
- * takes the whole family in one call.
- */
-type EventChannel<T> = abstract new (...args: any[]) => T;
 
 /** A live subscription; call {@link EventStreamProbe.stop} to end it. */
 export interface EventStreamProbe {
@@ -35,14 +29,14 @@ export interface EventStreamProbe {
  * and a bug in a diagnostic must never take down the actor whose event
  * it was watching.
  */
-export function subscribeToEventStream<T extends object>(
+export function subscribeToEventStream<TEvent extends object>(
   system: ActorSystem,
-  channel: EventChannel<T>,
-  handle: (event: T) => void,
+  channel: EventChannel<TEvent>,
+  handle: (event: TEvent) => void,
   name: string,
 ): EventStreamProbe {
-  class ProbeActor extends Actor<T> {
-    override onReceive(event: T): void {
+  class ProbeActor extends Actor<TEvent> {
+    override onReceive(event: TEvent): void {
       try {
         handle(event);
       } catch (error) {
@@ -53,7 +47,7 @@ export function subscribeToEventStream<T extends object>(
 
   // The `/system/devtools` group is marked tooling and `ActorCell` inherits
   // the mark, so the probe needs no `withInternal()` of its own.
-  const ref: ActorRef<T> = system._spawnSystemActor(
+  const ref: ActorRef<TEvent> = system._spawnSystemActor(
     ProbeActor,
     SystemGroups.devtools,
     freeActorName(system, SystemGroups.devtools, name),
