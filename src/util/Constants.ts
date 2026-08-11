@@ -77,14 +77,6 @@ export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
 
 /**
- * Default TTL for cache-fronted snapshot stores
- * (`CachedSnapshotStore`).  5 min suits the typical "actor
- * restarts a few times during deploy" pattern without holding
- * stale data forever.
- */
-export const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1_000;
-
-/**
  * Default mailbox capacity for every actor that doesn't pin its own
  * via `withMailbox(...)`.  10 000 is high enough that a
  * well-tuned actor never hits it on a normal traffic spike, low
