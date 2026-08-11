@@ -24,12 +24,10 @@ import {
   type DevToolsStreamId,
   type DevToolsStreamPayload,
 } from '../protocol/index.js';
+import { LOCAL_ADDRESS } from '../Constants.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
 import { subscribeToEventStream, type EventStreamProbe } from '../internal/EventStreamProbe.js';
 import type { DevToolsFederation } from '../cluster/Federation.js';
-
-/** Address used for the single node of a system with no cluster. */
-const LOCAL_ADDRESS = 'local';
 
 export class ActorTreeTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'actors';
