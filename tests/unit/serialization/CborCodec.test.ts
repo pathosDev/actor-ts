@@ -217,6 +217,39 @@ describe('CBOR error paths', () => {
   });
 });
 
+describe('CBOR encoder limits (#1036)', () => {
+  test('a cycle is a CborEncodeError, not a stack overflow', () => {
+    const node: Record<string, unknown> = { name: 'root' };
+    node['self'] = node;
+    expect(() => enc.encode(node)).toThrow(CborEncodeError);
+
+    const list: unknown[] = [1];
+    list.push(list);
+    expect(() => enc.encode(list)).toThrow(CborEncodeError);
+  });
+
+  test('a shared reference is not a cycle — a DAG duplicates, like JSON.stringify', () => {
+    const shared = { id: 7 };
+    expect(rt({ left: shared, right: shared })).toEqual({ left: { id: 7 }, right: { id: 7 } });
+    expect(rt([shared, shared])).toEqual([{ id: 7 }, { id: 7 }]);
+  });
+
+  // The encoder used to have no bound at all while the decoder capped at 256,
+  // so it could write bytes it could not read back.  Both now measure the
+  // same levels.
+  test('the encoder refuses what its own decoder would refuse', () => {
+    const nest = (levels: number): unknown => {
+      let out: unknown = 'leaf';
+      for (let i = 0; i < levels; i++) out = [out];
+      return out;
+    };
+    expect(() => enc.encode(nest(200_000))).toThrow(CborEncodeError);
+    expect(() => enc.encode(nest(300))).toThrow(CborEncodeError);
+    // Just inside the bound: encodes, and decodes back.
+    expect(dec.decode(enc.encode(nest(250)))).toEqual(nest(250));
+  });
+});
+
 describe('CBOR byte-level compactness', () => {
   test('small ints fit in 1 byte', () => {
     expect(enc.encode(5).byteLength).toBe(1);

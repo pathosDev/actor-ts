@@ -29,18 +29,47 @@ const TAG_EPOCH_DATETIME = 1; // RFC 8949: epoch-based date/time
 const TAG_UNSIGNED_BIGNUM = 2;
 const TAG_NEGATIVE_BIGNUM = 3;
 
+/**
+ * Ceiling on container nesting, enforced by BOTH halves of the codec.  The
+ * decoder recurses once per array, map and tag level, so without a bound a
+ * couple of hundred KB of `0x81` bytes exhausts the JS stack (#618); the
+ * encoder measures the same levels so it cannot write something its own
+ * decoder would refuse (#1036).  Real payloads are shallow; anything near
+ * this is malformed or hostile.
+ */
+const MAX_NESTING_DEPTH = 256;
+
 /* ================================ Encoder ================================= */
 
 export class CborEncoder {
   private chunks: number[] = [];
+  /**
+   * Containers on the path from the root to the current node.  Revisiting one
+   * is a cycle, reported as a `CborEncodeError` instead of overflowing the
+   * stack.  Siblings sharing a reference (a DAG) are fine and get duplicated,
+   * same as `JSON.stringify` and the JSON tree.
+   */
+  private ancestors = new Set<object>();
 
   encode(value: unknown): Uint8Array {
     this.chunks = [];
-    this.writeValue(value);
+    this.ancestors.clear();
+    this.writeValue(value, 0);
     return new Uint8Array(this.chunks);
   }
 
-  private writeValue(value: unknown): void {
+  /**
+   * `depth` counts the levels the DECODER will spend on this value, not the
+   * levels of user structure — a container that decodes through more than one
+   * nested item charges more than one.  Both sides then measure the same
+   * thing against `MAX_NESTING_DEPTH`, so "the encoder accepts it" and "the
+   * decoder accepts it" cannot come apart; without that, a node can write a
+   * snapshot it is unable to read back (#1036).
+   */
+  private writeValue(value: unknown, depth: number): void {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
+    }
     if (value === null || value === undefined) return this.writeSimple(22); // null
     if (typeof value === 'boolean') return this.writeSimple(value ? 21 : 20);
     if (typeof value === 'number') {
@@ -57,21 +86,40 @@ export class CborEncoder {
       this.writeDouble(value.getTime() / 1000);
       return;
     }
-    if (Array.isArray(value)) {
-      this.writeHeader(4, value.length);
-      for (const item of value) this.writeValue(item);
-      return;
+    if (Array.isArray(value)) return this.writeArray(value, depth);
+    if (typeof value === 'object') return this.writeObject(value, depth);
+    throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
+  }
+
+  private writeArray(values: ReadonlyArray<unknown>, depth: number): void {
+    this.enterContainer(values);
+    try {
+      this.writeHeader(4, values.length);
+      for (const item of values) this.writeValue(item, depth + 1);
+    } finally {
+      this.ancestors.delete(values);
     }
-    if (typeof value === 'object') {
+  }
+
+  private writeObject(value: object, depth: number): void {
+    this.enterContainer(value);
+    try {
       const entries = Object.entries(value as Record<string, unknown>);
       this.writeHeader(5, entries.length);
-      for (const [key, val] of entries) {
+      for (const [key, entryValue] of entries) {
         this.writeString(key);
-        this.writeValue(val);
+        this.writeValue(entryValue, depth + 1);
       }
-      return;
+    } finally {
+      this.ancestors.delete(value);
     }
-    throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
+  }
+
+  private enterContainer(container: object): void {
+    if (this.ancestors.has(container)) {
+      throw new CborEncodeError('Cannot encode a circular reference');
+    }
+    this.ancestors.add(container);
   }
 
   private writeInt(value: number): void {
@@ -148,14 +196,6 @@ export class CborEncoder {
  * linear anyway, so this is a backstop rather than the fix.
  */
 const MAX_BIGNUM_BYTES = 1024;
-
-/**
- * Ceiling on container nesting.  `readValue` recurses once per array, map and
- * tag level, so without a bound a couple of hundred KB of `0x81` bytes
- * exhausts the JS stack (#618).  Real payloads are shallow; anything near
- * this is malformed or hostile.
- */
-const MAX_NESTING_DEPTH = 256;
 
 export class CborDecoder {
   private pos = 0;
