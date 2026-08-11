@@ -7,7 +7,7 @@
  *   - `release()` voluntarily drops ownership.
  *   - `checkAlive()` is a cheap "do I still own this lease?" check used by
  *     failure-detection logic.
- *   - `onLost(cb)` registers a callback fired if ownership is lost
+ *   - `onLost(handler)` registers a callback fired if ownership is lost
  *     unexpectedly (TTL expired, another holder took over, etc.).
  *
  * Different backends implement the contract differently — see

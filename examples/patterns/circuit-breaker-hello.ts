@@ -8,8 +8,8 @@
 import { CircuitBreaker } from '../../src/index.js';
 
 async function main(): Promise<void> {
-  const cb = new CircuitBreaker({ maxFailures: 2, resetTimeoutMs: 150 });
-  cb.onStateChange((s) => console.log(`breaker → ${s}`));
+  const breaker = new CircuitBreaker({ maxFailures: 2, resetTimeoutMs: 150 });
+  breaker.onStateChange((s) => console.log(`breaker → ${s}`));
 
   let calls = 0;
   const flaky = async (): Promise<string> => {
@@ -20,12 +20,12 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < 6; i++) {
     try {
-      const result = await cb.call(flaky);
+      const result = await breaker.call(flaky);
       console.log(`call#${i}: ${result}`);
     } catch (e) {
       console.log(`call#${i}: ${(e as Error).name}: ${(e as Error).message}`);
     }
-    if (cb.state === 'open') {
+    if (breaker.state === 'open') {
       console.log(`  (open — waiting 200ms for the reset window)`);
       await Bun.sleep(200);
     }

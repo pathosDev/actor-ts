@@ -127,14 +127,14 @@ export class UdpSocketActor
 /* ---------------------------- internals --------------------------------- */
 
 interface DgramSocket {
-  on(event: 'message', cb: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
-  on(event: 'error', cb: (err: Error) => void): void;
-  once(event: 'listening', cb: () => void): void;
-  once(event: 'error', cb: (err: Error) => void): void;
+  on(event: 'message', listener: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  once(event: 'listening', listener: () => void): void;
+  once(event: 'error', listener: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
   bind(port: number, host?: string): void;
-  send(message: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
-  close(cb?: () => void): void;
+  send(message: Uint8Array, port: number, host: string, callback: (err?: Error) => void): void;
+  close(callback?: () => void): void;
   address(): { port: number; address: string };
 }
 

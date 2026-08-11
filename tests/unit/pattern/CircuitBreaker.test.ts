@@ -11,80 +11,80 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('CircuitBreaker — basics', () => {
   test('starts closed and passes through successful calls', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 3, resetTimeoutMs: 50 });
-    expect(cb.state).toBe('closed');
-    const value = await cb.call(async () => 42);
+    const breaker = new CircuitBreaker({ maxFailures: 3, resetTimeoutMs: 50 });
+    expect(breaker.state).toBe('closed');
+    const value = await breaker.call(async () => 42);
     expect(value).toBe(42);
-    expect(cb.state).toBe('closed');
+    expect(breaker.state).toBe('closed');
   });
 
   test('opens after maxFailures consecutive failures', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 2, resetTimeoutMs: 1_000 });
+    const breaker = new CircuitBreaker({ maxFailures: 2, resetTimeoutMs: 1_000 });
     for (let i = 0; i < 2; i++) {
-      try { await cb.call(async () => { throw new Error('boom'); }); }
+      try { await breaker.call(async () => { throw new Error('boom'); }); }
       catch { /* expected */ }
     }
-    expect(cb.state).toBe('open');
+    expect(breaker.state).toBe('open');
   });
 
   test('open breaker rejects immediately with CircuitBreakerOpenError', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000 });
-    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000 });
+    try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
     let caught: unknown = null;
-    try { await cb.call(async () => 'never called'); } catch (e) { caught = e; }
+    try { await breaker.call(async () => 'never called'); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerOpenError);
   });
 
   test('half-opens after resetTimeoutMs; a success closes it', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 40 });
-    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
-    expect(cb.state).toBe('open');
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 40 });
+    try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    expect(breaker.state).toBe('open');
 
     await sleep(60);
     // First call after reset should move to half-open as part of .call().
-    const value = await cb.call(async () => 'ok');
+    const value = await breaker.call(async () => 'ok');
     expect(value).toBe('ok');
-    expect(cb.state).toBe('closed');
+    expect(breaker.state).toBe('closed');
   });
 
   test('half-open failure re-opens the breaker', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 30 });
-    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 30 });
+    try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
     await sleep(50);
-    try { await cb.call(async () => { throw new Error('still flaky'); }); } catch { /* */ }
-    expect(cb.state).toBe('open');
+    try { await breaker.call(async () => { throw new Error('still flaky'); }); } catch { /* */ }
+    expect(breaker.state).toBe('open');
   });
 });
 
 describe('CircuitBreaker — call timeout', () => {
   test('callTimeoutMs converts slow calls into failures', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: 20 });
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: 20 });
     let caught: unknown = null;
-    try { await cb.call(() => new Promise(() => { /* never resolves */ })); }
+    try { await breaker.call(() => new Promise(() => { /* never resolves */ })); }
     catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerTimeoutError);
-    expect(cb.state).toBe('open');
+    expect(breaker.state).toBe('open');
   });
 });
 
 describe('CircuitBreaker — filtering', () => {
   test('isFailure=false skips the failure count', async () => {
-    const cb = new CircuitBreaker({
+    const breaker = new CircuitBreaker({
       maxFailures: 1, resetTimeoutMs: 1_000,
       isFailure: (err) => !(err.message === 'expected'),
     });
-    try { await cb.call(async () => { throw new Error('expected'); }); } catch { /* */ }
-    expect(cb.state).toBe('closed'); // error was not counted
+    try { await breaker.call(async () => { throw new Error('expected'); }); } catch { /* */ }
+    expect(breaker.state).toBe('closed'); // error was not counted
   });
 
   test('onStateChange fires for transitions', async () => {
-    const cb = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 20 });
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 20 });
     const states: string[] = [];
-    cb.onStateChange((s) => states.push(s));
+    breaker.onStateChange((s) => states.push(s));
 
-    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
     await sleep(30);
-    await cb.call(async () => 'ok'); // half-open → closed
+    await breaker.call(async () => 'ok'); // half-open → closed
 
     expect(states).toEqual(['open', 'half-open', 'closed']);
   });
@@ -95,11 +95,11 @@ describe('CircuitBreaker — filtering', () => {
 // previously-unvalidated callTimeoutMs and missing required fields.
 describe('CircuitBreaker — options validation', () => {
   test('builder form is equivalent to a plain object', async () => {
-    const cb = new CircuitBreaker(CircuitBreakerOptions.create()
+    const breaker = new CircuitBreaker(CircuitBreakerOptions.create()
       .withMaxFailures(1)
       .withResetTimeoutMs(1_000));
-    try { await cb.call(async () => { throw new Error('x'); }); } catch { /* */ }
-    expect(cb.state).toBe('open');
+    try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    expect(breaker.state).toBe('open');
   });
 
   test('rejects a non-positive / non-integer maxFailures with OptionsError', () => {

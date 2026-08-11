@@ -164,14 +164,14 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 /* ----------------------------- internals -------------------------------- */
 
 interface NetSocket {
-  on(event: 'data', cb: (chunk: Uint8Array) => void): void;
-  on(event: 'close', cb: () => void): void;
-  on(event: 'error', cb: (err: Error) => void): void;
-  once(event: 'connect', cb: () => void): void;
-  once(event: 'error', cb: (err: Error) => void): void;
+  on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+  on(event: 'close', listener: () => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
+  once(event: 'connect', listener: () => void): void;
+  once(event: 'error', listener: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
-  write(data: Uint8Array, cb?: (err?: Error) => void): boolean;
-  end(cb?: () => void): void;
+  write(data: Uint8Array, callback?: (err?: Error) => void): boolean;
+  end(callback?: () => void): void;
   destroy(): void;
 }
 

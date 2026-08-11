@@ -1,7 +1,7 @@
 /**
  * Event-sourced bank account.  Demonstrates:
  *   - PersistentActor with command / event / state triple
- *   - persist(event, cb) with cb replying to the sender
+ *   - persist(event, afterPersist) with afterPersist replying to the sender
  *   - Recovery from the journal after a fresh incarnation
  *   - Snapshot every N events to keep recovery cheap
  *   - SQLite-backed journal via `bun:sqlite`

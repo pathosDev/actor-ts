@@ -77,7 +77,7 @@ export class NodeTcpBackend implements TcpBackend {
 interface Buffer extends Uint8Array {}
 
 interface NodeSocketLike {
-  write(data: Uint8Array | string, cb?: () => void): boolean;
+  write(data: Uint8Array | string, callback?: () => void): boolean;
   end(): void;
   on(event: 'connect' | 'secureConnect' | 'close', listener: () => void): this;
   on(event: 'data', listener: (chunk: Buffer) => void): this;
@@ -88,8 +88,8 @@ interface NodeSocketLike {
 }
 
 interface NodeServerLike {
-  listen(port: number, host: string, cb?: () => void): void;
-  close(cb?: () => void): void;
+  listen(port: number, host: string, callback?: () => void): void;
+  close(callback?: () => void): void;
   address(): { port: number; address: string } | string | null;
   once(event: 'error', l: (err: Error) => void): void;
 }

@@ -408,13 +408,13 @@ interface GrpcServiceClient {
 
 interface GrpcUnaryFunction {
   call(client: GrpcServiceClient, request: unknown,
-       cb: (err: Error | null, response: unknown) => void): void;
+       callback: (err: Error | null, response: unknown) => void): void;
 }
 
 interface GrpcServerStreamCall {
-  on(event: 'data', cb: (chunk: unknown) => void): void;
-  on(event: 'end', cb: () => void): void;
-  on(event: 'error', cb: (err: Error) => void): void;
+  on(event: 'data', listener: (chunk: unknown) => void): void;
+  on(event: 'end', listener: () => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
 }
 
 interface GrpcServerStreamFunction {
@@ -433,9 +433,9 @@ interface GrpcClientStreamFunction {
 }
 
 interface GrpcDuplexCall {
-  on(event: 'data', cb: (chunk: unknown) => void): void;
-  on(event: 'end', cb: () => void): void;
-  on(event: 'error', cb: (err: Error) => void): void;
+  on(event: 'data', listener: (chunk: unknown) => void): void;
+  on(event: 'end', listener: () => void): void;
+  on(event: 'error', listener: (err: Error) => void): void;
   write(chunk: unknown): void;
   end(): void;
 }

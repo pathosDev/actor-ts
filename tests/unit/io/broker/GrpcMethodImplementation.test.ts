@@ -68,9 +68,9 @@ function fakeReadableCall(): {
   };
 }
 
-type ClientStreamImplementation = (call: unknown, cb: GrpcUnaryCallback) => void;
+type ClientStreamImplementation = (call: unknown, callback: GrpcUnaryCallback) => void;
 type ReadableImplementation = (call: unknown) => void;
-type UnaryImplementation = (call: { request: unknown }, cb: GrpcUnaryCallback) => void;
+type UnaryImplementation = (call: { request: unknown }, callback: GrpcUnaryCallback) => void;
 
 describe('buildGrpcMethodImplementation — client-stream (#5)', () => {
   test('hands the handler a call with the method name and no request message', () => {

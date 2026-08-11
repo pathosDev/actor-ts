@@ -55,9 +55,9 @@ export interface WebsocketPackageSocket {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   terminate?(): void;
-  on(event: 'message', cb: (data: unknown, isBinary: boolean) => void): void;
-  on(event: 'close', cb: (code: number, reason: unknown) => void): void;
-  on(event: 'error', cb: (err: unknown) => void): void;
+  on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): void;
+  on(event: 'close', listener: (code: number, reason: unknown) => void): void;
+  on(event: 'error', listener: (err: unknown) => void): void;
   readonly bufferedAmount?: number;
   readonly readyState?: number;
   readonly protocol?: string;

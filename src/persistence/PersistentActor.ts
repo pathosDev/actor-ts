@@ -82,7 +82,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   abstract onEvent(state: State, event: Event): State;
 
-  /** Handle an incoming command — typically calls `persist(event, cb)`. */
+  /** Handle an incoming command — typically calls `persist(event, afterPersist)`. */
   abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Called once recovery finishes, with the final replayed state. */
@@ -289,17 +289,17 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   protected async persist(
     event: Event,
-    cb?: (state: State) => void | Promise<void>,
+    afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
-    await this.persistAll([event], cb);
+    await this.persistAll([event], afterPersist);
   }
 
   /** Persist several events atomically.  Must also be awaited in onCommand. */
   protected async persistAll(
     events: ReadonlyArray<Event>,
-    cb?: (state: State) => void | Promise<void>,
+    afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
-    if (events.length === 0) { await cb?.(this._state); return; }
+    if (events.length === 0) { await afterPersist?.(this._state); return; }
     this._persisting = true;
     try {
       // Collect tags from the first event — tags are per-event but a single
@@ -329,7 +329,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         if (policy(pe.sequenceNr, this._state, domainEvent)) shouldSnapshot = true;
       }
       if (shouldSnapshot) await this.saveSnapshotNow();
-      await cb?.(this._state);
+      await afterPersist?.(this._state);
       // Drain any callbacks queued while we were busy (nested persists).
       while (this._pendingCallbacks.length > 0) {
         const next = this._pendingCallbacks.shift()!;
