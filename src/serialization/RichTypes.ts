@@ -14,7 +14,9 @@
  * `CborEncodeError` / `CborDecodeError` with a byte offset in CBOR.
  */
 
+/** A binary-view constructor plus the element width its byte length must be a multiple of. */
 interface BinaryViewConstructor {
+  readonly BYTES_PER_ELEMENT: number;
   new (buffer: ArrayBuffer): ArrayBufferView;
 }
 
@@ -70,7 +72,7 @@ export function binaryBytesOf(value: ArrayBufferView | ArrayBuffer): Uint8Array 
 
 /**
  * Rebuild a binary value from its wire name and bytes; `undefined` when the
- * name is unknown.
+ * name is unknown or the byte length is not a whole number of elements.
  *
  * The buffer is normalised to an exact, offset-0 allocation first.  Decoded
  * bytes can arrive as a view into a shared pool at an arbitrary `byteOffset`
@@ -85,7 +87,12 @@ export function rebuildBinaryView(kind: string, bytes: Uint8Array): ArrayBufferV
   if (kind === 'ArrayBuffer') return exact.buffer as ArrayBuffer;
   if (kind === 'DataView') return new DataView(exact.buffer as ArrayBuffer);
   for (const [name, constructor] of TYPED_ARRAY_CONSTRUCTORS) {
-    if (name === kind) return new constructor(exact.buffer as ArrayBuffer);
+    if (name !== kind) continue;
+    // A trailing partial element means the payload was truncated or forged.
+    // Without this check the constructor throws a raw `RangeError` naming
+    // neither the tag nor the value that produced it (#1036).
+    if (exact.byteLength % constructor.BYTES_PER_ELEMENT !== 0) return undefined;
+    return new constructor(exact.buffer as ArrayBuffer);
   }
   return undefined;
 }

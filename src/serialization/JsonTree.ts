@@ -440,12 +440,24 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       if (inner === null || typeof inner !== 'object' || typeof inner.source !== 'string' || typeof inner.flags !== 'string') {
         throw malformedTag(REGEXP_TAG, 'a { source, flags } pair of strings');
       }
-      return new RegExp(inner.source, inner.flags);
+      // Well-typed but still unbuildable: an unbalanced source or a bogus flag
+      // set makes the constructor throw a raw `SyntaxError` naming neither the
+      // tag nor the payload.  Every other malformed tag reports as a
+      // `SerializationError`; these two used to be the exception (#1036).
+      try {
+        return new RegExp(inner.source, inner.flags);
+      } catch {
+        throw malformedTag(REGEXP_TAG, `a valid pattern (got /${inner.source}/${inner.flags})`);
+      }
     }
     case URL_TAG: {
       const href = obj[URL_TAG];
       if (typeof href !== 'string') throw malformedTag(URL_TAG, 'a string');
-      return new URL(href);
+      try {
+        return new URL(href);
+      } catch {
+        throw malformedTag(URL_TAG, `an absolute URL (got '${href}')`);
+      }
     }
     case ERROR_TAG:
       return decodeError(obj[ERROR_TAG]);
@@ -486,7 +498,7 @@ function decodeBinaryView(inner: unknown): unknown {
   }
   const view = rebuildBinaryView(payload.kind, fromBase64(payload.data));
   if (view === undefined) {
-    throw malformedTag(TYPEDARRAY_TAG, `a known binary kind (got '${payload.kind}')`);
+    throw malformedTag(TYPEDARRAY_TAG, `a known binary kind with a whole number of elements (got '${payload.kind}')`);
   }
   return view;
 }
