@@ -334,9 +334,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * incarnation's anonymous children are still in the child map.  The counter
    * survives with the cell and rules that out on its own; the random half is
    * belt-and-braces.
+   *
+   * The `exists` check (#1146) makes that argument checked rather than reasoned.
+   * The counter is still what carries the guarantee, and the child map is the
+   * very thing `_createChild` throws over one line later — so drawing against it
+   * here costs one `Map.has` and turns a name clash from a crash the caller
+   * cannot act on into an event that cannot happen.
    */
   private _anonymousChildName(): string {
-    return `$anonymous-${++this._anonChildCounter}-${randomId(12)}`;
+    const prefix = `$anonymous-${++this._anonChildCounter}-`;
+    return prefix + randomId(12, (suffix) => this._children.has(prefix + suffix));
   }
 
   /**

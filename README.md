@@ -89,7 +89,10 @@ A short tour of what's in the box:
   adapter); plus
   the small helpers the framework itself runs on: `randomString` / `randomHex`
   / `randomId` (crypto entropy, no modulo bias, exact length) and `randomUuid`
-  (a v4 UUID, for when the identifier has to be globally unique too),
+  (a v4 UUID, for when the identifier has to be globally unique too) — all four
+  take an optional `exists` predicate and redraw while it says the candidate is
+  taken, so "keep going until one is free" is the call itself rather than a
+  `do`/`while` around it;
   `safeStringify`
   (a `JSON.stringify` for log and error paths that cannot throw),
   `lazyImportModule` (import an optional peer dependency, or fail with a

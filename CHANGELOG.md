@@ -9,7 +9,95 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **`EventStream` channels can be `kind`-discriminated types, not just
+  classes** (#1143).  `subscribe`/`unsubscribe` took a class constructor and
+  matched with `instanceof`, which locked the one API the project offers for
+  loosely coupled fan-out to exactly the message style the project argues
+  against: `AGENTS.md` mandates `kind`-discriminated named variant types, and
+  `fundamentals/messages` says outright to prefer plain objects over classes.
+  Such a type has no constructor, so there was nothing to hand `subscribe`.
+  The asymmetry was visible in the signatures — `publish(event: object)` has
+  always accepted a plain object, so you could publish something nobody was
+  able to subscribe to.
+
+  A channel is now named three ways.  By a **class**, exactly as before.  By an
+  **`EventKey`** — a new export mirroring `ServiceKey`/`ShardKey`, a `kind`
+  plus a phantom type parameter, so a type and a `const` of the same name give
+  a plain event the call shape a class gets for free:
+
+  ```ts
+  export type UserLoggedInEvent = { readonly kind: 'user-logged-in'; readonly userId: string };
+  export const UserLoggedInEvent = EventKey.of<UserLoggedInEvent>('user-logged-in');
+
+  eventStream.subscribe(self, UserLoggedInEvent, (event) => event.userId !== 'system');
+  eventStream.publish({ kind: 'user-logged-in', userId: 'user-42' });
+  ```
+
+  Or by the bare **kind string**, the shorthand — which costs the type, since
+  `TEvent` has nothing to be inferred from and falls back to `unknown`.
+  Supplying the argument brings the typing back and makes the string itself
+  checkable: `EventKey.of<UserLoggedInEvent>('user-loged-in')` and
+  `subscribe<UserLoggedInEvent>(ref, 'user-loged-in')` are both compile errors,
+  which is the one thing the bare string cannot give you.
+
+  A key and its string are the **same** channel — subscribing both ways dedups,
+  and either form unsubscribes the other, including a freshly built key.  That
+  is why a subscription is filed under the kind string rather than the key
+  object: `EventKey.of` mints a new instance per call, so an object identity
+  would make the obvious `unsubscribe` call a silent no-op.  A class and a kind
+  are **two** channels even when the class's instances carry that `kind`; they
+  select overlapping events exactly like a base class and its subclass.
+
+  Internally the channel is resolved once at subscribe time into an identity, a
+  `matches` closure and a label, rather than being discriminated per delivery:
+  `publish` runs on every actor start, every actor stop and every dead letter.
+  Class channels are untouched — `instanceof` matching, subclass instances
+  still reaching base-class subscribers, and dedup identity still the
+  constructor object.
+
+  **Not included:** prefix or wildcard families (`'billing.*'`).  A kind channel
+  matches exactly one kind, and the docs say so.  Turning "name a channel" into
+  "name a pattern" forces answers on dedup identity, unsubscribe identity and
+  precedence against exact channels; it is purely additive later.
+
+  Two behaviour changes fall out.  `unsubscribe` now tests `channel !== undefined`
+  instead of truthiness — with kind strings legal, `''` is a *supplied* channel
+  that reads as falsy, and the old shape would have taken the omitted-channel
+  branch and dropped every subscription the actor held.  And both operations
+  reject a channel that is neither a usable `instanceof` right-hand side nor a
+  non-empty kind.
+
 ### Changed
+
+- **Three of the framework's own identifier draws go through the `exists`
+  predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
+  twelve identifiers; the interesting result of the survey is that only three
+  of them should check anything, and the other nine are recorded on the issue
+  with the reason rather than left to be re-derived.  `ActorCell`'s anonymous
+  child names now draw against `this._children`, `ORSet.add` against the
+  element's live tags *and* its tombstones, and `ClusterClient.ask`'s id
+  against the pending map.  What they have in common is a registry in scope and
+  a failure that is silent or costly: `_createChild` throws over a duplicate
+  name, `pending.set` overwrites so a repeat leaves the earlier ask's promise
+  hanging until it reports a timeout that never happened, and a repeat of a
+  *tombstoned* ORSet tag is vetoed by the rule that stops a slow peer
+  resurrecting a removed tag — the element simply fails to appear on the next
+  merge, with no error anywhere.  `nextAskId` takes the pending map rather than
+  a ready-made predicate, so the one thing a call site could get wrong — the
+  polarity, where `true` has to mean *taken* — is written once and covered by a
+  test.  The nine sites left alone have nothing to check: a reply ref that is
+  never entered in a visible map, trace ids that have to be unique across
+  processes anyway, a lock token whose "is it taken" question `setIfAbsent`
+  already answers atomically, a correlation id that only reaches a log line.
+  `DistributedData` is the one exclusion with a real registry — its `pendingId`
+  is minted a `tell` away from the map it keys and is part of a wire-visible
+  message contract, so moving the mint is a design change, tracked as #1147.
+  No public API changes, and no behaviour change on the happy path: the entropy
+  already made every one of these collisions astronomically unlikely, so the
+  new tests replace the entropy with a constant to force the repeat and assert
+  the specific damage it used to do.
 
 - **Constants have a placement rule, and follow it** (#1142).  `src/` held
   ~300 module-level `SCREAMING_SNAKE` constants across 130 files with no
@@ -35,6 +123,76 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   value-imports the 700-line `ShardRegion` actor for one integer.
 
 ### Fixed
+
+- **One faulty `EventStream` subscription no longer breaks the bus for
+  everyone else** (#1010).  `publish` guarded the subscription's *predicate*
+  but not its *channel*: the `instanceof` test sat one line above the `try`
+  and `subscriber.tell` ran unguarded below it, so of the three things that
+  can throw per subscription exactly one was covered.  `subscribe` was the
+  other half — it deduplicated, pushed and returned `true` without ever
+  checking that the channel could sit on the right-hand side of `instanceof`.
+
+  A single bad entry therefore raised a `TypeError` into whoever called
+  `publish`, and because the throw escaped the loop, every subscription
+  registered *after* it silently stopped receiving anything — in an order
+  decided by subscription order, which no caller controls.  That reached
+  further than the bus: `publish` runs on every actor start, every actor stop
+  and every dead-lettered `tell`, so it turned `ref.tell(…)` — an API that
+  does not throw by contract — into one that did, broke actor creation, and
+  raised an unhandled dispatcher rejection during shutdown.
+
+  `subscribe` now rejects a channel that is not a usable `instanceof`
+  right-hand side, throwing on the line that wrote the subscription instead
+  of poisoning an unrelated `publish` in another actor later.  It throws
+  rather than returning `false`, because `false` already means "duplicate
+  rejected" and conflating the two destroys the signal the return value
+  carries.  The realistic route to a bad channel is one types do not cover:
+  a JavaScript consumer, a channel read out of a loosely-typed registry, or
+  an ESM import cycle in which the class binding is still uninitialised at
+  subscribe time.
+
+  Subscribe-time validation cannot be total, which is why the delivery guard
+  is not belt-and-braces: an arrow function is callable but has no
+  `prototype`, so `instanceof` throws on it regardless, and a throwing
+  `[Symbol.hasInstance]` passes any structural check and fails at delivery.
+  So `publish` now runs the match test, the predicate and `subscriber.tell`
+  under a guard, logs through the existing logger hook and carries on to the
+  next subscriber.  The predicate keeps its own inner guard: "no match for
+  this delivery, subscription stays active" (#85) is a specific documented
+  meaning that a generic delivery guard would flatten into an unexplained
+  skip.  The warning path no longer reads `channel.name`, which was itself
+  unsafe precisely when the channel was the thing that was wrong.
+
+  **Behaviour change:** a `subscriber.tell` that throws is now logged and
+  swallowed rather than propagated out of `publish`.
+
+- **A collision predicate on every random-id helper** (#1141).  `randomString`,
+  `randomHex`, `randomId` and `randomUuid` now take an optional `exists`
+  callback and draw again while it answers `true`, so the loop every caller
+  wrote by hand — `do { id = randomUuid(); } while (state.users.has(id))` —
+  collapses into `randomUuid((id) => state.users.has(id))`.  The polarity is the
+  design: the callback *is* that `while` condition, which is what keeps the `!`
+  off the call site and lets the two shapes read as one sentence; an
+  accept-predicate would have been the negation of the loop it replaces, and
+  would have put a `!` on every `Map`- or `Set`-backed call site.  The retry is
+  bounded at 1 000 draws and then throws an `Error` naming the helper and the
+  count — the same bound, and the same reasoning, as `freeActorName` in
+  `src/devtools/internal/ActorNames.ts`.  Unbounded, a space with nothing free
+  left in it and a predicate written the other way round both become a call that
+  never returns, and this module had already decided that question when it made
+  an empty alphabet throw.  `randomString` reaches the predicate through
+  overloads — the second slot when the character classes are left alone, the
+  third when they are not — so no call site needs a `{}` placeholder to get
+  there, and `randomId` deliberately forwards no predicate into its `randomHex`
+  delegation, which would otherwise nest a second bounded retry inside the first
+  and name the wrong helper in the error.  `ExistsPredicate` is exported from
+  the root barrel next to `RandomStringOptions`, for anyone naming the callback
+  rather than inlining it.  Nothing changes without one: the argument is
+  optional and trailing, the no-predicate path is a single draw with no loop,
+  and `randomUuid` is still the `() => string` that
+  `RequestIdOptions.withGenerate` defaults to.  The predicate reads and does not
+  write — the accepted value is not recorded for you.  Migrating the framework's
+  own draws onto it is not part of this change.
 
 - **A dead constant and its live duplicate** (#1142).
   `DEFAULT_SNAPSHOT_CACHE_TTL_MS` had zero importers while the consumer its
@@ -78,6 +236,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `PATH_TRAVERSAL_SEGMENTS`, typed `ReadonlySet` so a caller cannot delete
   from it.  No behaviour change: both sites reject exactly what they did
   before.
+
 
 ## [0.14.0] — 2026-08-11
 

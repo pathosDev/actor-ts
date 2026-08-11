@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { randomHex, randomId, randomString, randomUuid, type RandomStringOptions } from '../../../src/util/RandomString.js';
+import { randomHex, randomId, randomString, randomUuid, type ExistsPredicate, type RandomStringOptions } from '../../../src/util/RandomString.js';
 
 /**
  * Every character-class combination that yields a non-empty alphabet, with the
@@ -18,6 +18,24 @@ const COMBINATIONS: ReadonlyArray<{
   { options: { upperCase: false, digits: false }, pattern: /^[a-z]+$/, alphabetSize: 26 },
   { options: { lowerCase: false, digits: false }, pattern: /^[A-Z]+$/, alphabetSize: 26 },
   { options: { lowerCase: false, upperCase: false }, pattern: /^[0-9]+$/, alphabetSize: 10 },
+];
+
+/**
+ * Every helper in the call shape that reaches its predicate slot, paired with the
+ * name its exhaustion error has to carry.  `randomString` appears twice because
+ * the predicate reaches it through two different overloads, and only one of the
+ * two exercises the argument-shuffling in the implementation signature.
+ */
+const DRAWS: ReadonlyArray<{
+  label: string;
+  helper: string;
+  draw: (exists: ExistsPredicate) => string;
+}> = [
+  { label: 'randomString(length, exists)', helper: 'randomString', draw: (exists) => randomString(8, exists) },
+  { label: 'randomString(length, options, exists)', helper: 'randomString', draw: (exists) => randomString(8, { digits: false }, exists) },
+  { label: 'randomHex(length, exists)', helper: 'randomHex', draw: (exists) => randomHex(16, exists) },
+  { label: 'randomId(length, exists)', helper: 'randomId', draw: (exists) => randomId(12, exists) },
+  { label: 'randomUuid(exists)', helper: 'randomUuid', draw: (exists) => randomUuid(exists) },
 ];
 
 describe('randomString', () => {
@@ -148,5 +166,105 @@ describe('randomUuid (#1109)', () => {
       expect(value[14], `version nibble, attempt ${attempt}`).toBe('4');
       expect(['8', '9', 'a', 'b'], `variant nibble, attempt ${attempt}`).toContain(value[19]);
     }
+  });
+});
+
+describe('the exists predicate (#1141)', () => {
+  test('draws again while the predicate answers true, and returns the first one it does not', () => {
+    for (const { label, draw } of DRAWS) {
+      const seen: string[] = [];
+      const value = draw((candidate) => {
+        seen.push(candidate);
+        return seen.length <= 3;
+      });
+
+      expect(seen, label).toHaveLength(4);
+      expect(seen[3], label).toBe(value);
+      // The load-bearing assertion: four *distinct* candidates, so the helper
+      // redrew each round rather than re-testing one value it had already made.
+      expect(new Set(seen).size, label).toBe(4);
+    }
+  });
+
+  test('a predicate that never says taken is consulted exactly once', () => {
+    for (const { label, draw } of DRAWS) {
+      let calls = 0;
+      const value = draw(() => {
+        calls++;
+        return false;
+      });
+
+      expect(calls, label).toBe(1);
+      expect(value.length, label).toBeGreaterThan(0);
+    }
+  });
+
+  test('keeps drawing until it finds the one candidate left free', () => {
+    // Deterministic without touching `crypto`: nine of the ten digits are taken,
+    // so the only value the predicate accepts is '9'.  The chance of exhausting
+    // 1 000 draws without hitting it is 0.9^1000 ≈ 10^-46.
+    const taken = new Set('012345678'.split(''));
+    const value = randomString(1, { lowerCase: false, upperCase: false }, (candidate) => taken.has(candidate));
+    expect(value).toBe('9');
+  });
+
+  test('gives up after a bounded number of draws and names the helper that did it', () => {
+    for (const { label, helper, draw } of DRAWS) {
+      let calls = 0;
+      const attempt = (): string =>
+        draw(() => {
+          calls++;
+          return true;
+        });
+
+      // One `toThrow` only — a second would run the closure again and double the
+      // count.  1 000 000 here would mean `randomId` forwarded its predicate into
+      // `randomHex` and nested a second bounded retry inside its own.
+      expect(attempt, label).toThrow(new RegExp(`${helper} drew 1000 candidates`));
+      expect(calls, label).toBe(1000);
+    }
+  });
+
+  test('a zero-length draw whose empty string is taken throws rather than spinning', () => {
+    // '' is the only candidate a zero length can produce, so a predicate that
+    // rejects it can never be satisfied.  Unbounded, this is the hang the bound
+    // exists to convert into an error.
+    expect(() => randomString(0, () => true)).toThrow(/randomString drew 1000 candidates/);
+    expect(randomString(0, () => false)).toBe('');
+  });
+
+  test('an invalid length or an empty alphabet is still rejected before the predicate is consulted', () => {
+    // The length and alphabet guards live in `fromAlphabet`, which the first draw
+    // reaches before the first `exists()` — so they keep winning, and a caller
+    // whose predicate reads a database does not pay for a call that was never
+    // going to produce a candidate.
+    let consulted = false;
+    const record = (): boolean => {
+      consulted = true;
+      return true;
+    };
+
+    expect(() => randomString(-1, record)).toThrow(RangeError);
+    expect(() => randomHex(1.5, record)).toThrow(RangeError);
+    expect(() => randomString(8, { lowerCase: false, upperCase: false, digits: false }, record)).toThrow(RangeError);
+    expect(consulted).toBe(false);
+  });
+
+  test('an error thrown by the predicate propagates unwrapped', () => {
+    // It is user code reading user state.  Swallowing it would hide the bug and
+    // could hand back a colliding identifier as if the check had passed.
+    const boom = (): boolean => {
+      throw new Error('lookup failed');
+    };
+
+    expect(() => randomId(12, boom)).toThrow('lookup failed');
+    expect(() => randomId(12, boom)).not.toThrow(/drew 1000 candidates/);
+  });
+
+  test('the predicate in the second slot leaves every character class enabled', () => {
+    // Guards the overload wiring rather than the substitution: a `{}` that leaked
+    // the function through would still default the classes, so only the alphabet
+    // proves the argument landed where the overload says it does.
+    expect(randomString(512, () => false)).toMatch(/^[0-9A-Za-z]{512}$/);
   });
 });

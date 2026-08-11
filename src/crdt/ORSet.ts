@@ -101,7 +101,22 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // Minted here and nowhere else: a tag has to survive merges and
     // serialization byte-identical, since every comparison it takes part in —
     // tombstone veto, tag-set union, `equals` — is string equality.
-    const tag = `${replica}#${randomId(TAG_ENTROPY_CHARACTERS)}`;
+    //
+    // Drawn against both halves of that comparison (#1146).  A repeat of a live
+    // tag would union into the same set and lose nothing; a repeat of a
+    // *tombstoned* one is the case worth the check, because the veto that stops
+    // a slow peer resurrecting a removed tag cannot tell it apart from this
+    // add — the element would simply fail to appear on the next merge, with no
+    // error anywhere.  Both maps are already in hand, so the check is two
+    // lookups against the 96 bits that make it near-impossible in the first
+    // place.
+    const tagPrefix = `${replica}#`;
+    const liveTags = this.elements.get(key)?.tags;
+    const removedTags = this.tombstones.get(key);
+    const tag = tagPrefix + randomId(TAG_ENTROPY_CHARACTERS, (suffix) => {
+      const candidate = tagPrefix + suffix;
+      return liveTags?.has(candidate) === true || removedTags?.has(candidate) === true;
+    });
 
     const nextElements = new Map(this.elements);
     const existing = nextElements.get(key);
