@@ -225,15 +225,15 @@ try {
 As with a timeout, a refusal **doesn't undo the local write** — the value
 is applied before the quorum starts and gossips normally.
 
-<Aside type="tip" title="Why the default is 1000 and not 10 000">
-  The replicator runs on the default bounded mailbox — 10 000 entries,
-  `drop-head`.  At saturation that policy discards the **oldest** queued
-  envelope, and a queued `updateAsync` envelope carries your `resolve` and
-  `reject` with it: the promise you are awaiting can then never settle, and
-  nothing is logged.  A cap set at 10 000 would never be reached before the
-  mailbox got there first, so it would convert nothing.  Set an order of
-  magnitude below, the cap's entire value is that it turns that silent drop
-  into an explicit rejection you can catch.
+<Aside type="tip" title="What the cap actually bounds">
+  Not the queue — the replicator's mailbox is unbounded like every other
+  actor's, so no `updateAsync` envelope is ever discarded on its way in.
+  What accumulates is the *unsettled set*: each pending request keeps a
+  promise, a timer and a target set alive until its deadline passes.  Without
+  a cap, a partition that stops quorums from completing lets all three pile up
+  and then expire together as a timeout storm.  The cap converts that into
+  immediate rejections you can catch at the call site, while the request is
+  still attributable to the caller that made it.
 </Aside>
 
 ## Watching it in production

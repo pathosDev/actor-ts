@@ -232,16 +232,16 @@ Wie beim Timeout macht eine Ablehnung den **lokalen Write nicht
 rückgängig** — der Wert ist vor dem Quorum angewandt und gossipt normal
 weiter.
 
-<Aside type="tip" title="Warum der Default 1000 ist und nicht 10 000">
-  Der Replikator läuft auf der bounded Default-Mailbox — 10 000 Einträge,
-  `drop-head`.  Bei Sättigung verwirft diese Policy den **ältesten**
-  wartenden Envelope, und ein wartender `updateAsync`-Envelope nimmt dein
-  `resolve` und `reject` mit: das Promise, auf das du wartest, kann dann nie
-  mehr settlen, und geloggt wird nichts.  Ein Cap von 10 000 würde nie
-  erreicht, bevor die Mailbox zuerst dort ankommt — es würde also nichts
-  umwandeln.  Eine Größenordnung darunter gesetzt, besteht der ganze Wert
-  des Caps darin, aus diesem stillen Drop einen expliziten, fangbaren
-  Fehler zu machen.
+<Aside type="tip" title="Was der Cap tatsächlich begrenzt">
+  Nicht die Queue — die Mailbox des Replikators ist unbounded wie die jedes
+  anderen Aktors, es wird also nie ein `updateAsync`-Envelope auf dem Weg
+  hinein verworfen.  Was sich ansammelt, ist die **Menge der offenen
+  Requests**: jeder hält ein Promise, einen Timer und ein Ziel-Set am Leben,
+  bis seine Deadline abläuft.  Ohne Cap lässt eine Partition, die Quoren nicht
+  mehr zustande kommen lässt, alle drei anwachsen — und am Ende laufen sie
+  gemeinsam als Timeout-Sturm ab.  Der Cap macht daraus sofortige Fehler, die
+  du an der Aufrufstelle fangen kannst, solange der Request noch dem Aufrufer
+  zuzuordnen ist, der ihn gestellt hat.
 </Aside>
 
 ## In Produktion beobachten
