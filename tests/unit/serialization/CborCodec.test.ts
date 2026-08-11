@@ -251,6 +251,22 @@ describe('CBOR error paths', () => {
   test('encoder rejects unsupported types (functions, symbols)', () => {
     expect(() => enc.encode(Symbol('x') as unknown)).toThrow(CborEncodeError);
   });
+
+  // All three used to reach the generic object branch, where `Object.entries`
+  // is `[]` — they were stored as `{}` with nothing to say they had ever been
+  // anything else (#1036).
+  test('encoder refuses Promise, WeakMap and WeakSet instead of storing {}', () => {
+    expect(() => enc.encode(Promise.resolve(1))).toThrow(CborEncodeError);
+    expect(() => enc.encode(new WeakMap())).toThrow(CborEncodeError);
+    expect(() => enc.encode(new WeakSet())).toThrow(CborEncodeError);
+    expect(() => enc.encode({ pending: Promise.resolve(1) })).toThrow(CborEncodeError);
+  });
+
+  test('wrapper objects unwrap to their primitive, like JSON.stringify', () => {
+    expect(rt(new Number(42) as unknown)).toBe(42);
+    expect(rt(new String('ab') as unknown)).toBe('ab');
+    expect(rt(new Boolean(true) as unknown)).toBe(true);
+  });
 });
 
 describe('CBOR encoder limits (#1036)', () => {

@@ -95,6 +95,17 @@ export class CborEncoder {
       this.writeDouble(value.getTime() / 1000);
       return;
     }
+    if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+      // Wrapper objects unwrap like `JSON.stringify` does.  Left to the
+      // generic branch, `Object.entries(new String('ab'))` would write
+      // `{"0":"a","1":"b"}`.
+      return this.writeValue(value.valueOf(), depth);
+    }
+    if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet) {
+      // Inherently non-serialisable — refuse loudly instead of storing `{}`,
+      // which is what `Object.entries` produces for all three (#1036).
+      throw new CborEncodeError(`Cannot encode a ${value.constructor.name}`);
+    }
     if (Array.isArray(value)) return this.writeArray(value, depth);
     if (typeof value === 'object') return this.writeObject(value, depth);
     throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
