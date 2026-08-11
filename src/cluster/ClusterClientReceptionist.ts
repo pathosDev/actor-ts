@@ -46,6 +46,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { randomUuid } from '../util/RandomString.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import type { Cluster } from './Cluster.js';
@@ -197,7 +198,7 @@ export class ClusterClientReceptionist implements Extension {
     err: unknown,
     log: Logger,
   ): void {
-    const correlationId = globalThis.crypto.randomUUID();
+    const correlationId = randomUuid();
     log.warn(`cluster-client ask failed (correlationId=${correlationId})`, err);
     this.sendReply(
       cluster, from, askId, false,

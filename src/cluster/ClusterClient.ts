@@ -40,6 +40,7 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
@@ -68,13 +69,13 @@ const HELLO_TIMEOUT_MS = 5_000;
  * which an attacker on the wire (MitM on plaintext, malicious cluster
  * peer, or someone with frame-level write access via TLS-stripping
  * proxy) could predict and use to inject a forged reply BEFORE the
- * legitimate one arrives.  `crypto.randomUUID()` gives 122 bits of
+ * legitimate one arrives.  {@link randomUuid} gives 122 bits of
  * entropy per call — guessing the next ID is computationally
  * infeasible.  Frame replies whose ID doesn't match a current
  * pending entry are dropped by `handleReply()` (existing behaviour).
  */
 function nextAskId(): string {
-  return globalThis.crypto.randomUUID();
+  return randomUuid();
 }
 
 /** @internal — test-only handle for the predictability regression. */
