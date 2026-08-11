@@ -55,7 +55,8 @@ export type ActorOptionsType<TMessage = unknown> = {
    * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
    * Unset means unbounded, which is the default — so setting this is the
    * act that introduces message loss, and {@link mailboxOverflow} decides
-   * which message is lost.  Ignored when `mailbox` is set.
+   * which message is lost.  Cannot be combined with `mailbox`, which brings
+   * its own bound.
    */
   readonly mailboxCapacity?: number;
   /**
@@ -186,6 +187,17 @@ export class ActorOptionsValidator<TMessage = unknown>
         'mailboxOverflow',
         'needs a mailboxCapacity — an unbounded mailbox never overflows',
         s.mailboxOverflow,
+      );
+    }
+    // Same rule, other direction (#661): a caller-supplied mailbox carries
+    // its own bound and policy, so the cell has nowhere to apply these.  They
+    // used to be ignored outright, which reads as configuration and is not.
+    if (s.mailbox !== undefined && s.mailboxCapacity !== undefined) {
+      this.fail(
+        'mailboxCapacity',
+        'cannot be combined with mailbox — a supplied mailbox brings its own bound '
+        + '(configure it there, or drop withMailbox and let the capacity build one)',
+        s.mailboxCapacity,
       );
     }
   }

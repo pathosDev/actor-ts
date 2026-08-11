@@ -124,6 +124,19 @@ describe('ActorOptionsValidator', () => {
     expect(() => validate(settings)).toThrow(/mailboxOverflow.*drop-head.*drop-new.*reject/s);
   });
 
+  test('mailbox + mailboxCapacity is rejected rather than silently ignored (#661)', () => {
+    // `mailboxCapacity` used to be dropped on the floor whenever `mailbox`
+    // was set — the cell only read it in the else-branch.  Reading as
+    // configuration while doing nothing is the defect, not the precedence.
+    const settings = { mailbox: () => new Mailbox<string>(), mailboxCapacity: 8 };
+    expect(() => validate(settings)).toThrow(OptionsError);
+    expect(() => validate(settings)).toThrow(/mailboxCapacity cannot be combined with mailbox/);
+  });
+
+  test('a supplied mailbox on its own is fine — it is the capacity that conflicts', () => {
+    expect(() => validate({ mailbox: () => new Mailbox<string>() })).not.toThrow();
+  });
+
   test('mailboxOverflow without a capacity is rejected rather than silently ignored', () => {
     // An unbounded mailbox never overflows, so the policy would be a no-op —
     // and a silent no-op is what makes someone believe they configured it.

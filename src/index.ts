@@ -775,8 +775,9 @@ export type {
   FsmTransitionMap,
 } from './fsm/index.js';
 
-// Mailbox variants (BoundedMailbox, PriorityMailbox).
+// Mailboxes: the unbounded base (the default since #1148) and its variants.
 export {
+  Mailbox,
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
@@ -786,6 +787,7 @@ export {
   PriorityMailboxOptionsBuilder,
 } from './mailbox/index.js';
 export type {
+  Envelope,
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
   PriorityMailboxOptionsType,
