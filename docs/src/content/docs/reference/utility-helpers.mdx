@@ -274,11 +274,12 @@ decode, so the two halves cannot come back disagreeing. The same
 
 | Export | What it does |
 | --- | --- |
-| `randomString(length, options?)` | `length` characters from the enabled classes. Default: alphanumeric. |
-| `randomHex(length)` | `length` lowercase hex characters — for wire formats that mandate `[0-9a-f]`. |
-| `randomId(length)` | `length` characters for something you have to name yourself. |
-| `randomUuid()` | A version-4 UUID — for an identifier that must not collide with one minted elsewhere. |
+| `randomString(length, options?, exists?)` | `length` characters from the enabled classes. Default: alphanumeric. `exists` may take the second slot when you pass no options. |
+| `randomHex(length, exists?)` | `length` lowercase hex characters — for wire formats that mandate `[0-9a-f]`. |
+| `randomId(length, exists?)` | `length` characters for something you have to name yourself. |
+| `randomUuid(exists?)` | A version-4 UUID — for an identifier that must not collide with one minted elsewhere. |
 | `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — each defaults to `true`. |
+| `ExistsPredicate` | `(candidate: string) => boolean` — the optional collision check all four take. `true` means "taken, draw again". |
 
 The first three draw from `globalThis.crypto`, correct the modulo bias that a
 plain `byte % alphabet.length` introduces, and return exactly the length you
@@ -319,6 +320,45 @@ read.
   out of it reads garbage. Nor should you slice a UUID down to length —
   `randomHex` and `randomId` already answer "*n* characters", and a slice throws
   away the entropy you asked for the UUID to get.
+</Aside>
+
+### Drawing until you get a free one
+
+All four take an optional predicate as their last argument and draw again while
+it answers `true`:
+
+```ts
+import { randomUuid } from 'actor-ts';
+
+const userId = randomUuid((id) => state.users.has(id));
+```
+
+which is the loop that used to sit at the call site:
+
+```ts
+let userId: UserId;
+do {
+  userId = randomUuid();
+} while (state.users.has(userId));
+```
+
+The callback *is* that `while` condition. That is why it is named `exists` and
+why `true` means "draw again" — an accept-predicate would read as the negation
+of the loop it replaces, and would put a `!` on every `Map`- or `Set`-backed
+call site. `randomString` takes it in the second slot when you pass no options
+and in the third when you do: `randomString(8, exists)`,
+`randomString(8, { digits: false }, exists)`.
+
+It reads, it does not write. Nothing records the accepted value for you, so
+whatever `exists` consults is still yours to update.
+
+<Aside type="caution" title="true means taken">
+  The predicate answers "is this one already in use", not "is this one good".
+  Get it backwards and you hear about it rather than quietly receive a colliding
+  identifier: after 1 000 draws the helper throws an `Error` naming itself and
+  the count — which is also what a space with nothing free left in it looks
+  like. The bound is here for the reason an empty alphabet throws: a call that
+  never returns is the worse failure.
 </Aside>
 
 ## Stringifying a value that already went wrong
