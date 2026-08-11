@@ -57,12 +57,14 @@ tagged JSON text:
 | **`bigint`** | `{"__bigint__":"…"}` tag object | bignum tag 2 / 3 (compact) |
 
 One caveat cuts the other way: `JsonSerializer` preserves `Map`,
-`Set` and
+`Set`,
 [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse)
-(via `__map__` / `__set__` / `__bidirectionalmap__` tags), but
-`CborSerializer` does **not** — each encodes to an empty `{}` and its
-entries are lost.  Convert them to arrays / plain objects before a
-CBOR round-trip.
+and
+[`BidirectionalMultiMap`](/reference/utility-helpers/#bidirectionalmultimap--the-same-for-a-many-to-many-relation)
+(via `__map__` / `__set__` / `__bidirectionalmap__` /
+`__bidirectionalmultimap__` tags), but `CborSerializer` does **not** —
+each encodes to an empty `{}` and its entries are lost.  Convert them
+to arrays / plain objects before a CBOR round-trip.
 
 ## Making CBOR the extension default
 
