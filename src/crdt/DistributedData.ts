@@ -10,6 +10,8 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
 import {
+  DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
+  DEFAULT_MAX_QUORUM_TIMEOUT_MS,
   DistributedDataOptionsValidator,
   readDistributedDataOptionsFromConfig,
 } from './DistributedDataOptions.js';
@@ -613,17 +615,6 @@ type PendingRead = {
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
 };
-
-/**
- * Default ceiling on unsettled quorum requests — see
- * {@link DistributedDataOptionsType.maxPendingQuorumRequests} for why it has
- * to sit an order of magnitude below `DEFAULT_MAILBOX_CAPACITY` (10 000) to
- * be worth anything at all.
- */
-const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
-
-/** Default ceiling on a caller-supplied quorum `timeoutMs`. */
-const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
 
 /** Which of the two quorum flavours a metric series belongs to. */
 type QuorumOperation = 'write' | 'read';
