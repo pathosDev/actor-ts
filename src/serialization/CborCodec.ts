@@ -125,10 +125,14 @@ export class CborEncoder {
       }
       return this.writeDouble(value);
     }
-    if (typeof value === 'bigint') return this.writeBigInt(value);
+    if (typeof value === 'bigint') {
+      this.requireDepth(depth + 1);
+      return this.writeBigInt(value);
+    }
     if (typeof value === 'string') return this.writeString(value);
     if (value instanceof Uint8Array) return this.writeBytes(value);
     if (value instanceof Date) {
+      this.requireDepth(depth + 1);
       this.writeTag(TAG_EPOCH_DATETIME);
       this.writeDouble(value.getTime() / 1000);
       return;
@@ -140,10 +144,11 @@ export class CborEncoder {
     if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
     if (value instanceof Map) return this.writeMap(value, depth);
     if (value instanceof Set) return this.writeSet(value, depth);
-    if (value instanceof RegExp) return this.writeRegExp(value);
+    if (value instanceof RegExp) return this.writeRegExp(value, depth);
     // Before any `toJSON` handling: `URL.prototype.toJSON` would collapse it
     // to a bare string.
     if (value instanceof URL) {
+      this.requireDepth(depth + 1);
       this.writeTag(TAG_URI);
       return this.writeString(value.href);
     }
@@ -220,6 +225,7 @@ export class CborEncoder {
    * and the tag-259 map inside it.
    */
   private writeBidirectionalMap(map: BidirectionalMap<unknown, unknown>, depth: number): void {
+    this.requireDepth(depth + 2);
     this.enterContainer(map);
     try {
       this.writeTag(TAG_GENERIC_OBJECT);
@@ -237,6 +243,7 @@ export class CborEncoder {
    * encoder has to charge what the decoder will spend.
    */
   private writeSet(set: ReadonlySet<unknown>, depth: number): void {
+    this.requireDepth(depth + 1);
     this.enterContainer(set);
     try {
       this.writeTag(TAG_SET);
@@ -258,7 +265,8 @@ export class CborEncoder {
    *
    * `lastIndex` is a transient cursor, not data — deliberately not carried.
    */
-  private writeRegExp(pattern: RegExp): void {
+  private writeRegExp(pattern: RegExp, depth: number): void {
+    this.requireDepth(depth + 2);
     this.writeTag(TAG_GENERIC_OBJECT);
     this.writeHeader(4, 3);
     this.writeString('RegExp');
@@ -280,6 +288,9 @@ export class CborEncoder {
    * the payload map.
    */
   private writeError(error: Error, depth: number): void {
+    // Three, not two: the payload map always carries `name` and `message`,
+    // which the decoder reads a level below the map itself.
+    this.requireDepth(depth + 3);
     this.enterContainer(error);
     try {
       const cause = (error as { cause?: unknown }).cause;
@@ -319,6 +330,23 @@ export class CborEncoder {
       }
     } finally {
       this.ancestors.delete(value);
+    }
+  }
+
+  /**
+   * Assert a level the writer itself will occupy is inside the ceiling.
+   *
+   * `writeValue` only checks the level a value STARTS at, which is enough for
+   * an array or a plain map — they are one item, and their children are
+   * checked by their own `writeValue`.  It is not enough for the tagged
+   * forms: `27([…])` puts its payload two levels down, so a value that
+   * starts just inside the bound can still decode past it.  Where the writer
+   * recurses, the child's check would catch that; where it does not — an
+   * empty `Set`, a `RegExp`, an `Error` with no cause — nothing would.
+   */
+  private requireDepth(depth: number): void {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
     }
   }
 

@@ -581,6 +581,45 @@ describe('CBOR encoder limits (#1036)', () => {
       expect(() => enc.encode(nested(deepest + 1))).toThrow(CborEncodeError);
     }
   });
+
+  // The leaf-shaped rich types are where this is easiest to get wrong: they
+  // sit two decode levels below where they start (tag, argument array, body)
+  // but never recurse, so no child check fires to catch an overflow.  Each
+  // one has to police the levels it occupies itself.
+  test('a rich type that never recurses still cannot overflow the decoder', () => {
+    const leaves: ReadonlyArray<readonly [string, unknown]> = [
+      ['empty Set', new Set()],
+      ['empty Map', new Map()],
+      ['empty BidirectionalMap', new BidirectionalMap()],
+      ['RegExp', /x/g],
+      ['Error', new Error('x')],
+      ['Date', new Date(0)],
+      ['bigint', 2n ** 70n],
+      ['URL', new URL('https://example.test/')],
+    ];
+
+    for (const [kind, leaf] of leaves) {
+      for (let levels = 250; levels <= 260; levels++) {
+        let value: unknown = leaf;
+        for (let i = 0; i < levels; i++) value = [value];
+
+        let bytes: Uint8Array;
+        try {
+          bytes = enc.encode(value);
+        } catch {
+          continue; // Refused up front — nothing to read back.
+        }
+        // Whatever it agreed to write, it must be able to read.
+        let outcome = 'decodes';
+        try {
+          dec.decode(bytes);
+        } catch {
+          outcome = 'UNREADABLE';
+        }
+        expect(`${kind} at ${levels}: ${outcome}`).toBe(`${kind} at ${levels}: decodes`);
+      }
+    }
+  });
 });
 
 describe('CBOR byte-level compactness', () => {
