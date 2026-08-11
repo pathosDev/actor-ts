@@ -83,10 +83,18 @@ describe('spawn shapes', () => {
       ActorOptions.create<string>().withMailbox(() => new Mailbox<string>()),
     );
     const viaPlain = system.spawn(Greeter, 'plain', { mailboxCapacity: 4 });
-    // A custom mailbox replaces the bounded default outright.
+    // Both shapes reach the cell: the factory is honoured verbatim, and a
+    // capacity opts into a bound the default no longer imposes.
     expect(cellOf(viaBuilder)._mailboxForTest()).toBeInstanceOf(Mailbox);
     expect(cellOf(viaBuilder)._mailboxForTest()).not.toBeInstanceOf(BoundedMailbox);
     expect(cellOf(viaPlain)._mailboxForTest()).toBeInstanceOf(BoundedMailbox);
+  });
+
+  test('a bare spawn gets the unbounded mailbox — nothing configured, nothing bounded', () => {
+    system = createTestActorSystem();
+    const ref = system.spawn(Greeter, 'bare');
+    expect(cellOf(ref)._mailboxForTest()).toBeInstanceOf(Mailbox);
+    expect(cellOf(ref)._mailboxForTest()).not.toBeInstanceOf(BoundedMailbox);
   });
 
   test('withInternal marks the actor as tooling and children inherit it', () => {

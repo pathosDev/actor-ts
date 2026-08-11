@@ -8,8 +8,8 @@
  *
  *     system.spawn(() => new Worker(database), 'worker-1', workerOptions);
  *
- * Every field is optional, so the whole argument is: the defaults are a
- * bounded FIFO mailbox, the system dispatcher, and the parent's supervision.
+ * Every field is optional, so the whole argument is: the defaults are an
+ * unbounded FIFO mailbox, the system dispatcher, and the parent's supervision.
  */
 import type { Dispatcher } from './Dispatcher.js';
 import type { EntityContext } from './EntityContext.js';
@@ -18,20 +18,6 @@ import type { BoundedMailboxOverflow } from './mailbox/BoundedMailboxOptions.js'
 import type { SupervisorStrategy } from './Supervision.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
-
-/**
- * Built-in default for {@link ActorOptionsType.mailboxCapacity} — the
- * ceiling on every actor that does not pin its own via `withMailbox(...)`.
- * 10 000 is high enough that a well-tuned actor never hits it on a normal
- * traffic spike, low enough that a runaway producer is bounded before the
- * heap explodes.
- *
- * Pre-#310 the default was unbounded — operationally an OOM-or-bust
- * proposition.  The current default trades worst-case loss of messages for
- * a guaranteed memory ceiling.  Opt out per-actor with
- * `withMailbox(() => new Mailbox())` for the unbounded shape.
- */
-export const DEFAULT_MAILBOX_CAPACITY = 10_000;
 
 /**
  * Built-in default for {@link ActorOptionsType.mailboxOverflow}.
@@ -65,7 +51,12 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly supervisorStrategy?: SupervisorStrategy;
   /** Run this actor on a different dispatcher than the system's. */
   readonly dispatcher?: Dispatcher;
-  /** Ceiling for the default bounded mailbox.  Ignored when `mailbox` is set. */
+  /**
+   * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
+   * Unset means unbounded, which is the default — so setting this is the
+   * act that introduces message loss, and {@link mailboxOverflow} decides
+   * which message is lost.  Ignored when `mailbox` is set.
+   */
   readonly mailboxCapacity?: number;
   /**
    * What a full mailbox does with an arriving message.  Only meaningful
@@ -75,8 +66,14 @@ export type ActorOptionsType<TMessage = unknown> = {
    */
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
-   * Custom mailbox — `BoundedMailbox` or `PriorityMailbox` for non-default
-   * queueing.  Omit for the default bounded FIFO queue.
+   * Custom mailbox — `PriorityMailbox`, or a `BoundedMailbox` configured
+   * beyond what `mailboxCapacity` / `mailboxOverflow` express.  Omit for the
+   * default unbounded FIFO queue.
+   *
+   * The cell wires nothing into a mailbox supplied here, so a
+   * `BoundedMailbox` built this way does not report to
+   * `actor_mailbox_dropped_total` — pass `withMailboxCapacity` instead if
+   * you want the drop telemetry.
    */
   readonly mailbox?: MailboxFactory<TMessage>;
   /**

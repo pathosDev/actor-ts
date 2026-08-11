@@ -52,7 +52,7 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
-import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
+import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
 import { DEFAULT_STASH_CAPACITY } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
@@ -1078,8 +1078,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
    *      framework picks an overflow policy on a caller's behalf, and the
    *      only one whose drops reach `actor_mailbox_dropped_total`.
-   *   3. Nothing — the default, still bounded here.  #310 chose that; #1148
-   *      reverses it in the next commit.
+   *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
+   *      default and #1148 reversed it: a ceiling that discards the oldest
+   *      queued message is not one an actor framework can impose unasked,
+   *      because the envelope it evicts is as likely to be a `Terminated`
+   *      (#729) or a delivery confirmation (#732) as it is to be telemetry.
+   *      The heap is the ceiling now, and drawing a lower one is the
+   *      caller's decision.  Growth is not silent: the cell warns at
+   *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
    *
    * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
    * the call sits in the constructor body, and whether the parameter
@@ -1089,8 +1095,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
+    if (blueprint.mailboxCapacity === undefined) return new Mailbox<TMessage>();
     return new BoundedMailbox<TMessage>({
-      capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
+      capacity: blueprint.mailboxCapacity,
       overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
       onDrop: (reason) => this._onMailboxDrop(reason),
     });
