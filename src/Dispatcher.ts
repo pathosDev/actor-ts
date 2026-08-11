@@ -1,3 +1,5 @@
+import { DEFAULT_DISPATCHER_THROUGHPUT } from './Constants.js';
+
 /**
  * A Dispatcher schedules the execution of actor message-processing units.
  * In a single-threaded JS runtime we pick between the microtask queue and
@@ -59,7 +61,10 @@ export class ThroughputDispatcher implements Dispatcher {
   private queue: Array<() => void | Promise<void>> = [];
   private scheduled = false;
 
-  constructor(public readonly throughput: number = 16, id: string = 'throughput-dispatcher') {
+  constructor(
+    public readonly throughput: number = DEFAULT_DISPATCHER_THROUGHPUT,
+    id: string = 'throughput-dispatcher',
+  ) {
     this.id = id;
   }
 
@@ -97,5 +102,5 @@ export class ThroughputDispatcher implements Dispatcher {
 export const Dispatchers = {
   Immediate: () => new ImmediateDispatcher(),
   Microtask: () => new MicrotaskDispatcher(),
-  Throughput: (throughput: number = 16) => new ThroughputDispatcher(throughput),
+  Throughput: (throughput: number = DEFAULT_DISPATCHER_THROUGHPUT) => new ThroughputDispatcher(throughput),
 };
