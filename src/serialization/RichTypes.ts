@@ -61,6 +61,16 @@ export function binaryKindOf(value: ArrayBufferView | ArrayBuffer): string | und
 }
 
 /**
+ * Whether a wire name denotes a binary value at all — the question a decoder
+ * asks before deciding that a bad payload is an error rather than a name it
+ * simply does not know.
+ */
+export function isBinaryKind(kind: string): boolean {
+  if (kind === 'ArrayBuffer' || kind === 'DataView') return true;
+  return TYPED_ARRAY_CONSTRUCTORS.some(([name]) => name === kind);
+}
+
+/**
  * The bytes behind a binary value, as a view — no copy.  Callers that hand the
  * result to something long-lived must copy; `rebuildBinaryView` already does.
  */

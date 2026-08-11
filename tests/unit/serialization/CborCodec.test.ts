@@ -511,6 +511,72 @@ describe('CBOR RegExp, URL and Error (#1036)', () => {
   });
 });
 
+describe('CBOR typed arrays, DataView and ArrayBuffer (tag 27, #1036)', () => {
+  test('every typed-array kind round-trips as its own class, values intact', () => {
+    const views: readonly ArrayBufferView[] = [
+      new Int8Array([-1, 2]),
+      new Uint8ClampedArray([0, 255]),
+      new Int16Array([-300, 300]),
+      new Uint16Array([0, 65535]),
+      new Int32Array([-70000, 70000]),
+      new Uint32Array([0, 4294967295]),
+      new Float32Array([1.5, -2.5]),
+      new Float64Array([1.5, -0]),
+      new BigInt64Array([-5n, 5n]),
+      new BigUint64Array([0n, 18446744073709551615n]),
+    ];
+
+    for (const view of views) {
+      const decoded = rt(view);
+      expect(decoded.constructor.name).toBe(view.constructor.name);
+      expect(decoded).toEqual(view);
+    }
+    // -0 inside a typed array is bit-exact, since the array travels as bytes.
+    expect(Object.is((rt(new Float64Array([-0])))[0], -0)).toBe(true);
+  });
+
+  test('DataView and ArrayBuffer round-trip too', () => {
+    const buffer = new Uint8Array([1, 2, 3, 4]).buffer;
+    const decodedBuffer = rt(buffer);
+    expect(decodedBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(decodedBuffer)).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    const view = new DataView(new Uint8Array([0, 0, 0, 7]).buffer);
+    const decodedView = rt(view);
+    expect(decodedView).toBeInstanceOf(DataView);
+    expect(decodedView.getUint32(0, false)).toBe(7);
+  });
+
+  // The reason `Uint8Array` is matched before `ArrayBuffer.isView`: it keeps
+  // the bare byte string, which is the whole size argument for CBOR.
+  test('Uint8Array keeps its bare byte string — no tag, no wrapper', () => {
+    expect(Array.from(enc.encode(new Uint8Array([1, 2, 3])))).toEqual([0x43, 1, 2, 3]);
+    expect(rt(new Uint8Array([1, 2, 3]))).toBeInstanceOf(Uint8Array);
+    // Uint8ClampedArray is NOT a Uint8Array subclass, so it keeps its class.
+    expect(rt(new Uint8ClampedArray([1]))).toBeInstanceOf(Uint8ClampedArray);
+  });
+
+  test('a view over part of a buffer carries only its own bytes', () => {
+    const backing = new Uint8Array([9, 9, 1, 0, 9, 9]).buffer;
+    const decoded = rt(new Uint16Array(backing, 2, 1));
+    expect(decoded).toBeInstanceOf(Uint16Array);
+    expect(decoded.length).toBe(1);
+    expect(decoded[0]).toBe(1); // little-endian 0x0001
+  });
+
+  test('a truncated or unknown binary payload is a decode error', () => {
+    const generic = (name: string, ...rest: number[]): Uint8Array => new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x60 | name.length, ...[...name].map((c) => c.charCodeAt(0)),
+      ...rest,
+    ]);
+    // 27(["Int32Array", h'000000']) — three bytes is not a whole element.
+    expect(() => dec.decode(generic('Int32Array', 0x43, 0, 0, 0))).toThrow(CborDecodeError);
+    // 27(["Float64Array", 1]) — the argument is not a byte string.
+    expect(() => dec.decode(generic('Float64Array', 0x01))).toThrow(CborDecodeError);
+  });
+});
+
 describe('CBOR encoder limits (#1036)', () => {
   test('a cycle is a CborEncodeError, not a stack overflow', () => {
     const node: Record<string, unknown> = { name: 'root' };

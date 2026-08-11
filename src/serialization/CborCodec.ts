@@ -29,7 +29,13 @@
  */
 
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
-import { rebuildError } from './RichTypes.js';
+import {
+  binaryBytesOf,
+  binaryKindOf,
+  isBinaryKind,
+  rebuildBinaryView,
+  rebuildError,
+} from './RichTypes.js';
 
 export class CborEncodeError extends Error {
   constructor(message: string) { super(message); this.name = 'CborEncodeError'; }
@@ -144,6 +150,10 @@ export class CborEncoder {
     if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
     if (value instanceof Map) return this.writeMap(value, depth);
     if (value instanceof Set) return this.writeSet(value, depth);
+    // After the `Uint8Array` branch above, which keeps its bare byte string.
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      return this.writeBinaryView(value, depth);
+    }
     if (value instanceof RegExp) return this.writeRegExp(value, depth);
     // Before any `toJSON` handling: `URL.prototype.toJSON` would collapse it
     // to a bare string.
@@ -265,6 +275,37 @@ export class CborEncoder {
    *
    * `lastIndex` is a transient cursor, not data — deliberately not carried.
    */
+  /**
+   * `27([kind, <byte string>])`, using the same `kind` names the JSON tree
+   * stores under `__typedarray__` — both formats read one shared table, so
+   * they cannot come to disagree about what a `Float64Array` is called.
+   *
+   * Not RFC 8746's registered tags 64–87, and that is a deliberate call.
+   * They fit the numeric views well, but `DataView` and `ArrayBuffer` have no
+   * tag there and would need a second mechanism regardless; `Uint8Array`
+   * already travels as a bare byte string, so tag 64 would be a third
+   * spelling of the same bytes; and 8746 forces an explicit big/little-endian
+   * choice, i.e. a CBOR-only endianness table with no counterpart on the JSON
+   * side — a second source of truth in the one place this issue is about.
+   *
+   * The bytes are the view's own, in platform order.  Every runtime this
+   * project supports is little-endian, and the JSON tree has assumed the same
+   * since it gained `__typedarray__`; it is written down here because it is
+   * the one thing that would have to change to talk to a big-endian peer.
+   */
+  private writeBinaryView(value: ArrayBufferView | ArrayBuffer, depth: number): void {
+    const kind = binaryKindOf(value);
+    if (kind === undefined) {
+      // An exotic ArrayBuffer view we cannot reconstruct — refuse rather than guess.
+      throw new CborEncodeError(`Cannot encode binary view ${value.constructor?.name ?? 'unknown'}`);
+    }
+    this.requireDepth(depth + 2);
+    this.writeTag(TAG_GENERIC_OBJECT);
+    this.writeHeader(4, 2);
+    this.writeString(kind);
+    this.writeBytes(binaryBytesOf(value));
+  }
+
   private writeRegExp(pattern: RegExp, depth: number): void {
     this.requireDepth(depth + 2);
     this.writeTag(TAG_GENERIC_OBJECT);
@@ -558,7 +599,10 @@ export class CborDecoder {
       case 'BidirectionalMap': return buildBidirectionalMap(args);
       case 'RegExp': return buildRegExp(args);
       case 'Error': return buildError(args);
-      default: return inner;
+      default:
+        // A binary kind is a name we DO know, so a bad payload under it is an
+        // error rather than something to pass through.
+        return isBinaryKind(name) ? buildBinaryView(name, args) : inner;
     }
   }
 
@@ -712,6 +756,18 @@ function buildBidirectionalMap(args: readonly unknown[]): BidirectionalMap<unkno
     throw new CborDecodeError('BidirectionalMap expects a map of entries');
   }
   return new BidirectionalMap(entries);
+}
+
+function buildBinaryView(kind: string, args: readonly unknown[]): ArrayBufferView | ArrayBuffer {
+  const bytes = args[0];
+  if (!(bytes instanceof Uint8Array)) {
+    throw new CborDecodeError(`${kind} expects a byte string`);
+  }
+  const view = rebuildBinaryView(kind, bytes);
+  if (view === undefined) {
+    throw new CborDecodeError(`${kind} cannot be built from ${bytes.byteLength} bytes`);
+  }
+  return view;
 }
 
 function buildRegExp(args: readonly unknown[]): RegExp {
