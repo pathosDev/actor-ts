@@ -28,6 +28,8 @@
  * put in a map or an array can be mistaken for one.
  */
 
+import { BidirectionalMap } from '../util/BidirectionalMap.js';
+
 export class CborEncodeError extends Error {
   constructor(message: string) { super(message); this.name = 'CborEncodeError'; }
 }
@@ -39,6 +41,16 @@ const TAG_DATETIME = 0;      // RFC 8949: standard date/time string
 const TAG_EPOCH_DATETIME = 1; // RFC 8949: epoch-based date/time
 const TAG_UNSIGNED_BIGNUM = 2;
 const TAG_NEGATIVE_BIGNUM = 3;
+/**
+ * IANA: "Serialised language-independent object with type name and
+ * constructor arguments" — `27([name, ...arguments])`.
+ *
+ * The home for every rich type no registered tag describes faithfully.  One
+ * mechanism rather than a set of squatted numbers out of the unassigned
+ * ranges: a third-party reader sees the class name instead of a mystery, and
+ * nothing here depends on IANA never handing those numbers to someone else.
+ */
+const TAG_GENERIC_OBJECT = 27;
 /** IANA: "Mathematical finite set" — an array of the members. */
 const TAG_SET = 258;
 /**
@@ -118,6 +130,11 @@ export class CborEncoder {
       this.writeDouble(value.getTime() / 1000);
       return;
     }
+    // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only
+    // implements the interface today, so `instanceof Map` does not catch it —
+    // but if that ever changes, the wrong branch would silently start
+    // dropping the class.
+    if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
     if (value instanceof Map) return this.writeMap(value, depth);
     if (value instanceof Set) return this.writeSet(value, depth);
     if (value instanceof Number || value instanceof String || value instanceof Boolean) {
@@ -155,12 +172,49 @@ export class CborEncoder {
   private writeMap(map: ReadonlyMap<unknown, unknown>, depth: number): void {
     this.enterContainer(map);
     try {
-      this.writeTag(TAG_MAP);
-      this.writeHeader(5, map.size);
-      for (const [key, entryValue] of map) {
-        this.writeValue(key, depth + 1);
-        this.writeValue(entryValue, depth + 1);
-      }
+      this.writeMapBody(map, map.size, depth);
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
+  /**
+   * The tag-259 map itself, without the cycle bookkeeping — `BidirectionalMap`
+   * writes the same body under its own wrapper and must not re-register a
+   * container it has already entered, or it would report itself as a cycle.
+   */
+  private writeMapBody(
+    entries: Iterable<readonly [unknown, unknown]>,
+    size: number,
+    depth: number,
+  ): void {
+    this.writeTag(TAG_MAP);
+    this.writeHeader(5, size);
+    for (const [key, entryValue] of entries) {
+      this.writeValue(key, depth + 1);
+      this.writeValue(entryValue, depth + 1);
+    }
+  }
+
+  /**
+   * `27(["BidirectionalMap", 259(<map>)])` — the class name plus the single
+   * constructor argument `new BidirectionalMap(entries)` actually takes, so
+   * the body literally IS a `Map` and composes with the tag-259 reader.
+   *
+   * Only the forward direction goes out.  The reverse is fully determined by
+   * it, so writing both would double the payload and hand a decoder two
+   * sources of truth to disagree about; the constructor rebuilds the inverse.
+   *
+   * Three decode levels down to the entries — the tag, the argument array,
+   * and the tag-259 map inside it.
+   */
+  private writeBidirectionalMap(map: BidirectionalMap<unknown, unknown>, depth: number): void {
+    this.enterContainer(map);
+    try {
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('BidirectionalMap');
+      this.writeMapBody(map.entries(), map.size, depth + 2);
     } finally {
       this.ancestors.delete(map);
     }
@@ -380,7 +434,30 @@ export class CborDecoder {
   private readTagged(tag: number, depth: number): unknown {
     if (tag === TAG_MAP) return new Map(this.readEntryPairs(depth));
     const inner = this.readValue(depth + 1);
+    if (tag === TAG_GENERIC_OBJECT) return this.readGenericObject(inner);
     return this.applyTag(tag, inner);
+  }
+
+  /**
+   * Rebuild a `27([name, ...arguments])` object.  Names are dispatched
+   * through a fixed allow-list and never resolved dynamically — a payload
+   * must not be able to name an arbitrary global and have it constructed.
+   *
+   * An unknown name passes the decoded array through instead of throwing,
+   * the same way an unknown tag does.  A newer node writing a class an older
+   * one has never heard of then degrades to plain data on the old node
+   * rather than failing the whole message, which is what a rolling cluster
+   * upgrade needs.
+   */
+  private readGenericObject(inner: unknown): unknown {
+    if (!Array.isArray(inner) || inner.length < 1 || typeof inner[0] !== 'string') {
+      throw new CborDecodeError(`Tag ${TAG_GENERIC_OBJECT} expects [name, ...arguments]`);
+    }
+    const [name, ...args] = inner as [string, ...unknown[]];
+    switch (name) {
+      case 'BidirectionalMap': return buildBidirectionalMap(args);
+      default: return inner;
+    }
   }
 
   /**
@@ -509,6 +586,22 @@ export class CborDecoder {
         return inner;
     }
   }
+}
+
+/* ------------------------ Generic-object constructors ---------------------- */
+
+/**
+ * The argument is the tag-259 map the encoder wrote, so it arrives as a real
+ * `Map`.  Its constructor regenerates the reverse index, which is why a row
+ * that somehow carries a duplicate value resolves last-wins instead of
+ * restoring a map whose two halves disagree.
+ */
+function buildBidirectionalMap(args: readonly unknown[]): BidirectionalMap<unknown, unknown> {
+  const entries = args[0];
+  if (!(entries instanceof Map)) {
+    throw new CborDecodeError('BidirectionalMap expects a map of entries');
+  }
+  return new BidirectionalMap(entries);
 }
 
 /* --------------------------- BigInt ↔ bytes utilities ---------------------- */

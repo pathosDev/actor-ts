@@ -5,6 +5,7 @@ import {
   CborEncodeError,
   CborEncoder,
 } from '../../../src/serialization/CborCodec.js';
+import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 
 const enc = new CborEncoder();
 const dec = new CborDecoder();
@@ -356,6 +357,78 @@ describe('CBOR Map and Set (tags 259 / 258, #1036)', () => {
     const asObject = enc.encode({ a: 1 }).byteLength;
     const asMap = enc.encode(new Map([['a', 1]])).byteLength;
     expect(asMap).toBe(asObject + 3); // 0xd9 0x01 0x03
+  });
+});
+
+describe('CBOR BidirectionalMap (tag 27, #1036)', () => {
+  test('round-trips as a BidirectionalMap, both directions usable', () => {
+    const source = new BidirectionalMap<string, number>([['ada', 1], ['grace', 2]]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    expect(decoded.get('ada')).toBe(1);
+    // Never written to the wire — if this answers, it was genuinely rebuilt.
+    expect(decoded.getKey(2)).toBe('grace');
+    expect(decoded.size).toBe(2);
+  });
+
+  test('only the forward pairs are written, under 27(["BidirectionalMap", 259(map)])', () => {
+    const bytes = enc.encode(new BidirectionalMap([['ada', 1]]));
+    expect(Array.from(bytes)).toEqual([
+      0xd8, 0x1b,                                            // tag 27
+      0x82,                                                  // array(2)
+      0x70, ...[...'BidirectionalMap'].map((c) => c.charCodeAt(0)), // text(16)
+      0xd9, 0x01, 0x03,                                      // tag 259
+      0xa1,                                                  // map(1) — one pair, not two
+      0x63, ...[...'ada'].map((c) => c.charCodeAt(0)),       // text(3) "ada"
+      0x01,                                                  // 1
+    ]);
+  });
+
+  test('is not encoded as a plain Map despite implementing the interface', () => {
+    const decoded = rt(new BidirectionalMap([['a', 1]]));
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    const plain = rt(new Map([['a', 1]]));
+    expect(plain).toBeInstanceOf(Map);
+    expect(plain).not.toBeInstanceOf(BidirectionalMap);
+  });
+
+  test('rich types survive on both sides, and a Map nests inside', () => {
+    const source = new BidirectionalMap<unknown, unknown>([
+      [new Date('2024-02-02T00:00:00Z'), 9n],
+      ['inner', new Map([['deep', new Set([1])]])],
+    ]);
+    const decoded = rt(source);
+    expect([...decoded.keys()][0]).toBeInstanceOf(Date);
+    expect(decoded.get('inner')).toBeInstanceOf(Map);
+    const deep = (decoded.get('inner') as Map<string, Set<number>>).get('deep');
+    expect(deep).toBeInstanceOf(Set);
+  });
+
+  test('an empty BidirectionalMap survives', () => {
+    const decoded = rt(new BidirectionalMap());
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    expect(decoded.size).toBe(0);
+  });
+
+  test('a malformed generic object is rejected; an unknown class name passes through', () => {
+    // Tag 27 over a text string instead of [name, ...arguments].
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x1b, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 27, array(2), "BidirectionalMap", 1 — the argument is not a map.
+    const wrongArgument = new Uint8Array([
+      0xd8, 0x1b, 0x82, 0x70,
+      ...[...'BidirectionalMap'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(() => dec.decode(wrongArgument)).toThrow(CborDecodeError);
+
+    // An unrecognised name degrades to plain data rather than failing the
+    // message — a newer node's class must not break an older reader.
+    const unknownClass = new Uint8Array([
+      0xd8, 0x1b, 0x82, 0x64,
+      ...[...'Whom'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(dec.decode(unknownClass)).toEqual(['Whom', 1]);
   });
 });
 
