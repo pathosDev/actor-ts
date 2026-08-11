@@ -411,12 +411,18 @@ retry timer.
 
 ```ts
 override onReceive(_message: string): void {
-  void LogContext.runFresh(async () => {
+  LogContext.runFresh(async () => {
     await this.rebuildIndex();
     this.sink.tell('index-rebuilt');        // ← carries no tenant fields
-  });
+  }).catch((error) => this.log.error('index rebuild failed', error));
 }
 ```
+
+The `.catch` is not decoration. Nothing awaits this promise, so a
+rejection has nowhere to go: on Node an unhandled rejection has been
+fatal by default since v15, so a failing rebuild takes the process down
+instead of logging a line. `void` in front of the call would silence
+the linter and keep the crash.
 
 It is the inverse of `with()`: where `with` inherits and adds,
 `runFresh` deliberately starts from empty. That fails safe — a field
@@ -443,10 +449,10 @@ private onBuffer(m: BufferMessage): void {
 }
 
 private onDrain(): void {
-  void LogContext.runEach(this.buffered.splice(0), async (item) => {
+  LogContext.runEach(this.buffered.splice(0), async (item) => {
     await this.flush(item);
     this.sink.tell(item);                   // ← each item's OWN tenant
-  });
+  }).catch((error) => this.log.error('drain failed', error));
 }
 ```
 
@@ -465,6 +471,13 @@ the context ambient at drain time is ignored rather than merged.
   not belong to a diagnostics primitive; if you want per-item
   isolation, put the `try`/`catch` inside the callback, where it still
   runs under the right context.
+
+  Which is why the call above ends in `.catch` rather than starting with
+  `void`. Nothing awaits the returned promise, so a rejection that
+  propagates out of it is unhandled — fatal by default on Node since
+  v15. The framework treats its own deferred work the same way:
+  `Scheduler.scheduleOnceFunction` wraps the task in `runGuarded`
+  instead of firing it bare.
 </Aside>
 
 ## Structured logging — `withFields` + MDC together

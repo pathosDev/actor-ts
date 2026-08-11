@@ -1023,6 +1023,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   where the resolved map really does lose the header, which is how the claim
   survived; a test now composes the two layers the way a response meets them.
 
+- **The `runFresh` / `runEach` examples no longer discard their rejection**
+  (#1063).  Both showed `void LogContext.run…(…)` as the recommended shape,
+  directly above an aside explaining that an error *propagates immediately* —
+  which is exactly what makes the `void` dangerous.  Nothing awaits that
+  promise, so the rejection is unhandled, and on Node an unhandled rejection
+  has been fatal by default since v15: reproduced on node 26.7, the process
+  exits 1 rather than losing one batch item.  Both examples now end in
+  `.catch`, the aside says why, and the framework's own precedent is named —
+  `Scheduler.scheduleOnceFunction` wraps its task in `runGuarded` instead of
+  firing it bare.  `tests/unit/MdcPropagation.test.ts` had copied the same
+  `void`; it now follows what the page teaches.
+
 ### Security
 
 - **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).
