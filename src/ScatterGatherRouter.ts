@@ -10,11 +10,25 @@ import {
 import { AskTimeoutError, Terminated } from './SystemMessages.js';
 
 /**
- * Fallback deadline for one scatter.  Deliberately the same 5 s
- * `ActorRef.ask` defaults to: the scatter *is* N asks, and a router that
- * silently outlived the ask it wraps would be the more surprising default.
+ * Fallback deadline for one scatter — deliberately *under* the 5 s
+ * `ActorRef.ask` defaults to, not equal to it.
+ *
+ * The scatter is N asks and must not outlive the ask wrapped around it,
+ * which was the reason for matching 5 s.  Matching does not achieve it:
+ * the router's own deadline has to leave room for the inner asks to
+ * reject, the `AggregateError` to be built and the reply to reach the
+ * caller, and the caller's timer is already running for the same 5 s.
+ * On the documented default path — `scatterGatherFirstCompleted(n, R)`
+ * plus a bare `pool.ask(msg)` — the caller therefore saw its own
+ * `AskTimeoutError` and never the router's diagnosis (#1088).
+ *
+ * The 500 ms is a margin, not a budget cut: the aggregation and reply
+ * hop measured at ~18 ms, and a Windows timer quantum is 15.6 ms, which
+ * Bun can fire a whole one early (#477).  Anything under ~4 980 ms wins
+ * the race on an idle machine; 4 500 ms keeps 90 % of the budget and
+ * still wins it on a loaded one.
  */
-const DEFAULT_TIMEOUT_MS = 5_000;
+export const DEFAULT_SCATTER_GATHER_TIMEOUT_MS = 4_500;
 
 /**
  * How a scatter ended — the `outcome` label on
@@ -338,7 +352,7 @@ export function scatterGatherRouterFactory<TMessage>(
 ): ActorFactory<TMessage> {
   const explicit = (options ?? {}) as Partial<ScatterGatherOptionsType>;
   const settings: Required<ScatterGatherOptionsType> = {
-    timeoutMs: explicit.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs: explicit.timeoutMs ?? DEFAULT_SCATTER_GATHER_TIMEOUT_MS,
   };
   new ScatterGatherOptionsValidator().validate(settings);
   const config: ScatterGatherRouterConfig<TMessage> = {

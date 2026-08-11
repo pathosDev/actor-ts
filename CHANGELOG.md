@@ -115,7 +115,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that produced it; and stopping or restarting the router fails its open
   scatters immediately rather than running out the configured clock.
   Configured through the new `ScatterGatherOptions` (`withTimeoutMs`,
-  default 5 000 ms, validated at the factory call), instrumented with
+  default 4 500 ms — deliberately under the 5 000 ms `ActorRef.ask`
+  defaults to, because the router can only name the failing routees after
+  its own deadline has passed and it has collected their errors.  At an
+  equal 5 000 the caller's own `ask` won that race, so on the documented
+  entry point — `scatterGatherFirstCompleted(n, R)` plus a bare
+  `pool.ask(msg)` — you got `AskTimeoutError` and never the
+  `AggregateError` the router exists to produce (#1088).  Validated at the
+  factory call), instrumented with
   `router_scatter_gather_resolved_total{outcome}` and
   `router_scatter_gather_latency_seconds`, and documented on the new
   bilingual `routing/scatter-gather` page.

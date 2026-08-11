@@ -1,5 +1,6 @@
 import { ActorPath } from './ActorPath.js';
 import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
 import { randomId } from './util/RandomString.js';
 
 /**
@@ -73,7 +74,10 @@ export abstract class ActorRef<TMessage = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    */
-  ask<TResponse = unknown>(message: OmitReplyTo<TMessage>, timeoutMs: number = 5_000): Promise<TResponse> {
+  ask<TResponse = unknown>(
+    message: OmitReplyTo<TMessage>,
+    timeoutMs: number = DEFAULT_ASK_TIMEOUT_MS,
+  ): Promise<TResponse> {
     const name = nextAskName();
     const systemName = this.path.systemName;
     const ref = new AskResponseRef<TResponse>(systemName, name, timeoutMs, this.path.toString());

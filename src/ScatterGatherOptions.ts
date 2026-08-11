@@ -8,11 +8,13 @@ import { OptionsValidator } from './util/OptionsValidator.js';
 export type ScatterGatherOptionsType = {
   /**
    * How long one scatter may run before it is given up on, in
-   * milliseconds.  Default `5_000` — the same default `ActorRef.ask`
-   * uses, because that is literally what this becomes: the router turns
-   * each routee into an `ask` carrying this timeout, so the deadline is
-   * enforced per routee and the whole scatter fails only once the last
-   * one has expired.
+   * milliseconds.  Default `4_500` — just under the `5_000` default
+   * `ActorRef.ask` uses, because that is literally what this becomes:
+   * the router turns each routee into an `ask` carrying this timeout, so
+   * the deadline is enforced per routee and the whole scatter fails only
+   * once the last one has expired.  The gap is what lets the router
+   * report first; it used to match `ask` exactly, and the caller then
+   * saw its own timeout instead of the router's (#1088).
    *
    * Akka spells this `within`; the name here follows the project's
    * `…Ms` convention for durations and says what it actually is — the

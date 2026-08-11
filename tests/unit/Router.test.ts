@@ -17,7 +17,9 @@ import {
   smallestMailboxStrategy,
 } from '../../src/Router.js';
 import { ScatterGatherOptions } from '../../src/ScatterGatherOptions.js';
+import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS } from '../../src/ScatterGatherRouter.js';
 import type { ActorRef } from '../../src/ActorRef.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../src/util/Constants.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
@@ -801,6 +803,25 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
     expect(aggregate.message).toMatch(/all 3 routees failed/);
 
     await sys.terminate();
+  });
+
+  test('the default deadline stays under ask\'s, so the router reports first (#1088)', () => {
+    // Not a wall-clock test on purpose: proving it end to end costs the full
+    // 4.5 s, and every other case in this suite pins both timeouts by hand —
+    // which is exactly how the two defaults came to be equal without anything
+    // failing.  The invariant is what the defect was, so the invariant is what
+    // is asserted.
+    //
+    // The router can only name the failing routees once its own deadline has
+    // passed and it has collected their errors; measured at ~18 ms for the
+    // aggregate plus the reply hop.  With both defaults at 5 000 the caller's
+    // own `ask` won that race and raised `AskTimeoutError`, so the
+    // `AggregateError` this router exists to produce was unreachable from the
+    // documented entry point.
+    expect(DEFAULT_SCATTER_GATHER_TIMEOUT_MS).toBeLessThan(DEFAULT_ASK_TIMEOUT_MS);
+    // A margin that survives scheduler jitter — a Windows timer quantum is
+    // 15.6 ms and Bun can fire a whole one early (#477).
+    expect(DEFAULT_ASK_TIMEOUT_MS - DEFAULT_SCATTER_GATHER_TIMEOUT_MS).toBeGreaterThanOrEqual(100);
   });
 
   test('nobody answering in time rejects with the per-routee ask timeouts', async () => {
