@@ -88,7 +88,9 @@ A short tour of what's in the box:
   unlike an ordinary class, survive a snapshot as real instances — no
   adapter); plus
   the small helpers the framework itself runs on: `randomString` / `randomHex`
-  / `randomId` (crypto entropy, no modulo bias, exact length), `safeStringify`
+  / `randomId` (crypto entropy, no modulo bias, exact length) and `randomUuid`
+  (a v4 UUID, for when the identifier has to be globally unique too),
+  `safeStringify`
   (a `JSON.stringify` for log and error paths that cannot throw),
   `lazyImportModule` (import an optional peer dependency, or fail with a
   message naming the install command).

@@ -277,17 +277,20 @@ decode, so the two halves cannot come back disagreeing. The same
 | `randomString(length, options?)` | `length` characters from the enabled classes. Default: alphanumeric. |
 | `randomHex(length)` | `length` lowercase hex characters — for wire formats that mandate `[0-9a-f]`. |
 | `randomId(length)` | `length` characters for something you have to name yourself. |
+| `randomUuid()` | A version-4 UUID — for an identifier that must not collide with one minted elsewhere. |
 | `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — each defaults to `true`. |
 
-All three draw from `globalThis.crypto`, correct the modulo bias that a plain
-`byte % alphabet.length` introduces, and return exactly the length you asked
-for — never fewer.
+The first three draw from `globalThis.crypto`, correct the modulo bias that a
+plain `byte % alphabet.length` introduces, and return exactly the length you
+asked for — never fewer. `randomUuid` delegates to
+`globalThis.crypto.randomUUID()`.
 
 ```ts
-import { randomId, randomString } from 'actor-ts';
+import { randomId, randomString, randomUuid } from 'actor-ts';
 
 const sessionId = randomId(12);                                  // '9f3c1ab0e7d2'
 const coupon = randomString(8, { lowerCase: false, digits: true }); // 'K7Q2XP4M'
+const persistenceId = randomUuid();  // 'f81d4fae-7dec-41d0-a765-00a0c91e6bf6'
 ```
 
 `randomId` is the one to reach for when naming an actor. An actor name ends up
@@ -300,11 +303,22 @@ one hands you the next — which is why the framework names anonymous actors and
 W3C trace-context mandates `[0-9a-f]{32}` and `[0-9a-f]{16}` for a
 `traceparent` header, and a peer rejects anything else.
 
-<Aside type="caution" title="Not a UUID">
-  These are unguessable, not globally unique. `randomId(12)` is ~48 bits — far
-  more than enough for the number of names any one process has live at once,
-  and far less than a v4 UUID. If you need an identifier that will not collide
-  with one minted on another machine years from now, use `crypto.randomUUID()`.
+`randomUuid` sits at the other end of the entropy scale from `randomId`, and the
+split between the two is worth getting right. `randomId(12)` is ~48 bits: unguessable among
+the names one process holds live at once, which is the only uniqueness an actor
+name has to carry. `randomUuid()` is 122 random bits, which is what it takes for
+an identifier to stay distinct from one minted in another process, on another
+machine, years later, with nothing coordinating them — a `PersistenceId` for a
+new aggregate, a correlation id crossing a broker, a key another system will
+read.
+
+<Aside type="caution" title="Unguessable is not globally unique">
+  Do not reach for `randomHex(32)` and insert dashes. Six of a UUID's 128 bits
+  are the version and variant fields RFC 9562 fixes, so a hex string with dashes
+  in the right places only *looks* like one, and anything that parses a version
+  out of it reads garbage. Nor should you slice a UUID down to length —
+  `randomHex` and `randomId` already answer "*n* characters", and a slice throws
+  away the entropy you asked for the UUID to get.
 </Aside>
 
 ## Stringifying a value that already went wrong

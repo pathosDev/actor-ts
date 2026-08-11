@@ -18,8 +18,9 @@ get((req) => completeJson(Status.OK, { id: req.headers['x-request-id'] }));
 
 Eine eingehende ID wird nur übernommen, wenn sie wohlgeformt ist
 (`^[A-Za-z0-9._-]{1,64}$`) — ein bösartiger Wert erreicht nie einen
-Response-Header; andernfalls wird eine frische `crypto.randomUUID()`
-generiert.
+Response-Header; andernfalls wird eine frische ID mit
+[`randomUuid`](/de/reference/utility-helpers/#zufallszeichenketten-und-bezeichner)
+erzeugt.
 
 ## Die ID wieder auslesen
 
@@ -47,7 +48,7 @@ Header, statt den Wert als *die* ID auszugeben. Einen umbenannten Header
 | --- | --- | --- |
 | `withHeaderName(n)` | `headerName` | `'x-request-id'` |
 | `withTrustIncoming(flag?)` | `trustIncoming` | `true` |
-| `withGenerate(generate)` | `generate` | `crypto.randomUUID()` |
+| `withGenerate(generate)` | `generate` | `randomUuid` |
 
 ## Wie weiter
 

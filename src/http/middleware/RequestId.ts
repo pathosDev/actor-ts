@@ -4,9 +4,9 @@
  * incoming id is accepted only if it is well-formed — never echo raw
  * client bytes back into a header.
  */
-import { randomUUID } from 'node:crypto';
 import type { Middleware } from '../Route.js';
 import type { HttpRequest } from '../types.js';
+import { randomUuid } from '../../util/RandomString.js';
 import { applyHeaders } from './headers.js';
 import type { RequestIdOptions, RequestIdOptionsType } from './RequestIdOptions.js';
 
@@ -48,7 +48,7 @@ export function requestId(options: RequestIdOptions = {}): Middleware {
   const resolvedOptions = options as Partial<RequestIdOptionsType>;
   const headerName = (resolvedOptions.headerName ?? DEFAULT_REQUEST_ID_HEADER).toLowerCase();
   const trustIncoming = resolvedOptions.trustIncoming ?? true;
-  const generate = resolvedOptions.generate ?? ((): string => randomUUID());
+  const generate = resolvedOptions.generate ?? randomUuid;
 
   return async (request, next) => {
     const incoming = trustIncoming ? requestIdOf(request, headerName) : undefined;

@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`randomUuid()`** (#1109).  A random version-4 UUID, exported from
+  `src/util/RandomString.ts` next to `randomId` and re-exported from the root
+  barrel alongside it.  It closes the one identifier question that module could
+  not answer with an alphabet and a length: `randomId(12)` is ~48 bits and only
+  has to be unguessable among the names one process holds live at once, while a
+  `PersistenceId`, a correlation id crossing a broker, or a key another system
+  will read later has to stay distinct from identifiers minted in other
+  processes, on other machines, years apart, with nothing coordinating them —
+  122 random bits are what makes that hold.  Until now the docs answered it by
+  sending the reader out of the framework to `crypto.randomUUID()`, which is
+  also what three call sites in `src/` do, in two different spellings.  It
+  delegates to `globalThis.crypto.randomUUID()` rather than dashing up a
+  `randomHex(32)`: six of the 128 bits are the version and variant fields RFC
+  9562 fixes, so a hex string with dashes in the right places only looks like a
+  UUID and anything parsing a version out of it reads garbage.  No `length`
+  parameter — slicing a UUID down is the mistake the module exists to make
+  unnecessary.  Smoke-tested on Bun, Node and Deno, since `crypto.randomUUID` is
+  a second Web API off the same object as `getRandomValues` and a runtime can
+  carry one without the other.  Migrating the existing call sites onto it is not
+  part of this change.
+
 - **`CborSerializer` carries the same rich types as the JSON tree** (#1036).
   `Map`, `Set`, `BidirectionalMap` and `BidirectionalMultiMap` used to fall
   into the CBOR encoder's generic object branch, where `Object.entries` is
@@ -1419,6 +1440,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   takes part in, and the two formats cannot collide.
 
 ### Changed
+
+- **UUIDs in `src/` are minted through `randomUuid()`** (#1110).  Three call
+  sites still called the platform primitive themselves, in two different
+  spellings: `ClusterClient.nextAskId` and
+  `ClusterClientReceptionist.onAskFailure` used `globalThis.crypto.randomUUID()`,
+  while the `requestId` middleware imported `randomUUID` from `node:crypto`.
+  All three now go through the helper #1109 added, which puts the choice of
+  primitive back in the one module that owns where identifiers come from —
+  relevant the day it has to change (a runtime without `crypto.randomUUID`, or
+  UUIDv7 for a lexicographically ordered persistence key), since a `grep` for
+  `randomUuid` previously found none of them.  The middleware change also
+  removes the last `node:crypto` import in `src/` that had a Web Crypto
+  equivalent; the three remaining ones (`timingSafeEqual`, `createHmac`,
+  `randomBytes` in `BasicAuth`, `BearerToken` and `Csrf`) do not, so they stay.
+  No behaviour or API change — both spellings return a lowercase v4 UUID, and
+  the middleware's `VALID_ID` guard already had to accept one, since it also
+  vets client-supplied ids.  Docs samples that predated the helper (the K8s
+  lease test name, the `LogContext` correlation id, the `requestId` default)
+  now show `randomUuid` instead of sending the reader to the raw primitive.
 
 - **The receptionist, the pub-sub mediator and the broker base index their
   subscribers through `BidirectionalMultiMap`** (#1037).  All three kept the
