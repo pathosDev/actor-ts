@@ -33,7 +33,7 @@ responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
 | --- | --- | --- |
 | `withOrigins(...o)` | `origins` | Exact-match allowlist. |
 | `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit. |
-| `withOriginPredicate(fn)` | `origins` | Decide per request; a throwing predicate denies. |
+| `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. |
 | `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. |
 | `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. |
 | `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. |

@@ -1,6 +1,6 @@
 ---
 title: TestKit
-description: Die Test-Zeit-Fassade um `ActorSystem` — leises Logging als Default, ein einzeiliges `createTestProbe()`, ein `within(ms, fn)`-Deadline-Helper und sauberes `shutdown()`. Die meisten Actor-Tests starten mit `TestKit.create()`.
+description: Die Test-Zeit-Fassade um `ActorSystem` — leises Logging als Default, ein einzeiliges `createTestProbe()`, ein `within(ms, callback)`-Deadline-Helper und sauberes `shutdown()`. Die meisten Actor-Tests starten mit `TestKit.create()`.
 ---
 
 `TestKit` ist ein dünner Convenience-Wrapper um `ActorSystem`
@@ -40,7 +40,7 @@ class TestKit {
   readonly system: ActorSystem;
 
   createTestProbe(options?: TestProbeOptions): TestProbe;
-  within<T>(durationMs: number, fn: () => Promise<T>): Promise<T>;
+  within<T>(durationMs: number, callback: () => Promise<T>): Promise<T>;
   shutdown(): Promise<void>;
 }
 
@@ -83,7 +83,7 @@ Gibt einen `TestProbe` zurück, gescoped auf das System dieses
 Kits. Siehe [TestProbe](/de/testing/test-probe/) für die volle
 Expectations-API.
 
-### `tk.within(durationMs, fn)`
+### `tk.within(durationMs, callback)`
 
 ```ts
 await tk.within(1_000, async () => {
@@ -92,13 +92,13 @@ await tk.within(1_000, async () => {
 });
 ```
 
-Führe `fn` aus und assertete, dass es **in weniger als
+Führe `callback` aus und assertete, dass es **in weniger als
 `durationMs` abgeschlossen wurde**. Wirft, wenn es länger
 gedauert hat. Nützlich für „das sollte schnell sein"-SLAs
 innerhalb von Tests, ohne vom Per-Test-Timeout des Test-Runners
 abzuhängen.
 
-Hinweis: das ist eine *weiche* Deadline — `fn` läuft auch dann
+Hinweis: das ist eine *weiche* Deadline — `callback` läuft auch dann
 zu Ende, wenn es überzieht. Es wirft nur im Nachhinein.
 
 ### `tk.shutdown()`

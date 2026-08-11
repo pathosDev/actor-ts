@@ -84,7 +84,7 @@ Das `Dispatcher`-Interface ist winzig:
 ```ts
 interface Dispatcher {
   readonly id: string;
-  execute(fn: () => void | Promise<void>): void;
+  execute(task: () => void | Promise<void>): void;
 }
 ```
 
@@ -108,8 +108,8 @@ import type { Dispatcher } from 'actor-ts';
 class TracingDispatcher implements Dispatcher {
   readonly id = 'tracing-dispatcher';
   constructor(private readonly inner: Dispatcher) {}
-  execute(fn: () => void | Promise<void>): void {
-    this.inner.execute(() => withTraceContext(fn));
+  execute(task: () => void | Promise<void>): void {
+    this.inner.execute(() => withTraceContext(task));
   }
 }
 ```
@@ -121,7 +121,7 @@ hinzu.
 <Aside type="caution" title="Schreibe keinen synchronen Dispatcher in Produktion">
   ```ts
   class SyncDispatcher implements Dispatcher {
-    execute(fn: () => void): void { fn(); }
+    execute(task: () => void): void { task(); }
   }
   ```
   Synchrone Ausführung untergräbt die Actor-Modell-Invarianten: ein

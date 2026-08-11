@@ -31,7 +31,7 @@ BasicAuth({ validate: (user, pass) => checkAgainstDb(user, pass) });
 | Builder-Methode | Feld | Zweck |
 | --- | --- | --- |
 | `withUsers(map)` | `users` | Benutzername → Passwort, konstantzeit-verglichen |
-| `withValidate(fn)` | `validate` | eigene async/sync Zugangsdaten-Prüfung |
+| `withValidate(validate)` | `validate` | eigene async/sync Zugangsdaten-Prüfung |
 | `withRealm(name)` | `realm` | angekündigter Realm (Default `'actor-ts'`) |
 
 import { Aside } from '@astrojs/starlight/components';

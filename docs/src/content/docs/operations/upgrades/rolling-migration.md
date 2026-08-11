@@ -390,8 +390,8 @@ unrecoverable.
 | `migratingAdapter(chain, { writeVersion })` | Adapter exposing the chain to the journal |
 | `chain.manifestFor(value, version)`       | Lower-level envelope builder              |
 | `wrapEventAsEnvelope(event, manifestFor)` | One-shot rewrite for pre-envelope data    |
-| `migrateInMemoryJournal(journal, fn)`     | Bulk-rewrite every event under a journal  |
-| `migrateSnapshotStore(store, pids, fn)`   | Same for snapshots                        |
+| `migrateInMemoryJournal(journal, manifestFor)` | Bulk-rewrite every event under a journal |
+| `migrateSnapshotStore(store, persistenceIds, manifestFor)` | Same for snapshots           |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-version encryption key ring         |
 | `reEncryptObjectStorage(backend, options)`   | Sweep: re-encrypt every body under a prefix to the active key |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable resume tokens for the sweep (#109) — plug a file/Redis/object-storage backed implementation for million-object buckets |

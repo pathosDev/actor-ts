@@ -1,6 +1,6 @@
 ---
 title: TestKit
-description: The test-time facade around `ActorSystem` — quiet logging by default, a one-line `createTestProbe()`, a `within(ms, fn)` deadline helper, and clean `shutdown()`. Most actor tests start with `TestKit.create()`.
+description: The test-time facade around `ActorSystem` — quiet logging by default, a one-line `createTestProbe()`, a `within(ms, callback)` deadline helper, and clean `shutdown()`. Most actor tests start with `TestKit.create()`.
 ---
 
 `TestKit` is a thin convenience wrapper around `ActorSystem` for
@@ -40,7 +40,7 @@ class TestKit {
   readonly system: ActorSystem;
 
   createTestProbe(options?: TestProbeOptions): TestProbe;
-  within<T>(durationMs: number, fn: () => Promise<T>): Promise<T>;
+  within<T>(durationMs: number, callback: () => Promise<T>): Promise<T>;
   shutdown(): Promise<void>;
 }
 
@@ -83,7 +83,7 @@ Returns a `TestProbe` scoped to this kit's system.  See
 [TestProbe](/testing/test-probe/) for the full
 expectations API.
 
-### `tk.within(durationMs, fn)`
+### `tk.within(durationMs, callback)`
 
 ```ts
 await tk.within(1_000, async () => {
@@ -92,12 +92,12 @@ await tk.within(1_000, async () => {
 });
 ```
 
-Run `fn` and assert it **completed in under `durationMs`**.
+Run `callback` and assert it **completed in under `durationMs`**.
 Throws if it took longer.  Useful for "this should be fast" SLAs
 inside tests, without depending on the test runner's per-test
 timeout.
 
-Note: this is a *soft* deadline — `fn` still runs to completion
+Note: this is a *soft* deadline — `callback` still runs to completion
 even if it overshoots.  It just throws after the fact.
 
 ### `tk.shutdown()`

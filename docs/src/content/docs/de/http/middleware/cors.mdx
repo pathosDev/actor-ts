@@ -34,7 +34,7 @@ erhält `204` mit den `Access-Control-Allow-*`-Headern, und die eigentlichen
 | --- | --- | --- |
 | `withOrigins(...o)` | `origins` | Exakte Allowlist. |
 | `withAnyOrigin()` | `origins` | Jeden Origin erlauben (`*`). Muss explizit sein. |
-| `withOriginPredicate(fn)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. |
+| `withOriginPredicate(predicate)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. |
 | `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: die am Pattern registrierten Methoden. |
 | `withAllowedHeaders(...h)` | `allowedHeaders` | Default: die (sanitisierten) Request-Header echoen. |
 | `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. |

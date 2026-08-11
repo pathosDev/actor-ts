@@ -183,7 +183,7 @@ The framework publishes several event types you can subscribe to:
 
 One cluster event is deliberately **not** here: `CurrentClusterState`
 is delivered only to the listener that asked for it, by
-`cluster.subscribe(fn, { replayMode: 'snapshot' })`.  It states where
+`cluster.subscribe(listener, { replayMode: 'snapshot' })`.  It states where
 that subscriber is starting from, which is not news to anybody else,
 so it never reaches this bus.
 

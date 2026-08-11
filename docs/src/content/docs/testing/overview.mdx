@@ -266,7 +266,7 @@ import { Aside } from '@astrojs/starlight/components';
 Both work.  `TestKit` is convenience:
 
 - Defaults to `NoopLogger` — no console spam.
-- Provides `createTestProbe()`, `within(ms, fn)`, `shutdown()`.
+- Provides `createTestProbe()`, `within(ms, callback)`, `shutdown()`.
 - One-liner setup via `TestKit.create()`.
 
 For complex test setups (custom logger, multiple systems, specific
