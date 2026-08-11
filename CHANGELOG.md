@@ -1354,9 +1354,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   mediator, `SubscriberSet` becomes `TopicState` — what a topic holds
   besides its subscribers — and the four hand-written copies of the
   empty-topic guard become one `maybeDropTopic`.  The fan-out paths there
-  gain one map lookup per local subscriber per publish, which is the price
-  of keying on paths rather than ref identity; identity keying is what does
-  not survive death watch.
+  gain one map lookup per local subscriber per publish, the price of keying
+  on paths rather than on ref identity — identity keying is what does not
+  survive death watch.  Measured on `benchmarks/cluster/pubsub-fanout.ts`
+  at 1000 local subscribers, three runs each, it does not show: 63.3 / 61.5
+  / 61.9 µs per delivery before against 60.0 / 62.8 / 55.9 µs after.  The
+  lookup is inside the noise of the mailbox hop it sits next to.
 
 - **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
   `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
