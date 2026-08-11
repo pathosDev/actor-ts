@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
-import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../journals/SqliteClient.js';
+import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 
 export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
   /** Path or ":memory:". Defaults to ":memory:". */
