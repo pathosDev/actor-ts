@@ -142,7 +142,7 @@ class Account extends PersistentActor<Command, Event, State> {
 Three methods do all the work:
 
 - **`onCommand`** — validates the request.  Decides what event(s) to
-  persist via `this.persist(event, cb)`.  Side effects go in `cb`.
+  persist via `this.persist(event, afterPersist)`.  Side effects go in `afterPersist`.
 - **`onEvent`** — pure function from state + event to new state.
   **No side effects** here — this function runs during recovery to
   replay the journal, possibly many times.

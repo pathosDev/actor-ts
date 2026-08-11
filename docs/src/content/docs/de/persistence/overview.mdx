@@ -142,8 +142,8 @@ class Account extends PersistentActor<Command, Event, State> {
 Drei Methoden erledigen die ganze Arbeit:
 
 - **`onCommand`** — validiert die Anfrage.  Entscheidet, welche Events
-  per `this.persist(event, cb)` persistiert werden.  Seiteneffekte
-  gehören in `cb`.
+  per `this.persist(event, afterPersist)` persistiert werden.  Seiteneffekte
+  gehören in `afterPersist`.
 - **`onEvent`** — reine Funktion von State + Event zum neuen State.
   **Keine Seiteneffekte** hier — diese Funktion läuft während der
   Recovery, um das Journal abzuspielen, möglicherweise viele Male.

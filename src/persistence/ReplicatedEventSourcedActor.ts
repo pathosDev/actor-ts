@@ -396,7 +396,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * route to the holder.  Users that don't want the throw can gate
    * on `isLeaseHolder` before calling `persist`.
    */
-  protected async persist(event: Event, cb?: (state: State) => void): Promise<void> {
+  protected async persist(event: Event, afterPersist?: (state: State) => void): Promise<void> {
     if (this._lease && !this._isLeaseHolder) {
       throw new Error(
         `ReplicatedEventSourcedActor '${this.persistenceId}': cannot persist — ` +
@@ -416,7 +416,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     };
     await this._appendOne(envelope);
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
-    cb?.(this._state);
+    afterPersist?.(this._state);
   }
 
   /**

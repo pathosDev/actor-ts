@@ -47,7 +47,7 @@ class FSM<SName, SData, Message> extends Actor<Message> {
   protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
   protected onEnter(state: SName, hook: (data: SData) => void | Promise<void>): void;
   protected onExitState(state: SName, hook: (data: SData) => void | Promise<void>): void;
-  protected onTransition(cb: TransitionCallback<SName, SData>): void;
+  protected onTransition(listener: TransitionCallback<SName, SData>): void;
 
   // In Handlern:
   protected goto(state: SName, data: SData): Transition<SName, SData>;

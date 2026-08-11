@@ -75,8 +75,8 @@ class ProbeActor extends MqttActor {
   protected override mqttModule(): Promise<MqttModuleLike> {
     // Minimal fake module that connects immediately.
     const client = {
-      on() {}, once(ev: string, cb: () => void) { if (ev === 'connect') setTimeout(cb, 0); },
-      removeAllListeners() {}, publish() {}, subscribe() {}, unsubscribe() {}, end(_f?: unknown, _o?: unknown, cb?: () => void) { cb?.(); },
+      on() {}, once(ev: string, listener: () => void) { if (ev === 'connect') setTimeout(listener, 0); },
+      removeAllListeners() {}, publish() {}, subscribe() {}, unsubscribe() {}, end(_f?: unknown, _o?: unknown, callback?: () => void) { callback?.(); },
     };
     return Promise.resolve({ connect: () => client } as unknown as MqttModuleLike);
   }

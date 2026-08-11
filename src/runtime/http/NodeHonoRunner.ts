@@ -92,7 +92,7 @@ export class NodeHonoRunner implements HonoServerRunner {
 /* ----------------------------- internals --------------------------------- */
 
 interface NodeHttpServer {
-  close(cb?: () => void): void;
+  close(callback?: () => void): void;
   closeAllConnections?(): void;
   address?(): { port: number; address: string } | string | null;
 }

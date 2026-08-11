@@ -559,14 +559,14 @@ type GrpcServerStreamRequest = {
  */
 export type GrpcServerReadableCall = {
   metadata?: { get?: (key: string) => string[] };
-  on(event: 'data', cb: (chunk: unknown) => void): void;
-  on(event: 'end', cb: () => void): void;
+  on(event: 'data', listener: (chunk: unknown) => void): void;
+  on(event: 'end', listener: () => void): void;
 };
 
 type GrpcServerDuplexCall = {
   metadata?: { get?: (key: string) => string[] };
-  on(event: 'data', cb: (chunk: unknown) => void): void;
-  on(event: 'end', cb: () => void): void;
+  on(event: 'data', listener: (chunk: unknown) => void): void;
+  on(event: 'end', listener: () => void): void;
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
@@ -574,9 +574,9 @@ type GrpcServerDuplexCall = {
 
 interface GrpcServerLike {
   addService(definition: unknown, impl: Record<string, unknown>): void;
-  bindAsync(bind: string, creds: unknown, cb: (err: Error | null, port: number) => void): void;
+  bindAsync(bind: string, creds: unknown, callback: (err: Error | null, port: number) => void): void;
   start(): void;
-  tryShutdown(cb: (err?: Error) => void): void;
+  tryShutdown(callback: (err?: Error) => void): void;
   forceShutdown(): void;
 }
 

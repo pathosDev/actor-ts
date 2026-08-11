@@ -74,8 +74,8 @@ export abstract class FSM<SName extends string, SData, Message> extends Actor<Me
   }
 
   /** Subscribe to every transition — useful for logging/metrics. */
-  protected onTransition(cb: TransitionCallback<SName, SData>): void {
-    this.transitionListeners.push(cb);
+  protected onTransition(listener: TransitionCallback<SName, SData>): void {
+    this.transitionListeners.push(listener);
   }
 
   protected goto(next: SName, data: SData): Transition<SName, SData> {
@@ -116,8 +116,8 @@ export abstract class FSM<SName extends string, SData, Message> extends Actor<Me
     const entryHook = this.onEntry.get(next);
     if (entryHook) { try { await entryHook(data); } catch (e) { this.log.warn('onEnter threw', e); } }
 
-    for (const cb of this.transitionListeners) {
-      try { await cb(from, next, data); } catch { /* swallow */ }
+    for (const listener of this.transitionListeners) {
+      try { await listener(from, next, data); } catch { /* swallow */ }
     }
   }
 }

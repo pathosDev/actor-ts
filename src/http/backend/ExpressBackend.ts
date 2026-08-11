@@ -25,7 +25,7 @@ interface WebsocketServerLike {
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    cb: (ws: WebsocketPackageSocket) => void,
+    callback: (ws: WebsocketPackageSocket) => void,
   ): void;
   emit(event: 'connection', ws: WebsocketPackageSocket, req: IncomingMessage): boolean;
   readonly clients?: Iterable<{ terminate?: () => void; close?: () => void }>;
@@ -109,7 +109,7 @@ export interface ExpressAppLike {
   head(path: string | RegExp, handler: ExpressHandler): void;
   options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
-  listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
+  listen(port: number, hostname: string, callback: (err?: Error) => void): Server;
 }
 
 /**

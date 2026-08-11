@@ -154,7 +154,7 @@ erst nach einem Neustart um — die teuerste Art, das herauszufinden.
 Validiert das Command gegen den aktuellen State und entscheidet,
 welche Events persistiert werden.  Drei gültige Ergebnisse:
 
-- **`this.persist(event, cb)`** — ein Event persistieren.  Der
+- **`this.persist(event, afterPersist)`** — ein Event persistieren.  Der
   Callback läuft mit dem neuen State, sobald das Event angehängt
   und per `onEvent` angewendet ist.  Seiteneffekte gehören hierher.
 - **Antworten ohne Persist** — für Read-only-Commands (z. B.

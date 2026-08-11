@@ -50,44 +50,44 @@ class FakeMqttClient implements MqttClientLike {
   readonly unsubscribes: string[] = [];
   readonly publishes: Array<{ topic: string; payload: string | Uint8Array; qos: number; retain: boolean }> = [];
 
-  private messageCbs: Array<(t: string, publish: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
-  private closeCbs: Array<() => void> = [];
-  private errCbs: Array<(e: Error) => void> = [];
-  private connectCbs: Array<() => void> = [];
-  private connectErrCbs: Array<(e: Error) => void> = [];
+  private messageListeners: Array<(t: string, publish: Uint8Array, pk?: MqttInboundPacketLike) => void> = [];
+  private closeListeners: Array<() => void> = [];
+  private errorListeners: Array<(e: Error) => void> = [];
+  private connectListeners: Array<() => void> = [];
+  private connectErrorListeners: Array<(e: Error) => void> = [];
 
-  on(event: 'message' | 'error' | 'close', cb: (...args: never[]) => void): void {
-    if (event === 'message') this.messageCbs.push(cb as never);
-    else if (event === 'close') this.closeCbs.push(cb as never);
-    else this.errCbs.push(cb as never);
+  on(event: 'message' | 'error' | 'close', listener: (...args: never[]) => void): void {
+    if (event === 'message') this.messageListeners.push(listener as never);
+    else if (event === 'close') this.closeListeners.push(listener as never);
+    else this.errorListeners.push(listener as never);
   }
-  once(event: 'connect' | 'error', cb: (...args: never[]) => void): void {
-    if (event === 'connect') this.connectCbs.push(cb as never);
-    else this.connectErrCbs.push(cb as never);
+  once(event: 'connect' | 'error', listener: (...args: never[]) => void): void {
+    if (event === 'connect') this.connectListeners.push(listener as never);
+    else this.connectErrorListeners.push(listener as never);
   }
   removeAllListeners(event?: string): void {
-    if (event === 'error' || event === undefined) { this.errCbs = []; this.connectErrCbs = []; }
-    if (event === undefined) { this.messageCbs = []; this.closeCbs = []; this.connectCbs = []; }
+    if (event === 'error' || event === undefined) { this.errorListeners = []; this.connectErrorListeners = []; }
+    if (event === undefined) { this.messageListeners = []; this.closeListeners = []; this.connectListeners = []; }
   }
-  publish(topic: string, payload: string | Uint8Array, options: { qos: MqttQos; retain: boolean }, cb?: (err?: Error) => void): void {
+  publish(topic: string, payload: string | Uint8Array, options: { qos: MqttQos; retain: boolean }, callback?: (err?: Error) => void): void {
     this.publishes.push({ topic, payload, qos: options.qos, retain: options.retain });
-    cb?.();
+    callback?.();
   }
-  subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void {
+  subscribe(topic: string, options: { qos: MqttQos }, callback?: (err?: Error) => void): void {
     this.subscribes.push({ topic, qos: options.qos });
-    cb?.();
+    callback?.();
   }
-  unsubscribe(topic: string, _options: undefined, cb?: (err?: Error) => void): void {
+  unsubscribe(topic: string, _options: undefined, callback?: (err?: Error) => void): void {
     this.unsubscribes.push(topic);
-    cb?.();
+    callback?.();
   }
-  end(_force?: boolean, _options?: object, cb?: () => void): void { cb?.(); }
+  end(_force?: boolean, _options?: object, callback?: () => void): void { callback?.(); }
 
-  fireConnect(): void { for (const cb of [...this.connectCbs]) cb(); }
+  fireConnect(): void { for (const listener of [...this.connectListeners]) listener(); }
   fireMessage(topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike): void {
-    for (const cb of [...this.messageCbs]) cb(topic, payload, packet);
+    for (const listener of [...this.messageListeners]) listener(topic, payload, packet);
   }
-  fireClose(): void { for (const cb of [...this.closeCbs]) cb(); }
+  fireClose(): void { for (const listener of [...this.closeListeners]) listener(); }
 }
 
 class FakeMqttModule {
