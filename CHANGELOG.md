@@ -489,6 +489,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is the route an application does not have.  The *Logging* page (EN + DE) now
   shows the field and its import instead of starting at the `push`.
 
+- **`TcpServerActor`'s message variants on the public surface** (#1095).
+  `SendCommand`, `CloseCommand`, `ConnectionOpenedMessage`, `FrameMessage` and
+  `ConnectionClosedMessage` were module-local; only the unions
+  `TcpServerCommand` / `TcpServerMessage` left the file.  That is the right
+  default — a variant type belongs next to its union — but it does not survive
+  the union crossing the package boundary: the configured `target` handles the
+  variants one at a time, and a handler takes the **named variant type**.  The
+  echo server on the *TCP* page types `onFrame(message: FrameMessage)` for
+  exactly that reason, so anyone copying it got `TS2304`, with the only way out
+  being `Extract<TcpServerMessage, { kind: 'frame' }>` — the spelling the
+  project's own conventions rule out for a handler parameter.  Both language
+  versions of the page now show the import.
+
 ### Changed
 
 - **The `cb` short form is spelled out** (#1113).  152 occurrences across 34

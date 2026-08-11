@@ -34,6 +34,13 @@ export type {
   TcpServerCommand,
   TcpServerMessage,
   TcpConnectionId,
+  // The variants too, not just the unions: the `target` actor handles them
+  // one by one, and a handler takes the named variant type (#1095).
+  SendCommand,
+  CloseCommand,
+  ConnectionOpenedMessage,
+  FrameMessage,
+  ConnectionClosedMessage,
 } from './TcpServerActor.js';
 export { TcpServerOptions, TcpServerOptionsBuilder, TcpServerOptionsValidator } from './TcpServerOptions.js';
 export type { TcpServerOptionsType } from './TcpServerOptions.js';

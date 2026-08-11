@@ -170,6 +170,14 @@ type TcpServerMessage =
   | { kind: 'connectionClosed'; connectionId: string };
 ```
 
+The union and each of its variants are importable, so a handler can
+take the variant it is about rather than narrowing the union at
+every arm:
+
+```ts
+import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts';
+```
+
 An echo server is then the obvious three lines:
 
 ```ts
