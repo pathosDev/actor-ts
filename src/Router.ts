@@ -95,14 +95,18 @@ function routableDepthOf(routee: ActorRef): number | null {
  * `messageIndex % routees.length` and keeping the comparison strict (`<`)
  * makes an all-equal pool behave exactly like round-robin.
  *
- * That is also the answer for a **saturated** pool: when every bounded
- * mailbox sits at its capacity the depths are equal again, so the rotation
- * takes over and the overflow spreads evenly rather than piling onto one
- * routee.  The strategy has no notion of "full" and deliberately does not
- * grow one — refusing to route would invent back-pressure the caller never
- * configured, and what should happen to a message that does not fit is
- * already decided by the mailbox's own overflow policy (`drop-head` /
- * `drop-new` / `reject`).
+ * The strategy has no notion of "full" and deliberately does not grow one —
+ * refusing to route would invent back-pressure the caller never configured.
+ * On the unbounded default (#1148) that costs nothing: there is no "does not
+ * fit", so depth stays a truthful reading of backlog however far behind the
+ * pool falls, and the routee that is genuinely least loaded keeps winning.
+ *
+ * A pool of **bounded** routees does eventually saturate, and then the same
+ * tie-break answers it: once every mailbox sits at its capacity the depths
+ * are equal again, so the rotation takes over and the overflow spreads
+ * evenly rather than piling onto one routee.  What happens to a message that
+ * does not fit is the mailbox's own overflow policy (`drop-head` /
+ * `drop-new` / `reject`), not the router's call to make.
  *
  * **A terminated routee is skipped outright**, whatever its depth reads as —
  * see {@link routableDepthOf} for why that is not the same case as a depth

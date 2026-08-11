@@ -196,12 +196,15 @@ reagiert, was die Routees gerade tatsächlich tun.
 - **Kosten kennen, nur Anzahl.**  Zehn triviale Nachrichten sehen
   tiefer aus als eine riesige.  Queue-Länge ist ein Näherungswert für
   Last, keine Messung.
-- **Backpressure ausüben.**  Wenn jede begrenzte Mailbox an ihrer
-  Kapazität steht, sind die Tiefen gleich und die Nachricht wird
-  trotzdem geroutet; was mit einer Nachricht passiert, die nicht mehr
-  passt, entscheidet die Overflow-Policy der Mailbox (`drop-head` /
-  `drop-new` / `reject`).  Eine Strategie, die das Routen verweigert,
-  würde Backpressure erfinden, die der Aufrufer nie konfiguriert hat.
+- **Backpressure ausüben.**  Die Nachricht geht an den flachsten
+  Routee, wie tief der auch sei; eine Strategie, die das Routen
+  verweigert, würde Backpressure erfinden, die der Aufrufer nie
+  konfiguriert hat.  Auf dem unbounded Default gibt es kein „passt
+  nicht mehr", die Tiefe bleibt also ein echter Messwert des
+  Rückstaus, egal wie weit der Pool zurückfällt.  Begrenzt du die
+  Routees, gleichen sich die Tiefen an, sobald alle an ihrer Kapazität
+  stehen — dann übernimmt die Rotation, und die Overflow-Policy
+  (`drop-head` / `drop-new` / `reject`) entscheidet über die Nachricht.
 - **Eine entfernte Mailbox live lesen.**  Die Tiefe ist
   In-Process-Zustand.  Die Cluster-Variante unten holt sie über Nodes
   hinweg, aber nur als gecachte Meldung.

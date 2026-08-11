@@ -203,10 +203,11 @@ jedem Tick.  Es gibt keinen eingebauten Modus dafür.
 <Aside type="caution" title="Hochfrequente Timer sind Mailbox-Druck">
   Ein 10-ms-Intervall-Timer auf einem Actor, der 50 ms braucht, um
   jeden Tick zu behandeln, produziert eine ständig wachsende
-  Mailbox.  Wähle ein Intervall langsamer als die
+  Mailbox — und Mailboxes sind unbounded, sie wächst also, bis der
+  Heap es tut.  Wähle ein Intervall langsamer als die
   *Worst-Case*-Handler-Latenz oder begrenze die Mailbox mit
-  `drop-head` und akzeptiere, dass manche Ticks unter Last verworfen
-  werden.  Siehe [Mailboxes](/de/fundamentals/mailboxes/).
+  `withMailboxCapacity` und akzeptiere, dass manche Ticks unter Last
+  verworfen werden.  Siehe [Mailboxes](/de/fundamentals/mailboxes/).
 </Aside>
 
 ## Tests + der `ManualScheduler`

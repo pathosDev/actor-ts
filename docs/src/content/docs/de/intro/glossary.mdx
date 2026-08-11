@@ -22,9 +22,9 @@ Siehe [ActorSystem](/de/fundamentals/actor-system/).
 `tell`st und `ask`st über den Ref.  Siehe
 [Actor](/de/fundamentals/actor/).
 
-**Mailbox.**  Die Nachrichten-Queue pro Actor.  Default bounded
-(10.000 Kapazität, `drop-head`-Overflow) mit FIFO-Reihenfolge;
-Priority- und Unbounded-Varianten sind verfügbar.  Siehe
+**Mailbox.**  Die Nachrichten-Queue pro Actor.  Per Default
+unbounded FIFO; begrenze sie pro Actor mit `withMailboxCapacity`, oder
+liefere eine eigene Priority-Mailbox.  Siehe
 [Mailboxes](/de/fundamentals/mailboxes/).
 
 **Dispatcher.**  Plant, wann `onReceive` eines Actors auf dem

@@ -187,11 +187,14 @@ the routees are actually doing.
 - **Know about cost, only about count.**  Ten trivial messages look
   deeper than one enormous one.  Queue length is a proxy for load,
   not a measurement of it.
-- **Apply back-pressure.**  When every bounded mailbox is at capacity
-  the depths tie and the message is routed anyway; what happens to a
-  message that does not fit is the mailbox's overflow policy
-  (`drop-head` / `drop-new` / `reject`).  A strategy that refused to
-  route would be inventing back-pressure the caller never configured.
+- **Apply back-pressure.**  The message is routed to the shallowest
+  routee whatever that depth is; a strategy that refused to route would
+  be inventing back-pressure the caller never configured.  On the
+  unbounded default there is no "does not fit", so depth stays a true
+  reading of backlog however far behind the pool falls.  Bound the
+  routees and the depths tie once they all sit at capacity, at which
+  point the rotation takes over and the overflow policy (`drop-head` /
+  `drop-new` / `reject`) decides what happens to the message.
 - **Read a remote mailbox live.**  Depth is in-process state.  The
   cluster variant below gets it across nodes, but only as a cached
   reading.
