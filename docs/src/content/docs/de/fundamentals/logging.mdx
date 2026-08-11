@@ -419,12 +419,19 @@ Wartungslauf, ein Retry-Timer.
 
 ```ts
 override onReceive(_message: string): void {
-  void LogContext.runFresh(async () => {
+  LogContext.runFresh(async () => {
     await this.rebuildIndex();
     this.sink.tell('index-rebuilt');        // ← trägt keine Tenant-Felder
-  });
+  }).catch((error) => this.log.error('index rebuild failed', error));
 }
 ```
+
+Das `.catch` ist keine Zierde. Niemand awaitet dieses Promise, eine
+Rejection hat also keinen Ort, an den sie gehen könnte: Auf Node ist
+eine unbehandelte Rejection seit v15 standardmäßig fatal, ein
+fehlschlagender Rebuild reißt also den Prozess mit, statt eine Zeile zu
+loggen. Ein `void` vor dem Aufruf würde den Linter beruhigen und den
+Absturz behalten.
 
 Es ist die Umkehrung von `with()`: wo `with` erbt und ergänzt, startet
 `runFresh` bewusst leer. Das schlägt sicher fehl — ein Feld, das
@@ -452,10 +459,10 @@ private onBuffer(m: BufferMessage): void {
 }
 
 private onDrain(): void {
-  void LogContext.runEach(this.buffered.splice(0), async (item) => {
+  LogContext.runEach(this.buffered.splice(0), async (item) => {
     await this.flush(item);
     this.sink.tell(item);                   // ← der EIGENE Tenant je Item
-  });
+  }).catch((error) => this.log.error('drain failed', error));
 }
 ```
 
@@ -476,6 +483,13 @@ statt gemerged.
   gehört nicht in ein Diagnose-Primitiv; willst du Isolation je Item,
   gehört das `try`/`catch` in den Callback, wo es weiterhin unter dem
   richtigen Kontext läuft.
+
+  Genau deshalb endet der Aufruf oben auf `.catch` und beginnt nicht mit
+  `void`. Niemand awaitet das zurückgegebene Promise, eine Rejection,
+  die daraus entkommt, ist also unbehandelt — auf Node seit v15
+  standardmäßig fatal. Das Framework hält es bei eigener aufgeschobener
+  Arbeit genauso: `Scheduler.scheduleOnceFunction` verpackt den Task in
+  `runGuarded`, statt ihn blank abzufeuern.
 </Aside>
 
 ## Strukturiertes Logging — `withFields` + MDC zusammen

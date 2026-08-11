@@ -214,10 +214,13 @@ class IsolatingCollector extends Actor<CollectorMessage> {
   }
 
   private onDrain(): void {
-    void LogContext.runEach(this.buffered.splice(0), async (item) => {
+    // `.catch`, not `void`: nothing awaits this, so a rejection escaping it is
+    // unhandled — fatal by default on Node since v15.  The same shape the
+    // logging docs teach since #1063, and the reason they had to change.
+    LogContext.runEach(this.buffered.splice(0), async (item) => {
       await sleep(1);
       this.sink.tell(item);
-    });
+    }).catch((error) => this.log.error('drain failed', error as Error));
   }
 }
 
@@ -226,10 +229,10 @@ class DetachedWorker extends Actor<string> {
   constructor(private readonly observed: Array<Record<string, unknown>>) { super(); }
 
   override onReceive(_m: string): void {
-    void LogContext.runFresh(async () => {
+    LogContext.runFresh(async () => {
       await sleep(1);
       this.observed.push({ ...LogContext.get() });
-    });
+    }).catch((error) => this.log.error('detached work failed', error as Error));
   }
 }
 
