@@ -167,6 +167,51 @@ const gelfSinkOptions = GelfSinkOptions.create()
   .withTls({ ca: process.env['GRAYLOG_CA']! });
 ```
 
+## Parseable
+
+```ts
+import { ActorSystem, ActorSystemOptions, ParseableSink, ParseableSinkOptions } from 'actor-ts';
+
+const parseableSinkOptions = ParseableSinkOptions.create()
+  .withUrl('https://parseable.internal')
+  .withStream('app-logs')
+  .withApiKey(process.env['PARSEABLE_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new ParseableSink(parseableSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.parseable {
+  enabled = true
+  url     = "https://parseable.internal"
+  stream  = "app-logs"
+  api-key = ${?PARSEABLE_API_KEY}
+}
+```
+
+Ein Batch wird zu einem JSON-Array, das an `/api/v1/ingest` geschickt
+wird, mit dem Ziel-Dataset im Header `X-P-Stream`.  Parseable legt das
+Dataset beim ersten Mal an, es ist also nichts vorzubereiten.
+
+Records gehen **flach** hinaus —
+`{ timestamp, level, source, message, ...fields }` —, weil Parseable
+geschachtelte Objekte beim Ingest ohnehin flach zieht.  Flach zu senden
+hält jedes Feld einzeln abfragbar und spart eine Runde serverseitiges
+Umschreiben.
+
+Authentifiziere entweder mit API-Key oder mit Basic-Auth-Zugangsdaten,
+nie mit beidem; der Validator lehnt die Kombination beim Konstruieren ab,
+statt jeden Flush scheitern zu lassen.
+
+Ein Batch über Parseables 10-MiB-Grenze wird **geteilt**, nicht
+abgeschnitten.  Diese Grenze ist wichtig, weil ihr Überschreiten kein
+wiederholbarer Fehler ist — der Server weist die ganze Anfrage ab, ein zu
+großer Batch ginge also vollständig verloren.
+
+Parseable nimmt auch OTLP/HTTP mit JSON-Body entgegen, der
+[OTLP-Sink](#otlp--opentelemetry-über-http) erreicht es also ebenfalls.
+Nimm diesen hier für die einfachere Record-Form — oder jenen, wenn du
+ohnehin auf OTLP standardisiert bist.
+
 ## Verwandt
 
 - [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird

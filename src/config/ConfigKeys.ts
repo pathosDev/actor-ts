@@ -45,6 +45,7 @@ export const ConfigKeys = {
       file: 'actor-ts.logger.sinks.file',
       gelf: 'actor-ts.logger.sinks.gelf',
       otlp: 'actor-ts.logger.sinks.otlp',
+      parseable: 'actor-ts.logger.sinks.parseable',
     },
   },
 

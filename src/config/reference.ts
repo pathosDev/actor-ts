@@ -105,6 +105,26 @@ actor-ts {
           queue-capacity = 10000
         }
       }
+
+      # Parseable's REST ingestion.  Its OTLP endpoint works too — this
+      # sink sends a flatter record and skips OTLP semantics.
+      parseable {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "https://parseable.internal"
+        stream    = ""             # target dataset; created on first use
+        # Basic auth OR an API key, never both.  Prefer a substitution
+        # (\${?PARSEABLE_API_KEY}) over writing a secret in here.
+        username  = ""
+        password  = ""
+        api-key   = ""
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
     }
   }
 
