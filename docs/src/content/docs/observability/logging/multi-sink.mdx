@@ -1,0 +1,213 @@
+---
+title: Multi-sink logging
+description: Send one log record to several destinations at once — console, a rotating file, a log platform — each with its own minimum level, with bounded delivery and a guaranteed flush on shutdown.
+---
+
+The [default logger](/fundamentals/logging/) writes to exactly one
+place.  `MultiSinkLogger` fans every record out to **several
+destinations at once**, each with its own minimum level:
+
+```ts
+import { ActorSystem, ActorSystemOptions, ConsoleSink, LogLevel } from 'actor-ts';
+
+const consoleSink = new ConsoleSink();
+const systemOptions = ActorSystemOptions.create().withLogSinks([consoleSink]);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+`withLogSinks` is the shorthand: the system wraps the list in a
+`MultiSinkLogger`, hands the sinks its scheduler, and flushes them when
+it terminates.  Everything else stays as it was — `this.log` inside an
+actor, the levels, the [MDC](/fundamentals/logging/#log-context-mdc).
+
+## Why not just write your own `Logger`?
+
+You can — `Logger` is a documented extension point, and a hand-written
+implementation that writes to two places works.  What it does not get
+you is the part that is easy to get wrong:
+
+- **the record is built once**, not once per destination;
+- **a broken destination stays broken alone** — it cannot throw into
+  your code, and it cannot take the other destinations down with it;
+- **delivery is bounded** — a slow endpoint drops records instead of
+  growing a queue until the process dies;
+- **shutdown flushes** what is still buffered, within a deadline.
+
+## Per-sink levels
+
+Every sink declares a `minLevel`, and the pipeline only hands it
+records at or above it:
+
+```ts
+import { ConsoleSink, LogLevel } from 'actor-ts';
+
+const humanConsole = new ConsoleSink({ minLevel: LogLevel.Info });
+const auditConsole = new ConsoleSink({ minLevel: LogLevel.Error, format: 'json' });
+const systemOptions = ActorSystemOptions.create().withLogSinks([humanConsole, auditConsole]);
+```
+
+There are **two gates**, and they compose in one direction only.  The
+system level (`actor-ts.logger.level`, or `withLogLevel`) decides what
+is produced at all; a sink's `minLevel` narrows it further:
+
+```
+actor-ts.logger.level = "info"   ← nothing below info exists
+  └── console sink  min-level = "info"    → gets info and above
+  └── file sink     min-level = "debug"   → still gets info and above
+```
+
+A sink asking for `debug` while the system level is `info` receives
+nothing.  Lower the system level first, then narrow per sink — that
+ordering is what keeps a suppressed log call as cheap as a comparison.
+
+## Choosing a format
+
+`ConsoleSink` renders either shape:
+
+```ts
+const humanReadable = new ConsoleSink({ format: 'text' });   // the default
+const machineReadable = new ConsoleSink({ format: 'json' }); // one NDJSON object per line
+```
+
+`text` is what `ConsoleLogger` has always written, down to the byte, and
+positional arguments go to `console.*` untouched — an `Error` still
+renders with its stack, an object still opens as an inspectable
+preview.  `json` is what `JsonLogger` writes, down to the key order, so
+whatever parses your logs today keeps working.
+
+By default `text` goes through `console.debug/log/warn/error` (which is
+what gives you colouring and level routing in a terminal or devtools)
+and `json` goes to stdout as a single stream.  Force one with `stream`:
+
+```ts
+const consoleSink = new ConsoleSink({ format: 'json', stream: 'stderr' });
+```
+
+## Redacting records
+
+The pipeline takes one `transform` hook, applied **once** before
+fan-out.  It rewrites a record, or returns `null` to drop it:
+
+```ts
+import { MultiSinkLogger, MultiSinkLoggerOptions } from 'actor-ts';
+
+const loggerOptions = MultiSinkLoggerOptions.create()
+  .withSinks([consoleSink])
+  .withTransform((record) => ({
+    ...record,
+    message: record.message.replace(/Bearer [\w.-]+/g, 'Bearer [redacted]'),
+  }));
+const logger = new MultiSinkLogger(loggerOptions);
+```
+
+Running before fan-out is the point: every destination sees the same
+redacted record, so there is no question of which one got the raw
+value.  Keep it cheap and total — it runs on the caller's stack for
+every record that passes the level gate.  A `transform` that throws is
+reported and the record is kept unchanged, because silently deleting
+somebody's log stream is the worse failure.
+
+## Configuring sinks in HOCON
+
+Sinks can come from configuration instead of code:
+
+```hocon
+actor-ts {
+  logger {
+    level = "debug"
+    sinks {
+      console {
+        enabled   = true
+        min-level = "info"
+        format    = "json"
+      }
+    }
+  }
+}
+```
+
+Every sink ships **disabled**; enabling at least one replaces the
+default single `ConsoleLogger` with a `MultiSinkLogger` over the
+enabled set.  With nothing enabled, a system behaves exactly as it did
+before this existed.
+
+**Code and config do not merge.**  Passing `withLogger` or
+`withLogSinks` replaces the whole `sinks` block rather than adding to
+it.  A destination is described in one place or the other, never half
+in each — and options are validated in the constructor that owns them,
+which is only possible if that constructor sees all of them.  The
+precedence, highest first:
+
+1. `withLogger(...)` — your own `Logger`, used as-is;
+2. `withLogSinks([...])` — wrapped in a `MultiSinkLogger`;
+3. `actor-ts.logger.sinks.*` — the enabled blocks;
+4. the single `ConsoleLogger` default.
+
+A sink that needs a live object — an SDK instance, a TLS key — has no
+HOCON block at all and is configured in code by necessity.  Each such
+sink says so on its own page.
+
+## Shutdown
+
+`system.terminate()` flushes and closes the sinks before
+`whenTerminated()` resolves, bounded by `actor-ts.logger.close-timeout`
+(3 s by default):
+
+```hocon
+actor-ts.logger.close-timeout = 10s
+```
+
+The flush runs after every actor's `postStop`, so a parting message
+from a stopping actor is still in the batch being drained.  It also
+covers both shutdown paths — a direct `terminate()` and a
+[coordinated shutdown](/fundamentals/coordinated-shutdown/), whose last
+phase calls `terminate()` anyway.
+
+A destination that hangs cannot hold the process: when the budget
+expires the shutdown continues, and a line on the console says what was
+dropped.  Records logged *after* the sinks close fall back to a plain
+console line rather than disappearing — shutdown is exactly when a last
+message matters.
+
+## Writing your own sink
+
+A sink is a small object.  `name`, `minLevel` and `write` are all that
+is required:
+
+```ts
+import type { LogRecord, LogSink } from 'actor-ts';
+import { formatJsonLine, LogLevel } from 'actor-ts';
+
+class WebhookSink implements LogSink {
+  readonly name = 'webhook';
+  readonly minLevel = LogLevel.Error;
+
+  write(record: LogRecord): void {
+    // Fire-and-forget: `write` must not block the caller...
+    void fetch('https://example.com/hook', { method: 'POST', body: formatJsonLine(record) })
+      // ...and must never throw into it.
+      .catch(() => {});
+  }
+}
+```
+
+Three rules make a sink safe to put underneath an application:
+
+1. **`write` never throws.**  The pipeline catches anyway, but a sink
+   that leans on that loses the rest of its batch.
+2. **`write` never blocks.**  Hand the record to a queue and return.
+   For anything that batches or retries, extend `BatchingSink` rather
+   than building that machinery again.
+3. **A sink never logs through the framework logger.**  It *is* the
+   framework logger; reporting a failure that way feeds the failure
+   back into the thing that failed.  Use `SinkReporter`, which
+   rate-limits to the console.
+
+The optional members are `attach(context)` (you get the system's
+scheduler and name), `flush()` and `close()`.
+
+## Related
+
+- [Logging](/fundamentals/logging/) — levels, `withFields`, the MDC
+- [Coordinated shutdown](/fundamentals/coordinated-shutdown/) — where the flush sits
+- [reference.conf](/reference/reference-conf/) — every logging key in one place

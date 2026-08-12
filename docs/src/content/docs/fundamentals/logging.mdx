@@ -112,6 +112,25 @@ to be ambiguous, shared between actors, or to change mid-flight.
 [DevTools](/observability/devtools/actor-visualizer/) shows it as the
 row label, with the path still in the tooltip.
 
+## Logging to more than one place
+
+Everything on this page describes **one** destination: the logger you
+configure writes where it writes.  When you need the same record in
+several places at once — the console *and* a rotating file *and* a log
+platform, each with its own minimum level — reach for
+[multi-sink logging](/observability/logging/multi-sink/).
+
+```ts
+import { ActorSystem, ActorSystemOptions, ConsoleSink } from 'actor-ts';
+
+const consoleSink = new ConsoleSink();
+const actorSystemOptions = ActorSystemOptions.create().withLogSinks([consoleSink]);
+const system = ActorSystem.create('my-app', actorSystemOptions);
+```
+
+Nothing else changes: `this.log`, the levels, `withFields` and the MDC
+below all behave exactly the same.
+
 ## Structured JSON logs — built-in `JsonLogger`
 
 For log-aggregation pipelines (Loki, ELK, Datadog, CloudWatch,
@@ -509,6 +528,8 @@ log aggregator gets a query-friendly record.
   of the context every actor has.
 - **[Actor system](/fundamentals/actor-system/)** — the
   `logger` / `logLevel` settings.
+- **[Multi-sink logging](/observability/logging/multi-sink/)** —
+  one record to several destinations, each with its own level.
 - **[Tracing](/observability/tracing/tracer-api/)** —
   span-id propagation built on the same `AsyncLocalStorage`
   primitive.

@@ -9,6 +9,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-sink logging — one record, several destinations** (#1151).  The
+  logger wrote to exactly one place: `system.log` was a single `Logger`, and
+  the only knob was `actor-ts.logger.level`.  Sending the same record to the
+  console *and* a file *and* an aggregator meant hand-writing a `Logger` that
+  multiplexes and re-implements level handling, MDC merging and formatting.
+
+  `MultiSinkLogger` fans each record out to a list of `LogSink`s, each with
+  its own minimum level:
+
+  ```ts
+  const consoleSink = new ConsoleSink({ minLevel: LogLevel.Info });
+  const auditSink = new ConsoleSink({ minLevel: LogLevel.Error, format: 'json' });
+  const systemOptions = ActorSystemOptions.create().withLogSinks([consoleSink, auditSink]);
+  const system = ActorSystem.create('my-app', systemOptions);
+  ```
+
+  Or from configuration — every sink ships disabled, and enabling one
+  replaces the default single `ConsoleLogger`:
+
+  ```hocon
+  actor-ts.logger.sinks.console { enabled = true, min-level = "info", format = "json" }
+  ```
+
+  The pieces: `LogRecord` (built once per call, carrying the MDC captured
+  **synchronously at emit**, since a sink that flushes later runs in another
+  async context and could not read it), the `LogSink` contract
+  (`{ name, minLevel, write }` is a complete sink, with `attach` / `flush` /
+  `close` optional), `ConsoleSink`, and `formatTextLine` / `formatJsonLine` —
+  which reproduce `ConsoleLogger` and `JsonLogger` byte for byte, key order
+  included, so existing log parsers keep working.
+
+  The level gate runs at the call site, so a suppressed call costs a
+  comparison.  A sink that throws is caught, reported through a rate limiter
+  to `console.error` — never through the logger it is part of — and skipped,
+  while the other sinks still get the record.  `withSource` / `withFields`
+  return views over one shared pipeline, so a thousand actors still mean one
+  set of sinks, attached once and closed once.
+
+  `terminate()` now flushes and closes the logger before `whenTerminated()`
+  resolves, bounded by the new `actor-ts.logger.close-timeout` (3 s).  That
+  seam covers both shutdown paths, since `CoordinatedShutdown` ends by
+  calling `terminate()`, and it runs after the last `postStop` so a parting
+  message is still in the batch.  Any logger with a `close()` is flushed —
+  the check is structural, so a third-party one benefits too.
+
+  `Logger`, `ConsoleLogger`, `JsonLogger` and `NoopLogger` are untouched;
+  `Logger` remains a documented extension point and gained no members.
+
+### Security
+
+- **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`
+  takes a `transform` hook applied once, before fan-out, that rewrites a
+  record or drops it by returning `null` — one place to mask a token or a
+  credential-bearing URL that reached the MDC, rather than one per sink
+  (relevant to #590, #592, #741).  No sink option that carries a credential
+  is readable from HOCON.
+
 ## [0.15.0] — 2026-08-12
 
 ### Added

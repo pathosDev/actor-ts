@@ -14,7 +14,29 @@ actor-ts {
   }
 
   logger {
+    # System log level.  Gates BEFORE the per-sink min-levels below, so a
+    # sink asking for "debug" while this says "info" receives nothing —
+    # lower this first, then narrow per sink.
     level = "info"   # debug | info | warn | error | off
+
+    # Grace period terminate() gives the active logger to flush and close
+    # its sinks before whenTerminated() resolves.  Bounds the whole logger,
+    # so it applies to a custom one too — any logger with a close().
+    close-timeout = 3s
+
+    # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
+    # replaces the default single ConsoleLogger with a MultiSinkLogger over
+    # the enabled set.  An explicit logger (or logSinks) passed to
+    # ActorSystem.create replaces this whole block rather than merging with
+    # it -- a sink belongs to one construction world or the other.
+    sinks {
+      console {
+        enabled   = false
+        min-level = "info"     # debug | info | warn | error | off
+        format    = "text"     # text = human-readable, json = one NDJSON object per record
+        stream    = "auto"     # auto | stdout | stderr; auto = console.* for text, stdout for json
+      }
+    }
   }
 
   dispatcher {
