@@ -40,7 +40,7 @@ import {
   ReceiveTimeout,
   Terminated,
 } from '../SystemMessages.js';
-import { Envelope, Mailbox } from './Mailbox.js';
+import { Envelope, Mailbox, reportsDrops, type MailboxDropReason } from './Mailbox.js';
 import {
   describeMessagePayload,
   describeMessageType,
@@ -1098,10 +1098,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * The actor's queue.  Three shapes, in precedence order:
    *
    *   1. `withMailbox(...)` — the caller owns the whole queue, bound and
-   *      policy included; the cell wires nothing into it.
+   *      policy included.
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
-   *      framework picks an overflow policy on a caller's behalf, and the
-   *      only one whose drops reach `actor_mailbox_dropped_total`.
+   *      framework picks an overflow policy on a caller's behalf.
    *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
@@ -1111,6 +1110,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *      caller's decision.  Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
    *
+   * Drop reporting is wired *after* the choice rather than inside it, so all
+   * three shapes get it on one line.  Wiring it at the construction site is
+   * what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149): the
+   * cell can only pass `onDrop` into a mailbox it builds itself, and shape 1
+   * is by definition one it did not.
+   *
    * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
    * the call sits in the constructor body, and whether the parameter
    * property is assigned by then depends on the emit order for parameter
@@ -1118,12 +1123,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * moot.
    */
   private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+    const mailbox = this._buildMailbox(blueprint);
+    if (reportsDrops(mailbox)) mailbox.observeDrops((reason) => this._onMailboxDrop(reason));
+    return mailbox;
+  }
+
+  /** The queue itself — see {@link _createMailbox} for the three shapes. */
+  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
     if (blueprint.mailboxCapacity === undefined) return new Mailbox<TMessage>();
     return new BoundedMailbox<TMessage>({
       capacity: blueprint.mailboxCapacity,
       overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
-      onDrop: (reason) => this._onMailboxDrop(reason),
     });
   }
 
@@ -1147,18 +1158,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * Callback wired from the default `BoundedMailbox` — fires once per
-   * dropped message.  Increments `actor_mailbox_dropped_total` with
+   * Observer registered on any mailbox that reports its drops — fires once
+   * per discarded message.  Increments `actor_mailbox_dropped_total` with
    * labels {class, path, reason} so operators can spot slow-consumer
    * signals on the standard observability stack.  Cheap when metrics
    * are disabled (the noop registry's counter is a single object lookup).
    */
-  private _onMailboxDrop(reason: 'drop-head' | 'drop-new'): void {
+  private _onMailboxDrop(reason: MailboxDropReason): void {
     const cls = this.actor?.constructor.name ?? 'unknown';
     metricsOf(this.system).counter(
       'actor_mailbox_dropped_total',
       { class: cls, path: this.path.toString(), reason },
-      { help: 'Cumulative count of user messages dropped by a bounded mailbox\'s overflow policy.' },
+      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
     ).inc();
   }
 

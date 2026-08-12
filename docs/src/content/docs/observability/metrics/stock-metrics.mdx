@@ -48,11 +48,12 @@ the metric is empty.  A mailbox that drains back below the floor reads
 0 rather than its last spike, and the same threshold produces a log
 warning (repeated at each doubling) whether or not metrics are on.
 
-`actor_mailbox_dropped_total` is the **shedding** signal, and only
-appears for actors someone bounded with `withMailboxCapacity` — the
-`reason` label records the overflow policy that fired (`drop-head` /
-`drop-new`).  A `BoundedMailbox` you construct yourself and pass to
-`withMailbox` is not wired to this counter.
+`actor_mailbox_dropped_total` is the **shedding** signal, and only appears
+for actors whose mailbox discards something — which, since the default is
+unbounded, means actors someone deliberately bounded.  The `reason` label
+records the policy that fired (`drop-head` / `drop-new`).  Both ways of
+bounding are covered: `withMailboxCapacity`, and a mailbox you build
+yourself and pass to `withMailbox`.
 
 ## Cluster metrics
 

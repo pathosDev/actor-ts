@@ -787,7 +787,9 @@ export {
   PriorityMailboxOptionsBuilder,
 } from './mailbox/index.js';
 export type {
+  DropReportingMailbox,
   Envelope,
+  MailboxDropReason,
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
   PriorityMailboxOptionsType,

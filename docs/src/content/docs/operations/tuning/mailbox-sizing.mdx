@@ -159,12 +159,12 @@ The same 10 000 threshold produces a log warning, repeated at each
 doubling, whether or not metrics are enabled.  That is the line to
 alert on if you run no metrics stack.
 
-<Aside type="note" title="A mailbox you supplied reports no drops">
-  `actor_mailbox_dropped_total` is wired by the framework, and the
-  framework only wires the mailbox it built — the one you get from
-  `withMailboxCapacity`.  A `BoundedMailbox` you construct yourself
-  and pass to `withMailbox` keeps its own `droppedCount`, but nothing
-  reads it for you.
+<Aside type="note" title="Every mailbox reports, including yours">
+  `actor_mailbox_dropped_total` covers the mailbox you get from
+  `withMailboxCapacity` and the one you build yourself and pass to
+  `withMailbox` alike — the cell registers its observer on whatever
+  implements `DropReportingMailbox`.  A `BoundedMailboxOptions.onDrop` of
+  your own keeps firing alongside it.
 </Aside>
 
 ## The three overflow policies, compared
