@@ -1,0 +1,99 @@
+---
+title: Log-Plattform-Integrationen
+description: Logs an einen Collector oder eine Log-Plattform schicken — OTLP über HTTP zuerst, weil ein Endpunktformat die meisten erreicht, und native Sinks dort, wo es das nicht tut.
+---
+
+Sinks, die Records von der Maschine wegschicken.  Fang mit **OTLP** an:
+Ein Endpunktformat erreicht die meisten Plattformen, ein nativer Sink
+lohnt sich also nur dort, wo OTLP nicht hinkommt oder etwas verliert.
+
+| Plattform | Erreichbar über |
+| --- | --- |
+| OpenTelemetry Collector | [OTLP](#otlp--opentelemetry-über-http) |
+| Grafana Loki 3+ | OTLP (`/otlp/v1/logs`) |
+| Parseable | OTLP oder der native Sink |
+| SigNoz, Datadog, Axiom, Honeycomb, New Relic | OTLP |
+| Graylog | **nur GELF** — sein OTLP-Input spricht gRPC, das dieser OTLP-Sink nicht kann |
+| Sentry | das eigene SDK — die Fehlergruppierung *ist* das Produkt |
+
+## OTLP — OpenTelemetry über HTTP
+
+```ts
+import { ActorSystem, ActorSystemOptions, OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts';
+
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('http://collector:4318/v1/logs')
+  .withGzip(true);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new OtlpHttpSink(otlpSinkOptions)]);
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+```hocon
+actor-ts.logger.sinks.otlp {
+  enabled = true
+  url     = "http://collector:4318/v1/logs"
+  gzip    = true
+}
+```
+
+Records gehen als `ExportLogsServiceRequest` in proto3-JSON hinaus — ohne
+Protobuf-Bibliothek, ohne OpenTelemetry-SDK:
+
+```json
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"orders"}}]},
+ "scopeLogs":[{"scope":{"name":"actor-ts"},"logRecords":[{
+   "timeUnixNano":"1786527662113000000","severityNumber":9,"severityText":"INFO",
+   "body":{"stringValue":"placing order"},
+   "attributes":[{"key":"actor.path","value":{"stringValue":"actor-ts://orders/user/order"}}]}]}]}]}
+```
+
+`service.name` fällt auf den Namen des Actor-Systems zurück — worauf ein
+Backend gruppiert, sollte sagen, wie der *Dienst* heißt, nicht wie die
+Bibliothek heißt.  Mit `serviceName` überschreibbar.
+
+Die Level bilden auf die OTel-Severity-Bänder ab: `debug` → 5, `info` → 9,
+`warn` → 13, `error` → 17, jeweils mit passendem `severityText`.  Felder
+werden zu typisierten Attributen; der Pfad eines Actors kommt als
+`actor.path` an, sein Display-Name als `actor.name`.
+
+### Warum nicht das OpenTelemetry-SDK?
+
+Für [Tracing](/de/observability/tracing/otel-adapter/) und die
+OTel-Logs-Brücke nutzt das Framework durchaus das SDK-Import des Nutzers.
+Dieser Sink tut das nicht, und der Grund ist asymmetrisch: Das *Protokoll*
+ist stabil und seine JSON-Kodierung spezifiziert, während das
+**JavaScript-Logs-SDK weiterhin ein experimentelles 0.x** ist, dessen
+Releases brechen dürfen.  Ein festes Wire-Format ist die sicherere
+Grundlage.
+
+Wenn du das OTel-SDK ohnehin betreibst und Records durch *dessen* Pipeline
+schicken willst, nimm `otelLogger()` — dieser Weg nimmt dein Import und
+emittiert über den `LoggerProvider` des SDKs.
+
+### Retries
+
+Der Sink folgt der Regel der OTLP-Spezifikation: **429, 502, 503 und 504**
+werden wiederholt (unter Beachtung von `Retry-After`), alles andere nicht.
+Ein 400 oder 401 beschreibt die *Anfrage*; sie unverändert erneut zu
+senden kann keine andere Antwort erzeugen — also wird sie verworfen und
+einmal gemeldet, statt fünfmal gegen einen Dienst zu laufen, der sie nie
+annehmen wird.
+
+### Zugangsdaten
+
+`headers` gibt es nur im Code und ohne HOCON-Leaf:
+
+```ts
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('https://otlp.example.com/v1/logs')
+  .withHeaders({ authorization: `Bearer ${process.env['OTLP_TOKEN']}` });
+```
+
+Ein API-Key in einer Konfigurationsdatei landet in der Versionsverwaltung.
+Lies ihn aus der Umgebung und übergib ihn hier.
+
+## Verwandt
+
+- [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird
+- [Datei-Sink](/de/observability/logging/file-sink/) — lokale Dateien, ohne Collector
+- [OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/) — dieselben Backends, für Spans

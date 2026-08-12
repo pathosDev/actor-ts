@@ -1,0 +1,97 @@
+---
+title: Log platform integrations
+description: Ship logs to a collector or a log platform — OTLP over HTTP first, because one endpoint format reaches most of them, and native sinks where it does not.
+---
+
+Sinks that ship records off the machine.  Start with **OTLP**: one
+endpoint format reaches most platforms, so a native sink only earns its
+place where OTLP does not reach or loses something.
+
+| Platform | Reach it with |
+| --- | --- |
+| OpenTelemetry Collector | [OTLP](#otlp--opentelemetry-over-http) |
+| Grafana Loki 3+ | OTLP (`/otlp/v1/logs`) |
+| Parseable | OTLP, or the native sink |
+| SigNoz, Datadog, Axiom, Honeycomb, New Relic | OTLP |
+| Graylog | **GELF only** — its OTLP input is gRPC, which this OTLP sink does not speak |
+| Sentry | its own SDK — error grouping is the product |
+
+## OTLP — OpenTelemetry over HTTP
+
+```ts
+import { ActorSystem, ActorSystemOptions, OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts';
+
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('http://collector:4318/v1/logs')
+  .withGzip(true);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new OtlpHttpSink(otlpSinkOptions)]);
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+```hocon
+actor-ts.logger.sinks.otlp {
+  enabled = true
+  url     = "http://collector:4318/v1/logs"
+  gzip    = true
+}
+```
+
+Records go out as an `ExportLogsServiceRequest` in proto3 JSON — no
+protobuf library, no OpenTelemetry SDK:
+
+```json
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"orders"}}]},
+ "scopeLogs":[{"scope":{"name":"actor-ts"},"logRecords":[{
+   "timeUnixNano":"1786527662113000000","severityNumber":9,"severityText":"INFO",
+   "body":{"stringValue":"placing order"},
+   "attributes":[{"key":"actor.path","value":{"stringValue":"actor-ts://orders/user/order"}}]}]}]}]}
+```
+
+`service.name` defaults to the actor system's name — the thing a backend
+groups by should say what the *service* is called, not what the library
+is called. Set `serviceName` to override it.
+
+Levels map onto the OTel severity bands: `debug` → 5, `info` → 9,
+`warn` → 13, `error` → 17, with the matching `severityText`.  Fields
+become typed attributes; an actor's path arrives as `actor.path` and its
+display name as `actor.name`.
+
+### Why not the OpenTelemetry SDK?
+
+The framework does depend on the user's own OTel import for
+[tracing](/observability/tracing/otel-adapter/) and the OTel logs bridge.
+This sink does not, and the reason is asymmetric: the *protocol* is
+stable and its JSON encoding is specified, while the JavaScript **logs
+SDK is still an experimental 0.x** whose releases may break.  A fixed
+wire format is the safer thing to build on.
+
+If you already run the OTel SDK and want records to flow through *its*
+pipeline instead, use `otelLogger()` — that path takes your import and
+emits through the SDK's `LoggerProvider`.
+
+### Retries
+
+The sink follows the OTLP specification's rule: **429, 502, 503 and 504**
+are retried (honouring `Retry-After`), everything else is not.  A 400 or a
+401 describes the request, and sending it again unchanged cannot produce a
+different answer — so it is dropped and reported once rather than retried
+five times against a service that will never accept it.
+
+### Credentials
+
+`headers` is code-only and has no HOCON leaf:
+
+```ts
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('https://otlp.example.com/v1/logs')
+  .withHeaders({ authorization: `Bearer ${process.env['OTLP_TOKEN']}` });
+```
+
+An API key in a config file ends up in version control.  Read it from the
+environment and pass it here.
+
+## Related
+
+- [Multi-sink logging](/observability/logging/multi-sink/) — the pipeline these plug into
+- [File sink](/observability/logging/file-sink/) — local files, no collector needed
+- [OTel tracing adapter](/observability/tracing/otel-adapter/) — the same backends, for spans

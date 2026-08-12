@@ -117,6 +117,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   guaranteed to take the whole buffer and half a line in a log file is
   worse than none.  A smoke case runs the sink on all three runtimes.
 
+- **`OtlpHttpSink` — OpenTelemetry logs over HTTP** (#1154).  One endpoint
+  format reaches Grafana Loki 3+, Parseable, SigNoz, Datadog, Axiom,
+  Honeycomb, New Relic and every OpenTelemetry Collector, so this is the
+  sink to reach for before a platform-specific one.
+
+  ```ts
+  const otlpSinkOptions = OtlpHttpSinkOptions.create()
+    .withUrl('http://collector:4318/v1/logs')
+    .withGzip(true);
+  ```
+
+  Records go out as an `ExportLogsServiceRequest` in proto3 JSON — no
+  protobuf library and, deliberately, no OpenTelemetry SDK: the protocol is
+  stable and its JSON encoding specified, while the JavaScript logs SDK is
+  still an experimental 0.x whose releases may break.  Levels map onto the
+  OTel severity bands, fields become typed attributes, `service.name`
+  defaults to the actor system's name, and the body can be gzipped.
+
+  Timestamps go through `BigInt`.  `ms * 1e6` lands 64 ns short for a 2026
+  timestamp — and `String()` hides it, because JavaScript prints the
+  shortest decimal that round-trips to the wrong double.
+
+  Retry classification follows the specification: 429, 502, 503 and 504 are
+  retried honouring `Retry-After`; everything else describes the request and
+  is dropped rather than resent unchanged.  Request headers are code-only,
+  with no HOCON leaf, because they carry credentials.
+
+  `HttpDelivery` factors that classification out for the platform sinks
+  still to come.
+
 ### Security
 
 - **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`

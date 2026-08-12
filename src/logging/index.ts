@@ -66,7 +66,22 @@ export type {
   FileSinkFormat,
   FileSinkOptionsType,
 } from './FileSinkOptions.js';
+export { basicAuthorization, postToEndpoint, retryAfterMs } from './HttpDelivery.js';
+export type { FetchLike, HttpPostRequest } from './HttpDelivery.js';
 export { jsonSafeReplacer, normaliseArg } from './JsonSafe.js';
+export { OtlpHttpSink } from './OtlpHttpSink.js';
+export {
+  DEFAULT_OTLP_MIN_LEVEL,
+  DEFAULT_OTLP_REQUEST_TIMEOUT_MS,
+  DEFAULT_OTLP_SCOPE_NAME,
+  DEFAULT_OTLP_URL,
+  OtlpHttpSinkOptions,
+  OtlpHttpSinkOptionsBuilder,
+  OtlpHttpSinkOptionsValidator,
+  isOtlpSinkEnabled,
+  readOtlpSinkOptionsFromConfig,
+} from './OtlpHttpSinkOptions.js';
+export type { OtlpHttpSinkOptionsType } from './OtlpHttpSinkOptions.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';

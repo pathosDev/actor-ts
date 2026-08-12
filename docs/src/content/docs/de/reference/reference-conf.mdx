@@ -81,6 +81,27 @@ actor-ts {
           overflow       = "drop-new"   # drop-new | drop-head
         }
       }
+
+      # OpenTelemetry logs over HTTP with a JSON body.  One endpoint format
+      # reaches Loki 3+, Parseable, SigNoz, Datadog, Axiom, Honeycomb, New
+      # Relic and every OTel Collector — start here before a native sink.
+      otlp {
+        enabled   = false
+        min-level = "info"
+        url       = "http://localhost:4318/v1/logs"
+        # service.name on the OTLP resource; defaults to the system name.
+        service-name = ""
+        scope-name   = "actor-ts"
+        gzip         = false
+        request-timeout = 10s
+        # Request headers (API keys, tenant ids) are code-only: a config
+        # file is the wrong home for a credential.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
     }
   }
 
