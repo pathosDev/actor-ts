@@ -1,4 +1,5 @@
 import { LogContext, type LogContextData } from './LogContext.js';
+import { jsonSafeReplacer, normaliseArg } from './logging/JsonSafe.js';
 
 export enum LogLevel {
   Debug = 0,
@@ -239,42 +240,6 @@ export class JsonLogger implements Logger {
   withFields(fields: LogContextData): Logger {
     return new JsonLogger(this.level, this.source, { ...this.staticFields, ...fields }, this.sink);
   }
-}
-
-/**
- * Turn an `Error` into a plain object so `JSON.stringify` doesn't
- * collapse it to `"{}"` (Error's enumerable surface is empty).
- * Other values pass through unchanged — the replacer handles
- * remaining quirks (BigInt, circular).
- */
-function normaliseArg(v: unknown): unknown {
-  if (v instanceof Error) {
-    return {
-      name: v.name,
-      message: v.message,
-      ...(v.stack ? { stack: v.stack } : {}),
-    };
-  }
-  return v;
-}
-
-/**
- * JSON.stringify replacer:
- *  - BigInt → string (BigInt can't be JSON-serialised natively)
- *  - circular → `'[Circular]'`
- *  - function → undefined (drop)
- */
-function jsonSafeReplacer(): (this: unknown, key: string, value: unknown) => unknown {
-  const seen = new WeakSet<object>();
-  return function (_key, value) {
-    if (typeof value === 'bigint') return value.toString();
-    if (typeof value === 'function') return undefined;
-    if (value !== null && typeof value === 'object') {
-      if (seen.has(value)) return '[Circular]';
-      seen.add(value);
-    }
-    return value;
-  };
 }
 
 /**
