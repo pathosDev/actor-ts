@@ -1,3 +1,4 @@
+import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
 /**
@@ -112,6 +113,22 @@ export type HeartbeatAcknowledgmentMessage = {
 export type GossipMessage = {
   kind: 'gossip';
   from: NodeAddressData;
+  /**
+   * Strictly-increasing counter stamped by the node that composed the frame,
+   * seeded from its wall-clock at startup and bumped by one per frame (#112).
+   *
+   * It exists so a receiver can tell a *new* frame from a **recording of an
+   * old one**.  Nothing else on a gossip frame can: `members` is a snapshot
+   * whose versions are per-member and only move when a status changes, so a
+   * captured frame stays byte-for-byte valid indefinitely — and is accepted
+   * again the moment the receiver has dropped one of the entries it names,
+   * because the merge path's no-existing-entry branch has no lower bound to
+   * hold it to.
+   *
+   * Required, not optional: an optional field whose absence skips the check is
+   * bypassed by stripping it.
+   */
+  sequence: number;
   members: MemberData[];
 };
 
@@ -194,9 +211,28 @@ export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
  * payload bytes are buffered.  An attacker claiming a 4 GiB frame
  * hits the cap immediately and the decoder throws, so neither OOM
  * nor an indefinite stall is possible.
+ *
+ * **Decode cost (security, #588):** the accumulator is a slab plus a read
+ * cursor, not a `Uint8Array` rebuilt per chunk.  It used to be the latter —
+ * `buffer = concat(buffer, chunk)` — which copies everything received so far
+ * on *every* arriving chunk, so the work to assemble one frame was quadratic
+ * in the number of chunks it was split into.  The peer chooses that split:
+ * feeding a 16 MiB frame in ~1400-byte TCP-sized writes is ~12 000 chunks and
+ * ≈ 100 GB of memcpy, an amplification of roughly 6000× on bytes the attacker
+ * never had to send — and reachable before the `hello` gate, so no membership
+ * was required.  Appending into a slab copies each byte once on arrival, which
+ * makes the cost linear and the amplification 1×.
  */
 export class FrameDecoder {
-  private buffer: Uint8Array = new Uint8Array(0);
+  /**
+   * Bytes received and not yet decoded live in `slab[readOffset, writeOffset)`.
+   * The two cursors are what remove the copy: a decoded frame advances
+   * `readOffset` instead of reallocating, and the space it leaves is reclaimed
+   * by the next compaction rather than by a fresh allocation.
+   */
+  private slab: Uint8Array = new Uint8Array(0);
+  private readOffset = 0;
+  private writeOffset = 0;
   private readonly maxFrameBytes: number;
 
   constructor(maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES) {
@@ -206,42 +242,115 @@ export class FrameDecoder {
     this.maxFrameBytes = Math.trunc(maxFrameBytes);
   }
 
+  /**
+   * Bytes of a frame this decoder is still holding — zero when the buffer has
+   * drained exactly on a frame boundary.
+   *
+   * Exposed for the transport's stall deadline: "is a frame half-received?" is
+   * the question that decides whether a silent socket is a peer between frames
+   * (fine, that is most of them) or one holding memory it never intends to
+   * complete (#588).
+   */
+  pendingBytes(): number {
+    return this.writeOffset - this.readOffset;
+  }
+
   push(chunk: Uint8Array): WireMessage[] {
-    this.buffer = concat(this.buffer, chunk);
+    this.append(chunk);
     const out: WireMessage[] = [];
     const decoder = new TextDecoder();
-    while (this.buffer.byteLength >= HEADER_SIZE) {
-      const len = new DataView(
-        this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength,
+    while (this.pendingBytes() >= HEADER_SIZE) {
+      const length = new DataView(
+        this.slab.buffer, this.slab.byteOffset + this.readOffset, HEADER_SIZE,
       ).getUint32(0, false);
-      if (len > this.maxFrameBytes) {
+      if (length > this.maxFrameBytes) {
         // Reject BEFORE buffering — the attacker can't force an OOM
         // by claiming a 4 GiB frame.  Throwing here triggers
         // connection-shutdown in the transport layer.
         throw new Error(
-          `wire frame claims length ${len} > maxFrameBytes ${this.maxFrameBytes} — `
+          `wire frame claims length ${length} > maxFrameBytes ${this.maxFrameBytes} — `
           + `connection terminated to prevent OOM/DoS`,
         );
       }
-      if (this.buffer.byteLength < HEADER_SIZE + len) break;
-      const payload = this.buffer.subarray(HEADER_SIZE, HEADER_SIZE + len);
-      const json = decoder.decode(payload);
-      this.buffer = this.buffer.subarray(HEADER_SIZE + len);
+      if (this.pendingBytes() < HEADER_SIZE + length) break;
+      const payloadStart = this.readOffset + HEADER_SIZE;
+      const json = decoder.decode(this.slab.subarray(payloadStart, payloadStart + length));
+      this.readOffset = payloadStart + length;
       try {
         out.push(JSON.parse(json) as WireMessage);
       } catch (e) {
         throw new Error(`Invalid wire frame JSON: ${(e as Error).message}`);
       }
     }
+    this.reclaim();
     return out;
+  }
+
+  /* --------------------------- buffer management --------------------------- */
+
+  private append(chunk: Uint8Array): void {
+    if (chunk.byteLength === 0) return;
+    this.makeRoomFor(chunk.byteLength);
+    this.slab.set(chunk, this.writeOffset);
+    this.writeOffset += chunk.byteLength;
+  }
+
+  /**
+   * Make `extra` bytes fit after {@link writeOffset}, compacting in place when
+   * the slab is merely fragmented and growing only when it is genuinely too
+   * small.
+   *
+   * **Sized from what arrived, never from what was claimed.**  Allocating
+   * `HEADER_SIZE + length` the moment a header is read would be the obvious
+   * pre-sizing, and it re-opens the vector the frame cap closed: a peer claims
+   * just under the cap, sends no payload at all, and holds 16 MiB per
+   * connection for free.  Doubling off received bytes gives the same amortised
+   * cost with the resident size still bounded by what the peer actually paid
+   * to send.
+   */
+  private makeRoomFor(extra: number): void {
+    if (this.writeOffset + extra <= this.slab.byteLength) return;
+    const pending = this.pendingBytes();
+    const needed = pending + extra;
+    if (needed <= this.slab.byteLength) {
+      // The slab is big enough — the free space is just at the wrong end.
+      this.slab.copyWithin(0, this.readOffset, this.writeOffset);
+    } else {
+      let capacity = Math.max(this.slab.byteLength, INITIAL_FRAME_BUFFER_BYTES);
+      while (capacity < needed) capacity *= 2;
+      // Doubling amortises many small growths, but rounding a slab that is
+      // already frame-sized up to the next power of two would double the
+      // per-connection ceiling this decoder exists to bound — so above one
+      // whole frame the slab is sized to fit, not to the next step.
+      const ceiling = Math.max(needed, HEADER_SIZE + this.maxFrameBytes);
+      this.slab = replaceSlab(this.slab, this.readOffset, this.writeOffset, Math.min(capacity, ceiling));
+    }
+    this.readOffset = 0;
+    this.writeOffset = pending;
+  }
+
+  /**
+   * Hand a large slab back once the buffer has drained.
+   *
+   * A slab is as large as the biggest frame it ever had to hold, so without
+   * this one oversized envelope pins that much memory per connection until the
+   * peer disconnects.  Ordinary traffic never trips it: the buffer settles at
+   * {@link INITIAL_FRAME_BUFFER_BYTES}, well under the retention bound, and is
+   * reused for the life of the connection.
+   */
+  private reclaim(): void {
+    if (this.readOffset !== this.writeOffset) return;
+    this.readOffset = 0;
+    this.writeOffset = 0;
+    if (this.slab.byteLength > RETAINED_FRAME_BUFFER_BYTES) this.slab = new Uint8Array(0);
   }
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.byteLength + b.byteLength);
-  out.set(a, 0);
-  out.set(b, a.byteLength);
-  return out;
+/** Move `[start, end)` of `slab` into a fresh buffer of `capacity` bytes. */
+function replaceSlab(slab: Uint8Array, start: number, end: number, capacity: number): Uint8Array {
+  const grown = new Uint8Array(capacity);
+  grown.set(slab.subarray(start, end), 0);
+  return grown;
 }
 
 export const Protocol = {

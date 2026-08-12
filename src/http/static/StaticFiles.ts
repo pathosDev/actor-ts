@@ -137,13 +137,44 @@ async function serveResolvedFile(
   return { status: Status.OK, headers, contentType, body: await readFileBytes(fsPath) };
 }
 
-async function renderListing(fsPath: string, request: HttpRequest, atMountRoot: boolean, settings: ResolvedStaticOptions): Promise<HttpResponse> {
+/**
+ * `within-root` confinement for one filesystem hop: the canonicalised
+ * candidate must be `realRoot` itself or sit beneath it.  The root arrives
+ * already canonicalised because a single request checks several candidates
+ * — the resolved path, a directory's index file, and every listing entry
+ * are separate hops, and a `realpath` on one says nothing about the next
+ * (#575).
+ */
+async function isWithinRoot(candidate: string, realRoot: string): Promise<boolean> {
+  const realCandidate = await realPath(candidate);
+  if (realCandidate === null) return false;
+  return realCandidate === realRoot || realCandidate.startsWith(realRoot + sep);
+}
+
+async function renderListing(
+  fsPath: string,
+  request: HttpRequest,
+  atMountRoot: boolean,
+  settings: ResolvedStaticOptions,
+  realRoot: string | null,
+): Promise<HttpResponse> {
   const entries: ListingEntry[] = [];
-  for (const entry of await readDirectory(fsPath)) {
-    if (settings.dotfiles === 'deny' && entry.name.startsWith('.')) continue;
-    const stat = await statPath(join(fsPath, entry.name));
+  for (const name of await readDirectory(fsPath)) {
+    if (settings.dotfiles === 'deny' && name.startsWith('.')) continue;
+    const entryPath = join(fsPath, name);
+    const stat = await statPath(entryPath);
     if (!stat || (!stat.isFile && !stat.isDirectory)) continue; // skip broken symlinks / specials
-    entries.push({ name: entry.name, isDirectory: entry.isDirectory, size: stat.size, mtime: new Date(stat.mtimeMs) });
+    // An out-of-root entry is omitted rather than listed: its name, size and
+    // mtime are exactly the metadata `within-root` exists to withhold, and
+    // clicking it would 404 anyway.  Every entry is canonicalised, not just
+    // the ones a dirent flags as links — `readdir` type flags are false on a
+    // filesystem answering DT_UNKNOWN, which would turn this check off
+    // silently on the network mounts that need it most.
+    if (realRoot !== null && !(await isWithinRoot(entryPath, realRoot))) continue;
+    // `isDirectory` comes from the followed stat, not from a dirent: an
+    // in-root link to a directory behaves as a directory everywhere else in
+    // this module, so the listing links it with a trailing slash too.
+    entries.push({ name, isDirectory: stat.isDirectory, size: stat.size, mtime: new Date(stat.mtimeMs) });
   }
   const html = renderDirectoryListing({ urlPath: request.path, atMountRoot, entries });
   return {
@@ -161,9 +192,13 @@ async function serveFromDirectory(root: string, rawRest: string, request: HttpRe
   const stat = await statPath(resolved.fsPath);
   if (!stat) return notFound();
 
+  // Canonical root for the `within-root` policy, resolved once and reused by
+  // every later hop of this request; null means the policy is off
+  // (`symlinks: 'follow'`) and nothing is confined.
+  let realRoot: string | null = null;
   if (settings.symlinks === 'within-root') {
-    const [realFile, realRoot] = await Promise.all([realPath(resolved.fsPath), realPath(root)]);
-    if (!realFile || !realRoot || (realFile !== realRoot && !realFile.startsWith(realRoot + sep))) return notFound();
+    realRoot = await realPath(root);
+    if (realRoot === null || !(await isWithinRoot(resolved.fsPath, realRoot))) return notFound();
   }
 
   if (stat.isDirectory) {
@@ -171,10 +206,17 @@ async function serveFromDirectory(root: string, rawRest: string, request: HttpRe
     for (const index of settings.indexFiles) {
       const indexPath = join(resolved.fsPath, index);
       const indexStat = await statPath(indexPath);
-      if (indexStat && indexStat.isFile) return serveResolvedFile(indexPath, indexStat, request, settings, index);
+      if (!indexStat || !indexStat.isFile) continue;
+      // The index file is a hop of its own: `<dir>/index.html` can be a link
+      // out of the tree even when `<dir>` canonicalises inside it, and
+      // `statPath` follows the link, so `isFile` says nothing about where the
+      // bytes live.  An escapee counts as absent — the next index name is
+      // tried, then the listing or a 404 (#575).
+      if (realRoot !== null && !(await isWithinRoot(indexPath, realRoot))) continue;
+      return serveResolvedFile(indexPath, indexStat, request, settings, index);
     }
     const atMountRoot = rawRest.replace(/^\/+|\/+$/g, '') === '';
-    if (settings.browse) return renderListing(resolved.fsPath, request, atMountRoot, settings);
+    if (settings.browse) return renderListing(resolved.fsPath, request, atMountRoot, settings, realRoot);
     return notFound();
   }
 
@@ -182,7 +224,14 @@ async function serveFromDirectory(root: string, rawRest: string, request: HttpRe
   return serveResolvedFile(resolved.fsPath, stat, request, settings, basename(resolved.fsPath));
 }
 
-/** Serve a single file at `filePath` with the correct content-type. */
+/**
+ * Serve a single file at `filePath` with the correct content-type.
+ *
+ * No `within-root` check here, and none is missing: the caller names one
+ * exact file instead of a tree, so there is no root to be confined to and
+ * following a link is the whole point of naming it.  `symlinks` only has
+ * meaning for {@link getFromDirectory}.
+ */
 export function getFromFile(filePath: string, options?: StaticFilesOptions): Route {
   const settings = resolveStaticOptions(options);
   return get(async (request) => {

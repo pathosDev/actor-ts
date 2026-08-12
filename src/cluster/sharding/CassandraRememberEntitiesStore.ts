@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/CassandraClient.js';
+import { assertSafeIdentifier } from '../../persistence/storage/SqlIdentifier.js';
 import type { CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsType } from './CassandraRememberEntitiesStoreOptions.js';
 import type { RememberEntitiesStore, RememberEvent, StartedEvent, StoppedEvent } from './RememberEntitiesStore.js';
 
@@ -149,7 +150,15 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
   private get table(): string { return this.options.table ?? 'remember_entities'; }
 
   private qualified(): string {
-    return `${this.options.keyspace}.${this.table}`;
+    // keyspace + table are interpolated into CQL (identifiers can't be bound),
+    // so validate both against a safe charset — the guard CassandraJournal and
+    // CassandraSnapshotStore have always applied, missing here (security audit
+    // #615).  One string feeds four differently-shaped statements below, so an
+    // injected name is not merely a bad table: it rewrites INSERT, DELETE and
+    // SELECT alike.
+    const keyspace = this.options.keyspace;
+    if (keyspace !== undefined) assertSafeIdentifier(keyspace, 'keyspace');
+    return `${keyspace}.${assertSafeIdentifier(this.table, 'remember-entities table')}`;
   }
 }
 
@@ -159,13 +168,20 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
  * runnable CQL string so operators applying schemas by hand can
  * mirror the store's exact layout — same pattern as
  * {@link tagIndexDdl} from #44.
+ *
+ * Not only an operator convenience: this *is* the store's auto-create path
+ * (`autoCreateTables` defaults to true), so it needs the same identifier
+ * guard `qualified()` applies — the siblings reach their CREATE TABLE
+ * through their guarded `qualified()` and never had a second door (security
+ * audit #615).
  */
 export function rememberEntitiesDdl(args: {
   readonly keyspace: string;
   readonly table?: string;
 }): string {
   const table = args.table ?? 'remember_entities';
-  return `CREATE TABLE IF NOT EXISTS ${args.keyspace}.${table} (`
+  return `CREATE TABLE IF NOT EXISTS ${assertSafeIdentifier(args.keyspace, 'keyspace')}`
+    + `.${assertSafeIdentifier(table, 'remember-entities table')} (`
     + ` type_name text,`
     + ` shard_id int,`
     + ` entity_id text,`

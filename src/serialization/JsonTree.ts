@@ -1,5 +1,6 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
+import { ownedBytes } from './ByteViews.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
 
@@ -626,13 +627,31 @@ export function toBase64(bytes: Uint8Array): string {
   return btoa(binaryString);
 }
 
-export function fromBase64(s: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') {
-    const buffer = Buffer.from(s, 'base64');
-    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  }
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+/**
+ * Decode base64 to bytes that own their whole backing buffer.
+ *
+ * The copy is the security-relevant part (#619).  `Buffer.from(s, 'base64')`
+ * decodes into a shared pool and hands back a *view* at an arbitrary offset:
+ * in one sample run a 4-byte payload landed at `byteOffset` 1656 of a
+ * 65536-byte pool on Node 26.7.0 and at offset 96 of an 8192-byte pool on
+ * Deno 2.6.8, and every size from 1 byte to 8 KB was pool-backed — there is
+ * no payload big enough to escape it.  Passing the view on lets anything
+ * that reads `.buffer`
+ * rather than the view — a `DataView`, a `TextDecoder`, a user-supplied
+ * `Serializer.fromBinary` behind `PayloadCodec` — read bytes decoded for
+ * *other* requests, and holding it alive pins the whole pool.
+ *
+ * Bun does not pool base64 decodes, so this is invisible to `bun test`;
+ * `tests/smoke/cases/19-json-bytes-ownership.mjs` is what actually binds the
+ * guarantee on Node and Deno.  `ownedBytes` is also what keeps the result a
+ * plain `Uint8Array` rather than a `Buffer` — `rebuildBinaryView` normalises
+ * with `slice()`, which on a `Buffer` is Node's deprecated alias for
+ * `subarray` and would quietly hand the pool straight back.
+ */
+export function fromBase64(base64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') return ownedBytes(Buffer.from(base64, 'base64'));
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+  return bytes;
 }

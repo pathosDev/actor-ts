@@ -81,9 +81,14 @@ Zum Monitoring der Cluster-Gesundheit:
   liegen weiter vor der Uhr dieses Knotens als `maxVersionSkewMs` —
   entweder ist die Uhr eines Peers abgedriftet, oder jemand versucht,
   eine Adresse vorab zu beanspruchen. Bewegung auf `reason="map-cap"`
-  heißt, `max-members` / `max-tombstones` ist voll. Der Zähler wird
-  einmal pro Frame um dessen Anzahl erhöht, und die Label-Menge ist
-  auf diese zwei Werte geschlossen.
+  heißt, `max-members` / `max-tombstones` ist voll.
+  `reason="timestamp-skew"` ist ein Tombstone, dessen `removedAt` kein
+  plausibler Zeitpunkt ist. `reason="replayed-frame"` ist ein ganzer
+  Gossip-Frame, der den letzten von diesem Peer akzeptierten nicht
+  überbietet — ein Duplikat, oder jemand sendet einen vom Draht
+  mitgeschnittenen Frame erneut. Der Zähler wird einmal pro Frame um
+  dessen Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
+  geschlossen.
 
 ## DistributedData-Metriken
 

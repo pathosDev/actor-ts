@@ -49,15 +49,21 @@ describe('option builders — every withX sets its field', () => {
       .withCookie({ secure: false, sameSite: 'strict' })
       .withVerifyOrigin(false)
       .withAllowedOrigins('https://a.example')
+      .withExpectedScheme('http')
       .withFormField('_csrf');
     const fields = bag(builder);
     expect(fields.cookieName).toBe('c');
     expect(fields.headerName).toBe('x-c');
     expect(fields.verifyOrigin).toBe(false);
+    expect(fields.expectedScheme).toBe('http');
     expect(fields.formFieldName).toBe('_csrf');
 
-    const so = SameOriginOptions.create().withAllowedOrigins('https://a.example').withAllowMissingOrigin();
+    const so = SameOriginOptions.create()
+      .withAllowedOrigins('https://a.example')
+      .withAllowMissingOrigin()
+      .withExpectedScheme('http');
     expect(bag(so).allowMissingOrigin).toBe(true);
+    expect(bag(so).expectedScheme).toBe('http');
   });
 
   test('HstsOptions', () => {

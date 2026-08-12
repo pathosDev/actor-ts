@@ -122,6 +122,18 @@ umfasst und Recovery eine Partition pro Bucket liest.  Die
 `events_by_tag`-Tabelle ist nach `tag` geschlüsselt —
 Projection-Queries treffen eine Partition pro Tag.
 
+`keyspace` und jeder Tabellenname werden als Identifier in CQL
+interpoliert — Identifier lassen sich nicht binden — also wird jeder
+gegen `/^[A-Za-z_][A-Za-z0-9_]*$/` geprüft, bevor er in einem Statement
+landet: auf dem Write-Pfad, auf dem Tag-Index-Read-Pfad und innerhalb
+des `CREATE KEYSPACE`, das `autoCreateKeyspace` absetzt.
+Data-Center-Namen in `replication.dataCenters` sind CQL-*String*-Werte
+statt Identifier; sie behalten also die Bindestriche, die ein
+`Ec2Snitch`-abgeleiteter Name trägt (`us-east-1`), und werden
+stattdessen quote-escaped; Replikations-Faktoren müssen Integer sein.
+Alles andere — persistenceIds, Tags, Payloads — geht als Bind-Parameter,
+nie per String-Concat.
+
 ## Setup
 
 Provisioniere den Keyspace mit angemessener Replikation:

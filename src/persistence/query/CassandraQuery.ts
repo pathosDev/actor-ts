@@ -94,7 +94,10 @@ export class CassandraQuery extends InMemoryQuery {
   }
 
   private async fetchTagPartition(tag: string, fromTimestamp: number): Promise<TagIndexRow[]> {
-    const qualified = `${this.access.options.keyspace}.${this.cassandra.tagIndexTable}`;
+    // Deliberately outside the try below: an unsafe keyspace/table is a wiring
+    // fault, not a query failure, so it surfaces as itself instead of as a
+    // JournalError blaming the read (security audit #614).
+    const qualified = this.cassandra.qualifiedTagIndexTable;
     let response;
     try {
       response = await this.access.client.execute(
@@ -148,5 +151,4 @@ type TagIndexRow = {
 /** Type-only escape hatch matching the layout of `CassandraJournal`'s privates. */
 type CassandraInternalAccess = {
   readonly client: CassandraClientLike;
-  readonly options: { readonly keyspace: string };
 };

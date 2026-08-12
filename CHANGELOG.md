@@ -244,6 +244,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   escaping rule, so a `@t` arriving over the cluster wire cannot forge the
   record's timestamp.
 
+### Fixed
+
+- **Directory listings classify entries by the followed `stat`** (#575).  An
+  in-root symlink to a directory was rendered as a file — it carried the
+  directory's size and linked without a trailing slash — because the directory
+  flag came from the raw directory entry while size and mtime came from the
+  followed `stat`.  Both now come from the same source, so a link to an
+  in-root directory is listed as a directory.  The internal `readDirectory`
+  helper returns names accordingly; directory-entry type flags are unreliable
+  anyway (a filesystem answering `DT_UNKNOWN` reports every kind as false).
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to
@@ -260,6 +271,197 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   credential-bearing URL that reached the MDC, rather than one per sink
   (relevant to #590, #592, #741).  No sink option that carries a credential
   is readable from HOCON.
+
+- **BREAKING — a recorded gossip frame can no longer be played back** (#112,
+  relates to #940).  A gossip frame is a snapshot of the member map, and a
+  member's version only moves when its status does, so a frame captured off
+  the wire stayed valid indefinitely.  Against a converged receiver that was
+  harmless — every record lost the "higher version wins" comparison — but not
+  against an entry the receiver had *deleted*: the failure detector's down
+  path deletes outright so a healed partition can re-discover the peer, an
+  expired tombstone is pruned for the same reason, and the branch that files a
+  first sighting had no lower version bound at all.  Replaying a downed
+  member's own pre-down record therefore brought it back at its old version,
+  `up`, carrying its roles — and roles are what shard placement, singleton
+  hosting and downing quorums are computed from.
+
+  Every frame now carries a sequence its author stamps, seeded from that
+  node's wall clock at startup so a restart out-numbers its own previous
+  incarnation, and a receiver drops any frame that does not out-number the
+  highest it has accepted from that connection peer.  There is no new knob:
+  the comparison is between a peer and itself, so it needs no clock-skew
+  budget, and a sequence too far ahead to be plausible is merged but never
+  adopted as the mark — otherwise one frame numbered `Number.MAX_SAFE_INTEGER`
+  would silence the real node forever.  Refusals are reported through the
+  existing `cluster_gossip_records_refused_total` under a fourth reason,
+  `replayed-frame`, rather than a new metric series.
+
+  *Migration:* `GossipMessage` gains a required `sequence` field, and a frame
+  without it is refused at the decode boundary.  Nothing outside the framework
+  composes gossip frames, so application code is unaffected — but **a rolling
+  upgrade is not gossip-compatible in either direction**: an upgraded peer
+  refuses an old node's frames for the missing field, and an old node ignores
+  the new one.  Upgrade the cluster in one step, or accept that membership
+  does not converge while both versions are running.
+
+- **Cluster frame decoding is linear in the bytes received** (#588).
+  `FrameDecoder` rebuilt its whole accumulator on every arriving chunk, and
+  the peer chooses how a frame is split across TCP writes — so assembling one
+  frame cost work quadratic in the chunk count.  A frame just under the 16 MiB
+  cap delivered in ~1400-byte writes is roughly 12 000 chunks and about 100 GB
+  of memory copying, an amplification of ~6000x on bytes the attacker never
+  had to send, on a path that runs before the `hello` gate and therefore needs
+  no membership and no certificate.  The decoder now appends into a buffer it
+  grows by doubling, so each byte is copied once on arrival.  Growth is sized
+  from what actually arrived and never from the length a peer claims, which is
+  what keeps the pre-sizing variant of the original OOM vector closed, and a
+  buffer larger than 64 KiB is released once it drains so a single oversized
+  envelope does not pin memory per connection.
+
+- **An idle inbound cluster socket is now bounded in both directions** (#588).
+  A connection holding a half-received frame is closed if no further byte
+  arrives within 30 seconds — a stall bound rather than a budget for the
+  frame, re-armed on every chunk, so a peer shipping a large frame over a
+  congested link is never punished for being slow.  Concurrent inbound
+  connections are capped at 1024, refusing the newest rather than evicting an
+  established peer, because eviction would let an attacker push real members
+  off the node.  Until now only outbound dials had any deadline
+  (`HANDSHAKE_TIMEOUT_MS`), and that one stops mattering the moment the
+  handshake lands, so an unauthenticated socket could hold decode memory
+  indefinitely and multiply it by opening sockets in a loop.
+
+- **BREAKING — `getFromDirectory` enforces `symlinks: 'within-root'` on every
+  filesystem hop** (#575).  The confinement check ran once, against the path a
+  URL resolved to, so the two hops a directory request takes afterwards
+  escaped it: the index file it serves, and every entry of a browsable
+  listing.  The static directives use `stat`, not `lstat`, so a link is
+  followed silently and `isFile` says nothing about where the bytes live —
+  under the documented default policy `GET /static/sub/index.html` was
+  correctly refused while `GET /static/sub/` returned the out-of-root file's
+  bytes, and a listing exposed out-of-root names, sizes and mtimes.  The
+  canonical root is now resolved once per request and checked against each
+  hop: an escaping index file counts as absent (the next index name is tried,
+  then the listing or a 404) and an escaping listing entry is omitted.  The
+  mount root's own `index.html` was affected the same way, which is the
+  likelier real-world precondition — a build output or a package-manager link
+  farm plants exactly that link.
+
+  *Migration:* a tree that deliberately links outside its root now 404s under
+  the default policy, and those entries disappear from directory listings.
+  Opt in with `withSymlinks('follow')` (field `symlinks: 'follow'`).
+
+- **BREAKING — CSRF origin checks compare whole origins** (#604).
+  `csrfProtection` and `requireSameOrigin` compared bare hosts, so
+  `http://app.example` — and any other scheme that parses an authority,
+  `foo://` and `file://` included — passed as same-origin for an HTTPS site.
+  The `allowedOrigins` arm degraded the same way, silently matching by host
+  despite both option families documenting "full origins".  Both arms now
+  compare normalised origins (scheme + host + port, default port dropped,
+  case-insensitive), and an opaque `Origin: null` or an origin-less scheme is
+  rejected outright.  Since a `Host` header carries no scheme and a forwarded
+  scheme header is client-settable and untrusted, the site's own scheme comes
+  from a new `expectedScheme` option on both option families: default
+  `'https'`, except that `csrfProtection` reads `'http'` when `cookie.secure`
+  is explicitly `false`, because turning off the Secure cookie already
+  declares a plain-HTTP deployment.  `requireSameOrigin` also gained a
+  `SameOriginOptionsValidator` — it had no construction-time validation
+  before.
+
+  *Migration:* a plain-HTTP site using `requireSameOrigin` must add
+  `.withExpectedScheme('http')` or it will reject its own unsafe-method
+  requests; `allowedOrigins` entries must be full origins
+  (`'https://app.example'`, not `'app.example'`) or construction throws an
+  `OptionsError`.
+
+- **BREAKING — the CSRF cookie defaults to the `__Host-` prefix, and the HMAC
+  claim is corrected** (#605).  The module header, the `verifyToken` JSDoc and
+  both docs pages stated that a cookie an attacker plants fails HMAC
+  verification.  It does not: a token is bound to the server secret and to
+  nothing else, and every safe-method request — anonymous ones included — is
+  handed a freshly signed one, so a planted signed pair verifies.  What
+  actually closes both vectors named there is the cookie name, because a
+  `__Host-` cookie can be written neither by a sibling subdomain (the prefix
+  forbids `Domain`) nor from a plaintext origin (it requires `Secure`).
+  `DEFAULT_CSRF_COOKIE_NAME` (`'__Host-csrf-token'`) is now the default for
+  both `csrfProtection` and `readCsrfToken`, which each carried their own
+  hardcoded literal, and the prefix's attribute rules are checked by
+  `CsrfOptionsValidator` when the middleware is built rather than by
+  `serializeCookie` while every response is assembled — a wiring-time
+  `OptionsError` instead of a 500 per safe-method request.
+
+  *Migration:* the cookie is now `__Host-csrf-token`, so browser code reading
+  `document.cookie` must use the prefixed name, and cookies in flight under
+  the old name are ignored (the next safe-method request mints a fresh token).
+  A plain-HTTP deployment must opt out with `withCookieName('csrf-token')`,
+  since a `__Host-` cookie cannot be set over plain HTTP at all.
+
+- **Cassandra: the exported CQL DDL helpers now validate what they
+  interpolate** (#616).  `keyspaceDdl` spliced `connection.keyspace` straight
+  into `CREATE KEYSPACE IF NOT EXISTS`, emitted every `replication.dataCenters`
+  key inside single quotes unescaped, and concatenated the replication factors
+  in as bare numbers; `tagIndexDdl` had the same gap on its keyspace and
+  table.  This is the earliest of the Cassandra identifier sites because it
+  runs before any store's own guard — the journal and the snapshot store both
+  call `keyspaceDdl` from `doStart()` ahead of `ensureTables()`, and the
+  remember-entities store called it with no guard at all — so exactly one
+  attacker-shaped `CREATE KEYSPACE` reached the cluster before the next
+  statement failed.  Identifiers now go through `assertSafeIdentifier`.
+  Data-center names are CQL *string* values rather than identifiers, so they
+  are quote-escaped instead and keep the hyphens an `Ec2Snitch`-derived name
+  like `us-east-1` carries; replication factors must be integers, checked at
+  runtime because the connection object is routinely built from environment
+  variables.
+
+  Together with the two entries that follow, this closes the raw-interpolation
+  sites that the 0.13.0 note for #136 already described as "the last
+  raw-interpolation gap in the Cassandra backend".  That claim was premature —
+  three more remained, plus `tagIndexDdl` and `keyspaceDdl` themselves.
+
+- **BREAKING — Cassandra tag-index queries no longer build their table
+  reference by hand** (#614).  `CassandraQuery.fetchTagPartition` concatenated
+  `keyspace.tagIndexTable` itself instead of going through
+  `CassandraJournal.qualified()`, and it was the one Cassandra site nothing
+  else covered: a query-only process never runs `ensureTables()` (skipped
+  entirely with `autoCreateTables: false`) and never appends, so both names
+  first reached CQL there, unvalidated.  The journal now exposes
+  `qualifiedTagIndexTable`, which returns the validated `keyspace.table` form,
+  and the bare name is private again — there is no longer any way to obtain
+  the unqualified name from outside, which is what kept inviting the
+  hand-built copy.  This mirrors `SqliteQuery`, which reads the table name
+  `SqliteJournal` already validated at construction.
+
+  *Migration:* `CassandraJournal.tagIndexTable` is no longer public.  Read
+  `qualifiedTagIndexTable` for the validated `keyspace.table` form, or use the
+  name you passed to `withTagIndexTable(...)`.
+
+- **Cassandra remember-entities store: both of its CQL identifier paths are
+  guarded** (#615).  `CassandraRememberEntitiesStore.qualified()` concatenated
+  `keyspace.table` raw — one string feeding four differently-shaped statements
+  — and the exported `rememberEntitiesDdl` did the same.  The DDL helper
+  mattered as much as the runtime one: unlike the sibling Cassandra stores,
+  whose `ensureTables()` builds its `CREATE TABLE` through the guarded
+  `qualified()`, this store's auto-create (on by default) calls the exported
+  helper directly, so guarding only `qualified()` would have left open the
+  door the store itself walks through.  Both now use `assertSafeIdentifier`.
+  Worth knowing for anyone who read the original report: the pre-fix failure
+  mode was quieter than described, because `ShardCoordinator` catches every
+  remember-store error and downgrades it to a `log.warn` — a bad identifier
+  degraded remember-entities to an empty entity set behind one warning line
+  rather than failing the coordinator.
+
+- **Base64 decoding no longer hands out a view into the shared `Buffer` pool**
+  (#619).  On Node and Deno, `Buffer.from(str, 'base64')` decodes into a pool
+  and returns a view at an arbitrary offset, so a decoded `__bytes__` or
+  `__typedarray__` payload exposed unrelated payloads' plaintext to anything
+  that read its `.buffer` instead of the view — measured at `byteOffset` 1656
+  of a 65536-byte pool on Node 26.7.0 and offset 96 of an 8192-byte pool on
+  Deno 2.6.8, at every size from 1 byte to 8 KB.  It reached user code through
+  HTTP `entity()` bodies decoded by the default `JsonSerializer`, and through
+  every journal, snapshot and durable-state read, where `PayloadCodec` passes
+  the view straight to a custom `Serializer.fromBinary`.  Decoded bytes are
+  now copied into an exact, offset-0 `Uint8Array`.  Bun does not pool base64
+  decodes, so a unit test on the project's own runner cannot see this on its
+  own; a cross-runtime smoke case carries the guarantee on Node and Deno.
 
 ## [0.15.0] — 2026-08-12
 

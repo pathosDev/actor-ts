@@ -21,6 +21,7 @@ Cluster-Transports. Für den operativen Kontext siehe
 | MITM (Abfangen + Verändern) | TLS + Zertifikatsprüfung |
 | Unautorisierter Join (jeder mit Port-Zugriff kann joinen) | mTLS (zertifikatsbasierte Peer-Authentifizierung) |
 | Kompromittiertes Zertifikat (für gestohlene Identität ausgestellt) | Cert-Rotation + Revocation |
+| Replay eines mitgeschnittenen Gossip-Frames | TLS, dazu die Sequence pro Sender, die jeder Cluster durchsetzt |
 
 ## TLS aktivieren
 

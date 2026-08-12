@@ -5,6 +5,7 @@
  * driver, and so the driver itself stays an *optional* peer dependency.
  */
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
 export type CassandraRowResult = {
   readonly rows: Array<Record<string, unknown>>;
@@ -65,13 +66,18 @@ export type CassandraConnection = {
  *
  * `keyspace` and `tagIndexTable` default to the journal's own defaults
  * — pass them explicitly if you've customised either.
+ *
+ * Both are interpolated as CQL identifiers, which cannot be bound, so both
+ * are validated first (security audit #616) — the guard the journal's own
+ * `qualified()` has always applied, now also on the exported helper.
  */
 export function tagIndexDdl(args: {
   readonly keyspace: string;
   readonly tagIndexTable?: string;
 }): string {
   const table = args.tagIndexTable ?? 'events_by_tag';
-  return `CREATE TABLE IF NOT EXISTS ${args.keyspace}.${table} (`
+  return `CREATE TABLE IF NOT EXISTS ${assertSafeIdentifier(args.keyspace, 'keyspace')}`
+    + `.${assertSafeIdentifier(table, 'tag index table')} (`
     + ` tag text,`
     + ` timestamp bigint,`
     + ` persistence_id text,`
@@ -83,17 +89,65 @@ export function tagIndexDdl(args: {
 }
 
 /**
+ * Escape a CQL string literal by doubling every single quote — the only
+ * escape CQL defines inside `'…'`.
+ *
+ * Data-center names land in the replication map as `text` *values*, not as
+ * identifiers, so {@link assertSafeIdentifier} is the wrong guard for them:
+ * its charset rejects the hyphen that `Ec2Snitch`-derived names carry by
+ * default (`us-east`, `eu-west-1`).  Escaping keeps those working while
+ * closing the injection path a name containing a quote would open.
+ */
+function escapeCqlStringLiteral(value: string): string {
+  return value.replaceAll("'", "''");
+}
+
+/**
+ * Narrow a replication factor to an integer before it is spliced into CQL.
+ *
+ * Numbers are not bindable in DDL either, so the factor is concatenated in
+ * verbatim.  TypeScript types both `dataCenters` values and
+ * `replicationFactor` as `number`, which makes this look like dead code — it
+ * is not: the connection object is routinely assembled from environment
+ * variables or a parsed JSON/values file, where nothing enforces the declared
+ * type.  Hence the check is written over `unknown`.  Zero is accepted on
+ * purpose — a `NetworkTopologyStrategy` map may legitimately list a data
+ * center with no replicas.
+ */
+function assertReplicationFactor(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`invalid ${what} ${JSON.stringify(value)} — must be a non-negative integer`);
+  }
+  return value;
+}
+
+/**
  * Build the default keyspace-bootstrap statement — used by autoCreateKeyspace.
+ *
+ * Runs *before* the store's own `qualified()` guard (CassandraJournal and
+ * CassandraSnapshotStore both call this from `doStart()` ahead of
+ * `ensureTables()`), and `CassandraRememberEntitiesStore.start()` calls it
+ * with no guard of its own at all — so a hostile keyspace would otherwise
+ * reach the cluster inside one `CREATE KEYSPACE` before anything rejected it
+ * (security audit #616).  Validate here, at the choke point.
  */
 export function keyspaceDdl(connection: CassandraConnection): string {
-  const cls = connection.replication?.class ?? 'SimpleStrategy';
-  if (cls === 'NetworkTopologyStrategy') {
-    const dcs = connection.replication?.dataCenters ?? {};
-    const pairs = Object.entries(dcs).map(([dc, rf]) => `'${dc}': ${rf}`).join(', ');
-    return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
+  const keyspace = assertSafeIdentifier(connection.keyspace, 'keyspace');
+  const replicationClass = connection.replication?.class ?? 'SimpleStrategy';
+  if (replicationClass === 'NetworkTopologyStrategy') {
+    const dataCenters = connection.replication?.dataCenters ?? {};
+    const pairs = Object.entries(dataCenters).map(([dataCenter, replicationFactor]) => {
+      const replicas = assertReplicationFactor(
+        replicationFactor, `replication factor for data center ${JSON.stringify(dataCenter)}`,
+      );
+      return `'${escapeCqlStringLiteral(dataCenter)}': ${replicas}`;
+    }).join(', ');
+    return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
   }
-  const rf = connection.replication?.replicationFactor ?? 1;
-  return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${rf} }`;
+  const replicationFactor = assertReplicationFactor(
+    connection.replication?.replicationFactor ?? 1, 'replicationFactor',
+  );
+  return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${replicationFactor} }`;
 }
 
 /**

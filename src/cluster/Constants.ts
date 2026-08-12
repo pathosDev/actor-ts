@@ -78,6 +78,61 @@ export const HANDSHAKE_TIMEOUT_MS = 5_000;
 export const MAX_PENDING_FRAMES = 1_000;
 
 /**
+ * Where a connection's frame-decode buffer starts, and the largest one it
+ * keeps once it has nothing left to decode (#588).
+ *
+ * The decoder accumulates into a slab it grows by doubling, so the initial
+ * size only decides how many growths an ordinary connection performs before
+ * it settles — a few kilobytes covers every gossip, heartbeat and shard-map
+ * frame this framework emits, so in practice that is one allocation for the
+ * life of the connection.
+ *
+ * The retention bound is the other half: a slab is sized by the largest frame
+ * it has ever had to hold, so one 16 MiB envelope would otherwise pin 16 MiB
+ * per connection for the process's lifetime.  Above this size the slab is
+ * released the moment the buffer drains, which costs one allocation on the
+ * next chunk — worth paying for a frame size that, by definition, is rare.
+ */
+export const INITIAL_FRAME_BUFFER_BYTES = 8 * 1_024;
+export const RETAINED_FRAME_BUFFER_BYTES = 64 * 1_024;
+
+/**
+ * How long a connection may hold a half-received frame without another byte
+ * arriving before it is torn down (#588).
+ *
+ * This is a **stall** bound, not a budget for the frame: it is re-armed on
+ * every chunk, so a peer shipping a large frame over a slow link is never
+ * punished for being slow — only for going silent.  What it reclaims is the
+ * socket that sends three bytes of a length prefix and then nothing, which
+ * before this had no deadline at all on the inbound side: `HANDSHAKE_TIMEOUT_MS`
+ * is armed only on outbound dials, and it stops mattering the moment the
+ * handshake lands.
+ *
+ * Generous on purpose.  Together with {@link MAX_INBOUND_CONNECTIONS} it is
+ * what bounds inbound decode memory at all, and the bound is the product of
+ * the two — so the useful tightening is the connection count, not this.
+ */
+export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
+
+/**
+ * How many inbound connections one transport accepts before it starts
+ * refusing sockets outright (#588).
+ *
+ * A fully-meshed cluster needs one inbound connection per peer, so this is
+ * also a ceiling on how many peers may dial *this* node — set far above any
+ * topology this framework is built for, because refusing a legitimate peer is
+ * a partition and holding an idle socket is not.  What it stops is the
+ * unauthenticated caller opening sockets in a loop: each one carries a frame
+ * decoder, so without a cap the resident cost of "connected but silent" was
+ * unbounded.
+ *
+ * Refusing the newest rather than evicting the oldest is the same choice the
+ * member-map caps make: eviction would let an attacker push established peers
+ * off the node, which is a better exploit than the one being closed.
+ */
+export const MAX_INBOUND_CONNECTIONS = 1_024;
+
+/**
  * How many keys a remote peer may contribute, and how long each value may be.
  * A context rides on *every* envelope and is stamped onto *every* log line the
  * receiving actor emits, so an oversized one is not a single large record —
