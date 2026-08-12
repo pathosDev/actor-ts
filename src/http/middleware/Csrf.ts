@@ -2,12 +2,24 @@
  * Cross-Site Request Forgery protection.
  *
  * The framework has no session concept, so this is a stateless
- * double-submit scheme HARDENED with an HMAC: the token is
- * `payload.hmac(secret, payload)`.  A plain double-submit is defeated by
- * an attacker who can plant a cookie (from a sibling subdomain or a
- * MITM'd http origin) and send a matching header; the HMAC binds validity
- * to the server secret, so a planted pair fails verification.  On unsafe
- * methods it also checks Origin/Referer as a second gate.
+ * double-submit scheme: the token is `payload.hmac(secret, payload)`.
+ * Three separate things carry the defence, and it is worth being exact
+ * about which does what — the HMAC is NOT what stops cookie planting:
+ *
+ *  - The **HMAC** rejects tokens this server never minted (garbage, a
+ *    guess, a token from another deployment).  It binds a token to the
+ *    server secret and to nothing else, so a token minted for one client
+ *    verifies for every other: an attacker who can plant a cookie can
+ *    plant a *signed* one they were legitimately handed, and the pair
+ *    verifies.
+ *  - The **`__Host-` cookie name** (the default) is what defeats planting.
+ *    A browser refuses such a cookie unless it is `Secure`, `Path=/` and
+ *    carries no `Domain`, which locks it to exactly this host: a sibling
+ *    subdomain cannot write it, and a plaintext origin cannot write it at
+ *    all.
+ *  - The **Origin/Referer gate** on unsafe methods (on by default) rejects
+ *    the cross-site request that would carry such a pair in the first
+ *    place.
  *
  * The cookie is intentionally NOT HttpOnly: same-origin JS must read it to
  * echo it into the header.  The token authenticates nothing on its own
@@ -21,6 +33,7 @@ import { parseCookies, serializeCookie } from '../cookies.js';
 import { applyHeaders } from './headers.js';
 import {
   CsrfOptionsValidator,
+  DEFAULT_CSRF_COOKIE_NAME,
   SameOriginOptionsValidator,
   normalizeOrigin,
   type CsrfOptions,
@@ -100,7 +113,13 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-/** A token is valid iff its HMAC recomputes — a planted/unsigned token fails here. */
+/**
+ * A token is valid iff its HMAC recomputes — an unsigned or garbage token
+ * fails here.  A token this server DID mint passes no matter whose browser
+ * presents it: the payload is a bare nonce, so there is nothing tying it to
+ * a client.  What keeps someone else's token out of the victim's cookie jar
+ * is the `__Host-` cookie name, not this function.
+ */
 function verifyToken(secret: string | Uint8Array, token: string): boolean {
   const dot = token.lastIndexOf('.');
   if (dot <= 0) return false;
@@ -128,7 +147,7 @@ function formFieldValue(request: HttpRequest, field: string): string | undefined
 export function readCsrfToken(request: HttpRequest, options: { cookieName?: string; headerName?: string } = {}): string | null {
   const fromHeader = request.headers[(options.headerName ?? 'x-csrf-token').toLowerCase()];
   if (fromHeader) return fromHeader;
-  return parseCookies(request.headers['cookie'])[options.cookieName ?? 'csrf-token'] ?? null;
+  return parseCookies(request.headers['cookie'])[options.cookieName ?? DEFAULT_CSRF_COOKIE_NAME] ?? null;
 }
 
 /** Build the stateless double-submit CSRF middleware. */
@@ -141,7 +160,7 @@ export function csrfProtection(options: CsrfOptions): Middleware {
     throw new Error('csrfProtection: a secret of at least 16 bytes is required (32 recommended)');
   }
   new CsrfOptionsValidator().validate(resolvedOptions);
-  const cookieName = resolvedOptions.cookieName ?? 'csrf-token';
+  const cookieName = resolvedOptions.cookieName ?? DEFAULT_CSRF_COOKIE_NAME;
   const headerName = (resolvedOptions.headerName ?? 'x-csrf-token').toLowerCase();
   const cookie = resolvedOptions.cookie ?? {};
   const cookieAttrs = {

@@ -44,6 +44,19 @@ function firstNonOrigin(origins: ReadonlyArray<string> | undefined): string | un
   return origins?.find((origin) => normalizeOrigin(origin) === null);
 }
 
+/**
+ * Default CSRF cookie name.  The `__Host-` prefix is what actually stops
+ * cookie planting — a browser refuses such a cookie unless it is `Secure`,
+ * `Path=/` and carries no `Domain`, which locks it to exactly this host, so
+ * neither a sibling subdomain nor a plaintext origin can write it.  (The
+ * HMAC cannot do that job: it binds a token to the server secret, not to a
+ * client, so a signed token verifies for whoever presents it.)
+ *
+ * The price is that a `__Host-` cookie cannot be set over plain HTTP at
+ * all: a plain-HTTP deployment must pick an unprefixed name explicitly.
+ */
+export const DEFAULT_CSRF_COOKIE_NAME = '__Host-csrf-token';
+
 /** Attributes for the CSRF cookie (a subset of the general cookie attributes). */
 export type CsrfCookieOptions = {
   readonly path?: string;
@@ -57,7 +70,7 @@ export type CsrfCookieOptions = {
 export type CsrfOptionsType = {
   /** REQUIRED — HMAC key, at least 16 bytes (32 recommended). */
   readonly secret?: string | Uint8Array;
-  /** Cookie name.  Default `'csrf-token'`. */
+  /** Cookie name.  Default {@link DEFAULT_CSRF_COOKIE_NAME}. */
   readonly cookieName?: string;
   /** Request header carrying the token.  Default `'x-csrf-token'`. */
   readonly headerName?: string;
@@ -119,11 +132,16 @@ export type CsrfOptions = CsrfOptionsBuilder | Partial<CsrfOptionsType>;
 export const CsrfOptions = CsrfOptionsBuilder;
 
 /**
- * Validates resolved {@link CsrfOptionsType} settings.  All rules are
+ * Validates resolved {@link CsrfOptionsType} settings.  Most rules are
  * bespoke: `secret` is a `string | Uint8Array` union (byte length must be
  * >= 16), and the cookie attributes are nested.  A `secret` that is simply
  * absent is a REQUIRED-field error enforced by `csrfProtection`, not here —
  * the validator only checks the validity of a PRESENT secret.
+ *
+ * The cookie-prefix rule is the one that has to run here rather than being
+ * left to `serializeCookie`: that check fires while the response is being
+ * built, so a violated prefix would be a 500 on every safe-method request
+ * instead of an error when the middleware is constructed.
  */
 export class CsrfOptionsValidator extends OptionsValidator<CsrfOptionsType> {
   constructor() {
@@ -147,10 +165,36 @@ export class CsrfOptionsValidator extends OptionsValidator<CsrfOptionsType> {
         this.fail('cookie.maxAgeSeconds', 'must be a non-negative finite number', cookie.maxAgeSeconds);
       }
     }
+    this.nonEmptyString('cookieName');
+    this.nonEmptyString('headerName');
+    this.checkCookiePrefix(s.cookieName ?? DEFAULT_CSRF_COOKIE_NAME, cookie);
     this.oneOf('expectedScheme', ['http', 'https']);
     const notAnOrigin = firstNonOrigin(s.allowedOrigins);
     if (notAnOrigin !== undefined) {
       this.fail('allowedOrigins', 'entries must be full origins, e.g. "https://app.example"', notAnOrigin);
+    }
+  }
+
+  /**
+   * The `__Host-` / `__Secure-` cookie-prefix rules, restated against the
+   * attributes as configured — an unset attribute passes, because the
+   * middleware resolves it to a compliant default (`Secure`, `Path=/`, no
+   * `Domain`).
+   */
+  private checkCookiePrefix(cookieName: string, cookie: CsrfCookieOptions | undefined): void {
+    const optOut = ` — a plain-HTTP deployment needs an unprefixed cookie name, e.g. withCookieName('csrf-token')`;
+    if (cookieName.startsWith('__Host-')) {
+      if (cookie?.secure === false) {
+        this.fail('cookie.secure', `must not be false for the "${cookieName}" cookie${optOut}`, false);
+      }
+      if (cookie?.path !== undefined && cookie.path !== '/') {
+        this.fail('cookie.path', `must be "/" for the "${cookieName}" cookie`, cookie.path);
+      }
+      if (cookie?.domain !== undefined) {
+        this.fail('cookie.domain', `must be unset for the "${cookieName}" cookie`, cookie.domain);
+      }
+    } else if (cookieName.startsWith('__Secure-') && cookie?.secure === false) {
+      this.fail('cookie.secure', `must not be false for the "${cookieName}" cookie${optOut}`, false);
     }
   }
 }

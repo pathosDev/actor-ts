@@ -63,6 +63,7 @@ export {
   CsrfOptions,
   CsrfOptionsBuilder,
   CsrfOptionsValidator,
+  DEFAULT_CSRF_COOKIE_NAME,
   SameOriginOptions,
   SameOriginOptionsBuilder,
   SameOriginOptionsValidator,
