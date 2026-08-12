@@ -5,6 +5,8 @@ import { ConsoleSink } from './ConsoleSink.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from './ConsoleSinkOptions.js';
 import { FileSink } from './FileSink.js';
 import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from './FileSinkOptions.js';
+import { OtlpHttpSink } from './OtlpHttpSink.js';
+import { isOtlpSinkEnabled, readOtlpSinkOptionsFromConfig } from './OtlpHttpSinkOptions.js';
 import { parseLogLevel } from './LogLevelName.js';
 import type { LogSink } from './LogSink.js';
 import { MultiSinkLogger } from './MultiSinkLogger.js';
@@ -53,6 +55,9 @@ export function buildLoggerFromConfig(
   }
   if (isFileSinkEnabled(config)) {
     sinks.push(new FileSink(readFileSinkOptionsFromConfig(config)));
+  }
+  if (isOtlpSinkEnabled(config)) {
+    sinks.push(new OtlpHttpSink(readOtlpSinkOptionsFromConfig(config)));
   }
   if (sinks.length === 0) return undefined;
   return new MultiSinkLogger({
