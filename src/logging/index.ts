@@ -66,6 +66,35 @@ export type {
   FileSinkFormat,
   FileSinkOptionsType,
 } from './FileSinkOptions.js';
+export {
+  DEFAULT_GELF_MAX_CHUNK_BYTES,
+  GELF_CHUNK_HEADER_BYTES,
+  GELF_CHUNK_MAGIC,
+  GELF_MAX_CHUNKS,
+  GelfMessageTooLargeError,
+  chunkGelfDatagram,
+  newGelfMessageId,
+} from './GelfChunking.js';
+export { additionalFieldName, encodeGelf, gelfPayloadFor } from './GelfPayload.js';
+export { GelfSink } from './GelfSink.js';
+export {
+  DEFAULT_GELF_COMPRESSION,
+  DEFAULT_GELF_HOST,
+  DEFAULT_GELF_MIN_LEVEL,
+  DEFAULT_GELF_PORT,
+  DEFAULT_GELF_PROTOCOL,
+  DEFAULT_GELF_REQUEST_TIMEOUT_MS,
+  GelfSinkOptions,
+  GelfSinkOptionsBuilder,
+  GelfSinkOptionsValidator,
+  isGelfSinkEnabled,
+  readGelfSinkOptionsFromConfig,
+} from './GelfSinkOptions.js';
+export type {
+  GelfCompression,
+  GelfProtocol,
+  GelfSinkOptionsType,
+} from './GelfSinkOptions.js';
 export { basicAuthorization, postToEndpoint, retryAfterMs } from './HttpDelivery.js';
 export type { FetchLike, HttpPostRequest } from './HttpDelivery.js';
 export { jsonSafeReplacer, normaliseArg } from './JsonSafe.js';

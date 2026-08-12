@@ -82,6 +82,29 @@ actor-ts {
         }
       }
 
+      # Graylog.  Native rather than via OTLP because Graylog's
+      # OpenTelemetry input speaks gRPC only, which the otlp sink does not.
+      gelf {
+        enabled   = false
+        min-level = "info"
+        protocol  = "udp"          # udp | tcp | http
+        host      = "127.0.0.1"    # udp/tcp
+        port      = 12201          # udp/tcp
+        url       = ""             # http only, e.g. "http://graylog:12201/gelf"
+        # The GELF "host" field.  Empty = the OS hostname, else the system name.
+        host-name = ""
+        compression     = "gzip"   # udp only: none | gzip (server auto-detects)
+        max-chunk-bytes = 1420     # udp only: datagram size before chunking
+        request-timeout = 10s      # http only
+        # TLS for tcp is code-only: those fields carry the key material
+        # itself, not a path to it.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
       # OpenTelemetry logs over HTTP with a JSON body.  One endpoint format
       # reaches Loki 3+, Parseable, SigNoz, Datadog, Axiom, Honeycomb, New
       # Relic and every OTel Collector — start here before a native sink.

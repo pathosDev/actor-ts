@@ -92,6 +92,81 @@ const otlpSinkOptions = OtlpHttpSinkOptions.create()
 Ein API-Key in einer Konfigurationsdatei landet in der Versionsverwaltung.
 Lies ihn aus der Umgebung und übergib ihn hier.
 
+## Graylog — GELF
+
+```ts
+import { ActorSystem, ActorSystemOptions, GelfSink, GelfSinkOptions } from 'actor-ts';
+
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withHost('graylog.internal')
+  .withProtocol('udp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new GelfSink(gelfSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.gelf {
+  enabled  = true
+  protocol = "udp"          # udp | tcp | http
+  host     = "graylog.internal"
+  port     = 12201
+}
+```
+
+**Graylog ist die eine Plattform, die der OTLP-Sink nicht erreicht.**  Sein
+OpenTelemetry-Input nimmt OTLP ausschließlich über **gRPC** entgegen; ohne
+Collector dazwischen gibt es keinen HTTP-Weg dorthin.  GELF legt
+strukturierte Felder außerdem als erstklassige durchsuchbare Schlüssel ab,
+während der OTLP-Weg sie zu `otel_attributes_*` präfixt.
+
+Records gehen als GELF-1.1-Dokumente hinaus.  Die Level des Frameworks
+bilden auf Syslog-Severities ab (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3), die erste Zeile der Nachricht wird zu `short_message`, der
+Rest samt `Error`-Stack zu `full_message`.  Felder kommen als
+`_`-präfixierte Additional Fields an, der Actor-Pfad als `_source`.
+
+### Transport wählen
+
+| Protokoll | Wann |
+| --- | --- |
+| `udp` | der Standard, und worauf ein unveränderter Graylog-Input lauscht.  Komprimiert und gechunkt; keine Verbindung zu halten |
+| `tcp` | wenn ein verlorenes Datagramm nicht akzeptabel ist oder TLS gebraucht wird.  Nachrichten sind nullbyte-getrennt, damit entfallen Kompression und Chunking |
+| `http` | wenn ein Proxy oder Ingress vor Graylog steht.  Ein POST pro Nachricht |
+
+UDP-Datagramme werden standardmäßig gezippt — der Server erkennt das an
+den Magic Bytes, ohne dass etwas konfiguriert werden muss — und ein
+Dokument, das nicht in ein Datagramm passt, wird gechunkt, bis zur
+Protokollgrenze von 128 Chunks.  Ein Record, der darüber liegt, wird
+verworfen und gemeldet statt wiederholt, denn ein Retry macht ihn nicht
+kleiner; schick ihn stattdessen über TCP.
+
+`max-chunk-bytes` ist standardmäßig 1420 und hält damit das ganze Paket
+innerhalb einer 1500-Byte-Ethernet-MTU, mit Platz für einen Tunnel-Header.
+Ein höherer Wert funktioniert im LAN und fragmentiert still, sobald der
+Verkehr durch irgendetwas Gekapseltes läuft.
+
+### Sicherheit der Feldnamen
+
+GELF schränkt Namen von Additional Fields ein, und das MDC des Frameworks
+kann Werte tragen, die **von einem entfernten Cluster-Peer** stammen
+(#573).  Namen werden deshalb auf das reduziert, was die Spezifikation
+erlaubt, das verbotene `_id` wird verworfen, und ein Feld, das auf einen
+von GELFs eigenen Top-Level-Schlüsseln fiele — `short_message`,
+`timestamp`, `level`, `host` —, wird verworfen, statt ihn überschreiben zu
+dürfen.  Ein Peer kann die Nachricht, über die er berichtet, nicht
+umschreiben.
+
+### TLS
+
+TLS-Material für `tcp` gibt es nur im Code, ohne HOCON-Leaf: Diese Felder
+tragen Zertifikat und Schlüssel *selbst*, nicht Pfade darauf.
+
+```ts
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withProtocol('tcp')
+  .withHost('graylog.internal')
+  .withTls({ ca: process.env['GRAYLOG_CA']! });
+```
+
 ## Verwandt
 
 - [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird
