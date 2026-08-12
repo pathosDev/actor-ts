@@ -288,6 +288,48 @@ one value that is easy to get wrong, and that Seq rejects if you do.
 its sigil doubled, per CLEF's own escaping rule, so a `@t` arriving over
 the cluster wire cannot forge the record's timestamp.
 
+## Splunk
+
+```ts
+import { ActorSystemOptions, SplunkSink, SplunkSinkOptions } from 'actor-ts';
+
+const splunkSinkOptions = SplunkSinkOptions.create()
+  .withUrl('https://splunk.internal:8088')
+  .withToken(process.env['SPLUNK_HEC_TOKEN']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SplunkSink(splunkSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.splunk {
+  enabled = true
+  url     = "https://splunk.internal:8088"
+  token   = ${?SPLUNK_HEC_TOKEN}
+  index   = "main"
+}
+```
+
+A batch goes to the HTTP Event Collector's `/services/collector/event`
+endpoint, authenticated with `Authorization: Splunk <token>`:
+
+```json
+{"time":1786527662.113,"host":"orders","source":"actor-ts","sourcetype":"_json",
+ "event":{"level":"info","message":"placing order","actorPath":"actor-ts://orders/user/order-42"},
+ "fields":{"tenant":"acme"}}
+```
+
+Events are **concatenated back to back**, not wrapped in a JSON array.
+Newer Splunk versions accept an array too, but concatenation is the batch
+format every version understands and the difference is one join.
+
+`fields` carries indexed fields and must be **flat** — HEC rejects a
+nested value there, and the key only works on the `/event` endpoint at
+all, which is why this sink never uses `/raw`.  Values are stringified
+rather than dropped.
+
+`host` defaults to the actor system's name.  Put the token in the
+environment and reference it with a substitution rather than writing it
+into a config file.
+
 ## Sentry
 
 ```ts

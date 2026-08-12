@@ -190,6 +190,24 @@ actor-ts {
           queue-capacity = 10000
         }
       }
+
+      # Splunk's HTTP Event Collector.
+      splunk {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # HEC base URL, e.g. "https://splunk:8088"
+        token     = ""             # HEC token; prefer ${?SPLUNK_HEC_TOKEN}
+        index     = ""             # empty = the token's default index
+        source     = "actor-ts"
+        sourcetype = "_json"
+        host-name  = ""            # empty = the actor system's name
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
     }
   }
 

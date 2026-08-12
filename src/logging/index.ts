@@ -143,6 +143,19 @@ export {
   readSeqSinkOptionsFromConfig,
 } from './SeqSinkOptions.js';
 export type { SeqSinkOptionsType } from './SeqSinkOptions.js';
+export { SplunkSink } from './SplunkSink.js';
+export {
+  DEFAULT_SPLUNK_MIN_LEVEL,
+  DEFAULT_SPLUNK_REQUEST_TIMEOUT_MS,
+  DEFAULT_SPLUNK_SOURCE,
+  DEFAULT_SPLUNK_SOURCETYPE,
+  SplunkSinkOptions,
+  SplunkSinkOptionsBuilder,
+  SplunkSinkOptionsValidator,
+  isSplunkSinkEnabled,
+  readSplunkSinkOptionsFromConfig,
+} from './SplunkSinkOptions.js';
+export type { SplunkSinkOptionsType } from './SplunkSinkOptions.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';

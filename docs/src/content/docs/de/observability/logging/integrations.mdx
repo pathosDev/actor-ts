@@ -299,6 +299,49 @@ mit `@` beginnt, wird das Sigil verdoppelt, nach CLEFs eigener
 Escaping-Regel — ein `@t`, das über den Cluster-Draht ankommt, kann den
 Zeitstempel des Records also nicht fälschen.
 
+## Splunk
+
+```ts
+import { ActorSystemOptions, SplunkSink, SplunkSinkOptions } from 'actor-ts';
+
+const splunkSinkOptions = SplunkSinkOptions.create()
+  .withUrl('https://splunk.internal:8088')
+  .withToken(process.env['SPLUNK_HEC_TOKEN']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SplunkSink(splunkSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.splunk {
+  enabled = true
+  url     = "https://splunk.internal:8088"
+  token   = ${?SPLUNK_HEC_TOKEN}
+  index   = "main"
+}
+```
+
+Ein Batch geht an den `/services/collector/event`-Endpunkt des HTTP Event
+Collectors, authentifiziert mit `Authorization: Splunk <token>`:
+
+```json
+{"time":1786527662.113,"host":"orders","source":"actor-ts","sourcetype":"_json",
+ "event":{"level":"info","message":"placing order","actorPath":"actor-ts://orders/user/order-42"},
+ "fields":{"tenant":"acme"}}
+```
+
+Events werden **direkt aneinandergehängt**, nicht in ein JSON-Array
+gepackt.  Neuere Splunk-Versionen nehmen auch ein Array, aber die
+Konkatenation ist das Batch-Format, das jede Version versteht, und der
+Unterschied ist ein `join`.
+
+`fields` trägt indizierte Felder und muss **flach** sein — HEC lehnt dort
+verschachtelte Werte ab, und den Schlüssel gibt es überhaupt nur am
+`/event`-Endpunkt, weshalb dieser Sink `/raw` nie benutzt.  Werte werden
+in Strings gewandelt statt verworfen.
+
+`host` fällt auf den Namen des Actor-Systems zurück.  Leg das Token in die
+Umgebung und referenziere es per Substitution, statt es in eine
+Konfigurationsdatei zu schreiben.
+
 ## Sentry
 
 ```ts

@@ -244,6 +244,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   escaping rule, so a `@t` arriving over the cluster wire cannot forge the
   record's timestamp.
 
+- **`SplunkSink` — the HTTP Event Collector** (#1160).  A batch goes to
+  `/services/collector/event` with `Authorization: Splunk <token>`.  Events
+  are concatenated back to back rather than wrapped in a JSON array —
+  newer Splunk versions accept an array, but concatenation is the batch
+  format every version understands.
+
+  `fields` carries indexed fields flat, because HEC rejects a nested value
+  there and the key only works on the `/event` endpoint at all.  `host`
+  defaults to the actor system's name.
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to
