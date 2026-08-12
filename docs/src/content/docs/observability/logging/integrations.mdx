@@ -254,6 +254,40 @@ Cloud basic-auth header — go through the code-only `headers` option.
 for direct push and explicit label control; use that one if you are
 standardised on OTLP.
 
+## Seq
+
+```ts
+import { ActorSystemOptions, SeqSink, SeqSinkOptions } from 'actor-ts';
+
+const seqSinkOptions = SeqSinkOptions.create()
+  .withUrl('http://seq:5341')
+  .withApiKey(process.env['SEQ_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SeqSink(seqSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.seq {
+  enabled = true
+  url     = "http://seq:5341"
+  api-key = ${?SEQ_API_KEY}
+}
+```
+
+A batch becomes newline-delimited CLEF POSTed to `/ingest/clef` — which is
+the NDJSON the framework already emits with four keys renamed:
+
+```json
+{"@t":"2026-08-12T09:41:02.113Z","@m":"placing order","@l":"Information",
+ "source":"actor-ts://orders/user/order-42","tenant":"acme"}
+```
+
+Levels use Serilog's vocabulary, so `info` becomes **`Information`** — the
+one value that is easy to get wrong, and that Seq rejects if you do.
+
+`@`-prefixed keys are reserved.  A field whose name starts with `@` has
+its sigil doubled, per CLEF's own escaping rule, so a `@t` arriving over
+the cluster wire cannot forge the record's timestamp.
+
 ## Sentry
 
 ```ts

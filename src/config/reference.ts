@@ -154,6 +154,22 @@ actor-ts {
           queue-capacity = 10000
         }
       }
+
+      # Seq, over CLEF — newline-delimited JSON with @-prefixed reserved
+      # keys.  Close enough to the framework's own NDJSON that there is
+      # almost nothing to translate.
+      seq {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://seq:5341"
+        api-key   = ""             # X-Seq-ApiKey; prefer \${?SEQ_API_KEY}
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
     }
   }
 

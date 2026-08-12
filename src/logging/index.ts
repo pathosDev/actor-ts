@@ -131,6 +131,18 @@ export {
   sentrySink,
 } from './SentrySink.js';
 export type { SentrySdkLike, SentrySinkOptionsType } from './SentrySink.js';
+export { SeqSink, clefDocumentFor } from './SeqSink.js';
+export {
+  DEFAULT_SEQ_MIN_LEVEL,
+  DEFAULT_SEQ_REQUEST_TIMEOUT_MS,
+  SEQ_CLEF_CONTENT_TYPE,
+  SeqSinkOptions,
+  SeqSinkOptionsBuilder,
+  SeqSinkOptionsValidator,
+  isSeqSinkEnabled,
+  readSeqSinkOptionsFromConfig,
+} from './SeqSinkOptions.js';
+export type { SeqSinkOptionsType } from './SeqSinkOptions.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';

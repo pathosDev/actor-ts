@@ -166,6 +166,8 @@ export {
   DEFAULT_PARSEABLE_MIN_LEVEL,
   DEFAULT_PARSEABLE_REQUEST_TIMEOUT_MS,
   DEFAULT_SENTRY_MIN_LEVEL,
+  DEFAULT_SEQ_MIN_LEVEL,
+  DEFAULT_SEQ_REQUEST_TIMEOUT_MS,
   DEFAULT_SINK_CLOSE_TIMEOUT_MS,
   FileSink,
   FileSinkOptions,
@@ -186,6 +188,7 @@ export {
   OtlpHttpSinkOptionsBuilder,
   OtlpHttpSinkOptionsValidator,
   PARSEABLE_MAX_REQUEST_BYTES,
+  SEQ_CLEF_CONTENT_TYPE,
   ParseableSink,
   ParseableSinkOptions,
   ParseableSinkOptionsBuilder,
@@ -225,6 +228,7 @@ export type {
   ParseableSinkOptionsType,
   SentrySdkLike,
   SentrySinkOptionsType,
+  SeqSinkOptionsType,
   MultiSinkLoggerOptionsType,
 } from './logging/index.js';
 

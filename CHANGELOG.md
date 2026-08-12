@@ -235,6 +235,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Loki 3+ also ingests OTLP, so `OtlpHttpSink` reaches it too — this sink
   is for direct push and explicit label control.
 
+- **`SeqSink` — Seq over CLEF** (#1159).  A batch becomes newline-delimited
+  CLEF POSTed to `/ingest/clef`: the NDJSON the framework already emits
+  with four keys renamed.  Levels use Serilog's vocabulary, so `info`
+  becomes `Information` — the value Seq rejects if you guess it.
+
+  A field whose name starts with `@` has its sigil doubled, per CLEF's own
+  escaping rule, so a `@t` arriving over the cluster wire cannot forge the
+  record's timestamp.
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to
