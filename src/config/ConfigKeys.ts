@@ -47,6 +47,7 @@ export const ConfigKeys = {
       loki: 'actor-ts.logger.sinks.loki',
       otlp: 'actor-ts.logger.sinks.otlp',
       parseable: 'actor-ts.logger.sinks.parseable',
+      seq: 'actor-ts.logger.sinks.seq',
     },
   },
 

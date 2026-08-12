@@ -262,6 +262,43 @@ etwa ein Basic-Auth-Header für Grafana Cloud — laufen über die
 Sink für den direkten Push und explizite Label-Kontrolle — und jenen, wenn
 du auf OTLP standardisiert bist.
 
+## Seq
+
+```ts
+import { ActorSystemOptions, SeqSink, SeqSinkOptions } from 'actor-ts';
+
+const seqSinkOptions = SeqSinkOptions.create()
+  .withUrl('http://seq:5341')
+  .withApiKey(process.env['SEQ_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SeqSink(seqSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.seq {
+  enabled = true
+  url     = "http://seq:5341"
+  api-key = ${?SEQ_API_KEY}
+}
+```
+
+Ein Batch wird zu newline-getrenntem CLEF, das an `/ingest/clef` geht —
+also zu genau dem NDJSON, das das Framework ohnehin erzeugt, mit vier
+umbenannten Schlüsseln:
+
+```json
+{"@t":"2026-08-12T09:41:02.113Z","@m":"placing order","@l":"Information",
+ "source":"actor-ts://orders/user/order-42","tenant":"acme"}
+```
+
+Die Level nutzen Serilogs Vokabular, aus `info` wird also
+**`Information`** — der eine Wert, den man leicht falsch macht und den Seq
+dann ablehnt.
+
+`@`-präfixierte Schlüssel sind reserviert.  Bei einem Feld, dessen Name
+mit `@` beginnt, wird das Sigil verdoppelt, nach CLEFs eigener
+Escaping-Regel — ein `@t`, das über den Cluster-Draht ankommt, kann den
+Zeitstempel des Records also nicht fälschen.
+
 ## Sentry
 
 ```ts
