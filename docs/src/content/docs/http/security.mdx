@@ -97,10 +97,11 @@ wherever a response never comes back through it.
 ## Cookies
 
 Prefer the `__Host-` prefix (requires `Secure`, `Path=/`, no `Domain`) and
-`SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) is
-deliberately not `HttpOnly` (double-submit needs JS to read it); your
-session/auth cookie should be `HttpOnly`. `serializeCookie` refuses values
-that could inject a second header.
+`SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) uses
+that prefix by default — it is what stops a sibling subdomain from planting
+a token — and is deliberately not `HttpOnly` (double-submit needs JS to read
+it); your session/auth cookie should be `HttpOnly`. `serializeCookie`
+refuses values that could inject a second header.
 
 ## Error hygiene
 

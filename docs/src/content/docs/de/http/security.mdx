@@ -101,9 +101,11 @@ zum Builder, wenn der ganze Server sie braucht — denn die Middleware wird
 
 Bevorzuge das `__Host-`-Präfix (erfordert `Secure`, `Path=/`, kein `Domain`)
 und `SameSite=Lax` oder `Strict`. Das [CSRF-Cookie](/de/http/middleware/csrf/)
-ist bewusst nicht `HttpOnly` (Double-Submit braucht JS zum Lesen); dein
-Session-/Auth-Cookie sollte `HttpOnly` sein. `serializeCookie` verweigert
-Werte, die einen zweiten Header injizieren könnten.
+nutzt dieses Präfix per Default — es ist das, was eine Geschwister-Subdomain
+am Platzieren eines Tokens hindert — und ist bewusst nicht `HttpOnly`
+(Double-Submit braucht JS zum Lesen); dein Session-/Auth-Cookie sollte
+`HttpOnly` sein. `serializeCookie` verweigert Werte, die einen zweiten
+Header injizieren könnten.
 
 ## Fehlerhygiene
 

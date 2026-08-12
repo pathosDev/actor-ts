@@ -3,7 +3,7 @@ import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { TimeoutOptionsValidator } from '../../../../src/http/middleware/TimeoutOptions.js';
 import { HstsOptionsValidator } from '../../../../src/http/middleware/HstsOptions.js';
 import { CorsOptionsValidator } from '../../../../src/http/middleware/CorsOptions.js';
-import { CsrfOptionsValidator } from '../../../../src/http/middleware/CsrfOptions.js';
+import { CsrfOptionsValidator, SameOriginOptionsValidator } from '../../../../src/http/middleware/CsrfOptions.js';
 import { StaticFilesOptionsValidator } from '../../../../src/http/static/StaticFilesOptions.js';
 import { RateLimitOptions, RateLimitOptionsValidator } from '../../../../src/http/cache/RateLimitOptions.js';
 import { IdempotencyOptions, IdempotencyOptionsValidator } from '../../../../src/http/cache/IdempotencyOptions.js';
@@ -48,6 +48,44 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ secret: 'x'.repeat(16), cookie: { sameSite: 'bogus' as never } })).toThrow(/sameSite/);
     expect(() => validator.validate({ secret: 'x'.repeat(16), cookie: { maxAgeSeconds: -1 } })).toThrow(/maxAgeSeconds/);
     expect(() => validator.validate({})).not.toThrow();   // missing secret is a required-field concern, not this validator's
+  });
+
+  // #604 — allowedOrigins are compared as whole origins, so an entry that is
+  // not one (a bare host, a wildcard) can never match: fail at construction
+  // rather than silently letting the allowlist do nothing.
+  test('CsrfOptions: allowedOrigins entries are full origins + expectedScheme enum', () => {
+    const validator = new CsrfOptionsValidator();
+    expect(() => validator.validate({ allowedOrigins: ['app.example'] })).toThrow(OptionsError);
+    expect(() => validator.validate({ allowedOrigins: ['https://app.example', '*'] })).toThrow(/allowedOrigins/);
+    expect(() => validator.validate({ allowedOrigins: ['https://app.example', 'https://b.example:8443'] })).not.toThrow();
+    expect(() => validator.validate({ expectedScheme: 'ftp' as never })).toThrow(/expectedScheme/);
+    expect(() => validator.validate({ expectedScheme: 'http' })).not.toThrow();
+  });
+
+  // #605 — the __Host- default has attribute preconditions.  Checking them
+  // here turns a per-request 500 (serializeCookie throws while the response
+  // is built) into an error when the middleware is wired.
+  test('CsrfOptions: the default __Host- cookie name constrains the attributes', () => {
+    const validator = new CsrfOptionsValidator();
+    expect(() => validator.validate({ cookie: { secure: false } })).toThrow(/cookie\.secure/);
+    expect(() => validator.validate({ cookie: { path: '/app' } })).toThrow(/cookie\.path/);
+    expect(() => validator.validate({ cookie: { domain: 'app.example' } })).toThrow(OptionsError);
+    expect(() => validator.validate({ cookie: { secure: true, path: '/' } })).not.toThrow();
+    // Opting out of the prefix lifts all three.
+    const unprefixed = { cookieName: 'csrf-token', cookie: { secure: false, path: '/app', domain: 'app.example' } };
+    expect(() => validator.validate(unprefixed)).not.toThrow();
+    // __Secure- carries the Secure requirement alone.
+    expect(() => validator.validate({ cookieName: '__Secure-csrf', cookie: { secure: false } })).toThrow(/cookie\.secure/);
+    expect(() => validator.validate({ cookieName: '__Secure-csrf', cookie: { path: '/app' } })).not.toThrow();
+    expect(() => validator.validate({ cookieName: '' })).toThrow(/cookieName/);
+  });
+
+  test('SameOriginOptions: the same two rules', () => {
+    const validator = new SameOriginOptionsValidator();
+    expect(() => validator.validate({ allowedOrigins: ['app.example'] })).toThrow(/allowedOrigins/);
+    expect(() => validator.validate({ expectedScheme: 'ftp' as never })).toThrow(OptionsError);
+    expect(() => validator.validate({ allowedOrigins: ['https://app.example'], expectedScheme: 'https' })).not.toThrow();
+    expect(() => validator.validate({})).not.toThrow();
   });
 
   test('StaticFilesOptions: maxFileSize positive int + policy enums', () => {

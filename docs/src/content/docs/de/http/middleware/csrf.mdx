@@ -1,14 +1,13 @@
 ---
 title: CSRF-Schutz
-description: csrfProtection() ist ein zustandsloses Double-Submit-Verfahren, gehärtet mit einem HMAC; requireSameOrigin() ist der leichtgewichtige Origin/Referer-Check. Beide schützen unsichere Methoden vor Cross-Site Request Forgery.
+description: csrfProtection() ist ein zustandsloses Double-Submit-Verfahren mit HMAC-signiertem Token in einem __Host--Cookie; requireSameOrigin() ist der leichtgewichtige Origin/Referer-Check. Beide schützen unsichere Methoden vor Cross-Site Request Forgery.
 ---
 
 `csrfProtection` ist eine **zustandslose** CSRF-Abwehr: das Token ist
-`payload.hmac(secret, payload)`, sodass ein Cookie, das ein Angreifer von
-einer Geschwister-Subdomain platziert, die Verifikation nicht besteht.
-Sichere Methoden erzeugen/erneuern das Token; unsichere Methoden
-(`POST`/`PUT`/`PATCH`/`DELETE`) müssen ein passendes Cookie **und** einen
-passenden Header vorweisen.
+`payload.hmac(secret, payload)` und steckt in einem Cookie mit
+`__Host-`-Präfix. Sichere Methoden erzeugen/erneuern das Token; unsichere
+Methoden (`POST`/`PUT`/`PATCH`/`DELETE`) müssen ein passendes Cookie **und**
+einen passenden Header vorweisen.
 
 ```ts
 import { csrfProtection, CsrfOptions, withMiddleware } from 'actor-ts/http';
@@ -26,23 +25,71 @@ gesetzt und zusätzlich an den Handler weitergereicht, der es mit
 einsetzt. Der Browser sendet es beim nächsten unsicheren Request im
 `X-CSRF-Token`-Header (oder einem konfigurierten Formularfeld) zurück.
 
+## Was welcher Teil leistet
+
+Drei getrennte Dinge tragen die Abwehr, und es lohnt sich, genau zu sein,
+welches davon was leistet:
+
+- Der **HMAC** weist Tokens ab, die dieser Server nie ausgestellt hat —
+  Müll, geratene Werte, ein Token aus einem anderen Deployment. Er bindet
+  ein Token an das Server-Secret und an sonst nichts: ein für einen Client
+  ausgestelltes Token verifiziert also für jeden anderen. Er ist *nicht*
+  das, was das Platzieren von Cookies verhindert.
+- Der **`__Host-`-Cookie-Name** verhindert das Platzieren — und ist der
+  Default. Ein Browser akzeptiert so ein Cookie nur mit `Secure`, `Path=/`
+  und ohne `Domain`, was es exakt auf diesen Host festnagelt: eine
+  Geschwister-Subdomain kann es nicht schreiben, eine Klartext-Origin
+  überhaupt nicht.
+- Das **Origin/Referer-Gate** auf unsicheren Methoden weist den
+  Cross-Site-Request ab, der ein platziertes Paar überhaupt erst
+  mitbrächte.
+
 ## Konfiguration
 
 | Builder-Methode | Feld | Default |
 | --- | --- | --- |
 | `withSecret(s)` | `secret` | **erforderlich**, ≥ 16 Bytes |
-| `withCookieName(n)` | `cookieName` | `'csrf-token'` |
+| `withCookieName(n)` | `cookieName` | `'__Host-csrf-token'` |
 | `withHeaderName(n)` | `headerName` | `'x-csrf-token'` |
 | `withCookie(attrs)` | `cookie` | `Path=/`, `Secure`, `SameSite=Lax` |
 | `withVerifyOrigin(flag?)` | `verifyOrigin` | `true` — zusätzlich Origin/Referer prüfen |
-| `withAllowedOrigins(...o)` | `allowedOrigins` | zusätzlich akzeptierte Origins |
+| `withAllowedOrigins(...o)` | `allowedOrigins` | zusätzlich akzeptierte **vollständige** Origins |
+| `withExpectedScheme(s)` | `expectedScheme` | `'https'` — bzw. `'http'`, wenn das Cookie nicht `Secure` ist |
 | `withFormField(name)` | `formFieldName` | aus — das Token auch aus einem urlencoded Body-Feld lesen |
+
+## Was „same origin“ hier bedeutet
+
+Der Origin-Check vergleicht **vollständige Origins** — Scheme, Host und Port
+— auf beiden Armen: die eigene Origin des Requests und jeden
+`allowedOrigins`-Eintrag. `https://app.example` akzeptiert also weder
+`http://app.example` noch `https://app.example:8443`, und ein `Origin: null`
+(eine opake Origin, z. B. aus einem sandboxed iframe) wird immer abgewiesen.
+
+Ein Request nennt seinen Host im `Host`-Header, aber niemals sein Scheme —
+TLS kann am Proxy terminieren, und ein weitergereichter Scheme-Header wird
+vom Client gesetzt, ist also nicht vertrauenswürdig. `expectedScheme`
+liefert diese fehlende Hälfte. Default ist `'https'`; `csrfProtection` liest
+stattdessen `'http'`, wenn du das `Secure`-Cookie-Attribut ausdrücklich
+abschaltest — denn damit ist ein Klartext-HTTP-Betrieb bereits erklärt:
+
+```ts
+const csrfOptions = CsrfOptions.create()
+  .withSecret(process.env.CSRF_SECRET!)
+  // Local dev over plain HTTP: a __Host- cookie cannot be set at all, and
+  // dropping Secure also switches the expected scheme to http.
+  .withCookieName('csrf-token')
+  .withCookie({ secure: false });
+```
+
+Einträge in `allowedOrigins` müssen vollständige Origins sein
+(`'https://partner.example'`, nicht `'partner.example'`); alles andere wirft
+beim Bauen der Middleware einen `OptionsError`, weil es nie passen könnte.
 
 ## Die leichtgewichtige Alternative — `requireSameOrigin`
 
 Brauchst du nur Schutz für moderne Browser, weist `requireSameOrigin()`
-unsichere-Methoden-Requests ab, deren `Origin`/`Referer`-Host nicht der
-Request-Host ist:
+unsichere-Methoden-Requests ab, deren `Origin`/`Referer` nicht die eigene
+Origin des Requests ist:
 
 ```ts
 import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
@@ -50,11 +97,28 @@ import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
 const routes = withMiddleware(requireSameOrigin(), appRoutes);
 ```
 
+Es nimmt dieselben `allowedOrigins` und `expectedScheme` (plus
+`allowMissingOrigin`) mit demselben `'https'`-Default — eine
+Klartext-HTTP-Seite braucht
+`SameOriginOptions.create().withExpectedScheme('http')`, denn hier gibt es
+kein Cookie, aus dem sich das ableiten ließe.
+
 `csrfProtection` ist die Doppel-Absicherung (es führt diesen Check ebenfalls
 aus); `requireSameOrigin` allein ist leichter, verlässt sich aber darauf,
 dass der Browser ein korrektes `Origin`/`Referer` sendet.
 
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Das __Host--Präfix braucht HTTPS">
+  Ein `__Host-`-Cookie erfordert `Secure`, `Path=/` und kein `Domain` —
+  sonst verwirft der Browser es, und über reines HTTP lässt es sich gar
+  nicht setzen. `csrfProtection` weist ein unverträgliches
+  `withCookie(...)` deshalb schon beim Bauen der Middleware ab (ein
+  `OptionsError`, kein 500 pro Request). Für lokale Entwicklung über HTTP
+  wählst du mit `withCookieName('csrf-token')` einen Namen ohne Präfix.
+  Browser-Code, der das Cookie liest, muss den vollen Namen samt Präfix
+  verwenden.
+</Aside>
 
 <Aside type="note" title="Warum das Cookie nicht HttpOnly ist">
   Double-Submit **erfordert**, dass Same-Origin-JavaScript das Cookie liest

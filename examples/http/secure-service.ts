@@ -49,7 +49,11 @@ async function main(): Promise<void> {
   const csrfOptions = CsrfOptions.create()
     // Demo secret — load from a secret manager in production.
     .withSecret(process.env.CSRF_SECRET ?? 'dev-only-secret-change-me-0123456789')
-    // The sample runs over plain HTTP; drop this in production (HTTPS).
+    // The sample runs over plain HTTP, so it opts out of the two defaults
+    // that assume HTTPS — drop both lines in production. A `__Host-` cookie
+    // (the default name) cannot be set over plain HTTP at all, and dropping
+    // `Secure` also tells the origin check to expect `http://` origins.
+    .withCookieName('csrf-token')
     .withCookie({ secure: false });
 
   const routes =
