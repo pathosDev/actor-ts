@@ -130,6 +130,31 @@ actor-ts {
         }
       }
 
+      # Grafana Loki's native push API.  Loki 3+ also accepts OTLP at
+      # /otlp/v1/logs, so the otlp sink reaches it too; this one exists for
+      # direct push and explicit control over the label set.
+      loki {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://loki:3100"
+        tenant-id = ""             # X-Scope-OrgID, for multi-tenant Loki
+        format    = "text"         # text | json — how each log line is rendered
+        # Labels are Loki's INDEX.  Keep them static and few: every distinct
+        # combination is a separate stream, and a per-record value here
+        # (an actor path, a request id) multiplies streams without bound.
+        # Everything variable rides as structured metadata instead.
+        labels {
+          service = ""             # empty = the actor system's name
+        }
+        structured-metadata = true
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
       # Parseable's REST ingestion.  Its OTLP endpoint works too — this
       # sink sends a flatter record and skips OTLP semantics.
       parseable {

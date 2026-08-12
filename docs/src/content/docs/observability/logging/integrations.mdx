@@ -207,6 +207,53 @@ Parseable also accepts OTLP/HTTP with a JSON body, so the
 for the simpler record shape, or that one if you are already standardised
 on OTLP.
 
+## Grafana Loki
+
+```ts
+import { ActorSystemOptions, LokiSink, LokiSinkOptions } from 'actor-ts';
+
+const lokiSinkOptions = LokiSinkOptions.create()
+  .withUrl('http://loki:3100')
+  .withLabels({ service: 'orders', env: 'prod' });
+const systemOptions = ActorSystemOptions.create().withLogSinks([new LokiSink(lokiSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.loki {
+  enabled   = true
+  url       = "http://loki:3100"
+  tenant-id = "team-a"      # X-Scope-OrgID, for multi-tenant Loki
+  labels { service = "orders" }
+}
+```
+
+A batch becomes one push to `/loki/api/v1/push` in plain JSON — Loki
+accepts that as an alternative to snappy-compressed protobuf, so no
+compression or protobuf library is involved.
+
+**Labels are Loki's index, and this sink keeps them static.**  Every
+distinct label combination is a separate stream; a per-record value in
+there — an actor path, a request id — multiplies streams without bound and
+is the standard way to make a Loki cluster unusable.  So the options type
+does not accept a label derived from the record.  Variable data goes into
+**structured metadata**, which Loki stores per entry instead of indexing:
+
+```json
+["1786527662113000000", "[…] INFO  placing order",
+ {"level":"info","actor_path":"actor-ts://orders/user/order-42","tenant":"acme"}]
+```
+
+The timestamp is a nanosecond **string**.  Loki answers a JSON number with
+a 400, and the value is past what a double holds exactly anyway.
+
+`service` defaults to the actor system's name.  Credentials — a Grafana
+Cloud basic-auth header — go through the code-only `headers` option.
+
+**Loki 3+ also ingests OTLP** at `/otlp/v1/logs`, which the
+[OTLP sink](#otlp--opentelemetry-over-http) already speaks.  Use this sink
+for direct push and explicit label control; use that one if you are
+standardised on OTLP.
+
 ## Sentry
 
 ```ts

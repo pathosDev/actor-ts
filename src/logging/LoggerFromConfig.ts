@@ -7,6 +7,8 @@ import { FileSink } from './FileSink.js';
 import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from './FileSinkOptions.js';
 import { GelfSink } from './GelfSink.js';
 import { isGelfSinkEnabled, readGelfSinkOptionsFromConfig } from './GelfSinkOptions.js';
+import { LokiSink } from './LokiSink.js';
+import { isLokiSinkEnabled, readLokiSinkOptionsFromConfig } from './LokiSinkOptions.js';
 import { OtlpHttpSink } from './OtlpHttpSink.js';
 import { isOtlpSinkEnabled, readOtlpSinkOptionsFromConfig } from './OtlpHttpSinkOptions.js';
 import { ParseableSink } from './ParseableSink.js';
@@ -62,6 +64,9 @@ export function buildLoggerFromConfig(
   }
   if (isGelfSinkEnabled(config)) {
     sinks.push(new GelfSink(readGelfSinkOptionsFromConfig(config)));
+  }
+  if (isLokiSinkEnabled(config)) {
+    sinks.push(new LokiSink(readLokiSinkOptionsFromConfig(config)));
   }
   if (isOtlpSinkEnabled(config)) {
     sinks.push(new OtlpHttpSink(readOtlpSinkOptionsFromConfig(config)));

@@ -212,6 +212,56 @@ Parseable nimmt auch OTLP/HTTP mit JSON-Body entgegen, der
 Nimm diesen hier für die einfachere Record-Form — oder jenen, wenn du
 ohnehin auf OTLP standardisiert bist.
 
+## Grafana Loki
+
+```ts
+import { ActorSystemOptions, LokiSink, LokiSinkOptions } from 'actor-ts';
+
+const lokiSinkOptions = LokiSinkOptions.create()
+  .withUrl('http://loki:3100')
+  .withLabels({ service: 'orders', env: 'prod' });
+const systemOptions = ActorSystemOptions.create().withLogSinks([new LokiSink(lokiSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.loki {
+  enabled   = true
+  url       = "http://loki:3100"
+  tenant-id = "team-a"      # X-Scope-OrgID, for multi-tenant Loki
+  labels { service = "orders" }
+}
+```
+
+Ein Batch wird zu einem Push an `/loki/api/v1/push` in reinem JSON — Loki
+nimmt das als Alternative zu snappy-komprimiertem Protobuf entgegen, es
+ist also weder Kompression noch eine Protobuf-Bibliothek im Spiel.
+
+**Labels sind Lokis Index, und dieser Sink hält sie statisch.**  Jede
+eigene Label-Kombination ist ein eigener Stream; ein Wert pro Record darin
+— ein Actor-Pfad, eine Request-ID — vervielfacht Streams unbegrenzt und
+ist der übliche Weg, einen Loki-Cluster unbrauchbar zu machen.  Der
+Options-Typ nimmt deshalb kein aus dem Record abgeleitetes Label an.
+Variable Daten gehen in **Structured Metadata**, das Loki pro Eintrag
+speichert statt zu indizieren:
+
+```json
+["1786527662113000000", "[…] INFO  placing order",
+ {"level":"info","actor_path":"actor-ts://orders/user/order-42","tenant":"acme"}]
+```
+
+Der Zeitstempel ist ein Nanosekunden-**String**.  Loki beantwortet eine
+JSON-Zahl mit einem 400, und der Wert liegt ohnehin jenseits dessen, was
+ein Double exakt hält.
+
+`service` fällt auf den Namen des Actor-Systems zurück.  Zugangsdaten —
+etwa ein Basic-Auth-Header für Grafana Cloud — laufen über die
+`headers`-Option, die es nur im Code gibt.
+
+**Loki 3+ nimmt außerdem OTLP** unter `/otlp/v1/logs` entgegen, was der
+[OTLP-Sink](#otlp--opentelemetry-über-http) bereits spricht.  Nimm diesen
+Sink für den direkten Push und explizite Label-Kontrolle — und jenen, wenn
+du auf OTLP standardisiert bist.
+
 ## Sentry
 
 ```ts
