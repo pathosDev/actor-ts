@@ -147,7 +147,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `HttpDelivery` factors that classification out for the platform sinks
   still to come.
 
+- **`GelfSink` — Graylog over UDP, TCP or HTTP** (#1155).  The one platform
+  the OTLP sink cannot reach: Graylog's OpenTelemetry input accepts OTLP
+  over **gRPC only**, so there is no HTTP path to it without a collector in
+  between.  GELF also lands structured fields as first-class searchable
+  keys rather than `otel_attributes_*`.
+
+  ```ts
+  const gelfSinkOptions = GelfSinkOptions.create()
+    .withHost('graylog.internal')
+    .withProtocol('udp');
+  ```
+
+  No SDK — GELF is a JSON document, and the transports are a datagram, a
+  null-delimited stream and an HTTP POST.  UDP datagrams are gzipped by
+  default (the server detects it from the magic bytes) and chunked with the
+  spec's 12-byte header when they outgrow one packet; the default 1420-byte
+  datagram keeps the whole packet inside an Ethernet MTU with room for a
+  tunnel header.  A record needing more than the protocol's 128 chunks is
+  dropped and reported rather than retried — a retry cannot make it
+  smaller.  TLS for the TCP transport is code-only: those fields carry the
+  key material itself, not a path to it.
+
 ### Security
+
+- **GELF field names cannot be forged by a remote peer** (#1155, relates to
+  #573).  The MDC can carry values that arrived over the cluster wire, so
+  the GELF sink sanitises additional-field names to what the spec permits,
+  drops the forbidden `_id`, and drops any field that would land on one of
+  GELF's own top-level keys — `short_message`, `timestamp`, `level`,
+  `host`.  Without that, a peer could overwrite the message, the severity
+  or the origin of the record reporting on it.
 
 - **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`
   takes a `transform` hook applied once, before fan-out, that rewrites a
