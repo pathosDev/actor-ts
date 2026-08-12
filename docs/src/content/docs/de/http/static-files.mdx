@@ -43,7 +43,9 @@ mountet es darunter (z. B. `/static/...`), ohne mountet es an der Wurzel.
   unerfüllbar); `Accept-Ranges: bytes` wird angekündigt.
 - **Verzeichnisse** — ein Request ohne Trailing-Slash `301`-redirectet, um
   ihn zu ergänzen (Query erhalten); mit Slash werden Index-Dateien der Reihe
-  nach probiert, dann ein Listing (falls Browsing) oder `404`.
+  nach probiert, dann ein Listing (falls Browsing) oder `404`. Unter
+  `within-root` gilt eine Index-Datei, die außerhalb der Wurzel landet, als
+  nicht vorhanden.
 - **HEAD** — volle Header, leerer Body, kein Dateilesen.
 
 ## MIME-Typen
@@ -64,6 +66,16 @@ verweigert, der zusammengesetzte Pfad wird auf die Wurzel eingegrenzt, und
 ein Symlink, der die Wurzel verlässt, wird verweigert (`within-root`-
 Default). Dotfiles sind standardmäßig verboten. **Jede Ablehnung ist ein
 einheitlicher `404`** — kein Informationsleck über Existierendes.
+
+Die Eingrenzung wird bei **jedem Dateisystem-Sprung eines Requests** geprüft,
+nicht nur auf dem Pfad, den die URL aufgelöst hat: auch die Index-Datei eines
+Verzeichnisses und jeder Eintrag eines browsebaren Listings werden
+kanonisiert. Ein Link, der die Wurzel verlässt, ist ein `404` — egal ob er
+direkt angefragt oder als `index.html` erreicht wird — und er taucht im
+Listing gar nicht erst auf: Name, Größe und mtime sind genau das, was die
+Policy zurückhält. Auf `withSymlinks('follow')` umschalten, wenn der Baum
+absichtlich nach außen verlinkt (ein Build-Output, eine Link-Farm eines
+Paketmanagers).
 
 import { Aside } from '@astrojs/starlight/components';
 
