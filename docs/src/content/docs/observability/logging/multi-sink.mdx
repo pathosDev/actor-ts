@@ -169,6 +169,65 @@ dropped.  Records logged *after* the sinks close fall back to a plain
 console line rather than disappearing — shutdown is exactly when a last
 message matters.
 
+## Batched delivery
+
+A sink that writes to a file descriptor or a network endpoint does not
+write per record — it queues, batches, and ships on a timer.
+`BatchingSink` is the base class every such sink extends, so the
+settings mean the same thing everywhere:
+
+```hocon
+actor-ts.logger.sinks.<name>.delivery {
+  max-batch-size = 100      # most records in one write
+  flush-interval = 2s       # how often the queue is drained
+  queue-capacity = 10000    # most records that may wait in memory
+  overflow       = "drop-new"   # drop-new | drop-head
+  max-retries    = 5        # attempts after the first failure; 0 disables
+  min-backoff    = 1s       # first retry delay, doubling per attempt
+  max-backoff    = 30s      # ceiling for that delay
+  random-factor  = 0.2      # ±20 % jitter on each delay
+}
+```
+
+Or in code, as a nested `delivery` object on the sink's options.
+
+**The queue is bounded, and that is the point.**  When it is full a
+record is dropped — the newest by default, the oldest with
+`drop-head` — the count is kept on the sink's `droppedCount`, and the
+loss is reported on the console at most once a minute.  An unbounded
+buffer does not save the records; it converts "some logs were lost"
+into "the process died", and hides the problem until it is fatal.
+
+Batches are flushed on the interval, and immediately when
+`max-batch-size` records are waiting — otherwise a burst would pay a
+whole flush interval of latency after the first record.
+
+**Retries distinguish worth-retrying from not.**  A sink signals which
+by throwing `SinkDeliveryError`:
+
+```ts
+import { SinkDeliveryError } from 'actor-ts';
+
+if (response.status === 429 || response.status >= 500) {
+  const retryAfter = response.headers.get('retry-after');
+  throw new SinkDeliveryError(`HTTP ${response.status}`, true,
+    retryAfter ? Number(retryAfter) * 1000 : undefined);
+}
+if (!response.ok) throw new SinkDeliveryError(`HTTP ${response.status}`, false);
+```
+
+A retryable failure backs off exponentially with jitter, honouring a
+server-supplied delay when there is one.  A non-retryable one — a 401
+from a wrong API key — is dropped at once, because five retries with
+backoff only delay the moment somebody notices.  An error that is *not*
+a `SinkDeliveryError` counts as retryable: that is what a socket reset
+or a failed `fetch` looks like, and those do pass on their own.
+
+**On close, the queue is drained with retries switched off.**  Whoever
+is closing already holds a deadline (`actor-ts.logger.close-timeout`),
+so a shutdown gets one attempt per batch rather than a backoff schedule
+that would outlive the process.
+
 ## Writing your own sink
 
 A sink is a small object.  `name`, `minLevel` and `write` are all that

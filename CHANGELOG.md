@@ -59,6 +59,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `Logger`, `ConsoleLogger`, `JsonLogger` and `NoopLogger` are untouched;
   `Logger` remains a documented extension point and gained no members.
 
+- **`BatchingSink` — bounded, batched, retrying log delivery** (#1152).  The
+  base class every sink that writes somewhere slower than memory extends.  A
+  subclass implements one method, `emitBatch(records)`, and inherits a
+  bounded queue, batching, retry with jittered backoff, drop accounting and
+  a drain on close.
+
+  Settings live in a nested `delivery` block (`maxBatchSize` 100,
+  `flushIntervalMs` 2000, `queueCapacity` 10 000, `overflow` `drop-new` |
+  `drop-head`, `maxRetries` 5, `minBackoffMs` 1000, `maxBackoffMs` 30 000,
+  `randomFactor` 0.2), shared by every sink so the same word means the same
+  thing everywhere.
+
+  `SinkDeliveryError` carries whether a failure is worth retrying, plus an
+  optional server-supplied `retryAfterMs`.  A non-retryable failure — a 401
+  from a wrong key — is dropped at once instead of being retried five times
+  with backoff.  Anything that is *not* a `SinkDeliveryError` counts as
+  retryable, which is what a socket reset or a failed `fetch` looks like.
+
+  The queue is bounded on purpose: an unbounded buffer does not save the
+  records, it converts "some logs were lost" into "the process died".
+  Losses are counted on `droppedCount` and reported to the console at most
+  once a minute per reason.  On close the queue is drained with retries
+  switched off, since the caller already holds a deadline.
+
 ### Security
 
 - **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`
