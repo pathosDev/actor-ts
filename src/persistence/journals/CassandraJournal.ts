@@ -378,9 +378,16 @@ export class CassandraJournal implements Journal {
   private get eventsTable(): string { return this.options.eventsTable ?? 'events'; }
   private get metadataTable(): string { return this.options.metadataTable ?? 'metadata'; }
   private get allIdsTable(): string { return this.options.allIdsTable ?? 'all_persistence_ids'; }
-  /** Side-table name used when `useTagIndex` is set — visible so
-   *  `CassandraQuery` can target it directly. */
-  get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
+  private get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
+  /**
+   * `keyspace.tagIndexTable`, validated — the form `CassandraQuery` targets.
+   *
+   * The bare name used to be the public getter, and the query class rebuilt
+   * `${keyspace}.${name}` from it by hand, which skipped the guard every
+   * other CQL site here goes through (security audit #614).  Exposing only
+   * the qualified form removes the seam rather than documenting around it.
+   */
+  get qualifiedTagIndexTable(): string { return this.qualified(this.tagIndexTable); }
   /** Whether dual-writes to the tag-index side table are enabled. */
   get useTagIndex(): boolean { return this.options.useTagIndex === true; }
   /** Whether appends claim their sequence range with an LWT (#475).  On by default. */
