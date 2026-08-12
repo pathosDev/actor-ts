@@ -169,6 +169,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   smaller.  TLS for the TCP transport is code-only: those fields carry the
   key material itself, not a path to it.
 
+- **`ParseableSink` — Parseable's REST ingestion** (#1156).  A batch becomes
+  a JSON array POSTed to `/api/v1/ingest` with the dataset in the
+  `X-P-Stream` header; Parseable creates the dataset on first use.  No SDK
+  exists and none is needed.
+
+  Records are sent flat, because Parseable flattens nested objects at
+  ingest anyway — flat keeps every field individually queryable and skips a
+  round of server-side rewriting.  Authentication is an API key **or**
+  basic-auth credentials, and the validator rejects both-at-once and
+  half-a-pair at construction rather than letting every flush fail.
+
+  A batch over Parseable's 10 MiB request cap is split rather than sent and
+  rejected: exceeding it is not a retryable failure, so an oversized batch
+  would be lost in full.
+
+  Parseable also accepts OTLP/HTTP, so `OtlpHttpSink` reaches it too — this
+  sink is for the simpler record shape.
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to

@@ -9,6 +9,8 @@ import { GelfSink } from './GelfSink.js';
 import { isGelfSinkEnabled, readGelfSinkOptionsFromConfig } from './GelfSinkOptions.js';
 import { OtlpHttpSink } from './OtlpHttpSink.js';
 import { isOtlpSinkEnabled, readOtlpSinkOptionsFromConfig } from './OtlpHttpSinkOptions.js';
+import { ParseableSink } from './ParseableSink.js';
+import { isParseableSinkEnabled, readParseableSinkOptionsFromConfig } from './ParseableSinkOptions.js';
 import { parseLogLevel } from './LogLevelName.js';
 import type { LogSink } from './LogSink.js';
 import { MultiSinkLogger } from './MultiSinkLogger.js';
@@ -63,6 +65,9 @@ export function buildLoggerFromConfig(
   }
   if (isOtlpSinkEnabled(config)) {
     sinks.push(new OtlpHttpSink(readOtlpSinkOptionsFromConfig(config)));
+  }
+  if (isParseableSinkEnabled(config)) {
+    sinks.push(new ParseableSink(readParseableSinkOptionsFromConfig(config)));
   }
   if (sinks.length === 0) return undefined;
   return new MultiSinkLogger({

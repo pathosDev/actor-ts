@@ -111,6 +111,18 @@ export {
   readOtlpSinkOptionsFromConfig,
 } from './OtlpHttpSinkOptions.js';
 export type { OtlpHttpSinkOptionsType } from './OtlpHttpSinkOptions.js';
+export { ParseableSink, requestBodiesFor } from './ParseableSink.js';
+export {
+  DEFAULT_PARSEABLE_MIN_LEVEL,
+  DEFAULT_PARSEABLE_REQUEST_TIMEOUT_MS,
+  PARSEABLE_MAX_REQUEST_BYTES,
+  ParseableSinkOptions,
+  ParseableSinkOptionsBuilder,
+  ParseableSinkOptionsValidator,
+  isParseableSinkEnabled,
+  readParseableSinkOptionsFromConfig,
+} from './ParseableSinkOptions.js';
+export type { ParseableSinkOptionsType } from './ParseableSinkOptions.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';

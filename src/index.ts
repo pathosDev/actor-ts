@@ -161,6 +161,8 @@ export {
   DEFAULT_OTLP_REQUEST_TIMEOUT_MS,
   DEFAULT_OTLP_SCOPE_NAME,
   DEFAULT_OTLP_URL,
+  DEFAULT_PARSEABLE_MIN_LEVEL,
+  DEFAULT_PARSEABLE_REQUEST_TIMEOUT_MS,
   DEFAULT_SINK_CLOSE_TIMEOUT_MS,
   FileSink,
   FileSinkOptions,
@@ -180,6 +182,11 @@ export {
   OtlpHttpSinkOptions,
   OtlpHttpSinkOptionsBuilder,
   OtlpHttpSinkOptionsValidator,
+  PARSEABLE_MAX_REQUEST_BYTES,
+  ParseableSink,
+  ParseableSinkOptions,
+  ParseableSinkOptionsBuilder,
+  ParseableSinkOptionsValidator,
   SinkDeliveryError,
   SinkReporter,
   buildLoggerFromConfig,
@@ -208,6 +215,7 @@ export type {
   LogSink,
   LogSinkContext,
   OtlpHttpSinkOptionsType,
+  ParseableSinkOptionsType,
   MultiSinkLoggerOptionsType,
 } from './logging/index.js';
 
