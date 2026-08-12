@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-12
+
 ### Added
 
 - **`EventStream` channels can be `kind`-discriminated types, not just

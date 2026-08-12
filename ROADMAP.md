@@ -4,31 +4,64 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.14.0 is out** — the *caps, codecs and lifecycle* release, and the
-  largest window so far: 106 issues and eighteen breaking changes.  Three
-  threads carry it.  **Caps**: the cluster-wide registries, the member map and
-  the metric label space are all bounded now, gossiped records are held to
-  those bounds rather than trusted (#131, #137, #139, #841), and the wire
-  discriminator is one spelling (#494).  **Codecs**: CBOR reaches rich-type
-  parity with the JSON tree and changes four encodings to get there (#1036),
-  Avro and Protobuf ship as serializers, and `BidirectionalMap` /
-  `BidirectionalMultiMap` round-trip through every store (#1033, #1035).
-  **Lifecycle**: a restart stops the actor's children (#634) and a resumed
-  actor brings its subtree back with it (#635).  New building blocks:
-  `TcpServerActor` (#158), the scatter/gather router (#153), the three
-  persistence-id queries (#156), JetStream KV and Object-Store, and gRPC
-  client-streaming (#5).  Every `severity: high` finding from both audit
-  passes is closed.  See `CHANGELOG.md` — the breaking changes each carry a
-  migration note.
+- **v0.15.0 is out** — the *mailboxes and channels* release, cut a day after
+  v0.14.0 because one breaking change should not sit in a window.  **The
+  default mailbox is unbounded again (#1148)**: since #310 every actor
+  spawned without an explicit `mailboxCapacity` got a `drop-head` bound that
+  silently evicted its *oldest* queued message, and the tracker holds one
+  entry per victim — a death-watch `Terminated` (#729), a ReliableDelivery
+  `confirm` that never settled (#732), a DistributedData promise left
+  unsettled (#1078), three WebSocket-hub defects (#717, #985, #986).  The
+  memory ceiling it was traded for never existed, because the system-message
+  queue was never bounded (#794).  Bounding is opt-in now and names its own
+  loss, `actor_mailbox_size` exists to watch what replaced it, and every
+  mailbox reports its drops rather than only the one the framework built
+  (#1149, #661).  **Channels**: `EventStream` accepts `kind`-discriminated
+  types rather than only classes (#1143), and one faulty subscription no
+  longer breaks the bus for every subscriber registered after it (#1010).
+  Underneath, constants got a placement rule (#1142) that turned up a dead
+  export, five duplicated values and a second path-traversal denylist.  See
+  `CHANGELOG.md` — the breaking change carries a migration note.
 - Next window is open (`[Unreleased]`).
 
   The obvious heads from here: the `reference.conf` expansion tracked in
   #887, the remaining `severity: medium` security catalogue, and #766 — whose
   titled fix turns out to be insufficient on its own, see the issue.
-- ~5 100 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~5 170 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
+
+- **v0.15.0 — mailboxes and channels:**
+  - **The unbounded mailbox is the default again (#1148)** — BREAKING, and
+    the reason this window is a minor.  A mailbox cannot tell a stale sample
+    from a control message, so `drop-head` on every actor was never confined
+    to the telemetry-shaped workloads it suits.  `mailboxOverflow` /
+    `withMailboxOverflow` is a real `ActorOptions` field now, setting it
+    without a capacity is rejected rather than ignored, and `ActorCell` warns
+    at 10 000 queued messages and every doubling after
+  - **Drop reporting reaches every mailbox (#1149, #661)** — the cell
+    registers its observer after choosing the mailbox, on anything
+    implementing the new `DropReportingMailbox` contract, so a mailbox
+    supplied through `withMailbox` is no longer invisible to
+    `actor_mailbox_dropped_total`.  `Mailbox` and `Envelope` are exported
+    from the package root, which is what made the documented escape hatch
+    reachable at all
+  - **`EventStream` channels can be `kind`-discriminated types (#1143)** —
+    a new `EventKey` mirroring `ServiceKey` / `ShardKey`, or the bare kind
+    string; class channels are untouched.  Publishing something nobody could
+    subscribe to was possible before this
+  - **The event stream survives a bad subscription (#1010)** — the channel
+    test, the predicate and `subscriber.tell` all run under a guard, so one
+    faulty entry no longer silently stops every subscription registered
+    after it, on every spawn, stop and dead letter
+  - **Constants have a placement rule (#1142)** — four possible homes,
+    checked in order, written down in `AGENTS.md`; ~300 constants across 130
+    files audited against it.  Every public name is unchanged
+  - **A collision predicate on the random-id helpers (#1141, #1146)** — an
+    optional `exists` callback that collapses the hand-written `do/while`,
+    bounded at 1 000 draws; three of the framework's own twelve draws now
+    use it, and the other nine are recorded with the reason
 
 - **v0.14.0 — caps, codecs and lifecycle:**
   - **`allPersistenceIds` + `currentPersistenceIdsPaginated` (#156)** — the
