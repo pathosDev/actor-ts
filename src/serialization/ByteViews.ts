@@ -1,6 +1,7 @@
 /**
- * Byte-view hygiene for serializers that delegate encoding to an external
- * binary library (Avro, Protobuf, …).  Both helpers exist because of a
+ * Byte-view hygiene for serializers that hand out bytes they did not
+ * allocate themselves — the external binary libraries (Avro, Protobuf, …)
+ * and the base64 framing in `JsonTree`.  Both helpers exist because of a
  * concrete behaviour measured on Bun, Node and Deno — not defensiveness.
  *
  * **Pooled output.**  `protobufjs`'s `Writer.finish()` returns a view into
@@ -11,6 +12,12 @@
  * `byteOffset`/`byteLength` therefore sees *other messages' bytes*, and
  * holding the view alive pins the whole pool.  A serializer's output is
  * handed to a journal row and outlives the pool, so it must own its bytes.
+ *
+ * **Pooled input.**  `Buffer.from(str, 'base64')` does the same thing on
+ * the way in, and unlike protobufjs it is not a library quirk but the
+ * documented `Buffer` allocator: on Node and Deno *every* decode from 1
+ * byte to 8 KB came back as a view into the pool.  That is the read half
+ * of the same hazard (#619) and the reason `fromBase64` copies.
  *
  * **`Buffer`-only decoders.**  `avsc` reaches for `Buffer`-private methods
  * inside `fromBuffer`, so a plain `Uint8Array` — exactly what the base64
