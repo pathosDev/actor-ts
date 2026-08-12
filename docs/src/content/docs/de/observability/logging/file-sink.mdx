@@ -1,0 +1,179 @@
+---
+title: Datei-Log-Sink
+description: Logs in zeitgestempelte Dateien auf der Platte schreiben — Rollover nach Größe und Uhrzeit, mit Retention, gzip und der Garantie, dass kein Record je auf zwei Dateien aufgeteilt wird.
+---
+
+`FileSink` schreibt Records in Dateien, benannt nach dem Moment, in dem
+sie geöffnet wurden:
+
+```
+logs/
+  log-2026-08-10-00-00-00.txt.gz
+  log-2026-08-11-00-00-00.txt.gz
+  log-2026-08-12-09-41-02.txt      ← die aktive Datei
+```
+
+```ts
+import { ActorSystem, ActorSystemOptions, FileSink, FileSinkOptions } from 'actor-ts';
+
+const fileSinkOptions = FileSinkOptions.create()
+  .withDirectory('/var/log/my-app')
+  .withRotateInterval('daily')
+  .withMaxFiles(14);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new FileSink(fileSinkOptions)]);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+Es ist ein
+[Batching-Sink](/de/observability/logging/multi-sink/#gebündelte-zustellung):
+`write` reiht ein, und die Queue wird auf einem Timer, bei vollem Batch
+und beim Shutdown geleert.  Records stehen also nicht in dem Moment auf
+der Platte, in dem sie geloggt werden — was das heißt und was nicht,
+steht unter [Dauerhaftigkeit](#dauerhaftigkeit).
+
+## Rollover
+
+Zwei Auslöser, und sie greifen zusammen:
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withMaxFileBytes(64 * 1024 * 1024)   // roll when the file would pass 64 MiB
+  .withRotateInterval('daily');          // and roll at every local midnight
+```
+
+`rotateInterval` ist `off`, `hourly` oder `daily` und meint die
+**Uhrzeitgrenze**, nicht „24 Stunden nach dem Start": Ein um 09:41
+gestarteter Prozess rollt zur nächsten Mitternacht, nicht um 09:41 am
+Folgetag.  `maxFileBytes = 0` schaltet den Größen-Auslöser ab, `off` den
+Uhrzeit-Auslöser.
+
+**Beim Rollover wird eine neue Datei geöffnet — die aktive wird nie
+umbenannt.**  Windows verweigert das Umbenennen einer geöffneten Datei,
+ein Rename-Schema scheitert dort also entweder oder muss die Datei erst
+schließen und mit allem konkurrieren, was noch schreibt.  Die nächste
+gestempelte Datei zu öffnen hat keins von beiden Problemen, und jede
+Datei auf der Platte ist vollständig unter dem Namen, den sie immer haben
+sollte.  (`pino-roll` und `winston-daily-rotate-file` sind bei derselben
+Antwort gelandet.)
+
+**Kein Record wird je auf zwei Dateien aufgeteilt.**  Die Rollover-Prüfung
+läuft vor jeder Zeile, nicht pro Batch — ein Batch, der die Größengrenze
+überschreitet, beendet die aktuelle Zeile, rollt und schreibt in der neuen
+Datei weiter.
+
+Existiert der gewählte Name schon — zwei Systeme, die in derselben Sekunde
+starten, oder ein Neustart innerhalb einer Sekunde —, bekommt die neue
+Datei ein `-2`, `-3`, statt an die fremde anzuhängen.
+
+## Retention
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withMaxFiles(14)                          // keep the 14 newest rotated files
+  .withMaxAgeMs(14 * 24 * 60 * 60 * 1000)    // and nothing older than 14 days
+  .withCompressRotated(true);                // gzip each file as it rolls
+```
+
+Beide Grenzen gelten; `0` schaltet die jeweilige ab.  Die Kompression
+läuft, nachdem die neue Datei offen ist — ein langsames gzip hält also nie
+die wartenden Records auf, und ein Fehlschlag lässt die unkomprimierte
+Datei liegen.
+
+**Retention löscht ausschließlich die eigenen Dateien dieses Sinks.**  Eine
+Datei muss den konfigurierten `prefix`, die konfigurierte `extension` und
+exakt die Zeitstempel-Form treffen, um überhaupt in Frage zu kommen, und
+die aktive Datei kommt nie in Frage.  Ein Log-Verzeichnis, das mit einem
+Nachbardienst geteilt wird — oder in dem jemand absichtlich eine Datei
+abgelegt hat —, bleibt unversehrt.  Genau dafür gibt es `prefix`: Zwei
+File-Sinks im selben Verzeichnis mit verschiedenen Präfixen räumen einander
+nicht ab.
+
+## Benennung
+
+Der Standard ist `log-<yyyy-MM-dd>-<HH-mm-ss>.txt` in lokaler Zeit — die
+Uhr, die jemand im Kopf hat, der wissen will, „was gegen drei passiert
+ist".  Die Teile lassen sich einzeln ändern:
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withPrefix('audit')
+  .withExtension('ndjson')
+  .withFormat('json');
+// → audit-2026-08-12-09-41-02.ndjson
+```
+
+`prefix` und `extension` dürfen weder Punkt noch Pfadtrenner enthalten:
+Sie gehen sowohl in den Dateinamen als auch in das Muster ein, gegen das
+die Retention prüft, und ein verirrtes `../` würde Löschungen irgendwohin
+richten, wo sie niemand haben wollte.
+
+## Konfiguration
+
+```hocon
+actor-ts.logger.sinks.file {
+  enabled   = true
+  min-level = "info"
+  format    = "text"        # or json, for one NDJSON object per line
+  directory = "/var/log/my-app"
+  prefix    = "log"
+  extension = "txt"
+
+  max-file-bytes  = 64M
+  rotate-interval = "daily"   # off | hourly | daily
+  max-files       = 14
+  max-age         = 14d
+  compress-rotated = true
+
+  delivery {
+    max-batch-size = 500
+    flush-interval = 1s
+  }
+}
+```
+
+## Dauerhaftigkeit
+
+Der Sink bündelt, es gibt also ein Fenster — bis zu `flush-interval` —, in
+dem ein Record geloggt, aber noch nicht geschrieben ist.  Ein Prozess, der
+in diesem Fenster getötet wird, verliert ihn.  Das ist derselbe Handel,
+den jeder durchsatzstarke Logger eingeht; die Alternative wäre ein Syscall
+pro Record.
+
+Was *nicht* auf dem Spiel steht, ist die Datei selbst.  Schreibvorgänge
+laufen in einer Schleife, bis jedes Byte angenommen wurde, ein
+Teilschreibvorgang kann also keine halbe Zeile hinterlassen; das Rollover
+benennt nie um, ein Absturz kann also keine Datei mitten im Umbenennen
+erwischen; und `terminate()` leert die Queue, bevor das System fertig ist.
+Ein abgestürzter Prozess hinterlässt eine Datei, die bis zu einer
+Record-Grenze vollständig ist — nie eine kaputte.
+
+Für ein Audit-Log, das die letzten zwei Sekunden nicht verlieren darf:
+`flush-interval` senken — oder diese Records irgendwo Transaktionales
+schicken und das Log für Diagnose nutzen.
+
+## Cross-Runtime
+
+Eine Implementierung bedient Bun, Node und Deno: Der Append-Handle,
+`readdir` und `unlink` kommen alle aus `node:fs/promises`, das die
+Kompatibilitätsschichten von Bun und Deno abdecken.  Es gibt keinen
+Per-Runtime-Adapter, und ein Smoke-Case fährt den Sink auf allen dreien,
+damit diese Behauptung ehrlich bleibt.
+
+## Fehlerfall
+
+Ein Verzeichnis, das nicht angelegt oder beschrieben werden kann — ein
+read-only gemountetes Dateisystem, ein falscher Pfad — **deaktiviert den
+Sink** nach einer Konsolenmeldung, statt für immer bei jedem Flush zu
+scheitern.  Der Zustand ist seiner Natur nach dauerhaft, die Anwendung
+läuft ansonsten einwandfrei, und eine Meldung alle zwei Sekunden über die
+gesamte Prozesslaufzeit hilft niemandem.
+
+Alles andere (volle Platte, kurzzeitige Windows-Sperre) läuft über den
+[normalen Retry-Pfad](/de/observability/logging/multi-sink/#gebündelte-zustellung)
+und endet, wenn es sich nicht auflöst, als gezählter Drop.
+
+## Verwandt
+
+- [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird
+- [Logging](/de/fundamentals/logging/) — Level, `withFields`, das MDC
+- [reference.conf](/de/reference/reference-conf/) — alle Logging-Keys an einer Stelle

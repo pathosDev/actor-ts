@@ -3,6 +3,8 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { LogLevel } from '../Logger.js';
 import { ConsoleSink } from './ConsoleSink.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from './ConsoleSinkOptions.js';
+import { FileSink } from './FileSink.js';
+import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from './FileSinkOptions.js';
 import { parseLogLevel } from './LogLevelName.js';
 import type { LogSink } from './LogSink.js';
 import { MultiSinkLogger } from './MultiSinkLogger.js';
@@ -48,6 +50,9 @@ export function buildLoggerFromConfig(
   const sinks: LogSink[] = [];
   if (isConsoleSinkEnabled(config)) {
     sinks.push(new ConsoleSink(readConsoleSinkOptionsFromConfig(config)));
+  }
+  if (isFileSinkEnabled(config)) {
+    sinks.push(new FileSink(readFileSinkOptionsFromConfig(config)));
   }
   if (sinks.length === 0) return undefined;
   return new MultiSinkLogger({

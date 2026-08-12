@@ -100,6 +100,10 @@ A short tour of what's in the box:
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
+- **Multi-sink logging** — one record to several destinations at once, each
+  with its own minimum level: console (text or NDJSON) and rotating log
+  files today, with bounded queues, batched delivery and a flush on
+  shutdown.  A `transform` hook redacts once, before fan-out.
 - **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a

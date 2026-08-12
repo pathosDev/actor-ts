@@ -42,6 +42,7 @@ export const ConfigKeys = {
      */
     sinks: {
       console: 'actor-ts.logger.sinks.console',
+      file: 'actor-ts.logger.sinks.file',
     },
   },
 

@@ -1,0 +1,166 @@
+---
+title: File log sink
+description: Write logs to timestamped files on disk — rolling over on size and on the clock, with retention, gzip, and a guarantee that no record is ever split across two files.
+---
+
+`FileSink` writes records to files named after the moment they were
+opened:
+
+```
+logs/
+  log-2026-08-10-00-00-00.txt.gz
+  log-2026-08-11-00-00-00.txt.gz
+  log-2026-08-12-09-41-02.txt      ← the active file
+```
+
+```ts
+import { ActorSystem, ActorSystemOptions, FileSink, FileSinkOptions } from 'actor-ts';
+
+const fileSinkOptions = FileSinkOptions.create()
+  .withDirectory('/var/log/my-app')
+  .withRotateInterval('daily')
+  .withMaxFiles(14);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new FileSink(fileSinkOptions)]);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+It is a [batching sink](/observability/logging/multi-sink/#batched-delivery):
+`write` queues, and the queue is drained on a timer, on a full batch, and
+on shutdown.  Records are not on disk the instant they are logged — see
+[Durability](#durability) for what that means and what it does not.
+
+## Rolling over
+
+Two triggers, and they combine:
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withMaxFileBytes(64 * 1024 * 1024)   // roll when the file would pass 64 MiB
+  .withRotateInterval('daily');          // and roll at every local midnight
+```
+
+`rotateInterval` is `off`, `hourly` or `daily`, and it means the **clock
+boundary**, not "24 hours after startup": a process started at 09:41 rolls
+at the next midnight, not the next 09:41.  `maxFileBytes` of `0` disables
+the size trigger; `off` disables the clock one.
+
+**Rolling over opens a new file — the active one is never renamed.**
+Windows refuses to rename a file that is open, so a rename-based scheme
+either fails there or has to close the file first and race whatever is
+still writing.  Opening the next stamped file has neither problem, and it
+means every file on disk is complete under the name it was always going to
+have.  (`pino-roll` and `winston-daily-rotate-file` arrived at the same
+answer.)
+
+**No record is ever split across two files.**  The rotation check runs
+before each line rather than per batch, so a batch that crosses the size
+limit finishes the current line, rolls, and continues in the new file.
+
+If a file with the chosen name already exists — two systems starting in
+the same second, or a restart inside one — the new file gets a `-2`, `-3`
+suffix instead of appending to somebody else's.
+
+## Retention
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withMaxFiles(14)                          // keep the 14 newest rotated files
+  .withMaxAgeMs(14 * 24 * 60 * 60 * 1000)    // and nothing older than 14 days
+  .withCompressRotated(true);                // gzip each file as it rolls
+```
+
+Both limits apply; `0` disables either one.  Compression runs after the
+new file is open, so a slow gzip never stalls the records waiting behind
+it, and a failure leaves the plain file in place.
+
+**Retention only ever deletes this sink's own files.**  A file has to
+match the configured `prefix`, the configured `extension` and the exact
+timestamp shape to be a candidate, and the active file is never a
+candidate.  A log directory shared with a sibling service — or with a file
+somebody put there deliberately — survives intact.  That is also why
+`prefix` exists: two file sinks writing the same directory under different
+prefixes do not clean up after each other.
+
+## Naming
+
+The default is `log-<yyyy-MM-dd>-<HH-mm-ss>.txt` in local time — the
+clock a reader looking for "what happened around three" has in mind.
+Change the parts independently:
+
+```ts
+const fileSinkOptions = FileSinkOptions.create()
+  .withPrefix('audit')
+  .withExtension('ndjson')
+  .withFormat('json');
+// → audit-2026-08-12-09-41-02.ndjson
+```
+
+`prefix` and `extension` may not contain a dot or a path separator: they
+are built into both the filename and the pattern retention matches on, and
+a stray `../` would point deletions somewhere nobody meant.
+
+## Configuration
+
+```hocon
+actor-ts.logger.sinks.file {
+  enabled   = true
+  min-level = "info"
+  format    = "text"        # or json, for one NDJSON object per line
+  directory = "/var/log/my-app"
+  prefix    = "log"
+  extension = "txt"
+
+  max-file-bytes  = 64M
+  rotate-interval = "daily"   # off | hourly | daily
+  max-files       = 14
+  max-age         = 14d
+  compress-rotated = true
+
+  delivery {
+    max-batch-size = 500
+    flush-interval = 1s
+  }
+}
+```
+
+## Durability
+
+The sink batches, so there is a window — up to `flush-interval` — in
+which a record has been logged but not yet written.  A process killed
+inside that window loses it.  This is the same trade every
+high-throughput logger makes, and the alternative is a syscall per record.
+
+What is *not* at risk is the file itself.  Writes loop until every byte is
+accepted, so a partial write cannot leave half a line; rotation never
+renames, so a crash cannot catch a file mid-rename; and `terminate()`
+drains the queue before the system is done.  A crashed process leaves a
+file that is complete up to some record boundary, never a corrupt one.
+
+For an audit trail that must not lose the last two seconds, lower
+`flush-interval` — or send those records somewhere transactional and use
+the log for diagnostics.
+
+## Cross-runtime
+
+One implementation serves Bun, Node and Deno: the append handle,
+`readdir` and `unlink` all come from `node:fs/promises`, which Bun's and
+Deno's compatibility layers cover.  There is no per-runtime adapter, and a
+smoke case runs the sink on all three to keep that claim honest.
+
+## Failure
+
+A directory that cannot be created or written — a read-only mount, a
+wrong path — **disables the sink** after one console message rather than
+failing every flush forever.  The condition is permanent by nature, the
+application is otherwise fine, and a message every two seconds for the
+life of the process helps nobody.
+
+Everything else (a full disk, a transient Windows lock) goes through the
+[normal retry path](/observability/logging/multi-sink/#batched-delivery)
+and, if it does not clear, ends as a counted drop.
+
+## Related
+
+- [Multi-sink logging](/observability/logging/multi-sink/) — the pipeline this plugs into
+- [Logging](/fundamentals/logging/) — levels, `withFields`, the MDC
+- [reference.conf](/reference/reference-conf/) — every logging key in one place

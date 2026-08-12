@@ -83,6 +83,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   once a minute per reason.  On close the queue is drained with retries
   switched off, since the caller already holds a deadline.
 
+- **`FileSink` — log files on disk, with rotation and retention** (#1153).
+  There was no way to write logs to a file; every deployment that is not a
+  container scraping stdout had to build it.
+
+  ```ts
+  const fileSinkOptions = FileSinkOptions.create()
+    .withDirectory('/var/log/my-app')
+    .withRotateInterval('daily')
+    .withMaxFiles(14);
+  const systemOptions = ActorSystemOptions.create().withLogSinks([new FileSink(fileSinkOptions)]);
+  ```
+
+  Files are named `log-<yyyy-MM-dd>-<HH-mm-ss>.txt` after the moment they
+  were opened, and roll over on size (`maxFileBytes`), on the clock
+  boundary (`rotateInterval`: `off` | `hourly` | `daily`), or both.
+  Retention takes a file count and an age; rotated files can be gzipped.
+
+  **Rolling over opens a new file — the active one is never renamed.**
+  Windows will not rename an open file, and a crash can never catch a file
+  mid-rename this way.  **No record is split across two files**: the
+  rotation check runs before each line, not per batch.  **Retention only
+  deletes this sink's own files** — matching prefix, extension and
+  timestamp shape, never the active file and never anything else in the
+  directory.
+
+  A directory that cannot be written disables the sink after one console
+  message instead of failing every flush forever.
+
+  `AppendOnlyFile` is the first long-lived file handle in the codebase: one
+  lazy `node:fs/promises` import serving Bun, Node and Deno, with writes
+  looping until every byte is accepted, since a single `write` is not
+  guaranteed to take the whole buffer and half a line in a log file is
+  worse than none.  A smoke case runs the sink on all three runtimes.
+
 ### Security
 
 - **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`
