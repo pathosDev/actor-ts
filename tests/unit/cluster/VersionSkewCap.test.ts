@@ -83,9 +83,22 @@ function internals(cluster: Cluster): ClusterInternals {
   return cluster as unknown as ClusterInternals;
 }
 
+/**
+ * Gossip frames carry a monotonic per-sender `sequence` since #112, and a
+ * receiver refuses one that does not out-number the last it accepted from that
+ * peer — so the helper stamps a fresh number for every frame it injects.
+ */
+let gossipSequence = 0;
+
 /** Deliver a gossip frame as if it arrived on a connection owned by `from`. */
 function gossipFrom(cluster: Cluster, from: NodeAddress, members: MemberData[]): void {
-  internals(cluster).handleWire(from, { kind: 'gossip', from: from.toJSON(), members });
+  // A minute ahead of the clock: a live node seeds its own counter from
+  // `Date.now()` and adds one per frame, so a plain `Date.now()` can land just
+  // below it.  Still well inside `maxVersionSkewMs`.
+  gossipSequence = Math.max(gossipSequence + 1, Date.now() + 60_000);
+  internals(cluster).handleWire(from, {
+    kind: 'gossip', from: from.toJSON(), sequence: gossipSequence, members,
+  });
 }
 
 /** Merge a single record as a sender the cluster already considers active. */

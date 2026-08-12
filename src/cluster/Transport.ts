@@ -1,5 +1,10 @@
 import type { Logger } from '../Logger.js';
-import { HANDSHAKE_TIMEOUT_MS, MAX_PENDING_FRAMES } from './Constants.js';
+import {
+  HANDSHAKE_TIMEOUT_MS,
+  INCOMPLETE_FRAME_IDLE_MS,
+  MAX_INBOUND_CONNECTIONS,
+  MAX_PENDING_FRAMES,
+} from './Constants.js';
 import {
   getTcpBackend,
   type TcpBackend,
@@ -58,6 +63,18 @@ type Connection = {
   targetKey: string | null;
   /** Armed on dial, cleared by `hello-ack`.  See {@link HANDSHAKE_TIMEOUT_MS}. */
   handshakeTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Armed whenever the decoder is left holding part of a frame, re-armed on
+   * every chunk and cleared when the buffer drains.  See
+   * {@link INCOMPLETE_FRAME_IDLE_MS}.
+   */
+  incompleteFrameTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Whether this connection still counts against {@link MAX_INBOUND_CONNECTIONS}.
+   * A flag rather than `!outbound`, because the slot is given back exactly once
+   * and both `onClose` and `dropConnection` can be the one to do it.
+   */
+  holdsInboundSlot: boolean;
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
 };
@@ -79,6 +96,10 @@ export class TcpTransport implements Transport {
   private bySocket = new WeakMap<TcpSocketLike, Connection>();
   private handler: WireHandler = () => {};
   private stopped = false;
+  /** Live inbound sockets, bounded by {@link MAX_INBOUND_CONNECTIONS} (#588). */
+  private inboundConnections = 0;
+  /** Set while the cap is saturated, so the refusal is one WARN per episode. */
+  private inboundCapReported = false;
 
   constructor(
     readonly self: NodeAddress,
@@ -118,6 +139,7 @@ export class TcpTransport implements Transport {
     this.stopped = true;
     for (const connection of this.byPeer.values()) {
       this.clearHandshakeTimer(connection);
+      this.clearIncompleteFrameTimer(connection);
       try { connection.socket?.end(); } catch { /* ignore */ }
     }
     this.byPeer.clear();
@@ -151,6 +173,8 @@ export class TcpTransport implements Transport {
     const connection = this.byPeer.get(peer.toString());
     if (!connection) return;
     this.clearHandshakeTimer(connection);
+    this.clearIncompleteFrameTimer(connection);
+    this.releaseInboundSlot(connection);
     try { connection.socket?.end(); } catch { /* ignore */ }
     this.byPeer.delete(peer.toString());
   }
@@ -163,7 +187,29 @@ export class TcpTransport implements Transport {
 
   /* --------------------------- internals -------------------------------- */
 
-  private attachInbound(sock: TcpSocketLike): void {
+  /**
+   * Register an inbound socket, unless {@link MAX_INBOUND_CONNECTIONS} is
+   * already saturated — then the socket is closed straight away and `null`
+   * comes back (#588).
+   *
+   * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
+   * here: attaching twice would replace a decoder mid-frame *and* count the
+   * same socket against the cap twice.
+   */
+  private acceptInbound(sock: TcpSocketLike): Connection | null {
+    const existing = this.bySocket.get(sock);
+    if (existing) return existing;
+    if (this.inboundConnections >= MAX_INBOUND_CONNECTIONS) {
+      if (!this.inboundCapReported) {
+        this.inboundCapReported = true;
+        this.log.warn(
+          `refusing inbound connections: ${MAX_INBOUND_CONNECTIONS} are already open`,
+        );
+      }
+      try { sock.end(); } catch { /* ignore */ }
+      return null;
+    }
+    this.inboundConnections += 1;
     const connection: Connection = {
       socket: sock,
       peer: null,
@@ -172,9 +218,16 @@ export class TcpTransport implements Transport {
       outbound: false,
       targetKey: null,
       handshakeTimer: null,
+      incompleteFrameTimer: null,
+      holdsInboundSlot: true,
       pendingOverflowed: false,
     };
     this.bySocket.set(sock, connection);
+    return connection;
+  }
+
+  private attachInbound(sock: TcpSocketLike): void {
+    this.acceptInbound(sock);
   }
 
   private openOutbound(to: NodeAddress): Connection {
@@ -187,6 +240,8 @@ export class TcpTransport implements Transport {
       outbound: true,
       targetKey,
       handshakeTimer: null,
+      incompleteFrameTimer: null,
+      holdsInboundSlot: false,
       pendingOverflowed: false,
     };
     this.byPeer.set(targetKey, connection);
@@ -236,17 +291,11 @@ export class TcpTransport implements Transport {
   }
 
   private onData(sock: TcpSocketLike, chunk: Uint8Array): void {
-    let connection = this.bySocket.get(sock);
-    if (!connection) {
-      // Bun delivers `data` before `open` completes its microtask in some
-      // edge cases — attach a fresh inbound Connection lazily.
-      connection = {
-        socket: sock, peer: null, decoder: new FrameDecoder(this.maxFrameBytes),
-        pending: [], outbound: false,
-        targetKey: null, handshakeTimer: null, pendingOverflowed: false,
-      };
-      this.bySocket.set(sock, connection);
-    }
+    // Bun delivers `data` before `open` completes its microtask in some edge
+    // cases — attach a fresh inbound Connection lazily, subject to the same
+    // inbound cap the `onOpen` route goes through.
+    const connection = this.bySocket.get(sock) ?? this.acceptInbound(sock);
+    if (connection === null) return;
     let frames: WireMessage[];
     try {
       frames = connection.decoder.push(chunk);
@@ -258,6 +307,7 @@ export class TcpTransport implements Transport {
       this.dropConnection(connection);
       return;
     }
+    this.trackIncompleteFrame(connection);
     for (const frame of frames) {
       // Two tiers, because the two failures mean different things.  A frame
       // that fails its shape check is *this frame's* problem — skip it and
@@ -404,6 +454,8 @@ export class TcpTransport implements Transport {
     if (!connection) return;
     this.bySocket.delete(sock);
     this.clearHandshakeTimer(connection);
+    this.clearIncompleteFrameTimer(connection);
+    this.releaseInboundSlot(connection);
     this.releasePeerSlot(connection);
   }
 
@@ -443,15 +495,71 @@ export class TcpTransport implements Transport {
     }
   }
 
+  /**
+   * Give an inbound connection's slot back, once (#588).
+   *
+   * Clearing the saturation flag here rather than on the next refusal is what
+   * makes the WARN one line per saturation episode instead of one per lifetime:
+   * a node that fills up, drains and fills up again is worth telling an
+   * operator about twice.
+   */
+  private releaseInboundSlot(connection: Connection): void {
+    if (!connection.holdsInboundSlot) return;
+    connection.holdsInboundSlot = false;
+    this.inboundConnections -= 1;
+    this.inboundCapReported = false;
+  }
+
   private clearHandshakeTimer(connection: Connection): void {
     if (connection.handshakeTimer === null) return;
     clearTimeout(connection.handshakeTimer);
     connection.handshakeTimer = null;
   }
 
+  /**
+   * Arm — or disarm — the deadline on a half-received frame (#588).
+   *
+   * Re-arming on every chunk is deliberate: the bound is "no byte has arrived
+   * since", not "this frame is taking too long", so a peer pushing a large
+   * frame over a congested link keeps its connection for as long as it keeps
+   * making progress.  Ordinary traffic pays nothing — a chunk that ends on a
+   * frame boundary leaves no pending bytes, so no timer is ever created.
+   */
+  private trackIncompleteFrame(connection: Connection): void {
+    this.clearIncompleteFrameTimer(connection);
+    if (connection.decoder.pendingBytes() === 0) return;
+    connection.incompleteFrameTimer = setTimeout(
+      () => this.onIncompleteFrameTimeout(connection),
+      INCOMPLETE_FRAME_IDLE_MS,
+    );
+    // Same reasoning as the handshake timer: a half-received frame must not be
+    // what keeps the runtime from exiting.
+    (connection.incompleteFrameTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearIncompleteFrameTimer(connection: Connection): void {
+    if (connection.incompleteFrameTimer === null) return;
+    clearTimeout(connection.incompleteFrameTimer);
+    connection.incompleteFrameTimer = null;
+  }
+
+  /** The peer stopped mid-frame and never came back — reclaim the buffer. */
+  private onIncompleteFrameTimeout(connection: Connection): void {
+    connection.incompleteFrameTimer = null;
+    const pending = connection.decoder.pendingBytes();
+    if (pending === 0) return;
+    this.log.warn(
+      `no data from ${connection.peer ?? '<unknown peer>'} for ${INCOMPLETE_FRAME_IDLE_MS} ms `
+      + `while ${pending} byte(s) of an incomplete frame are buffered; closing the connection`,
+    );
+    this.dropConnection(connection);
+  }
+
   /** Tear a connection down and give up whatever it was still holding. */
   private dropConnection(connection: Connection): void {
     this.clearHandshakeTimer(connection);
+    this.clearIncompleteFrameTimer(connection);
+    this.releaseInboundSlot(connection);
     const sock = connection.socket;
     if (sock) {
       try { sock.end(); } catch { /* ignore */ }

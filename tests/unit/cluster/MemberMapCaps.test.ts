@@ -188,11 +188,14 @@ describe('the member-map caps (#138)', () => {
     nodes.push(node);
     const connection = new NodeAddress('cap-sender', '10.0.138.2', 9_290);
 
+    // Every frame arrives on the *same* connection, so each needs a sequence
+    // above the last — the replay guard keys on the connection's peer (#112).
     for (let i = 0; i < 200; i++) {
       const claimed = new NodeAddress('cap-sender', '10.0.138.3', 21_000 + i);
       internals(node.cluster).handleWire(connection, {
         kind: 'gossip',
         from: claimed.toJSON(),
+        sequence: Date.now() + i,
         members: [],
       });
     }

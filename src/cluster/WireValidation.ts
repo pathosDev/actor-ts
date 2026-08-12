@@ -84,8 +84,15 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
     }
 
     case 'gossip': {
-      const { from, members } = frame as { from?: unknown; members?: unknown };
+      const { from, sequence, members } = frame as {
+        from?: unknown; sequence?: unknown; members?: unknown;
+      };
       if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      // Shape only — `Cluster.onGossip` decides whether a well-formed sequence
+      // is also *fresh*, and how far ahead of this node's clock it may be.
+      if (typeof sequence !== 'number' || !Number.isFinite(sequence)) {
+        return '`sequence` is not a finite number';
+      }
       if (!Array.isArray(members)) return '`members` is not an array';
       const bad = members.findIndex((m) => !isMemberData(m));
       return bad < 0 ? null : `member[${bad}] is malformed (address, status or version)`;
