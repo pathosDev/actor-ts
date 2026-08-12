@@ -303,6 +303,7 @@ describe('FrameDecoder', () => {
       {
         kind: 'gossip',
         from: new NodeAddress('s', 'h', 1).toJSON(),
+        sequence: 1_700_000_000_001,
         members: [
           { address: new NodeAddress('s', 'h', 1).toJSON(), status: 'up', version: 3, roles: ['backend'] },
         ],

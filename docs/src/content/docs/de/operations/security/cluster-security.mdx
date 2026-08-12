@@ -266,6 +266,7 @@ erreichen.
 | Socket öffnet, schickt einen halben Frame und verstummt | Stall-Deadline auf einem unvollständigen Frame, dazu eine Obergrenze für eingehende Verbindungen |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
+| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt akzeptierten überbieten |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
@@ -615,10 +616,56 @@ zweiten Gossip-Frame des Knotens aufgehoben zu werden.
 
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
-Zähler `cluster_gossip_records_refused_total{reason}` mit `reason`
-gleich `version-skew` oder `map-cap`. Pro Record zu loggen würde
+Zähler `cluster_gossip_records_refused_total{reason}`, dessen
+Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`
+und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
 einem Peer Log-Verstärkung schenken statt des Wachstums, das er
 gerade verloren hat.
+
+### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen
+
+Ein Gossip-Frame ist eine Momentaufnahme der Member-Map, und die
+Version eines Members bewegt sich nur, wenn sich sein Status
+bewegt — ein vom Draht mitgeschnittener Frame bleibt also
+unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
+das nichts: jeder Record darin verliert den Vergleich „höhere
+Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
+wird es bei einem Eintrag, den der Empfänger **gelöscht** hat.
+Der Down-Pfad des Failure Detectors löscht rundheraus, statt
+einen Tombstone zu hinterlassen, damit eine Partition nach dem
+Heilen den Peer wiederfinden kann — und ein abgelaufener
+Tombstone wird aus demselben Grund entfernt. So oder so bleibt
+nichts zum Vergleichen übrig, und der Zweig, der eine
+Erstsichtung ablegt, hat überhaupt keine untere Versionsgrenze.
+
+Das Wiedereinspielen des eigenen Records eines heruntergefahrenen
+Members brachte ihn also zurück: gleiche Adresse, gleiche
+Version, `up`, mit den Rollen, die er hatte. Shard-Platzierung
+und Singleton-Hosting richten sich nach den Rollen, der Cluster
+schickt also Arbeit an einen Knoten, den er verstoßen hatte.
+
+Jeder Gossip-Frame trägt deshalb eine **Sequence**, die sein
+Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
+Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
+die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
+diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
+ein einziger Record darin angesehen wird. Es gibt keinen
+Stellknopf: verglichen wird ein Peer mit *sich selbst*, das
+braucht kein Uhren-Skew-Budget. Und eine Sequence, die zu weit
+vor der Uhr des Empfängers liegt, um plausibel zu sein, wird zwar
+gemerged, aber nie als Marke übernommen — sonst würde ein
+einziger Frame mit `Number.MAX_SAFE_INTEGER` den echten Knoten
+für immer verstummen lassen, genau der Exploit, den die
+Versionsgrenze oben verhindert.
+
+Was das **nicht** schließt, ist ein Peer, der sich Standing
+erworben hat und einen *frischen* Frame komponiert, der eine
+gelöschte Adresse mit ihrer alten Version nennt. Das ist eine
+Fälschung, kein Replay, und um sie von einer echten
+Wiederentdeckung zu unterscheiden, braucht die Adresse selbst
+eine Inkarnationsidentität — der Neustart eines Knotens muss ein
+*anderes* Member unter demselben `host:port` sein. Diese Arbeit
+wird separat verfolgt.
 
 ## Per-Deployment-Rezept
 

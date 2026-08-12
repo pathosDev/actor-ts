@@ -75,7 +75,9 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
  * deliberately coarse: it is a metric label, so every value here is a time
  * series an operator carries forever.
  */
-const GOSSIP_REFUSAL_REASONS = ['map-cap', 'version-skew', 'timestamp-skew'] as const;
+const GOSSIP_REFUSAL_REASONS = [
+  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame',
+] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
 type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
@@ -168,7 +170,34 @@ export class Cluster {
     'map-cap': 0,
     'version-skew': 0,
     'timestamp-skew': 0,
+    'replayed-frame': 0,
   };
+
+  /**
+   * The highest {@link GossipMessage.sequence} accepted from each connection
+   * peer — the high-water mark that makes a captured gossip frame worthless
+   * on a second delivery (#112).
+   *
+   * Keyed on the **connection's** peer, exactly like every authority rule
+   * since #562, and not on the frame's `from` field: the payload is the one
+   * thing an attacker fully controls, so keying there would let any connection
+   * pin *another* member's mark and cut it out of this node's gossip — the
+   * shape of the exploit #114 closed, reintroduced one field to the left.
+   *
+   * Bounded exactly like {@link reachability}: entries are only written for an
+   * address the member map already holds, and {@link deleteMember} drops them
+   * with the member, so the map #138 caps caps this one too.
+   */
+  private readonly acceptedGossipSequences = new Map<string, number>();
+
+  /**
+   * This node's own gossip frame counter — see {@link GossipMessage.sequence}.
+   * Seeded in `_start` from the wall-clock, for the same reason the self
+   * member's version is: a restarted process must out-number anything its
+   * previous incarnation sent, or peers would refuse its frames as replays
+   * until it caught up.
+   */
+  private gossipSequence = 0;
 
   private heartbeatSeq = 0;
   private gossipTimer: Cancellable | null = null;
@@ -583,6 +612,10 @@ export class Cluster {
     // the epoch only ensures a fresh process starts above any
     // version that previous incarnation could have reached.
     const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
+    // Same seed, same argument: peers hold a high-water mark per sender, so a
+    // fresh process has to start above every frame the previous incarnation of
+    // this address ever sent (#112).
+    this.gossipSequence = Date.now();
     this.setMember(me);
     this.emit(new MemberJoined(me));
     this.log.debug(
@@ -646,15 +679,25 @@ export class Cluster {
   private contactSeeds(): void {
     const me = this.members.get(this.selfAddress.toString());
     if (!me) return;
+    // One frame for the whole round: each seed keeps its own high-water mark
+    // for this node, so a shared sequence is delivered once per peer.  A retry
+    // round composes a new one and therefore out-numbers this.
+    const initialGossip: GossipMessage = {
+      kind: 'gossip',
+      from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
+      members: [me.toData()],
+    };
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
-      const initialGossip: GossipMessage = {
-        kind: 'gossip',
-        from: this.selfAddress.toJSON(),
-        members: [me.toData()],
-      };
       this.transport.send(seed, initialGossip);
     }
+  }
+
+  /** The next value for {@link GossipMessage.sequence}. */
+  private nextGossipSequence(): number {
+    this.gossipSequence += 1;
+    return this.gossipSequence;
   }
 
   /**
@@ -810,6 +853,15 @@ export class Cluster {
    * — see {@link maySpeakFor} (#562).
    */
   private onGossip(from: NodeAddress, message: GossipMessage): void {
+    // Before anything the frame could achieve, including the failure-detector
+    // refresh below: a replayed frame is a recording, not evidence that anyone
+    // is alive.  The connection itself is still credited — `handleWire` bumped
+    // the detector for `from` on arrival, and bytes did arrive.
+    if (!this.admitsGossipSequence(from, message.sequence)) {
+      this.refusalCounts['replayed-frame'] += message.members.length;
+      this.reportRefusals(from, 'replayed-frame', message.members.length);
+      return;
+    }
     const sender = NodeAddress.fromJSON(message.from);
     // The failure detector's sample map is the *second* thing `message.from`
     // could grow without bound, and capping only the member map would have
@@ -851,6 +903,8 @@ export class Cluster {
       }
     }
 
+    this.rememberGossipSequence(from, message.sequence);
+
     // One line and one counter increment per frame and reason, not per refused
     // record: an attacker who has just lost the memory growth must not be
     // handed log amplification instead, and the label set stays a closed three
@@ -869,6 +923,69 @@ export class Cluster {
         }
       }
     }
+  }
+
+  /**
+   * Whether this frame is newer than the last one accepted from the same
+   * connection peer — the guard that makes a captured gossip frame worthless
+   * on a second delivery (#112).
+   *
+   * **What a replay buys without it.**  A gossip frame carries a snapshot of
+   * the member map, and a member's `version` only moves when its status does,
+   * so a frame captured off the wire stays byte-for-byte valid indefinitely.
+   * Against a converged receiver that is harmless — every record loses the
+   * `incoming.version <= existing.version` comparison in {@link mergeMember}.
+   * What makes it an exploit is an entry the receiver has **deleted**: the
+   * failure-detector down path deletes outright so a healed partition can
+   * re-discover the peer, and {@link tombstonePruneTick} deletes an expired
+   * tombstone.  Either leaves `existing === undefined`, and that branch of
+   * `mergeMember` has no lower version bound at all — so replaying a downed
+   * member's own pre-down record brings it back at its old version, `up`, and
+   * carrying the roles it had, which is what shard placement, singleton
+   * hosting and downing quorums are computed from (#940, step B3).
+   *
+   * **Why a counter rather than a timestamp.**  The issue asked for a
+   * wall-clock staleness window, and a window tight enough to bound a replay —
+   * a few gossip intervals, so seconds — is an order of magnitude below every
+   * other clock-skew budget here ({@link ClusterOptionsType.maxVersionSkewMs}
+   * is five minutes, {@link MAX_WALL_CLOCK_SKEW_MS} a day).  A node a few
+   * seconds off NTP would have *all* of its gossip dropped: a liveness failure
+   * worse than the replay it prevents.  A per-sender counter compares a peer
+   * only against itself, so it is skew-free, needs no knob, and refuses every
+   * replay rather than those older than a window.
+   *
+   * **What it does not close.**  A peer that has earned standing can still
+   * *compose* a fresh frame naming a deleted address at its old version — that
+   * is not a replay, and only an incarnation identity on `NodeAddress` closes
+   * it (#940).
+   */
+  private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
+    const lastAccepted = this.acceptedGossipSequences.get(from.toString());
+    return lastAccepted === undefined || sequence > lastAccepted;
+  }
+
+  /**
+   * Raise the high-water mark for a peer whose frame was just merged.
+   *
+   * Two conditions, both about not turning a replay guard into a denial of
+   * service:
+   *
+   * - **Only for an address the member map holds**, which is what bounds this
+   *   map by the same caps as that one — the sender fallback above has already
+   *   run, so an honest peer is on file by the time this is asked.
+   * - **Only for a sequence that is plausible**, held to the same budget as a
+   *   gossiped version.  A frame numbered `Number.MAX_SAFE_INTEGER` is still
+   *   *accepted* — it is by definition not a recording of a real frame, so the
+   *   guard has no business refusing it — but it must not become the mark, or
+   *   one frame would pin a member's address and refuse everything the real
+   *   node says from then on.  That is exactly the exploit #114 closed on
+   *   `version`, and it would be reintroduced one field to the left.
+   */
+  private rememberGossipSequence(from: NodeAddress, sequence: number): void {
+    const key = from.toString();
+    if (!this.members.has(key)) return;
+    if (sequence > Date.now() + this.maxVersionSkewMs) return;
+    this.acceptedGossipSequences.set(key, sequence);
   }
 
   /**
@@ -899,6 +1016,8 @@ export class Cluster {
         `version skew above maxVersionSkewMs (${this.maxVersionSkewMs}ms)`)
       .with('timestamp-skew', () =>
         `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
+      .with('replayed-frame', () =>
+        'the frame does not out-number the last one accepted from that peer — a replay or a duplicate')
       .exhaustive();
   }
 
@@ -1031,6 +1150,7 @@ export class Cluster {
     const gossip: GossipMessage = {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
       members: Array.from(this.members.values()).map(member => member.toData()),
     };
     this.transport.send(target.address, gossip);
@@ -1535,6 +1655,10 @@ export class Cluster {
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
+    // Likewise: a high-water mark outliving its member would refuse the first
+    // frames of the address's next incarnation, whose counter starts from its
+    // own clock rather than from where the previous one left off (#112).
+    this.acceptedGossipSequences.delete(key);
   }
 
   private updateMember(next: Member): void {

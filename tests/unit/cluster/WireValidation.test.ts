@@ -100,16 +100,29 @@ describe('validateWireFrame — per-kind shapes', () => {
   });
 
   test('rejects gossip whose member list is not an array', () => {
-    const result = validateWireFrame({ kind: 'gossip', from: address, members: 'all-of-them' });
+    const result = validateWireFrame({
+      kind: 'gossip', from: address, sequence: 1, members: 'all-of-them',
+    });
     expect(result).toHaveProperty('problem');
   });
 
   test('reports which member of a gossip batch is malformed', () => {
     const good = { address, status: 'up', version: 1 };
     const result = validateWireFrame({
-      kind: 'gossip', from: address, members: [good, { ...good, status: 'pwned' }],
+      kind: 'gossip', from: address, sequence: 1, members: [good, { ...good, status: 'pwned' }],
     });
     expect((result as { problem: string }).problem).toContain('member[1]');
+  });
+
+  test('rejects gossip whose replay sequence is missing or not a finite number', () => {
+    // The field is required, not optional: a freshness marker whose absence
+    // skips the check is bypassed by stripping it (#112).
+    const good = { address, status: 'up', version: 1 };
+    for (const sequence of [undefined, Number.NaN, Number.POSITIVE_INFINITY, '7', null]) {
+      const result = validateWireFrame({ kind: 'gossip', from: address, sequence, members: [good] });
+      expect(result, `sequence=${String(sequence)} was accepted`).toHaveProperty('problem');
+      expect((result as { problem: string }).problem).toContain('sequence');
+    }
   });
 
   test('rejects an envelope with no destination path', () => {
@@ -129,7 +142,10 @@ describe('validateWireFrame — per-kind shapes', () => {
       { kind: 'hello-ack', self: address },
       { kind: 'heartbeat', from: address, seq: 1, ts: Date.now() },
       { kind: 'heartbeat-ack', from: address, seq: 1 },
-      { kind: 'gossip', from: address, members: [{ address, status: 'up', version: 1 }] },
+      {
+        kind: 'gossip', from: address, sequence: Date.now(),
+        members: [{ address, status: 'up', version: 1 }],
+      },
       { kind: 'envelope', to: '/user/a', from: '/user/b', body: { hello: 'world' } },
       { kind: 'shard-map', type: 'User', shards: { 0: address }, version: 3 },
       { kind: 'leave', node: address },

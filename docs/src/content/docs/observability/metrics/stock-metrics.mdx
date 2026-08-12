@@ -74,8 +74,12 @@ For monitoring cluster health:
   of this node's clock than `maxVersionSkewMs` — either a peer's clock
   has drifted or someone is trying to pre-claim an address. Movement
   on `reason="map-cap"` means `max-members` / `max-tombstones` is
-  full. The counter is incremented once per frame with that frame's
-  count, and the label set is closed at those two values.
+  full. `reason="timestamp-skew"` is a tombstone whose `removedAt` is
+  not a plausible instant. `reason="replayed-frame"` is a whole gossip
+  frame that did not out-number the last one accepted from that peer —
+  a duplicate, or someone re-sending a frame captured off the wire.
+  The counter is incremented once per frame with that frame's count,
+  and the label set is closed at those four values.
 
 ## DistributedData metrics
 

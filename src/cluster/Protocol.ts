@@ -113,6 +113,22 @@ export type HeartbeatAcknowledgmentMessage = {
 export type GossipMessage = {
   kind: 'gossip';
   from: NodeAddressData;
+  /**
+   * Strictly-increasing counter stamped by the node that composed the frame,
+   * seeded from its wall-clock at startup and bumped by one per frame (#112).
+   *
+   * It exists so a receiver can tell a *new* frame from a **recording of an
+   * old one**.  Nothing else on a gossip frame can: `members` is a snapshot
+   * whose versions are per-member and only move when a status changes, so a
+   * captured frame stays byte-for-byte valid indefinitely — and is accepted
+   * again the moment the receiver has dropped one of the entries it names,
+   * because the merge path's no-existing-entry branch has no lower bound to
+   * hold it to.
+   *
+   * Required, not optional: an optional field whose absence skips the check is
+   * bypassed by stripping it.
+   */
+  sequence: number;
   members: MemberData[];
 };
 
