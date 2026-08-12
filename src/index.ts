@@ -163,6 +163,7 @@ export {
   DEFAULT_OTLP_URL,
   DEFAULT_PARSEABLE_MIN_LEVEL,
   DEFAULT_PARSEABLE_REQUEST_TIMEOUT_MS,
+  DEFAULT_SENTRY_MIN_LEVEL,
   DEFAULT_SINK_CLOSE_TIMEOUT_MS,
   FileSink,
   FileSinkOptions,
@@ -187,6 +188,9 @@ export {
   ParseableSinkOptions,
   ParseableSinkOptionsBuilder,
   ParseableSinkOptionsValidator,
+  SentrySinkOptions,
+  SentrySinkOptionsBuilder,
+  SentrySinkOptionsValidator,
   SinkDeliveryError,
   SinkReporter,
   buildLoggerFromConfig,
@@ -195,6 +199,7 @@ export {
   logLevelName,
   parseLogLevel,
   readLoggerLevelFromConfig,
+  sentrySink,
 } from './logging/index.js';
 export type {
   ConsoleSinkFormat,
@@ -216,6 +221,8 @@ export type {
   LogSinkContext,
   OtlpHttpSinkOptionsType,
   ParseableSinkOptionsType,
+  SentrySdkLike,
+  SentrySinkOptionsType,
   MultiSinkLoggerOptionsType,
 } from './logging/index.js';
 
