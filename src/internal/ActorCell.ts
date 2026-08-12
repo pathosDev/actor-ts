@@ -40,7 +40,7 @@ import {
   ReceiveTimeout,
   Terminated,
 } from '../SystemMessages.js';
-import { Envelope, Mailbox } from './Mailbox.js';
+import { Envelope, Mailbox, reportsDrops, type MailboxDropReason } from './Mailbox.js';
 import {
   describeMessagePayload,
   describeMessageType,
@@ -52,7 +52,9 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
-import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
+import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
+import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
+import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -67,8 +69,6 @@ import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
 import { randomId } from '../util/RandomString.js';
 import { TokenBucket } from '../util/TokenBucket.js';
-
-const DEFAULT_STASH_CAPACITY = 1024;
 
 /**
  * Key a death-watch registration by incarnation, not by address.
@@ -85,9 +85,6 @@ function watchKeyOf(ref: ActorRef): string {
   return `${ref.path.toString()}#${ref.path.uid}`;
 }
 
-/** Messages kept by an explain plan when the caller names no capacity. */
-const DEFAULT_EXPLAIN_CAPACITY = 100;
-
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /
  * ActorContext API with the mailbox, dispatcher and supervision machinery.
@@ -98,6 +95,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly log: Logger;
 
   private readonly mailbox: Mailbox<TMessage>;
+  /**
+   * Queue depth that trips the next backlog warning; doubles after each one
+   * so a genuinely runaway actor escalates instead of repeating.  See
+   * {@link MAILBOX_HIGH_WATER_MARK}.
+   */
+  private _mailboxWarnAt = MAILBOX_HIGH_WATER_MARK;
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
@@ -211,18 +214,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = blueprint.mailbox
-      ? blueprint.mailbox()
-      // #310 — bounded by default.  Unbounded was the pre-#310 default
-      // and is still available via `withMailbox(() => new Mailbox())`
-      // for use-cases that need it (deterministic replay, test setups,
-      // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
-      // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
-      : new BoundedMailbox<TMessage>({
-        capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
-        overflow: DEFAULT_MAILBOX_OVERFLOW,
-        onDrop: (reason) => this._onMailboxDrop(reason),
-      });
+    this.mailbox = this._createMailbox(blueprint);
     this.self = new LocalActorRef<TMessage>(this);
     // Resolved per record rather than bound here: the user's Actor does not
     // exist yet, and once it does its name may change (state, restart).
@@ -337,9 +329,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * incarnation's anonymous children are still in the child map.  The counter
    * survives with the cell and rules that out on its own; the random half is
    * belt-and-braces.
+   *
+   * The `exists` check (#1146) makes that argument checked rather than reasoned.
+   * The counter is still what carries the guarantee, and the child map is the
+   * very thing `_createChild` throws over one line later — so drawing against it
+   * here costs one `Map.has` and turns a name clash from a crash the caller
+   * cannot act on into an event that cannot happen.
    */
   private _anonymousChildName(): string {
-    return `$anonymous-${++this._anonChildCounter}-${randomId(12)}`;
+    const prefix = `$anonymous-${++this._anonChildCounter}-`;
+    return prefix + randomId(12, (suffix) => this._children.has(prefix + suffix));
   }
 
   /**
@@ -722,16 +721,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   _mailboxForTest(): Mailbox<TMessage> { return this.mailbox; }
 
+  /**
+   * The one door every user message goes through on its way into the queue.
+   *
+   * Single seam so the high-water check cannot be forgotten by a future
+   * caller, and so the check stays out of `Mailbox` itself: the base class
+   * imports only types today, and giving it a callback would mean giving it
+   * an options family — a structural change to the framework's most
+   * fundamental primitive, made in passing.  The cell already owns a logger,
+   * a path and the enqueue funnel, so it is the cheaper place by every
+   * measure.
+   *
+   * Cost is one field read, one getter and one compare — less than the
+   * `BoundedMailbox.enqueue` bound check that used to run here by default.
+   */
+  private _enqueueUser(env: Envelope<TMessage>): void {
+    this.mailbox.enqueue(env);
+    if (this.mailbox.size >= this._mailboxWarnAt) this._onMailboxHighWaterMark();
+    this.schedule();
+  }
+
   /** @internal */
   postUserMessage(message: TMessage, sender: ActorRef | null): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this.mailbox.enqueue(this._explain === null
+    this._enqueueUser(this._explain === null
       ? { message, sender }
       : { message, sender, enqueuedAtMs: Date.now() });
-    this.schedule();
   }
 
   /**
@@ -745,10 +763,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this.mailbox.enqueue(this._explain === null || env.enqueuedAtMs !== undefined
+    this._enqueueUser(this._explain === null || env.enqueuedAtMs !== undefined
       ? env
       : { ...env, enqueuedAtMs: Date.now() });
-    this.schedule();
   }
 
   /** @internal */
@@ -864,7 +881,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   private onWatchNotify(signal: WatchNotifyCommand): void {
-    this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+    this._enqueueUser({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
   }
 
   private async onReceiveTimeout(): Promise<void> {
@@ -1078,18 +1095,81 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * Callback wired from the default `BoundedMailbox` — fires once per
-   * dropped message.  Increments `actor_mailbox_dropped_total` with
+   * The actor's queue.  Three shapes, in precedence order:
+   *
+   *   1. `withMailbox(...)` — the caller owns the whole queue, bound and
+   *      policy included.
+   *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
+   *      framework picks an overflow policy on a caller's behalf.
+   *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
+   *      default and #1148 reversed it: a ceiling that discards the oldest
+   *      queued message is not one an actor framework can impose unasked,
+   *      because the envelope it evicts is as likely to be a `Terminated`
+   *      (#729) or a delivery confirmation (#732) as it is to be telemetry.
+   *      The heap is the ceiling now, and drawing a lower one is the
+   *      caller's decision.  Growth is not silent: the cell warns at
+   *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
+   *
+   * Drop reporting is wired *after* the choice rather than inside it, so all
+   * three shapes get it on one line.  Wiring it at the construction site is
+   * what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149): the
+   * cell can only pass `onDrop` into a mailbox it builds itself, and shape 1
+   * is by definition one it did not.
+   *
+   * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
+   * the call sits in the constructor body, and whether the parameter
+   * property is assigned by then depends on the emit order for parameter
+   * properties versus field initializers.  Passing it makes the question
+   * moot.
+   */
+  private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+    const mailbox = this._buildMailbox(blueprint);
+    if (reportsDrops(mailbox)) mailbox.observeDrops((reason) => this._onMailboxDrop(reason));
+    return mailbox;
+  }
+
+  /** The queue itself — see {@link _createMailbox} for the three shapes. */
+  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+    if (blueprint.mailbox) return blueprint.mailbox();
+    if (blueprint.mailboxCapacity === undefined) return new Mailbox<TMessage>();
+    return new BoundedMailbox<TMessage>({
+      capacity: blueprint.mailboxCapacity,
+      overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
+    });
+  }
+
+  /**
+   * The mailbox has crossed its next warning threshold.  Since #1148 removed
+   * the default bound, this is the framework's only unconditional signal
+   * that an actor is losing to its producers — it fires whether or not
+   * metrics are enabled, because a backlog heading for an OOM should not
+   * require an observability stack to notice.
+   *
+   * A bounded mailbox whose capacity sits below the mark never reaches it,
+   * which is correct: it already has a ceiling and reports its drops.
+   */
+  private _onMailboxHighWaterMark(): void {
+    const depth = this.mailbox.size;
+    this.log.warn(
+      `mailbox depth ${depth} — this actor is falling behind its producers; `
+      + 'bound it with ActorOptions.withMailboxCapacity(...) or slow the senders',
+    );
+    this._mailboxWarnAt = depth * 2;
+  }
+
+  /**
+   * Observer registered on any mailbox that reports its drops — fires once
+   * per discarded message.  Increments `actor_mailbox_dropped_total` with
    * labels {class, path, reason} so operators can spot slow-consumer
    * signals on the standard observability stack.  Cheap when metrics
    * are disabled (the noop registry's counter is a single object lookup).
    */
-  private _onMailboxDrop(reason: 'drop-head' | 'drop-new'): void {
+  private _onMailboxDrop(reason: MailboxDropReason): void {
     const cls = this.actor?.constructor.name ?? 'unknown';
     metricsOf(this.system).counter(
       'actor_mailbox_dropped_total',
       { class: cls, path: this.path.toString(), reason },
-      { help: 'Cumulative count of user messages dropped by a bounded mailbox\'s overflow policy.' },
+      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
     ).inc();
   }
 

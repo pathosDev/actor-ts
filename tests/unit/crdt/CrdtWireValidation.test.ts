@@ -13,7 +13,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { decodeCrdt } from '../../../src/crdt/DistributedData.js';
-import { CrdtDecodeError, MAX_MV_REGISTER_ENTRIES } from '../../../src/crdt/CrdtWireValidation.js';
+import { MAX_MV_REGISTER_ENTRIES } from '../../../src/crdt/Constants.js';
+import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import { LWWMap } from '../../../src/crdt/LWWMap.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';

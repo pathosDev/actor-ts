@@ -31,6 +31,61 @@ export type Envelope<T = unknown> = {
 };
 
 /**
+ * Why a mailbox discarded a message — the `reason` label on
+ * `actor_mailbox_dropped_total`.
+ *
+ * Deliberately a closed set of two rather than a free-form string, even for a
+ * mailbox of your own: `reason` is a metric label, and an open one is a
+ * cardinality vector (#745).  Pick whichever describes what you did — you
+ * dropped the oldest queued message, or you dropped the arriving one.
+ * Refusing a message is not a drop; that throws instead.
+ *
+ * Lives here rather than in `BoundedMailboxOptions.ts` despite typing an
+ * option field there: it is the vocabulary of {@link DropReportingMailbox},
+ * which every mailbox may implement, and `BoundedMailbox` is only the
+ * built-in one that does.  The layering runs base → subclass, so the shared
+ * word belongs at the base.
+ */
+export type MailboxDropReason = 'drop-head' | 'drop-new';
+
+/**
+ * A mailbox that discards messages and is willing to say so.
+ *
+ * Implement it on a {@link Mailbox} subclass of your own and the cell counts
+ * its drops in `actor_mailbox_dropped_total`, with the same
+ * `{class, path, reason}` labels the built-in bound produces.  `BoundedMailbox`
+ * implements it; nothing else needs to.
+ *
+ * The cell probes for this method rather than testing
+ * `instanceof BoundedMailbox` on purpose.  Since #661 the base `Mailbox` is
+ * public and subclassing it is a supported thing to do, so a queue that drops
+ * for its own reasons should not be second-class in the telemetry.
+ */
+export interface DropReportingMailbox {
+  /**
+   * Register a drop observer.  Called by the cell once, before the mailbox
+   * receives anything.
+   *
+   * **Additive, not a setter.**  Whatever the mailbox already reports —
+   * `BoundedMailboxOptions.onDrop`, a previously registered observer — has to
+   * keep firing.  A caller who wired their own metric does not lose it
+   * because the framework wired the stock one.
+   */
+  observeDrops(observer: (reason: MailboxDropReason) => void): void;
+}
+
+/**
+ * Does this mailbox report its drops?  The structural check that keeps
+ * {@link DropReportingMailbox} open to implementations the framework has
+ * never heard of.
+ */
+export function reportsDrops<T>(
+  mailbox: Mailbox<T>,
+): mailbox is Mailbox<T> & DropReportingMailbox {
+  return typeof (mailbox as Partial<DropReportingMailbox>).observeDrops === 'function';
+}
+
+/**
  * Per-actor message queue.  System messages (create, terminate, failure, …)
  * are kept on a separate priority queue and drained before any user message.
  */

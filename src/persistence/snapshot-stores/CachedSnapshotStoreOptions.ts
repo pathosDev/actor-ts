@@ -2,6 +2,14 @@ import type { Cache } from '../../cache/Cache.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
+/**
+ * Built-in default for {@link CachedSnapshotStoreOptionsType.ttlMs}.  5 min
+ * suits the typical "actor restarts a few times during deploy" pattern
+ * without holding stale data forever — see {@link CachedSnapshotStore} for
+ * why the TTL is the correctness net rather than a mere optimisation.
+ */
+export const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 5 * 60_000;
+
 export type CachedSnapshotStoreOptionsType = {
   /** Backing cache — typically Redis in production. */
   readonly cache: Cache;

@@ -64,10 +64,11 @@ export type { BidirectionalMultiMapJson } from './util/BidirectionalMultiMap.js'
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
-// Random strings — crypto entropy, no modulo bias, exact length.  The same
-// source the framework names its own actors and reply refs from.
+// Random strings — crypto entropy, no modulo bias, exact length, and an optional
+// collision predicate that redraws for you.  The same source the framework names
+// its own actors and reply refs from.
 export { randomString, randomHex, randomId, randomUuid } from './util/RandomString.js';
-export type { RandomStringOptions } from './util/RandomString.js';
+export type { ExistsPredicate, RandomStringOptions } from './util/RandomString.js';
 
 // safeStringify — JSON.stringify for log and error paths, which cannot throw.
 export { safeStringify } from './util/SafeStringify.js';
@@ -117,6 +118,8 @@ export {
 } from './Dispatcher.js';
 export type { Dispatcher } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
+export { EventKey } from './EventKey.js';
+export type { EventChannel, EventClass, KindOf } from './EventKey.js';
 export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } from './Logger.js';
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
@@ -772,8 +775,9 @@ export type {
   FsmTransitionMap,
 } from './fsm/index.js';
 
-// Mailbox variants (BoundedMailbox, PriorityMailbox).
+// Mailboxes: the unbounded base (the default since #1148) and its variants.
 export {
+  Mailbox,
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
@@ -783,6 +787,9 @@ export {
   PriorityMailboxOptionsBuilder,
 } from './mailbox/index.js';
 export type {
+  DropReportingMailbox,
+  Envelope,
+  MailboxDropReason,
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
   PriorityMailboxOptionsType,

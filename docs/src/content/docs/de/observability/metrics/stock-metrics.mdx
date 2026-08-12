@@ -41,13 +41,24 @@ Handler".
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
+| `actor_mailbox_size` | gauge | `class`, `path` | Wartende User-Nachrichten, gesampelt. Nur Actors ab 10 000 sind vertreten. |
 | `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
-Ein wachsendes `actor_mailbox_dropped_total` ist ein
-**Slow-Consumer-Signal** — der Actor kommt mit seiner
-Eingangsrate nicht mit und seine beschränkte Mailbox wirft Last
-ab. Das `reason`-Label hält die ausgelöste Overflow-Policy fest
-(`drop-head` / `drop-new`).
+`actor_mailbox_size` ist das **Rückstau**-Signal. Mailboxes sind per
+Default unbounded, ein zurückfallender Actor sammelt also an, statt
+abzuwerfen — und eine Serie entsteht erst, wenn einer 10 000 wartende
+Nachrichten überschreitet. Ihr *Vorhandensein* ist damit der Alarm: auf
+einem gesunden System ist die Metrik leer. Eine Mailbox, die wieder
+unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
+dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
+Verdopplung), unabhängig davon ob Metriken aktiv sind.
+
+`actor_mailbox_dropped_total` ist das **Abwurf**-Signal und taucht nur für
+Actors auf, deren Mailbox etwas verwirft — da der Default unbounded ist,
+also für Actors, die jemand bewusst begrenzt hat. Das `reason`-Label hält
+die ausgelöste Policy fest (`drop-head` / `drop-new`). Beide Wege, zu
+begrenzen, sind abgedeckt: `withMailboxCapacity` und eine selbst gebaute
+Mailbox aus `withMailbox`.
 
 ## Cluster-Metriken
 

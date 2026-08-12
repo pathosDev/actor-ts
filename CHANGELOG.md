@@ -9,6 +9,309 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-12
+
+### Added
+
+- **`EventStream` channels can be `kind`-discriminated types, not just
+  classes** (#1143).  `subscribe`/`unsubscribe` took a class constructor and
+  matched with `instanceof`, which locked the one API the project offers for
+  loosely coupled fan-out to exactly the message style the project argues
+  against: `AGENTS.md` mandates `kind`-discriminated named variant types, and
+  `fundamentals/messages` says outright to prefer plain objects over classes.
+  Such a type has no constructor, so there was nothing to hand `subscribe`.
+  The asymmetry was visible in the signatures — `publish(event: object)` has
+  always accepted a plain object, so you could publish something nobody was
+  able to subscribe to.
+
+  A channel is now named three ways.  By a **class**, exactly as before.  By an
+  **`EventKey`** — a new export mirroring `ServiceKey`/`ShardKey`, a `kind`
+  plus a phantom type parameter, so a type and a `const` of the same name give
+  a plain event the call shape a class gets for free:
+
+  ```ts
+  export type UserLoggedInEvent = { readonly kind: 'user-logged-in'; readonly userId: string };
+  export const UserLoggedInEvent = EventKey.of<UserLoggedInEvent>('user-logged-in');
+
+  eventStream.subscribe(self, UserLoggedInEvent, (event) => event.userId !== 'system');
+  eventStream.publish({ kind: 'user-logged-in', userId: 'user-42' });
+  ```
+
+  Or by the bare **kind string**, the shorthand — which costs the type, since
+  `TEvent` has nothing to be inferred from and falls back to `unknown`.
+  Supplying the argument brings the typing back and makes the string itself
+  checkable: `EventKey.of<UserLoggedInEvent>('user-loged-in')` and
+  `subscribe<UserLoggedInEvent>(ref, 'user-loged-in')` are both compile errors,
+  which is the one thing the bare string cannot give you.
+
+  A key and its string are the **same** channel — subscribing both ways dedups,
+  and either form unsubscribes the other, including a freshly built key.  That
+  is why a subscription is filed under the kind string rather than the key
+  object: `EventKey.of` mints a new instance per call, so an object identity
+  would make the obvious `unsubscribe` call a silent no-op.  A class and a kind
+  are **two** channels even when the class's instances carry that `kind`; they
+  select overlapping events exactly like a base class and its subclass.
+
+  Internally the channel is resolved once at subscribe time into an identity, a
+  `matches` closure and a label, rather than being discriminated per delivery:
+  `publish` runs on every actor start, every actor stop and every dead letter.
+  Class channels are untouched — `instanceof` matching, subclass instances
+  still reaching base-class subscribers, and dedup identity still the
+  constructor object.
+
+  **Not included:** prefix or wildcard families (`'billing.*'`).  A kind channel
+  matches exactly one kind, and the docs say so.  Turning "name a channel" into
+  "name a pattern" forces answers on dedup identity, unsubscribe identity and
+  precedence against exact channels; it is purely additive later.
+
+  Two behaviour changes fall out.  `unsubscribe` now tests `channel !== undefined`
+  instead of truthiness — with kind strings legal, `''` is a *supplied* channel
+  that reads as falsy, and the old shape would have taken the omitted-channel
+  branch and dropped every subscription the actor held.  And both operations
+  reject a channel that is neither a usable `instanceof` right-hand side nor a
+  non-empty kind.
+
+### Changed
+
+- **BREAKING — the default mailbox is unbounded again** (#1148).  Every actor
+  spawned without an explicit `mailboxCapacity` now gets the plain, unbounded
+  `Mailbox`.  Since #310 it got a `BoundedMailbox` with `capacity = 10_000`
+  and `overflow = 'drop-head'`, which silently discarded the *oldest* queued
+  message on overflow — no dead letter, no exception, only a counter.
+
+  #310's trade was worst-case message loss for a guaranteed memory ceiling.
+  The ceiling turned out not to exist: the system-message queue was never
+  bounded (#794), so the framework was paying the loss without collecting the
+  guarantee.  And the loss was not confined to the telemetry-shaped workloads
+  `drop-head` suits, because a mailbox cannot tell a stale sample from a
+  control message — the bug tracker has one entry per victim: death-watch
+  `Terminated` evicted and the watcher blinded (#729), ReliableDelivery sends
+  discarded with their `confirm` never settling (#732), DistributedData
+  `updateAsync` promises stranded unsettled (#1078), and three WebSocket-hub
+  defects where the evicted envelope was a spawn command, a `close()` or a
+  disconnect signal (#717, #985, #986).  None of those are reachable under the
+  new default.
+
+  **Migration.**  Nothing to do if you want the unbounded shape — it is the
+  default.  To keep a bound, say so at the spawn site:
+
+  ```ts
+  // before — the bound was implicit, and so was the drop policy
+  system.spawn(Worker, 'worker');
+
+  // after — bounding is the deliberate act, and it names its own loss
+  const workerOptions = ActorOptions.create<WorkerMessage>()
+    .withMailboxCapacity(10_000)
+    .withMailboxOverflow('drop-head');
+  system.spawn(Worker, 'worker', workerOptions);
+  ```
+
+  Unbounded does not mean unobserved.  `ActorCell` warns when a mailbox
+  crosses 10 000 queued messages and again at every doubling, and metrics
+  gained the `actor_mailbox_size` gauge that the tuning docs had been
+  documenting for a gauge that did not exist.  `actor_mailbox_dropped_total`
+  still exists and now only counts drops someone asked for.
+
+  Also in this change: `mailboxOverflow` / `withMailboxOverflow` is a real
+  `ActorOptions` field (default `drop-head`; setting it without a capacity is
+  rejected rather than silently ignored), and `Mailbox` + `Envelope` are
+  exported from the package root — the escape hatch the docs described was
+  previously impossible to import (#661).
+
+- **Every mailbox reports its drops, not just the one the framework built**
+  (#1149).  `actor_mailbox_dropped_total` was fed by an `onDrop` the cell
+  passed into the `BoundedMailbox` it constructed, so a mailbox supplied
+  through `withMailbox` was invisible to it.  That was a corner while the
+  default was bounded; #1148 made bounding an opt-in and both ways of opting
+  in equally idiomatic, so it became a trap.
+
+  The cell now registers its observer *after* choosing the mailbox, on
+  anything implementing the new `DropReportingMailbox` contract —
+  `BoundedMailbox` does, and a `Mailbox` subclass of your own can by adding
+  `observeDrops`.  A structural probe rather than an `instanceof` check,
+  because #661 made the base class public and a queue that discards for its
+  own reasons should not be second-class in the telemetry.
+
+  Registration is **additive**: a `BoundedMailboxOptions.onDrop` of your own
+  keeps firing alongside the stock counter.  New exports:
+  `DropReportingMailbox` and `MailboxDropReason`, the latter now naming the
+  `'drop-head' | 'drop-new'` union that was written inline in four places.
+
+- **Three of the framework's own identifier draws go through the `exists`
+  predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
+  twelve identifiers; the interesting result of the survey is that only three
+  of them should check anything, and the other nine are recorded on the issue
+  with the reason rather than left to be re-derived.  `ActorCell`'s anonymous
+  child names now draw against `this._children`, `ORSet.add` against the
+  element's live tags *and* its tombstones, and `ClusterClient.ask`'s id
+  against the pending map.  What they have in common is a registry in scope and
+  a failure that is silent or costly: `_createChild` throws over a duplicate
+  name, `pending.set` overwrites so a repeat leaves the earlier ask's promise
+  hanging until it reports a timeout that never happened, and a repeat of a
+  *tombstoned* ORSet tag is vetoed by the rule that stops a slow peer
+  resurrecting a removed tag — the element simply fails to appear on the next
+  merge, with no error anywhere.  `nextAskId` takes the pending map rather than
+  a ready-made predicate, so the one thing a call site could get wrong — the
+  polarity, where `true` has to mean *taken* — is written once and covered by a
+  test.  The nine sites left alone have nothing to check: a reply ref that is
+  never entered in a visible map, trace ids that have to be unique across
+  processes anyway, a lock token whose "is it taken" question `setIfAbsent`
+  already answers atomically, a correlation id that only reaches a log line.
+  `DistributedData` is the one exclusion with a real registry — its `pendingId`
+  is minted a `tell` away from the map it keys and is part of a wire-visible
+  message contract, so moving the mint is a design change, tracked as #1147.
+  No public API changes, and no behaviour change on the happy path: the entropy
+  already made every one of these collisions astronomically unlikely, so the
+  new tests replace the entropy with a constant to force the repeat and assert
+  the specific damage it used to do.
+
+- **Constants have a placement rule, and follow it** (#1142).  `src/` held
+  ~300 module-level `SCREAMING_SNAKE` constants across 130 files with no
+  documented rule for where any of them belonged; nine lived in
+  `src/util/Constants.ts` and the rest sat wherever they were first needed.
+  A constant now has exactly four possible homes, checked in order: beside
+  its field in `XOptions.ts` when it is an options default; where it already
+  is when it *is* its file's implementation (a codec's tag vocabulary, a
+  parser's regex, a singleton, a derived value, a frame-schema bound); in
+  `src/<subsystem>/Constants.ts` for every other tuned cap, bound or
+  timeout; and in `src/util/Constants.ts` only when two or more subsystems
+  consume it.  The rule is written down in AGENTS.md, and
+  `docs/…/reference/configuration.mdx` now says where the built-in default
+  behind a `reference.conf` key lives.
+
+  Eight `Constants.ts` modules hold 42 values; ~20 misplaced options
+  defaults moved next to the option they back.  **Every public name is
+  unchanged** — the barrels re-export from the new location, so no import
+  breaks.  Two structural gains fall out of it: an `XOptions.ts` no longer
+  imports a functional module to reach a default it shares with another
+  options type (`DEFAULT_SQLITE_BUSY_TIMEOUT_MS`,
+  `RESERVED_SERIALIZER_IDS_BELOW`), and `ClusterSharding` no longer
+  value-imports the 700-line `ShardRegion` actor for one integer.
+
+### Fixed
+
+- **One faulty `EventStream` subscription no longer breaks the bus for
+  everyone else** (#1010).  `publish` guarded the subscription's *predicate*
+  but not its *channel*: the `instanceof` test sat one line above the `try`
+  and `subscriber.tell` ran unguarded below it, so of the three things that
+  can throw per subscription exactly one was covered.  `subscribe` was the
+  other half — it deduplicated, pushed and returned `true` without ever
+  checking that the channel could sit on the right-hand side of `instanceof`.
+
+  A single bad entry therefore raised a `TypeError` into whoever called
+  `publish`, and because the throw escaped the loop, every subscription
+  registered *after* it silently stopped receiving anything — in an order
+  decided by subscription order, which no caller controls.  That reached
+  further than the bus: `publish` runs on every actor start, every actor stop
+  and every dead-lettered `tell`, so it turned `ref.tell(…)` — an API that
+  does not throw by contract — into one that did, broke actor creation, and
+  raised an unhandled dispatcher rejection during shutdown.
+
+  `subscribe` now rejects a channel that is not a usable `instanceof`
+  right-hand side, throwing on the line that wrote the subscription instead
+  of poisoning an unrelated `publish` in another actor later.  It throws
+  rather than returning `false`, because `false` already means "duplicate
+  rejected" and conflating the two destroys the signal the return value
+  carries.  The realistic route to a bad channel is one types do not cover:
+  a JavaScript consumer, a channel read out of a loosely-typed registry, or
+  an ESM import cycle in which the class binding is still uninitialised at
+  subscribe time.
+
+  Subscribe-time validation cannot be total, which is why the delivery guard
+  is not belt-and-braces: an arrow function is callable but has no
+  `prototype`, so `instanceof` throws on it regardless, and a throwing
+  `[Symbol.hasInstance]` passes any structural check and fails at delivery.
+  So `publish` now runs the match test, the predicate and `subscriber.tell`
+  under a guard, logs through the existing logger hook and carries on to the
+  next subscriber.  The predicate keeps its own inner guard: "no match for
+  this delivery, subscription stays active" (#85) is a specific documented
+  meaning that a generic delivery guard would flatten into an unexplained
+  skip.  The warning path no longer reads `channel.name`, which was itself
+  unsafe precisely when the channel was the thing that was wrong.
+
+  **Behaviour change:** a `subscriber.tell` that throws is now logged and
+  swallowed rather than propagated out of `publish`.
+
+- **A collision predicate on every random-id helper** (#1141).  `randomString`,
+  `randomHex`, `randomId` and `randomUuid` now take an optional `exists`
+  callback and draw again while it answers `true`, so the loop every caller
+  wrote by hand — `do { id = randomUuid(); } while (state.users.has(id))` —
+  collapses into `randomUuid((id) => state.users.has(id))`.  The polarity is the
+  design: the callback *is* that `while` condition, which is what keeps the `!`
+  off the call site and lets the two shapes read as one sentence; an
+  accept-predicate would have been the negation of the loop it replaces, and
+  would have put a `!` on every `Map`- or `Set`-backed call site.  The retry is
+  bounded at 1 000 draws and then throws an `Error` naming the helper and the
+  count — the same bound, and the same reasoning, as `freeActorName` in
+  `src/devtools/internal/ActorNames.ts`.  Unbounded, a space with nothing free
+  left in it and a predicate written the other way round both become a call that
+  never returns, and this module had already decided that question when it made
+  an empty alphabet throw.  `randomString` reaches the predicate through
+  overloads — the second slot when the character classes are left alone, the
+  third when they are not — so no call site needs a `{}` placeholder to get
+  there, and `randomId` deliberately forwards no predicate into its `randomHex`
+  delegation, which would otherwise nest a second bounded retry inside the first
+  and name the wrong helper in the error.  `ExistsPredicate` is exported from
+  the root barrel next to `RandomStringOptions`, for anyone naming the callback
+  rather than inlining it.  Nothing changes without one: the argument is
+  optional and trailing, the no-predicate path is a single draw with no loop,
+  and `randomUuid` is still the `() => string` that
+  `RequestIdOptions.withGenerate` defaults to.  The predicate reads and does not
+  write — the accepted value is not recorded for you.  Migrating the framework's
+  own draws onto it is not part of this change.
+
+- **A dead constant and its live duplicate** (#1142).
+  `DEFAULT_SNAPSHOT_CACHE_TTL_MS` had zero importers while the consumer its
+  own docblock named, `CachedSnapshotStore`, declared the same five minutes
+  locally as `DEFAULT_TTL_MS`.  Exactly the drift the shared-constants
+  module was introduced (#257) to prevent, and invisible because knip's
+  `exports` rule is off.  One declaration now, in
+  `CachedSnapshotStoreOptions.ts` where the `ttlMs` field is.
+
+- **`reEncryptionSweep` rebuilt the ATS1 magic prefix** (#1142) instead of
+  importing the `ATS1_MAGIC` that `BodyCodec` already exports — a second
+  copy of a format definition, in a file that already imported four other
+  things from the codec.
+
+- **The heartbeat interval existed twice** (#1142).
+  `defaultFailureDetectorOptions` and `defaultPhiAccrualOptions` each
+  carried `heartbeatIntervalMs: 500`, so swapping detectors could silently
+  change how often a node talks to its peers.  Worse, only the first was
+  pinned to `reference.conf` by a test; the φ-accrual copy was pinned to
+  nothing.
+
+- **Two independently-introduced redraw caps** (#1142).  `randomId`'s
+  `exists`-predicate loop and DevTools' `freeActorName` each declared
+  `MAXIMUM_ATTEMPTS = 1_000`, and the second one documented the coupling in
+  prose ("the same bound, and the same reasoning, as `freeActorName`") —
+  which is precisely the kind of coupling a comment cannot hold.  Now one
+  `MAXIMUM_DRAW_ATTEMPTS` in `src/util/Constants.ts`, since both subsystems
+  answer the same question for the same reason.
+
+- **Unnamed literals mirroring `reference.conf`** (#1142): the dispatcher
+  throughput was written out as a bare `16` in three places
+  (`ActorSystem`, and twice in `Dispatcher`), and `ShardCoordinator`
+  resolved its rebalance interval and hand-off timeout against `?? 2_000`
+  and `?? 10_000`.  All now named, and verified to match the HOCON leaves
+  they mirror.  Also de-duplicated: `LOCAL_ADDRESS` and `TOP_MAILBOX_COUNT`
+  in devtools, the DynamoDB batch limit, and the explain ring's default
+  capacity, which the runtime API and the DevTools RPC each answered
+  separately.
+
+### Security
+
+- **One path-traversal denylist instead of two** (#1142).  `ActorPath` and
+  `PersistenceIdValidator` each declared `new Set(['.', '..'])` under a
+  different name.  Both guard against the same attack — a persistence id
+  becomes a filesystem or object-storage key where `..` climbs out of the
+  configured prefix (#133), a path segment reaches actor-selection
+  resolution — and neither imported the other, so extending one would have
+  left the other accepting what it now rejects.  Shared as
+  `PATH_TRAVERSAL_SEGMENTS`, typed `ReadonlySet` so a caller cannot delete
+  from it.  No behaviour change: both sites reject exactly what they did
+  before.
+
+
 ## [0.14.0] — 2026-08-11
 
 ### Added

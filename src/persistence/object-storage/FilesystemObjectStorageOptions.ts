@@ -1,6 +1,11 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
+/** Built-in default for {@link FilesystemObjectStorageOptionsType.lockTimeoutMs}. */
+export const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
+/** Built-in default for {@link FilesystemObjectStorageOptionsType.staleLockMs}. */
+export const DEFAULT_STALE_LOCK_MS = 30_000;
+
 export type FilesystemObjectStorageOptionsType = {
   /** Root directory.  Will be created (recursively) if it doesn't exist. */
   readonly dir: string;

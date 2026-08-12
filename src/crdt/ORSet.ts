@@ -1,3 +1,4 @@
+import { TAG_ENTROPY_CHARACTERS } from './Constants.js';
 import type { Crdt, ReplicaId } from './Crdt.js';
 import { randomId } from '../util/RandomString.js';
 import {
@@ -45,27 +46,6 @@ export type ORSetOptions<E> = {
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
 
-/**
- * Random hex characters in a tag suffix — 96 bits.
- *
- * A tag used to be `${replica}#${seq}` off a monotonic counter, and the
- * counter travelled in the payload.  Tombstones veto by tag on merge and are
- * never pruned, so a peer that could *predict* a tag could tombstone one the
- * victim had not issued yet: the victim's next adds then vanished on the very
- * next merge, silently, with no API to undo a tombstone (#722).  Guessing a
- * tag is the whole attack, which is why this draws from `crypto` — the same
- * conclusion #120 reached for `ClusterClient` ask ids and #896 for quorum
- * correlation ids.
- *
- * Longer than the 12–16 characters those two use, because the uniqueness that
- * has to hold is different: an ask id only has to be distinct among the
- * requests in flight, whereas a tag is compared against every tag its replica
- * has ever minted for the element and against tombstones that outlive them
- * all.  At 96 bits a replica making 10^9 adds has a collision chance around
- * 6e-12 — below the rate at which the hardware underneath miscounts.
- */
-const TAG_ENTROPY_CHARACTERS = 24;
-
 type ElementEntry<E> = {
   readonly element: E;
   readonly tags: ReadonlySet<string>;
@@ -101,7 +81,22 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // Minted here and nowhere else: a tag has to survive merges and
     // serialization byte-identical, since every comparison it takes part in —
     // tombstone veto, tag-set union, `equals` — is string equality.
-    const tag = `${replica}#${randomId(TAG_ENTROPY_CHARACTERS)}`;
+    //
+    // Drawn against both halves of that comparison (#1146).  A repeat of a live
+    // tag would union into the same set and lose nothing; a repeat of a
+    // *tombstoned* one is the case worth the check, because the veto that stops
+    // a slow peer resurrecting a removed tag cannot tell it apart from this
+    // add — the element would simply fail to appear on the next merge, with no
+    // error anywhere.  Both maps are already in hand, so the check is two
+    // lookups against the 96 bits that make it near-impossible in the first
+    // place.
+    const tagPrefix = `${replica}#`;
+    const liveTags = this.elements.get(key)?.tags;
+    const removedTags = this.tombstones.get(key);
+    const tag = tagPrefix + randomId(TAG_ENTROPY_CHARACTERS, (suffix) => {
+      const candidate = tagPrefix + suffix;
+      return liveTags?.has(candidate) === true || removedTags?.has(candidate) === true;
+    });
 
     const nextElements = new Map(this.elements);
     const existing = nextElements.get(key);

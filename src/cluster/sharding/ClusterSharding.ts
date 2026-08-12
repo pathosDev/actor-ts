@@ -20,8 +20,8 @@ import {
 import { EntityRef } from './EntityRef.js';
 import type { ShardMessage } from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
+import { DEFAULT_NUM_SHARDS } from './ShardingOptions.js';
 import {
-  DEFAULT_NUM_SHARDS,
   ShardRegion,
   coordinatorPath,
 } from './ShardRegion.js';

@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
-import { RESERVED_SERIALIZER_IDS_BELOW } from './Serializer.js';
+import { RESERVED_SERIALIZER_IDS_BELOW } from './Constants.js';
 
 /** What `encode()` hands back — the writer whose `finish()` yields the bytes. */
 export interface ProtobufWriter {

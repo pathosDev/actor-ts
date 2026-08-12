@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-5080%20of%205080-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-5158%20of%205158-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~92%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~5080 tests, ~92 % line) but the
+> production**.  Test coverage is good (~5158 tests, ~92 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -89,7 +89,10 @@ A short tour of what's in the box:
   adapter); plus
   the small helpers the framework itself runs on: `randomString` / `randomHex`
   / `randomId` (crypto entropy, no modulo bias, exact length) and `randomUuid`
-  (a v4 UUID, for when the identifier has to be globally unique too),
+  (a v4 UUID, for when the identifier has to be globally unique too) — all four
+  take an optional `exists` predicate and redraw while it says the candidate is
+  taken, so "keep going until one is free" is the call itself rather than a
+  `do`/`while` around it;
   `safeStringify`
   (a `JSON.stringify` for log and error paths that cannot throw),
   `lazyImportModule` (import an optional peer dependency, or fail with a

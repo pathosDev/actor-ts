@@ -31,8 +31,8 @@ export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
 export {
   assertValidPersistenceId,
   persistenceIdRejection,
-  MAX_PERSISTENCE_ID_LENGTH,
 } from './storage/PersistenceIdValidator.js';
+export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 
@@ -64,8 +64,8 @@ export {
   adaptSqliteDatabase,
   applySqliteBusyTimeout,
   buildSqliteDatabase,
-  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
 } from './journals/SqliteClient.js';
+export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from './Constants.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';

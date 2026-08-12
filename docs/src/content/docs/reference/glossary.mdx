@@ -202,9 +202,9 @@ hops.  See [Logging](/fundamentals/logging/).
 
 ## M
 
-**Mailbox.**  The per-actor message queue.  Default bounded
-(10,000 capacity, `drop-head` overflow) with FIFO ordering;
-priority and unbounded variants are available.  See
+**Mailbox.**  The per-actor message queue.  Unbounded FIFO by
+default; bound one per actor with `withMailboxCapacity`, or supply a
+priority mailbox of your own.  See
 [Mailboxes](/fundamentals/mailboxes/).
 
 **Message.**  Any value `tell`'d to an actor.  Convention:

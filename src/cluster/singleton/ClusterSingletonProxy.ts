@@ -6,6 +6,7 @@ import { LeaderChanged } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
 import { singletonProxyName } from '../../internal/SystemPaths.js';
 import { singletonHost, singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
+import { DEFAULT_BUFFER_SIZE } from './StartSingletonOptions.js';
 import type { SingletonKey } from './SingletonKey.js';
 
 /**
@@ -19,13 +20,6 @@ import type { SingletonKey } from './SingletonKey.js';
  * expected (e.g. as a sender for ask patterns).  It is not backed by a real
  * actor — it is a thin forwarder.
  */
-/**
- * How many messages a proxy holds while the cluster has no host, unless the
- * caller says otherwise.  A thousand is enough to ride out an election —
- * normally a gossip round — without being enough to matter if the wait never
- * ends.
- */
-const DEFAULT_BUFFER_SIZE = 1_000;
 
 export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   readonly path: ActorPath;

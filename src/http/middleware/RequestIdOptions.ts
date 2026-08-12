@@ -1,6 +1,14 @@
 /** Options for the {@link requestId} middleware.  Options-only. */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
+/**
+ * Built-in default for {@link RequestIdOptionsType.headerName} — the header
+ * the middleware reads and echoes unless configured otherwise, and the one
+ * `requestIdOf` looks at by default.  A single spelling so the middleware
+ * and the framework's own error log cannot drift apart.
+ */
+export const DEFAULT_REQUEST_ID_HEADER = 'x-request-id';
+
 /** Plain settings shape for request-id. */
 export type RequestIdOptionsType = {
   /** Header carrying the id, in + out.  Default `'x-request-id'`. */

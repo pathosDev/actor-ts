@@ -1,14 +1,15 @@
 ---
 title: Mailbox sizing
-description: When to use bounded vs unbounded mailboxes, how to pick capacity, and what overflow policies cost. The decision is per-actor — production rarely uses one-size-fits-all defaults.
+description: When to bound a mailbox, how to pick capacity, and what overflow policies cost. The default is unbounded — the decision to shed load is per-actor and deliberate.
 ---
 
-The default actor mailbox is **bounded** — capacity 10 000 with
-a `drop-head` overflow policy.  The queue can't grow without
-limit; once full, the oldest pending message is dropped.  For
-most actors the default ceiling is fine.  When it isn't, you
-tune the capacity and overflow policy — or opt into an
-[unbounded mailbox](/fundamentals/mailboxes/).
+import { Aside } from '@astrojs/starlight/components';
+
+The default actor mailbox is **unbounded**.  Nothing is discarded on
+the way in, and the queue grows until the actor drains it.  Bounding
+one is a per-actor decision, because it is a decision to lose
+messages — you take it where you can say which messages are safe to
+lose.
 
 This page is the **decision guide** for production mailbox
 sizing.
@@ -17,35 +18,39 @@ sizing.
 
 ```ts
 const ref = system.spawnAnonymous(Worker);
-//  ↑ bounded FIFO mailbox — capacity 10 000, drop-head overflow
+//  ↑ unbounded FIFO mailbox — nothing is ever dropped on the way in
 ```
 
-The default gives every actor a **guaranteed memory ceiling**:
-the queue holds at most 10 000 messages, and when a new message
-arrives on a full mailbox the oldest pending one is dropped
-(`drop-head`).  For most actors that's fine — a brief burst is
-absorbed, and a runaway producer can't grow the heap without
-limit.
+Unbounded is the honest default: an actor framework cannot know
+which of your messages is expendable, and between v0.10 and v0.15
+this one guessed.  It bounded every mailbox at 10 000 with
+`drop-head`, so an actor that fell behind silently lost its
+**oldest** queued message — which is right for a sensor reading and
+wrong for a `Terminated` signal, a delivery confirmation or a
+WebSocket `close`.  All three went through the same queue, and each
+became a filed defect.
 
-The trade-off is **silent message loss**: under sustained
-pressure `drop-head` keeps the queue fresh but discards older
-work, and the sender is never told.  When losing messages is
-the wrong answer, tune the capacity or switch the overflow
-policy (below).
+The ceiling that trade bought was not real either: only the *user*
+queue was bounded.  System messages were never capped, so the
+process could exhaust its heap regardless.
 
-Opting *out* — back to an [unbounded mailbox](/fundamentals/mailboxes/) —
-trades that ceiling for the pre-#310 failure mode:
+What you get instead is **growth you are told about**:
 
-- Heap exhaustion → process OOM-killed.
-- Long GC pauses → cluster flaps.
-- Backpressure absent → producer doesn't know there's a problem.
+- An actor whose queue reaches 10 000 messages logs a warning, and
+  again at each doubling — 20 000, 40 000, and so on.  This is
+  always on and needs no metrics stack.
+- With metrics enabled, `actor_mailbox_size{class, path}` reports the
+  depth of any mailbox at or above that same mark.
 
-Reach for it only when an actor genuinely needs no bound.
+So the failure mode an unbounded queue can still reach — heap
+exhaustion, long GC pauses, a producer that never learns there is a
+problem — announces itself well before it arrives.  Watch for the
+warning; bound the actors that produce it.
 
-## When to tune the bound
+## When to introduce a bound
 
-Three patterns where the default capacity or policy isn't the
-right fit — override capacity, overflow, or both:
+Three patterns where an unbounded queue is the wrong answer.  In each,
+the capacity and the policy are both deliberate choices:
 
 ### 1. Producer/consumer mismatch known in advance
 
@@ -139,18 +144,34 @@ actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
 
 Watch:
 
-- **`mailbox_size`** — high values relative to capacity indicate
-  pressure.
-- **`mailbox_dropped_total`** — non-zero with `drop-head` /
-  `drop-new` is by design; spikes warrant investigation.
+- **`actor_mailbox_size`** — the depth of any mailbox at or above
+  10 000 queued messages.  A series only exists once an actor crosses
+  that mark, so its *presence* is the signal; on a healthy system the
+  metric is empty.  A drained mailbox reads 0 rather than its last
+  spike.
+- **`actor_mailbox_dropped_total`** — non-zero with `drop-head` /
+  `drop-new` is by design for the actors you bounded; on any other
+  actor it should not appear at all.
 - **`MailboxFullError` rate** at the sender — usually surfaces
   as supervisor restarts of the sending actor.
+
+The same 10 000 threshold produces a log warning, repeated at each
+doubling, whether or not metrics are enabled.  That is the line to
+alert on if you run no metrics stack.
+
+<Aside type="note" title="Every mailbox reports, including yours">
+  `actor_mailbox_dropped_total` covers the mailbox you get from
+  `withMailboxCapacity` and the one you build yourself and pass to
+  `withMailbox` alike — the cell registers its observer on whatever
+  implements `DropReportingMailbox`.  A `BoundedMailboxOptions.onDrop` of
+  your own keeps firing alongside it.
+</Aside>
 
 ## The three overflow policies, compared
 
 | Policy | When |
 | --- | --- |
-| **`reject`** (default) | Backpressure surfaces to sender.  Sender must handle. |
+| **`reject`** | Backpressure surfaces to sender.  Sender must handle. |
 | **`drop-head`** | Telemetry / metrics — newest wins. |
 | **`drop-new`** | Critical work — preserve queued, drop incoming. |
 
@@ -207,16 +228,16 @@ you'd combine:
 The mailbox enforces the local boundary; the rest is your
 protocol design.
 
-import { Aside } from '@astrojs/starlight/components';
-
-<Aside type="caution" title="Blanket-opting out to unbounded">
+<Aside type="caution" title="Blanket-bounding every actor">
   ```ts
-  // ✗ blanket .withMailbox(() => new Mailbox()) everywhere
+  // ✗ blanket .withMailboxCapacity(10_000) everywhere
   ```
-  Opting every actor out of the bounded default reintroduces the
-  pre-#310 OOM-or-bust shape.  Reach for unbounded only for a
-  specific actor whose semantics need it (deterministic replay,
-  a test harness) — never as a blanket policy.
+  A bound is a decision to discard messages, and it can only be made
+  where someone knows which ones are expendable.  Applied across the
+  board it reaches actors nobody assessed — a death-watch subscriber,
+  a delivery producer, a WebSocket hub — and the evicted envelope is
+  a control message.  That is the shape the unbounded default exists
+  to prevent, and setting a global capacity re-creates it.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

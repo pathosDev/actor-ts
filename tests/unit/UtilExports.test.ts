@@ -12,6 +12,7 @@ import {
 import type {
   BidirectionalMapJson,
   BidirectionalMultiMapJson,
+  ExistsPredicate,
   LazyImportOptions,
   RandomStringOptions,
 } from '../../src/index.js';
@@ -54,6 +55,25 @@ describe('util helpers are reachable from the barrel (#1034)', () => {
 
     test('two draws differ — the export is not a constant behind a random name', () => {
       expect(randomHex(32)).not.toBe(randomHex(32));
+    });
+
+    test('the collision predicate is honoured through the barrel (#1141)', () => {
+      // The named annotation is the point: `ExistsPredicate` has to be exported
+      // as a *type* for a consumer to write this line at all, and a barrel that
+      // shipped the functions without it would still pass an inline arrow.
+      const taken = new Set('012345678'.split(''));
+      const exists: ExistsPredicate = (candidate) => taken.has(candidate);
+      expect(randomString(1, { lowerCase: false, upperCase: false }, exists)).toBe('9');
+    });
+
+    test('randomUuid takes the predicate in its only slot', () => {
+      const seen: string[] = [];
+      const value = randomUuid((candidate) => {
+        seen.push(candidate);
+        return seen.length === 1;
+      });
+      expect(seen).toHaveLength(2);
+      expect(value).toBe(seen[1]);
     });
   });
 

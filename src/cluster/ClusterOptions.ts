@@ -8,6 +8,71 @@ import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
 /**
+ * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
+ * long a node waits before re-attempting a failed `Cluster.join`.  3 s
+ * balances "give the seed node time to start" with "fail fast on a missing
+ * peer".
+ */
+export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.maxVersionSkewMs} — how far
+ * ahead of the local wall-clock a gossiped member version may be.  The full
+ * reasoning for both the rule and the number is on `Cluster.admitsVersion`
+ * (#114).
+ *
+ * Distinct from the 24 h wall-clock cap in `Cluster.ts`, which the two
+ * deliberately do not share: that one bounds *timestamps*, this one bounds
+ * *versions*, and they happen to be different quantities with different
+ * justifications.
+ */
+export const DEFAULT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.maxMembers} — the cap on
+ * **live** entries in the member map (#138).
+ *
+ * The number is chosen against the failure mode that actually bites, which is
+ * not an out-of-memory kill.  Gossip carries the whole member list, so at
+ * roughly 110 000 entries this node's own frame outgrows the 16 MiB wire cap
+ * and every peer terminates the connection on the length prefix — the node
+ * removes itself from the cluster while still running.  1000 sits two orders
+ * of magnitude below that, and comfortably above any cluster this framework
+ * is built for.
+ */
+export const DEFAULT_MAX_MEMBERS = 1_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.maxTombstones} — the cap on
+ * `removed` tombstones in the member map (#138).
+ *
+ * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
+ * that legitimately outnumber live members — every node that ever left leaves
+ * one for {@link ClusterOptionsType.tombstoneTtlMs}.  That same property is
+ * why this is the cap that matters: a phantom in an active status is reclaimed
+ * by the failure detector within `downAfterMs`, a gossiped tombstone is not
+ * reclaimed by anything for a day.
+ */
+export const DEFAULT_MAX_TOMBSTONES = 10_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.tombstoneTtlMs} — how long a
+ * removed member's tombstone is retained.  24 h gives slow or partitioned
+ * peers a generous window to converge after a member is removed; once
+ * expired, peers can re-mint the address without resurrecting the tombstone.
+ * See `Cluster.ts` + #75 for the full lifecycle.
+ */
+export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Built-in default for
+ * {@link ClusterOptionsType.tombstonePruneIntervalMs} — the cadence of the
+ * tombstone-pruning sweep.  5 min gives a useful safety margin around the
+ * 24 h TTL without busy-looping.
+ */
+export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
+
+/**
  * Whether — and when — this node may declare itself the first member of a
  * new cluster, moving straight from `joining` to `up` with nobody's
  * agreement.

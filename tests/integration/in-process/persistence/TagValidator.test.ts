@@ -1,9 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  assertValidTags,
-  MAX_TAG_LENGTH,
-  MAX_TAGS_PER_EVENT,
-} from '../../../../src/persistence/storage/TagValidator.js';
+import { MAX_TAG_LENGTH, MAX_TAGS_PER_EVENT } from '../../../../src/persistence/Constants.js';
+import { assertValidTags } from '../../../../src/persistence/storage/TagValidator.js';
 import { InMemoryJournal } from '../../../../src/persistence/index.js';
 
 describe('assertValidTags', () => {

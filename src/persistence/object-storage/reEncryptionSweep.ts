@@ -31,6 +31,7 @@
 
 import type { MasterKeyRing } from '../PersistenceOptions.js';
 import {
+  ATS1_MAGIC,
   decodeBody,
   encodeBody,
   FLAG_ENCRYPTED,
@@ -41,8 +42,6 @@ import {
 import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
-
-const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
 
 /* ============================ progress (#109) ============================ */
 
@@ -460,10 +459,10 @@ export async function reEncryptObjectStorage(
 
 function startsWithAts1(buffer: Uint8Array): boolean {
   return buffer.length >= 5
-    && buffer[0] === ATS1_MAGIC_PREFIX[0]
-    && buffer[1] === ATS1_MAGIC_PREFIX[1]
-    && buffer[2] === ATS1_MAGIC_PREFIX[2]
-    && buffer[3] === ATS1_MAGIC_PREFIX[3];
+    && buffer[0] === ATS1_MAGIC[0]
+    && buffer[1] === ATS1_MAGIC[1]
+    && buffer[2] === ATS1_MAGIC[2]
+    && buffer[3] === ATS1_MAGIC[3];
 }
 
 /**

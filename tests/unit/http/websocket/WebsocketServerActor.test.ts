@@ -134,9 +134,14 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const sock = new MockSocket();
     wire(system, hub, sock);
     sock.emit(JSON.stringify({ kind: 'ping', n: 5 }));
-    await awaitCondition(() => rec.events.some((e) => e.startsWith('ping:')), {
+    // Wait on the send, not on the handler's own recording: `reply` is a
+    // `tell` to the per-connection actor, so `sock.send` runs in a LATER turn
+    // than the `rec.events.push` beside it.  Waiting on the push returns while
+    // the pong is still sitting in a mailbox (#1145).  This subsumes the
+    // recording — the pong cannot be sent before the ping was handled.
+    await awaitCondition(() => sock.textSent.length >= 1, {
       timeoutMs: 4_000,
-      label: 'the ping was recorded',
+      label: 'the pong reached the socket',
     });
 
     expect(rec.connections).toHaveLength(1);
@@ -309,6 +314,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     });
     const before = sock.sent.length;
     expect(() => connection.tell({ kind: 'pong', n: 1 })).not.toThrow();
+    // A settle, not a wait: the assertion is that nothing arrives, and there
+    // is no condition to poll for an absence.  So this one stays a `sleep` —
+    // it can only ever pass too easily (a write that was merely slow reads as
+    // a write that never happened), never flake.
     await sleep(40);
     expect(sock.sent.length).toBe(before);
   });

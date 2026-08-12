@@ -1,15 +1,15 @@
 ---
 title: Mailbox-Sizing
-description: Wann bounded vs unbounded Mailboxes, wie man die Kapazität wählt und was Overflow-Policies kosten. Die Entscheidung ist pro Actor — Produktion benutzt selten one-size-fits-all-Defaults.
+description: Wann du eine Mailbox begrenzt, wie du die Kapazität wählst und was Overflow-Policies kosten. Der Default ist unbounded — Last abzuwerfen ist eine bewusste Entscheidung pro Actor.
 ---
 
-Die Default-Mailbox eines Actors ist **bounded** — Kapazität
-10 000 mit einer `drop-head`-Overflow-Policy. Die Queue kann
-nicht ohne Limit wachsen; sobald sie voll ist, wird die älteste
-wartende Nachricht verworfen. Für die meisten Actors ist die
-Default-Obergrenze in Ordnung. Wenn nicht, passt du Kapazität
-und Overflow-Policy an — oder entscheidest dich für eine
-[unbounded Mailbox](/de/fundamentals/mailboxes/).
+import { Aside } from '@astrojs/starlight/components';
+
+Die Default-Mailbox eines Actors ist **unbounded**. Auf dem Weg hinein
+wird nichts verworfen, und die Queue wächst, bis der Actor sie
+abarbeitet. Eine zu begrenzen ist eine Entscheidung pro Actor, denn es
+ist eine Entscheidung, Nachrichten zu verlieren — du triffst sie dort,
+wo du sagen kannst, welche verzichtbar sind.
 
 Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
 
@@ -17,37 +17,39 @@ Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
 
 ```ts
 const ref = system.spawnAnonymous(Worker);
-//  ↑ bounded FIFO-Mailbox — Kapazität 10 000, drop-head-Overflow
+//  ↑ unbounded FIFO-Mailbox — auf dem Weg hinein wird nie etwas verworfen
 ```
 
-Der Default gibt jedem Actor eine **garantierte
-Speicher-Obergrenze**: die Queue hält höchstens 10 000
-Nachrichten, und wenn eine neue Nachricht auf einer vollen
-Mailbox ankommt, wird die älteste wartende verworfen
-(`drop-head`). Für die meisten Actors ist das in Ordnung — ein
-kurzer Burst wird absorbiert, und ein außer Kontrolle geratener
-Producer kann den Heap nicht ohne Limit wachsen lassen.
+Unbounded ist der ehrliche Default: ein Actor-Framework kann nicht
+wissen, welche deiner Nachrichten entbehrlich ist — und zwischen v0.10
+und v0.15 hat dieses geraten. Es begrenzte jede Mailbox auf 10 000 mit
+`drop-head`, ein zurückfallender Actor verlor also still seine
+**älteste** wartende Nachricht. Für einen Sensorwert ist das richtig,
+für ein `Terminated`-Signal, eine Delivery-Bestätigung oder ein
+WebSocket-`close` falsch. Alle drei liefen durch dieselbe Queue, und
+aus jedem wurde ein gemeldeter Defekt.
 
-Der Trade-off ist **stiller Nachrichtenverlust**: unter
-anhaltendem Druck hält `drop-head` die Queue frisch, verwirft
-aber ältere Arbeit, und der Sender wird nie benachrichtigt. Wenn
-Nachrichtenverlust die falsche Antwort ist, passe die Kapazität
-an oder wechsle die Overflow-Policy (unten).
+Die Obergrenze, die dieser Handel erkaufte, gab es ohnehin nicht: nur
+die *User*-Queue war begrenzt. System-Nachrichten waren nie gedeckelt,
+der Prozess konnte den Heap also trotzdem ausschöpfen.
 
-Das *Abwählen* — zurück zu einer [unbounded Mailbox](/de/fundamentals/mailboxes/) —
-tauscht diese Obergrenze gegen den Pre-#310-Fehlermodus:
+Was du stattdessen bekommst, ist **Wachstum, von dem du erfährst**:
 
-- Heap erschöpft → Prozess OOM-gekillt.
-- Lange GC-Pausen → Cluster flappt.
-- Kein Backpressure → der Producer weiß nicht, dass es ein Problem
-  gibt.
+- Ein Actor, dessen Queue 10 000 Nachrichten erreicht, loggt eine
+  Warnung — und erneut bei jeder Verdopplung: 20 000, 40 000 und so
+  weiter. Das läuft immer, ohne Metrik-Stack.
+- Mit aktivierten Metriken meldet `actor_mailbox_size{class, path}` die
+  Tiefe jeder Mailbox ab derselben Marke.
 
-Greif nur dazu, wenn ein Actor wirklich keinen Bound braucht.
+Der Fehlermodus, den eine unbegrenzte Queue weiterhin erreichen kann —
+erschöpfter Heap, lange GC-Pausen, ein Producer, der nie erfährt, dass
+es ein Problem gibt — kündigt sich also lange vorher an. Achte auf die
+Warnung; begrenze die Actors, die sie produzieren.
 
-## Wann den Bound tunen
+## Wann einen Bound einführen
 
-Drei Muster, in denen die Default-Kapazität oder -Policy nicht
-passt — überschreibe Kapazität, Overflow oder beides:
+Drei Muster, in denen eine unbegrenzte Queue die falsche Antwort ist.
+In jedem sind Kapazität und Policy bewusste Entscheidungen:
 
 ### 1. Producer/Consumer-Mismatch vorab bekannt
 
@@ -142,18 +144,34 @@ actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
 
 Beobachte:
 
-- **`mailbox_size`** — hohe Werte relativ zur Kapazität deuten
-  auf Druck hin.
-- **`mailbox_dropped_total`** — ungleich Null mit `drop-head` /
-  `drop-new` ist beabsichtigt; Spikes verdienen Untersuchung.
+- **`actor_mailbox_size`** — die Tiefe jeder Mailbox ab 10 000
+  wartenden Nachrichten. Eine Serie entsteht erst, wenn ein Actor diese
+  Marke überschreitet — ihr *Vorhandensein* ist also das Signal; auf
+  einem gesunden System ist die Metrik leer. Eine geleerte Mailbox
+  liest 0 statt ihres letzten Ausschlags.
+- **`actor_mailbox_dropped_total`** — ungleich Null mit `drop-head` /
+  `drop-new` ist bei den Actors beabsichtigt, die du begrenzt hast; bei
+  jedem anderen sollte sie gar nicht auftauchen.
 - **`MailboxFullError`-Rate** beim Sender — taucht meist als
   Supervisor-Restarts des sendenden Actors auf.
+
+Dieselbe 10 000er-Schwelle erzeugt eine Log-Warnung, wiederholt bei
+jeder Verdopplung, unabhängig davon ob Metriken aktiv sind. Auf diese
+Zeile alarmierst du, wenn du keinen Metrik-Stack betreibst.
+
+<Aside type="note" title="Jede Mailbox meldet, auch deine eigene">
+  `actor_mailbox_dropped_total` deckt die Mailbox aus
+  `withMailboxCapacity` und die selbst gebaute aus `withMailbox`
+  gleichermaßen ab — die Cell registriert ihren Observer auf allem, was
+  `DropReportingMailbox` implementiert. Ein eigenes
+  `BoundedMailboxOptions.onDrop` feuert weiter daneben.
+</Aside>
 
 ## Die drei Overflow-Policies im Vergleich
 
 | Policy | Wann |
 | --- | --- |
-| **`reject`** (Default) | Backpressure schlägt zum Sender durch. Der Sender muss handeln. |
+| **`reject`** | Backpressure schlägt zum Sender durch. Der Sender muss handeln. |
 | **`drop-head`** | Telemetrie / Metriken — Neueste gewinnt. |
 | **`drop-new`** | Kritische Arbeit — Eingereihtes behalten, Eingehendes droppen. |
 
@@ -210,17 +228,17 @@ langsamer) kombinierst du:
 Die Mailbox erzwingt die lokale Grenze; der Rest ist dein
 Protokoll-Design.
 
-import { Aside } from '@astrojs/starlight/components';
-
-<Aside type="caution" title="Pauschales Abwählen zu unbounded">
+<Aside type="caution" title="Pauschales Begrenzen jedes Actors">
   ```ts
-  // ✗ pauschal überall .withMailbox(() => new Mailbox())
+  // ✗ pauschal überall .withMailboxCapacity(10_000)
   ```
-  Jeden Actor aus dem bounded Default abzuwählen führt die
-  Pre-#310-OOM-or-bust-Form wieder ein. Greif zu unbounded nur
-  für einen bestimmten Actor, dessen Semantik es braucht
-  (deterministisches Replay, ein Test-Harness) — niemals als
-  pauschale Policy.
+  Ein Bound ist die Entscheidung, Nachrichten zu verwerfen, und die
+  kann nur dort fallen, wo jemand weiß, welche entbehrlich sind.
+  Pauschal angewandt trifft sie Actors, die niemand beurteilt hat —
+  einen Death-Watch-Subscriber, einen Delivery-Producer, einen
+  WebSocket-Hub — und der verworfene Envelope ist eine
+  Kontrollnachricht. Genau das soll der unbounded Default verhindern,
+  und eine globale Kapazität stellt es wieder her.
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">

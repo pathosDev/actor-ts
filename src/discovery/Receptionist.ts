@@ -3,7 +3,12 @@ import { Actor } from '../Actor.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { ReceptionistOptionsValidator, readReceptionistOptionsFromConfig } from './ReceptionistOptions.js';
+import {
+  DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
+  DEFAULT_MAX_SUBSCRIBERS_TOTAL,
+  ReceptionistOptionsValidator,
+  readReceptionistOptionsFromConfig,
+} from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { fromNullable, type Option } from '../util/Option.js';
@@ -47,11 +52,6 @@ type Message =
  * (the shape of #709).
  */
 type ReceptionistInbox = Message | Terminated;
-
-/** Subscribers per key when nothing else is configured. */
-const DEFAULT_MAX_SUBSCRIBERS_PER_KEY = 1_000;
-/** Subscribers across every key when nothing else is configured. */
-const DEFAULT_MAX_SUBSCRIBERS_TOTAL = 10_000;
 
 type KeyEntry = {
   /** Locally registered refs — treated as authoritative on this node. */

@@ -17,6 +17,13 @@
  * the three runtimes word their own module-resolution failure
  * differently, and the helper's contract is that the message still names
  * the package and how to install it.
+ *
+ * The `exists` predicate (#1141) rides along for a weaker reason, stated
+ * plainly: the retry loop is ordinary JavaScript and cannot differ per
+ * runtime.  What it buys is that this file is the only place the four
+ * helpers' *public call shapes* meet the built `dist/`, so the overloads
+ * and the trailing parameter are exercised against what actually ships.
+ * A thousand extra draws cost under a millisecond.
  */
 export const name = 'public util helpers';
 export const description = 'randomString entropy + safeStringify cycle + lazyImportModule error';
@@ -35,6 +42,25 @@ export async function run({ actorTs }) {
   }
   if (randomHex(32) === randomHex(32)) throw new Error('randomHex returned the same value twice');
   if (randomUuid() === randomUuid()) throw new Error('randomUuid returned the same value twice');
+
+  // Nine of the ten digits are taken, so '9' is the only value the predicate
+  // lets through — the redraw is what has to find it.
+  const taken = new Set(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
+  const free = randomString(1, { lowerCase: false, upperCase: false }, (c) => taken.has(c));
+  if (free !== '9') throw new Error(`randomString did not redraw to the one free digit: ${free}`);
+
+  let attempts = 0;
+  let exhausted = null;
+  try {
+    randomUuid(() => { attempts++; return true; });
+  } catch (e) {
+    exhausted = e.message;
+  }
+  if (exhausted === null) throw new Error('randomUuid with an always-taken predicate returned');
+  if (attempts !== 1000) throw new Error(`randomUuid drew ${attempts} candidates, expected 1000`);
+  if (!exhausted.includes('randomUuid')) {
+    throw new Error(`exhaustion message does not name the helper: ${exhausted}`);
+  }
 
   const cyclic = { name: 'loop' };
   cyclic.self = cyclic;

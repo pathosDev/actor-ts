@@ -1,6 +1,14 @@
+import type { MailboxDropReason } from '../internal/Mailbox.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
-import type { BoundedMailboxOverflow } from './BoundedMailbox.js';
+
+export type BoundedMailboxOverflow =
+  /** Drop the oldest message in the queue to make room for the new one. */
+  | 'drop-head'
+  /** Drop the message being enqueued. */
+  | 'drop-new'
+  /** Throw a MailboxFullError — caller can surface it. */
+  | 'reject';
 
 /** Plain options-object shape accepted by a {@link BoundedMailbox}. */
 export type BoundedMailboxOptionsType = {
@@ -10,8 +18,12 @@ export type BoundedMailboxOptionsType = {
    * Optional hook fired each time a message is dropped by the overflow
    * policy.  Receives the policy that triggered the drop so the consumer
    * can label metrics.  Never fires for `reject` — that throws instead.
+   *
+   * Yours alone: the cell reports to `actor_mailbox_dropped_total` through
+   * {@link DropReportingMailbox.observeDrops}, which runs alongside this
+   * rather than replacing it.
    */
-  readonly onDrop?: (reason: 'drop-head' | 'drop-new') => void;
+  readonly onDrop?: (reason: MailboxDropReason) => void;
 };
 
 /**
@@ -38,7 +50,7 @@ export class BoundedMailboxOptionsBuilder extends OptionsBuilder<BoundedMailboxO
   }
 
   /** Hook fired on each overflow drop (for metrics). */
-  withOnDrop(onDrop: (reason: 'drop-head' | 'drop-new') => void): this {
+  withOnDrop(onDrop: (reason: MailboxDropReason) => void): this {
     return this.set('onDrop', onDrop);
   }
 }

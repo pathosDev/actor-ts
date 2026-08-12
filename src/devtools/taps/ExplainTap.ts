@@ -15,6 +15,8 @@ import { LocalActorRef } from '../../internal/LocalActorRef.js';
 import type { ActorCell } from '../../internal/ActorCell.js';
 import type { MessageExplain } from '../../internal/Instrumentation.js';
 import { parseSelectionPath } from '../../ActorSelection.js';
+import { MAXIMUM_CAPACITY } from '../Constants.js';
+import { DEFAULT_EXPLAIN_CAPACITY } from '../../util/Constants.js';
 import {
   explainEntriesPayload,
   type ExplainEnableParameters,
@@ -23,11 +25,6 @@ import {
   type ExplainStatusResult,
 } from '../protocol/index.js';
 import type { DevToolsServer } from '../DevToolsServer.js';
-
-/** Ring size when the caller names none. */
-const DEFAULT_CAPACITY = 100;
-/** Refuse anything larger; a ring is a debugging aid, not a log. */
-const MAXIMUM_CAPACITY = 10_000;
 
 /**
  * Wires the three `explain.*` methods onto the server.
@@ -118,7 +115,7 @@ function requirePath(path: unknown): string {
 }
 
 function clampCapacity(capacity: unknown): number {
-  if (capacity === undefined) return DEFAULT_CAPACITY;
+  if (capacity === undefined) return DEFAULT_EXPLAIN_CAPACITY;
   if (typeof capacity !== 'number' || !Number.isInteger(capacity) || capacity < 1) {
     throw new Error('`capacity` must be an integer >= 1');
   }

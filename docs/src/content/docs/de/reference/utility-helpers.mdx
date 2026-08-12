@@ -286,11 +286,12 @@ gilt genauso.
 
 | Export | Zweck |
 | --- | --- |
-| `randomString(length, options?)` | `length` Zeichen aus den aktivierten Klassen. Voreinstellung: alphanumerisch. |
-| `randomHex(length)` | `length` Kleinbuchstaben-Hex-Zeichen — für Wire-Formate, die `[0-9a-f]` vorschreiben. |
-| `randomId(length)` | `length` Zeichen für etwas, das du selbst benennen musst. |
-| `randomUuid()` | Eine v4-UUID — für einen Bezeichner, der mit keinem anderswo erzeugten kollidieren darf. |
+| `randomString(length, options?, exists?)` | `length` Zeichen aus den aktivierten Klassen. Voreinstellung: alphanumerisch. `exists` darf auf Position zwei stehen, wenn du keine Optionen übergibst. |
+| `randomHex(length, exists?)` | `length` Kleinbuchstaben-Hex-Zeichen — für Wire-Formate, die `[0-9a-f]` vorschreiben. |
+| `randomId(length, exists?)` | `length` Zeichen für etwas, das du selbst benennen musst. |
+| `randomUuid(exists?)` | Eine v4-UUID — für einen Bezeichner, der mit keinem anderswo erzeugten kollidieren darf. |
 | `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — jedes standardmäßig `true`. |
+| `ExistsPredicate` | `(candidate: string) => boolean` — die optionale Kollisionsprüfung, die alle vier annehmen. `true` heißt „vergeben, zieh noch einmal“. |
 
 Die ersten drei ziehen aus `globalThis.crypto`, korrigieren den Modulo-Bias, den
 ein schlichtes `byte % alphabet.length` einführt, und liefern exakt die
@@ -333,6 +334,46 @@ Broker läuft, ein Schlüssel, den ein anderes System liest.
   liest Müll. Genauso wenig solltest du eine UUID auf Länge zuschneiden:
   `randomHex` und `randomId` beantworten „*n* Zeichen“ bereits, und ein
   Zuschnitt wirft genau die Entropie weg, wegen der du die UUID geholt hast.
+</Aside>
+
+### Ziehen, bis eine frei ist
+
+Alle vier nehmen als letztes Argument ein optionales Prädikat und ziehen erneut,
+solange es `true` antwortet:
+
+```ts
+import { randomUuid } from 'actor-ts';
+
+const userId = randomUuid((id) => state.users.has(id));
+```
+
+also genau die Schleife, die bisher an der Aufrufstelle stand:
+
+```ts
+let userId: UserId;
+do {
+  userId = randomUuid();
+} while (state.users.has(userId));
+```
+
+Der Callback *ist* diese `while`-Bedingung. Deshalb heißt er `exists`, und
+deshalb bedeutet `true` „zieh noch einmal“ — ein Akzeptanz-Prädikat wäre die
+Negation der Schleife, die es ersetzt, und würde jeder `Map`- oder
+`Set`-gestützten Aufrufstelle ein `!` verpassen. `randomString` nimmt ihn auf
+Position zwei, wenn du keine Optionen übergibst, und auf Position drei, wenn du
+es tust: `randomString(8, exists)`, `randomString(8, { digits: false }, exists)`.
+
+Es liest nur, es schreibt nicht. Der akzeptierte Wert wird nirgends für dich
+vermerkt — was `exists` befragt, bleibt deine Sache.
+
+<Aside type="caution" title="true heißt vergeben">
+  Das Prädikat beantwortet „ist dieser hier schon in Gebrauch“, nicht „ist
+  dieser hier gut“. Drehst du es um, erfährst du davon, statt still einen
+  kollidierenden Bezeichner zu bekommen: nach 1 000 Ziehungen wirft der Helfer
+  einen `Error`, der sich selbst und die Anzahl nennt — und genauso sieht auch
+  ein Raum aus, in dem nichts Freies mehr übrig ist. Die Schranke steht hier aus
+  demselben Grund, aus dem ein leeres Alphabet wirft: ein Aufruf, der nie
+  zurückkehrt, ist der schlimmere Fehler.
 </Aside>
 
 ## Werte ausgeben, bei denen schon etwas schiefging

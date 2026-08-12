@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import {
   applySqliteBusyTimeout,
   buildSqliteDatabase,
-  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
 } from '../../../src/persistence/journals/SqliteClient.js';
 import { SqliteJournal } from '../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions } from '../../../src/persistence/journals/SqliteJournalOptions.js';

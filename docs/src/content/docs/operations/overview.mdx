@@ -61,7 +61,7 @@ you see specific symptoms:
 | --- | --- |
 | **[Gossip cadence](/operations/tuning/gossip-cadence/)** | Large clusters (>20 nodes) where the default 1-second gossip is wasteful, or small clusters where you want faster convergence. |
 | **[Failure detector](/operations/tuning/failure-detector/)** | Tight networks (LAN) where 2-second unreachable detection is too slow, or noisy networks where it triggers false alarms. |
-| **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** | When bounded mailboxes drop more than expected, or an opt-in unbounded mailbox grows memory without limit. |
+| **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** | When a mailbox grows memory without limit, or one you bounded drops more than expected. |
 | **[Dispatcher tuning](/operations/tuning/dispatcher-tuning/)** | When you observe HTTP latency degradation under actor-heavy load, or low CPU utilization with high actor throughput. |
 
 If you can't articulate the symptom, don't tune.  Defaults aren't
@@ -109,7 +109,7 @@ cluster down."
 | Sharded entities won't spawn | Coordinator not on a leader, role mismatch |
 | `PersistentActor` takes 30 s to start | No snapshot, deep journal — set `snapshotPolicy` |
 | Tests hang at the end | Forgot `await system.terminate()` |
-| Memory grows unboundedly | An opt-in unbounded mailbox with a slow consumer, or a subscriber/`DistributedData` leak |
+| Memory grows unboundedly | A mailbox with a slow consumer (unbounded by default), or a subscriber/`DistributedData` leak |
 
 See [Troubleshooting](/operations/troubleshooting/) for
 the diagnostic-by-symptom catalog.

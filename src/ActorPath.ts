@@ -1,5 +1,4 @@
-/** Whole-segment values that would carry traversal meaning in a path. */
-const TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
+import { PATH_TRAVERSAL_SEGMENTS } from './util/Constants.js';
 
 /**
  * Prefix the framework keeps for the names it picks itself — today
@@ -56,7 +55,7 @@ function assertValidName(name: string, parent: ActorPath | null): void {
   if (name.includes('/') || name.includes('\\')) {
     reject('must not contain a path separator ("/" or "\\")');
   }
-  if (TRAVERSAL_SEGMENTS.has(name)) {
+  if (PATH_TRAVERSAL_SEGMENTS.has(name)) {
     reject('must not be "." or ".."');
   }
   if (hasControlCharacter(name)) {

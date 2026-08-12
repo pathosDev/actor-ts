@@ -3,32 +3,12 @@ import type { ActorOptions } from './ActorOptions.js';
 import type { ActorRef, OmitReplyTo } from './ActorRef.js';
 import { metricsOf } from './metrics/MetricsExtension.js';
 import {
+  DEFAULT_SCATTER_GATHER_TIMEOUT_MS,
   ScatterGatherOptionsValidator,
   type ScatterGatherOptions,
   type ScatterGatherOptionsType,
 } from './ScatterGatherOptions.js';
 import { AskTimeoutError, Terminated } from './SystemMessages.js';
-
-/**
- * Fallback deadline for one scatter — deliberately *under* the 5 s
- * `ActorRef.ask` defaults to, not equal to it.
- *
- * The scatter is N asks and must not outlive the ask wrapped around it,
- * which was the reason for matching 5 s.  Matching does not achieve it:
- * the router's own deadline has to leave room for the inner asks to
- * reject, the `AggregateError` to be built and the reply to reach the
- * caller, and the caller's timer is already running for the same 5 s.
- * On the documented default path — `scatterGatherFirstCompleted(n, R)`
- * plus a bare `pool.ask(msg)` — the caller therefore saw its own
- * `AskTimeoutError` and never the router's diagnosis (#1088).
- *
- * The 500 ms is a margin, not a budget cut: the aggregation and reply
- * hop measured at ~18 ms, and a Windows timer quantum is 15.6 ms, which
- * Bun can fire a whole one early (#477).  Anything under ~4 980 ms wins
- * the race on an idle machine; 4 500 ms keeps 90 % of the budget and
- * still wins it on a loaded one.
- */
-export const DEFAULT_SCATTER_GATHER_TIMEOUT_MS = 4_500;
 
 /**
  * How a scatter ended — the `outcome` label on

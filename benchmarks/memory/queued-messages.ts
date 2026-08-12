@@ -6,6 +6,14 @@
  * for the next N tells to pile up behind it.  We resolve the latch at the
  * end of each run so the actor drains and the process exits cleanly.
  *
+ * The rows only became comparable in #1148.  While the default mailbox was
+ * bounded at 10 000 with `drop-head`, the 100 000 row retained ~9 999
+ * messages and spent the other 90 001 tells performing an O(n) shift over a
+ * full array — so the number it printed was allocator churn from the drop
+ * path, not the footprint of a queue (#972).  It read *higher* than the
+ * unbounded measurement, which is why "the cap is what it reports" was the
+ * wrong diagnosis even though the row was wrong.
+ *
  *   bun run benchmarks/memory/queued-messages.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';

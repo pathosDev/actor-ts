@@ -4,6 +4,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
+import { DEFAULT_NUM_SHARDS, DEFAULT_PASSIVATION_IDLE_MS } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
@@ -47,21 +48,6 @@ import {
   type EntityStopped,
   type ToShard,
 } from './ShardingProtocol.js';
-
-/** Shard count used when a sharded type doesn't pick one. */
-export const DEFAULT_NUM_SHARDS = 64;
-
-/**
- * How long an entity may sit idle before the region passivates it, when
- * nothing else says otherwise.  `0` disables the sweep.
- *
- * Kept in lockstep with `passivation-idle` in `reference.conf`: HOCON only
- * reaches a region that came through `ClusterSharding.start`, while a
- * directly-constructed one falls back to this constant, and the two
- * disagreeing would make the same options mean different things depending on
- * which door they came through.
- */
-export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
 
 export type ShardRegionConfig<TMessage> = {
   readonly typeName: string;

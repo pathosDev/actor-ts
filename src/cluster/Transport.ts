@@ -1,4 +1,5 @@
 import type { Logger } from '../Logger.js';
+import { HANDSHAKE_TIMEOUT_MS, MAX_PENDING_FRAMES } from './Constants.js';
 import {
   getTcpBackend,
   type TcpBackend,
@@ -60,23 +61,6 @@ type Connection = {
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
 };
-
-/**
- * How long a dialled connection may sit without a `hello-ack` before it is
- * torn down and its `byPeer` slot released.  A peer that accepts TCP but never
- * speaks the protocol would otherwise hold the slot — and every frame aimed at
- * it — for the process's lifetime.
- */
-const HANDSHAKE_TIMEOUT_MS = 5_000;
-
-/**
- * Cap on frames buffered while a handshake is outstanding.  The buffer exists
- * so a `send` racing the handshake is not lost; it is not a durable queue, and
- * an unbounded one turns a silently-stuck peer into a memory leak.  Oldest
- * frames are dropped first — the newest membership/heartbeat state is the
- * state worth keeping.
- */
-const MAX_PENDING_FRAMES = 1_000;
 
 /**
  * TCP-backed cluster transport.  Wire framing lives in `Protocol.ts`; the

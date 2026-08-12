@@ -1,5 +1,6 @@
 export type { Serializer, SerializedValue } from './Serializer.js';
-export { SerializationError, RESERVED_SERIALIZER_IDS_BELOW } from './Serializer.js';
+export { SerializationError } from './Serializer.js';
+export { RESERVED_SERIALIZER_IDS_BELOW } from './Constants.js';
 export { JsonSerializer } from './JsonSerializer.js';
 export { encodeJsonTree, decodeJsonTree } from './JsonTree.js';
 export type { JsonTreeEncodeOptions, UndefinedValueHandling } from './JsonTree.js';

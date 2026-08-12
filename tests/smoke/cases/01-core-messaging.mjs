@@ -2,13 +2,14 @@
  * Smoke case: core actor messaging.  N tells + one ask round-trip.
  * Catches "actor system doesn't even boot" regressions.
  *
- * N=1000 because the default mailbox is now bounded at 10k (#310);
- * 10k tells + 1 ask = 10001 which would lose one message to
- * drop-head.  1000 is more than enough to verify the core path
- * works — we're not trying to benchmark throughput here.
+ * N=20_000 deliberately clears the 10 000 the default mailbox used to be
+ * bounded at (#310, reversed by #1148).  This suite is the only gate that
+ * runs on Bun, Node and Deno, so it is the only place a runtime-specific
+ * regression in the unbounded default would surface — and the exact count
+ * coming back is what proves nothing was dropped.
  */
 export const name = 'core actor messaging';
-export const description = '1k tells + ask round-trip';
+export const description = '20k tells + ask round-trip';
 
 export async function run({ actorTs }) {
   const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
@@ -25,9 +26,9 @@ export async function run({ actorTs }) {
   const sys = ActorSystem.create('smoke-core', sysOptions);
   try {
     const ref = sys.spawnAnonymous(Counter);
-    const N = 1_000;
+    const N = 20_000;
     for (let i = 0; i < N; i++) ref.tell('inc');
-    const got = await ref.ask('get', 5_000);
+    const got = await ref.ask('get', 30_000);
     if (got !== N) throw new Error(`counter mismatch: ${got} !== ${N}`);
   } finally {
     await sys.terminate();

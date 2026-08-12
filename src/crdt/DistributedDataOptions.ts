@@ -4,6 +4,17 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { Config } from '../config/Config.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 
+/**
+ * Built-in default for
+ * {@link DistributedDataOptionsType.maxPendingQuorumRequests} — see that
+ * field for what the cap actually buys, which is a bound on the unsettled
+ * set rather than protection from the mailbox underneath it.
+ */
+export const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
+
+/** Built-in default ceiling on a caller-supplied quorum `timeoutMs`. */
+export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
+
 /** Plain options-object shape accepted by {@link DistributedData.start}. */
 export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */
@@ -13,15 +24,19 @@ export type DistributedDataOptionsType = {
    * unsettled at once.  A request past the cap is rejected outright instead
    * of being tracked.  `0` disables the cap.
    *
-   * The cap is deliberately far below the actor's mailbox capacity
-   * (`DEFAULT_MAILBOX_CAPACITY`, 10 000, `drop-head`).  At mailbox
-   * saturation the default policy discards the *oldest* queued envelope —
-   * and a `ddata-update` envelope carries the caller's `resolve` / `reject`,
-   * so dropping it strands the `updateAsync` promise forever, unsettled and
-   * with nothing logged.  A cap set at the mailbox's own capacity would
-   * never fire before that happens.  Set well below it, the cap's whole
-   * value is that it converts a silent drop into an explicit rejection
-   * naming the knob (#140).
+   * What the cap buys is a bound on the unsettled set itself: every entry
+   * holds a promise, a timer and a target set until its deadline passes, so
+   * an uncapped replicator under load accumulates all three.  Refusing past
+   * the cap converts what would be a timeout storm into immediate,
+   * attributable rejections naming this knob (#140).
+   *
+   * It is deliberately *not* justified by the mailbox underneath it any
+   * more.  That argument (sit an order of magnitude below the 10 000
+   * drop-head bound, so the cap fires before the mailbox strands a
+   * `ddata-update` envelope carrying the caller's `resolve` / `reject`) was
+   * wrong twice over: measurement in #1078 showed the promises stayed
+   * unsettled either way, and #1148 removed the default bound entirely.
+   * 1 000 stands on the reasoning above, not on that one.
    */
   readonly maxPendingQuorumRequests?: number;
   /**

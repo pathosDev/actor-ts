@@ -1,7 +1,7 @@
 import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from './util/Constants.js';
+import { DEFAULT_PHASE_TIMEOUT_MS } from './Constants.js';
 
 /**
  * Structured reason passed to every shutdown task so that they can behave

@@ -1,12 +1,13 @@
 ---
 title: Event stream
-description: A system-wide pub/sub bus — subscribe to a *class* of event, receive an instance via `tell` whenever someone publishes. Predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
+description: A system-wide pub/sub bus — subscribe to a class of event or to a `kind`-discriminated type, receive it via `tell` whenever someone publishes. Predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
 ---
 
 The **event stream** is a system-wide bus for one-to-many messaging
 that doesn't fit the parent-child or sender-receiver shape.  Any
-actor can subscribe to a class of event; any code can publish; the
-bus matches and `tell`s the event to every subscriber.
+actor can subscribe to a class of event, or to a `kind`-discriminated
+type; any code can publish; the bus matches and `tell`s the event to
+every subscriber.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -50,14 +51,20 @@ fan-out alerts).
 ## The API
 
 ```ts
+// A channel is named by a class, by an EventKey, or by the bare kind string.
+type EventChannel<TEvent> =
+  | (abstract new (...args: any[]) => TEvent)
+  | EventKey<TEvent>
+  | KindOf<TEvent>;
+
 class EventStream {
-  subscribe<T>(
+  subscribe<TEvent>(
     subscriber: ActorRef,
-    channel: new (...args: any[]) => T,
-    predicate?: (event: T) => boolean,
+    channel: EventChannel<TEvent>,
+    predicate?: (event: TEvent) => boolean,
   ): boolean;
 
-  unsubscribe<T>(subscriber: ActorRef, channel?: new (...args: any[]) => T): boolean;
+  unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean;
 
   publish(event: object): void;
 }
@@ -65,17 +72,17 @@ class EventStream {
 
 Three operations:
 
-- **`subscribe(ref, ClassName)`** — register interest in a class of
-  events.  Returns `true` if a new subscription was added, `false`
-  if a duplicate was ignored.
-- **`unsubscribe(ref, ClassName?)`** — remove subscriptions.  With
-  the class, just that channel; without, every subscription for
-  that ref.
+- **`subscribe(ref, channel)`** — register interest.  The channel is
+  a class, an `EventKey`, or a kind string.  Returns `true` if a new
+  subscription was added, `false` if a duplicate was ignored, and
+  **throws** if the channel is unusable (see the caution below).
+- **`unsubscribe(ref, channel?)`** — remove subscriptions.  With a
+  channel, just that one; without, every subscription for that ref.
 - **`publish(event)`** — fire-and-forget.  The bus walks its
-  subscription list, matches via `instanceof`, and `tell`s each
-  match.
+  subscription list, matches each subscription's channel, and `tell`s
+  every match.
 
-Matching is `instanceof`-based, so **subclass instances reach
+Class channels match with `instanceof`, so **subclass instances reach
 base-class subscribers**:
 
 ```ts
@@ -89,6 +96,77 @@ eventStream.subscribe(loginCounter, UserLoggedIn);   // catches only the in-even
 
 This makes hierarchical event taxonomies easy: subscribers pick
 their level.
+
+## Kind channels
+
+[Messages](/fundamentals/messages/) tells you to prefer plain objects
+(`{ kind: 'x', n: 1 }`) over classes — and a plain type has no
+constructor to hand `subscribe`.  Name it by its `kind` instead.  A
+type and a `const` of the same name give it the call shape a class
+gets for free:
+
+```ts
+import { EventKey } from 'actor-ts';
+
+export type UserLoggedInEvent = {
+  readonly kind: 'user-logged-in';
+  readonly userId: string;
+};
+export const UserLoggedInEvent = EventKey.of<UserLoggedInEvent>('user-logged-in');
+
+class AuditLogger extends Actor<UserLoggedInEvent> {
+  override preStart(): void {
+    this.context.system.eventStream.subscribe(this.context.self, UserLoggedInEvent);
+  }
+  override onReceive(event: UserLoggedInEvent): void {
+    this.log.info(`user ${event.userId} logged in`);
+  }
+}
+
+system.eventStream.publish({ kind: 'user-logged-in', userId: 'user-42' });
+```
+
+The key carries the event type, so a predicate written against it
+sees the real shape without you annotating the parameter:
+
+```ts
+eventStream.subscribe(auditor, UserLoggedInEvent, (event) => event.userId !== 'system');
+```
+
+The **bare kind string** is the shorthand, and it costs the type —
+there is nothing for `TEvent` to be inferred from, so the predicate
+sees `unknown`.  Supplying the argument brings the typing back *and*
+makes the string itself checkable against the type's `kind`:
+
+```ts
+eventStream.subscribe(auditor, 'user-logged-in');                     // predicate sees unknown
+eventStream.subscribe<UserLoggedInEvent>(auditor, 'user-logged-in');  // typed, and the string is checked
+```
+
+Two identity rules follow from this:
+
+- **A key and its string are the same channel.**  Subscribing both
+  ways dedups, and either form unsubscribes the other — including a
+  freshly built `EventKey.of('user-logged-in')`.
+- **A class and a kind are two channels**, even when the class's
+  instances carry that `kind`.  They select overlapping events, just
+  like a base class and its subclass, so an actor holding both
+  subscriptions receives two deliveries per publish.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="A kind channel matches exactly one kind">
+  A class hierarchy gives you families for free — subscribe to the
+  abstract base and you get everything below it.  Kinds have no base,
+  so there is no way to say "every `billing.*` event": subscribe once
+  per kind, or give the family a class hierarchy instead.
+
+  The empty string is rejected outright — it names no event, and it
+  reads like "everything" to whoever wrote it.  Note also that the
+  bare string gives you no protection against a typo, where the key
+  does: a misspelled kind compiles fine and then quietly never
+  matches.
+</Aside>
 
 ## Predicate filtering
 
@@ -132,8 +210,6 @@ Three good fits:
    spy subscribe directly.
 
 ## When NOT to use it
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="One specific receiver = use a ref">
   If exactly one actor should receive the message, hold its `ActorRef`
@@ -181,6 +257,10 @@ The framework publishes several event types you can subscribe to:
 | `ReachabilityChanged` | The publishing node's own failure detector gained or lost sight of a peer — a local observation, unlike `MemberUnreachable`, which may have arrived in gossip.  See [Failure detector](/cluster/failure-detector/). |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |
 
+Everything the framework itself publishes is a **class**, so class
+channels remain the way to reach all of the above.  Kind channels are
+for your own application events.
+
 One cluster event is deliberately **not** here: `CurrentClusterState`
 is delivered only to the listener that asked for it, by
 `cluster.subscribe(listener, { replayMode: 'snapshot' })`.  It states where
@@ -198,7 +278,8 @@ publishes.
 - **[Actor system](/fundamentals/actor-system/)** —
   `system.eventStream` is where you reach the bus.
 - **[Messages](/fundamentals/messages/)** — the shape
-  rules (immutable, no method refs) apply equally to events.
+  rules (immutable, no method refs) apply equally to events, and the
+  `kind` convention documented there is directly subscribable.
 
 The [`EventStream`](/api/classes/eventstream/) API
 reference covers the full surface.

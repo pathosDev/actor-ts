@@ -205,9 +205,12 @@ export const ConfigKeys = {
    * cluster is a positional argument to `start`, not a tunable.
    *
    * The two caps bound what one replica can be made to hold *and* how long
-   * it holds it.  The mailbox already bounds the queue; these bound the
-   * unsettled promises behind it, which the mailbox's `drop-head` policy
-   * would otherwise strand rather than reject.
+   * it holds it.  Each unsettled request keeps a promise, a timer and a
+   * target set alive until its deadline, so the cap is what turns a timeout
+   * storm into immediate rejections naming the knob.  It is not a guard
+   * against the mailbox underneath — see
+   * `DEFAULT_MAX_PENDING_QUORUM_REQUESTS` for why that framing was dropped
+   * (#1078, #1148).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',

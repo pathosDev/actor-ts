@@ -6,6 +6,20 @@ import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceIntervalMs}.
+ * Mirrors `actor-ts.sharding.rebalance-interval = 2s` in `reference.conf`.
+ */
+export const DEFAULT_REBALANCE_INTERVAL_MS = 2_000;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.handOffTimeoutMs} —
+ * how long a hand-off may stall before the coordinator gives up on the old
+ * owner and reallocates the shard.  Mirrors
+ * `actor-ts.sharding.hand-off-timeout = 10s` in `reference.conf`.
+ */
+export const DEFAULT_HAND_OFF_TIMEOUT_MS = 10_000;
+
 /** Plain options-object shape consumed by a {@link ShardCoordinator}. */
 export type ShardCoordinatorOptionsType = {
   readonly typeName: string;

@@ -260,6 +260,69 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
 
+### Constants
+
+A module-level `SCREAMING_SNAKE` constant lives in one of four places.
+Check them **in order** and take the first that matches:
+
+1. **`XOptions.ts`** — it is the built-in default of an `XOptionsType`
+   field, or a bound that file's `XOptionsValidator` checks. This covers
+   the lowerCamelCase default *objects* of the same family too
+   (`defaultFailureDetectorOptions`, `defaultPhiAccrualOptions`).
+2. **It stays where it is** — a closed list of six kinds, not a loophole:
+   - **wire/format vocabulary** whose meaning *is* the codec beside it —
+     `JsonTree.ts` tags, `CborCodec.ts` tag numbers, `BodyCodec.ts` flags
+     and `ATS1_MAGIC`, `Protocol.ts` `HEADER_SIZE`;
+   - **algorithm-derived** sizes fixed by a primitive chosen in that file —
+     `Encryption.ts` `IV_LENGTH`/`KEY_LENGTH`, `MAX_KEY_VERSION`;
+   - a **regex or lookup table that is the implementation** — `Html.ts`
+     `ESCAPES`, `Duration.ts` `UNIT_MS`, `MimeTypes.ts`
+     `DEFAULT_MIME_TYPES`, `SystemPaths.ts` `GROUP_POLICIES`;
+   - a **singleton or sentinel** needing a class or symbol from the same
+     file — `NOOP_TRACER`, `Metrics.ts`'s `NOOP_*`, `Behaviors.ts`'s five
+     `{ kind }` objects, `BackoffSupervisor.ts` `RESPAWN_TICK`;
+   - a value **derived from another constant in the same file** —
+     `FRAMING_TAGS`, `RESERVED_TAGS`, `HISTORY_MAXIMUM_SPAN_MS`;
+   - a **protocol declaration** — bounds in a `*Frames.ts` that define the
+     wire schema a client validates against (`TRACING_BUFFER_*`).
+3. **`src/<subsystem>/Constants.ts`** — every other tuned value: cap,
+   bound, timeout, buffer size, retry limit, protocol size. One file per
+   **top-level** directory under `src/`; nested directories fold up
+   (`src/http/websocket/*` → `src/http/Constants.ts`), root-level files use
+   `src/Constants.ts`. Create it once a subsystem has two such constants,
+   or one that more than one file reads.
+4. **`src/util/Constants.ts`** — only when **two or more top-level
+   subsystems** consume it. `src/util/` has no outward import, so it is the
+   one module everything may depend on without coupling subsystems.
+
+Further rules:
+
+- A `Constants.ts` **imports nothing from its own subsystem** — cycle-free
+  by construction, the same property `XOptions.ts` has. Importing
+  `src/config/ConfigKeys.js` or another `Constants.ts` is fine.
+- **Rule 3 is what rule 1 cannot express.** A default shared by *two*
+  options types has no single `XOptions.ts` to sit in — co-location would
+  put it in both. `DEFAULT_HEARTBEAT_INTERVAL_MS` and
+  `DEFAULT_SQLITE_BUSY_TIMEOUT_MS` are that case. An `XOptions.ts` must
+  never import a functional module to reach a constant.
+- **Move the declaration with its JSDoc verbatim**, and carry `as const`
+  and explicit type annotations across. Dropping them is how a "pure move"
+  silently widens a type: `'drop-head' as const` becomes `string`, a
+  `ReadonlySet` becomes mutable.
+- **Constants move, `ConfigKeys` reads do not.**
+  `tests/unit/config/NoDeadConfigKeys.test.ts` matches `ConfigKeys.<group>`
+  and `.<leaf>` in the *same file*, so relocating a reader breaks it even
+  when behaviour is identical. `bun run typecheck` cannot see that failure.
+- **Naming:** `DEFAULT_<DOMAIN>_<UNIT>` with the unit suffix. Prefix a
+  vendor limit with the vendor (`DYNAMODB_MAX_BATCH_ITEMS`) — a bare
+  `MAX_BATCH_ITEMS` is unambiguous in one driver and meaningless in a
+  shared namespace.
+- **Public names stay public.** Barrels re-export from the new location, so
+  relocating a declaration is never a breaking change.
+- Two constants may share a value and still both stay: `MAX_WALL_CLOCK_SKEW_MS`
+  (24 h security cap) and `DEFAULT_TOMBSTONE_TTL_MS` (retention window) are
+  a documented non-merge, as are the three unrelated `EMPTY` sentinels.
+
 ### Options & settings
 
 - **Every configurable thing has one `XOptions.ts` file with three exports**,

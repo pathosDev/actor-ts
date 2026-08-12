@@ -253,53 +253,105 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
-  test('default actor mailbox is bounded (10_000, drop-head) — #310', async () => {
+  test('withMailboxOverflow reaches the mailbox — reject throws at the tell site', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-overflow-option', kitOptions);
+
+    class Slow extends Actor<number> {
+      override async onReceive(_m: number): Promise<void> { await sleep(50); }
+    }
+    const options = ActorOptions.create<number>()
+      .withMailboxCapacity(2)
+      .withMailboxOverflow('reject');
+    const ref = kit.system.spawnAnonymous(Slow, options);
+
+    // Capacity 2 and a handler that will not keep up: the third tell finds a
+    // full mailbox.  `reject` surfaces synchronously at the sender rather
+    // than discarding quietly, which is the whole reason to choose it.
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+    await kit.system.terminate();
+  });
+
+  test('the default mailbox is unbounded — 20 000 queued, every one delivered in order (#1148)', async () => {
+    // The #310 guard this replaces asserted `instanceof BoundedMailbox` and
+    // `droppedCount === 0` on a mailbox nothing had been sent to, so it
+    // stayed green for any default at all — capacity 3 with drop-new
+    // included (#1020).  This one asserts on DELIVERED MESSAGES, which no
+    // bounded default can fake: the actor is wedged on a latch, twice the
+    // old 10 000 ceiling is queued behind it, and then every message is
+    // required back in order.  Capacity 3 / drop-new fails it, 10 000 /
+    // drop-head fails it, and a PriorityMailbox fails the ordering.
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('mbox-default', kitOptions);
 
-    class Worker extends Actor<number> {
-      override onReceive(_m: number): void {
-        // intentionally empty — we only care about the mailbox shape
+    let release: () => void = () => {};
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+    const handled: number[] = [];
+
+    class Sink extends Actor<number> {
+      override async onReceive(n: number): Promise<void> {
+        if (n === 0) await latch;
+        handled.push(n);
       }
     }
-    const ref = kit.system.spawnAnonymous(Worker);
+    const ref = kit.system.spawnAnonymous(Sink);
 
-    // Reach into the ActorCell's mailbox via the LocalActorRef internal
-    // accessor so we can assert the concrete type without exporting it
-    // from the public surface.  The whole point of this test is that
-    // the default WIRED-UP mailbox is bounded; a future change to
-    // `new Mailbox()` would silently make the framework unbounded
-    // again and only manifest as an OOM in production.
-    const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
+    const COUNT = 20_000;
+    for (let i = 0; i < COUNT; i++) ref.tell(i);
+
+    const cell = (ref as unknown as {
+      getCell(): { _mailboxForTest(): { size: number } };
+    }).getCell();
     const mailbox = cell._mailboxForTest();
-    expect(mailbox).toBeInstanceOf(BoundedMailbox);
-    // The capacity + overflow are encapsulated; cheapest check is to
-    // assert behaviorally: fill past capacity, observe drop-head.
-    const mbox = mailbox as BoundedMailbox<number>;
-    expect(mbox.droppedCount).toBe(0);
+    // Read the depth BEFORE releasing the latch: message 0 cannot complete,
+    // so the queue genuinely holds the rest.  Past the old ceiling is the
+    // whole claim.
+    expect(mailbox.size).toBeGreaterThan(10_000);
+    expect(mailbox).not.toBeInstanceOf(BoundedMailbox);
+
+    release();
+    await awaitCondition(() => handled.length === COUNT, {
+      timeoutMs: 30_000,
+      label: 'every queued message was delivered',
+    });
+    expect(handled.length).toBe(COUNT);
+    expect(handled[0]).toBe(0);
+    expect(handled[COUNT - 1]).toBe(COUNT - 1);
     await kit.system.terminate();
   });
 
-  test('default mailbox can be opted out per-actor via withMailbox(() => new Mailbox())', async () => {
-    const { Mailbox } = await import('../../../src/internal/Mailbox.js');
+  test('a bound is opt-in via withMailboxCapacity, and its drops reach onDrop', async () => {
+    // The inverse of the guard above, and the only non-Docker coverage of
+    // the `onDrop` -> `actor_mailbox_dropped_total` chain: the cell wires
+    // the callback only for the capacity path, never for `withMailbox`.
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
-    const kit = TestKit.create('mbox-optout', kitOptions);
+    const kit = TestKit.create('mbox-optin', kitOptions);
 
-    class Worker extends Actor<number> {
-      override onReceive(_m: number): void { /* noop */ }
+    let release: () => void = () => {};
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+
+    class Sink extends Actor<number> {
+      override async onReceive(n: number): Promise<void> { if (n === 0) await latch; }
     }
-    const options = ActorOptions.create<number>().withMailbox(() => new Mailbox<number>());
-    const ref = kit.system.spawnAnonymous(Worker, options);
+    const options = ActorOptions.create<number>().withMailboxCapacity(4);
+    const ref = kit.system.spawnAnonymous(Sink, options);
+
+    for (let i = 0; i < 64; i++) ref.tell(i);
 
     const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
     const mailbox = cell._mailboxForTest();
-    // Concrete type is the plain (unbounded) Mailbox — not BoundedMailbox.
-    expect(mailbox).toBeInstanceOf(Mailbox);
-    expect(mailbox).not.toBeInstanceOf(BoundedMailbox);
+    expect(mailbox).toBeInstanceOf(BoundedMailbox);
+    const bounded = mailbox as BoundedMailbox<number>;
+    expect(bounded.size).toBeLessThanOrEqual(4);
+    expect(bounded.droppedCount).toBeGreaterThan(0);
+
+    release();
     await kit.system.terminate();
   });
 
