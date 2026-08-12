@@ -262,6 +262,8 @@ erreichen.
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
+| Frame in tausende Chunks zerlegt, um die Decode-Kosten zu vervielfachen | Linearer Decode-Puffer — jedes Byte wird einmal kopiert, beim Eintreffen |
+| Socket öffnet, schickt einen halben Frame und verstummt | Stall-Deadline auf einem unvollständigen Frame, dazu eine Obergrenze für eingehende Verbindungen |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
@@ -355,6 +357,50 @@ Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
 eine Versionsabweichung und ein feindlicher Peer sehen im Log
 unterschiedlich aus.
+
+## Was das Decodieren eines Frames kostet
+
+Die Prüfung läuft auf einem ganzen Frame, und ein ganzer Frame
+muss aus so vielen TCP-Chunks zusammengesetzt werden, wie der
+Sender ihn zerlegt hat. **Der Peer wählt diese Zerlegung**, und
+das war früher die teure Hälfte: der Decoder baute seinen
+Akkumulator bei jedem Chunk neu auf, sodass das Zusammensetzen
+eines Frames quadratisch in der Chunk-Anzahl kostete. Ein Frame
+knapp unter der 16-MiB-Grenze, geliefert in TCP-großen
+~1400-Byte-Writes, sind rund 12 000 Chunks und ≈ 100 GB
+Speicherkopieren — etwa 6000-fache Verstärkung auf Bytes, die
+der Angreifer nie senden musste, und erreichbar vor dem
+`hello`-Gate, also ganz ohne Mitgliedschaft. Der Decoder hängt
+jetzt an einen Puffer an, den er durch Verdoppeln wachsen lässt:
+jedes Byte wird beim Eintreffen einmal kopiert, die Verstärkung
+ist 1×.
+
+Zwei Grenzen decken ab, was ein unauthentifizierter Socket
+während der Verbindung noch halten darf:
+
+- Ein **unvollständiger Frame** darf 30 Sekunden liegen, ohne
+  dass ein weiteres Byte eintrifft, dann wird die Verbindung
+  geschlossen. Das ist eine Stall-Grenze, kein Budget für den
+  Frame: die Deadline wird bei jedem Chunk neu gestellt, ein
+  Peer mit einem großen Frame auf einer überlasteten Leitung
+  wird also nie für Langsamkeit bestraft — nur fürs Verstummen.
+  Bisher hatten nur *ausgehende* Dials eine Deadline, und die
+  ist bedeutungslos, sobald der Handshake steht.
+- **Eingehende Verbindungen** sind auf 1024 begrenzt. Ein voll
+  vermaschter Cluster braucht eine pro Peer, die Grenze liegt
+  also weit über jeder realistischen Topologie; was sie nimmt,
+  ist die Möglichkeit, die Kosten pro Verbindung durch das
+  Öffnen von Sockets in einer Schleife zu vervielfachen. Die
+  neueste Verbindung wird abgewiesen, statt eine etablierte zu
+  verdrängen — Verdrängung ließe einen Angreifer echte Peers
+  vom Knoten stoßen.
+
+Zusammen begrenzen sie den eingehenden Decode-Speicher
+überhaupt erst: als Produkt der beiden, wobei der Term pro
+Verbindung schon durch `actor-ts.remote.max-frame-bytes`
+gedeckelt ist. Diesen Key zu senken ist auch der Hebel für ein
+Deployment, das nie große Envelopes schickt — die residenten
+Kosten pro Verbindung folgen ihm direkt.
 
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
