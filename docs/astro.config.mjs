@@ -773,6 +773,7 @@ export default defineConfig({
               collapsed: true,
               items: [
                 { label: 'Multi-sink logging', slug: 'observability/logging/multi-sink', translations: { de: 'Multi-Sink-Logging', es: 'Registro multi-sink', fr: 'Journalisation multi-sink', ja: 'マルチシンクロギング', ko: '멀티 싱크 로깅', 'pt-BR': 'Logging multi-sink', ru: 'Многоканальное логирование', 'zh-CN': '多 Sink 日志' } },
+                { label: 'File sink', slug: 'observability/logging/file-sink', translations: { de: 'Datei-Sink', es: 'Sink de archivo', fr: 'Sink fichier', ja: 'ファイルシンク', ko: '파일 싱크', 'pt-BR': 'Sink de arquivo', ru: 'Файловый sink', 'zh-CN': '文件 Sink' } },
               ],
             },
             {

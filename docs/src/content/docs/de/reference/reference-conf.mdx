@@ -56,6 +56,31 @@ actor-ts {
         format    = "text"     # text = human-readable, json = one NDJSON object per record
         stream    = "auto"     # auto | stdout | stderr; auto = console.* for text, stdout for json
       }
+
+      file {
+        enabled   = false
+        min-level = "info"
+        format    = "text"
+        directory = "logs"     # created if missing
+        prefix    = "log"      # file name is <prefix>-<yyyy-MM-dd>-<HH-mm-ss>.<extension>
+        extension = "txt"
+        # Rolling over always opens a NEW stamped file — the active file is
+        # never renamed, which Windows forbids while it is open anyway.
+        max-file-bytes  = 64M      # roll when the file would pass this; 0 = never
+        rotate-interval = "daily"  # off | hourly | daily — roll on the clock boundary
+        # Retention only ever deletes files matching this sink's own prefix,
+        # extension and timestamp shape — never anything else in the directory.
+        max-files        = 14      # keep this many rotated files; 0 = keep all
+        max-age          = 14d     # delete rotated files older than this; 0 = keep all
+        compress-rotated = false   # gzip each rotated file to <name>.gz
+
+        delivery {
+          max-batch-size = 500
+          flush-interval = 1s
+          queue-capacity = 10000
+          overflow       = "drop-new"   # drop-new | drop-head
+        }
+      }
     }
   }
 

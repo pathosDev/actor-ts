@@ -43,6 +43,29 @@ export type {
   DeliveryOverflow,
   ResolvedDeliveryOptions,
 } from './DeliveryOptions.js';
+export { AppendOnlyFile } from './AppendOnlyFile.js';
+export { FileSink } from './FileSink.js';
+export {
+  DEFAULT_FILE_SINK_DIRECTORY,
+  DEFAULT_FILE_SINK_EXTENSION,
+  DEFAULT_FILE_SINK_FORMAT,
+  DEFAULT_FILE_SINK_MAX_AGE_MS,
+  DEFAULT_FILE_SINK_MAX_FILES,
+  DEFAULT_FILE_SINK_MAX_FILE_BYTES,
+  DEFAULT_FILE_SINK_MIN_LEVEL,
+  DEFAULT_FILE_SINK_PREFIX,
+  DEFAULT_FILE_SINK_ROTATE_INTERVAL,
+  FileSinkOptions,
+  FileSinkOptionsBuilder,
+  FileSinkOptionsValidator,
+  isFileSinkEnabled,
+  readFileSinkOptionsFromConfig,
+} from './FileSinkOptions.js';
+export type {
+  FileRotateInterval,
+  FileSinkFormat,
+  FileSinkOptionsType,
+} from './FileSinkOptions.js';
 export { jsonSafeReplacer, normaliseArg } from './JsonSafe.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
