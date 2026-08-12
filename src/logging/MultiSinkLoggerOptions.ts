@@ -1,6 +1,7 @@
-import { LogLevel } from '../Logger.js';
+import type { LogLevel } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { isLogLevel, LOG_LEVEL_REASON } from './LogLevelName.js';
 import type { LogRecordTransform } from './LogRecord.js';
 import type { LogSink } from './LogSink.js';
 
@@ -73,7 +74,9 @@ export class MultiSinkLoggerOptionsValidator extends OptionsValidator<MultiSinkL
   }
 
   protected rules(s: Partial<MultiSinkLoggerOptionsType>): void {
-    this.oneOf('level', [LogLevel.Debug, LogLevel.Info, LogLevel.Warn, LogLevel.Error, LogLevel.Off]);
+    if (s.level !== undefined && !isLogLevel(s.level)) {
+      this.fail('level', LOG_LEVEL_REASON, s.level);
+    }
     this.positiveInt('closeTimeoutMs');
     if (s.sinks !== undefined && !Array.isArray(s.sinks)) {
       this.fail('sinks', 'must be an array of LogSink', s.sinks);

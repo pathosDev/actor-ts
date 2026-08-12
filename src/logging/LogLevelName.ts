@@ -44,3 +44,18 @@ export function parseLogLevel(raw: string): LogLevel | undefined {
 export function logLevelName(level: LogLevel): LogLevelName {
   return BY_LEVEL[level] ?? 'info';
 }
+
+/** Whether a value is one of the five `LogLevel` members. */
+export function isLogLevel(value: unknown): value is LogLevel {
+  return typeof value === 'number' && value in BY_LEVEL;
+}
+
+/**
+ * The rejection reason an options validator uses for a level field.
+ *
+ * Levels reach a validator as numbers, so the generic `oneOf` helper would
+ * report `must be one of 0, 1, 2, 3, 100` — true, and useless to whoever
+ * wrote `min-level = "warning"` in a config file.  Naming the accepted
+ * spellings is the whole point of the message.
+ */
+export const LOG_LEVEL_REASON = `must be one of ${LOG_LEVEL_NAMES.join(', ')}`;

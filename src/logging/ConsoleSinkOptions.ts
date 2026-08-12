@@ -1,6 +1,10 @@
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Config } from '../config/Config.js';
 import { LogLevel } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { isLogLevel, LOG_LEVEL_REASON } from './LogLevelName.js';
+import { isSinkEnabled, readSinkMinLevel, sinkLeaf } from './SinkConfig.js';
 
 /** How a {@link ConsoleSink} renders each record. */
 export type ConsoleSinkFormat = 'text' | 'json';
@@ -62,11 +66,39 @@ export class ConsoleSinkOptionsValidator extends OptionsValidator<ConsoleSinkOpt
     super('ConsoleSinkOptions');
   }
 
-  protected rules(_s: Partial<ConsoleSinkOptionsType>): void {
-    this.oneOf('minLevel', [LogLevel.Debug, LogLevel.Info, LogLevel.Warn, LogLevel.Error, LogLevel.Off]);
+  protected rules(s: Partial<ConsoleSinkOptionsType>): void {
+    if (s.minLevel !== undefined && !isLogLevel(s.minLevel)) {
+      this.fail('minLevel', LOG_LEVEL_REASON, s.minLevel);
+    }
     this.oneOf('format', ['text', 'json']);
     this.oneOf('stream', ['auto', 'stdout', 'stderr']);
   }
+}
+
+/** Whether `actor-ts.logger.sinks.console.enabled` asks for this sink. */
+export function isConsoleSinkEnabled(config: Config): boolean {
+  return isSinkEnabled(config, ConfigKeys.logger.sinks.console);
+}
+
+/**
+ * Read `actor-ts.logger.sinks.console.*`.  Only keys actually present are
+ * returned, so an absent one falls through to the built-in default instead
+ * of landing as an explicit `undefined`.
+ */
+export function readConsoleSinkOptionsFromConfig(config: Config): Partial<ConsoleSinkOptionsType> {
+  const root = ConfigKeys.logger.sinks.console;
+  const out: { -readonly [K in keyof ConsoleSinkOptionsType]?: ConsoleSinkOptionsType[K] } = {};
+  const minLevel = readSinkMinLevel(config, root);
+  if (minLevel !== undefined) out.minLevel = minLevel;
+  // Enum leaves are read as-is; an unknown value is rejected by the
+  // validator, which names the field, rather than silently defaulting.
+  if (config.hasPath(sinkLeaf(root, 'format'))) {
+    out.format = config.getString(sinkLeaf(root, 'format')) as ConsoleSinkFormat;
+  }
+  if (config.hasPath(sinkLeaf(root, 'stream'))) {
+    out.stream = config.getString(sinkLeaf(root, 'stream')) as ConsoleSinkStream;
+  }
+  return out;
 }
 
 /**

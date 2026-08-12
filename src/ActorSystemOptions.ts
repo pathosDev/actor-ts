@@ -15,6 +15,7 @@ import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
+import type { LogSink } from './logging/LogSink.js';
 import type { Scheduler } from './Scheduler.js';
 import type { Journal } from './persistence/Journal.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
@@ -23,6 +24,16 @@ import { OptionsBuilder } from './util/OptionsBuilder.js';
 /** Plain options-object shape accepted by {@link ActorSystem.create}. */
 export type ActorSystemOptionsType = {
   readonly logger?: Logger;
+  /**
+   * Log destinations — the system wraps them in a `MultiSinkLogger`,
+   * attaches them to its scheduler, and flushes them on `terminate()`.
+   *
+   * The shorthand for the common case; `logger` still wins when both are
+   * given.  Setting either one replaces the `actor-ts.logger.sinks.*`
+   * block wholesale rather than merging with it: a sink is configured in
+   * code or in HOCON, never half in each.
+   */
+  readonly logSinks?: readonly LogSink[];
   readonly logLevel?: LogLevel;
   readonly dispatcher?: Dispatcher;
   /** Inject a custom scheduler — typically a ManualScheduler in tests. */
@@ -72,6 +83,14 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
   /** System logger.  Overrides the HOCON/console default. */
   withLogger(logger: Logger): this {
     return this.set('logger' as keyof T, logger as T[keyof T]);
+  }
+
+  /**
+   * Log destinations, wrapped in a `MultiSinkLogger` by the system.
+   * Ignored if `withLogger` is set.
+   */
+  withLogSinks(logSinks: readonly LogSink[]): this {
+    return this.set('logSinks' as keyof T, logSinks as T[keyof T]);
   }
 
   /** Minimum log level for the default console logger (ignored if `withLogger` is set). */

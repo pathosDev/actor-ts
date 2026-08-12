@@ -124,6 +124,39 @@ export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } f
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
 export type { LogContextData, LogContextEntry } from './LogContext.js';
+export {
+  ConsoleSink,
+  ConsoleSinkOptions,
+  ConsoleSinkOptionsBuilder,
+  ConsoleSinkOptionsValidator,
+  DEFAULT_CONSOLE_SINK_FORMAT,
+  DEFAULT_CONSOLE_SINK_MIN_LEVEL,
+  DEFAULT_CONSOLE_SINK_STREAM,
+  DEFAULT_SINK_CLOSE_TIMEOUT_MS,
+  LOG_LEVEL_NAMES,
+  MultiSinkLogger,
+  MultiSinkLoggerOptions,
+  MultiSinkLoggerOptionsBuilder,
+  MultiSinkLoggerOptionsValidator,
+  SinkReporter,
+  buildLoggerFromConfig,
+  formatJsonLine,
+  formatTextLine,
+  logLevelName,
+  parseLogLevel,
+  readLoggerLevelFromConfig,
+} from './logging/index.js';
+export type {
+  ConsoleSinkFormat,
+  ConsoleSinkOptionsType,
+  ConsoleSinkStream,
+  LogLevelName,
+  LogRecord,
+  LogRecordTransform,
+  LogSink,
+  LogSinkContext,
+  MultiSinkLoggerOptionsType,
+} from './logging/index.js';
 
 // Metrics — Counter / Gauge / Histogram + Prometheus exposition (#11).
 export {

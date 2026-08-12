@@ -33,6 +33,16 @@ export const ConfigKeys = {
   /** Logger root — `actor-ts.logger.*`. */
   logger: {
     level: 'actor-ts.logger.level',
+    closeTimeout: 'actor-ts.logger.close-timeout',
+    /**
+     * One block root per sink.  Each is read as a *block* by the matching
+     * `readXSinkOptionsFromConfig`, so the leaves under it (`enabled`,
+     * `min-level`, …) need no entry of their own — the same shape the
+     * cache and persistence plugin roots use.
+     */
+    sinks: {
+      console: 'actor-ts.logger.sinks.console',
+    },
   },
 
   /** Dispatcher root — `actor-ts.dispatcher.*`. */

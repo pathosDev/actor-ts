@@ -13,7 +13,10 @@ import {
   ThroughputDispatcher,
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
-import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
+import { ConsoleLogger, Logger } from './Logger.js';
+import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
+import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
+import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
 import { Scheduler } from './Scheduler.js';
@@ -57,6 +60,8 @@ export class ActorSystem {
   readonly scheduler: Scheduler;
   readonly eventStream: EventStream;
   readonly log: Logger;
+  /** How long `terminate()` waits for the logger to flush and close. */
+  private readonly loggerCloseTimeoutMs: number;
   readonly deadLetters: ActorRef;
   /** Full merged configuration in effect for this system. */
   readonly config: Config;
@@ -116,8 +121,13 @@ export class ActorSystem {
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
     this.scheduler = options.scheduler ?? new Scheduler();
     this.eventStream = new EventStream();
-    this.log = options.logger
-      ?? new ConsoleLogger(options.logLevel ?? logLevelFromConfig(this.config));
+    this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
+    this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
+    // Sinks are built before any system exists, so anything system-shaped —
+    // the scheduler a batching sink ticks on, the name a remote sink sends
+    // as its service identity — has to reach them here.  Structural, so a
+    // third-party logger that grew an `attach` benefits too.
+    attachLogger(this.log, { scheduler: this.scheduler, systemName: this.name });
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
@@ -431,7 +441,21 @@ export class ActorSystem {
     this.scheduler.shutdown();
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
-    for (const resolve of resolvers) resolve();
+    const finish = (): void => { for (const resolve of resolvers) resolve(); };
+
+    // Flush the log sinks before anyone learns the system is down.  This is
+    // the only seam that catches both shutdown paths: `CoordinatedShutdown`
+    // ends by calling `terminate()`, so a task registered in a phase would
+    // miss every program that terminates directly.  It also runs *after*
+    // every `postStop`, so a last message from a stopping actor is still in
+    // the queue being drained.  Structural, so any logger with a `close()`
+    // is flushed — not just the framework's own.
+    const closeLogger = closeOf(this.log);
+    if (closeLogger === undefined) {
+      finish();
+      return;
+    }
+    void withinBudget(closeLogger, this.loggerCloseTimeoutMs).then(finish, finish);
   }
 }
 
@@ -457,16 +481,79 @@ function systemNameFromConfig(config: Config): string {
     : 'default';
 }
 
-function logLevelFromConfig(config: Config): LogLevel {
-  if (!config.hasPath(ConfigKeys.logger.level)) return LogLevel.Info;
-  const raw = config.getString(ConfigKeys.logger.level).toLowerCase();
-  return match(raw)
-    .with('debug', () => LogLevel.Debug)
-    .with('info',  () => LogLevel.Info)
-    .with('warn',  () => LogLevel.Warn)
-    .with('error', () => LogLevel.Error)
-    .with('off',   () => LogLevel.Off)
-    .otherwise(() => LogLevel.Info);
+/* ----------------------------- Logger helpers ----------------------------- */
+
+/**
+ * Pick the system logger.  Precedence is **atomic**: an explicit `logger`
+ * wins outright, then an explicit `logSinks` list, then the sinks enabled
+ * in HOCON, then the historical single `ConsoleLogger`.  Code and config
+ * never merge into one sink set — a half-configured destination is worse
+ * than either whole answer, and merging would mean validating options
+ * somewhere other than the constructor that owns them.
+ */
+function resolveLogger(
+  options: ActorSystemOptionsType,
+  config: Config,
+  closeTimeoutMs: number,
+): Logger {
+  if (options.logger !== undefined) return options.logger;
+  const level = options.logLevel ?? readLoggerLevelFromConfig(config);
+  if (options.logSinks !== undefined) {
+    return new MultiSinkLogger({ sinks: options.logSinks, level, closeTimeoutMs });
+  }
+  return buildLoggerFromConfig(config, { level, closeTimeoutMs }) ?? new ConsoleLogger(level);
+}
+
+function loggerCloseTimeoutFromConfig(config: Config): number {
+  return config.hasPath(ConfigKeys.logger.closeTimeout)
+    ? config.getDuration(ConfigKeys.logger.closeTimeout)
+    : DEFAULT_SINK_CLOSE_TIMEOUT_MS;
+}
+
+/** A logger's `attach`, if it has one — a structural, not nominal, check. */
+function attachLogger(log: Logger, context: { scheduler: Scheduler; systemName: string }): void {
+  const attach = (log as Partial<MultiSinkLogger>).attach;
+  if (typeof attach !== 'function') return;
+  try {
+    attach.call(log, context);
+  } catch (error) {
+    // Attaching is a courtesy, not a precondition: a sink that refuses it
+    // still logs, just without a scheduler.  Reported the way everything
+    // underneath logging reports — the logger itself is the thing at fault.
+    console.error('[actor-ts] log sink attach failed:', error);
+  }
+}
+
+/** A logger's `close`, bound, if it has one. */
+function closeOf(log: Logger): (() => Promise<void>) | undefined {
+  const close = (log as Partial<MultiSinkLogger>).close;
+  return typeof close === 'function' ? () => close.call(log) : undefined;
+}
+
+/**
+ * Run `operation` with a hard deadline.  A raw `setTimeout` because the
+ * scheduler is already shut down by the time this runs, and deliberately
+ * not `unref`'d: the loop is empty at that point, and an unreferenced timer
+ * in an empty loop is not guaranteed to fire — the timeout that exists to
+ * break a hang would hang.  It is cleared in the `finally`.
+ */
+async function withinBudget(operation: () => Promise<void>, budgetMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve(operation()),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          console.error(`[actor-ts] logger close timed out after ${budgetMs} ms; some records may be lost`);
+          resolve();
+        }, budgetMs);
+      }),
+    ]);
+  } catch (error) {
+    console.error('[actor-ts] logger close failed:', error);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function dispatcherFromConfig(config: Config): Dispatcher {
