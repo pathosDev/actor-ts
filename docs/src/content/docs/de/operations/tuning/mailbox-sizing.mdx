@@ -159,12 +159,12 @@ Dieselbe 10 000er-Schwelle erzeugt eine Log-Warnung, wiederholt bei
 jeder Verdopplung, unabhängig davon ob Metriken aktiv sind. Auf diese
 Zeile alarmierst du, wenn du keinen Metrik-Stack betreibst.
 
-<Aside type="note" title="Eine selbst gelieferte Mailbox meldet keine Drops">
-  `actor_mailbox_dropped_total` verdrahtet das Framework — und zwar nur
-  in die Mailbox, die es selbst gebaut hat, also die aus
-  `withMailboxCapacity`. Eine `BoundedMailbox`, die du selbst
-  konstruierst und an `withMailbox` übergibst, führt ihren eigenen
-  `droppedCount`, aber niemand liest ihn für dich.
+<Aside type="note" title="Jede Mailbox meldet, auch deine eigene">
+  `actor_mailbox_dropped_total` deckt die Mailbox aus
+  `withMailboxCapacity` und die selbst gebaute aus `withMailbox`
+  gleichermaßen ab — die Cell registriert ihren Observer auf allem, was
+  `DropReportingMailbox` implementiert. Ein eigenes
+  `BoundedMailboxOptions.onDrop` feuert weiter daneben.
 </Aside>
 
 ## Die drei Overflow-Policies im Vergleich

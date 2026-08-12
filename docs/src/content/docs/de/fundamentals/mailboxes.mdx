@@ -96,11 +96,35 @@ const triageOptions = ActorOptions.create()
 system.spawn(Triage, 'triage', triageOptions);
 ```
 
-Eine so gelieferte Mailbox gehört ganz dir: das Framework verdrahtet
-nichts hinein, ihre Drops erreichen also **nicht**
-`actor_mailbox_dropped_total`.  Wenn du einen einfachen Bound samt
-Telemetrie willst, nimm `withMailboxCapacity`.  Beides zu kombinieren
-ist ein Konfigurationsfehler, keine stille Vorrangregel.
+Die Mailbox gehört dir, ihre Drops werden trotzdem gezählt: die Cell
+registriert einen Observer auf dem, was du zurückgibst — sofern es
+`DropReportingMailbox` implementiert.  `BoundedMailbox` tut das, und eine
+eigene `Mailbox`-Subklasse kann es mit einer Methode:
+
+```ts
+import { Mailbox, type Envelope, type MailboxDropReason } from 'actor-ts';
+
+class SheddingMailbox<T> extends Mailbox<T> {
+  private readonly observers: Array<(reason: MailboxDropReason) => void> = [];
+
+  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+    this.observers.push(observer);
+  }
+
+  override enqueue(envelope: Envelope<T>): void {
+    if (this.shouldShed()) {
+      for (const observer of this.observers) observer('drop-new');
+      return;
+    }
+    super.enqueue(envelope);
+  }
+}
+```
+
+Das Registrieren ist additiv, ein eigenes `BoundedMailboxOptions.onDrop`
+feuert also weiter neben dem Standard-Counter.  Was nicht geht, ist
+`withMailbox` mit `withMailboxCapacity` zu kombinieren — das ist ein
+Konfigurationsfehler, keine stille Vorrangregel.
 
 ## System-Nachrichten kommen immer zuerst
 

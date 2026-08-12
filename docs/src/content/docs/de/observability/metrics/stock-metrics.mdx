@@ -53,11 +53,12 @@ unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
 dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
 Verdopplung), unabhängig davon ob Metriken aktiv sind.
 
-`actor_mailbox_dropped_total` ist das **Abwurf**-Signal und taucht nur
-für Actors auf, die jemand mit `withMailboxCapacity` begrenzt hat — das
-`reason`-Label hält die ausgelöste Overflow-Policy fest (`drop-head` /
-`drop-new`). Eine `BoundedMailbox`, die du selbst konstruierst und an
-`withMailbox` übergibst, ist nicht an diesen Counter verdrahtet.
+`actor_mailbox_dropped_total` ist das **Abwurf**-Signal und taucht nur für
+Actors auf, deren Mailbox etwas verwirft — da der Default unbounded ist,
+also für Actors, die jemand bewusst begrenzt hat. Das `reason`-Label hält
+die ausgelöste Policy fest (`drop-head` / `drop-new`). Beide Wege, zu
+begrenzen, sind abgedeckt: `withMailboxCapacity` und eine selbst gebaute
+Mailbox aus `withMailbox`.
 
 ## Cluster-Metriken
 

@@ -116,6 +116,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   exported from the package root — the escape hatch the docs described was
   previously impossible to import (#661).
 
+- **Every mailbox reports its drops, not just the one the framework built**
+  (#1149).  `actor_mailbox_dropped_total` was fed by an `onDrop` the cell
+  passed into the `BoundedMailbox` it constructed, so a mailbox supplied
+  through `withMailbox` was invisible to it.  That was a corner while the
+  default was bounded; #1148 made bounding an opt-in and both ways of opting
+  in equally idiomatic, so it became a trap.
+
+  The cell now registers its observer *after* choosing the mailbox, on
+  anything implementing the new `DropReportingMailbox` contract —
+  `BoundedMailbox` does, and a `Mailbox` subclass of your own can by adding
+  `observeDrops`.  A structural probe rather than an `instanceof` check,
+  because #661 made the base class public and a queue that discards for its
+  own reasons should not be second-class in the telemetry.
+
+  Registration is **additive**: a `BoundedMailboxOptions.onDrop` of your own
+  keeps firing alongside the stock counter.  New exports:
+  `DropReportingMailbox` and `MailboxDropReason`, the latter now naming the
+  `'drop-head' | 'drop-new'` union that was written inline in four places.
+
 - **Three of the framework's own identifier draws go through the `exists`
   predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
   twelve identifiers; the interesting result of the survey is that only three

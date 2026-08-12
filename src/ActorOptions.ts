@@ -68,13 +68,14 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
    * Custom mailbox — `PriorityMailbox`, or a `BoundedMailbox` configured
-   * beyond what `mailboxCapacity` / `mailboxOverflow` express.  Omit for the
-   * default unbounded FIFO queue.
+   * beyond what `mailboxCapacity` / `mailboxOverflow` express, or a
+   * `Mailbox` subclass of your own.  Omit for the default unbounded FIFO
+   * queue.
    *
-   * The cell wires nothing into a mailbox supplied here, so a
-   * `BoundedMailbox` built this way does not report to
-   * `actor_mailbox_dropped_total` — pass `withMailboxCapacity` instead if
-   * you want the drop telemetry.
+   * Drops still reach `actor_mailbox_dropped_total`: the cell registers its
+   * observer on whatever you return, provided the mailbox implements
+   * `DropReportingMailbox` (`BoundedMailbox` does).  Any `onDrop` of your own
+   * keeps firing alongside it.
    */
   readonly mailbox?: MailboxFactory<TMessage>;
   /**
