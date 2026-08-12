@@ -218,6 +218,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   live in the SDK, and a hand-rolled transport would duplicate them badly
   or lose them.
 
+- **`LokiSink` — Grafana Loki's native push API** (#1158).  A batch becomes
+  one push to `/loki/api/v1/push` in plain JSON, which Loki accepts as an
+  alternative to snappy-compressed protobuf.
+
+  **Labels are static by construction.**  They are Loki's index, and a
+  per-record value in there multiplies streams without bound — the standard
+  way to make a Loki cluster unusable — so the options type does not accept
+  one.  Variable data (the actor path, the fields, the level) goes into
+  structured metadata, which Loki stores per entry instead of indexing.
+  `service` defaults to the actor system's name.
+
+  Timestamps are nanosecond strings: Loki answers a JSON number with a 400.
+  `nanosecondsOf` moved to its own module now that two sinks need it.
+
+  Loki 3+ also ingests OTLP, so `OtlpHttpSink` reaches it too — this sink
+  is for direct push and explicit label control.
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
 import { LogLevel } from '../../../src/Logger.js';
-import { nanosecondsOf, OtlpHttpSink } from '../../../src/logging/OtlpHttpSink.js';
+import { OtlpHttpSink } from '../../../src/logging/OtlpHttpSink.js';
+import { nanosecondsOf } from '../../../src/logging/Timestamps.js';
 import { OtlpHttpSinkOptions } from '../../../src/logging/OtlpHttpSinkOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { FetchLike } from '../../../src/logging/HttpDelivery.js';

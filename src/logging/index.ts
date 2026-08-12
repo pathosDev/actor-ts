@@ -135,6 +135,19 @@ export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';
 export { buildLoggerFromConfig, readLoggerLevelFromConfig } from './LoggerFromConfig.js';
+export { LokiSink } from './LokiSink.js';
+export {
+  DEFAULT_LOKI_MIN_LEVEL,
+  DEFAULT_LOKI_REQUEST_TIMEOUT_MS,
+  LOKI_LABEL_PATTERN,
+  LokiSinkOptions,
+  LokiSinkOptionsBuilder,
+  LokiSinkOptionsValidator,
+  isLokiSinkEnabled,
+  readLokiSinkOptionsFromConfig,
+} from './LokiSinkOptions.js';
+export type { LokiLineFormat, LokiSinkOptionsType } from './LokiSinkOptions.js';
+export { nanosecondsOf } from './Timestamps.js';
 export type { LogRecord, LogRecordTransform } from './LogRecord.js';
 export type { LogSink, LogSinkContext } from './LogSink.js';
 export { MultiSinkLogger } from './MultiSinkLogger.js';
