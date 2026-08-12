@@ -768,6 +768,14 @@ export default defineConfig({
               ],
             },
             {
+              label: 'Logging',
+              translations: { de: 'Logging', es: 'Registro', fr: 'Journalisation', ja: 'ロギング', ko: '로깅', 'pt-BR': 'Logging', ru: 'Логирование', 'zh-CN': '日志' },
+              collapsed: true,
+              items: [
+                { label: 'Multi-sink logging', slug: 'observability/logging/multi-sink', translations: { de: 'Multi-Sink-Logging', es: 'Registro multi-sink', fr: 'Journalisation multi-sink', ja: 'マルチシンクロギング', ko: '멀티 싱크 로깅', 'pt-BR': 'Logging multi-sink', ru: 'Многоканальное логирование', 'zh-CN': '多 Sink 日志' } },
+              ],
+            },
+            {
               label: 'Tracing',
               translations: { de: 'Tracing', es: 'Trazado', fr: 'Tracing', ja: 'トレーシング', ko: '트레이싱', 'pt-BR': 'Tracing', ru: 'Трассировка', 'zh-CN': '链路追踪' },
               collapsed: true,
