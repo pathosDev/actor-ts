@@ -247,8 +247,13 @@ export class JsonLogger implements Logger {
  * non-empty string counts: `LogContextData` also admits numbers and
  * booleans, and a `displayName=42` in the head would read as a rendering
  * bug rather than as the name someone chose.
+ *
+ * Exported for the multi-sink pipeline, which lifts the name into
+ * `LogRecord.displayName` under exactly this rule.  Not re-exported from
+ * the package root: it is an internal detail of how the field is read, not
+ * API.
  */
-function displayNameOf(fields: LogContextData): string {
+export function displayNameOf(fields: LogContextData): string {
   const value = fields[DISPLAY_NAME_FIELD];
   return typeof value === 'string' ? value : '';
 }

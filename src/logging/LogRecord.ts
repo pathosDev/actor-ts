@@ -47,10 +47,15 @@ export type LogRecord = {
    */
   readonly displayName?: string;
   /**
-   * Extra positional arguments, already through `normaliseArg` so an
-   * `Error` is a plain `{ name, message, stack }` object rather than the
-   * `{}` a bare `JSON.stringify` would produce.  Absent when none were
-   * passed, so a sink can skip the key entirely.
+   * Extra positional arguments, exactly as the caller passed them —
+   * **not** normalised.  A structured sink runs them through
+   * `normaliseArg` on its way to JSON (an `Error` would otherwise
+   * serialise to `{}`), while the console sink hands them to `console.*`
+   * untouched so the runtime can render an `Error` with its stack and an
+   * object as an inspectable preview.  Normalising here would take that
+   * away from every console.
+   *
+   * Absent when none were passed, so a sink can skip the key entirely.
    */
   readonly args?: readonly unknown[];
 };
