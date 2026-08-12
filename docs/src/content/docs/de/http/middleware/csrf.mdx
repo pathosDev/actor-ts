@@ -35,20 +35,53 @@ einsetzt. Der Browser sendet es beim nächsten unsicheren Request im
 | `withHeaderName(n)` | `headerName` | `'x-csrf-token'` |
 | `withCookie(attrs)` | `cookie` | `Path=/`, `Secure`, `SameSite=Lax` |
 | `withVerifyOrigin(flag?)` | `verifyOrigin` | `true` — zusätzlich Origin/Referer prüfen |
-| `withAllowedOrigins(...o)` | `allowedOrigins` | zusätzlich akzeptierte Origins |
+| `withAllowedOrigins(...o)` | `allowedOrigins` | zusätzlich akzeptierte **vollständige** Origins |
+| `withExpectedScheme(s)` | `expectedScheme` | `'https'` — bzw. `'http'`, wenn das Cookie nicht `Secure` ist |
 | `withFormField(name)` | `formFieldName` | aus — das Token auch aus einem urlencoded Body-Feld lesen |
+
+## Was „same origin“ hier bedeutet
+
+Der Origin-Check vergleicht **vollständige Origins** — Scheme, Host und Port
+— auf beiden Armen: die eigene Origin des Requests und jeden
+`allowedOrigins`-Eintrag. `https://app.example` akzeptiert also weder
+`http://app.example` noch `https://app.example:8443`, und ein `Origin: null`
+(eine opake Origin, z. B. aus einem sandboxed iframe) wird immer abgewiesen.
+
+Ein Request nennt seinen Host im `Host`-Header, aber niemals sein Scheme —
+TLS kann am Proxy terminieren, und ein weitergereichter Scheme-Header wird
+vom Client gesetzt, ist also nicht vertrauenswürdig. `expectedScheme`
+liefert diese fehlende Hälfte. Default ist `'https'`; `csrfProtection` liest
+stattdessen `'http'`, wenn du das `Secure`-Cookie-Attribut ausdrücklich
+abschaltest — denn damit ist ein Klartext-HTTP-Betrieb bereits erklärt:
+
+```ts
+const csrfOptions = CsrfOptions.create()
+  .withSecret(process.env.CSRF_SECRET!)
+  // Local dev over plain HTTP — both halves belong together.
+  .withCookie({ secure: false });
+```
+
+Einträge in `allowedOrigins` müssen vollständige Origins sein
+(`'https://partner.example'`, nicht `'partner.example'`); alles andere wirft
+beim Bauen der Middleware einen `OptionsError`, weil es nie passen könnte.
 
 ## Die leichtgewichtige Alternative — `requireSameOrigin`
 
 Brauchst du nur Schutz für moderne Browser, weist `requireSameOrigin()`
-unsichere-Methoden-Requests ab, deren `Origin`/`Referer`-Host nicht der
-Request-Host ist:
+unsichere-Methoden-Requests ab, deren `Origin`/`Referer` nicht die eigene
+Origin des Requests ist:
 
 ```ts
 import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
 
 const routes = withMiddleware(requireSameOrigin(), appRoutes);
 ```
+
+Es nimmt dieselben `allowedOrigins` und `expectedScheme` (plus
+`allowMissingOrigin`) mit demselben `'https'`-Default — eine
+Klartext-HTTP-Seite braucht
+`SameOriginOptions.create().withExpectedScheme('http')`, denn hier gibt es
+kein Cookie, aus dem sich das ableiten ließe.
 
 `csrfProtection` ist die Doppel-Absicherung (es führt diesen Check ebenfalls
 aus); `requireSameOrigin` allein ist leichter, verlässt sich aber darauf,

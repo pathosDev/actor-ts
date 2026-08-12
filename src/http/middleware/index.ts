@@ -22,8 +22,15 @@ export type { CorsOptionsType, CorsOrigin } from './CorsOptions.js';
 
 // CSRF — stateless double-submit + the lightweight same-origin check.
 export { csrfProtection, requireSameOrigin, readCsrfToken } from './Csrf.js';
-export { CsrfOptions, CsrfOptionsBuilder, CsrfOptionsValidator, SameOriginOptions, SameOriginOptionsBuilder } from './CsrfOptions.js';
-export type { CsrfOptionsType, CsrfCookieOptions, SameOriginOptionsType } from './CsrfOptions.js';
+export {
+  CsrfOptions,
+  CsrfOptionsBuilder,
+  CsrfOptionsValidator,
+  SameOriginOptions,
+  SameOriginOptionsBuilder,
+  SameOriginOptionsValidator,
+} from './CsrfOptions.js';
+export type { CsrfOptionsType, CsrfCookieOptions, OriginScheme, SameOriginOptionsType } from './CsrfOptions.js';
 
 // Request id, HTTP Basic auth, request timeout.
 export { requestId, requestIdOf } from './RequestId.js';

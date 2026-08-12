@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { csrfProtection, readCsrfToken, requireSameOrigin } from '../../../../src/http/middleware/Csrf.js';
-import { CsrfOptions } from '../../../../src/http/middleware/CsrfOptions.js';
+import { CsrfOptions, SameOriginOptions } from '../../../../src/http/middleware/CsrfOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
 
@@ -74,6 +74,28 @@ describe('csrfProtection', () => {
     }), async () => ok)).rejects.toThrow(/CSRF verification failed/);
   });
 
+  // #604 — the origin gate compares whole origins, so a plaintext origin is
+  // NOT the request's own origin for a (default) HTTPS site.
+  test('an http:// origin is cross-origin for an https:// site', async () => {
+    const mw = csrfProtection({ secret: SECRET });
+    const token = await mint(mw);
+    const pair = { cookie: `csrf-token=${token}`, 'x-csrf-token': token, host: 'app.example' };
+    await expect(mw(request('POST', { ...pair, origin: 'http://app.example' }), async () => ok))
+      .rejects.toThrow(/CSRF verification failed/);
+    expect((await mw(request('POST', { ...pair, origin: 'https://app.example' }), async () => ok)).status).toBe(Status.OK);
+  });
+
+  test('a plain-HTTP app (non-Secure cookie) expects http:// origins instead', async () => {
+    const mw = csrfProtection(CsrfOptions.create()
+      .withSecret(SECRET)
+      .withCookie({ secure: false }));
+    const token = await mint(mw);
+    const pair = { cookie: `csrf-token=${token}`, 'x-csrf-token': token, host: 'app.example' };
+    expect((await mw(request('POST', { ...pair, origin: 'http://app.example' }), async () => ok)).status).toBe(Status.OK);
+    await expect(mw(request('POST', { ...pair, origin: 'https://app.example' }), async () => ok))
+      .rejects.toThrow(/CSRF verification failed/);
+  });
+
   test('reads the token from a urlencoded form field when configured', async () => {
     const mw = csrfProtection(CsrfOptions.create().withSecret(SECRET).withFormField('_csrf'));
     const token = await mint(mw);
@@ -118,5 +140,51 @@ describe('requireSameOrigin', () => {
   test('falls back to the Referer host', async () => {
     const mw = requireSameOrigin();
     expect((await mw(request('POST', { referer: 'https://app.example/page', host: 'app.example' }), async () => ok)).status).toBe(200);
+  });
+
+  // #604 — the whole origin is compared, not just the host.
+  test('a same-host POST on another scheme is rejected', async () => {
+    const mw = requireSameOrigin();
+    await expect(mw(request('POST', { origin: 'http://app.example', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+    // Any scheme that parses an authority used to pass the host compare.
+    await expect(mw(request('POST', { origin: 'foo://app.example', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+    await expect(mw(request('POST', { origin: 'null', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+  });
+
+  test('expectedScheme names the scheme the site is served over', async () => {
+    const sameOriginOptions = SameOriginOptions.create().withExpectedScheme('http');
+    const mw = requireSameOrigin(sameOriginOptions);
+    expect((await mw(request('POST', { origin: 'http://app.example', host: 'app.example' }), async () => ok)).status).toBe(200);
+    await expect(mw(request('POST', { origin: 'https://app.example', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+  });
+
+  test('an allowlisted origin is matched whole — scheme included, case and default port normalised', async () => {
+    const sameOriginOptions = SameOriginOptions.create().withAllowedOrigins('https://Partner.example/', 'https://other.example:8443');
+    const mw = requireSameOrigin(sameOriginOptions);
+    const pass = async (origin: string): Promise<number> =>
+      (await mw(request('POST', { origin, host: 'app.example' }), async () => ok)).status;
+    expect(await pass('https://partner.example')).toBe(200);
+    expect(await pass('https://partner.example:443')).toBe(200);
+    expect(await pass('https://other.example:8443')).toBe(200);
+    // The host-only fallback that used to accept these is gone.
+    await expect(mw(request('POST', { origin: 'http://partner.example', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+    await expect(mw(request('POST', { origin: 'https://other.example', host: 'app.example' }), async () => ok))
+      .rejects.toThrow(HttpError);
+  });
+
+  test('a case-differing Host header still matches its own origin', async () => {
+    const mw = requireSameOrigin();
+    expect((await mw(request('POST', { origin: 'https://app.example', host: 'APP.example' }), async () => ok)).status).toBe(200);
+    expect((await mw(request('POST', { origin: 'https://app.example', host: 'app.example:443' }), async () => ok)).status).toBe(200);
+  });
+
+  test('an allowedOrigins entry that is not a full origin is rejected at construction', () => {
+    expect(() => requireSameOrigin({ allowedOrigins: ['app.example'] })).toThrow(/allowedOrigins/);
+    expect(() => requireSameOrigin({ expectedScheme: 'ftp' as never })).toThrow(/expectedScheme/);
   });
 });

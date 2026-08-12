@@ -34,19 +34,52 @@ unsafe request.
 | `withHeaderName(n)` | `headerName` | `'x-csrf-token'` |
 | `withCookie(attrs)` | `cookie` | `Path=/`, `Secure`, `SameSite=Lax` |
 | `withVerifyOrigin(flag?)` | `verifyOrigin` | `true` — also check Origin/Referer |
-| `withAllowedOrigins(...o)` | `allowedOrigins` | extra accepted origins |
+| `withAllowedOrigins(...o)` | `allowedOrigins` | extra accepted **full** origins |
+| `withExpectedScheme(s)` | `expectedScheme` | `'https'` — or `'http'` when the cookie is not `Secure` |
 | `withFormField(name)` | `formFieldName` | off — read the token from a urlencoded body field too |
+
+## What "same origin" means here
+
+The origin check compares **whole origins** — scheme, host and port — on
+both arms: the request's own origin and every `allowedOrigins` entry. So
+`https://app.example` accepts neither `http://app.example` nor
+`https://app.example:8443`, and an `Origin: null` (an opaque origin, e.g. a
+sandboxed iframe) is always rejected.
+
+A request tells you its host, in the `Host` header, but never its scheme —
+TLS may terminate at a proxy, and a forwarded scheme header is set by the
+client, so it isn't trusted. `expectedScheme` supplies that missing half.
+It defaults to `'https'`; `csrfProtection` reads `'http'` instead when you
+explicitly turn off the `Secure` cookie attribute, since that already
+declares a plain-HTTP deployment:
+
+```ts
+const csrfOptions = CsrfOptions.create()
+  .withSecret(process.env.CSRF_SECRET!)
+  // Local dev over plain HTTP — both halves belong together.
+  .withCookie({ secure: false });
+```
+
+Entries of `allowedOrigins` must be full origins (`'https://partner.example'`,
+not `'partner.example'`); anything else throws an `OptionsError` when the
+middleware is built, because it could never match.
 
 ## The lightweight alternative — `requireSameOrigin`
 
 If you only need modern-browser protection, `requireSameOrigin()` rejects
-unsafe-method requests whose `Origin`/`Referer` host isn't the request host:
+unsafe-method requests whose `Origin`/`Referer` isn't the request's own
+origin:
 
 ```ts
 import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
 
 const routes = withMiddleware(requireSameOrigin(), appRoutes);
 ```
+
+It takes the same `allowedOrigins` and `expectedScheme` (plus
+`allowMissingOrigin`), with the same `'https'` default — a plain-HTTP site
+needs `SameOriginOptions.create().withExpectedScheme('http')`, as there is
+no cookie here to infer it from.
 
 `csrfProtection` is the belt-and-suspenders option (it runs this check too);
 `requireSameOrigin` alone is lighter but relies on the browser sending a

@@ -21,28 +21,45 @@ import { parseCookies, serializeCookie } from '../cookies.js';
 import { applyHeaders } from './headers.js';
 import {
   CsrfOptionsValidator,
+  SameOriginOptionsValidator,
+  normalizeOrigin,
   type CsrfOptions,
   type CsrfOptionsType,
+  type OriginScheme,
   type SameOriginOptions,
   type SameOriginOptionsType,
 } from './CsrfOptions.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-function hostOf(urlLike: string): string | null {
-  try { return new URL(urlLike).host; } catch { return null; }
-}
-
-/** Same-origin check for unsafe methods: the Origin/Referer host must match the request host (or an allowlisted origin). */
-function isSameOrigin(request: HttpRequest, allowedOrigins: ReadonlyArray<string> | undefined, allowMissing: boolean): boolean {
+/**
+ * Same-origin check for unsafe methods: the Origin/Referer must be the
+ * request's own origin, or one of the allowlisted origins — compared
+ * WHOLE, scheme included.
+ *
+ * The request's own origin is `expectedScheme` + the `Host` header,
+ * because `Host` carries no scheme of its own and the app cannot see the
+ * one the client used (TLS may terminate at a proxy, and a forwarded
+ * scheme header is client-settable, so it is not trusted here).  Comparing
+ * bare hosts instead — what this did before — accepts `http://app.example`
+ * as same-origin for an HTTPS site, and likewise any exotic scheme that
+ * parses an authority.
+ */
+function isSameOrigin(
+  request: HttpRequest,
+  allowedOrigins: ReadonlyArray<string> | undefined,
+  allowMissing: boolean,
+  expectedScheme: OriginScheme,
+): boolean {
   const source = request.headers['origin'] ?? request.headers['referer'];
   if (!source) return allowMissing;
-  const sourceHost = hostOf(source);
-  if (!sourceHost) return false;
-  if (request.headers['host'] && sourceHost === request.headers['host']) return true;
+  const sourceOrigin = normalizeOrigin(source);
+  if (!sourceOrigin) return false;
+  const host = request.headers['host'];
+  if (host && sourceOrigin === normalizeOrigin(`${expectedScheme}://${host}`)) return true;
   if (allowedOrigins) {
     for (const allowed of allowedOrigins) {
-      if (allowed === source || hostOf(allowed) === sourceHost) return true;
+      if (sourceOrigin === normalizeOrigin(allowed)) return true;
     }
   }
   return false;
@@ -56,9 +73,11 @@ function isSameOrigin(request: HttpRequest, allowedOrigins: ReadonlyArray<string
  */
 export function requireSameOrigin(options: SameOriginOptions = {}): Middleware {
   const resolvedOptions = options as Partial<SameOriginOptionsType>;
+  new SameOriginOptionsValidator().validate(resolvedOptions);
+  const expectedScheme = resolvedOptions.expectedScheme ?? 'https';
   return async (request, next) => {
     if (SAFE_METHODS.has(request.method)) return next();
-    if (!isSameOrigin(request, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false)) {
+    if (!isSameOrigin(request, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false, expectedScheme)) {
       throw new HttpError(Status.Forbidden, 'cross-origin request rejected');
     }
     return next();
@@ -134,6 +153,10 @@ export function csrfProtection(options: CsrfOptions): Middleware {
     maxAgeSeconds: cookie.maxAgeSeconds,
   };
   const verifyOrigin = resolvedOptions.verifyOrigin ?? true;
+  // A non-Secure CSRF cookie is an explicit declaration that the app runs
+  // over plain HTTP — take it as the expected scheme rather than rejecting
+  // every one of that app's own origins.
+  const expectedScheme = resolvedOptions.expectedScheme ?? (cookie.secure === false ? 'http' : 'https');
   const formFieldName = resolvedOptions.formFieldName;
 
   return async (request, next) => {
@@ -153,7 +176,7 @@ export function csrfProtection(options: CsrfOptions): Middleware {
 
     // Unsafe method: origin gate (token is the primary gate, so a missing
     // Origin/Referer is allowed through to the token check), then the pair.
-    if (verifyOrigin && !isSameOrigin(request, resolvedOptions.allowedOrigins, true)) {
+    if (verifyOrigin && !isSameOrigin(request, resolvedOptions.allowedOrigins, true, expectedScheme)) {
       throw new HttpError(Status.Forbidden, 'CSRF verification failed');
     }
     const submitted = request.headers[headerName] ?? (formFieldName ? formFieldValue(request, formFieldName) : undefined);
