@@ -187,6 +187,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Parseable also accepts OTLP/HTTP, so `OtlpHttpSink` reaches it too — this
   sink is for the simpler record shape.
 
+- **`sentrySink()` — Sentry through your own SDK** (#1157).  A factory, not
+  a class, mirroring `otelLogger`: you pass your initialised `@sentry/node`
+  import and the framework never imports it, declares no dependency, and
+  has no version to keep in step.
+
+  ```ts
+  const sentry = await import('@sentry/node');
+  sentry.init({ dsn: process.env['SENTRY_DSN'] });
+  const systemOptions = ActorSystemOptions.create()
+    .withLogSinks([new ConsoleSink(), sentrySink(SentrySinkOptions.create().withSdk(sentry))]);
+  ```
+
+  Error-level records with an `Error` argument go to `captureException` —
+  which is what gives Sentry a stack to group on — and without one to
+  `captureMessage`.  Everything else that passes the level gate goes to the
+  structured-logs product when the SDK has one.  A warning is deliberately
+  *not* an issue.
+
+  The default `minLevel` is `warn`, stricter than every other sink: Sentry
+  is priced per event, so a debug firehose pointed at it is a billing
+  incident rather than a preference.
+
+  There is no `actor-ts.logger.sinks.sentry` block, because the sink needs
+  a live SDK object; `reference.conf` says so where a reader would look for
+  it.
+
+  Delegating rather than speaking Sentry's envelope protocol is the point:
+  grouping, stack-trace processing, release detection and breadcrumbs all
+  live in the SDK, and a hand-rolled transport would duplicate them badly
+  or lose them.
+
 ### Security
 
 - **GELF field names cannot be forged by a remote peer** (#1155, relates to

@@ -123,6 +123,14 @@ export {
   readParseableSinkOptionsFromConfig,
 } from './ParseableSinkOptions.js';
 export type { ParseableSinkOptionsType } from './ParseableSinkOptions.js';
+export {
+  DEFAULT_SENTRY_MIN_LEVEL,
+  SentrySinkOptions,
+  SentrySinkOptionsBuilder,
+  SentrySinkOptionsValidator,
+  sentrySink,
+} from './SentrySink.js';
+export type { SentrySdkLike, SentrySinkOptionsType } from './SentrySink.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';

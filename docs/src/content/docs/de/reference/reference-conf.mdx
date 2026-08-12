@@ -49,6 +49,10 @@ actor-ts {
     # the enabled set.  An explicit logger (or logSinks) passed to
     # ActorSystem.create replaces this whole block rather than merging with
     # it -- a sink belongs to one construction world or the other.
+    #
+    # The Sentry sink has no block here: it needs your own @sentry/node
+    # import, which a config file cannot hold, so it is wired in code.
+    # See docs -> Observe -> Logging -> Platform integrations.
     sinks {
       console {
         enabled   = false

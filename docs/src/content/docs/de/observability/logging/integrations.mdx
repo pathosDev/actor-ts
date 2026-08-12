@@ -212,6 +212,64 @@ Parseable nimmt auch OTLP/HTTP mit JSON-Body entgegen, der
 Nimm diesen hier für die einfachere Record-Form — oder jenen, wenn du
 ohnehin auf OTLP standardisiert bist.
 
+## Sentry
+
+```ts
+import { ActorSystemOptions, ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts';
+
+const sentry = await import('@sentry/node');
+sentry.init({ dsn: process.env['SENTRY_DSN'] });
+
+const sentrySinkOptions = SentrySinkOptions.create().withSdk(sentry);
+const systemOptions = ActorSystemOptions.create()
+  .withLogSinks([new ConsoleSink(), sentrySink(sentrySinkOptions)]);
+```
+
+**Du übergibst dein eigenes SDK.**  Das Framework importiert
+`@sentry/node` nie, deklariert keine Abhängigkeit darauf und muss keine
+Version mitziehen — dieselbe Passthrough-Form wie der
+[OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/).  Wichtiger
+noch: Es nutzt den Client, den deine Anwendung ohnehin konfiguriert hat,
+sodass Releases, Environments, Breadcrumbs und vorhandene
+Instrumentierung zusammenpassen, statt zu konkurrieren.
+
+Deshalb gibt es auch **keinen `actor-ts.logger.sinks.sentry`-Block**: Der
+Sink braucht ein lebendes SDK-Objekt, das eine Konfigurationsdatei nicht
+halten kann.  Er wird notwendigerweise im Code konfiguriert, nicht aus
+Versehen.
+
+### Was wohin geht
+
+| Record | Sentry |
+| --- | --- |
+| `error` mit `Error`-Argument | `captureException` — ein echter Stack zum Gruppieren |
+| `error` ohne | `captureMessage(msg, 'error')` |
+| alles andere, das das Level passiert | das Structured-Logs-Produkt, sofern das SDK es hat |
+
+Eine **Warnung ist kein Issue**.  Sie in ein verfolgtes, zuweisbares,
+alarmierendes Event zu verwandeln, ist der Weg, auf dem ein
+Sentry-Projekt zu Lärm wird, den niemand liest — Warnungen gehen also in
+die Logs, und nur Fehler werden zu Issues.
+
+Der Actor-Pfad reist als `actor.path` in den Extra-Daten des Events mit.
+Das macht aus „irgendwas hat geworfen" ein „die Order-Entity für Mandant
+acme hat geworfen".
+
+### Das Standard-Level ist `warn`
+
+Strenger als bei jedem anderen Sink, mit Absicht.  Sentry wird pro Event
+abgerechnet; eine Debug-Feuerwehr darauf zu richten ist eher ein
+Abrechnungsvorfall als eine Konfigurationsvorliebe — und das Signal, auf
+das sich die Rufbereitschaft verlässt, geht so oder so unter.
+
+### Warum nicht das Wire-Protokoll sprechen?
+
+Sentrys Envelope-Format ist dokumentiert und ließe sich ohne Abhängigkeit
+nachbauen.  Es wäre nur schlechter: Was Sentry nützlich macht — Gruppierung,
+Stacktrace-Aufbereitung, Release-Erkennung, Breadcrumbs — steckt im SDK,
+und ein selbstgebauter Transport würde all das entweder schlecht
+nachbauen oder verlieren.
+
 ## Verwandt
 
 - [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird

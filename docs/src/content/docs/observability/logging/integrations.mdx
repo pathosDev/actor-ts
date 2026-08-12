@@ -207,6 +207,62 @@ Parseable also accepts OTLP/HTTP with a JSON body, so the
 for the simpler record shape, or that one if you are already standardised
 on OTLP.
 
+## Sentry
+
+```ts
+import { ActorSystemOptions, ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts';
+
+const sentry = await import('@sentry/node');
+sentry.init({ dsn: process.env['SENTRY_DSN'] });
+
+const sentrySinkOptions = SentrySinkOptions.create().withSdk(sentry);
+const systemOptions = ActorSystemOptions.create()
+  .withLogSinks([new ConsoleSink(), sentrySink(sentrySinkOptions)]);
+```
+
+**You pass your own SDK.**  The framework never imports `@sentry/node`,
+declares no dependency on it, and has no version to keep in step — the
+same passthrough shape as the
+[OTel tracing adapter](/observability/tracing/otel-adapter/).  More
+importantly, it uses the client your application already configured, so
+releases, environments, breadcrumbs and any existing instrumentation all
+line up instead of competing.
+
+That is also why there is **no `actor-ts.logger.sinks.sentry` block**: the
+sink needs a live SDK object, which a config file cannot hold.  It is
+configured in code by necessity, not by oversight.
+
+### What goes where
+
+| Record | Sentry |
+| --- | --- |
+| `error` with an `Error` argument | `captureException` — a real stack to group on |
+| `error` without one | `captureMessage(msg, 'error')` |
+| anything else that passes the level | the structured-logs product, when the SDK has it |
+
+A **warning is not an issue**.  Turning one into a tracked, assignable,
+alert-firing event is how a Sentry project becomes noise nobody reads, so
+warnings go to logs and only errors become issues.
+
+The actor path travels as `actor.path` in the event's extra data, which is
+what turns "something threw" into "the order entity for tenant acme
+threw".
+
+### The default level is `warn`
+
+Stricter than every other sink, on purpose.  Sentry is priced per event;
+pointing a debug firehose at it is a billing incident rather than a
+configuration preference — and the signal an on-call engineer depends on
+drowns either way.
+
+### Why not speak the wire protocol?
+
+Sentry's envelope format is documented and could be hand-rolled without a
+dependency.  It would also be worse: what makes Sentry useful is grouping,
+stack-trace processing, release detection and breadcrumbs — all of which
+live in the SDK, and all of which a hand-rolled transport would either
+duplicate badly or lose.
+
 ## Related
 
 - [Multi-sink logging](/observability/logging/multi-sink/) — the pipeline these plug into
