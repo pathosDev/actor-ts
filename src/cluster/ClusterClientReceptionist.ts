@@ -227,6 +227,13 @@ export class ClusterClientReceptionist implements Extension {
   private countSenderMismatch(message: WireMessage, peer: NodeAddress, log: Logger): void {
     const claimed = (message as { readonly from?: unknown }).from;
     if (claimed === undefined || claimed === null) return;
+    // The shape guard has to come first and has to be total.  `fromJSON`
+    // *throws* on anything it does not recognise, and this runs inside the
+    // transport's frame-dispatch loop — that is the #711 crash, and it would
+    // be a poor trade to reintroduce it in the code that counts its cause.
+    // The guard enforces exactly the fields `fromJSON` demands, so the parse
+    // below cannot throw; a shape that fails it is by definition not this
+    // connection's address and counts.
     if (isNodeAddressData(claimed) && NodeAddress.fromJSON(claimed).equals(peer)) return;
 
     log.debug(
