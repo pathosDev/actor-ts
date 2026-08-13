@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { HonoBackend, contentLengthExceeds, readBufferedAmount } from '../../../src/http/backend/HonoBackend.js';
+import { HonoBackend, readBufferedAmount } from '../../../src/http/backend/HonoBackend.js';
 import { HonoBackendOptions } from '../../../src/http/backend/HonoBackendOptions.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import {
@@ -298,22 +298,8 @@ describe('HonoBackend — body size limit', () => {
   });
 });
 
-describe('HonoBackend — contentLengthExceeds (HTTP-1 fast-path predicate)', () => {
-  test('true when the declared length is over the cap', () => {
-    expect(contentLengthExceeds('64', 16)).toBe(true);
-    expect(contentLengthExceeds('17', 16)).toBe(true);
-  });
-
-  test('false at or under the cap', () => {
-    expect(contentLengthExceeds('16', 16)).toBe(false);
-    expect(contentLengthExceeds('0', 16)).toBe(false);
-  });
-
-  test('false for missing/non-numeric header (backstop handles those)', () => {
-    expect(contentLengthExceeds(undefined, 16)).toBe(false);
-    expect(contentLengthExceeds('not-a-number', 16)).toBe(false);
-  });
-});
+// `contentLengthExceeds` moved to HttpServerBackend.ts when Express started
+// sharing it — its unit tests live in BodySizeParity.test.ts (#357).
 
 describe('HonoBackend — readBufferedAmount (WS-4 backpressure signal)', () => {
   test('Bun-style getBufferedAmount()', () => {

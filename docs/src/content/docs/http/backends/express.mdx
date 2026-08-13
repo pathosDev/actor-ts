@@ -28,7 +28,7 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Configuration
 
 ```ts
-const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
 new ExpressBackend(
   expressBackendOptions,
 );
@@ -36,7 +36,9 @@ new ExpressBackend(
 // (`app.set('trust proxy', true)`), passed via `.withApp(app)`.
 ```
 
-Express-style settings.
+Express-style settings. `maxBodyBytes` defaults to **1 MiB**, the shared
+cap every backend applies — raise it only for an endpoint that genuinely
+takes more, as above.
 
 ## Security headers
 
