@@ -5,9 +5,22 @@
  * has a sampling tick, and a peer that has stopped answering is then
  * simply a reading that stopped getting newer — which is exactly how it
  * should read on the overview.  Nothing waits for a slow node.
+ *
+ * Everything in the cache arrived off the cluster wire, so what may land
+ * there is bounded on three axes: only a node the cluster currently holds
+ * as a member may open a row, the row is keyed on the address the
+ * transport supplied rather than the one the report claims for itself,
+ * and both the number of rows and one report's actor tree are capped
+ * (#593).  A peer that lies now lies only about its own row.
  */
-import { STALE_AFTER_MS } from '../Constants.js';
+import {
+  MAXIMUM_PEER_ACTORS,
+  MAXIMUM_PEER_REPORTS,
+  STALE_AFTER_MS,
+  TOP_MAILBOX_COUNT,
+} from '../Constants.js';
 import type { Cluster } from '../../cluster/Cluster.js';
+import type { NodeAddress } from '../../cluster/NodeAddress.js';
 import {
   CLUSTER_MEMBER_RETENTION_MS,
   type ActorNode,
@@ -30,6 +43,7 @@ type CachedReport = {
 
 export class DevToolsFederation {
   private unregister: (() => void) | null = null;
+  /** Keyed on the sending peer's authenticated address — see `onEnvelope`. */
   private readonly reports = new Map<string, CachedReport>();
   private round = 0;
   /** Whether the last round asked for actor trees — they are not small. */
@@ -41,7 +55,7 @@ export class DevToolsFederation {
     if (this.unregister !== null) return;
     this.unregister = this.cluster._registerEnvelopeHandler(
       DEVTOOLS_COLLECTOR_PATH,
-      (envelope) => this.onEnvelope(envelope.body),
+      (envelope, from) => this.onEnvelope(envelope.body, from),
     );
   }
 
@@ -109,17 +123,100 @@ export class DevToolsFederation {
     return this.reports.get(address)?.actors ?? null;
   }
 
-  private onEnvelope(body: unknown): void {
+  private onEnvelope(body: unknown, from: NodeAddress): void {
     if (!isNodeReport(body)) return;
-    const address = body.figures.address;
-    if (typeof address !== 'string' || address.length === 0) return;
+    // The address the transport handed us, never the one the body claimed.
+    const address = from.toString();
+    if (!this.isMember(address)) return;
+    this.makeRoomFor(address);
     // A report from a round we have moved past is still the newest thing
     // that node has said, so it is kept — only its age is what matters.
     this.reports.set(address, {
-      figures: body.figures,
-      actors: body.actors ?? this.reports.get(address)?.actors ?? null,
+      figures: this.attributedFigures(address, body.figures),
+      actors: this.cappedActors(address, body.actors),
       receivedAtMs: Date.now(),
     });
+  }
+
+  /**
+   * A peer's figures, filed under the address that actually sent them.
+   *
+   * `peers()` hands `figures` straight to the overview and `ActorTreeTap`
+   * looks a peer's tree back up by `figures.address`, so this string is a
+   * row key in two panels.  Taken from the body it was the *sender's*
+   * choice of key: a peer could file its readings under another node's
+   * name, or under a name no node in the cluster has, and the dashboard
+   * would show the result as a real node with a real actor tree (#593).
+   * Replacing it here means the authenticated address is the only one
+   * that ever leaves the collector, which also keeps `actorsOf` resolving.
+   */
+  private attributedFigures(address: string, reported: NodeFigures): NodeFigures {
+    return {
+      ...reported,
+      address,
+      // An honest node sends its busiest `TOP_MAILBOX_COUNT` and no more;
+      // beyond that is padding the serving node would re-sort every tick.
+      topMailboxes: reported.topMailboxes.slice(0, TOP_MAILBOX_COUNT),
+    };
+  }
+
+  /**
+   * The tree to cache: this round's, capped — or the last one, kept.
+   *
+   * A round that did not ask for actors carries none, and forgetting the
+   * cached tree then would blank the panel between the rounds that do ask.
+   */
+  private cappedActors(
+    address: string,
+    reported: ReadonlyArray<ActorNode> | undefined,
+  ): ReadonlyArray<ActorNode> | null {
+    if (reported === undefined) return this.reports.get(address)?.actors ?? null;
+    return reported.length <= MAXIMUM_PEER_ACTORS
+      ? reported
+      : reported.slice(0, MAXIMUM_PEER_ACTORS);
+  }
+
+  /**
+   * Whether the cluster currently holds `address` as a member.
+   *
+   * `poll()` asks members and nobody else, so a report from anywhere else
+   * was never solicited.  Gating what may *enter* the cache rather than
+   * what stays in it leaves `forgetLongGoneNodes`' hour untouched:
+   * `getMembers()` still returns `leaving`, `down` and `unreachable`
+   * nodes, so a node on its way out still lands the last reading — the
+   * one an operator actually wants afterwards.
+   */
+  private isMember(address: string): boolean {
+    return this.cluster.getMembers().some((member) => member.address.toString() === address);
+  }
+
+  /**
+   * Evict oldest-first until a new row fits.
+   *
+   * A backstop: the membership gate above already bounds this map by the
+   * cluster's own `maxMembers`.  It is here because those two caps live in
+   * different subsystems, and "they will stay in agreement" is not a
+   * property anything checks.
+   */
+  private makeRoomFor(address: string): void {
+    if (this.reports.has(address)) return;
+    while (this.reports.size >= MAXIMUM_PEER_REPORTS) {
+      const oldest = this.oldestReport();
+      if (oldest === null) return;
+      this.reports.delete(oldest);
+    }
+  }
+
+  /** The address whose last reading is furthest back, if there is one. */
+  private oldestReport(): string | null {
+    let oldest: string | null = null;
+    let oldestAtMs = Number.POSITIVE_INFINITY;
+    for (const [address, cached] of this.reports) {
+      if (cached.receivedAtMs >= oldestAtMs) continue;
+      oldest = address;
+      oldestAtMs = cached.receivedAtMs;
+    }
+    return oldest;
   }
 
   /**
