@@ -40,7 +40,10 @@ import {
  *      is treated as 'lease lost' and fires `onLost(reason)`.
  *
  *   3. **release()** — DELETE the lease (404 is treated as success).
- *      Cancels the renewal timer.
+ *      Cancels the renewal timer first, and rejects if the DELETE
+ *      itself fails — the record is then still claimed on the server
+ *      while this process has dropped it, which callers must be able
+ *      to see.
  *
  * Failure modes that fire `onLost`:
  *   - PUT during renewal returns 409 (someone else won a race after we
@@ -241,6 +244,20 @@ export class KubernetesLease implements Lease {
     return renewedAt + durationMs > now;
   }
 
+  /**
+   * Stop renewing, then DELETE the lease object.
+   *
+   * A DELETE that fails now rejects instead of being swallowed (#600).
+   * Swallowing it reported a clean release for a record still claimed by
+   * us on the server — the ambiguous state `LeaseMajority`'s fail-safe
+   * exists for, which the swallow made unreachable.  Every in-repo caller
+   * treats release as cleanup and catches; `Lease.release()` documents
+   * the rejection.
+   *
+   * Renewal is stopped and local state dropped before the request, so a
+   * failed DELETE cannot leave a timer quietly renewing a lease this
+   * process considers released.
+   */
   async release(): Promise<void> {
     if (!this.held) return;
     this.held = false;
@@ -248,16 +265,9 @@ export class KubernetesLease implements Lease {
       clearInterval(this.renewalTimer);
       this.renewalTimer = null;
     }
-    const creds = await this.getCreds().catch(() => null);
-    if (!creds) return;
-    try {
-      await deleteLease(creds, this.options.namespace, this.options.name, this.options.client);
-    } catch (e) {
-      // best-effort — log via thrown info but don't fail the caller
-      // (release is a cleanup hook).
-      void e;
-    }
     this.currentLease = null;
+    const creds = await this.getCreds();
+    await deleteLease(creds, this.options.namespace, this.options.name, this.options.client);
   }
 
   checkAlive(): boolean { return this.held; }

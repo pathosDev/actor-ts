@@ -33,6 +33,8 @@ class FakeK8sServer implements K8sFetchClient {
   forceConflictNext = false;
   /** When set, the next GET pretends the lease is missing. */
   forceMissingNext = false;
+  /** When set, the next DELETE fails with a 500 (API server having a bad day). */
+  forceDeleteErrorNext = false;
   /** Capture every request for assertion. */
   log: Array<{ method: string; path: string; body?: unknown }> = [];
 
@@ -93,6 +95,10 @@ class FakeK8sServer implements K8sFetchClient {
     }
 
     if (options.method === 'DELETE' && name) {
+      if (this.forceDeleteErrorNext) {
+        this.forceDeleteErrorNext = false;
+        return { status: 500, body: { code: 500, reason: 'InternalError' } };
+      }
       const key = `${ns}/${name}`;
       const existed = this.leases.delete(key);
       if (!existed) return { status: 404, body: { code: 404 } };
@@ -240,6 +246,31 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
     await lease.release();
     expect(lease.checkAlive()).toBe(false);
     expect(server.peek('default', 'test-lease')).toBeUndefined();
+  });
+
+  test('release rejects when the DELETE fails, and stops renewing anyway (#600)', async () => {
+    // Swallowing the failure reported a clean release for a record still
+    // claimed on the server — which is exactly the ambiguity
+    // LeaseMajority's fail-safe exists for, and made it unreachable.
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 20 }));
+    await lease.acquire();
+    server.forceDeleteErrorNext = true;
+    await expect(lease.release()).rejects.toThrow(/DELETE lease default\/test-lease/);
+    expect(lease.checkAlive()).toBe(false);
+
+    // The record is still there — that is the point of the rejection —
+    // but this process must not keep renewing it.
+    const stored = server.peek('default', 'test-lease');
+    expect(stored).toBeDefined();
+    const renewTimeAfterRelease = stored!.spec.renewTime;
+    await sleep(80);
+    expect(server.peek('default', 'test-lease')?.spec.renewTime).toBe(renewTimeAfterRelease);
+  });
+
+  test('release is a no-op when the lease was never held', async () => {
+    const lease = new KubernetesLease(baseOptions());
+    await lease.release();
+    expect(server.log.filter((l) => l.method === 'DELETE')).toHaveLength(0);
   });
 });
 

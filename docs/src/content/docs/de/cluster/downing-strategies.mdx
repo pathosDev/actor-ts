@@ -231,6 +231,39 @@ betrachtet.
 Richtig für paranoide Produktionsszenarien, in denen du eher
 **doppelten Aufwand** für Split-Brain-Schutz akzeptierst.
 
+### Wenn das Acquire hängt
+
+Der interessante Fall ist nicht „die Lease sagt nein“, sondern
+„die Lease sagt gar nichts“.  Wenn `acquire()` nicht innerhalb von
+`acquireTimeoutMs` (Default 5 s) resolved, hört die Strategie auf
+zu warten — und muss dann damit rechnen, dass der Versuch auf der
+Leitung trotzdem noch erfolgreich ist und die Lease bei einem Node
+beansprucht zurücklässt, der nicht mehr glaubt, gewonnen zu haben.
+Dafür gelten drei Regeln:
+
+- **Das späte Ergebnis wird verworfen.**  Jeder Versuch trägt eine
+  Epoch; ein Ergebnis, das nach dem Ausmustern seiner Epoch
+  eintrifft, kann keine Entscheidung mehr schreiben.  Ein langsames
+  `acquire() → true` kann diese Seite also nicht nachträglich zur
+  Überlebenden erklären.
+- **Ein später Gewinn wird released — und bis dahin startet
+  nichts Neues.**  Eigentum beginnt erst, wenn das Acquire
+  resolved, also wartet das Rückgängigmachen darauf, dass es sich
+  zurückmeldet; früher zu releasen wäre ein No-op.  Solange das
+  offen ist, liefert `decide()` weiter eine leere Entscheidung,
+  statt einen zweiten Versuch zu starten: zwei überlappende
+  Versuche sind genau der Weg, auf dem das Aufräumen eine Lease
+  löschen könnte, die diese Seite gerade beansprucht.
+- **Schlägt das Release fehl, entscheidet die Strategie nicht
+  mehr.**  Der Zustand der Lease ist dann unbekannt, also geht sie
+  in den *Fail-safe* und liefert für diese Partitionssicht eine
+  leere Entscheidung, bis die Partition heilt.  Nichts zu
+  entscheiden ist immer sicher; falsch zu entscheiden nicht.
+
+Das sichtbare Symptom eines Lease-Providers mit einem schlechten
+Tag ist deshalb ein Cluster, der wartet — keiner, der auseinander
+fällt.
+
 ## Eine Strategie auswählen
 
 Drei Fragen, in dieser Reihenfolge:
