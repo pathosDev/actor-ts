@@ -1,4 +1,6 @@
 import type { IncomingMessage, Server } from 'node:http';
+import { ServerResponse } from 'node:http';
+import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { Readable } from 'node:stream';
 import { match } from 'ts-pattern';
@@ -13,10 +15,7 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import { applyHeaders } from '../middleware/headers.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
-import { matchWebsocketPattern } from '../websocket/matchPattern.js';
-import { writeRawHttpResponse } from '../websocket/rawResponse.js';
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
@@ -95,12 +94,33 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * `ServerResponse.assignSocket`/`detachSocket` are typed for a `net.Socket`,
+ * while the `'upgrade'` event hands over the widest shape it can promise, a
+ * `Duplex`.  On a real `http.Server` it is always the former — the two are
+ * the same object — and this narrowing records that rather than widening the
+ * fields that carry it.
+ */
+function asNetSocket(socket: Duplex): Socket {
+  return socket as Socket;
+}
+
+/**
  * Subset of the Express app API we touch.  Covers v4 and v5.  Paths accept
  * a RegExp as well as a string: a trailing-`*` wildcard route registers as
  * a RegExp so it works identically on Express 4 and 5 (v5's path-to-regexp
  * rejects a bare string `*`).
+ *
+ * The call signature is the app itself — `express()` returns
+ * `function (request, response, next) { app.handle(...) }`, which is what
+ * `app.listen()` hands to `http.createServer`.  Calling it is how a
+ * WebSocket upgrade is pushed through the middleware chain (see
+ * {@link ExpressBackend.attachUpgradeDispatch}).  It is declared instead of
+ * `app.handle` deliberately: `@types/express` types the app as callable but
+ * does not declare `handle`, so requiring the method would reject a genuine
+ * Express app at `ExpressBackendOptionsBuilder.withApp`.
  */
 export interface ExpressAppLike {
+  (request: IncomingMessage, response: ServerResponse, next: ExpressNext): void;
   get(path: string | RegExp, handler: ExpressHandler): void;
   post(path: string | RegExp, handler: ExpressHandler): void;
   put(path: string | RegExp, handler: ExpressHandler): void;
@@ -113,9 +133,36 @@ export interface ExpressAppLike {
 }
 
 /**
+ * One in-flight WebSocket upgrade, parked while the Express stack runs.
+ *
+ * Node hands the raw socket to the `'upgrade'` listener and never to the
+ * request handler, so the socket cannot travel through Express with the
+ * request.  This record is how the WebSocket route handler — invoked deep
+ * inside the middleware chain — finds the socket belonging to the request it
+ * was called with.
+ */
+type PendingUpgrade = {
+  /** The raw request; `ws` needs it verbatim to compute the handshake. */
+  readonly request: IncomingMessage;
+  readonly socket: Duplex;
+  /** Bytes the client already sent after the request head. */
+  readonly head: Buffer;
+  /** Synthesised response the Express stack writes to; owns `socket`. */
+  readonly response: ServerResponse;
+  /** Set once the socket's fate is decided, so it is torn down exactly once. */
+  settled: boolean;
+};
+
+/**
  * Express-backed HTTP backend — drop-in alternative to the Fastify
  * default.  Intended for teams that already have an Express-based plugin
  * ecosystem (session stores, auth, observability) they want to reuse.
+ *
+ * That reuse covers **WebSocket handshakes too**: an upgrade is dispatched
+ * through the app itself, so everything installed with `app.use(...)` —
+ * sessions, authentication, rate limiting — runs before a socket is upgraded,
+ * and a middleware that answers the request cancels the handshake (#623).
+ * See {@link ExpressBackend.attachUpgradeDispatch} for the mechanics.
  *
  * `express` is an optional peer dependency: install it only if you use
  * this backend.  When no app is injected, the backend imports `express`
@@ -127,6 +174,8 @@ export class ExpressBackend implements HttpServerBackend {
   private app: ExpressAppLike | null;
   private server: Server | null = null;
   private readonly ownsApp: boolean;
+  /** Upgrades waiting for the Express stack to reach their route. */
+  private readonly pendingUpgrades = new WeakMap<object, PendingUpgrade>();
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
@@ -176,6 +225,10 @@ export class ExpressBackend implements HttpServerBackend {
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
+    // WebSocket routes go in ahead of the HTTP ones.  A wildcard GET route
+    // registered first would match the upgrade request and answer it as an
+    // ordinary GET, and the handshake would never reach its own route.
+    if (this.wsRegistered.length > 0) await this.attachWebsocketRoutes(this.app);
     // Apply routes.  Express treats patterns like "/users/:id" natively.
     for (const route of this.registered) this.attachRoute(route);
     // 404 + error middlewares MUST come last.
@@ -204,7 +257,7 @@ export class ExpressBackend implements HttpServerBackend {
     });
 
     if (this.wsRegistered.length > 0 && this.server) {
-      await this.attachUpgradeHandling(this.server);
+      this.attachUpgradeDispatch(this.server, this.app);
     }
 
     return {
@@ -238,93 +291,153 @@ export class ExpressBackend implements HttpServerBackend {
     };
   }
 
-  private async attachUpgradeHandling(server: Server): Promise<void> {
+  /**
+   * Register every WebSocket route as an ordinary Express GET.
+   *
+   * Reaching one of these handlers *is* the guarantee #623 asked for: the
+   * request only gets there after the whole middleware chain ran and let it
+   * through, exactly like any other route on this app.
+   */
+  private async attachWebsocketRoutes(app: ExpressAppLike): Promise<void> {
     const WebsocketServerConstructor = await wsServerConstructorLazy.get();
     // Cap the transport payload at the default WS frame size so an oversized
     // frame is rejected at the protocol level instead of being buffered up to
     // the `ws` default of 100 MiB first (security audit WS-3).
     const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES });
     this.wss = wss;
-    server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-      // Attach the raw-socket error guard BEFORE any async work: a peer
-      // that vanishes mid-handshake (or a malformed upgrade) must never
-      // surface as an unhandled 'error' event, which would crash the
-      // process (security audit WS-1).
-      socket.on('error', () => { /* ignore */ });
-      void (async () => {
-        const url = new URL(req.url ?? '/', 'http://localhost');
-        let hit: { reg: WebsocketRouteRegistration; params: Record<string, string> } | null = null;
-        for (const reg of this.wsRegistered) {
-          const params = matchWebsocketPattern(reg.pattern, url.pathname);
-          if (params) { hit = { reg, params }; break; }
-        }
-        if (!hit) {
-          this.rejectUpgrade(socket, { status: 404, body: 'Not Found' });
-          return;
-        }
-        const adapted = this.adaptUpgradeRequest(req, url, hit.params);
-        let reject: HttpResponse | null;
-        try {
-          reject = await hit.reg.authorize(adapted);
-        } catch {
-          reject = { status: 500, body: 'Internal Server Error' };
-        }
-        if (reject) {
-          this.rejectUpgrade(socket, reject);
-          return;
-        }
-        wss.handleUpgrade(req, socket, head, (ws) => {
-          // Keep wss.clients populated so the unbind terminate-walk works.
-          wss.emit('connection', ws, req);
-          hit!.reg.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+    for (const registration of this.wsRegistered) {
+      app.get(registration.pattern, (req, res, next) => {
+        const pending = this.pendingUpgrades.get(req);
+        // A plain GET to a WebSocket path is not a handshake — fall through,
+        // so it lands wherever it landed before this route existed (a
+        // wildcard route, or the not-found handler).
+        if (!pending) { next(); return; }
+        this.completeUpgrade(pending, registration, wss, req, res).catch(() => {
+          // Last-resort guard: this handler must never reject into an
+          // unhandled rejection (process-fatal under Node's default, and
+          // Express 4 does not await a handler's promise).  Any unexpected
+          // throw closes the socket instead (security audit WS-1).
+          this.releaseUpgrade(pending);
         });
-      })().catch(() => {
-        // Last-resort guard: an upgrade handler must never reject into an
-        // unhandled rejection (process-fatal under Node's default).  Any
-        // unexpected throw closes the raw socket instead (WS-1).
-        try { socket.destroy(); } catch { /* already gone */ }
       });
+    }
+  }
+
+  /**
+   * Push every upgrade through the Express app, the way `@fastify/websocket`
+   * pushes one through `fastify.routing`.
+   *
+   * Node emits `'upgrade'` on the server and never routes it into the request
+   * handler, so an adapter that answers the event itself — as this backend
+   * used to — silently skips every `app.use(...)` the application installed:
+   * sessions, authentication, rate limiting (#623).  Binding a synthesised
+   * `ServerResponse` to the raw socket and calling the app restores the
+   * ordinary request path.  The socket is upgraded only if the chain reached
+   * the WebSocket route without answering; a middleware that writes a
+   * response instead cancels the handshake and gets that response delivered.
+   *
+   * The `ServerResponse` also replaces the hand-rolled socket write this path
+   * used before, which measurably delivered *zero bytes* under Bun 1.3.1 — a
+   * rejected client saw a bare connection close instead of the guard's 401.
+   * Written through a `ServerResponse` the status line arrives on both Bun
+   * and Node.  Deno delivers neither, before or after this change: its
+   * `'upgrade'` socket is write-only in the direction of a completed
+   * handshake, so a rejected client there still just sees the connection go.
+   */
+  private attachUpgradeDispatch(server: Server, app: ExpressAppLike): void {
+    server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+      // Attach the raw-socket error guard BEFORE any other work: a peer that
+      // vanishes mid-handshake (or a malformed upgrade) must never surface as
+      // an unhandled 'error' event, which would crash the process (WS-1).
+      socket.on('error', () => { /* ignore */ });
+      const response = new ServerResponse(request);
+      const pending: PendingUpgrade = { request, socket, head, response, settled: false };
+      this.pendingUpgrades.set(request, pending);
+      // Which event marks "the app answered" differs per runtime — Node emits
+      // only 'finish', Bun 'finish' then 'close', Deno 'close' with the socket
+      // already destroyed — so both are wired and the teardown is idempotent.
+      const release = (): void => this.releaseUpgrade(pending);
+      response.on('finish', release);
+      response.on('close', release);
+      try {
+        response.assignSocket(asNetSocket(socket));
+        // Only a GET can become a WebSocket (RFC 6455 §4.1), and anything
+        // else must not enter the app at all: the raw-body middleware would
+        // try to drain a body from a socket the HTTP parser already let go of.
+        if ((request.method ?? '').toUpperCase() !== 'GET') {
+          this.answerUpgrade(pending, 405, 'Method Not Allowed');
+          return;
+        }
+        app(request, response, () => this.answerUpgrade(pending, 404, 'Not Found'));
+      } catch {
+        release();
+      }
     });
   }
 
   /**
-   * Reject a WebSocket upgrade with a plain HTTP response on the raw socket.
-   * There is no Express `res` on this path, so the server-wide defaults are
-   * merged into the response object instead — `applyHeaders` leaves anything
-   * the rejecting `authorize` guard set itself untouched.
-   *
-   * Whether the peer ever reads it is a separate matter: measured on Bun
-   * 1.3.1, *nothing* written to a `node:http` `'upgrade'` socket reaches the
-   * client (write, end and destroy all deliver zero bytes), while the same
-   * probe under Node 26 delivers the full response.  So under Bun a rejected
-   * client sees a bare connection close instead of the guard's 401 — tracked
-   * separately; this path stays correct for the runtimes that do deliver it.
+   * Run the DSL's own upgrade guard and, if it passes, hand the socket to
+   * `ws`.  Everything before this point was the application's middleware; the
+   * `authorize` fold here is what `withMiddleware()` / `allowedOrigins`
+   * compile down to, and it stays the last word.
    */
-  private rejectUpgrade(socket: Duplex, response: HttpResponse): void {
-    writeRawHttpResponse(socket, applyHeaders(response, this.defaultResponseHeaders));
+  private async completeUpgrade(
+    pending: PendingUpgrade,
+    registration: WebsocketRouteRegistration,
+    wss: WebsocketServerLike,
+    req: ExpressRequestLike,
+    res: ExpressResponseLike,
+  ): Promise<void> {
+    // Express already matched the pattern and populated `req.params`, so the
+    // upgrade reuses the very same adapter the HTTP path uses — including
+    // `req.ip`, which honours `app.set('trust proxy', …)`.
+    const adapted = this.adaptRequest(req);
+    let reject: HttpResponse | null;
+    try {
+      reject = await registration.authorize(adapted);
+    } catch {
+      reject = { status: 500, body: 'Internal Server Error' };
+    }
+    // The peer may have gone away while `authorize` awaited.
+    if (pending.settled) return;
+    if (reject) {
+      this.writeResponse(res, reject);
+      return;
+    }
+    // Hand the socket over.  The response has to let go of it first, or Node
+    // keeps treating it as the body of an HTTP response.
+    pending.settled = true;
+    this.pendingUpgrades.delete(pending.request);
+    pending.response.detachSocket(asNetSocket(pending.socket));
+    wss.handleUpgrade(pending.request, pending.socket, pending.head, (ws) => {
+      // Keep wss.clients populated so the unbind terminate-walk works.
+      wss.emit('connection', ws, pending.request);
+      registration.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+    });
   }
 
-  private adaptUpgradeRequest(req: IncomingMessage, url: URL, params: Record<string, string>): HttpRequest {
-    const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (typeof value === 'string') headers[key] = value;
-      else if (Array.isArray(value)) headers[key] = value.join(',');
-    }
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const key of new Set(url.searchParams.keys())) {
-      const all = url.searchParams.getAll(key);
-      query[key] = all.length > 1 ? all : all[0];
-    }
-    const remoteAddress = req.socket?.remoteAddress;
-    return {
-      method: 'GET',
-      path: url.pathname,
-      headers,
-      query,
-      params,
-      body: null,
-      ...(remoteAddress ? { remoteAddress } : {}),
-    };
+  /**
+   * Answer an upgrade the app itself never answered, using the bare
+   * `ServerResponse` API.  Both callers can be reached before Express's own
+   * `expressInit` middleware swapped the response prototype, so `res.status(…)`
+   * — what {@link writeResponse} uses — is not guaranteed to exist yet.
+   */
+  private answerUpgrade(pending: PendingUpgrade, status: number, body: string): void {
+    const { response } = pending;
+    if (pending.settled || response.headersSent) { this.releaseUpgrade(pending); return; }
+    response.statusCode = status;
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) response.setHeader(key, value);
+    response.setHeader('content-type', 'text/plain; charset=utf-8');
+    response.end(body);
+  }
+
+  /** Give up an upgrade that will not happen and close its socket, once. */
+  private releaseUpgrade(pending: PendingUpgrade): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    this.pendingUpgrades.delete(pending.request);
+    try { pending.response.detachSocket(asNetSocket(pending.socket)); } catch { /* runtime already did */ }
+    try { pending.socket.destroy(); } catch { /* already gone */ }
   }
 
   /* ============================ internals ============================ */
