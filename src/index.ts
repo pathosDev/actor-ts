@@ -73,6 +73,11 @@ export type { ExistsPredicate, RandomStringOptions } from './util/RandomString.j
 // safeStringify — JSON.stringify for log and error paths, which cannot throw.
 export { safeStringify } from './util/SafeStringify.js';
 
+// URL redaction for log and error paths.  The framework runs every connection
+// URL it reports through these; exported so an application's own log line — or
+// a MultiSinkLogger `transform` — can hold the same line.
+export { redactUrlCredentials, redactedUrlLabel } from './util/RedactUrlCredentials.js';
+
 // lazyImportModule — import an optional peer dependency, or fail with a message
 // that names the package and how to install it.
 export { lazyImportModule } from './util/LazyImport.js';

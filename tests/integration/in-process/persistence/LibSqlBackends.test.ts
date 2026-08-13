@@ -82,6 +82,22 @@ describe('LibSql* option validation', () => {
       .toThrow(/must be a valid URL/);
   });
 
+  test('never renders the URL credential into the rejection (#590)', () => {
+    // A Turso URL is handed out with its auth token, and this message ends up
+    // in an ERROR log via ActorCell.
+    let caught: unknown;
+    try {
+      new LibSqlJournal(LibSqlJournalOptions.create().withUrl('postgres://admin:hunter2@host/db'));
+    } catch (e) {
+      caught = e;
+    }
+    const err = caught as { message: string; value: unknown };
+    expect(err.message).toContain('must use protocol');
+    expect(err.message).toContain('postgres://***@host/db');
+    expect(err.message).not.toContain('hunter2');
+    expect(err.value).toBe('postgres://***@host/db');
+  });
+
   test('accepts the Turso and self-hosted schemes', () => {
     for (const url of ['libsql://db.turso.io', 'https://db.turso.io', 'http://127.0.0.1:8080', 'wss://db.turso.io']) {
       expect(() => new LibSqlJournal(LibSqlJournalOptions.create().withUrl(url))).not.toThrow();

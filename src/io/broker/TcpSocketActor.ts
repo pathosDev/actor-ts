@@ -37,6 +37,12 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   private socket: NetSocket | null = null;
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
+  /**
+   * How far into {@link inboundBuffer} the `lines` delimiter search already
+   * reached.  Carrying it across chunks is what keeps a delimiter-free peer
+   * from making every chunk re-scan everything buffered so far (#610).
+   */
+  private inboundScanFrom = 0;
 
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
@@ -81,6 +87,12 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   protected async disconnectImplementation(): Promise<void> {
+    // Before the early return, not after: bytes from the connection that just
+    // went are meaningless to the next one, and this is the single teardown
+    // path every reconnect goes through (#578).  It also has to run when the
+    // socket is already gone — `dropConnection` nulls it, and the base class
+    // still calls in here before the next connect attempt.
+    this.resetInboundBuffer();
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -119,7 +131,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     const framing = this.options.framing ?? DEFAULT_FRAMING;
     if (framing.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
-      this.inboundBuffer = new Uint8Array(0);
+      this.resetInboundBuffer();
     } else if (framing.kind === 'lines') {
       this.extractLines(
         framing.delimiter ?? DEFAULT_LINE_DELIMITER,
@@ -131,7 +143,9 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   private extractLines(delimiter: string, maxLineLen: number): void {
-    this.applyExtraction(extractLineFrames(this.inboundBuffer, delimiter, maxLineLen));
+    this.applyExtraction(
+      extractLineFrames(this.inboundBuffer, delimiter, maxLineLen, this.inboundScanFrom),
+    );
   }
 
   private extractLengthPrefixed(maxFrameLen: number): void {
@@ -142,17 +156,54 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
    * Deliver what the pass completed, then either drop the connection (a cap
    * was breached) or keep the leftover for the next chunk.
    *
-   * A breached cap takes the whole actor down because a client actor owns
-   * exactly one connection — the server's counterpart drops only the
-   * offending connection instead.
+   * A breached cap costs the whole connection because a client actor owns
+   * exactly one — the server's counterpart drops only the offending
+   * connection instead.
    */
   private applyExtraction(extraction: FrameExtraction): void {
     for (const frame of extraction.frames) this.deliver(frame);
     if (extraction.overflow !== undefined) {
-      this.handleConnectionLost(new Error(extraction.overflow));
+      this.dropConnection(new Error(extraction.overflow));
       return;
     }
     this.inboundBuffer = extraction.remainder;
+    this.inboundScanFrom = extraction.scanFrom ?? 0;
+  }
+
+  /**
+   * Discard what the peer sent, take the socket down, then report the loss.
+   *
+   * All three, because reporting alone was inert (#578): the extractors hand
+   * a breached buffer back untouched for the caller to discard, and
+   * `handleConnectionLost` never touches the transport — it flips the state
+   * and asks the reconnect policy what to do.  With `reconnect: false`, or
+   * once `maxAttempts` runs out, that policy does nothing at all, so the
+   * socket stayed attached with its `'data'` listener live and the same peer
+   * went on growing the buffer the cap had just refused.  Even under a
+   * working policy the guard was only inert for the backoff window, and the
+   * bytes survived it.
+   *
+   * Order matters.  Listeners go first: `destroy()` fires `'close'`, whose
+   * handler calls back into `handleConnectionLost` with `socket closed`,
+   * which would overwrite the real cause.  The base class' `_transportOpened`
+   * flag stays set, which is correct — the next `_tryConnect` still runs
+   * `disconnectImplementation`, and that is where the buffer reset lives.
+   */
+  private dropConnection(cause: Error): void {
+    this.resetInboundBuffer();
+    const sock = this.socket;
+    this.socket = null;
+    if (sock) {
+      sock.removeAllListeners();
+      try { sock.destroy(); } catch { /* already gone */ }
+    }
+    this.handleConnectionLost(cause);
+  }
+
+  /** Forget every pending inbound byte and the scan position that indexes it. */
+  private resetInboundBuffer(): void {
+    this.inboundBuffer = new Uint8Array(0);
+    this.inboundScanFrom = 0;
   }
 
   private deliver(frame: TcpFrame): void {

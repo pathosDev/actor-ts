@@ -634,6 +634,26 @@ falscher Typ, fehlender Pfad) und `BrokerOptionsError` (ein
 Broker-Pflichtfeld fehlt in jeder Ebene).  Ungesetzte optionale Felder
 lösen ihn nie aus; sie fallen auf ihre Defaults zurück.
 
+<Aside type="note" title="Eine abgelehnte URL wird mit maskierten Zugangsdaten gemeldet">
+  ```text
+  MqttOptions: brokerUrl must use protocol mqtt, mqtts (got "amqp://***@rabbit:5672/vhost")
+  ```
+  Jede Regel, die eine URL ablehnt — der Check-Helfer `url` und die
+  Verbindungs-URL-Regeln der Mongo-, libSQL-, D1- und DynamoDB-Stores —
+  ersetzt die Userinfo durch `***`, und zwar **sowohl** in der Meldung
+  **als auch** in `OptionsError.value`.  Eine abgelehnte Broker-URL wird
+  auf ERROR geloggt, wenn sie den `preStart` eines Aktors scheitern lässt,
+  und ein Passwort, das einen Log-Aggregator erreicht hat, muss rotiert
+  werden — löschen genügt nicht.
+
+  Sonst wird am Wert nichts angefasst — keine Normalisierung, kein
+  angehängter Schrägstrich, kein kleingeschriebener Host —, du erkennst
+  also weiterhin, was du getippt hast, und ein Wert, der gar keine URL ist
+  (`":memory:"`, `"file:local.db"`), kommt unverändert zurück.  Dieselbe
+  Maskierung steht deinem eigenen Code als
+  [`redactUrlCredentials`](/de/reference/utility-helpers/) zur Verfügung.
+</Aside>
+
 ```ts
 import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';
 

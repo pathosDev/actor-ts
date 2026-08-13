@@ -184,6 +184,16 @@ Ein `WebsocketFrame` ist `{ kind: 'text'; data: string }` oder
 einen `WebsocketDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
 wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
 
+Ein zu großer Frame wird mit einer Warnung verworfen, eine pro Frame — das
+Gegenüber bestimmt also, wie oft diese Zeile geschrieben wird.  Sie benennt
+die Verbindung deshalb mit einem redigierten Label
+(`wss://feed.example.com/ws/orders`) statt mit `url`: Userinfo und
+Query-String fallen weg, denn ein WebSocket-Endpunkt wird üblicherweise mit
+einem `?token=…` authentifiziert, und der Pfad bleibt erhalten, weil er zwei
+Verbindungen zum selben Host unterscheidet.  Dieselbe Maskierung steht
+deinem eigenen Code als
+[`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
+
 ## Reconnect und Buffering
 
 Eine unerwartete Trennung übernimmt der

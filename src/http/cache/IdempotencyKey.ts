@@ -36,14 +36,15 @@ type CachedResponse = {
   readonly body: unknown;
   readonly contentType?: string;
   /**
-   * SHA-256 hash (base64) of the ORIGINAL request body that produced
-   * this cached response.  Re-checked on every replay: if the new
-   * request's body hash doesn't match, the client tried to reuse the
-   * same idempotency key for a SEMANTICALLY DIFFERENT request — we
-   * reject with 422 rather than returning the wrong response.
-   * Stripe's spec calls this out explicitly; without it, a malicious
-   * (or buggy) client that reuses an idempotency key can poison the
-   * cache to receive someone else's response.
+   * SHA-256 hash (base64) of the ORIGINAL request — method, path,
+   * canonical query and body — that produced this cached response.
+   * Re-checked on every replay: if the new request's hash doesn't
+   * match, the client tried to reuse the same idempotency key for a
+   * SEMANTICALLY DIFFERENT request — we reject with 422 rather than
+   * returning the wrong response.  Stripe's spec calls this out
+   * explicitly; without it, a malicious (or buggy) client that reuses
+   * an idempotency key can poison the cache to receive someone else's
+   * response.
    */
   readonly requestFingerprint: string;
 };
@@ -84,15 +85,15 @@ export function idempotent(options: IdempotencyOptions) {
             error: 'idempotency-key in-flight; retry shortly',
           });
         }
-        // Security: same idempotency key + DIFFERENT body = client
-        // tried to reuse a key for a semantically-different request.
-        // Stripe's spec says reject with 422.  Returning the cached
-        // (unrelated) response would let an attacker poison the
-        // cache with a key they guessed/observed and steal another
-        // client's response.
+        // Security: same idempotency key + DIFFERENT method, path,
+        // query or body = client tried to reuse a key for a
+        // semantically-different request.  Stripe's spec says reject
+        // with 422.  Returning the cached (unrelated) response would
+        // let an attacker poison the cache with a key they
+        // guessed/observed and steal another client's response.
         if (value.requestFingerprint !== fingerprint) {
           return complete(Status.UnprocessableEntity, {
-            error: 'idempotency-key already used with a different request body',
+            error: 'idempotency-key already used with a different request',
           });
         }
         return decodeResponse(value);
@@ -146,17 +147,66 @@ function encodeResponse(response: HttpResponse, requestFingerprint: string): Cac
 }
 
 /**
- * Compute a stable fingerprint of the request body + method + path
- * for the idempotency-key duplicate-body check.  SHA-256 base64
- * — fast (sub-ms for typical payloads), collision-resistant, and
+ * Canonical serialisation of `request.query` for the fingerprint.
+ *
+ * Keys are **sorted**, so a retry that happens to reorder parameters
+ * (`?a=1&b=2` vs `?b=2&a=1`) fingerprints identically — parameter order
+ * carries no meaning in a URL, and 422-ing an honest retry breaks
+ * idempotency in exactly the direction it is supposed to protect.  The
+ * values of a *repeated* key keep their **original order**, because
+ * `?tag=a&tag=b` and `?tag=b&tag=a` are different inputs to any API
+ * that reads the list positionally — sorting them would silently widen
+ * the guard.  `URLSearchParams` normalises percent-encoding on the way
+ * out, so two spellings of the same value collapse to one form.
+ *
+ * This choice is deliberate and easy to "tidy" into a total sort by
+ * mistake; keep the note if the code moves.
+ */
+function canonicalQuery(query: HttpRequest['query']): string {
+  const params = new URLSearchParams();
+  for (const key of Object.keys(query).sort()) {
+    const value = query[key];
+    if (value === undefined) continue;
+    if (Array.isArray(value)) for (const single of value) params.append(key, single);
+    else params.append(key, value);
+  }
+  return params.toString();
+}
+
+/**
+ * `path` with any query fragment removed.
+ *
+ * `HttpRequest.path` is contractually the bare pathname, but a backend
+ * that hands over the raw request target instead would otherwise fold
+ * the query into the fingerprint twice — once verbatim inside `path`,
+ * once canonically — and so compute a different fingerprint from a peer
+ * pod running a different backend against the same shared cache.
+ * Normalising here keeps the fingerprint a property of the request, not
+ * of the server that received it.
+ */
+function pathWithoutQuery(path: string): string {
+  const queryStart = path.indexOf('?');
+  return queryStart === -1 ? path : path.slice(0, queryStart);
+}
+
+/**
+ * Compute a stable fingerprint of the request body + method + path +
+ * query for the idempotency-key duplicate-request check.  SHA-256
+ * base64 — fast (sub-ms for typical payloads), collision-resistant, and
  * the base64 form is JSON-safe for storage in the cache.
  *
  * We include `method + path` so even a body-less GET can be
- * fingerprinted, and a same-body POST/PUT mix doesn't collide.
+ * fingerprinted, and a same-body POST/PUT mix doesn't collide.  The
+ * query belongs in there for the same reason: `POST /refunds?amount=1`
+ * and `POST /refunds?amount=9999` are different requests even with an
+ * identical body, and without the query the second one replays the
+ * first one's response instead of being rejected with 422.
  */
 async function computeRequestFingerprint(request: HttpRequest): Promise<string> {
   const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  const prelude = new TextEncoder().encode(`${request.method} ${request.path}\n`);
+  const query = canonicalQuery(request.query);
+  const target = `${pathWithoutQuery(request.path)}${query ? `?${query}` : ''}`;
+  const prelude = new TextEncoder().encode(`${request.method} ${target}\n`);
   const body = request.body ?? new Uint8Array(0);
   const combined = new Uint8Array(prelude.byteLength + body.byteLength);
   combined.set(prelude, 0);

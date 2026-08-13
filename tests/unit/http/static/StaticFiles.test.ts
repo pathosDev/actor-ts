@@ -78,6 +78,27 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
     expect(response.headers.get('location')).toBe('/static/');
   });
 
+  test('the directory redirect keeps the query and puts the slash on the path', async () => {
+    // The query is re-appended after the trailing slash, never inside it.
+    // A backend reporting the raw request target in `HttpRequest.path`
+    // produced `/static?a=1/` here — the slash landing in the query value,
+    // so the redirect target addressed a different resource and the
+    // documented "query preserved" guarantee held on two backends of three.
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/static?a=1&b=2`, { redirect: 'manual' });
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('/static/?a=1&b=2');
+  });
+
+  test('the directory listing heading is the pathname, without the query', async () => {
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/browse/sub/?show=all`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('/browse/sub/');
+    expect(html).not.toContain('show=all');
+  });
+
   test('serves a nested file', async () => {
     const url = await start(mk, routes());
     expect(await (await fetch(`${url}/static/sub/page.txt`)).text()).toBe('hello sub');

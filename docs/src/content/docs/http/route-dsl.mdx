@@ -221,13 +221,19 @@ The handler receives an `HttpRequest`:
 ```ts
 type HttpRequest = {
   readonly method:  HttpMethod;
-  readonly path:    string;
+  readonly path:    string;   // pathname only — '/orders/42', never '/orders/42?page=2'
   readonly headers: Record<string, string>;
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
 };
 ```
+
+`path` is the **pathname only**, on every backend — the query string
+never appears in it, because the parameters are already parsed into
+`query`.  That matters for anything built by appending to `path`: a
+redirect target, a cache key, a request fingerprint.  Percent-escapes
+are left encoded; decode once, then validate.
 
 ### Path parameters
 

@@ -26,10 +26,11 @@
  * A thousand extra draws cost under a millisecond.
  */
 export const name = 'public util helpers';
-export const description = 'randomString entropy + safeStringify cycle + lazyImportModule error';
+export const description = 'randomString entropy + safeStringify cycle + lazyImportModule error + URL redaction';
 
 export async function run({ actorTs }) {
   const { randomString, randomHex, randomId, randomUuid, safeStringify, lazyImportModule } = actorTs;
+  const { redactUrlCredentials, redactedUrlLabel } = actorTs;
 
   for (const [label, value, pattern] of [
     ['randomHex', randomHex(16), /^[0-9a-f]{16}$/],
@@ -85,4 +86,35 @@ export async function run({ actorTs }) {
 
   const nodePath = await lazyImportModule('node:path');
   if (typeof nodePath.join !== 'function') throw new Error('lazyImportModule lost the module shape');
+
+  // URL redaction (#590, #592) is runtime-sensitive for one specific reason:
+  // `redactedUrlLabel` parses with the WHATWG `URL`, and the NON-SPECIAL
+  // schemes this project speaks (`mqtt:`, `amqp:`, `libsql:`) are exactly
+  // where the three implementations differ on how much of the authority
+  // survives.  `redactUrlCredentials` is pure string work and rides along
+  // because its whole contract is being a no-op on the inputs the persistence
+  // stores feed it (`:memory:`, `file:…`).
+  for (const [input, expected] of [
+    ['mongodb://user:pass@host:27017/db', 'mongodb://***@host:27017/db'],
+    ['amqp://guest:guest@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    [':memory:', ':memory:'],
+    ['file:/tmp/actor-ts.db', 'file:/tmp/actor-ts.db'],
+    ['not a url', 'not a url'],
+  ]) {
+    const actual = redactUrlCredentials(input);
+    if (actual !== expected) {
+      throw new Error(`redactUrlCredentials(${JSON.stringify(input)}) = ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+    }
+  }
+
+  for (const [input, expected] of [
+    ['wss://user:pass@example.com/ws/orders?token=abc', 'wss://example.com/ws/orders'],
+    ['mqtt://user:pass@broker:1883', 'mqtt://broker:1883'],
+    ['not a url', 'not a url'],
+  ]) {
+    const actual = redactedUrlLabel(input);
+    if (actual !== expected) {
+      throw new Error(`redactedUrlLabel(${JSON.stringify(input)}) = ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+    }
+  }
 }

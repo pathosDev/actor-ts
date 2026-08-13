@@ -120,6 +120,15 @@ Detail serverseitig, verschlüsselt über die Request-ID. Halte `403`/`404`
 unspezifisch — die Static-File-Schicht liefert für jeden abgelehnten Pfad
 einen einheitlichen `404`, verrät also nie, was existiert.
 
+Auch die serverseitige Kopie braucht Hygiene, und das übliche Leck dort ist
+eine Verbindungs-URL: ein abgelehnter Optionswert und die
+Oversize-Frame-Warnung des WebSocket-Clients benennen beide eine, und beide
+werden mit maskierter Userinfo geschrieben. Wenn du selbst eine URL loggst,
+schick sie durch
+[`redactUrlCredentials` oder `redactedUrlLabel`](/de/reference/utility-helpers/)
+— ein Passwort, das einen Log-Aggregator erreicht hat, muss rotiert werden;
+löschen genügt nicht.
+
 ## Redirects
 
 `redirect(target)` nimmt **ausschließlich Same-Origin-Ziele** — eine

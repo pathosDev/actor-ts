@@ -71,15 +71,26 @@ type IdempotencyOptions = {
 | `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
 | `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
-| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4). |
+| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4). |
 
-Der Wrapper speichert zusätzlich einen **SHA-256-Hash des
-Request-Bodies** neben jeder gecachten Response.  Wenn ein
-zweiter Request mit demselben Key, aber anderem Body
-hereinkommt, lehnt der Wrapper mit 422 ab — das verhindert, dass
-ein Client (böswillig oder fehlerhaft) denselben Key für einen
-semantisch anderen Request wiederverwendet und so die falsche
-gespeicherte Response erhält.
+Der Wrapper speichert zusätzlich einen **SHA-256-Fingerprint des
+Requests** — Methode, Pfad, Query-String und Body — neben jeder
+gecachten Response.  Wenn ein zweiter Request mit demselben Key
+hereinkommt, sich aber in einem dieser vier Teile unterscheidet,
+lehnt der Wrapper mit 422 ab — das verhindert, dass ein Client
+(böswillig oder fehlerhaft) denselben Key für einen semantisch
+anderen Request wiederverwendet und so die falsche gespeicherte
+Response erhält.  `POST /refunds?amount=1` und
+`POST /refunds?amount=9999` sind verschiedene Requests, auch wenn
+ihre Bodies identisch sind.
+
+Die Query geht **kanonisch** ein: Parameter-*Keys* werden
+sortiert, damit ein Retry, der `?a=1&b=2` zu `?b=2&a=1`
+umsortiert, weiterhin abgespielt statt abgelehnt wird —
+Umsortieren ist kein anderer Request.  Die Werte eines
+*wiederholten* Keys behalten ihre ursprüngliche Reihenfolge,
+sodass `?tag=a&tag=b` von `?tag=b&tag=a` verschieden bleibt; das
+zählt für jede API, die eine solche Liste positionell liest.
 
 ## Was gecacht wird
 

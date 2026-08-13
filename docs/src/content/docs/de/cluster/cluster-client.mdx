@@ -72,7 +72,7 @@ Der Client:
 type ClusterClientOptionsType = {
   contactPoints: ReadonlyArray<string>;            // mindestens ein Node: host:port oder <system>@host:port
   systemName?: string;                             // synthetischer System-Name im Hello des Clients
-  clientIdentity?: { host: string; port: number }; // Identität für das Reply-Routing
+  clientIdentity?: { host: string; port: number }; // im Hello des Clients angekündigte Identität
   askTimeoutMs?: number;                           // Standard-Ask-Timeout (ms; Standard 5000)
   tls?: TlsTransportOptionsType;                   // muss zum Cluster passen
   logger?: Logger;                                 // Standard: ConsoleLogger auf WARN
@@ -107,6 +107,42 @@ die Nachricht zu — jeder bereits unter `/user` laufende Actor ist
 Seine einzige Option, `askTimeoutMs`, begrenzt die Wartezeit, wenn
 ein Client-Envelope ein ask trägt; setze sie über
 `ClusterClientReceptionistOptions`.
+
+## An wen die Antwort geht
+
+Ein ask wird über **die Verbindung beantwortet, auf der das
+Envelope ankam** — nie an eine Adresse, die das Envelope nennt.
+Ein Client sagt genau einmal, wer er ist: im `hello`-Handshake.
+Der Transport bindet diese Angabe an den Socket, und jede
+Antwort, jede Redaktion und jedes „path not found“ folgt dieser
+Bindung.
+
+Deshalb hat das Envelope überhaupt kein Absenderfeld mehr.
+Früher trug es eines, und der Receptionist routete darauf — was
+jede verbundene Gegenstelle die Adresse wählen ließ, an die
+dieser Node antwortete und zu der er eine Verbindung aufbaute.
+Das Feld zu löschen statt es zu prüfen, lässt nichts übrig, das
+beim nächsten Mal falsch gemacht werden kann, wenn jemand zur
+billigeren von zwei Antworten auf dieselbe Frage greift.
+
+Ein Client, der alt genug ist, das Feld noch zu senden, wird
+normal bedient; der Wert wird ignoriert.  Nennt er etwas
+*anderes* als die Verbindung, zählt der Node es auf
+`cluster_envelope_from_mismatch_total{frame="cluster-client-envelope"}`
+und macht weiter.  Das ist entweder ein Client, der sich über
+seine eigene Adresse irrt, oder jemand, der testet, ob dieser
+Node auf Payload routet — eine Zahl wert, keine Ablehnung, denn
+das Envelope selbst ist in Ordnung.
+
+:::caution[Das ist keine Client-Authentifizierung]
+Der Peer der Verbindung ist das, was der Socket in seinem
+`hello` behauptet hat.  Darauf zu routen nimmt die Beliebigkeit
+heraus — eine Antwort lässt sich nicht mehr aus der Payload
+steuern —, macht die Gegenstelle aber nicht zu dem, was sie zu
+sein behauptet.  Nur Peer-Zertifikate tun das: unter mTLS muss
+die behauptete Adresse zum Zertifikat passen.  Siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/).
+:::
 
 ## Was ein Fehlschlag dem Client verrät
 
