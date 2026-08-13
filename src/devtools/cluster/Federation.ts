@@ -68,7 +68,6 @@ export class DevToolsFederation {
     const self = this.cluster.selfAddress.toString();
     const query: NodeQueryMessage = {
       kind: 'devtools-node-query',
-      from: self,
       round: ++this.round,
       wantActors: this.wantActors,
     };

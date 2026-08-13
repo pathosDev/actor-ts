@@ -17,11 +17,18 @@ export const DEVTOOLS_AGENT_PATH = '/devtools/node-agent';
 /** Envelope path the serving node collects replies on. */
 export const DEVTOOLS_COLLECTOR_PATH = '/devtools/collector';
 
-/** The serving node asking a peer how it is doing. */
+/**
+ * The serving node asking a peer how it is doing.
+ *
+ * Carries no return address on purpose.  It used to name one, and a peer
+ * answered wherever it pointed — so a single forged frame made any
+ * DevTools-enabled node dial an attacker-chosen host and hand it the
+ * whole actor tree.  The answer now goes back down the connection the
+ * query arrived on, which is the only address the receiver has any
+ * reason to trust (#595).
+ */
 export type NodeQueryMessage = {
   readonly kind: 'devtools-node-query';
-  /** Where to answer — the asker's cluster address. */
-  readonly from: string;
   /** Echoed back, so a late reply to a previous round is recognisable. */
   readonly round: number;
   /** Whether the actor tree is wanted; it is far larger than the figures. */
@@ -45,7 +52,6 @@ export function isNodeQuery(body: unknown): body is NodeQueryMessage {
   const message = body as Partial<NodeQueryMessage> | null;
   return message !== null
     && message?.kind === 'devtools-node-query'
-    && typeof message.from === 'string'
     && typeof message.round === 'number';
 }
 
