@@ -101,9 +101,13 @@ A short tour of what's in the box:
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
 - **Multi-sink logging** — one record to several destinations at once, each
-  with its own minimum level: console (text or NDJSON) and rotating log
-  files today, with bounded queues, batched delivery and a flush on
-  shutdown.  A `transform` hook redacts once, before fan-out.
+  with its own minimum level, with bounded queues, batched delivery and a
+  flush on shutdown.  Console (text or NDJSON), rotating log files, and
+  ten platforms: OTLP (which alone reaches Loki, Datadog, SigNoz, Axiom,
+  Honeycomb, New Relic and any OTel collector), Graylog/GELF, Sentry,
+  Parseable, Loki, Seq, Splunk HEC and RFC 5424 syslog.  No dependencies —
+  Sentry is a passthrough to your own SDK.  A `transform` hook redacts
+  once, before fan-out.
 - **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a

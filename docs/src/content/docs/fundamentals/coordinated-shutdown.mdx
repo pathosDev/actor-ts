@@ -259,6 +259,12 @@ By the time the promise resolves:
 - The built-in `actor-system-terminate` task has called
   `system.terminate()`, which has stopped every actor and closed
   the dispatcher and scheduler.
+- The **log sinks have been flushed and closed**, bounded by
+  `actor-ts.logger.close-timeout` (3 s by default) — so a batching
+  sink's last records are on disk or on the wire before the process
+  goes.  That flush lives inside `terminate()` rather than in a phase,
+  which means it also covers a program that calls `terminate()`
+  directly; see [multi-sink logging](/observability/logging/multi-sink/#shutdown).
 - The process is free to exit (`process.exit(0)`).  Nothing left
   to do.
 
