@@ -17,7 +17,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { Agent, type RequestOptions, request } from 'node:https';
-import { KubernetesApiSeedProvider } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
+import { endpointsPath, KubernetesApiSeedProvider } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
 import { KubernetesApiSeedProviderOptions } from '../../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as basicLookupScenario } from './scenarios/01-basic-lookup.js';
@@ -112,7 +112,9 @@ async function main(): Promise<void> {
         .withSystemName('k8s-integration')
         .withPort(9000)
         .withFetchEndpoints(async (): Promise<string[]> => {
-          const response = await api('GET', `/api/v1/namespaces/${namespace}/endpoints/${serviceName}`);
+          // Same path builder the default fetcher uses, so this runner does
+          // not keep a second, unencoded copy of the interpolation (#597).
+          const response = await api('GET', endpointsPath(namespace, serviceName));
           if (response.status !== 200) throw new Error(`k8s API ${response.status}: ${response.body.slice(0, 200)}`);
           const parsed = JSON.parse(response.body) as {
             subsets?: Array<{ addresses?: Array<{ ip: string }> }>;
