@@ -185,16 +185,55 @@ export class KubernetesLease implements Lease {
     return 'success';
   }
 
-  /** True iff the existing lease has a different live holder. */
+  /**
+   * True iff the existing lease has a different live holder.
+   *
+   * Every field consulted here was written by the *previous holder*, so
+   * none of it may be taken at face value (#598).  Left unbounded, a
+   * single write of `leaseDurationSeconds: 2147483647` or a `renewTime`
+   * in the year 3000 keeps this method answering "still held" for
+   * decades — no pod ever runs the singleton again, and the write needs
+   * only the Lease-CRUD RBAC the framework's own example prescribes.
+   * Two bounds make such a record survivable:
+   *
+   *   - the remote duration is capped at a *multiple* of our own TTL,
+   *     not at our own TTL.  Capping at exactly ours would be unsafe in
+   *     the other direction: during a rolling upgrade that raises
+   *     `ttlMs`, the node still on the smaller value would declare a
+   *     live holder expired and steal the lease.  The multiple absorbs
+   *     an ordinary configuration spread while still bounding a hostile
+   *     value;
+   *   - a `renewTime` further ahead than one local TTL cannot come from
+   *     an honest holder with a sane clock, so it is treated as expired
+   *     rather than as live.  Believing it is what turns one write into
+   *     a permanent wedge, and clamping it to "now" would be no better,
+   *     since every later call would clamp it again.
+   *
+   * A missing *or* unparseable `renewTime` still reads as live: neither
+   * carries usable information, and for an owned record the safe reading
+   * is "someone holds this".  That the two now agree is itself a fix —
+   * `new Date('garbage').getTime()` is `NaN` and `NaN > Date.now()` is
+   * `false`, so an unparseable timestamp used to mean *free for the
+   * taking*, the opposite polarity of the missing-timestamp branch
+   * directly beside it.
+   */
   private isStillHeldByOther(lease: K8sLeaseObject): boolean {
     const holder = lease.spec.holderIdentity;
     if (!holder) return false;                       // unowned
     if (holder === this.options.owner) return false; // we already hold it
-    const renewTime = lease.spec.renewTime;
-    const durationSec = lease.spec.leaseDurationSeconds ?? this.options.ttlMs / 1000;
-    if (!renewTime) return true;                     // owned but no time → assume live
-    const expiresAt = new Date(renewTime).getTime() + durationSec * 1000;
-    return expiresAt > Date.now();
+
+    const renewedAt = new Date(lease.spec.renewTime ?? '').getTime();
+    if (!Number.isFinite(renewedAt)) return true;    // missing / unparseable → assume live
+    const now = Date.now();
+    if (renewedAt > now + this.options.ttlMs) return false;  // implausibly far ahead → not credible
+
+    /** How far a remote holder's TTL may exceed ours before we stop believing it. */
+    const remoteDurationTolerance = 4;
+    const remoteDurationMs = (lease.spec.leaseDurationSeconds ?? 0) * 1000;
+    const durationMs = Number.isFinite(remoteDurationMs) && remoteDurationMs > 0
+      ? Math.min(remoteDurationMs, this.options.ttlMs * remoteDurationTolerance)
+      : this.options.ttlMs;
+    return renewedAt + durationMs > now;
   }
 
   async release(): Promise<void> {

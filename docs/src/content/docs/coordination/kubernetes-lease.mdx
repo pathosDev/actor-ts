@@ -139,7 +139,26 @@ The framework writes:
 - `spec.leaseDurationSeconds` — derived from `ttlMs`.
 
 Other holders check `renewTime + leaseDurationSeconds < now()`
-to decide whether the current holder is stale.
+to decide whether the current holder is stale — but never at face
+value, because both fields were written by the holder they are
+being used to judge:
+
+- `leaseDurationSeconds` counts for at most **4 × the challenger's
+  own `ttlMs`**.  The factor is deliberately generous rather than a
+  straight clamp to `ttlMs`: during a rolling upgrade that raises
+  the TTL, a node still running the smaller value would otherwise
+  declare a live holder expired and take the lease from it.
+- A `renewTime` further ahead than one `ttlMs` is not credible from
+  a holder with a working clock, and counts as **expired**.
+  Believing it is what lets one write wedge the lease for good.
+- A missing *or* unparseable `renewTime` counts as **live**.  For an
+  owned record with no usable timestamp, "someone holds this" is the
+  safe reading.
+
+So a corrupt or hostile `Lease` object costs at most
+`4 × ttlMs` of unavailability instead of pinning the lease
+indefinitely.  Configure the same `ttlMs` on every pod that
+competes for one lease, and the tolerance never comes into play.
 
 ## Acquire flow
 

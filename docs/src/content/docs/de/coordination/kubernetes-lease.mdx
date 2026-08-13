@@ -141,7 +141,28 @@ Das Framework schreibt:
 - `spec.leaseDurationSeconds` — abgeleitet aus `ttlMs`.
 
 Andere Halter prüfen `renewTime + leaseDurationSeconds < now()`,
-um zu entscheiden, ob der aktuelle Halter stale ist.
+um zu entscheiden, ob der aktuelle Halter stale ist — aber nie
+ungeprüft, denn beide Felder hat genau der Halter geschrieben, über
+den sie urteilen sollen:
+
+- `leaseDurationSeconds` zählt höchstens für **4 × das eigene
+  `ttlMs`** des Herausforderers.  Der Faktor ist bewusst großzügig
+  statt eines harten Clamps auf `ttlMs`: bei einem Rolling Upgrade,
+  das die TTL anhebt, würde ein Node mit dem noch kleineren Wert
+  sonst einen lebenden Halter für abgelaufen erklären und ihm den
+  Lease wegnehmen.
+- Eine `renewTime`, die weiter als ein `ttlMs` in der Zukunft liegt,
+  ist von einem Halter mit funktionierender Uhr nicht glaubwürdig
+  und zählt als **abgelaufen**.  Ihr zu glauben ist genau das, was
+  einen einzelnen Write den Lease dauerhaft blockieren lässt.
+- Eine fehlende *oder* nicht parsebare `renewTime` zählt als
+  **lebend**.  Für einen Record mit Owner, aber ohne brauchbaren
+  Zeitstempel ist „irgendwer hält ihn“ die sichere Lesart.
+
+Ein korruptes oder feindliches `Lease`-Objekt kostet damit höchstens
+`4 × ttlMs` an Nichtverfügbarkeit, statt den Lease unbegrenzt zu
+blockieren.  Konfiguriere auf allen Pods, die um einen Lease
+konkurrieren, dasselbe `ttlMs`, dann greift die Toleranz nie.
 
 ## Acquire-Ablauf
 

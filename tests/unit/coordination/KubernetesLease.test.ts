@@ -264,6 +264,71 @@ describe('KubernetesLease — contention with another holder', () => {
   });
 });
 
+describe('KubernetesLease — hostile lease records (#598)', () => {
+  /** Seed a lease held by `other-pod` with the given spec overrides. */
+  const seedForeignLease = (spec: Partial<K8sLeaseObject['spec']>): void => {
+    server.seedLease('default', {
+      apiVersion: 'coordination.k8s.io/v1',
+      kind: 'Lease',
+      metadata: { name: 'test-lease', namespace: 'default' },
+      spec: { holderIdentity: 'other-pod', leaseTransitions: 1, ...spec },
+    });
+  };
+
+  test('a hostile leaseDurationSeconds cannot pin the lease past the local budget', async () => {
+    // 68 years of "duration", renewed a minute ago.  Unbounded, this
+    // reads as live until 2093; capped at 4 × our 5 s TTL it expired
+    // 40 s ago.
+    seedForeignLease({
+      leaseDurationSeconds: 2_147_483_647,
+      renewTime: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(true);
+    await lease.release();
+  });
+
+  test('a renewTime far in the future is not credible and does not wedge the lease', async () => {
+    seedForeignLease({
+      leaseDurationSeconds: 30,
+      renewTime: new Date(Date.now() + 10 * 365 * 24 * 60 * 60_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(true);
+    await lease.release();
+  });
+
+  test('an unparseable renewTime reads as live, not as free for the taking', async () => {
+    // `new Date('yesterday-ish').getTime()` is NaN, and `NaN > now` is
+    // false — which used to hand the lease to whoever asked next.
+    seedForeignLease({ leaseDurationSeconds: 30, renewTime: 'yesterday-ish' });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);
+  });
+
+  test('a live holder configured with a larger ttl is not stolen', async () => {
+    // The rolling-upgrade case that rules out clamping at exactly our own
+    // TTL: the holder runs ttlMs 15 s, we still run 5 s, and it renewed
+    // 10 s ago.  A `Math.min(remote, ours)` clamp would call it expired
+    // and take a live lease.
+    seedForeignLease({
+      leaseDurationSeconds: 15,
+      renewTime: new Date(Date.now() - 10_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);
+  });
+
+  test('a negative leaseDurationSeconds falls back to the local ttl', async () => {
+    seedForeignLease({
+      leaseDurationSeconds: -1,
+      renewTime: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);   // 1 s ago + our 5 s TTL → still live
+  });
+});
+
 describe('KubernetesLease — race / retry', () => {
   test('CREATE 409 retries up to acquireRetries', async () => {
     server.forceConflictNext = true;  // first POST will 409
