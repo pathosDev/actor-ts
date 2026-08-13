@@ -483,6 +483,25 @@ The parser rejects these with the usual line and column instead.
 The check is exact-match, so keys that merely resemble them are fine:
 `_proto_`, `constructorName` and `prototypes` all work normally.
 
+#### Reads see own keys only
+
+Refusing three names guards the write side.  The read side is guarded the
+other way round — positively — because `Object.prototype` has a dozen more
+members and a list could never keep up with them:
+
+```hocon
+name = ${toString}    # error: unresolved substitution — not a native function
+port = ${?valueOf}    # optional: falls through to the environment, then away
+```
+
+Every lookup — a substitution, `hasPath`, and each typed getter — reads
+**own** keys only, in the config tree and in the environment alike.  A name
+that happens to match an inherited member therefore misses instead of
+resolving to whatever lives on the prototype, and `hasPath('toString')` is
+`false` on any config that does not declare a `toString` key itself.
+Declaring one is still allowed and still works: an own key shadows the
+inherited member, so `toString = "mine"` reads back as `"mine"`.
+
 ## Reading config in code
 
 ```ts

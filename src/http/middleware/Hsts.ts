@@ -8,7 +8,7 @@
  * a harmless no-op.
  */
 import type { Middleware } from '../Route.js';
-import { applyHeaders } from './headers.js';
+import { headerDecorator } from './headers.js';
 import { HstsOptionsValidator, type HstsOptions, type HstsOptionsType } from './HstsOptions.js';
 
 export type ResolvedHsts = {
@@ -40,11 +40,14 @@ export function hstsHeaderValue(r: ResolvedHsts): string {
 
 /**
  * Build a middleware that adds `Strict-Transport-Security` to every
- * response (without clobbering one a handler already set).
+ * response its subtree produces (without clobbering one a handler already
+ * set) — including the response of a thrown `HttpError` short-circuit,
+ * which is what a first-contact client gets when its very first request is
+ * the one that gets rejected (#606).
  */
 export function strictTransportSecurity(options: HstsOptions = {}): Middleware {
   const value = hstsHeaderValue(resolveHsts(options as Partial<HstsOptionsType>));
-  return async (_req, next) => applyHeaders(await next(), { 'strict-transport-security': value });
+  return headerDecorator({ 'strict-transport-security': value });
 }
 
 /** Short alias for {@link strictTransportSecurity}. */

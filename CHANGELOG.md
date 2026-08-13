@@ -291,7 +291,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   receiver cut the frame short.  `lf` is available for receivers that
   accept nothing else, and collapses the newlines it cannot represent.
 
+### Changed
+
+- **BREAKING — `Lease.release()` reports a failure instead of swallowing it**
+  (#600).  `KubernetesLease.release()` used to discard a failed DELETE and
+  resolve as though the lease had been dropped, which left the record claimed
+  on the server while the process had locally forgotten it — exactly the
+  ambiguity `LeaseMajority`'s fail-safe exists for, and what made that fail-safe
+  dead code.  It now rejects, after stopping the renewal timer so a failed
+  DELETE cannot leave a lease being quietly renewed.  Every caller inside the
+  framework already treated release as best-effort and catches.
+
+  *Migration:* wrap `lease.release()` in `.catch(...)` where it is used purely
+  as cleanup; third-party `Lease` backends should propagate a release failure
+  rather than swallow it.
+
 ### Fixed
+
+- **A lease built without `name`, `owner`, `ttlMs` — or `namespace` for the
+  Kubernetes backend — is now rejected at construction** (#596).  It used to
+  come up silently and then disable mutual exclusion on the wire: without an
+  `owner` the CREATE/PUT carries no `spec.holderIdentity` (the undefined key
+  drops out of the JSON body) and a holder-less lease reads as free to every
+  node, so every `acquire()` returned true; without `ttlMs` the expiry is
+  `NaN`, which is never later than now, and the renewal interval is `NaN` too,
+  which `setInterval` clamps to about a millisecond.  Both shipped backends
+  were affected.  Required-ness is checked separately from the value rules,
+  because the options-validator helpers are contractually a no-op on unset
+  fields.
+
+- **`LeaseMajority`'s release-on-abandon and fail-safe do something now**
+  (#600).  The release fired from the timeout branch while the acquire it meant
+  to undo was still in flight — and a lease is a no-op to release before its
+  acquire resolves, so the abandoned attempt went on to land, take the lease
+  and renew it forever on a node whose own strategy had written the attempt
+  off.  The undo now waits for the abandoned attempt to report back and
+  releases only if it won, and no fresh acquire starts in the meantime: a
+  same-owner re-acquire would win trivially and claim survival, and a release
+  landing after that would delete the very record being claimed.  The fail-safe
+  on a failed release, previously unreachable for both shipped backends, is now
+  both reachable and covered.
 
 - **Directory listings classify entries by the followed `stat`** (#575).  An
   in-root symlink to a directory was rendered as a file — it carried the
@@ -509,6 +548,154 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   now copied into an exact, offset-0 `Uint8Array`.  Bun does not pool base64
   decodes, so a unit test on the project's own runner cannot see this on its
   own; a cross-runtime smoke case carries the guarantee on Node and Deno.
+
+- **HOCON substitutions and `Config` accessors no longer read through the
+  object prototype** (#589).  Both path lookups descended with a bare property
+  read, so every member of `Object.prototype` answered a config path:
+  `${toString}` spliced a native function into the resolved config,
+  `hasPath('toString')` returned `true`, and the typed getter behind it then
+  failed with a type error on a function instead of a missing-path error.  The
+  refusal list added in #406 covers three key names, and a blocklist can never
+  enumerate a prototype chain, so reads are now guarded positively with
+  `Object.hasOwn` — in `HoconParser.lookup`, in `Config.lookup`, and in the
+  environment fallback, where `process.env` is prototype-backed and hands back
+  a native function on Node and Deno (Bun returns `undefined`, which is why the
+  hole was invisible on the primary toolchain).  `Config.fromObject`'s deep copy
+  also gained the forbidden-key filter `deepMerge` and `stripUndefined` already
+  had, so an own `__proto__` from `JSON.parse` can no longer re-parent the
+  cloned tree.  Verified on Bun, Node and Deno via the cross-runtime smoke case.
+
+  *Migration:* a config path naming an inherited member now misses instead of
+  resolving — `hasPath('toString')` is `false`, and `${toString}` fails as an
+  unresolved substitution rather than silently yielding a function.  Declaring
+  the key in the config itself still works unchanged; an own key shadows the
+  inherited member.
+
+- **Security headers, CSP, HSTS and the request id now survive a throwing
+  short-circuit** (#606).  The four response-decorating middlewares were written
+  as `applyHeaders(await next(), headers)`, so a rejected `await` skipped the
+  decoration entirely — and throwing `HttpError` is the framework's idiomatic
+  short-circuit, which is exactly what `csrfProtection`, `BasicAuth` and
+  `BearerTokenAuth` do.  A cross-origin POST against the documented stack came
+  back as a 403 with no `X-Frame-Options`, `Referrer-Policy`, COOP, HSTS, CSP or
+  request id — and CSP and the id were unreachable by any other route, since
+  neither has a server-wide equivalent.  The four now rethrow an `HttpError`
+  copy carrying their headers, merged *under* whatever the thrower set itself;
+  anything that is not an `HttpError` is rethrown untouched, because it maps to
+  the generic 500 that deliberately carries nothing from the thrown value, and
+  those responses stay the backend seam's job
+  (`newServerAt(…).withSecurityHeaders(…)`).  Error responses therefore arrive
+  with headers they previously lacked, so a test asserting an exact header set
+  on a 401/403 may need updating.  The documented security stack also moves
+  `handleErrors` outside `csrfProtection`, so the error mapper finally sees that
+  403 while the response it hands back still flows out through the header
+  layers.
+
+- **The DevTools node agent answers the connection, not the payload** (#595).  A
+  `devtools-node-query` used to carry its own return address and the agent
+  replied wherever it pointed, so a single forged frame on the cluster port made
+  any DevTools-enabled clustered node open an outbound connection to an
+  attacker-chosen host and post it the node's entire actor tree — every path,
+  class name, mailbox depth and dispatcher — plus its figures, unprompted.  The
+  reply now goes to the peer the transport supplied, which is the connection the
+  query arrived on, and the query's return-address field is removed rather than
+  validated: a field whose only correct value is one the receiver already holds
+  can only be got wrong later.  This is the same defect class swept out of the
+  cluster in #562/#564/#572/#711, which missed this agent.  The node-to-node
+  DevTools vocabulary carries no compatibility promise, but during a rolling
+  upgrade an unpatched agent drops a patched collector's query, so those peers
+  read as stale on the overview until the upgrade finishes.
+
+- **The DevTools federation collector no longer takes a peer's word for who it
+  is** (#593).  Peer readings were cached under the address written inside the
+  report, so a member could file its figures under another node's name and
+  overwrite that node's row, or under a name no node has and conjure a peer
+  complete with a fabricated actor tree that the overview and the actors panel
+  then showed as real.  Nothing checked membership, and nothing bounded the map
+  — the only eviction pass refuses to drop an entry under an hour old, so forged
+  addresses accumulated an hour at a time.  Reports are now keyed on the address
+  the transport supplied (and that address replaces the one the report claims,
+  so the actors panel still resolves), accepted only from a node the cluster
+  currently holds as a member, capped in number with the oldest reading evicted
+  first, and capped in reported actor-tree size.  The payload check was
+  `typeof figures === 'object'`, which passed an array or a half-populated
+  object through to the cluster-wide totals where the counters are summed; every
+  counter, both latency percentiles and every mailbox-depth row must now be a
+  finite number, because one `undefined` among them used to turn every number on
+  the overview into `NaN`.
+
+- **A Kubernetes lease no longer believes the previous holder's expiry claims
+  without bound** (#598).  Liveness was computed as
+  `renewTime + leaseDurationSeconds` from two fields the previous holder wrote,
+  so one write of a 68-year duration or a `renewTime` in the year 3000 kept the
+  lease reading as held for decades — no pod ever acquires it again, no
+  singleton ever spawns — and the write needs only the Lease CRUD permissions
+  the framework's own RBAC example prescribes.  The remote duration now counts
+  for at most four times the challenger's own `ttlMs` (a generous multiple
+  rather than a straight clamp, so a rolling upgrade that raises the TTL cannot
+  make one node steal a live lease from another), a `renewTime` further ahead
+  than one TTL counts as expired, and a non-positive duration falls back to the
+  local TTL.  An unparseable `renewTime` now counts as live like a missing one;
+  it used to count as free for the taking.
+
+- **BREAKING — the pod's mounted ServiceAccount token is never paired with a
+  caller-supplied API-server address** (#599).  `apiServerUrl`, `authToken` and
+  `caCert` were merged field by field against the in-cluster credentials, so
+  naming only an `apiServerUrl` sent the cluster's own bearer token to that host
+  — a credential travelling to an address it was not issued for.  The pinned CA
+  bounded the damage, but the target of the request is operator-supplied and the
+  token is not.  The three fields are now all-or-nothing: supply all of them, or
+  none and the in-cluster mount is used whole.  `apiServerUrl` is also
+  restricted to `https`, since the client builds its request with `node:https`
+  regardless of what the URL's protocol says.
+
+  *Migration:* supply `apiServerUrl` + `authToken` + `caCert` together, or none
+  of them; a partial set now throws `OptionsError` at construction, and an
+  `http://` API-server URL is rejected.
+
+- **Every GitHub Actions workflow pins its actions to a commit SHA** (#585).
+  All 32 `uses:` references across the 11 workflow files were mutable tags.  A
+  tag is a pointer its owner can move, so an action author — or whoever takes
+  over their account — could have swapped the code that runs inside
+  `publish.yml`'s job, which holds `id-token: write` and publishes to npm with
+  provenance.  Each pin carries its release tag in a trailing `# vX.Y.Z`
+  comment, which is what keeps Dependabot updating it; drop the comment and the
+  repository silently freezes on a stale action instead.
+  `tests/unit/ci/WorkflowHygiene.test.ts` asserts both halves, because workflow
+  YAML is invisible to every other gate the project runs.
+
+- **The GitHub Pages deploy credentials are scoped to the job that deploys**
+  (#621).  `docs.yml` granted `pages: write` + `id-token: write` at workflow
+  level, so the build job — the one that installs the root and docs dependency
+  trees, downloads Chromium and runs `astro build` — held them too, even though
+  its only Pages step authenticates with the Actions runtime token and needs no
+  scope at all.  Both grants moved down to `deploy`, which is a single step and
+  no checkout.  The seven workflows that declared no permissions at all now
+  state `contents: read` explicitly, so a change to the repository default
+  cannot silently widen them.
+
+- **The README-badge push no longer shares a job with the test suite** (#622).
+  `test.yml` ran the entire devDependency tree in a job holding
+  `contents: write` plus a git credential `actions/checkout` had persisted into
+  `.git/config`, purely so the last two steps could update a badge — reachable
+  from any postinstall script in the installed tree.  The suite now runs with
+  `contents: read` and `persist-credentials: false`, and a separate `badge` job
+  that installs nothing consumes its numbers and pushes.  The suite still runs
+  exactly once.  Every `bun install` in CI is `--frozen-lockfile`, so no check
+  can pass against a dependency set the lockfile never recorded; note that
+  Dependabot does not regenerate `bun.lock`, so its pull requests fail until it
+  is synced by hand (#817).
+
+- **The generated DevTools UI bundle is visible in diffs again** (#620).
+  `.gitattributes` marked `src/devtools/generated/uiAssets.ts` `-diff`, which
+  made git and GitHub report it as binary.  `bun run check:ui` proves only that
+  the committed `source-hash` matches the UI sources it claims — it deliberately
+  does not compare the bundle's bytes, since those are not reproducible across
+  operating systems and Bun releases — so review is the only check the embedded
+  payload ever gets, and `-diff` removed it.  A payload edited without touching
+  `devtools-ui/**` now shows up as `gzipBase64`, `size` and `etag` moving while
+  `source-hash` stays put.  `linguist-generated`, `text` and `eol=lf` are
+  unchanged, and a regenerate is 7 changed lines, only 2 of them large.
 
 ## [0.15.0] — 2026-08-12
 

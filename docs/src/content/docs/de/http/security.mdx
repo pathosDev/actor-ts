@@ -26,8 +26,8 @@ const routes =
   withMiddleware(securityHeaders(),
   cors(corsOptions,
   withMiddleware(requestTimeout(15_000),
-  withMiddleware(csrf,
   handleErrors(errorMapper,
+  withMiddleware(csrf,
     concat(
       appRoutes,
       fallback(notFound),
@@ -37,11 +37,11 @@ const routes =
 | Schicht | Warum hier |
 | --- | --- |
 | `requestId` | ganz außen, damit jede Log-Zeile (auch Fehler) eine ID hat |
-| `securityHeaders` | Header auf **jeder** Response setzen, auch bei Short-Circuits |
+| `securityHeaders` | über allem, was ablehnt — damit auch diese Responses die Header tragen |
 | `cors` | **außerhalb** der Auth — Preflights sind laut Spec anonym |
 | `requestTimeout` | Latenz begrenzen, bevor echte Arbeit läuft |
+| `handleErrors` | **außerhalb von `csrf`**, damit es dessen eigene 403 mappt — und innerhalb der Header-Schichten, damit das Ergebnis noch durch sie läuft |
 | `csrf` | nur Browser-Apps; nach CORS, vor den Handlern |
-| `handleErrors` | geworfene Fehler nahe den Routen auf Responses mappen |
 | `fallback` | an der Wurzel — beantwortet alles Unpassende |
 
 ## Was jede Response ohnehin schon trägt
@@ -81,9 +81,14 @@ Objekt geht genauso (`withSecurityHeaders({ frameOptions: 'SAMEORIGIN' })`),
 und `withSecurityHeaders(false)` schaltet den Mechanismus komplett ab.
 
 Serverweit oder als `securityHeaders()`-Middleware — beide setzen dieselbe
-Menge. Zur Middleware greifst du, wenn nur ein Routen-Teilbaum sie braucht;
-zum Builder, wenn der ganze Server sie braucht — denn die Middleware wird
-überall dort übersprungen, wo eine Response nie durch sie zurückläuft.
+Menge. Die Middleware deckt ihren eigenen Teilbaum ab, und dazu gehört auch
+ein **Short-Circuit, der wirft**: Ein `HttpError` aus einer Schicht darunter
+— eine CSRF-403, eine Auth-401 — nimmt die Header mit hinaus. Was sie nie
+sieht, ist eine Response, die außerhalb ihres Teilbaums entsteht: der
+backend-eigene 404, der 413 bei zu großem Body und die generische 500, auf
+die ein Wurf ohne `HttpError` gemappt wird. Zur Middleware greifst du, wenn
+nur ein Routen-Teilbaum sie braucht; zum Builder, wenn der ganze Server sie
+braucht.
 
 ## Betriebsumfeld
 
@@ -153,7 +158,7 @@ Upgrade-Zeit und gated damit den Handshake.
 | Maßnahme | Womit |
 | --- | --- |
 | MIME-Sniffing auf jeder Response abgeschaltet | nichts — per Default an |
-| Security-Header auf jeder Response | `securityHeaders()`, oder serverweit `withSecurityHeaders(...)` |
+| Security-Header auf jeder Response | serverweit `withSecurityHeaders(...)` — `securityHeaders()` deckt einen Teilbaum ab, Ablehnungen eingeschlossen |
 | HTTPS vom Browser erzwungen | `strictTransportSecurity()` / `withHsts` |
 | Cross-Origin kontrolliert | `cors(...)` |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |

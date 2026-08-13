@@ -179,6 +179,21 @@ DevTools is a debugger, and the defaults treat it as one.
   Binding to loopback is not a substitute for this. A WebSocket
   handshake is not subject to the same-origin policy, so any page in
   the developer's browser can reach `127.0.0.1`.
+- **The cluster side goes by the connection.** When you pass a
+  `Cluster`, every node answers "how is your node doing?" over the
+  cluster transport and the serving node collects the answers.  Both
+  ends trust the connection rather than the message: a node replies down
+  the connection the question arrived on, never to an address the
+  question named, and the collector files a reading under the address
+  the transport supplied, never the one the reading claims for itself.
+  Only a node the cluster currently holds as a member gets a row, and
+  both the number of rows and the size of a reported actor tree are
+  capped.  A peer that lies can only lie about its own row.
+
+  This bounds what one compromised or buggy member can do to the
+  dashboard.  It is not authentication of the cluster port — that is
+  [mTLS](/operations/security/cluster-security/), and it stays the thing
+  to configure when the port is reachable by anything you do not run.
 
 If you do expose it, put it behind the same auth as your management
 endpoints and treat the credentials as production secrets:

@@ -190,6 +190,24 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   Die Bindung an Loopback ersetzt das nicht. Ein WebSocket-Handshake
   unterliegt nicht der Same-Origin-Policy, jede Seite im Browser der
   entwickelnden Person erreicht also `127.0.0.1`.
+- **Die Cluster-Seite richtet sich nach der Verbindung.** Übergibst du
+  einen `Cluster`, beantwortet jeder Knoten über den Cluster-Transport
+  die Frage „Wie geht es deinem Knoten?“, und der ausliefernde Knoten
+  sammelt die Antworten ein.  Beide Enden vertrauen der Verbindung, nicht
+  der Nachricht: Ein Knoten antwortet über die Verbindung, auf der die
+  Frage ankam, nie an eine Adresse, die die Frage genannt hat — und der
+  Sammler legt eine Messung unter der Adresse ab, die der Transport
+  geliefert hat, nie unter der, die die Messung für sich selbst
+  behauptet.  Eine Zeile bekommt nur ein Knoten, den der Cluster gerade
+  als Mitglied führt, und sowohl die Anzahl der Zeilen als auch die
+  Größe eines gemeldeten Actor-Baums sind gedeckelt.  Ein lügender Peer
+  kann nur über seine eigene Zeile lügen.
+
+  Das begrenzt, was ein kompromittiertes oder fehlerhaftes Mitglied dem
+  Dashboard antun kann.  Eine Authentifizierung des Cluster-Ports ist es
+  nicht — das ist [mTLS](/de/operations/security/cluster-security/), und das
+  bleibt das, was zu konfigurieren ist, sobald der Port für irgendetwas
+  erreichbar ist, das du nicht selbst betreibst.
 
 Wenn du sie doch exponierst, hänge sie hinter dieselbe Auth wie deine
 Management-Endpunkte und behandle die Credentials als Produktivgeheimnis:

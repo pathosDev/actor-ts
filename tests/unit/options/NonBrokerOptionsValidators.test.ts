@@ -210,13 +210,39 @@ describe('KubernetesLeaseOptionsValidator', () => {
     expect(() => check({ ttlMs: -1 })).toThrow(/ttlMs/);
   });
 
-  test('rejects a non-http apiServerUrl', () => {
+  test('rejects a non-https apiServerUrl', () => {
     expect(() => check({ apiServerUrl: 'ftp://k8s' })).toThrow(OptionsError);
+    // `http` used to be allowed even though the client always dials
+    // `node:https` — the URL's protocol is never read.
+    expect(() => check({ apiServerUrl: 'http://k8s.default.svc' })).toThrow(/apiServerUrl/);
+  });
+
+  // Until #599 this case asserted `.not.toThrow()`, which froze the defect
+  // green: an apiServerUrl on its own fell back to the Pod's mounted
+  // ServiceAccount token, sending the cluster credential to a
+  // caller-supplied host.
+  test('rejects a partial API-server credential', () => {
+    const base = { name: 's', owner: 'o', ttlMs: 15_000, namespace: 'actors' };
+    expect(() => check({ ...base, apiServerUrl: 'https://k8s.default.svc' })).toThrow(OptionsError);
+    expect(() => check({ ...base, apiServerUrl: 'https://k8s.default.svc', authToken: 't' }))
+      .toThrow(/caCert/);
+    expect(() => check({ ...base, authToken: 't' })).toThrow(/apiServerUrl \+ caCert/);
   });
 
   test('accepts a valid k8s lease config', () => {
-    expect(() => check({ name: 's', owner: 'o', ttlMs: 15_000, namespace: 'actors', apiServerUrl: 'https://k8s.default.svc' }))
-      .not.toThrow();
+    expect(() => check({
+      name: 's',
+      owner: 'o',
+      ttlMs: 15_000,
+      namespace: 'actors',
+      apiServerUrl: 'https://k8s.default.svc',
+      authToken: 'token',
+      caCert: '<<ca>>',
+    })).not.toThrow();
+  });
+
+  test('accepts a config with no explicit credentials — the in-cluster mount is used whole', () => {
+    expect(() => check({ name: 's', owner: 'o', ttlMs: 15_000, namespace: 'actors' })).not.toThrow();
   });
 });
 

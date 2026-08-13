@@ -22,6 +22,12 @@ Response-Header; andernfalls wird eine frische ID mit
 [`randomUuid`](/de/reference/utility-helpers/#zufallszeichenketten-und-bezeichner)
 erzeugt.
 
+Ein **Short-Circuit, der wirft**, wird ebenfalls geechot: Die 401 oder 403,
+die eine Auth- oder CSRF-Schicht darunter wirft, kommt mit der ID zurück —
+und genau zu dieser Response sucht später jemand die Log-Zeile. Die Ausnahme
+ist ein unbehandelter Wurf: Er wird auf die generische 500 gemappt, die
+bewusst nichts aus dem geworfenen Wert übernimmt, und kommt daher ohne ID an.
+
 ## Die ID wieder auslesen
 
 `requestIdOf(request)` liefert die ID, die der Request trägt, oder

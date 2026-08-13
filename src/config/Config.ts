@@ -6,6 +6,7 @@ import {
   type ConfigObject,
   type ConfigValue,
   deepMerge,
+  isForbiddenConfigKey,
   isPlainObject,
   parseHocon,
   resolveSubstitutions,
@@ -196,11 +197,26 @@ export class Config {
 
   /* ------------------------------- Internal ------------------------------- */
 
+  /**
+   * Descends **own** properties only, so no path can reach `Object.prototype`.
+   *
+   * Without the `Object.hasOwn` guard every inherited member answers a lookup:
+   * `hasPath('toString')` came back `true` and `getString('toString')` then
+   * threw a type error on a native function, which reads as a config bug rather
+   * than the bad path it is.  A blocklist of prototype member names cannot do
+   * this job — the chain is open-ended — so the guard is positive.
+   *
+   * No forbidden-key check is needed alongside it: every builder of a tree
+   * (`cloneTree`, `deepMerge`, `stripUndefined`) drops those keys, so an *own*
+   * `__proto__` — the one case `Object.hasOwn` would wave through — cannot be
+   * in `this.tree` to begin with.
+   */
   private lookup(path: string): ConfigValue | undefined {
     const parts = path.split('.');
     let cur: ConfigValue | undefined = this.tree;
     for (const part of parts) {
       if (!isPlainObject(cur)) return undefined;
+      if (!Object.hasOwn(cur, part)) return undefined;
       cur = (cur as ConfigObject)[part];
       if (cur === undefined) return undefined;
     }
@@ -232,9 +248,19 @@ function typeError(path: string, expected: string, actual: unknown): ConfigError
   return new ConfigError(`Config at "${path}" is not a ${expected} (got ${actualType})`);
 }
 
+/**
+ * Deep-copy a tree, dropping forbidden keys exactly as `deepMerge` and
+ * `stripUndefined` do.  The filter is not decoration: this runs on
+ * caller-supplied objects (`Config.fromObject`, and through it
+ * `ActorSystemOptions.withConfig` and `Config.load({ overrides })`), where
+ * `JSON.parse('{"__proto__":{…}}')` yields an *own* `__proto__` that
+ * `Object.entries` reports and the plain `out[key] = …` below would hand to the
+ * inherited setter — re-parenting the fresh tree.
+ */
 function cloneTree(obj: ConfigObject): ConfigObject {
   const out: ConfigObject = {};
   for (const [key, value] of Object.entries(obj)) {
+    if (isForbiddenConfigKey(key)) continue;
     if (Array.isArray(value)) {
       out[key] = value.map(x => (isPlainObject(x) ? cloneTree(x as ConfigObject) : x)) as ConfigValue[];
     } else if (isPlainObject(value)) {

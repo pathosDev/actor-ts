@@ -1,10 +1,49 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { InMemoryLease, LeaseOptions, inMemoryLeaseStore } from '../../../src/coordination/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 beforeEach(() => {
   inMemoryLeaseStore._clear();
+});
+
+describe('InMemoryLease — required options (#596)', () => {
+  test('rejects a missing owner instead of letting every holder win', async () => {
+    const withoutOwner = LeaseOptions.create()
+      .withName('required-owner')
+      .withTtlMs(200);
+    expect(() => new InMemoryLease(withoutOwner)).toThrow(OptionsError);
+    expect(() => new InMemoryLease(withoutOwner)).toThrow(/owner is required/);
+
+    // The guarantee the throw buys: with two `undefined` owners the store
+    // would hand the same record to both, since `existing.owner !== owner`
+    // is false for `undefined !== undefined`.
+    const first = new InMemoryLease(LeaseOptions.create().withName('required-owner').withOwner('A').withTtlMs(200));
+    const second = new InMemoryLease(LeaseOptions.create().withName('required-owner').withOwner('B').withTtlMs(200));
+    expect(await first.acquire()).toBe(true);
+    expect(await second.acquire()).toBe(false);
+    await first.release();
+  });
+
+  test('rejects a missing ttlMs, which would make every expiry NaN', () => {
+    const withoutTtl = LeaseOptions.create()
+      .withName('required-ttl')
+      .withOwner('A');
+    expect(() => new InMemoryLease(withoutTtl)).toThrow(/ttlMs is required/);
+  });
+
+  test('rejects a missing name and an options-less construction', () => {
+    const withoutName = LeaseOptions.create()
+      .withOwner('A')
+      .withTtlMs(200);
+    expect(() => new InMemoryLease(withoutName)).toThrow(/name is required/);
+    expect(() => new InMemoryLease()).toThrow(OptionsError);
+  });
+
+  test('a plain options object is held to the same requirement as the builder', () => {
+    expect(() => new InMemoryLease({ name: 'required-plain', ttlMs: 200 })).toThrow(/owner is required/);
+  });
 });
 
 describe('InMemoryLease', () => {

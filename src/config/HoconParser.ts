@@ -470,9 +470,10 @@ function resolveOne(
   const fromTree = lookup(root, sub.path);
   if (fromTree !== undefined) return fromTree as ConfigValue;
   // ENV variable name is the path with dots turned into underscores, uppercased.
-  const envName1 = sub.path;
-  const envName2 = sub.path.replace(/\./g, '_').toUpperCase();
-  const fromEnv = env[envName1] ?? env[envName2];
+  const envName = sub.path;
+  const envNameUpperCase = sub.path.replace(/\./g, '_').toUpperCase();
+  const fromEnv = readOwnEnvironmentEntry(env, envName)
+    ?? readOwnEnvironmentEntry(env, envNameUpperCase);
   if (fromEnv !== undefined) {
     // Try to interpret as JSON first (so `${FOO}` can be a number/boolean/obj);
     // fall back to the raw string.
@@ -488,6 +489,41 @@ function resolveOne(
   throw new Error(`Unresolved substitution: \${${sub.path}}`);
 }
 
+/**
+ * The environment is prototype-backed as well, so it gets the same own-property
+ * guard the tree lookup has: a bare `env['toString']` hands back a native
+ * function on Node and Deno (`process.env` is a proxy that forwards the
+ * inherited members) and on any plain `{ … }` map a caller passes in — which
+ * would splice that function into the config exactly as the tree read once did.
+ * Bun happens to return `undefined` there, so the bare read looked correct on
+ * the primary runtime and failed on the other two.
+ */
+function readOwnEnvironmentEntry(
+  env: Record<string, string | undefined>,
+  name: string,
+): string | undefined {
+  return Object.hasOwn(env, name) ? env[name] : undefined;
+}
+
+/**
+ * Resolve a dotted path against the tree, reading **own** properties only.
+ *
+ * The `Object.hasOwn` guard is what keeps `${toString}` from splicing a native
+ * function into the resolved config: without it the descent reads straight
+ * through to `Object.prototype`, every member of which answers a lookup.  A
+ * blocklist cannot close that hole — `isForbiddenConfigKey` names three keys,
+ * while the prototype chain is open-ended (engine and host additions land there
+ * too) — so the guard is stated positively instead.  It also restores the
+ * fallback in `resolveOne`: a hit here short-circuits the environment lookup,
+ * so a shadowed `${?toString}` could never reach `env` at all.
+ *
+ * The two checks are not redundant.  `Object.hasOwn` misses an *own* `__proto__`
+ * — `JSON.parse('{"__proto__":…}')` produces exactly that, and `resolveOne`
+ * hands us the caller's unfiltered object as `root` — which is what
+ * `isForbiddenConfigKey` is still here for.  Order matters as well: the
+ * `isPlainObject` guard must run first so arrays and not-yet-resolved
+ * `Substitution` markers still short-circuit before any property read.
+ */
 function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
   const parts = path.split('.');
   let cur: ConfigValue | undefined = obj;
@@ -497,6 +533,7 @@ function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
     // built in code, where an optional substitution should just miss.
     if (isForbiddenConfigKey(part)) return undefined;
     if (!isPlainObject(cur)) return undefined;
+    if (!Object.hasOwn(cur, part)) return undefined;
     cur = (cur as ConfigObject)[part];
     if (cur === undefined) return undefined;
     if (isSubstitution(cur)) return undefined; // not resolved yet

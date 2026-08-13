@@ -7,6 +7,10 @@ description: securityHeaders() is a small helmet-style bundle (nosniff, X-Frame-
 header is individually overridable, `false` leaves one out, and a header the
 handler already set always wins.
 
+It covers its whole subtree, rejections included: a layer below it that
+short-circuits by throwing `HttpError` — CSRF, auth, a rate limit — produces
+a response that carries the headers too.
+
 <Aside type="caution" title="`false` omits a header, it does not remove one">
   The bundle only ever **adds** headers. As a middleware it runs on top of
   what the backend already writes, so `false` means "this middleware does not
@@ -21,8 +25,9 @@ handler already set always wins.
   `withSecurityHeaders(false)` for none of them at all.
 
   There is no per-subtree opt-out, deliberately: the backend's copy is the
-  last word precisely so that the 404s, body-parse 413s and error
-  short-circuits which never reach a middleware are covered too.
+  last word precisely so that the responses no middleware ever sees are
+  covered too — the backend's own 404s, body-parse 413s, and the generic 500
+  an unhandled throw maps to.
 </Aside>
 
 ```ts
