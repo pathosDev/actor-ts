@@ -7,10 +7,14 @@
  *   curl -i -X OPTIONS http://localhost:8080/api/echo \
  *        -H 'origin: https://app.example' \
  *        -H 'access-control-request-method: POST'        # CORS preflight
+ *   curl -i -X POST http://localhost:8080/api/echo       # CSRF 403 — headers and all
  *
  * Layer order (outermost first): requestId → securityHeaders → cors →
- * requestTimeout → csrfProtection → handleErrors → routes + fallback.
- * cors sits OUTSIDE auth so its (anonymous) preflight routes aren't gated.
+ * requestTimeout → handleErrors → csrfProtection → routes + fallback.
+ * cors sits OUTSIDE auth so its (anonymous) preflight routes aren't gated,
+ * and handleErrors sits OUTSIDE csrfProtection so it maps that middleware's
+ * own 403 as well — inside the header layers, so the response it hands back
+ * still flows through them.
  */
 import {
   ActorSystem,
@@ -61,9 +65,9 @@ async function main(): Promise<void> {
     withMiddleware(securityHeaders(),
     cors(corsOptions,
     withMiddleware(requestTimeout(5000),
-    withMiddleware(csrfProtection(csrfOptions),
     handleErrors(
       (err) => (err instanceof HttpError ? completeJson(err.status, { error: err.message }) : null),
+    withMiddleware(csrfProtection(csrfOptions),
       concat(
         get((request) => completeHtml(Status.OK, html`
           <h1>secure-service</h1>

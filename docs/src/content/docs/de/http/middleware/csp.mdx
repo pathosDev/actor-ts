@@ -27,6 +27,14 @@ Die Baseline (`useDefaults`, standardmäßig an) ist `default-src 'self'`,
 setze eine Direktive auf `[]`, um sie zu entfernen, oder rufe
 `withoutDefaults()`, um nur das Angegebene zu senden.
 
+Der Header fährt auch bei einem **Short-Circuit, der wirft**, mit — ein
+`HttpError` aus einer Schicht darunter nimmt die Policy mit hinaus. Das
+wiegt hier schwerer als beim übrigen Header-Bündel: Eine Policy ist viel zu
+anwendungsspezifisch für das serverweite `withSecurityHeaders(...)`, diese
+Middleware ist also die einzige Stelle, die eine sendet — eine Response, die
+außerhalb ihres Teilbaums entsteht (der backend-eigene 404, die generische
+500), trägt keine.
+
 ## Konfiguration
 
 | Builder-Methode | Zweck |
