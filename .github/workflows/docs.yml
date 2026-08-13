@@ -14,9 +14,15 @@
 #   Settings → Pages → Source: GitHub Actions
 # (Without that, the deploy step fails with "Pages site not found".)
 #
-# **Permissions**: the deploy job needs `pages: write` + `id-token:
-# write` to publish the artifact via OIDC.  Workflow-level defaults
-# leave other scopes read-only.
+# **Permissions**: declared per job, never at workflow level (#621).
+# `deploy` needs `pages: write` + `id-token: write` to publish the
+# artifact via OIDC; `build` needs neither.  Granted once at the top,
+# both scopes would also be minted for the job that installs the whole
+# docs dependency tree and drives headless Chromium — the job most
+# likely to execute someone else's code — even though its only Pages
+# step, `actions/upload-pages-artifact`, authenticates with the
+# runtime token instead.  A per-job block keeps the deploy credential
+# in the job that does nothing but deploy.
 name: docs
 
 on:
@@ -37,15 +43,15 @@ concurrency:
   group: "pages-${{ github.ref }}"
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # Reads the repository and uploads an artifact — nothing else.  The
+    # upload action uses the Actions runtime token, not `GITHUB_TOKEN`,
+    # so it needs no Pages scope of its own.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -111,6 +117,13 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    # The two scopes `actions/deploy-pages` documents as its minimum, and
+    # they live here rather than at workflow level so only this job — one
+    # step, no checkout, no dependencies — can mint them.  `contents: read`
+    # is deliberately absent: this job never reads the repository.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

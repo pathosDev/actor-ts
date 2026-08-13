@@ -62,6 +62,48 @@ function actionReferences({ name, lines }: WorkflowFile): ActionReference[] {
 
 const references = workflows.flatMap(actionReferences);
 
+type WorkflowJob = {
+  readonly workflow: string;
+  readonly name: string;
+  readonly lines: readonly string[];
+};
+
+/**
+ * The `jobs:` mapping split into its two-space-indented entries. Everything
+ * between one job key and the next belongs to that job — enough to ask which
+ * scopes a job grants itself and what it runs, without a YAML parser.
+ */
+function jobsOf(file: WorkflowFile): WorkflowJob[] {
+  const start = file.lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (start < 0) return [];
+  const out: { workflow: string; name: string; lines: string[] }[] = [];
+  for (const line of file.lines.slice(start + 1)) {
+    if (/^[A-Za-z0-9_-]+:/.test(line)) break; // a new top-level key ends `jobs:`
+    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (header) out.push({ workflow: file.name, name: header[1] ?? '', lines: [] });
+    else out[out.length - 1]?.lines.push(line);
+  }
+  return out;
+}
+
+const jobs = workflows.flatMap(jobsOf);
+
+/** `scope: value` pairs of the workflow-level (column 0) `permissions:` block. */
+function workflowLevelScopes({ lines }: WorkflowFile): string[] {
+  const start = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!/^ {2}\S/.test(line)) break;
+    out.push(line.trim());
+  }
+  return out;
+}
+
+const declaresPermissions = (file: WorkflowFile): boolean =>
+  file.lines.some((line) => /^permissions:/.test(line))
+  || jobsOf(file).every((job) => job.lines.some((line) => /^\s+permissions:/.test(line)));
+
 describe('workflow hygiene', () => {
   test('the workflow directory actually parsed', () => {
     // Guards the guard: a path or parser regression that yielded nothing
@@ -69,6 +111,8 @@ describe('workflow hygiene', () => {
     expect(workflows.map((workflow) => workflow.name)).toContain('publish.yml');
     expect(workflows.length).toBeGreaterThanOrEqual(11);
     expect(references.length).toBeGreaterThanOrEqual(30);
+    expect(jobs.length).toBeGreaterThanOrEqual(workflows.length);
+    expect(jobs.map((job) => `${job.workflow}#${job.name}`)).toContain('docs.yml#deploy');
   });
 
   /**
@@ -111,4 +155,39 @@ describe('workflow hygiene', () => {
       ).toMatch(/^# v\d+(\.\d+)*$/);
     },
   );
+
+  /**
+   * #621 — a workflow-level `permissions:` block is granted to every job in
+   * the file, including the ones that install and execute third-party code.
+   * That is how `docs.yml`'s build job came to hold `pages: write` +
+   * `id-token: write` while its only Pages step needed neither.
+   *
+   * So the workflow-level block is a read-only floor and nothing more; a
+   * scope that can change anything belongs on the single job that uses it.
+   */
+  test.each(workflows)('$name grants no write scope at workflow level', (file) => {
+    for (const scope of workflowLevelScopes(file)) {
+      expect(
+        scope,
+        `${file.name} grants "${scope}" to every job in the file, including the `
+        + 'ones that run third-party code. Move write scopes down to the job '
+        + 'that needs them and leave the workflow-level block read-only.',
+      ).toMatch(/:\s*(read|none)$/);
+    }
+  });
+
+  /**
+   * An absent `permissions:` block falls back to the repository default.
+   * That default is read-only today, so this is not a live exposure — it is
+   * the reason the exposure would be silent if the setting were ever flipped,
+   * and new workflows keep being added without one.
+   */
+  test.each(workflows)('$name states its token permissions explicitly', (file) => {
+    expect(
+      declaresPermissions(file),
+      `${file.name} declares no permissions, so its token scope is whatever the `
+      + 'repository default happens to be. Add a workflow-level '
+      + '"permissions: contents: read", or declare one on every job.',
+    ).toBe(true);
+  });
 });

@@ -43,6 +43,12 @@ on:
     # 03:30 UTC, half-hour offset from integration.yml's 03:00.
     - cron: '30 3 * * *'
 
+# Least privilege, stated rather than inherited: the repository default is
+# read-only today, but a settings flip would otherwise hand a write token to
+# a job that installs and runs the whole dependency tree.  #621
+permissions:
+  contents: read
+
 jobs:
   broker:
     runs-on: ubuntu-latest
