@@ -402,9 +402,10 @@ All of them are exported from the top-level `actor-ts` barrel.
 
 ## Related
 
-- [`docs/persistence/migration-recipes.md`](../persistence/migration-recipes.md)
+- [Migration recipes](/persistence/migration/recipes/)
   — decision tree for which adapter to pick.
-- [`CHANGELOG.md`](../../CHANGELOG.md) `[0.6.0]` → "schema migration
-  & encryption polish" for the underlying feature set.
+- [`CHANGELOG.md`](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+  `[0.6.0]` → "schema migration & encryption polish" for the underlying
+  feature set.
 - Open issues: [#71](https://github.com/pathosDev/actor-ts/issues/71)
   bulk wrap-legacy migration for SQL/Cassandra.
