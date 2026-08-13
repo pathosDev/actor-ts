@@ -23,6 +23,13 @@ const lease = new InMemoryLease(
 await lease.acquire();   // → true (first acquire)
 ```
 
+`name`, `owner` and `ttlMs` are required — the constructor throws
+`OptionsError` when one is missing, rather than building a lease
+that cannot exclude anyone.  Two leases with no `owner` both
+compete under the same `undefined` holder and both win; with no
+`ttlMs` the expiry is `NaN`, which is never later than now, so an
+existing holder always reads as expired.
+
 ## When to use it
 
 - **Unit tests** for actors that take a `Lease` parameter — pass

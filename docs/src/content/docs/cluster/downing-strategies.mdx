@@ -220,6 +220,35 @@ Lease resource) before considering itself authoritative.
 Right for paranoid production scenarios where you'd rather
 **double the cost** of split-brain protection.
 
+### When the acquire hangs
+
+The interesting case is not "the lease said no" but "the lease
+said nothing".  If `acquire()` has not resolved within
+`acquireTimeoutMs` (5 s by default), the strategy stops waiting
+for it — and then has to assume the attempt may still succeed on
+the wire, leaving the lease claimed by a node that no longer
+believes it won.  Three rules cover that:
+
+- **The late result is dropped.**  Every attempt carries an
+  epoch; a result arriving after its epoch was retired cannot
+  write a decision.  So a slow `acquire() → true` can never make
+  this side claim survival after the fact.
+- **A late win is released, and nothing new starts until it is.**
+  Ownership only begins when the acquire resolves, so the undo
+  waits for it to report back — releasing earlier would be a
+  no-op.  While that is outstanding, `decide()` keeps returning
+  an empty decision rather than starting a second attempt: two
+  attempts overlapping is precisely how the cleanup could delete
+  a lease this side is actively claiming.
+- **If the release fails, the strategy stops deciding.**  The
+  lease is then in an unknown state, so it enters *fail-safe* and
+  returns an empty decision for this partition view until the
+  partition heals.  Deciding nothing is always safe; deciding
+  wrongly is not.
+
+The visible symptom of a lease provider having a bad day is
+therefore a cluster that waits, not one that splits.
+
 ## Picking a strategy
 
 Three questions in order:

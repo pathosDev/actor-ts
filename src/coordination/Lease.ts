@@ -48,7 +48,16 @@ export interface Lease {
    */
   acquireWithToken?(): Promise<{ readonly token: string } | null>;
 
-  /** Release the lease voluntarily.  No-op if not held. */
+  /**
+   * Release the lease voluntarily.  No-op if not held.
+   *
+   * Rejects if the backend could not be told to drop it.  That is a
+   * materially different outcome from a clean release: the holder can no
+   * longer tell whether it still owns the lease, and a caller arbitrating
+   * on ownership (`LeaseMajority`) has to stop claiming majority until it
+   * can.  Backends must therefore propagate the failure rather than
+   * swallow it; callers using release purely as cleanup catch it.
+   */
   release(): Promise<void>;
 
   /** True if this process currently owns the lease.  Purely local — no IO. */
