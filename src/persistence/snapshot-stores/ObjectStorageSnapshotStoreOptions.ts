@@ -5,6 +5,8 @@ import type {
   CompressionResolver,
   EncryptionConfig,
   EncryptionResolver,
+  IntegrityConfig,
+  IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 
@@ -28,6 +30,37 @@ export type ObjectStorageSnapshotStoreOptionsType = StoreSerializerOptionsBase &
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption — flat config or per-pid resolver.  Default: `{ mode: 'none' }`. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * Opt-in HMAC-SHA256 integrity protection over each snapshot body
+   * (#116).  Default `{ mode: 'none' }` — nothing is signed and nothing
+   * is checked.
+   *
+   * A snapshot is not an ordinary record: recovery folds events **on
+   * top of** it, so whoever can rewrite one dictates the state an actor
+   * comes back as.  `Replay` bounds the `sequenceNr` a snapshot may
+   * claim, but nothing else authenticates the `state` payload — that is
+   * what this closes (#613).
+   *
+   * Setting `{ mode: 'hmac-sha256', integrityKey }` signs new writes
+   * **and makes verification mandatory on read**: a body arriving
+   * without a tag is refused, because the manifest bit that claims "no
+   * tag here" is one of the bytes an attacker with write access
+   * controls (#579).  A bucket that still holds pre-integrity snapshots
+   * needs {@link ObjectStorageSnapshotStoreOptionsType.allowUntaggedBodies}
+   * for the length of its migration.
+   */
+  readonly integrity?: IntegrityConfig | IntegrityResolver;
+  /**
+   * Re-admit snapshot bodies that carry no integrity tag while an
+   * `integrity` config is in effect — the migration window of a bucket
+   * written before integrity was enabled.  Default `false`.
+   *
+   * Snapshots migrate by themselves: `keepN` prunes the untagged ones
+   * as new tagged snapshots are taken, so the window can usually be
+   * closed after `keepN` saves per persistenceId rather than after an
+   * explicit rewrite sweep.
+   */
+  readonly allowUntaggedBodies?: boolean;
   /**
    * Cap on the decompressed size of a stored body in bytes — the
    * decompression-bomb guard on read (security audit #3).  Default 512 MiB
@@ -79,6 +112,16 @@ export class ObjectStorageSnapshotStoreOptionsBuilder extends StoreSerializerOpt
   /** Encryption — flat config or per-pid resolver.  Default: none. */
   withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
     return this.set('encryption', encryption);
+  }
+
+  /** Opt-in HMAC-SHA256 integrity protection over each snapshot body (#116) — signs writes and requires a tag on reads.  Default: none. */
+  withIntegrity(integrity: IntegrityConfig | IntegrityResolver): this {
+    return this.set('integrity', integrity);
+  }
+
+  /** Accept untagged snapshot bodies while integrity is configured — the legacy-corpus migration window (#579).  Default: false. */
+  withAllowUntaggedBodies(allowUntaggedBodies = true): this {
+    return this.set('allowUntaggedBodies', allowUntaggedBodies);
   }
 
   /**

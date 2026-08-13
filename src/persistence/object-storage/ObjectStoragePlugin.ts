@@ -8,6 +8,7 @@ import {
   probeEncryptionAvailability,
   validateMasterKeyRing,
 } from './Encryption.js';
+import { probeIntegrityAvailability } from './Integrity.js';
 import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
@@ -21,6 +22,8 @@ import {
   type CompressionResolver,
   type EncryptionConfig,
   type EncryptionResolver,
+  type IntegrityConfig,
+  type IntegrityResolver,
 } from './PluginConfig.js';
 
 /** Canonical plugin IDs registered by `registerObjectStoragePlugins`. */
@@ -74,8 +77,8 @@ export interface ObjectStoragePluginHandles {
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs
  * need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
- * Node provides a native impl), `SubtleCrypto` when any
- * encryption config is supplied.  A failing probe surfaces the
+ * Node provides a native impl), `SubtleCrypto` when a client-side
+ * encryption or an integrity config is supplied.  A failing probe surfaces the
  * "install X" message **here**, at registration time, instead of
  * silently surviving until the first persist call.  For resolvers
  * built via `compressionByPrefix` / `encryptionByPrefix` every config
@@ -114,6 +117,8 @@ export async function registerObjectStoragePlugins(
       ...(resolvedOptions.keepN !== undefined ? { keepN: resolvedOptions.keepN } : {}),
       ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
       ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+      ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
+      ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
       ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
       ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
     });
@@ -125,6 +130,8 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
     ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
+    ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
+    ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
   });
@@ -165,6 +172,14 @@ export async function validateObjectStoragePeerDeps(
   const encConfigs = collectEncryptionConfigs(resolvedOptions.encryption);
   if (encConfigs.some((c) => c.mode === 'client-aes256-gcm')) {
     await probeEncryptionAvailability();
+  }
+
+  // Integrity: HMAC-SHA256 goes through SubtleCrypto as well, and a
+  // deployment may configure integrity without any client-side
+  // encryption — so it needs its own probe rather than riding along.
+  const integrityConfigs = collectIntegrityConfigs(resolvedOptions.integrity);
+  if (integrityConfigs.some((c) => c.mode === 'hmac-sha256')) {
+    await probeIntegrityAvailability();
   }
 }
 
@@ -245,6 +260,14 @@ function collectEncryptionConfigs(
   if (e === undefined) return [];
   if (typeof e === 'function') return knownConfigsOf<EncryptionConfig>(e) ?? [];
   return [e];
+}
+
+function collectIntegrityConfigs(
+  i: IntegrityConfig | IntegrityResolver | undefined,
+): ReadonlyArray<IntegrityConfig> {
+  if (i === undefined) return [];
+  if (typeof i === 'function') return knownConfigsOf<IntegrityConfig>(i) ?? [];
+  return [i];
 }
 
 function buildBackend(spec: ObjectStorageBackendSpec): ObjectStorageBackend {

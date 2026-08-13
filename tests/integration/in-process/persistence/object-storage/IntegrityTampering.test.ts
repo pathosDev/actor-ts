@@ -25,6 +25,9 @@ import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/o
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { SEQ_PADDING } from '../../../../../src/persistence/Constants.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   ATS1_MAGIC,
@@ -307,6 +310,148 @@ describe('#116 — encrypted body is already protected by AES-GCM', () => {
     store.forgetEtagForTest('a');
     let err: Error | null = null;
     try { await store.load('a'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+  });
+});
+
+/* ============ #613 — the snapshot store gets the same control ============ */
+
+/**
+ * A snapshot is the starting state recovery folds events on top of, so
+ * an unverified snapshot is an unverified actor.  Until #613 the store
+ * had no integrity plumbing at all and silently discarded
+ * `PersistenceOptions.integrity`.
+ *
+ * FS backend key layout for snapshots: `dir/<pid>/<seq padded to
+ * SEQ_PADDING>.json`.
+ */
+function snapshotFileFor(persistenceId: string, seq: number): string {
+  return join(dir, persistenceId, `${String(seq).padStart(SEQ_PADDING, '0')}.json`);
+}
+
+describe('#613 — snapshot bodies carry an integrity tag', () => {
+  test('a snapshot written under integrity carries FLAG_INTEGRITY_HMAC and round-trips', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('p', 5, { balance: 100 });
+
+    const raw = new Uint8Array(readFileSync(snapshotFileFor('p', 5)));
+    expect(raw[0]).toBe(ATS1_MAGIC[0]);
+    expect(raw[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+
+    const loaded = await store.loadLatest<{ balance: number }>('p');
+    expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
+  });
+
+  test('a tampered snapshot body is refused', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('p', 5, { balance: 100 });
+
+    const path = snapshotFileFor('p', 5);
+    const raw = readFileSync(path);
+    raw[20] ^= 0xff;
+    writeFileSync(path, raw);
+
+    let err: Error | null = null;
+    try { await store.loadLatest('p'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+    expect(err!.message).toContain('integrity / decode failure');
+  });
+
+  test('a snapshot re-framed without a tag is refused (the #579 downgrade)', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('p', 5, { balance: 100 });
+
+    const downgraded = await encodeBody(
+      new TextEncoder().encode(JSON.stringify({
+        persistenceId: 'p', sequenceNr: 5, state: { balance: 1_000_000 }, timestamp: Date.now(),
+      })),
+    );
+    expect(downgraded[4]! & FLAG_INTEGRITY_HMAC).toBe(0);
+    writeFileSync(snapshotFileFor('p', 5), downgraded);
+
+    let err: Error | null = null;
+    try { await store.loadLatest('p'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+  });
+
+  test('loadBefore verifies too, not just loadLatest', async () => {
+    const writerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: OTHER_KEY });
+    const writer = new ObjectStorageSnapshotStore(writerOptions);
+    await writer.save('p', 5, { balance: 100 });
+    await writer.save('p', 9, { balance: 200 });
+
+    const readerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const reader = new ObjectStorageSnapshotStore(readerOptions);
+    let err: Error | null = null;
+    try { await reader.loadBefore('p', 9); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+  });
+
+  test('a legacy untagged snapshot needs allowUntaggedBodies', async () => {
+    const writerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const writer = new ObjectStorageSnapshotStore(writerOptions);
+    await writer.save('p', 5, { balance: 100 });
+
+    const strictOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const strict = new ObjectStorageSnapshotStore(strictOptions);
+    let err: Error | null = null;
+    try { await strict.loadLatest('p'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+
+    const migratingOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY })
+      .withAllowUntaggedBodies(true);
+    const migrating = new ObjectStorageSnapshotStore(migratingOptions);
+    const loaded = await migrating.loadLatest<{ balance: number }>('p');
+    expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
+  });
+
+  test('per-call PersistenceOptions.integrity is honoured instead of discarded', async () => {
+    // The store has no integrity config: before #613 the field was
+    // bound by the signature and thrown away on both paths.
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    const perCall = { integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY } } as const;
+    await store.save('p', 5, { balance: 100 }, perCall);
+
+    const raw = new Uint8Array(readFileSync(snapshotFileFor('p', 5)));
+    expect(raw[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+
+    const loaded = await store.loadLatest<{ balance: number }>('p', perCall);
+    expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
+
+    // …and the key actually has to match.
+    let err: Error | null = null;
+    try {
+      await store.loadLatest('p', { integrity: { mode: 'hmac-sha256', integrityKey: OTHER_KEY } });
+    } catch (e) { err = e as Error; }
     expect(err).toBeInstanceOf(JournalError);
   });
 });

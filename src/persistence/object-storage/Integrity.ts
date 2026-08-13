@@ -43,6 +43,17 @@ function getSubtle(): SubtleCrypto {
 }
 
 /**
+ * Probe whether WebCrypto is available for HMAC.  Resolves on success,
+ * throws the same clear error {@link hmacSha256} would throw on the
+ * first write.  Called eagerly by `registerObjectStoragePlugins` when
+ * an integrity config is present, so a runtime without WebCrypto fails
+ * at registration rather than at the first save (#18, #59).
+ */
+export async function probeIntegrityAvailability(): Promise<void> {
+  getSubtle();
+}
+
+/**
  * Compute HMAC-SHA256 over `data` with `key`, truncated to
  * {@link HMAC_TAG_LENGTH} bytes.
  */

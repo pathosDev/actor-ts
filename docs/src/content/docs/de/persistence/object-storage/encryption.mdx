@@ -279,6 +279,25 @@ auch die Kompressions- und Verschlüsselungs-Flags abgedeckt sind — und
 jeder Read prüft es, bevor ein einziges Payload-Byte die Store-Schicht
 erreicht.
 
+### Snapshots brauchen es ebenso
+
+`ObjectStorageSnapshotStore` nimmt dieselbe Option, und die
+Ein-Aufruf-Verdrahtung reicht sie an beide Stores zugleich weiter:
+
+```ts
+const objectStoragePluginOptions = ObjectStoragePluginOptions.create()
+  .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey });
+const { durableStateStore } = await registerObjectStoragePlugins(ext, objectStoragePluginOptions);
+```
+
+Ein Snapshot ist dabei wohl das lohnendere Ziel von beiden: Recovery
+faltet Events **auf ihn obendrauf**, wer also einen umschreiben kann,
+bestimmt den Zustand, mit dem ein Actor zurückkehrt.  Replay begrenzt
+die `sequenceNr`, die ein Snapshot behaupten darf — ein Snapshot vor
+dem Journal wird abgelehnt —, aber sonst authentifiziert nichts das
+`state`-Payload.
+
 ### Das Tag ist Pflicht, nicht bloß geprüft
 
 Eine konfigurierte Integrität macht das Tag beim Lesen **verbindlich**.
@@ -314,6 +333,11 @@ Schreibe anschließend jedes Objekt neu — ein `load` gefolgt von einem
 Option wieder**.  Solange sie gesetzt ist, wird ein Body ohne Tag von
 jedem akzeptiert; ein Body *mit* Tag wird weiterhin geprüft, aber der
 Downgrade-Weg steht so lange offen wie das Fenster.
+
+Snapshots migrieren von selbst: `keepN` räumt die ungetaggten weg,
+während neue getaggte Snapshots entstehen — das Fenster lässt sich also
+meist nach `keepN` Saves pro `persistenceId` schließen statt nach einem
+eigenen Sweep.
 
 **Integrität und Master-Key-Rotation greifen noch nicht ineinander.**
 `reEncryptObjectStorage` übergibt keinen Integritätsschlüssel, kann

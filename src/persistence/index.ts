@@ -20,6 +20,7 @@ export type {
   CompressionAlgo,
   CompressionConfig,
   EncryptionConfig,
+  IntegrityConfig,
   PersistenceOptions,
   MasterKeyRing,
   MasterKeyRingEntry,
@@ -597,10 +598,12 @@ export {
   encryptionByPrefix,
   resolveCompression,
   resolveEncryption,
+  resolveIntegrity,
 } from './object-storage/PluginConfig.js';
 export type {
   CompressionResolver,
   EncryptionResolver,
+  IntegrityResolver,
 } from './object-storage/PluginConfig.js';
 export {
   reEncryptObjectStorage,

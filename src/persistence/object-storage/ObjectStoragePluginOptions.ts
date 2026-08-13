@@ -5,6 +5,8 @@ import type {
   CompressionResolver,
   EncryptionConfig,
   EncryptionResolver,
+  IntegrityConfig,
+  IntegrityResolver,
 } from './PluginConfig.js';
 import type { ObjectStorageBackendSpec } from './ObjectStoragePlugin.js';
 
@@ -21,6 +23,23 @@ export type ObjectStoragePluginOptionsType = {
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption config or per-pid resolver.  Default: none. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /**
+   * HMAC-SHA256 body integrity (#116) for **both** stores this plugin
+   * registers.  Default: none.
+   *
+   * It belongs here and not only on the individual store options
+   * because this is the one-call wiring: without it the snapshot store
+   * and the durable-state store could only be given an integrity key by
+   * constructing them by hand, which is the whole reason the control
+   * went unused (#613).
+   */
+  readonly integrity?: IntegrityConfig | IntegrityResolver;
+  /**
+   * Accept untagged bodies while `integrity` is configured — the
+   * migration window for a bucket written before integrity was enabled
+   * (#579), applied to both registered stores.  Default: false.
+   */
+  readonly allowUntaggedBodies?: boolean;
   /** Payload serializer applied to both stores this plugin registers. */
   readonly serializer?: Serializer;
   /**
@@ -75,6 +94,16 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Encryption config or per-pid resolver (passed whole).  Default: none. */
   withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
     return this.set('encryption', encryption);
+  }
+
+  /** HMAC-SHA256 body integrity (#116) for both registered stores — signs writes and requires a tag on reads.  Default: none. */
+  withIntegrity(integrity: IntegrityConfig | IntegrityResolver): this {
+    return this.set('integrity', integrity);
+  }
+
+  /** Accept untagged bodies in both registered stores while integrity is configured — the migration window (#579).  Default: false. */
+  withAllowUntaggedBodies(allowUntaggedBodies = true): this {
+    return this.set('allowUntaggedBodies', allowUntaggedBodies);
   }
 
   /** Payload serializer applied to both stores this plugin registers. */
