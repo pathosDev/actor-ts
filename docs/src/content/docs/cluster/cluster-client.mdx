@@ -68,7 +68,7 @@ The client:
 type ClusterClientOptionsType = {
   contactPoints: ReadonlyArray<string>;            // at least one node: host:port or <system>@host:port
   systemName?: string;                             // synthetic system name in the client's hello
-  clientIdentity?: { host: string; port: number }; // identity used for reply routing
+  clientIdentity?: { host: string; port: number }; // identity announced in the client's hello
   askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
   tls?: TlsTransportOptionsType;                   // must match the cluster's
   logger?: Logger;                                 // default: ConsoleLogger at WARN
@@ -102,6 +102,41 @@ tree and delivers the message — any actor already running under
 Its one option, `askTimeoutMs`, bounds the wait when a client
 envelope carries an ask; set it via
 `ClusterClientReceptionistOptions`.
+
+## Who the reply goes to
+
+An ask is answered down the **connection the envelope arrived
+on** — never to an address the envelope names.  A client says
+who it is once, in the `hello` handshake; the transport binds
+that claim to the socket, and every reply, redaction and
+path-not-found follows the binding.
+
+That is why the envelope has no sender field at all.  It used
+to carry one, and the receptionist used to route on it, which
+let any connected party choose the address this node replied
+to — and opened a connection to.  Deleting the field rather
+than checking it leaves nothing to get wrong the next time
+someone reaches for the cheaper of two answers to the same
+question.
+
+A client old enough to still send the field is served
+normally; the value is ignored.  If it names something *other*
+than the connection, the node counts it on
+`cluster_envelope_from_mismatch_total{frame="cluster-client-envelope"}`
+and carries on.  That is either a client wrong about its own
+address or someone testing whether this node routes on
+payload — worth a number, not a refusal, because the envelope
+itself is fine.
+
+:::caution[This is not client authentication]
+The connection's peer is whatever the socket claimed in its
+`hello`.  Routing on it removes the free-for-all — a reply can
+no longer be steered from the payload — but it does not make
+the party on the other end who they say they are.  Only peer
+certificates do: under mTLS the claimed address has to match
+the certificate.  See
+[Cluster security](/operations/security/cluster-security/).
+:::
 
 ## What a failure tells the client
 
