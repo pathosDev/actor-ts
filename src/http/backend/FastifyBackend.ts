@@ -238,9 +238,20 @@ export class FastifyBackend implements HttpServerBackend {
     // `string` but can be missing in non-standard test doubles.
     const remoteAddress = (req as unknown as { ip?: string; socket?: { remoteAddress?: string } }).ip
       ?? (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress;
+    // `req.url` is Fastify's RAW request target — query string included.
+    // `HttpRequest.path` is contractually the bare pathname (see
+    // `src/http/types.ts`), which is what Express and Hono already report,
+    // so split at the first `?`.  A pathname can never contain a literal
+    // one (it is percent-encoded as `%3F`), and the parameters are in
+    // `query` anyway.  Leaving the query in `path` made every consumer that
+    // appends to it — the static-file directory redirect, the DevTools shell
+    // redirect, the directory-listing heading — build a target with the
+    // suffix landing inside the query instead of on the path.
+    const queryStart = req.url.indexOf('?');
+    const pathname = queryStart === -1 ? req.url : req.url.slice(0, queryStart);
     return {
       method: (req.method as HttpRequest['method']),
-      path: req.url,
+      path: pathname,
       headers,
       query: (req.query as Record<string, string | string[] | undefined>) ?? {},
       params: (req.params as Record<string, string>) ?? {},

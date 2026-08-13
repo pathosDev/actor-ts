@@ -8,6 +8,21 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 
 
 export type HttpRequest = {
   readonly method: HttpMethod;
+  /**
+   * The **pathname only** — `/orders/42`, never `/orders/42?page=2`.
+   * The query lives in `query`, already parsed; a backend that receives
+   * a raw request target splits it before handing the request over.
+   * Every backend must normalise to this shape, because anything built
+   * by appending to `path` — the static-file directory redirect, the
+   * DevTools shell redirect, a directory-listing heading, an
+   * idempotency fingerprint — is otherwise silently wrong on one
+   * backend and right on the next.
+   *
+   * Percent-escapes are NOT decoded here: decoding is the consumer's
+   * job and must happen once, before validation (see
+   * `resolveStaticPath`), so that an encoded traversal cannot slip past
+   * a check performed on the decoded form.
+   */
   readonly path: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, string | string[] | undefined>>;

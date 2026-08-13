@@ -63,7 +63,15 @@ key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
+
+// Query-sensitive — the query is NOT part of req.path:
+key: (req) => `${req.path}|page=${req.query.page ?? '1'}`,
 ```
+
+`req.path` is the **pathname only** — `/api/products`, never
+`/api/products?page=2`.  An endpoint whose response varies by a query
+parameter has to fold that parameter into the key itself; otherwise
+every page shares one entry and page 2 is served page 1.
 
 Build the key to be deterministic across equivalent requests
 but unique across responses you want cached separately.
