@@ -127,7 +127,9 @@ describe('extractLineFrames', () => {
     // The quadratic claim, made observable: after every chunk the reported
     // `scanFrom` already covers the whole pending buffer, so the next pass
     // starts at its end instead of re-decoding all of it from offset 0.
-    let buffer = new Uint8Array(0);
+    // Annotated: `new Uint8Array(0)` infers the narrower `ArrayBuffer`
+    // variant, which the extractor's `ArrayBufferLike` result cannot fill.
+    let buffer: Uint8Array = new Uint8Array(0);
     let scanFrom = 0;
     let passes = 0;
     for (let chunk = 0; chunk < 16; chunk++) {
