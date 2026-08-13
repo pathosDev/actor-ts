@@ -4,10 +4,12 @@ import {
   COMPRESSION_GZIP,
   COMPRESSION_NONE,
   COMPRESSION_ZSTD,
+  FLAG_INTEGRITY_HMAC,
   decodeBody,
   encodeBody,
 } from '../../../../../src/persistence/object-storage/BodyCodec.js';
 import { IV_LENGTH } from '../../../../../src/persistence/object-storage/Encryption.js';
+import { HMAC_TAG_LENGTH } from '../../../../../src/persistence/object-storage/Integrity.js';
 
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const fromUtf8 = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -211,5 +213,78 @@ describe('BodyCodec — versioned encryption (#8)', () => {
     await expect(encodeBody(utf8('x'), {
       encryption: { subKey: subKeyV1, keyVersion: 1.5 },
     })).rejects.toThrow(/keyVersion/);
+  });
+});
+
+/* ============ #116 / #579 — integrity tag at the codec level ============ */
+
+describe('BodyCodec — integrity tag (#116, #579)', () => {
+  const integrityKey = new Uint8Array(32).fill(0x11);
+  const otherKey = new Uint8Array(32).fill(0x22);
+
+  test('encoder sets FLAG_INTEGRITY_HMAC and appends the tag', async () => {
+    const plain = await encodeBody(utf8('body'), { compression: 'none' });
+    const tagged = await encodeBody(utf8('body'), { compression: 'none', integrity: { integrityKey } });
+    expect(plain[4]! & FLAG_INTEGRITY_HMAC).toBe(0);
+    expect(tagged[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+    expect(tagged.length - plain.length).toBe(HMAC_TAG_LENGTH);
+  });
+
+  test('a tagged body round-trips under the signing key', async () => {
+    const framed = await encodeBody(utf8('round-trip'), { integrity: { integrityKey } });
+    const decoded = await decodeBody(framed, { integrity: { integrityKey } });
+    expect(fromUtf8(decoded.payload)).toBe('round-trip');
+  });
+
+  test('a flipped payload byte invalidates the tag', async () => {
+    const framed = await encodeBody(utf8('round-trip'), { compression: 'none', integrity: { integrityKey } });
+    framed[6] ^= 0xff;
+    await expect(decodeBody(framed, { integrity: { integrityKey } })).rejects.toThrow(/integrity check failed/);
+  });
+
+  test('a tagged body decoded without a key is refused rather than skipped', async () => {
+    const framed = await encodeBody(utf8('tagged'), { integrity: { integrityKey } });
+    await expect(decodeBody(framed)).rejects.toThrow(/no integrityKey was supplied/);
+  });
+
+  /*
+   * #579 — the tag is only worth something if its ABSENCE is also an
+   * error.  Both bodies below are well-formed ATS1 frames an attacker
+   * with write access can produce without knowing the key.
+   */
+  test('an untagged body is refused when an integrityKey is supplied', async () => {
+    const untagged = await encodeBody(utf8('untagged'));
+    await expect(decodeBody(untagged, { integrity: { integrityKey } }))
+      .rejects.toThrow(/no integrity tag/);
+  });
+
+  test('stripping the tag and clearing the flag does not bypass verification', async () => {
+    const framed = await encodeBody(utf8('original'), { compression: 'none', integrity: { integrityKey } });
+    // Exactly what the attacker does: drop the trailing tag bytes and
+    // clear bit4 so the frame claims it never had one.
+    const stripped = framed.slice(0, framed.length - HMAC_TAG_LENGTH);
+    stripped[4] = stripped[4]! & ~FLAG_INTEGRITY_HMAC;
+    await expect(decodeBody(stripped, { integrity: { integrityKey } }))
+      .rejects.toThrow(/no integrity tag/);
+  });
+
+  test('allowUntaggedBodies re-admits an untagged body for the migration window', async () => {
+    const untagged = await encodeBody(utf8('legacy'));
+    const decoded = await decodeBody(untagged, { integrity: { integrityKey, allowUntaggedBodies: true } });
+    expect(fromUtf8(decoded.payload)).toBe('legacy');
+  });
+
+  test('allowUntaggedBodies still verifies a body that carries a tag', async () => {
+    const framed = await encodeBody(utf8('signed elsewhere'), { integrity: { integrityKey: otherKey } });
+    await expect(decodeBody(framed, { integrity: { integrityKey, allowUntaggedBodies: true } }))
+      .rejects.toThrow(/integrity check failed/);
+  });
+
+  test('the tag covers the manifest byte, not just the payload', async () => {
+    const framed = await encodeBody(utf8('x'), { compression: 'none', integrity: { integrityKey } });
+    // Flip an unallocated manifest bit (bit5): decode ignores it, so only
+    // the HMAC's coverage of byte 4 can catch this.
+    framed[4] = framed[4]! | 0b100000;
+    await expect(decodeBody(framed, { integrity: { integrityKey } })).rejects.toThrow(/integrity check failed/);
   });
 });

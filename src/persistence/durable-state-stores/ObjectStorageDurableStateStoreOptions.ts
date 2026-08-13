@@ -26,22 +26,28 @@ export type ObjectStorageDurableStateStoreOptionsType = StoreSerializerOptionsBa
    * Opt-in HMAC-SHA256 integrity protection over each body (#116).
    * Closes a tamper-in-place gap on unencrypted bodies: without this,
    * an attacker with write access to the backend bucket can flip the
-   * `revision` field in the JSON and bypass CAS.  Default `{ mode: 'none' }`
-   * is back-compat (no integrity tag); set `{ mode: 'hmac-sha256',
-   * integrityKey }` to protect new writes and verify reads.
+   * `revision` field in the JSON and bypass CAS.  Default
+   * `{ mode: 'none' }` — nothing is signed and nothing is checked.
    *
-   * Legacy bodies without the integrity flag still decode cleanly —
-   * tag is opt-in.  Migrate by reading-then-writing once integrity is
-   * enabled.
+   * Setting `{ mode: 'hmac-sha256', integrityKey }` signs new writes
+   * **and makes verification mandatory on read**: a body arriving
+   * without a tag is refused, because the manifest bit that claims
+   * "no tag here" is one of the bytes an attacker with write access
+   * has just proved they control (#579).  A corpus that still holds
+   * pre-integrity bodies needs {@link ObjectStorageDurableStateStoreOptionsType.allowUntaggedBodies}
+   * for the length of its migration.
    */
   readonly integrity?: IntegrityConfig | IntegrityResolver;
   /**
-   * When set with an `integrity` config, decode rejects bodies that
-   * DON'T carry an integrity tag.  Use after a deployment has been
-   * fully migrated so an attacker can't downgrade by re-writing a
-   * body without the tag.
+   * Re-admit bodies that carry no integrity tag while an `integrity`
+   * config is in effect — the read-then-write migration window of a
+   * bucket written before integrity was enabled.  Default `false`.
+   *
+   * Spelled out rather than implied, because it is the single setting
+   * that turns the check back off and an attacker can always produce an
+   * untagged body.  Drop it once every object has been rewritten.
    */
-  readonly requireIntegrity?: boolean;
+  readonly allowUntaggedBodies?: boolean;
   /**
    * Cap on the decompressed size of a stored body in bytes — the
    * decompression-bomb guard on read (security audit #3).  Default 512 MiB
@@ -90,14 +96,14 @@ export class ObjectStorageDurableStateStoreOptionsBuilder extends StoreSerialize
     return this.set('encryption', encryption);
   }
 
-  /** Opt-in HMAC-SHA256 integrity protection over each body (#116).  Default: none. */
+  /** Opt-in HMAC-SHA256 integrity protection over each body (#116) — signs writes and requires a tag on reads.  Default: none. */
   withIntegrity(integrity: IntegrityConfig | IntegrityResolver): this {
     return this.set('integrity', integrity);
   }
 
-  /** Reject reads of bodies lacking an integrity tag — post-migration downgrade protection. */
-  withRequireIntegrity(requireIntegrity = true): this {
-    return this.set('requireIntegrity', requireIntegrity);
+  /** Accept untagged bodies while integrity is configured — the legacy-corpus migration window (#579).  Default: false. */
+  withAllowUntaggedBodies(allowUntaggedBodies = true): this {
+    return this.set('allowUntaggedBodies', allowUntaggedBodies);
   }
 
   /**

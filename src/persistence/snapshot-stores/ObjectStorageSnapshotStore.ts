@@ -11,8 +11,10 @@ import type {
   CompressionResolver,
   EncryptionConfig,
   EncryptionResolver,
+  IntegrityConfig,
+  IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
-import { resolveCompression, resolveEncryption } from '../object-storage/PluginConfig.js';
+import { resolveCompression, resolveEncryption, resolveIntegrity } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -43,6 +45,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly keepN: number;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
+  private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
+  private readonly allowUntaggedBodies: boolean;
   private readonly maxDecompressedBytes: number;
 
   private readonly serializer?: Serializer;
@@ -57,6 +61,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     this.keepN = resolvedOptions.keepN ?? 3;
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
+    this.integrity = resolvedOptions.integrity;
+    this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     this.serializer = resolvedOptions.serializer;
   }
@@ -78,6 +84,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
       ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+    const integrity = options?.integrity
+      ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 
     const now = Date.now();
     const json = encodePayload({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now }, this.serializer);
@@ -97,6 +105,9 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
               ...(stampVersion ? { keyVersion: active.keyVersion } : {}),
             }
           : undefined,
+        ...(integrity.mode === 'hmac-sha256'
+          ? { integrity: { integrityKey: integrity.integrityKey } }
+          : {}),
       });
     } catch (e) {
       throw new JournalError(`ObjectStorageSnapshotStore.save: encode failed for ${persistenceId}@${seq}: ${(e as Error).message}`, e);
@@ -179,11 +190,37 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // precedence order as the write path.
     const encryption = options?.encryption
       ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+    const integrity = options?.integrity
+      ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
     const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
-    const decoded = await decodeBody(fetched.value.body, {
-      ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
-      maxOutputBytes: this.maxDecompressedBytes,
-    });
+    // Handing `decodeBody` the key is what demands a tag — an untagged
+    // body is refused unless the operator opened the migration window
+    // (#579).  Recovery folds events on top of whatever comes back from
+    // here, so an unverified snapshot is an unverified starting state.
+    let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
+    try {
+      decoded = await decodeBody(fetched.value.body, {
+        ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+        ...(integrity.mode === 'hmac-sha256'
+          ? {
+              integrity: {
+                integrityKey: integrity.integrityKey,
+                allowUntaggedBodies: this.allowUntaggedBodies,
+              },
+            }
+          : {}),
+        maxOutputBytes: this.maxDecompressedBytes,
+      });
+    } catch (e) {
+      // The codec's own wording goes in the message, not only in the
+      // cause: it is the part that names WHICH key or tag was missing,
+      // and a wrapper that swallows it turns a diagnosable failure into
+      // an unexplained "decode failed".
+      throw new JournalError(
+        `ObjectStorageSnapshotStore: integrity / decode failure at key ${key}: ${(e as Error).message}`,
+        e,
+      );
+    }
     const json = utf8Decoder.decode(decoded.payload);
     let parsed: { persistenceId: string; sequenceNr: number; state: S; timestamp: number };
     try { parsed = decodePayload(json, this.serializer) as { persistenceId: string; sequenceNr: number; state: S; timestamp: number }; }
