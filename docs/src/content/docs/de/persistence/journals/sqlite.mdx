@@ -79,34 +79,11 @@ const sqliteJournalOptions = SqliteJournalOptions.create()
 new SqliteJournal(sqliteJournalOptions)
 ```
 
-Das Framework erstellt die Tabelle automatisch bei der ersten
-Verwendung, mit dem Schema:
-
-```sql
-CREATE TABLE events (
-  persistence_id TEXT NOT NULL,
-  sequence_nr    INTEGER NOT NULL,
-  payload        TEXT NOT NULL,
-  tags           TEXT,                -- legacy CSV-Tags (Rückwärtskompatibilität)
-  timestamp      INTEGER NOT NULL,
-  PRIMARY KEY (persistence_id, sequence_nr)
-);
-
-CREATE INDEX idx_events_pid ON events (persistence_id);
-
-CREATE TABLE events_tags (
-  persistence_id TEXT NOT NULL,
-  sequence_nr    INTEGER NOT NULL,
-  tag            TEXT NOT NULL,
-  timestamp      INTEGER NOT NULL,
-  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
-);
-
-CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
-```
-
-Das Dual-Table-Design (events + events_tags) lässt Tag-Queries
-einen Index treffen, statt CSV zu scannen.
+Der Name ist ein Stamm, nicht nur eine Tabelle: Der Tag-Index und
+die Compaction-High-Water-Mark leiten sich davon ab, `orders_events`
+liefert dir also auch `orders_events_tags` und `orders_events_meta`.
+Das Framework erstellt sie alle automatisch bei der ersten
+Verwendung — siehe [Schema](#schema).
 
 ### `wal`
 
@@ -183,6 +160,79 @@ gibt keinen Import-Pfad, um selbst einen zu konstruieren — daher ist
 der `driver`-Slot eine interne Naht, die die Tests des Frameworks
 verwenden, nichts, was du in Anwendungscode verdrahtest.
 
+## Schema
+
+Jeder Store führt bei der ersten Verwendung `CREATE TABLE IF NOT EXISTS`
+aus, eine leere Datei ist also ein gültiger Startpunkt.  Fünf Tabellen,
+verteilt auf die drei Stores:
+
+```sql
+CREATE TABLE events (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,    -- JSON
+  tags           TEXT,             -- legacy CSV (auch nach events_tags gespiegelt)
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE INDEX idx_events_pid ON events(persistence_id);
+
+CREATE TABLE events_tags (         -- indizierte Tag-Lookups für Projektionen
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags(persistence_id, sequence_nr);
+
+CREATE TABLE events_meta (         -- Compaction-High-Water-Mark
+  persistence_id TEXT PRIMARY KEY,
+  deleted_to     INTEGER NOT NULL
+);
+
+CREATE TABLE snapshots (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+
+CREATE TABLE durable_state (
+  persistence_id TEXT PRIMARY KEY,
+  revision       INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL
+);
+```
+
+Die Namen oben sind die Defaults; `eventsTable`, `snapshotsTable` und die
+`table`-Option des Durable-State-Stores benennen sie um, und `events_tags`
+/ `events_meta` folgen dem Stamm des Journals.
+
+Zwei Details, die du kennen solltest.  Das **Dual-Table-Design für Tags**
+ist der Grund, warum Projektionen skalieren: `events.tags` behält die
+Legacy-CSV-Spalte aus Rückwärtskompatibilität, aber Tag-Queries lesen
+`events_tags` und treffen damit einen Index, statt jede Zeile zu scannen.
+Beide werden in derselben Transaktion geschrieben, können also nicht
+auseinanderlaufen.
+
+Und der **Primary Key von `events` ist hier die Absicherung, nicht der
+Concurrency-Mechanismus**.  Lokal liest das Journal die Head-Sequence
+innerhalb einer `BEGIN IMMEDIATE`-Transaktion erneut und wirft einen
+`JournalConcurrencyError`, bevor überhaupt ein Insert versucht wird.  Die
+HTTP-basierten Backends haben keine solche Transaktion, lassen den Write
+also auf `(persistence_id, sequence_nr)` laufen und übersetzen
+stattdessen das `UNIQUE constraint failed` — dieselben Tabellen,
+schwächere Garantie.
+
+Das ist das Schema des SQLite-Dialekts, wortgleich geteilt mit
+[libSQL / Turso](/de/persistence/journals/libsql/) und
+[Cloudflare D1](/de/persistence/journals/cloudflare-d1/) — auf allen dreien
+läuft dieselbe DDL, und genau das lässt eine Datenbank ohne Migration
+zwischen einer lokalen Datei und einem der beiden wechseln.
+
 ## Peer-Dependency auf Node — optional
 
 ```bash
@@ -241,9 +291,10 @@ selbst:
 database.exec('PRAGMA busy_timeout = 1000;');
 ```
 
-Das Schema ist das des SQLite-Dialekts und damit identisch zu
+Seine Tabelle ist die `durable_state` aus [Schema](#schema) — die des
+SQLite-Dialekts und damit identisch zu dem, was
 [libSQL / Turso](/de/persistence/journals/libsql/) und
-[Cloudflare D1](/de/persistence/journals/cloudflare-d1/) — eine
+[Cloudflare D1](/de/persistence/journals/cloudflare-d1/) ausführen — eine
 Datenbank kann also ohne Migration zwischen einer lokalen Datei und
 einem der beiden wandern.
 
