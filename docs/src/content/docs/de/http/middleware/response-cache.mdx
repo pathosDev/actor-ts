@@ -63,7 +63,16 @@ key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
+
+// Query-sensitive — the query is NOT part of req.path:
+key: (req) => `${req.path}|page=${req.query.page ?? '1'}`,
 ```
+
+`req.path` ist **nur der Pfadname** — `/api/products`, nie
+`/api/products?page=2`.  Ein Endpunkt, dessen Response von einem
+Query-Parameter abhängt, muss diesen Parameter selbst in den Key
+falten; sonst teilen sich alle Seiten einen Eintrag und Seite 2
+bekommt Seite 1 ausgeliefert.
 
 Baue den Key so, dass er über äquivalente Requests deterministisch,
 aber über getrennt zu cachende Responses eindeutig ist.

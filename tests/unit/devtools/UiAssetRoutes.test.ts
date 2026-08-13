@@ -111,6 +111,18 @@ describe('uiAssetRoutes', () => {
     expect(response.headers.get('location')).toBe('/devtools/');
   });
 
+  test('the mount-prefix redirect puts the slash on the path, not inside a query', async () => {
+    // The shell redirect appends to `HttpRequest.path`.  While the default
+    // backend reported the raw request target there, `GET /devtools?x=1`
+    // answered `Location: /devtools?x=1/` — a trailing slash on a query
+    // value, which resolves relative asset URLs against the wrong
+    // directory, exactly what the redirect exists to prevent.
+    const url = await start(path('devtools', uiAssetRoutes(FAKE_ASSETS)));
+    const response = await fetch(`${url}/devtools?panel=actors`, { redirect: 'manual' });
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('/devtools/');
+  });
+
   test('serves assets under a mount prefix', async () => {
     const url = await start(concat(path('devtools', uiAssetRoutes(FAKE_ASSETS))));
     expect(await (await fetch(`${url}/devtools/assets/main.js`)).text()).toBe('console.log("ui")');

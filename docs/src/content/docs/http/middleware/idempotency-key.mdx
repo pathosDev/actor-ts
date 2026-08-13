@@ -71,14 +71,24 @@ type IdempotencyOptions = {
 | `headerName` | Customize the header name (case-insensitive match).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-key namespace.  Default `'idem:'` so multiple idempotency wrappers in the same Redis don't collide. |
 | `missingHeader` | What to do when the header is absent.  Default `'reject'` (400); set `'pass-through'` to run the handler without dedup when only some clients use idempotency. |
-| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4). |
+| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4). |
 
-The wrapper also stores a **SHA-256 hash of the request body**
-alongside each cached response.  When a second request arrives
-with the same key but a different body, the wrapper rejects
-with 422 — preventing a client (malicious or buggy) from
-reusing a key for a semantically different request to receive
-the wrong stored response.
+The wrapper also stores a **SHA-256 fingerprint of the request**
+— method, path, query string and body — alongside each cached
+response.  When a second request arrives with the same key but
+any of those four differing, the wrapper rejects with 422 —
+preventing a client (malicious or buggy) from reusing a key for
+a semantically different request to receive the wrong stored
+response.  `POST /refunds?amount=1` and `POST /refunds?amount=9999`
+are different requests even when their bodies are identical.
+
+The query is folded in **canonically**: parameter *keys* are
+sorted, so a retry that reorders `?a=1&b=2` into `?b=2&a=1`
+still replays instead of being rejected — reordering is not a
+different request.  The values of a *repeated* key keep their
+original order, so `?tag=a&tag=b` stays distinct from
+`?tag=b&tag=a`, which matters for any API that reads such a
+list positionally.
 
 ## What gets cached
 

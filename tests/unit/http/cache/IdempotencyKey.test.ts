@@ -259,3 +259,130 @@ describe('idempotent — request-body fingerprint binding', () => {
     expect(invocations).toBe(3);
   });
 });
+
+/* ------------------------- security: query-string binding -------------------------- */
+
+function requestWithQuery(
+  headers: Record<string, string>,
+  query: HttpRequest['query'],
+  path = '/payments',
+): HttpRequest {
+  return {
+    method: 'POST',
+    path,
+    headers,
+    query,
+    params: {},
+    body: new TextEncoder().encode('{"amount":42}'),
+  };
+}
+
+describe('idempotent — query-string fingerprint binding', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  `HttpRequest` keeps `path` and
+   * `query` in separate fields, and the fingerprint hashed only
+   * `method + path + body`.  The query was therefore invisible to the
+   * replay guard:
+   *
+   *   POST /refunds?amount=1     Idempotency-Key: abc   (body identical)
+   *   POST /refunds?amount=9999  Idempotency-Key: abc   (body identical)
+   *
+   * The second request differs only in the query, so it fingerprinted
+   * identically to the first and replayed its stored 200 — the larger
+   * refund was silently dropped and the client was told it succeeded,
+   * exactly the outcome the 422 exists to prevent.  Reachable on every
+   * backend that reports `path` as the bare pathname.
+   */
+  test('exploit: same key + different query → 422 (not the cached response)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { txId: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-refund' }, { amount: '1' }, '/refunds'));
+    expect(first.status).toBe(200);
+
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-refund' }, { amount: '9999' }, '/refunds'));
+    expect(second.status).toBe(422);
+    expect(invocations).toBe(1);                              // handler NOT invoked
+    expect(JSON.stringify(second.body)).not.toContain('txId'); // no leak of the first response
+  });
+
+  test('canonical: the same parameters in a different key order replay (no false 422)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-order' }, { a: '1', b: '2' }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-order' }, { b: '2', a: '1' }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);  // SAME response replayed
+    expect(invocations).toBe(1);
+  });
+
+  test('canonical: the values of a repeated parameter keep their order → reordering is a different request', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    await handler(requestWithQuery({ 'idempotency-key': 'q-repeat' }, { tag: ['a', 'b'] }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-repeat' }, { tag: ['b', 'a'] }));
+    expect(second.status).toBe(422);
+  });
+
+  /**
+   * A backend that reports the raw request target in `path` (query
+   * included) must fingerprint a request identically to one that
+   * reports the bare pathname plus a parsed `query` — otherwise two
+   * pods running different backends against one shared Redis
+   * idempotency cache 422 each other's perfectly valid retries.
+   */
+  test('portability: a query-bearing path fingerprints like a bare path plus query', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const rawTarget = await handler(
+      requestWithQuery({ 'idempotency-key': 'q-portable' }, { a: '1', b: '2' }, '/payments?a=1&b=2'),
+    );
+    const parsedTarget = await handler(
+      requestWithQuery({ 'idempotency-key': 'q-portable' }, { a: '1', b: '2' }, '/payments'),
+    );
+    expect(rawTarget.status).toBe(200);
+    expect(parsedTarget.status).toBe(200);  // replayed, NOT 422
+    expect(invocations).toBe(1);
+  });
+
+  test('regression: an undefined query value is skipped, not hashed as a difference', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-undef' }, { a: '1' }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-undef' }, { a: '1', b: undefined }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+  });
+
+  test('regression: query-free requests are unaffected (empty query hashes as no query)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-none' }, {}));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-none' }, {}));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(invocations).toBe(1);
+  });
+});
