@@ -153,6 +153,30 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 Die Middleware-Sammlung steht in der
 [HTTP-Übersicht](/de/http/overview/).
 
+### Backend-eigene Middleware läuft ebenfalls
+
+`withMiddleware()` ist der portable Weg — auf jedem Backend
+identisch —, aber ein Handshake ist auch für das darunterliegende
+Framework ein ganz normaler Request, und **dessen** eigene
+Middleware läuft ebenfalls:
+
+| Backend | Was beim Handshake zusätzlich läuft |
+| --- | --- |
+| **Fastify** | Route-Hooks, inklusive `preValidation` |
+| **Express** | alles, was mit `app.use(...)` registriert wurde |
+| **Hono** | alles, was mit `app.use(...)` registriert wurde |
+
+Eine App, die `/ws` mit `app.use(requireLogin)` absichert, ist also
+wirklich abgesichert, und eine native Middleware, die den Request
+beantwortet, lehnt das Upgrade ab.  Der Guard des Frameworks läuft
+nach allen anderen — `withMiddleware()` und `allowedOrigins` haben
+damit immer das letzte Wort.
+
+Nimm `withMiddleware()`, wenn sich eine Route über alle Backends
+hinweg gleich verhalten soll; greif zu nativer Middleware, wenn du
+ein bestehendes Ökosystem weiterverwendest (Sessions, Rate
+Limiting, Observability).
+
 ## `WebsocketServerActor`
 
 Ein Actor pro Route — der **Hub**.  Er sieht die Events jeder
