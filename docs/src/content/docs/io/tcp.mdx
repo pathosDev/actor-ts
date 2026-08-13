@@ -114,6 +114,13 @@ type TcpFraming =
 With `lines` or `length-prefixed`, each message the target receives
 is **one full frame**, not an arbitrary chunk.
 
+Both actors validate `framing` while starting, so a bad setting
+throws an `OptionsError` before a socket exists rather than at the
+first inbound byte.  A cap that is not a positive integer is
+rejected, and so is an **empty `delimiter`** — it matches at every
+offset without consuming anything, which is not a slow framer but a
+wedged process.
+
 Both actors read the same strategies from the same code — on
 `TcpServerActor` the chosen framing is applied **per accepted
 connection**, each with its own re-assembly buffer, so two clients

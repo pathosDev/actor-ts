@@ -156,6 +156,17 @@ export function extractLineFrames(
   scanFrom = 0,
 ): FrameExtraction {
   const delimiterBytes = textEncoder.encode(delimiter);
+  // An empty delimiter matches at every offset while consuming nothing, so
+  // the loop below would never advance — a synchronous spin no timeout can
+  // interrupt, growing `frames` with empty strings until the process dies
+  // (#789).  Unreachable through either actor: {@link findFramingViolation}
+  // rejects it in `preStart`, before a socket exists.  Which is why this
+  // throws rather than reporting an `overflow`: an overflow tells the caller
+  // to drop the connection and reconnect, and it would then reconnect into
+  // the same misconfiguration forever, with nothing pointing at the config.
+  if (delimiterBytes.length === 0) {
+    throw new Error('extractLineFrames: framing.delimiter must not be empty');
+  }
   const frames: TcpFrame[] = [];
   let lineStart = 0;
   // Clamped rather than trusted: a caller that lost track of its buffer would
@@ -259,34 +270,45 @@ export function readFramingFromConfig(framingConfig: Config): TcpFraming {
   return { kind: 'bytes' };
 }
 
-/** A framing size cap that is present but outside its domain. */
-export type FramingCapViolation = {
+/** A framing setting that is present but outside its domain. */
+export type FramingViolation = {
   readonly field: string;
   readonly reason: string;
-  readonly value: number;
+  readonly value: number | string;
 };
 
 /**
- * The offending size cap in `framing`, or `undefined` when both are fine —
+ * The offending `framing` setting, or `undefined` when all of them are fine —
  * the rule shared by every TCP options validator.
  *
- * `framing` carries the two inbound size caps, and both are DoS limits: a
- * frame past the cap drops the connection instead of buffering without
- * bound.  They sit one level down, so the validators' check helpers — typed
- * against the top-level fields of an options type — cannot reach them, which
- * is why this is spelled out as a free function instead.
+ * `framing`'s leaves sit one level down, so the validators' check helpers —
+ * typed against the top-level fields of an options type — cannot reach them,
+ * which is why this is spelled out as a free function instead.  Both TCP
+ * actors delegate to it, so one rule covers the client and the listener, and
+ * covers the builder, the plain object and HOCON alike.
  *
- * The failure mode is worse than a merely wrong number.  Both caps are
- * applied as `length > cap`, and any comparison against `NaN` is `false` —
- * so a non-numeric value read from HOCON does not clamp anything, it
- * **removes the cap entirely** and restores the unbounded buffering the
- * limit exists to prevent.  A zero or negative cap fails the other way,
- * dropping every connection immediately.
+ * Every rule here guards a failure mode worse than a merely wrong value.
+ *
+ * The two size caps are DoS limits: a frame past the cap drops the connection
+ * instead of buffering without bound.  Both are applied as `length > cap`,
+ * and any comparison against `NaN` is `false` — so a non-numeric value read
+ * from HOCON does not clamp anything, it **removes the cap entirely** and
+ * restores the unbounded buffering the limit exists to prevent.  A zero or
+ * negative cap fails the other way, dropping every connection immediately.
+ *
+ * An empty `delimiter` is worse still: it matches at every offset without
+ * consuming anything, so the extractor's scan cannot advance.  That is a
+ * synchronous spin — not a slow actor but a wedged process, since no timeout
+ * can interrupt it (#789).  `''` survives every layer on its own (`??`
+ * treats it as set, HOCON reads it verbatim), so nothing else would catch it.
  */
-export function findFramingCapViolation(
+export function findFramingViolation(
   framing: TcpFraming | undefined,
-): FramingCapViolation | undefined {
+): FramingViolation | undefined {
   if (framing === undefined) return undefined;
+  if (framing.kind === 'lines' && framing.delimiter === '') {
+    return { field: 'framing.delimiter', reason: 'must not be empty', value: framing.delimiter };
+  }
   const reason = 'must be a positive integer number of bytes';
   if (framing.kind === 'lines' && framing.maxLineLen !== undefined
       && !isByteCap(framing.maxLineLen)) {

@@ -118,6 +118,13 @@ Mit `lines` oder `length-prefixed` ist jede Nachricht, die das
 Target empfängt, **ein vollständiger Frame**, kein beliebiger
 Chunk.
 
+Beide Actors validieren `framing` beim Start, ein falscher Wert
+wirft also einen `OptionsError`, bevor es einen Socket gibt — nicht
+erst beim ersten eingehenden Byte.  Ein Limit, das keine positive
+Ganzzahl ist, wird abgelehnt, und ein **leerer `delimiter`** ebenso:
+Er passt an jeder Position, ohne etwas zu verbrauchen, und das ist
+kein langsamer Framer, sondern ein festgefahrener Prozess.
+
 Beide Actors lesen dieselben Strategien aus demselben Code — auf
 `TcpServerActor` wird das gewählte Framing **pro angenommener
 Verbindung** angewandt, jede mit eigenem Re-Assembly-Buffer, sodass

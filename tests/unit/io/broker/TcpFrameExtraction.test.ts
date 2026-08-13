@@ -20,8 +20,10 @@ import {
   extractFrames,
   extractLengthPrefixedFrames,
   extractLineFrames,
-  findFramingCapViolation,
+  findFramingViolation,
 } from '../../../../src/io/broker/TcpFraming.js';
+import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
+import { TcpSocketOptionsValidator } from '../../../../src/io/broker/TcpSocketOptions.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -228,17 +230,53 @@ describe('extractFrames — strategy dispatch and defaults', () => {
   });
 });
 
-describe('findFramingCapViolation', () => {
+describe('findFramingViolation', () => {
   test('passes when the caps are unset — they fall through to the defaults', () => {
-    expect(findFramingCapViolation(undefined)).toBeUndefined();
-    expect(findFramingCapViolation({ kind: 'lines' })).toBeUndefined();
-    expect(findFramingCapViolation({ kind: 'bytes' })).toBeUndefined();
+    expect(findFramingViolation(undefined)).toBeUndefined();
+    expect(findFramingViolation({ kind: 'lines' })).toBeUndefined();
+    expect(findFramingViolation({ kind: 'bytes' })).toBeUndefined();
   });
 
   test('names the offending field for a NaN cap', () => {
-    expect(findFramingCapViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
+    expect(findFramingViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
       .toBe('framing.maxLineLen');
-    expect(findFramingCapViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
+    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
       .toBe('framing.maxFrameLen');
+  });
+
+  test('rejects an empty delimiter — it would wedge the extractor (#789)', () => {
+    // The primary proof, and deliberately at this level: an empty delimiter
+    // never reaches the extractor because the validators refuse the settings
+    // in preStart, before a socket exists.
+    const violation = findFramingViolation({ kind: 'lines', delimiter: '' });
+    expect(violation?.field).toBe('framing.delimiter');
+    expect(violation?.value).toBe('');
+    // One rule, both actors: the client and the listener delegate here, so
+    // neither validator can be the one that forgot.
+    const framing = { kind: 'lines', delimiter: '' } as const;
+    expect(() => new TcpSocketOptionsValidator().validate({ framing }))
+      .toThrow(/framing\.delimiter/);
+    expect(() => new TcpServerOptionsValidator().validate({ framing }))
+      .toThrow(/framing\.delimiter/);
+  });
+
+  test('a delimiter that is set and non-empty passes', () => {
+    expect(findFramingViolation({ kind: 'lines', delimiter: '\r\n' })).toBeUndefined();
+    expect(findFramingViolation({ kind: 'lines', delimiter: '\0' })).toBeUndefined();
+  });
+});
+
+describe('extractLineFrames — empty delimiter (#789)', () => {
+  test('is refused outright rather than scanned with', () => {
+    // NOTE for whoever breaks this: a regression here does not fail the test,
+    // it WEDGES the run.  An empty delimiter matches at every offset without
+    // consuming anything, and the scan loop is synchronous, so bun's per-test
+    // timeout cannot interrupt it — the suite hangs until the growing frame
+    // array exhausts memory.  The guard is the first statement in the
+    // function precisely so this assertion can never be the thing that hangs.
+    expect(() => extractLineFrames(encode('a\nb'), '', 64)).toThrow(/delimiter/);
+    expect(() => extractLineFrames(new Uint8Array(0), '', 64)).toThrow(/delimiter/);
+    expect(() => extractFrames(encode('a\nb'), { kind: 'lines', delimiter: '' }))
+      .toThrow(/delimiter/);
   });
 });
