@@ -159,3 +159,48 @@ describe('Config.load', () => {
     expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
   });
 });
+
+describe('Config reads own properties only (#589)', () => {
+  const config = Config.parseString('a = 1\nobj { key = "value" }');
+  // Every member of Object.prototype used to answer a path lookup, so the
+  // guarded three were never the whole list.
+  const inherited = ['toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', 'constructor', '__proto__'];
+
+  test('hasPath is false for every inherited member', () => {
+    for (const member of inherited) expect(config.hasPath(member)).toBe(false);
+  });
+
+  test('hasPath is false for an inherited member at any depth', () => {
+    for (const member of inherited) expect(config.hasPath(`obj.${member}`)).toBe(false);
+  });
+
+  test('a typed getter reports a missing path, not a type error on a function', () => {
+    // The old failure was `Config at "toString" is not a string (got function)`,
+    // which reads as a broken value rather than the bad path it is.
+    expect(() => config.getString('toString')).toThrow(ConfigError);
+    expect(() => config.getString('toString')).toThrow(/Missing config value at path "toString"/);
+  });
+
+  test('a key that happens to be named like a prototype member still works', () => {
+    const shadowing = Config.parseString('toString = "mine"\nvalueOf = 7');
+    expect(shadowing.hasPath('toString')).toBe(true);
+    expect(shadowing.getString('toString')).toBe('mine');
+    expect(shadowing.getInt('valueOf')).toBe(7);
+  });
+
+  test('fromObject drops an own __proto__ instead of re-parenting the tree', () => {
+    // JSON.parse yields an *own* __proto__ that Object.entries reports; the
+    // clone used to assign it straight through, hitting the inherited setter.
+    const config = Config.fromObject(JSON.parse('{"__proto__":{"clonePwned":1},"a":1}'));
+    expect(config.toJSON()).toEqual({ a: 1 });
+    expect(Object.getPrototypeOf(config.toJSON())).toBe(Object.prototype);
+    expect(config.hasPath('clonePwned')).toBe(false);
+    expect(({} as Record<string, unknown>).clonePwned).toBeUndefined();
+  });
+
+  test('a nested own __proto__ is dropped as well', () => {
+    const config = Config.fromObject(JSON.parse('{"outer":{"__proto__":{"nestedPwned":1},"b":2}}'));
+    expect(config.toJSON()).toEqual({ outer: { b: 2 } });
+    expect(({} as Record<string, unknown>).nestedPwned).toBeUndefined();
+  });
+});

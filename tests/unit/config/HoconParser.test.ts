@@ -376,3 +376,56 @@ describe('prototype pollution (#406)', () => {
     expect(isForbiddenConfigKey('__proto__x')).toBe(false);
   });
 });
+
+describe('substitutions read own properties only (#589)', () => {
+  // The three guarded keys are a blocklist; `Object.prototype` has a dozen more
+  // members, and every one of them used to answer a substitution lookup.  These
+  // cases pin the positive guard instead: nothing inherited resolves, whatever
+  // it is called.
+  const inherited = ['toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', 'toLocaleString'];
+
+  test('a required substitution naming a prototype member stays unresolved', () => {
+    for (const member of inherited) {
+      // Before the fix this spliced the native function into the config tree,
+      // where the next typed getter met it as a value.
+      expect(() => resolveSubstitutions(parseHocon(`x = \${${member}}`)))
+        .toThrow(`Unresolved substitution: \${${member}}`);
+    }
+  });
+
+  test('a prototype member never resolves through a nested path either', () => {
+    expect(() => resolveSubstitutions(parseHocon('a { b = 1 }\nx = ${a.toString}')))
+      .toThrow(/Unresolved substitution/);
+  });
+
+  test('an optional substitution now falls through to the environment', () => {
+    // The tree hit short-circuited `resolveOne` before it reached `env`, so a
+    // shadowed name could never be supplied from outside.
+    const resolved = resolveSubstitutions(parseHocon('x = ${?toString}'), { toString: 'from-env' });
+    expect(resolved).toEqual({ x: 'from-env' });
+  });
+
+  test('an optional substitution with no environment entry is dropped, not shadowed', () => {
+    expect(stripUndefined(resolveSubstitutions(parseHocon('x = ${?valueOf}'), {}))).toEqual({});
+  });
+
+  test('no function value can reach the resolved tree', () => {
+    const resolved = resolveSubstitutions(parseHocon('a = 1\nb = ${?hasOwnProperty}'), {});
+    for (const value of Object.values(resolved)) expect(typeof value).not.toBe('function');
+  });
+
+  test('an own __proto__ on the root is still not readable as a substitution source', () => {
+    // `Object.hasOwn` alone would wave this one through — `resolveOne` looks up
+    // against the caller's unfiltered object — which is why the forbidden-key
+    // check stays in the descent next to it.
+    const evil = JSON.parse('{"__proto__":{"leak":1},"x":{"__substitution":true,"path":"__proto__.leak","optional":true}}');
+    expect(stripUndefined(resolveSubstitutions(evil, {}))).toEqual({});
+  });
+
+  test('ordinary keys that shadow a prototype member still resolve', () => {
+    // The guard must not cost a legitimate key: an explicitly declared
+    // `toString` is an own property and stays readable.
+    expect(resolveSubstitutions(parseHocon('toString = "mine"\nx = ${toString}')))
+      .toEqual({ toString: 'mine', x: 'mine' });
+  });
+});

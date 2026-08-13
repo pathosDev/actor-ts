@@ -498,6 +498,26 @@ Die Prüfung vergleicht exakt, ähnlich aussehende Schlüssel sind also
 unproblematisch: `_proto_`, `constructorName` und `prototypes`
 funktionieren normal.
 
+#### Lesend sind nur eigene Schlüssel sichtbar
+
+Drei abgelehnte Namen sichern die Schreibseite.  Die Leseseite ist
+andersherum abgesichert — positiv — denn `Object.prototype` hat ein Dutzend
+weitere Member, und eine Liste käme dabei nie hinterher:
+
+```hocon
+name = ${toString}    # Fehler: unaufgelöste Substitution — keine native Funktion
+port = ${?valueOf}    # optional: fällt auf die Umgebung durch, dann weg
+```
+
+Jeder Zugriff — eine Substitution, `hasPath` und jeder typisierte Getter —
+liest ausschließlich **eigene** Schlüssel, im Config-Baum wie in der
+Umgebung.  Ein Name, der zufällig einem geerbten Member entspricht, geht
+damit ins Leere, statt zu dem aufzulösen, was auf dem Prototypen liegt, und
+`hasPath('toString')` ist `false`, solange die Config keinen eigenen
+`toString`-Schlüssel deklariert.  Das bleibt erlaubt und funktioniert
+weiterhin: ein eigener Schlüssel überdeckt den geerbten Member,
+`toString = "mine"` liest sich also als `"mine"` zurück.
+
 ## Config im Code lesen
 
 ```ts
