@@ -324,6 +324,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   counter carries the signal, because every envelope is its own frame and a
   warning per envelope would let a client write the node's log at line rate.
 
+- **Snapshots stored in object storage can now be integrity-protected**
+  (#613).  `ObjectStorageSnapshotStore` had no integrity plumbing at all and
+  silently discarded `PersistenceOptions.integrity` on both the write and
+  the read path — and recovery folds events *on top of* a snapshot, so
+  whoever could rewrite one dictated the state an actor came back as.  It now
+  takes `integrity` and `allowUntaggedBodies`, signs bodies on `save`, and
+  verifies on `loadLatest` and `loadBefore`.  `registerObjectStoragePlugins`
+  forwards both to the snapshot store **and** the durable-state store, which
+  previously had no way to reach the option through the one-call wiring
+  either.  `IntegrityConfig`, `IntegrityResolver` and `resolveIntegrity` are
+  exported from the package — the option was typed with names it did not
+  export.
+
+- **A gRPC client can now be faked without installing the `@grpc/*` peer
+  dependencies** (#1040).  `GrpcClientActor.createServiceClient()` is a
+  protected hook holding the module load and client construction that used
+  to sit inside `connectImplementation` — the same test seam
+  `JetStreamActor.createNatsConnection` provides — and the structural shims
+  an override has to satisfy (`GrpcServiceClient`, `GrpcCallOptions`, the
+  four call-shape interfaces, `GrpcReadableCall`, `GrpcWritableCall`,
+  `GrpcDuplexCall`) are exported from the broker barrel.  That makes the
+  client's call sites and its client-stream registry assertable in the unit
+  suite for the first time: seven new tests cover the deadline reaching the
+  wire and the fact that the stream handle's token, not its stream id, is
+  what grants access to a stream.  The client-side `GrpcServerStreamCall`
+  interface is renamed `GrpcReadableCall` — it was module-local and collided
+  with the server actor's exported type of the same name.
+
 ### Changed
 
 - **BREAKING — `Lease.release()` reports a failure instead of swallowing it**
@@ -355,6 +383,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   by query, and a hand-rolled `request.path.split('?')[0]` quietly becomes a
   no-op.  Debug access logs on Fastify now print the pathname only, which
   matches what the other two backends already logged.
+
+- **BREAKING — Every HTTP backend now caps a request body at the same 1
+  MiB** (#357).  Express and Hono each hardcoded 10 MiB while Fastify was
+  never handed a `bodyLimit` at all and sat on its own 1 MiB default, so how
+  large a request the framework accepted changed with the backend rather
+  than with anything the application asked for.  The shared value is
+  `DEFAULT_HTTP_MAX_BODY_BYTES` in the new `src/http/Constants.ts` — 1 MiB
+  rather than 10 because it is the stricter of the two and the number the
+  default backend already enforced; raising it instead would have widened
+  the accept-anything window for every application that never made a choice.
+  Lift it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)`
+  on the Express and Hono backend options, `bodyLimit` in the
+  `FastifyBackend` options bag.
+
+  *Migration:* an Express or Hono backend that relied on the implicit 10 MiB
+  cap now answers 413 above 1 MiB.  Restore the old cap explicitly:
+  `ExpressBackendOptions.create().withMaxBodyBytes(10 * 1024 * 1024)`,
+  likewise `HonoBackendOptions`.
 
 ### Removed
 
@@ -468,6 +514,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the direction of a completed handshake, so a refused client there still
   just sees the connection go.  The handshake is refused correctly on all
   three either way — only the explanatory body was missing.
+
+- **A body-size refusal now reads the same whichever backend served it**
+  (#357).  All three answer 413 with the `text/plain` body `Payload Too
+  Large` and the server-wide default response headers, written through the
+  backend's own response writer.  Fastify used to let its own
+  `FST_ERR_CTP_BODY_TOO_LARGE` JSON envelope through — and, once
+  `withErrorHandler` was installed, reported the refusal as a 500, because
+  the app-level hook maps every non-`HttpError` to one.  That hook is now
+  installed for every server and answers the refusal itself: a body cap is a
+  transport decision, and the Express and Hono backends never consulted the
+  user's error handler for it either.  Every other error on a server without
+  an error handler is still handed back to Fastify's default serialisation
+  untouched.
+
+- **The Express backend refuses an over-long declared `Content-Length`
+  before reading a byte of the body** (#357).  It used to stream and count
+  instead, so a client announcing a gigabyte still had a full cap's worth
+  read and buffered before the 413 went out.  Hono and Fastify already
+  refused up front; the shared predicate now sits beside the backend
+  contract in `HttpServerBackend.ts`.  A chunked body that declares no length
+  is still measured as it arrives — that is the one path a size cap cannot
+  short-circuit without help from the runtime adapters.
 
 ### Security
 
@@ -931,6 +999,95 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   unconditionally.  And `ExpressAppLike` gained the call signature every
   Express app already has, so a hand-written implementation of that
   interface must become callable; a real `express()` app needs no change.
+
+- **BREAKING — An HMAC integrity tag can no longer be stripped to skip
+  verification** (#579).  `FLAG_INTEGRITY_HMAC` lives in the body manifest,
+  so an attacker with write access to the bucket could clear it, drop the 16
+  trailing tag bytes, and hand `decodeBody` a well-formed frame it waved
+  through — `requireIntegrity` defaulted to false and `withIntegrity()`
+  never set it, so the control was bypassable in exactly the configuration
+  the API leads you to.  Stripping a tag is far cheaper than forging one.
+  Supplying an `integrityKey` on decode now means *this corpus is
+  protected*: a body without a tag is refused.  The demand lives in the
+  codec, so it covers the store-level config and a per-call
+  `PersistenceOptions.integrity` alike.
+
+  *Migration:* `withRequireIntegrity(true)` is removed — it is what the
+  default does now.  Its inverse `withAllowUntaggedBodies(true)` (default
+  `false`) re-admits untagged bodies.  A deployment that called
+  `.withIntegrity(...)` against a bucket still holding pre-integrity bodies
+  must add `.withAllowUntaggedBodies(true)`, rewrite every object (a `load`
+  + `upsert` per persistenceId re-frames it with a tag), then drop the
+  option.  Note that `reEncryptObjectStorage` still cannot read
+  integrity-tagged bodies (#739), so finish any pending master-key rotation
+  before enabling integrity.
+
+- **BREAKING — A unary gRPC call is now bounded by the configured deadline**
+  (#577).  `GrpcClientOptions.deadlineMs` was declared, exposed as
+  `withDeadlineMs`, read from HOCON, validated and defaulted to 30 s — and
+  never handed to grpc-js, so every call ran unbounded.  A server that
+  accepts a call and then never answers left a live grpc-js call plus a
+  retained closure over the reply target for as long as the application kept
+  issuing RPCs.  `onUnary` now passes a per-call options object carrying an
+  absolute deadline minted from the configured duration.  The bound is
+  unary-only: a gRPC deadline covers the whole RPC, so applying the same
+  single value to the server-stream, client-stream and bidi call classes
+  would tear down every stream that outlives it, and long-lived streams are
+  a supported pattern.  Detecting a stream whose peer has gone quiet is a
+  channel-level concern (HTTP/2 keepalive, #790).
+
+  *Migration:* a unary call that previously hung forever now fails with
+  `DEADLINE_EXCEEDED` after 30 s by default.  Raise it with
+  `withDeadlineMs(...)` (or the `deadlineMs` HOCON leaf) if you relied on
+  the old unbounded behaviour — and note that a small value which used to be
+  inert is now load-bearing: `deadlineMs: 1` passes validation and will fail
+  every unary call immediately.
+
+- **BREAKING — The Kubernetes API seed provider now percent-encodes the path
+  segments it builds** (#597).  `namespace` and `serviceName` go into
+  `/api/v1/namespaces/…/endpoints/…` through the same kind of helper the
+  sibling lease client has always used.  Both values arrive straight from the
+  pod's environment — `CLUSTER_NAMESPACE` / `CLUSTER_SERVICE_NAME`, via
+  `autoDiscovery` and via the `Cluster.bootstrap({ discovery: 'kubernetes'
+  })` shorthand — so a `/` or `..` in either one previously walked the GET
+  to a different API resource with the pod's ServiceAccount token attached,
+  and a trailing `?watch=true` turned the one-shot GET into a stream whose
+  response accumulator never finished.
+  `KubernetesApiSeedProviderOptionsValidator` additionally requires the
+  names Kubernetes itself would accept: a DNS-1123 label for `namespace`,
+  the wider DNS-1123 subdomain for `serviceName` (an `Endpoints` object may
+  carry a dotted name), so a mangled value is rejected by field name at
+  construction instead of arriving later as a puzzling 404.
+
+  *Migration:* a `namespace` or `serviceName` outside the DNS-1123 shape is
+  now an `OptionsError` at construction.  The rule is scoped to the default
+  in-cluster fetcher — supply `fetchEndpoints` if you use those two fields
+  as plain labels rather than to address a Kubernetes object.  On the
+  `autoDiscovery` ladder an out-of-shape `CLUSTER_SERVICE_NAME` now fails
+  the bootstrap instead of silently falling through to DNS.
+
+- **BREAKING — `DevTools.mount()` now demands the same acknowledgement a
+  routable `attach()` does** (#594).  `attach` refuses a non-loopback bind
+  that nothing gates — DevTools reads every actor's class, mailbox and, with
+  time travel, persisted events — while `mount` returned the identical route
+  tree, WebSocket included, with no check at all.  It did not bypass the
+  validator, as first reported: it ran the same one, but the rule had
+  nothing to bite on, because `host` is read only by `bind()`, so on the
+  mount path it describes an interface nobody binds and its loopback default
+  made every ungated mount look safe.  There is no fact in the options a
+  mount could reason from — the routes go to a server the extension never
+  sees — so it now asks instead: `auth`, `ipAllowlist`, or the new
+  `allowUngatedMount` acknowledgement, which also logs one line recording
+  that DevTools is running without a gate of its own.  `attach`'s host rule
+  is unchanged; the validator is simply told which entry point it serves, so
+  both paths enforce one policy.
+
+  *Migration:* `DevTools.mount(system)` throws `OptionsError` unless the
+  options carry `auth`, `ipAllowlist`, or `allowUngatedMount: true`.  Pass a
+  gate, or add `.withAllowUngatedMount()` to keep the previous behaviour.
+  `new DevToolsOptionsValidator()` now takes the exposure it validates for
+  (`'attach'` or `'mount'`), required rather than defaulted so a forgotten
+  argument cannot silently pick the laxer rule.
 
 ## [0.15.0] — 2026-08-12
 
