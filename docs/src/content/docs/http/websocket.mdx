@@ -146,6 +146,27 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 
 See the [HTTP overview](/http/overview/) for the middleware set.
 
+### Backend-native middleware runs too
+
+`withMiddleware()` is the portable path — it works the same on every
+backend — but a handshake is also a normal request to the underlying
+framework, and **that** framework's own middleware runs as well:
+
+| Backend | What also runs at the handshake |
+| --- | --- |
+| **Fastify** | route hooks, including `preValidation` |
+| **Express** | everything registered with `app.use(...)` |
+| **Hono** | everything registered with `app.use(...)` |
+
+So an app that gates `/ws` with `app.use(requireLogin)` really is
+gated, and a native middleware that answers the request refuses the
+upgrade.  The framework's own guard runs after all of them, so
+`withMiddleware()` and `allowedOrigins` always have the last word.
+
+Prefer `withMiddleware()` when a route should behave identically
+across backends; reach for native middleware when you are reusing an
+existing ecosystem (sessions, rate limiting, observability).
+
 ## `WebsocketServerActor`
 
 One actor per route — the **hub**.  It sees every connection's
