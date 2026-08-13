@@ -418,9 +418,10 @@ Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.
 
 ## Verwandt
 
-- [`docs/persistence/migration-recipes.md`](../persistence/migration-recipes.md)
+- [Migrations-Rezepte](/de/persistence/migration/recipes/)
   — Entscheidungsbaum, welchen Adapter zu wählen.
-- [`CHANGELOG.md`](../../CHANGELOG.md) `[0.6.0]` → "schema migration
-  & encryption polish" für das zugrundeliegende Feature-Set.
+- [`CHANGELOG.md`](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+  `[0.6.0]` → "schema migration & encryption polish" für das
+  zugrundeliegende Feature-Set.
 - Offene Issues: [#71](https://github.com/pathosDev/actor-ts/issues/71)
   Bulk-Wrap-Legacy-Migration für SQL/Cassandra.
