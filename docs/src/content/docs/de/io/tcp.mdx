@@ -118,6 +118,11 @@ Mit `lines` oder `length-prefixed` ist jede Nachricht, die das
 Target empfängt, **ein vollständiger Frame**, kein beliebiger
 Chunk.
 
+Ein Frame über seinem Limit wird nie gepuffert: Die noch offenen
+Bytes werden verworfen und die Verbindung mit ihnen.  Der Client
+zerstört seinen Socket und fällt auf seine Reconnect-Policy zurück,
+der Listener schließt nur die betroffene Verbindung.
+
 Beide Actors validieren `framing` beim Start, ein falscher Wert
 wirft also einen `OptionsError`, bevor es einen Socket gibt — nicht
 erst beim ersten eingehenden Byte.  Ein Limit, das keine positive
@@ -261,10 +266,14 @@ Config-Datei ist der falsche Ort für einen privaten Schlüssel.
   einen Verbindungsfehler statt eines sauberen Schließens; genau so
   sieht auf TCP-Ebene aus, an der Kapazitätsgrenze abgewiesen zu werden.
 - **Ein Frame über dem `framing`-Limit trennt nur diese Verbindung.**
-  Beim Client-Actor legt derselbe Verstoß den ganzen Actor still,
-  denn dort *ist* die Verbindung der gesamte Transport; ein Listener,
-  der das genauso hielte, ließe jeden einzelnen Client den Dienst für
-  alle abschalten.
+  Der Client-Actor beantwortet denselben Verstoß damit, *seine*
+  Verbindung fallen zu lassen — dort *ist* die eine Verbindung der
+  gesamte Transport — und richtet sich danach nach seiner
+  Reconnect-Policy; ein Listener, der das genauso hielte, ließe jeden
+  einzelnen Client den Dienst für alle abschalten.  In beiden Fällen
+  gehen die noch gepufferten Bytes mit dem Socket: Sinn eines Limits
+  ist nicht, den Verstoß zu protokollieren, sondern aufzuhören, das
+  festzuhalten, was ihn ausgelöst hat.
 - **`outboundBuffer` ist hier `0`** — anders als bei jedem anderen
   Broker-Actor.  Puffern im getrennten Zustand existiert, damit eine
   Nachricht einen Reconnect überlebt — aber "getrennt" heißt beim

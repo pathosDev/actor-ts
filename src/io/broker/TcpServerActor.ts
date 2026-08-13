@@ -332,6 +332,11 @@ export class TcpServerActor
    */
   private forgetConnection(connection: ServerConnection): void {
     if (!this.connections.delete(connection.connectionId)) return;
+    // Release the partial frame with the connection.  `connectionsBySocket` is
+    // weak but the socket outlives this call, and a connection closed for
+    // breaching a cap is holding the largest buffer of the lot (#578).
+    connection.inboundBuffer = new Uint8Array(0);
+    connection.inboundScanFrom = 0;
     this.deliver({ kind: 'connectionClosed', connectionId: connection.connectionId });
   }
 

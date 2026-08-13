@@ -2,6 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import { TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../src/io/broker/TcpSocketOptions.js';
 
+/**
+ * Stand-in for the `node:net` socket, so the teardown half of a cap breach is
+ * observable without IO.  Only the four methods the actor calls; a real
+ * socket is what the integration suite is for.
+ */
+type FakeSocket = {
+  listenersRemoved: boolean;
+  destroyed: boolean;
+  removeAllListeners(): void;
+  destroy(): void;
+  end(callback?: () => void): void;
+};
+
 // Exercise the private `lines` framing in isolation: construct the actor
 // (no start → no socket/system), stub `deliver` + `handleConnectionLost`,
 // drive `extractLines` directly.  Deterministic, no IO.
@@ -11,7 +24,9 @@ function makeActor() {
     deliver: (f: unknown) => void;
     handleConnectionLost: (e: Error) => void;
     inboundBuffer: Uint8Array;
+    socket: FakeSocket | null;
     extractLines: (delimiter: string, maxLineLen: number) => void;
+    disconnectImplementation: () => Promise<void>;
   };
   const delivered: unknown[] = [];
   const state = { lost: null as Error | null };
@@ -31,7 +46,19 @@ function makeActor() {
     actor.inboundBuffer = merged;
     actor.extractLines(delimiter, maxLineLen);
   };
-  return { actor, delivered, state, feed, feedChunk, pending };
+  /** Give the actor a socket, so a teardown has something to be visible on. */
+  const attachSocket = (): FakeSocket => {
+    const socket: FakeSocket = {
+      listenersRemoved: false,
+      destroyed: false,
+      removeAllListeners() { this.listenersRemoved = true; },
+      destroy() { this.destroyed = true; },
+      end(callback?: () => void) { callback?.(); },
+    };
+    actor.socket = socket;
+    return socket;
+  };
+  return { actor, delivered, state, feed, feedChunk, pending, attachSocket };
 }
 
 // security audit BRK-1 — a delimiter-free stream must not grow the inbound
@@ -68,6 +95,63 @@ describe('TcpSocketActor — lines framing bounds (BRK-1)', () => {
     harness.actor.extractLines('\n', 8);
     expect(harness.state.lost).toBeNull();
     expect(harness.delivered.length).toBe(0);
+  });
+});
+
+// #578 — the half BRK-1 never covered.  Reporting the breach was inert on
+// its own: the bytes stayed in the buffer and the socket stayed attached with
+// its 'data' listener live, so the peer that tripped the cap simply carried
+// on filling the buffer the cap had refused to clear.
+describe('TcpSocketActor — what a breached cap actually costs (#578)', () => {
+  test('an over-long UNTERMINATED line drains the buffer and destroys the socket', () => {
+    const harness = makeActor();
+    const socket = harness.attachSocket();
+    harness.feed('x'.repeat(32));            // no delimiter, 32 > maxLineLen 8
+    harness.actor.extractLines('\n', 8);
+    expect(harness.state.lost).not.toBeNull();
+    expect(harness.pending()).toBe('');       // the oversized bytes are gone
+    expect(socket.destroyed).toBe(true);      // and so is the socket
+    // Listeners first: 'close' fires from destroy() and would otherwise
+    // report 'socket closed' over the real cause.
+    expect(socket.listenersRemoved).toBe(true);
+    expect(harness.actor.socket).toBeNull();
+  });
+
+  test('an over-long TERMINATED line costs the connection the same way', () => {
+    const harness = makeActor();
+    const socket = harness.attachSocket();
+    harness.feed('x'.repeat(20) + '\n');
+    harness.actor.extractLines('\n', 8);
+    expect(harness.state.lost).not.toBeNull();
+    expect(harness.pending()).toBe('');
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('a breach with no socket attached still drains the buffer', () => {
+    // The reconnect race: the socket can already be gone when the last chunk
+    // is framed.  Nothing to destroy is not a reason to keep the bytes.
+    const harness = makeActor();
+    harness.feed('x'.repeat(32));
+    harness.actor.extractLines('\n', 8);
+    expect(harness.pending()).toBe('');
+  });
+
+  test('no bytes cross a reconnect boundary', async () => {
+    // A peer that hangs up mid-line leaves a partial frame behind.  Splicing
+    // it onto the first chunk of the NEXT connection would frame two peers'
+    // bytes into one line.
+    const harness = makeActor();
+    const socket = harness.attachSocket();
+    harness.feed('half-a-line');
+    await harness.actor.disconnectImplementation();
+    expect(harness.pending()).toBe('');
+    expect(socket.listenersRemoved).toBe(true);
+
+    // And again with the socket already gone — the path a cap breach leaves
+    // behind, where `disconnectImplementation` returns early.
+    harness.feed('more-bytes');
+    await harness.actor.disconnectImplementation();
+    expect(harness.pending()).toBe('');
   });
 });
 

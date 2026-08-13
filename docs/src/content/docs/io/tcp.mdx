@@ -114,6 +114,11 @@ type TcpFraming =
 With `lines` or `length-prefixed`, each message the target receives
 is **one full frame**, not an arbitrary chunk.
 
+A frame past its cap is never buffered: the pending bytes are
+dropped, and the connection with them.  The client destroys its
+socket and falls back to its reconnect policy; the listener closes
+only the offending connection.
+
 Both actors validate `framing` while starting, so a bad setting
 throws an `OptionsError` before a socket exists rather than at the
 first inbound byte.  A cap that is not a positive integer is
@@ -252,10 +257,13 @@ file is the wrong place for a private key.
   peers that cooperate.  The refused peer therefore sees a connection
   error rather than a clean close — which is what being turned away at
   capacity looks like at the TCP level.
-- **A frame past its `framing` cap drops only that connection.**  On
-  the client actor the same breach takes the whole actor down,
-  because there it *is* the whole transport; a listener that did the
-  same would let any single client take the service down for everyone.
+- **A frame past its `framing` cap drops only that connection.**  The
+  client actor answers the same breach by dropping *its* connection —
+  there the one connection *is* the whole transport — and then follows
+  its reconnect policy; a listener that did the same would let any
+  single client take the service down for everyone.  Either way the
+  pending bytes go with the socket: the point of a cap is not to log
+  the breach but to stop holding what caused it.
 - **`outboundBuffer` defaults to `0`** here, unlike every other broker
   actor.  Buffering while disconnected exists so a message survives a
   reconnect — but "disconnected" for a listener means the port is

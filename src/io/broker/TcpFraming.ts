@@ -58,6 +58,11 @@ export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
  * `remainder` is only meaningful when `overflow` is unset: a breached cap
  * leaves the caller's buffer untouched, because the connection is about to go
  * away and re-slicing a buffer nobody will read again would only obscure that.
+ *
+ * "About to go away" is the caller's half of the contract, and both callers
+ * owe it: the listener closes the offending connection, the client discards
+ * the bytes and destroys its socket (#578).  A caller that only reported the
+ * overflow would keep the oversized buffer *and* the peer that sent it.
  */
 export type FrameExtraction = {
   /** Frames completed in this pass, in arrival order. */
