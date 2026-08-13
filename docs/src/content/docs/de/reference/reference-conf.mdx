@@ -208,6 +208,29 @@ actor-ts {
           queue-capacity = 10000
         }
       }
+
+      # RFC 5424 syslog — the integration that needs no vendor: rsyslog,
+      # syslog-ng, journald's forwarder, Papertrail and a long tail of
+      # appliances all speak it.
+      syslog {
+        enabled   = false
+        min-level = "info"
+        transport = "udp"          # udp | tcp | tls
+        host      = "127.0.0.1"
+        port      = 514
+        facility  = 16             # 0-23; 16 = local0, the range for applications
+        app-name  = ""             # empty = the actor system's name
+        host-name = ""             # empty = the OS hostname
+        # tcp/tls framing.  octet-counting (RFC 6587) is the only one that
+        # survives a message containing a newline — a stack trace always does.
+        framing   = "octet-counting"   # octet-counting | lf
+        # TLS material is code-only: those fields carry the key itself.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
     }
   }
 

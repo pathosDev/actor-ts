@@ -173,6 +173,12 @@ export {
   DEFAULT_SPLUNK_REQUEST_TIMEOUT_MS,
   DEFAULT_SPLUNK_SOURCE,
   DEFAULT_SPLUNK_SOURCETYPE,
+  DEFAULT_SYSLOG_FACILITY,
+  DEFAULT_SYSLOG_FRAMING,
+  DEFAULT_SYSLOG_HOST,
+  DEFAULT_SYSLOG_MIN_LEVEL,
+  DEFAULT_SYSLOG_PORT,
+  DEFAULT_SYSLOG_TRANSPORT,
   FileSink,
   FileSinkOptions,
   FileSinkOptionsBuilder,
@@ -234,6 +240,10 @@ export type {
   SentrySinkOptionsType,
   SeqSinkOptionsType,
   SplunkSinkOptionsType,
+  SyslogFrameParts,
+  SyslogFraming,
+  SyslogSinkOptionsType,
+  SyslogTransport,
   MultiSinkLoggerOptionsType,
 } from './logging/index.js';
 

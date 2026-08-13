@@ -400,6 +400,68 @@ Stacktrace-Aufbereitung, Release-Erkennung, Breadcrumbs — steckt im SDK,
 und ein selbstgebauter Transport würde all das entweder schlecht
 nachbauen oder verlieren.
 
+## Syslog (RFC 5424)
+
+```ts
+import { ActorSystemOptions, SyslogSink, SyslogSinkOptions } from 'actor-ts';
+
+const syslogSinkOptions = SyslogSinkOptions.create()
+  .withHost('logs.internal')
+  .withTransport('tcp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SyslogSink(syslogSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.syslog {
+  enabled   = true
+  transport = "udp"          # udp | tcp | tls
+  host      = "logs.internal"
+  port      = 514
+  facility  = 16             # local0
+}
+```
+
+**Die Integration, die ohne Anbieter auskommt.**  rsyslog, syslog-ng, der
+Forwarder von journald, Papertrail und eine lange Reihe von
+Netzwerk-Appliances sprechen sie alle — ein Sink deckt also Ziele ab, die
+sonst nichts gemeinsam haben.
+
+```
+<134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+```
+
+Die Priority ist `facility · 8 + severity`, wobei die Level des Frameworks
+auf Syslog-Severities abbilden (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3).  `facility` ist standardmäßig 16 (`local0`) — der für
+Anwendungen reservierte Bereich; darunter gehört dem System, wo die
+Records einer Anwendung falsch einsortiert würden.  `APP-NAME` fällt auf
+den Namen des Actor-Systems zurück, `HOSTNAME` auf den OS-Hostnamen.
+
+### Das Structured-Data-Element ist `-`
+
+Mit Absicht.  Eine wohlgeformte `SD-ID` braucht eine IANA Private
+Enterprise Number; eine zu erfinden hieße, Records unter fremder Kennung
+abzulegen.  Die Felder des Records hängen stattdessen im selben
+`{k=v}`-Format am `MSG`, das auch die Konsole nutzt — es geht also nichts
+verloren, es wird beim Empfänger nur nicht maschinell zerlegt.  Nachrüstbar,
+falls das Projekt je eine Nummer registriert.
+
+### Framing
+
+`udp` braucht keins: Die Datagramm-Grenze *ist* der Rahmen.  Für `tcp` und
+`tls`:
+
+| Framing | Anmerkung |
+| --- | --- |
+| `octet-counting` (Standard, RFC 6587) | längenpräfixiert und das **einzige**, das eine Nachricht mit Zeilenumbruch übersteht — und ein Stacktrace hat immer einen |
+| `lf` | für Empfänger, die nichts anderes annehmen; Zeilenumbrüche in der Nachricht werden zu Leerzeichen, weil das Framing sie nicht darstellen kann |
+
+Die Länge zählt **Bytes**, nicht Zeichen — ein Mehrbyte-Zeichen kann den
+Empfänger also nicht dazu bringen, den Rahmen zu früh abzuschneiden.
+
+TLS-Material gibt es nur im Code, ohne HOCON-Leaf: Diese Felder tragen
+Zertifikat und Schlüssel selbst.
+
 ## Verwandt
 
 - [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird

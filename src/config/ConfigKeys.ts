@@ -49,6 +49,7 @@ export const ConfigKeys = {
       parseable: 'actor-ts.logger.sinks.parseable',
       seq: 'actor-ts.logger.sinks.seq',
       splunk: 'actor-ts.logger.sinks.splunk',
+      syslog: 'actor-ts.logger.sinks.syslog',
     },
   },
 

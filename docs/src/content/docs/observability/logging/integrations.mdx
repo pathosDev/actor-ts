@@ -386,6 +386,67 @@ stack-trace processing, release detection and breadcrumbs — all of which
 live in the SDK, and all of which a hand-rolled transport would either
 duplicate badly or lose.
 
+## Syslog (RFC 5424)
+
+```ts
+import { ActorSystemOptions, SyslogSink, SyslogSinkOptions } from 'actor-ts';
+
+const syslogSinkOptions = SyslogSinkOptions.create()
+  .withHost('logs.internal')
+  .withTransport('tcp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SyslogSink(syslogSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.syslog {
+  enabled   = true
+  transport = "udp"          # udp | tcp | tls
+  host      = "logs.internal"
+  port      = 514
+  facility  = 16             # local0
+}
+```
+
+**The integration that needs no vendor.**  rsyslog, syslog-ng, journald's
+forwarder, Papertrail and a long tail of network appliances all speak it,
+so one sink covers destinations that have nothing else in common.
+
+```
+<134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+```
+
+The priority is `facility · 8 + severity`, with the framework's levels
+mapped onto syslog severities (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3).  `facility` defaults to 16 (`local0`) — the range reserved
+for applications; below it belongs to the system, where an application's
+records would be misfiled.  `APP-NAME` defaults to the actor system's
+name and `HOSTNAME` to the OS hostname.
+
+### The structured-data element is `-`
+
+Deliberately.  A well-formed `SD-ID` requires an IANA private enterprise
+number, and inventing one would file records under somebody else's
+identifier.  The record's fields are appended to `MSG` in the same
+`{k=v}` form the console uses, so nothing is lost — it is simply not
+machine-parsed by the receiver.  This is revisitable if the project ever
+registers a number.
+
+### Framing
+
+`udp` needs none: the datagram boundary is the frame.  For `tcp` and
+`tls`:
+
+| Framing | Notes |
+| --- | --- |
+| `octet-counting` (default, RFC 6587) | length-prefixed, and the **only** one that survives a message containing a newline — which a stack trace always does |
+| `lf` | for receivers that accept nothing else; newlines in the message are collapsed to spaces, because the framing cannot represent them |
+
+The length is counted in **bytes**, not characters, so a multi-byte
+character cannot make the receiver cut the frame short.
+
+TLS material is code-only, with no HOCON leaf: those fields carry the
+certificate and key themselves.
+
 ## Related
 
 - [Multi-sink logging](/observability/logging/multi-sink/) — the pipeline these plug into

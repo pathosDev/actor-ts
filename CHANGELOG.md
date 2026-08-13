@@ -254,6 +254,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   there and the key only works on the `/event` endpoint at all.  `host`
   defaults to the actor system's name.
 
+- **`SyslogSink` — RFC 5424 over UDP, TCP and TLS** (#1161).  The one
+  integration that needs no vendor: rsyslog, syslog-ng, journald's
+  forwarder, Papertrail and a long tail of appliances all speak it.
+
+  ```
+  <134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+  ```
+
+  The priority is `facility · 8 + severity`; `facility` defaults to 16
+  (`local0`), the range reserved for applications.  `APP-NAME` defaults to
+  the actor system's name.
+
+  The structured-data element is deliberately `-`: a well-formed `SD-ID`
+  needs an IANA private enterprise number, and inventing one would file
+  records under somebody else's identifier.  Fields ride in `MSG` in the
+  same `{k=v}` form the console uses.
+
+  Stream framing defaults to `octet-counting` (RFC 6587) — the only framing
+  that survives a message containing a newline, which a stack trace always
+  does — and counts **bytes**, so a multi-byte character cannot make the
+  receiver cut the frame short.  `lf` is available for receivers that
+  accept nothing else, and collapses the newlines it cannot represent.
+
 ### Fixed
 
 - **Directory listings classify entries by the followed `stat`** (#575).  An

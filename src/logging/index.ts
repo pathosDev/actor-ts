@@ -156,6 +156,26 @@ export {
   readSplunkSinkOptionsFromConfig,
 } from './SplunkSinkOptions.js';
 export type { SplunkSinkOptionsType } from './SplunkSinkOptions.js';
+export {
+  DEFAULT_SYSLOG_FACILITY,
+  frameForStream,
+  syslogMessageFor,
+} from './SyslogFrame.js';
+export type { SyslogFraming, SyslogFrameParts } from './SyslogFrame.js';
+export { SyslogSink } from './SyslogSink.js';
+export {
+  DEFAULT_SYSLOG_FRAMING,
+  DEFAULT_SYSLOG_HOST,
+  DEFAULT_SYSLOG_MIN_LEVEL,
+  DEFAULT_SYSLOG_PORT,
+  DEFAULT_SYSLOG_TRANSPORT,
+  SyslogSinkOptions,
+  SyslogSinkOptionsBuilder,
+  SyslogSinkOptionsValidator,
+  isSyslogSinkEnabled,
+  readSyslogSinkOptionsFromConfig,
+} from './SyslogSinkOptions.js';
+export type { SyslogSinkOptionsType, SyslogTransport } from './SyslogSinkOptions.js';
 export { formatJsonLine, formatTextLine } from './LogFormat.js';
 export { LOG_LEVEL_NAMES, logLevelName, parseLogLevel } from './LogLevelName.js';
 export type { LogLevelName } from './LogLevelName.js';
