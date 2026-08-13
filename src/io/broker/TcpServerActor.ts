@@ -70,6 +70,11 @@ type ServerConnection = {
   readonly socket: TcpSocketLike;
   /** Bytes not yet matched by the framing strategy. */
   inboundBuffer: Uint8Array;
+  /**
+   * How far into {@link inboundBuffer} the `lines` delimiter search already
+   * reached — per connection, because each peer sets its own pace (#610).
+   */
+  inboundScanFrom: number;
 };
 
 /**
@@ -261,7 +266,12 @@ export class TcpServerActor
       return;
     }
     const connectionId = `tcp-${++this.connectionCounter}`;
-    const connection: ServerConnection = { connectionId, socket, inboundBuffer: new Uint8Array(0) };
+    const connection: ServerConnection = {
+      connectionId,
+      socket,
+      inboundBuffer: new Uint8Array(0),
+      inboundScanFrom: 0,
+    };
     this.connections.set(connectionId, connection);
     this.connectionsBySocket.set(socket, connection);
     this.deliver({ kind: 'connectionOpened', connectionId, remoteAddress: socket.remoteAddress });
@@ -276,6 +286,7 @@ export class TcpServerActor
     const extraction = extractFrames(
       connection.inboundBuffer,
       this.options.framing ?? DEFAULT_FRAMING,
+      connection.inboundScanFrom,
     );
     for (const frame of extraction.frames) {
       this.deliver({ kind: 'frame', connectionId: connection.connectionId, payload: frame });
@@ -291,6 +302,7 @@ export class TcpServerActor
       return;
     }
     connection.inboundBuffer = extraction.remainder;
+    connection.inboundScanFrom = extraction.scanFrom ?? 0;
   }
 
   private onSocketClosed(socket: TcpSocketLike): void {

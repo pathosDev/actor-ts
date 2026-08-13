@@ -105,8 +105,11 @@ type TcpFraming =
 - **`bytes`** (Default) — jeder Chunk wird roh geliefert; das
   Target behandelt die Byte-Stream-Semantik selbst.
 - **`lines`** — split am `delimiter` (Default `'\n'`); jeder Frame
-  kommt als `string` an.  `maxLineLen` begrenzt eine nicht
-  terminierte Zeile.
+  kommt als `string` an.  `maxLineLen` begrenzt eine Zeile in
+  **Bytes**, die nicht terminierte eingeschlossen — diese zweite
+  Hälfte ist es, die den Re-Assembly-Buffer gegen einen Peer
+  begrenzt, der nie einen Delimiter schickt.  Bytes, keine Zeichen:
+  ein CJK-Zeichen kostet drei davon.
 - **`length-prefixed`** — die ersten **4 Bytes** (Big-Endian
   `uint32`) tragen die Payload-Größe; die Prefix-Breite ist fest,
   nur `maxFrameLen` ist konfigurierbar.

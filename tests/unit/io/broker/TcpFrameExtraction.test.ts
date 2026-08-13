@@ -88,6 +88,82 @@ describe('extractLineFrames', () => {
     expect(result.frames).toEqual(['a', 'b']);
     expect(decode(result.remainder)).toBe('c');
   });
+
+  test('the cap counts BYTES, not decoded characters (#752)', () => {
+    // U+20AC is three UTF-8 bytes but one UTF-16 code unit, so a cap measured
+    // on the decoded string let a peer buffer 3x what the validator promises
+    // ("a positive integer number of bytes").  Both checks must see bytes.
+    const unterminated = extractLineFrames(encode('€'.repeat(4)), '\n', 8);  // 12 bytes / 4 units
+    expect(unterminated.overflow).toMatch(/unterminated line/);
+    const terminated = extractLineFrames(encode('€€€\n'), '\n', 8);          // 9-byte line
+    expect(terminated.overflow).toMatch(/maxLineLen=8/);
+    expect(terminated.frames).toEqual([]);
+  });
+
+  test('a line of exactly maxLineLen bytes still passes', () => {
+    // The boundary the byte comparison must not move: `>`, not `>=`.
+    const result = extractLineFrames(encode('€€\n'), '\n', 6);
+    expect(result.overflow).toBeUndefined();
+    expect(result.frames).toEqual(['€€']);
+  });
+
+  test('a character split across chunks survives the boundary (#610)', () => {
+    // 'ä' is C3 A4.  Decoding the whole buffer turned a trailing lone C3 into
+    // U+FFFD and re-encoded THAT into the leftover, so the A4 arriving in the
+    // next chunk could never repair it.  Raw bytes go back untouched.
+    const firstChunk = new Uint8Array([...encode('a\n'), 0xc3]);
+    const first = extractLineFrames(firstChunk, '\n', 64);
+    expect(first.frames).toEqual(['a']);
+    expect([...first.remainder]).toEqual([0xc3]);
+
+    const merged = appendChunk(first.remainder, new Uint8Array([0xa4, 0x0a]));
+    const second = extractLineFrames(merged, '\n', 64, first.scanFrom);
+    expect(second.frames).toEqual(['ä']);
+  });
+
+  test('a delimiter-free stream re-searches nothing (#610)', () => {
+    // The quadratic claim, made observable: after every chunk the reported
+    // `scanFrom` already covers the whole pending buffer, so the next pass
+    // starts at its end instead of re-decoding all of it from offset 0.
+    let buffer = new Uint8Array(0);
+    let scanFrom = 0;
+    let passes = 0;
+    for (let chunk = 0; chunk < 16; chunk++) {
+      buffer = appendChunk(buffer, encode('x'.repeat(64)));
+      const pass = extractLineFrames(buffer, '\n', 4096, scanFrom);
+      expect(pass.frames).toEqual([]);
+      expect(pass.overflow).toBeUndefined();
+      buffer = pass.remainder;
+      scanFrom = pass.scanFrom ?? 0;
+      expect(scanFrom).toBe(buffer.length);   // nothing left to look at twice
+      passes++;
+    }
+    expect(passes).toBe(16);
+    expect(buffer.length).toBe(16 * 64);
+  });
+
+  test('a multi-byte delimiter straddling the resume point is still found', () => {
+    // The trap in resuming: stopping at the buffer's end would step over a
+    // '\r' whose '\n' is in the next chunk, and that line never completes.
+    const first = extractLineFrames(encode('abc\r'), '\r\n', 64);
+    expect(first.frames).toEqual([]);
+    expect(first.scanFrom).toBe(3);          // backed off, so the '\r' is re-read
+
+    const merged = appendChunk(first.remainder, encode('\ndef'));
+    const second = extractLineFrames(merged, '\r\n', 64, first.scanFrom);
+    expect(second.frames).toEqual(['abc']);
+    expect(decode(second.remainder)).toBe('def');
+  });
+
+  test('an out-of-range scanFrom cannot push the scan outside the buffer', () => {
+    // Defensive only — the contract is that the caller hands back the value
+    // the previous pass reported.  A negative one must not read behind the
+    // buffer, one past the end must not index outside it.
+    expect(extractLineFrames(encode('a\nb'), '\n', 64, -5).frames).toEqual(['a']);
+    const beyond = extractLineFrames(encode('ab'), '\n', 64, 9_999);
+    expect(beyond.frames).toEqual([]);
+    expect(decode(beyond.remainder)).toBe('ab');
+  });
 });
 
 describe('extractLengthPrefixedFrames', () => {

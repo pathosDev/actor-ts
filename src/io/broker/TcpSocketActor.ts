@@ -37,6 +37,12 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   private socket: NetSocket | null = null;
   /** Buffer for partial frames not yet matched by the framing strategy. */
   private inboundBuffer: Uint8Array = new Uint8Array(0);
+  /**
+   * How far into {@link inboundBuffer} the `lines` delimiter search already
+   * reached.  Carrying it across chunks is what keeps a delimiter-free peer
+   * from making every chunk re-scan everything buffered so far (#610).
+   */
+  private inboundScanFrom = 0;
 
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
@@ -119,7 +125,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     const framing = this.options.framing ?? DEFAULT_FRAMING;
     if (framing.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
-      this.inboundBuffer = new Uint8Array(0);
+      this.resetInboundBuffer();
     } else if (framing.kind === 'lines') {
       this.extractLines(
         framing.delimiter ?? DEFAULT_LINE_DELIMITER,
@@ -131,7 +137,9 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   private extractLines(delimiter: string, maxLineLen: number): void {
-    this.applyExtraction(extractLineFrames(this.inboundBuffer, delimiter, maxLineLen));
+    this.applyExtraction(
+      extractLineFrames(this.inboundBuffer, delimiter, maxLineLen, this.inboundScanFrom),
+    );
   }
 
   private extractLengthPrefixed(maxFrameLen: number): void {
@@ -153,6 +161,13 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       return;
     }
     this.inboundBuffer = extraction.remainder;
+    this.inboundScanFrom = extraction.scanFrom ?? 0;
+  }
+
+  /** Forget every pending inbound byte and the scan position that indexes it. */
+  private resetInboundBuffer(): void {
+    this.inboundBuffer = new Uint8Array(0);
+    this.inboundScanFrom = 0;
   }
 
   private deliver(frame: TcpFrame): void {

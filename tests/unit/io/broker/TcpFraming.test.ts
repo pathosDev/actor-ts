@@ -19,7 +19,19 @@ function makeActor() {
   actor.handleConnectionLost = (e) => { state.lost = e; };
   const feed = (s: string): void => { actor.inboundBuffer = new TextEncoder().encode(s); };
   const pending = (): string => new TextDecoder().decode(actor.inboundBuffer);
-  return { actor, delivered, state, feed, pending };
+  /**
+   * One inbound chunk, the way `handleData` sees it: append, then extract.
+   * Bytes, not a string, because a chunk boundary is free to fall inside a
+   * multi-byte character — which is the whole point of the tests below.
+   */
+  const feedChunk = (chunk: Uint8Array, delimiter = '\n', maxLineLen = 64): void => {
+    const merged = new Uint8Array(actor.inboundBuffer.length + chunk.length);
+    merged.set(actor.inboundBuffer, 0);
+    merged.set(chunk, actor.inboundBuffer.length);
+    actor.inboundBuffer = merged;
+    actor.extractLines(delimiter, maxLineLen);
+  };
+  return { actor, delivered, state, feed, feedChunk, pending };
 }
 
 // security audit BRK-1 — a delimiter-free stream must not grow the inbound
@@ -56,5 +68,36 @@ describe('TcpSocketActor — lines framing bounds (BRK-1)', () => {
     harness.actor.extractLines('\n', 8);
     expect(harness.state.lost).toBeNull();
     expect(harness.delivered.length).toBe(0);
+  });
+});
+
+// The actor half of #610: the scan position lives on the actor, so the
+// extractor's incremental contract only holds if `handleData`'s path carries
+// it from chunk to chunk.  These drive chunk by chunk, which nothing did.
+describe('TcpSocketActor — lines framing across chunks (#610)', () => {
+  test('a character split across two chunks is not corrupted', () => {
+    const harness = makeActor();
+    // 'ä' is C3 A4 — the chunk boundary falls between the two bytes.
+    harness.feedChunk(new Uint8Array([0x61, 0x0a, 0xc3]));   // 'a\n' + lead byte
+    expect(harness.delivered).toEqual(['a']);
+    harness.feedChunk(new Uint8Array([0xa4, 0x0a]));         // continuation + '\n'
+    expect(harness.delivered).toEqual(['a', 'ä']);
+    expect(harness.state.lost).toBeNull();
+    expect(harness.pending()).toBe('');
+  });
+
+  test('a line assembled from many chunks arrives once, whole', () => {
+    const harness = makeActor();
+    const encoder = new TextEncoder();
+    let chunks = 0;
+    for (const part of ['ab', 'cd', 'ef', 'gh']) {
+      harness.feedChunk(encoder.encode(part));
+      chunks++;
+      expect(harness.delivered.length).toBe(0);   // no delimiter yet
+    }
+    expect(chunks).toBe(4);
+    harness.feedChunk(encoder.encode('\n'));
+    expect(harness.delivered).toEqual(['abcdefgh']);
+    expect(harness.pending()).toBe('');
   });
 });

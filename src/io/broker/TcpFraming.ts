@@ -47,7 +47,7 @@ export type TcpFrame = Uint8Array | string;
 export const DEFAULT_FRAMING: TcpFraming = { kind: 'bytes' };
 /** Line terminator when `lines` framing leaves `delimiter` unset. */
 export const DEFAULT_LINE_DELIMITER = '\n';
-/** Cap on one `lines` frame when `maxLineLen` is unset. */
+/** Cap on one `lines` frame, in bytes, when `maxLineLen` is unset. */
 export const DEFAULT_MAX_LINE_LENGTH = 1_048_576;
 /** Cap on one `length-prefixed` frame when `maxFrameLen` is unset. */
 export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
@@ -64,9 +64,28 @@ export type FrameExtraction = {
   readonly frames: readonly TcpFrame[];
   /** Bytes left over for the next chunk — assign back to the caller's buffer. */
   readonly remainder: Uint8Array;
+  /**
+   * How far into `remainder` the delimiter search already reached: those bytes
+   * are known to hold no delimiter, so the next pass may start there instead
+   * of at 0.  Hand it back as the `scanFrom` argument and a delimiter-free
+   * peer costs O(chunk) per chunk rather than O(buffered) (#610).
+   *
+   * Unset on a breached cap, and unset for the strategies that keep no scan
+   * state — `0` is always the safe reading.
+   */
+  readonly scanFrom?: number;
   /** Set when a frame breached its size cap; the reason, for the error. */
   readonly overflow?: string;
 };
+
+/**
+ * Shared instances, because neither carries state across calls here: the
+ * decoder is only ever handed a *complete* line and never opts into
+ * `{ stream: true }`, so one instance per module saves an allocation per
+ * frame without coupling two extraction passes.
+ */
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 /**
  * Append `chunk` to `buffer`, avoiding the copy when there is nothing to
@@ -81,21 +100,49 @@ export function appendChunk(buffer: Uint8Array, chunk: Uint8Array): Uint8Array {
   return merged;
 }
 
-/** Run `framing`'s extractor over `buffer`, filling in the unset caps. */
-export function extractFrames(buffer: Uint8Array, framing: TcpFraming): FrameExtraction {
+/**
+ * Run `framing`'s extractor over `buffer`, filling in the unset caps.
+ *
+ * `scanFrom` is the previous pass' {@link FrameExtraction.scanFrom} for this
+ * buffer; only `lines` keeps scan state, the other two ignore it.
+ */
+export function extractFrames(
+  buffer: Uint8Array,
+  framing: TcpFraming,
+  scanFrom = 0,
+): FrameExtraction {
   if (framing.kind === 'bytes') return { frames: [buffer], remainder: new Uint8Array(0) };
   if (framing.kind === 'lines') {
     return extractLineFrames(
       buffer,
       framing.delimiter ?? DEFAULT_LINE_DELIMITER,
       framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH,
+      scanFrom,
     );
   }
   return extractLengthPrefixedFrames(buffer, framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH);
 }
 
 /**
- * Split `buffer` on `delimiter`, rejecting any line longer than `maxLineLen`.
+ * Split `buffer` on `delimiter`, rejecting any line longer than `maxLineLen`
+ * **bytes**.
+ *
+ * The scan runs over the raw bytes against the UTF-8-encoded delimiter, and
+ * only completed lines are decoded.  Three properties follow from that, none
+ * of which held while the whole pending buffer was decoded per chunk (#610):
+ *
+ *   - **Cost.**  Decoding N buffered bytes to look for a delimiter that has
+ *     not arrived yet is O(N) per chunk and O(N²) over a delimiter-free
+ *     stream — under a cap sized in mebibytes, an event-loop stall a peer can
+ *     simply ask for.  `scanFrom` carries the already-searched prefix across
+ *     calls, so each byte is looked at once.
+ *   - **Correctness.**  A chunk boundary splitting a multi-byte character
+ *     used to decode the partial sequence to U+FFFD and re-encode *that* into
+ *     the leftover, so the continuation byte arriving next could never repair
+ *     it.  Raw bytes go back untouched, so it repairs itself.
+ *   - **The cap counts bytes** (#752) — the unit the options validator has
+ *     always claimed.  Measured on the decoded string it counted UTF-16 code
+ *     units, which let a 1 MiB `maxLineLen` buffer 3 MiB of ordinary CJK.
  *
  * The un-terminated remainder is checked against the cap too: bytes after the
  * last delimiter can never become a valid line once they are already over it,
@@ -106,31 +153,63 @@ export function extractLineFrames(
   buffer: Uint8Array,
   delimiter: string,
   maxLineLen: number,
+  scanFrom = 0,
 ): FrameExtraction {
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+  const delimiterBytes = textEncoder.encode(delimiter);
   const frames: TcpFrame[] = [];
-  let cursor = 0;
+  let lineStart = 0;
+  // Clamped rather than trusted: a caller that lost track of its buffer would
+  // otherwise skip bytes it never searched.
+  let searchFrom = Math.min(Math.max(scanFrom, 0), buffer.length);
   for (;;) {
-    const index = text.indexOf(delimiter, cursor);
+    const index = indexOfBytes(buffer, delimiterBytes, searchFrom);
     if (index < 0) break;
-    const line = text.slice(cursor, index);
-    if (line.length > maxLineLen) {
+    if (index - lineStart > maxLineLen) {
       return { frames, remainder: buffer, overflow: `line exceeds maxLineLen=${maxLineLen}` };
     }
-    frames.push(line);
-    cursor = index + delimiter.length;
+    frames.push(textDecoder.decode(buffer.subarray(lineStart, index)));
+    lineStart = index + delimiterBytes.length;
+    searchFrom = lineStart;
   }
-  if (text.length - cursor > maxLineLen) {
+  if (buffer.length - lineStart > maxLineLen) {
     return {
       frames,
       remainder: buffer,
       overflow: `unterminated line exceeds maxLineLen=${maxLineLen}`,
     };
   }
-  // Nothing consumed → hand the buffer straight back rather than paying a
-  // decode/encode round-trip for a chunk that is still one partial line.
-  if (cursor === 0) return { frames, remainder: buffer };
-  return { frames, remainder: new TextEncoder().encode(text.slice(cursor)) };
+  // Resume one short of a full delimiter, not at the very end: a multi-byte
+  // delimiter straddling the boundary would otherwise be stepped over, and
+  // that line would never complete.
+  const searched = Math.max(buffer.length - delimiterBytes.length + 1, lineStart);
+  // Nothing consumed → hand the buffer straight back rather than pay for a
+  // view onto a chunk that is still one partial line.
+  if (lineStart === 0) return { frames, remainder: buffer, scanFrom: searched };
+  return { frames, remainder: buffer.subarray(lineStart), scanFrom: searched - lineStart };
+}
+
+/**
+ * Offset of `needle` in `haystack` at or after `from`, or `-1`.
+ *
+ * Searching bytes is sound even for a non-ASCII delimiter: UTF-8 is
+ * self-synchronizing — a lead byte never appears as a continuation byte — so
+ * an encoded delimiter can only match on a character boundary.  The outer
+ * scan is `TypedArray.indexOf`, i.e. the runtime's own byte search, which is
+ * most of why this is cheaper than decoding first.
+ */
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): number {
+  const first = needle[0]!;
+  const last = haystack.length - needle.length;
+  for (
+    let index = haystack.indexOf(first, from);
+    index >= 0 && index <= last;
+    index = haystack.indexOf(first, index + 1)
+  ) {
+    let matched = 1;
+    while (matched < needle.length && haystack[index + matched] === needle[matched]) matched++;
+    if (matched === needle.length) return index;
+  }
+  return -1;
 }
 
 /**
