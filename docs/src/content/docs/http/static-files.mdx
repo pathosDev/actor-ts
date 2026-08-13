@@ -42,7 +42,8 @@ it mounts under it (e.g. `/static/...`), without one it mounts at the root.
   `Accept-Ranges: bytes` is advertised.
 - **Directories** — a request without a trailing slash `301`-redirects to
   add it (query preserved); with a slash, index files are tried in order,
-  then a listing (if browsing) or `404`.
+  then a listing (if browsing) or `404`. Under `within-root`, an index file
+  that resolves outside the root counts as absent.
 - **HEAD** — full headers, empty body, no file read.
 
 ## MIME types
@@ -62,6 +63,15 @@ stream); absolute forms are refused, the joined path is confined to the
 root, and a symlink escaping the root is refused (`within-root` default).
 Dotfiles are denied by default. **Every rejection is a uniform `404`** — no
 information leak about what exists.
+
+Confinement is checked on **every filesystem hop a request touches**, not
+only on the path the URL resolved to: a directory's index file and each
+entry of a browsable listing are canonicalised as well. A link that escapes
+the root is a `404` whether it is asked for directly or reached as
+`index.html`, and it is left out of the listing entirely — its name, size
+and mtime are exactly what the policy withholds. Switch to
+`withSymlinks('follow')` when the tree links outside itself on purpose (a
+build output, a package-manager link farm).
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -12,11 +12,6 @@ export type FileStat = {
   readonly isDirectory: boolean;
 };
 
-export type DirectoryEntry = {
-  readonly name: string;
-  readonly isDirectory: boolean;
-};
-
 let fsPromises: typeof import('node:fs/promises') | undefined;
 async function fsp(): Promise<typeof import('node:fs/promises')> {
   if (!fsPromises) fsPromises = await import('node:fs/promises');
@@ -42,10 +37,15 @@ export async function realPath(path: string): Promise<string | null> {
   }
 }
 
-/** Directory entries with a file/dir flag. */
-export async function readDirectory(path: string): Promise<DirectoryEntry[]> {
-  const entries = await (await fsp()).readdir(path, { withFileTypes: true });
-  return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
+/**
+ * Entry names in a directory.  Names only, deliberately: the dirent's own
+ * type is unreliable as a classification (a filesystem that answers
+ * `DT_UNKNOWN` — network mounts, some FUSE layers — makes every `isX()`
+ * false, and a link to a directory is a plain link to a dirent), so the
+ * caller classifies each entry with a followed {@link statPath} instead.
+ */
+export async function readDirectory(path: string): Promise<string[]> {
+  return await (await fsp()).readdir(path);
 }
 
 /** Read the whole file into a Uint8Array (bounded by the caller's maxFileSize). */

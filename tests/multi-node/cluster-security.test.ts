@@ -72,11 +72,42 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 /* ----- access helper: invoke the private handleWire via type cast ----- */
 
 interface ClusterPrivate {
-  handleWire(from: NodeAddress, message: { kind: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
+  handleWire(from: NodeAddress, message: GossipMessage): void;
 }
 
-function inject(cluster: Cluster, from: NodeAddress, message: GossipMessage): void {
-  (cluster as unknown as ClusterPrivate).handleWire(from, message);
+/**
+ * A gossip frame as these tests write them.  Frames carry a monotonic
+ * per-sender `sequence` since #112, and a receiver refuses one that does not
+ * out-number the last it accepted from that peer — so every helper stamps a
+ * fresh one unless a test is deliberately replaying an old frame.
+ */
+type InjectableGossip = Omit<GossipMessage, 'sequence'> & { sequence?: number };
+
+let injectedGossipSequence = 0;
+
+/**
+ * A minute ahead of the wall clock, because some of these tests inject a frame
+ * from an address that is also a *live* node in the same test: a real node
+ * seeds its counter from its own `Date.now()` and adds one per frame it sends,
+ * so a plain `Date.now()` can land just *below* it.  The margin stays well
+ * inside `maxVersionSkewMs`, which is what decides whether the receiver adopts
+ * the value as its new high-water mark.
+ */
+const INJECTED_SEQUENCE_MARGIN_MS = 60_000;
+
+function nextGossipSequence(): number {
+  injectedGossipSequence = Math.max(
+    injectedGossipSequence + 1, Date.now() + INJECTED_SEQUENCE_MARGIN_MS,
+  );
+  return injectedGossipSequence;
+}
+
+function withSequence(message: InjectableGossip): GossipMessage {
+  return { ...message, sequence: message.sequence ?? nextGossipSequence() };
+}
+
+function inject(cluster: Cluster, from: NodeAddress, message: InjectableGossip): void {
+  (cluster as unknown as ClusterPrivate).handleWire(from, withSequence(message));
 }
 
 let nodes: NodeHandle[] = [];
@@ -125,7 +156,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // Forge a malicious gossip from an "attacker" address (no real
     // node — just a synthetic NodeAddress to source the frame).
     const attacker = new NodeAddress('csec', 'h', 65_535);
-    const evil: GossipMessage = {
+    const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -155,7 +186,7 @@ describe('Cluster — gossip exploit defenses', () => {
     });
 
     const attacker = new NodeAddress('csec', 'h', 65_534);
-    const evil: GossipMessage = {
+    const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -178,7 +209,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // No B needed — inject an attempted-creation of a fake member.
     const ghost = new NodeAddress('csec', 'h', 60_000);
     const attacker = new NodeAddress('csec', 'h', 65_533);
-    const evil: GossipMessage = {
+    const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -213,7 +244,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // This should be accepted (within the 24-h skew tolerance) and
     // can legitimately bump the member's recorded version.
     const futureVersion = Date.now() + 5 * 60 * 1000;
-    const evil: GossipMessage = {
+    const evil: InjectableGossip = {
       kind: 'gossip',
       from: nodeB.address.toJSON(),
       members: [{
@@ -595,8 +626,11 @@ function rawMember(cluster: Cluster, address: NodeAddress): Member | undefined {
   return (cluster as unknown as ClusterWirePrivate).members.get(address.toString());
 }
 
-function injectWire(cluster: Cluster, from: NodeAddress, message: WireMessage): void {
-  (cluster as unknown as ClusterWirePrivate).handleWire(from, message);
+function injectWire(
+  cluster: Cluster, from: NodeAddress, message: Exclude<WireMessage, GossipMessage> | InjectableGossip,
+): void {
+  const frame: WireMessage = message.kind === 'gossip' ? withSequence(message) : message;
+  (cluster as unknown as ClusterWirePrivate).handleWire(from, frame);
 }
 
 /** Start a node whose outbound frames are recorded, so replies can be asserted. */
@@ -637,7 +671,7 @@ describe('Cluster — numeric wire-field defenses', () => {
 
     const attacker = new NodeAddress('csec', 'h', 65_533);
     const victim = new NodeAddress('csec', 'h', 64_000);
-    const forge = (removedAt: number): GossipMessage => ({
+    const forge = (removedAt: number): InjectableGossip => ({
       kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
@@ -757,6 +791,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
+      sequence: nextGossipSequence(),
       members: [{ address: ghost.toJSON(), status: 'pwned' as never, version: Date.now() }],
     });
     await Bun.sleep(60);
@@ -777,6 +812,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
+      sequence: nextGossipSequence(),
       members: [
         { address: good.toJSON(), status: 'up', version: Date.now() },
         { address: good.toJSON(), status: 'pwned' as never, version: Date.now() },
@@ -988,4 +1024,158 @@ describe('Extensions survive what a peer can address to them (#713)', () => {
     });
     expect(found.length).toBe(1);
   }, 10_000);
+});
+
+describe('Cluster — a recorded gossip frame is worthless on a second delivery (#112)', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  A gossip frame carries a snapshot of
+   * the member map, and a member's `version` only moves when its status does —
+   * so a frame captured off the wire stays byte-for-byte valid indefinitely.
+   * Against a converged receiver that is harmless: every record loses
+   * `mergeMember`'s `incoming.version <= existing.version` comparison.  What
+   * makes it an exploit is an entry the receiver has **deleted**.  The failure
+   * detector's down path deletes outright rather than tombstoning, so a healed
+   * partition can re-discover the peer — and that is exactly what leaves
+   * nothing behind for a replay to be compared against: the no-existing-entry
+   * branch of the merge has no lower version bound at all.
+   *
+   * So replaying a downed member's own pre-down record brought it back at its
+   * old version, `up`, carrying the roles it had — and roles are what shard
+   * placement, singleton hosting and downing quorums are computed from.
+   * Reproduced by execution in #940 (its step B3).
+   *
+   * Fix: every gossip frame carries a `sequence` its author stamps, and a
+   * receiver keeps the highest one it has accepted per connection peer.  A
+   * frame that does not out-number that mark is dropped whole.
+   */
+  test('exploit: replaying a downed member\'s own record does not bring it back', async () => {
+    const port = 60_100 + Math.floor(Math.random() * 300);
+    const node = await startNode('csecreplay', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    const peer = new NodeAddress('csecreplay', 'h', port + 100);
+    const victim = new NodeAddress('csecreplay', 'h', port + 200);
+
+    // The peer earns standing the ordinary way — a self-announcement, the one
+    // claim `maySpeakFor` never refuses (#562).
+    inject(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{ address: peer.toJSON(), status: 'up', version: Date.now(), roles: [] }],
+    });
+    await waitFor(() => rawMember(node.cluster, peer)?.status === 'up');
+
+    // The frame an attacker records off the wire: a peer with standing
+    // reporting the victim as `up` and hosting the `payments` shards.
+    const captured = withSequence({
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{
+        address: victim.toJSON(), status: 'up', version: Date.now(), roles: ['payments'],
+      }],
+    });
+    inject(node.cluster, peer, captured);
+    expect(rawMember(node.cluster, victim)?.status).toBe('up');
+
+    // The victim falls silent and the failure detector evicts it, deleting the
+    // entry.  Heartbeats keep the *peer* alive meanwhile — `handleWire` credits
+    // the connection, so any frame from it is enough.
+    let beat = 0;
+    const keepPeerAlive = setInterval(() => {
+      beat += 1;
+      injectWire(node.cluster, peer, {
+        kind: 'heartbeat', from: peer.toJSON(), seq: beat, ts: Date.now(),
+      });
+    }, 40);
+    try {
+      await waitFor(() => rawMember(node.cluster, victim) === undefined, 5_000);
+    } finally {
+      clearInterval(keepPeerAlive);
+    }
+    expect(rawMember(node.cluster, peer)?.status).toBe('up');
+
+    // The replay: the same frame, byte for byte, from a peer that still has
+    // every bit of the standing it had when the frame was genuine.
+    inject(node.cluster, peer, captured);
+
+    expect(rawMember(node.cluster, victim)).toBeUndefined();
+    expect(node.cluster.upMembersWithRole('payments')).toHaveLength(0);
+  }, 20_000);
+
+  test('a fresh frame from the same peer still merges', async () => {
+    // The regression side: the guard refuses a *repeat*, not the peer.  Without
+    // this the first refusal would end the conversation.
+    const port = 60_500 + Math.floor(Math.random() * 300);
+    const node = await startNode('csecreplay2', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    const peer = new NodeAddress('csecreplay2', 'h', port + 100);
+    const subject = new NodeAddress('csecreplay2', 'h', port + 200);
+
+    inject(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{ address: peer.toJSON(), status: 'up', version: Date.now(), roles: [] }],
+    });
+    await waitFor(() => rawMember(node.cluster, peer)?.status === 'up');
+
+    const stale = withSequence({
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{ address: subject.toJSON(), status: 'joining', version: Date.now(), roles: [] }],
+    });
+    inject(node.cluster, peer, stale);
+    inject(node.cluster, peer, stale);          // refused — same sequence
+
+    // …and the next genuine frame, which out-numbers it, lands.
+    const laterVersion = Date.now() + 1_000;
+    inject(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{
+        address: subject.toJSON(), status: 'leaving', version: laterVersion, roles: [],
+      }],
+    });
+
+    expect(rawMember(node.cluster, subject)?.status).toBe('leaving');
+    expect(rawMember(node.cluster, subject)?.version).toBe(laterVersion);
+  }, 15_000);
+
+  test('what the guard deliberately leaves open: a live forgery, not a replay (#940)', async () => {
+    // The counterfactual that fixes the scope.  A peer that has *earned*
+    // standing can still compose a NEW frame naming a deleted address at its
+    // old version, and the no-existing-entry branch admits it with whatever
+    // roles the frame carries.  That is not a replay — the frame is fresh —
+    // and closing it needs an incarnation identity on `NodeAddress`, which is
+    // tracked as #940.  Asserted so the boundary is a decision on record
+    // rather than an accident.
+    const port = 60_900 + Math.floor(Math.random() * 90);
+    const node = await startNode('csecreplay3', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    const peer = new NodeAddress('csecreplay3', 'h', port + 100);
+    const ghost = new NodeAddress('csecreplay3', 'h', port + 200);
+
+    inject(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{ address: peer.toJSON(), status: 'up', version: Date.now(), roles: [] }],
+    });
+    await waitFor(() => rawMember(node.cluster, peer)?.status === 'up');
+
+    // A brand-new frame — a sequence the peer has never used — about an
+    // address this node has no record of.
+    inject(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{
+        address: ghost.toJSON(), status: 'up', version: Date.now(), roles: ['payments'],
+      }],
+    });
+
+    expect(rawMember(node.cluster, ghost)?.status).toBe('up');
+  }, 15_000);
 });
