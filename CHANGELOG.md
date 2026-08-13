@@ -11,6 +11,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Logging grew a sink architecture** (#1150).  The logger wrote to exactly
+  one place; it now fans one record out to as many destinations as you
+  configure — console, rotating files, and ten log platforms — each with its
+  own minimum level, bounded delivery and a flush on shutdown.  The
+  individual entries below cover the pipeline (#1151, #1152), the file sink
+  (#1153) and the platform sinks (#1154–#1161).
+
+  Nothing about the existing surface changed: `Logger`, `ConsoleLogger`,
+  `JsonLogger` and `NoopLogger` are untouched, `this.log` behaves as before,
+  and a system whose config nobody edited logs exactly what it logged
+  yesterday.  Every integration is dependency-free — the two that could have
+  pulled an SDK, OpenTelemetry and Sentry, take the opposite routes and say
+  why on their own pages.
+
 - **Multi-sink logging — one record, several destinations** (#1151).  The
   logger wrote to exactly one place: `system.log` was a single `Logger`, and
   the only knob was `actor-ts.logger.level`.  Sending the same record to the

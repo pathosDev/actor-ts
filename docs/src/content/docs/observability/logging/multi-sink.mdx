@@ -18,7 +18,7 @@ const system = ActorSystem.create('my-app', systemOptions);
 `withLogSinks` is the shorthand: the system wraps the list in a
 `MultiSinkLogger`, hands the sinks its scheduler, and flushes them when
 it terminates.  Everything else stays as it was — `this.log` inside an
-actor, the levels, the [MDC](/fundamentals/logging/#log-context-mdc).
+actor, the levels, the [MDC](/fundamentals/logging/#dynamic-context--logcontext-mdc).
 
 ## Why not just write your own `Logger`?
 
