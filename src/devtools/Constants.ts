@@ -39,6 +39,30 @@ export const STALE_AFTER_MS = 5_000;
 /** How often departed members are checked for expiry. */
 export const SWEEP_INTERVAL_MS = 30_000;
 
+/**
+ * Hard ceiling on cached peer readings, oldest evicted first.
+ *
+ * Deliberately the same 1000 as the cluster's own `maxMembers` default:
+ * the collector only ever caches a node the cluster holds as a member, so
+ * a cache larger than the member map is a cache holding rows for nodes
+ * that do not exist.  A backstop rather than the first line of defence —
+ * it is here because the two caps live in different subsystems, and
+ * "they will stay in agreement" is not a property anything checks.
+ */
+export const MAXIMUM_PEER_REPORTS = 1_000;
+
+/**
+ * Longest actor tree accepted from a peer; the rest is dropped.
+ *
+ * A node's own tree is sent whole, because a node reporting on itself
+ * cannot lie about its size.  A peer's arrives off the cluster wire, and
+ * the collector holds it until the next round — so an unbounded one is a
+ * memory cost this node did not choose.  Ten thousand rows is already far
+ * past what the tree panel can show; a truncated tree beats a stalled
+ * dashboard.
+ */
+export const MAXIMUM_PEER_ACTORS = 10_000;
+
 /** How often a running session reports its sample count. */
 export const PROGRESS_INTERVAL_MS = 500;
 
