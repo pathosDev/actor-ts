@@ -89,6 +89,39 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
   protected rules(s: Partial<T>): void {
     this.commonRules(s);
   }
+
+  /**
+   * Fields a lease cannot be constructed without.  Subclasses widen the
+   * list (`KubernetesLeaseOptionsValidator` adds `namespace`).
+   */
+  protected requiredFields(): readonly string[] {
+    return ['name', 'owner', 'ttlMs'];
+  }
+
+  /**
+   * Assert every {@link requiredFields} entry is present, throwing
+   * `OptionsError` on the first one that is not.
+   *
+   * Deliberately separate from {@link validate}: the check helpers of
+   * `OptionsValidator` are contractually a no-op on `undefined` — an unset
+   * optional always passes — so required-ness has to be enforced by the
+   * consumer, the way `BrokerActor.requiredOptions()` does it for brokers.
+   * Folding the check into {@link rules} would also break every caller that
+   * validates a deliberately partial object.
+   *
+   * The stakes are why this exists at all (#596): a lease built without an
+   * `owner` wrote no `spec.holderIdentity`, so every node's `acquire()`
+   * succeeded and mutual exclusion was silently off; a lease built without
+   * `ttlMs` computed a `NaN` expiry, with the same effect by a different
+   * route.  Both used to construct without a murmur.
+   */
+  validateRequired(settings: Partial<T>): void {
+    for (const field of this.requiredFields()) {
+      if ((settings as Record<string, unknown>)[field] === undefined) {
+        this.fail(field, 'is required');
+      }
+    }
+  }
   protected commonRules(s: Partial<T>): void {
     const options = s as Partial<LeaseOptionsType>;
     if (options.name !== undefined && (typeof options.name !== 'string' || options.name.length === 0)) {

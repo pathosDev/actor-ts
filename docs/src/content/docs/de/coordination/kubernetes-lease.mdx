@@ -62,6 +62,29 @@ liest API-URL und Token von den Standard-Locations.
 Für Tests / Dev gegen eine lokale K8s-API (kind, minikube)
 überschreibe `apiServerUrl` + `authToken` + `caCert`.
 
+### Pflichtfelder werden bei der Konstruktion erzwungen
+
+`name`, `owner`, `ttlMs` und `namespace` haben keinen Default.  Der
+Konstruktor wirft `OptionsError`, sobald eines davon fehlt — bevor
+auch nur ein Request den API-Server erreicht:
+
+```ts
+const incompleteOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withNamespace('my-app');
+new KubernetesLease(incompleteOptions);
+// OptionsError: KubernetesLeaseOptions: owner is required
+```
+
+Die Prüfung ist nicht kosmetisch.  Ohne `owner` wird das
+`Lease`-Objekt ohne `spec.holderIdentity` geschrieben — der
+undefinierte Key fällt schlicht aus dem JSON-Body heraus — und ein
+Lease ohne Holder liest sich für jeden Pod als frei: jedes
+`acquire()` liefert `true`, und die Single-Holder-Garantie ist weg,
+ohne dass ein einziger Fehler geloggt würde.  Ein fehlendes `ttlMs`
+führt über einen anderen Weg zum selben Ergebnis, denn die daraus
+berechnete Ablaufzeit ist `NaN` — und `NaN` liegt nie nach jetzt.
+
 ## RBAC
 
 Das ServiceAccount des Pods braucht Rechte, um `Lease`-Ressourcen

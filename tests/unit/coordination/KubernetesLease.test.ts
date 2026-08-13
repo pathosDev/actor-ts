@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions, type KubernetesLeaseOptionsType } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
@@ -153,6 +154,55 @@ const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kuber
   if (s.client !== undefined) options.withClient(s.client);
   return options;
 };
+
+describe('KubernetesLease — required options (#596)', () => {
+  /**
+   * Each of these used to construct silently and then disable mutual
+   * exclusion on the wire: no `owner` means no `spec.holderIdentity`
+   * (JSON.stringify drops the undefined key), which `isStillHeldByOther`
+   * reads as "unowned" for every Pod; no `ttlMs` makes the expiry `NaN`,
+   * which is never greater than `Date.now()`.
+   */
+  test('rejects a missing owner instead of writing a lease without a holderIdentity', () => {
+    const withoutOwner = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutOwner)).toThrow(OptionsError);
+    expect(() => new KubernetesLease(withoutOwner)).toThrow(/owner is required/);
+  });
+
+  test('rejects a missing ttlMs', () => {
+    const withoutTtl = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withOwner('test-pod');
+    expect(() => new KubernetesLease(withoutTtl)).toThrow(/ttlMs is required/);
+  });
+
+  test('rejects a missing name and a missing namespace', () => {
+    const withoutName = KubernetesLeaseOptions.create()
+      .withNamespace('default')
+      .withOwner('test-pod')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutName)).toThrow(/name is required/);
+
+    const withoutNamespace = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withOwner('test-pod')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutNamespace)).toThrow(/namespace is required/);
+  });
+
+  test('rejects an options-less construction', () => {
+    expect(() => new KubernetesLease()).toThrow(OptionsError);
+  });
+
+  test('a plain options object is held to the same requirement as the builder', () => {
+    expect(() => new KubernetesLease({ name: 'test-lease', namespace: 'default', ttlMs: 5_000 }))
+      .toThrow(/owner is required/);
+  });
+});
 
 describe('KubernetesLease — acquire (no existing lease)', () => {
   test('creates the lease object and sets holderIdentity', async () => {

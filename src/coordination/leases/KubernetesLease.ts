@@ -19,6 +19,12 @@ import {
  * is impossible: at most one Pod can hold the lease at a time, K8s
  * arbitrates via optimistic concurrency control.
  *
+ * That guarantee rests on `name`, `owner`, `ttlMs` and `namespace` being
+ * present, so the constructor rejects a missing one with `OptionsError`
+ * rather than starting up half-configured (#596) — without an `owner`
+ * the CREATE/PUT carries no `spec.holderIdentity` and every Pod's
+ * `acquire()` succeeds against the same object.
+ *
  * Lifecycle:
  *
  *   1. **acquire()** — GET the lease object.  If it doesn't exist, CREATE
@@ -56,7 +62,11 @@ export class KubernetesLease implements Lease {
 
   constructor(options: KubernetesLeaseOptions = {}) {
     this.options = options as KubernetesLeaseOptionsType;
-    new KubernetesLeaseOptionsValidator().validate(this.options);
+    // Required-ness first, domain validity second — a missing field must be
+    // reported as missing, not as a domain violation of `undefined`.
+    const validator = new KubernetesLeaseOptionsValidator();
+    validator.validateRequired(this.options);
+    validator.validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
   }

@@ -77,6 +77,11 @@ export class KubernetesLeaseOptionsValidator extends LeaseOptionsValidator<Kuber
     this.nonEmptyString('namespace');
     this.url('apiServerUrl', ['http', 'https']);
   }
+
+  /** The K8s backend additionally cannot address a Lease object without a `namespace`. */
+  protected override requiredFields(): readonly string[] {
+    return [...super.requiredFields(), 'namespace'];
+  }
 }
 
 /**

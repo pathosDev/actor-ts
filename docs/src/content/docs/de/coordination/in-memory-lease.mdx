@@ -23,6 +23,13 @@ const lease = new InMemoryLease(
 await lease.acquire();   // → true (erstes Acquire)
 ```
 
+`name`, `owner` und `ttlMs` sind Pflicht — der Konstruktor wirft
+`OptionsError`, sobald eines fehlt, statt ein Lease zu bauen, das
+niemanden ausschließen kann.  Zwei Leases ohne `owner` konkurrieren
+beide unter demselben `undefined`-Holder und gewinnen beide; ohne
+`ttlMs` ist die Ablaufzeit `NaN` und liegt damit nie nach jetzt, ein
+bestehender Holder liest sich also immer als abgelaufen.
+
 ## Wann du sie einsetzt
 
 - **Unit Tests** für Actors, die einen `Lease`-Parameter
