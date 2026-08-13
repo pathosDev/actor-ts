@@ -198,7 +198,7 @@ describe('workflow hygiene', () => {
    * So the workflow-level block is a read-only floor and nothing more; a
    * scope that can change anything belongs on the single job that uses it.
    */
-  test.each(workflows)('$name grants no write scope at workflow level', (file) => {
+  test.each([...workflows])('$name grants no write scope at workflow level', (file) => {
     for (const scope of workflowLevelScopes(file)) {
       expect(
         scope,
@@ -215,7 +215,7 @@ describe('workflow hygiene', () => {
    * the reason the exposure would be silent if the setting were ever flipped,
    * and new workflows keep being added without one.
    */
-  test.each(workflows)('$name states its token permissions explicitly', (file) => {
+  test.each([...workflows])('$name states its token permissions explicitly', (file) => {
     expect(
       declaresPermissions(file),
       `${file.name} declares no permissions, so its token scope is whatever the `
