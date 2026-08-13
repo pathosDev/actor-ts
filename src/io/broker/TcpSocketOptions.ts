@@ -9,7 +9,7 @@
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
-import { findFramingCapViolation } from './TcpFraming.js';
+import { findFramingViolation } from './TcpFraming.js';
 import type { TcpFraming } from './TcpFraming.js';
 
 export interface TcpSocketOptionsType extends BrokerCommonOptionsType {
@@ -63,9 +63,9 @@ export class TcpSocketOptionsValidator extends BrokerOptionsValidator<TcpSocketO
     this.commonRules(s);
     this.nonEmptyString('host');
     this.port('port');
-    // Shared with TcpServerOptions — see findFramingCapViolation for why a
-    // bad cap is worse than a merely wrong number.
-    const violation = findFramingCapViolation(s.framing);
+    // Shared with TcpServerOptions — see findFramingViolation for why each of
+    // its rules guards something worse than a merely wrong value.
+    const violation = findFramingViolation(s.framing);
     if (violation) this.fail(violation.field, violation.reason, violation.value);
   }
 }
