@@ -78,34 +78,11 @@ const sqliteJournalOptions = SqliteJournalOptions.create()
 new SqliteJournal(sqliteJournalOptions)
 ```
 
-The framework creates the table automatically on first use, with
-the schema:
-
-```sql
-CREATE TABLE events (
-  persistence_id TEXT NOT NULL,
-  sequence_nr    INTEGER NOT NULL,
-  payload        TEXT NOT NULL,
-  tags           TEXT,                -- legacy CSV tags (back-compat)
-  timestamp      INTEGER NOT NULL,
-  PRIMARY KEY (persistence_id, sequence_nr)
-);
-
-CREATE INDEX idx_events_pid ON events (persistence_id);
-
-CREATE TABLE events_tags (
-  persistence_id TEXT NOT NULL,
-  sequence_nr    INTEGER NOT NULL,
-  tag            TEXT NOT NULL,
-  timestamp      INTEGER NOT NULL,
-  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
-);
-
-CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
-```
-
-The dual-table design (events + events_tags) lets tag queries hit
-an index instead of scanning CSV.
+The name is a stem, not just one table: the tag index and the
+compaction high-water mark derive from it, so `orders_events` also
+gives you `orders_events_tags` and `orders_events_meta`.  The
+framework creates all of them automatically on first use — see
+[Schema](#schema).
 
 ### `wal`
 
@@ -177,6 +154,76 @@ path to construct one by hand — so the `driver` slot is an
 internal seam the framework's own tests use, not something you
 wire up in application code.
 
+## Schema
+
+Each store runs `CREATE TABLE IF NOT EXISTS` on first use, so an empty
+file is a valid starting point.  Five tables, across the three stores:
+
+```sql
+CREATE TABLE events (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,    -- JSON
+  tags           TEXT,             -- legacy CSV (also mirrored into events_tags)
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE INDEX idx_events_pid ON events(persistence_id);
+
+CREATE TABLE events_tags (         -- indexed tag lookups for projections
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags(persistence_id, sequence_nr);
+
+CREATE TABLE events_meta (         -- compaction high-water mark
+  persistence_id TEXT PRIMARY KEY,
+  deleted_to     INTEGER NOT NULL
+);
+
+CREATE TABLE snapshots (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+
+CREATE TABLE durable_state (
+  persistence_id TEXT PRIMARY KEY,
+  revision       INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL
+);
+```
+
+The names above are the defaults; `eventsTable`, `snapshotsTable` and the
+durable-state `table` option rename them, and `events_tags` / `events_meta`
+follow the journal's stem.
+
+Two details worth knowing.  The **dual-table tag design** is why
+projections scale: `events.tags` keeps the legacy CSV column for
+back-compat, but tag queries read `events_tags`, hitting an index instead
+of scanning every row.  Both are written in the same transaction, so they
+cannot drift apart.
+
+And the **`events` primary key is the backstop here, not the concurrency
+mechanism**.  Locally the journal re-reads the head sequence inside a
+`BEGIN IMMEDIATE` transaction and raises `JournalConcurrencyError` before
+attempting any insert.  The HTTP-fronted backends have no such
+transaction, so they let the write hit `(persistence_id, sequence_nr)` and
+translate the `UNIQUE constraint failed` instead — same tables, weaker
+guarantee.
+
+This is the SQLite dialect's schema, shared verbatim with
+[libSQL / Turso](/persistence/journals/libsql/) and
+[Cloudflare D1](/persistence/journals/cloudflare-d1/) — the same DDL runs on
+all three, which is what lets a database move between a local file and
+either of those without a migration.
+
 ## Peer dependency on Node — optional
 
 ```bash
@@ -237,9 +284,10 @@ yourself on a handle you own:
 database.exec('PRAGMA busy_timeout = 1000;');
 ```
 
-The schema is the SQLite dialect's, identical to
+Its table is the `durable_state` one in [Schema](#schema) — the SQLite
+dialect's, identical to what
 [libSQL / Turso](/persistence/journals/libsql/) and
-[Cloudflare D1](/persistence/journals/cloudflare-d1/), so a database can
+[Cloudflare D1](/persistence/journals/cloudflare-d1/) run, so a database can
 move between a local file and either of those without a migration.
 
 One difference worth knowing in the other direction: because this talks
