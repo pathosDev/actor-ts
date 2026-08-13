@@ -291,6 +291,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   receiver cut the frame short.  `lf` is available for receivers that
   accept nothing else, and collapses the newlines it cannot represent.
 
+- **`redactUrlCredentials` and `redactedUrlLabel`** (#590, #592).  Both are
+  exported from the package root, next to `safeStringify`.  The framework
+  runs every connection URL it reports through them, but it cannot redact
+  what your own log line prints.  `redactUrlCredentials(value)` masks the
+  userinfo and changes nothing else, and is a strict no-op on anything
+  without a `scheme://…@` authority, so it is safe to apply to a value that
+  only might be a URL.  `redactedUrlLabel(value)` goes further and reduces a
+  URL to a stable identity — scheme, host, port and path — dropping the
+  query string as well, for a line you emit repeatedly.  Both are also what
+  you call inside a `MultiSinkLogger` `transform` when a credential reached
+  a record's fields rather than its message.
+
+- **`cluster_envelope_from_mismatch_total{frame}`** (#121).  It counts
+  envelopes whose payload names a sender other than the connection they
+  arrived on.  Nothing the node does depends on that field any more, but a
+  claim contradicting the connection is still worth a number: it is either a
+  client old enough to still send it and wrong about its own address, or
+  someone probing whether this node routes on payload, and an operator wants
+  to see both.  A matching claim is not counted — that is the compatibility
+  direction that has to keep working.  It is a new family rather than a fifth
+  reason on `cluster_gossip_records_refused_total`, whose subject is a
+  gossiped member record a merge-path guard refused: this is neither a
+  gossip record nor a refusal, since the envelope is delivered and only the
+  hint in it ignored.  The `frame` label is the wire kind, drawn from code
+  and never from the payload, so the series count is bounded by how many
+  wire handlers make the check — one today — and the same question asked of
+  another seam lands as a second label value instead of a second metric
+  name.  The claimed address is deliberately neither a label nor log text: as
+  a label it is one series per address a sender cares to invent, and as log
+  text it is an unvalidated payload string.  The log line is `debug` and the
+  counter carries the signal, because every envelope is its own frame and a
+  warning per envelope would let a client write the node's log at line rate.
+
 ### Changed
 
 - **BREAKING — `Lease.release()` reports a failure instead of swallowing it**
@@ -305,6 +338,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *Migration:* wrap `lease.release()` in `.catch(...)` where it is used purely
   as cleanup; third-party `Lease` backends should propagate a release failure
   rather than swallow it.
+
+- **BREAKING — `HttpRequest.path` is the bare pathname on every backend**
+  (#601).  The Fastify backend passed Fastify's raw request target straight
+  through, so `GET /orders?page=2` arrived as `path: '/orders?page=2'` on
+  the default backend while Express and Hono both reported `'/orders'` — the
+  field's meaning depended on which backend was serving, which is exactly
+  the kind of divergence a backend-agnostic request type exists to prevent.
+  It is now the pathname everywhere, with the parameters in `query`, and the
+  contract is documented on the field itself so the next backend has
+  something to normalise against.
+
+  *Migration:* code that read the query out of `request.path` on Fastify
+  must read `request.query` instead.  Nothing typechecks this: a
+  response-cache key built from `request.path` alone silently stops varying
+  by query, and a hand-rolled `request.path.split('?')[0]` quietly becomes a
+  no-op.  Debug access logs on Fastify now print the pathname only, which
+  matches what the other two backends already logged.
+
+### Removed
+
+- **BREAKING — the ClusterClient envelope no longer carries a sender field**
+  (#121).  `cluster-client-envelope` used to repeat, on every message, the
+  address the client's `hello` handshake had already established.  The
+  receptionist stopped reading it when it started replying down the
+  connection the request arrived on: the payload's copy was absent often
+  enough to throw a `TypeError` out of the frame-dispatch loop, and when
+  present but forged it made the node send a reply — and open a connection —
+  to an address of the sender's choosing.  What was left was a field with
+  exactly one correct value, and that value is one the receiver already
+  holds.  That is not information, it is a second answer to a question that
+  already had one, and it survives only until the next reader reaches for
+  the cheaper of the two.  A client states who it is once now, in the
+  handshake, where the transport binds the claim to the socket.
+
+  *Migration:* `ClusterClientEnvelopeMessage` is publicly re-exported and no
+  longer has `from`; drop the field if you compose the frame yourself.
+  Compatibility runs one way and only one way: a current node still serves a
+  pre-upgrade client that sends the field — the value is ignored, and a
+  value that contradicts the connection is counted on the new mismatch
+  metric.  The reverse does not work: a current client against a node older
+  than v0.13.0 hits `NodeAddress.fromJSON(undefined)` and throws out of that
+  node's frame-dispatch loop.  Upgrade the cluster nodes before the clients.
+
+- **The internal WebSocket path matcher is gone** (#623).
+  `matchWebsocketPattern` existed only because, as its own doc comment put
+  it, "the `upgrade` event bypasses the router entirely" on the Express
+  backend.  Now that upgrades are dispatched through the app, Express matches
+  the pattern and populates `req.params` itself, so the hand-rolled matcher
+  has no caller.  It was never exported from a barrel, so nothing public
+  changes.
 
 ### Fixed
 
@@ -340,6 +423,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   in-root directory is listed as a directory.  The internal `readDirectory`
   helper returns names accordingly; directory-entry type flags are unreliable
   anyway (a filesystem answering `DT_UNKNOWN` reports every kind as false).
+
+- **Query-bearing URLs no longer produce mangled redirects and headings on
+  the Fastify backend** (#601).  Everything that builds a target by appending
+  to `HttpRequest.path` was doing so with the query still inside it, and so
+  was correct on two backends and wrong on the default one: the static-file
+  directory redirect answered `Location: /static?a=1/` instead of
+  `/static/?a=1`, breaking the query-preserving redirect the static-files
+  documentation already promised; the DevTools shell redirect answered
+  `Location: /devtools?x=1/`, putting the trailing slash inside a query
+  value and defeating the relative-asset resolution that redirect exists to
+  guarantee; the directory listing was headed `Index of /files/sub?a=1`; and
+  WebSocket handlers received a query-bearing `upgrade.path`.  All four
+  follow from the pathname fix and needed no change of their own.
+
+- **TCP `lines` framing no longer re-decodes the whole pending buffer on
+  every inbound chunk** (#610).  The extractor decoded all buffered bytes and
+  restarted the delimiter search at offset 0 per chunk — O(buffered) each
+  time, O(N²) over a delimiter-free stream, so a peer could stall the event
+  loop entirely inside a cap the docs call a DoS limit.  The scan now runs
+  over the raw bytes against the encoded delimiter, only completed lines are
+  decoded, and the search position is carried across chunks.  The same
+  rewrite fixes a corruption bug: a chunk boundary splitting a multi-byte
+  character used to be decoded to U+FFFD and re-encoded into the leftover,
+  so the continuation byte arriving next could never repair it.  Applies to
+  the listener too, per accepted connection.
+
+- **`maxLineLen` now counts bytes, the unit its validator has always
+  claimed** (#752).  Both cap checks compared the length of the decoded
+  string, i.e.  UTF-16 code units: 1,048,576 CJK characters are exactly the
+  default cap in code units and 3,145,728 bytes, so a peer could hold three
+  times the configured limit with no overflow reported.  This is a semantic
+  tightening you can observe — the same `maxLineLen` now trips up to 3x
+  earlier on a non-ASCII line protocol, and the 1 MiB default means 1 MiB of
+  bytes rather than up to 3 MiB.
+
+- **A rejected WebSocket upgrade now reaches the client on Bun** (#623).  The
+  Express backend wrote its rejection straight to the hijacked socket, which
+  under Bun 1.3.1 delivered zero bytes — a client refused by an upgrade
+  guard saw a bare connection close instead of the guard's 401, while the
+  same code under Node delivered the full response.  Routing the rejection
+  through a `ServerResponse` bound to that socket delivers it on both.  Deno
+  delivers neither, before or after: its `'upgrade'` socket is write-only in
+  the direction of a completed handshake, so a refused client there still
+  just sees the connection go.  The handshake is refused correctly on all
+  three either way — only the explanatory body was missing.
 
 ### Security
 
@@ -696,6 +824,113 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `devtools-ui/**` now shows up as `gzipBase64`, `size` and `etag` moving while
   `source-hash` stays put.  `linguist-generated`, `text` and `eol=lf` are
   unchanged, and a regenerate is 7 changed lines, only 2 of them large.
+
+- **BREAKING — A rejected connection URL is no longer reported with its
+  password** (#590).  `OptionsValidator.url()` and the connection-URL rules
+  of the Mongo, libSQL, D1 and DynamoDB stores rendered the value exactly as
+  given, and a connection URL is the one setting that routinely carries a
+  secret inline (`amqp://user:pass@host/vhost`,
+  `mongodb+srv://user:pass@cluster`, `redis://:token@host`).  That message is
+  not private: `BrokerActor.preStart` runs the validator, `ActorCell`
+  catches the throw and logs it at ERROR, so one mistyped protocol shipped
+  the password to whatever log aggregator the deployment has — and
+  `OptionsError.value` carried the raw string too, which the default
+  `ConsoleLogger` prints alongside.  The userinfo is now replaced with `***`
+  in both the message and `OptionsError.value`.  Nothing else about the value
+  changes — no normalisation, no trailing slash, no lowercased host — so you
+  still recognise what you typed, and a value that is not a URL at all
+  (`":memory:"`, `"file:local.db"`) comes back verbatim.  All fourteen `url`
+  rule call sites benefit, including the six log-shipping sinks (Loki,
+  Splunk, Seq, GELF, Parseable, OTLP), whose endpoints are among the most
+  likely to carry a token.
+
+  *Migration:* `OptionsError.value` now holds the redacted string rather
+  than the raw one.  Code that catches an `OptionsError` to re-derive the
+  configured URL gets `***` in place of the userinfo; read the URL from your
+  own settings instead.
+
+- **The WebSocket client's oversize-frame warning names a redacted label
+  instead of the connection URL** (#592).  The warning is written once per
+  offending frame with no latch, so the peer decides how often it appears —
+  a hostile or simply broken server could drive an unbounded number of
+  copies of whatever the URL carried into the log, and a WebSocket endpoint
+  is commonly authenticated with a `?token=…`.  The line now names the
+  connection as `wss://host:port/path`, with the userinfo and the query
+  string stripped.  The path is kept on purpose: it is what tells two
+  connections to the same host apart, so the line still identifies which
+  client dropped the frame.
+
+- **The idempotency-key fingerprint now covers the query string** (#609).
+  `computeRequestFingerprint` hashed only method, path and body, and
+  `HttpRequest` keeps the query in a field of its own — so `POST
+  /refunds?amount=1` and `POST /refunds?amount=9999` sent with the same
+  `Idempotency-Key` and an identical body fingerprinted the same, and the
+  second request replayed the first one's stored response instead of
+  tripping the 422 that exists to catch a key reused for a semantically
+  different request.  Reachable on the Express and Hono backends; the Fastify
+  default escaped only because it reported the raw request target in `path`,
+  which is the very thing the request-path fix removes.  The fingerprint
+  prelude now carries a canonical serialisation of the query: parameter keys
+  are sorted, so a retry that reorders `?a=1&b=2` into `?b=2&a=1` still
+  replays instead of being rejected, while the values of a repeated key keep
+  their original order, so `?tag=a&tag=b` stays distinct from
+  `?tag=b&tag=a`.  Anything from the first `?` onward is stripped off `path`
+  before the canonical query is appended, so pods running different backends
+  against one shared cache compute the same fingerprint for the same
+  request.  Note the direction: folding the query in makes the guard
+  **stricter**, so a request that used to replay may now be answered with
+  422.  The 422 message no longer says "body", since the mismatch can be
+  method, path, query or body.
+
+  *Migration:* cached records written by an earlier build carry the old
+  fingerprint, so during a rolling upgrade a genuine retry that lands on a
+  new pod can see one 422 until those entries age out (24 h by default).
+  There is no fingerprint-version field to tell an old record apart from a
+  real mismatch.
+
+- **A breached TCP framing cap now drops the pending bytes and the socket,
+  not just a log line** (#578).  The client actor reported the overflow and
+  returned above the only assignment that would have cleared its inbound
+  buffer, and reporting a lost connection never touches the transport — so
+  with `reconnect: false`, or once `maxAttempts` ran out, the socket stayed
+  attached with its `data` listener live and the same peer went on growing
+  the buffer the cap had just refused to clear.  The buffer also survived a
+  reconnect, splicing one peer's partial line onto the next connection's
+  first chunk.  The connection is now torn down for real, and the listener
+  releases a closed connection's partial frame as well.
+
+- **An empty `framing.delimiter` is rejected instead of wedging the
+  process** (#789).  An empty delimiter matches at every offset without
+  consuming anything, so the extraction loop never advanced — a synchronous
+  spin no timeout can interrupt, accumulating empty frames until memory ran
+  out, reachable from the client and from the listener per accepted
+  connection.  The shared framing rule now refuses it during options
+  validation, before any socket exists, and the extractor refuses it
+  outright as a precondition that cannot occur.
+
+- **BREAKING — Express WebSocket handshakes now run the app's middleware**
+  (#623).  The Express backend answered Node's `'upgrade'` event itself, so
+  the request never entered the Express app and nothing registered with
+  `app.use(...)` ran for a handshake — an application that gated `/ws` with
+  `app.use(requireLogin)` was not gated, and sessions, authentication and
+  rate limiting were all skipped.  That is precisely the ecosystem this
+  backend exists to reuse, and Fastify (a `preValidation` hook) and Hono (a
+  plain `app.get`) both already routed their handshake through the
+  framework, so Express was the sole outlier of the three.  The upgrade is
+  now dispatched through the app the way `@fastify/websocket` dispatches
+  through `fastify.routing`: each `websocket()` route registers as an
+  ordinary Express `GET`, and reaching its handler means the whole chain let
+  the request through.  A middleware that answers instead cancels the
+  handshake; the DSL's own `withMiddleware()` / `allowedOrigins` guard still
+  runs last and keeps the final word.
+
+  *Migration:* two things change for Express users.  Native middleware now
+  sees WebSocket upgrades, so a catch-all `app.use` that rejects
+  unauthenticated requests will start refusing handshakes it previously let
+  through — which is the point, but check any middleware that answers
+  unconditionally.  And `ExpressAppLike` gained the call signature every
+  Express app already has, so a hand-written implementation of that
+  interface must become callable; a real `express()` app needs no change.
 
 ## [0.15.0] — 2026-08-12
 
