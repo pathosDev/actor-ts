@@ -8,7 +8,12 @@ import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import {
+  contentLengthExceeds,
+  DEFAULT_RESPONSE_SECURITY_HEADERS,
+  PAYLOAD_TOO_LARGE_RESPONSE,
+} from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -189,7 +194,7 @@ export class ExpressBackend implements HttpServerBackend {
     new ExpressBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */
@@ -484,6 +489,14 @@ export class ExpressBackend implements HttpServerBackend {
       if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
         req.rawBody = null; next(); return;
       }
+      // A declared length over the cap is refused before a byte is read, the
+      // way Hono and Fastify already refuse it — otherwise a client
+      // announcing a gigabyte still gets `cap` bytes read and buffered first.
+      const declaredLength = req.headers['content-length'];
+      if (contentLengthExceeds(typeof declaredLength === 'string' ? declaredLength : undefined, cap)) {
+        this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
+        return;
+      }
       try {
         const chunks: Buffer[] = [];
         let total = 0;
@@ -491,10 +504,9 @@ export class ExpressBackend implements HttpServerBackend {
         for await (const chunk of readable) {
           const buffer = chunk as Buffer;
           total += buffer.length;
+          // The backstop for a chunked body, which declares no length.
           if (total > cap) {
-            this.applyDefaultResponseHeaders(res);
-            res.status(413).setHeader('content-type', 'text/plain; charset=utf-8');
-            res.end('Payload Too Large');
+            this.writeResponse(res, PAYLOAD_TOO_LARGE_RESPONSE);
             return;
           }
           chunks.push(buffer);

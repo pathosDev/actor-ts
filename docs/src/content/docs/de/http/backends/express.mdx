@@ -28,7 +28,7 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Konfiguration
 
 ```ts
-const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
 new ExpressBackend(
   expressBackendOptions,
 );
@@ -37,7 +37,9 @@ new ExpressBackend(
 // übergeben.
 ```
 
-Settings im Express-Stil.
+Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
+dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
+wirklich mehr annimmt, so wie oben.
 
 ## Security-Header
 

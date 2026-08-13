@@ -26,7 +26,13 @@ export type HonoBackendOptionsType = {
    * `hono` dynamically and build a fresh app on `listen()`.
    */
   readonly app?: HonoAppLike;
-  /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
+  /**
+   * Maximum allowed body size in bytes.  Exceeding it returns 413.
+   *
+   * Defaults to `DEFAULT_HTTP_MAX_BODY_BYTES` (1 MiB) — the same cap every
+   * shipped backend applies, so swapping backends cannot change which
+   * requests are accepted (#357).
+   */
   readonly maxBodyBytes?: number;
 };
 
@@ -42,7 +48,7 @@ export class HonoBackendOptionsBuilder extends OptionsBuilder<HonoBackendOptions
     return this.set('app', app);
   }
 
-  /** Maximum request body size in bytes.  Default 10 MiB; exceeding it returns 413. */
+  /** Maximum request body size in bytes.  Default 1 MiB; exceeding it returns 413. */
   withMaxBodyBytes(bytes: number): this {
     return this.set('maxBodyBytes', bytes);
   }
