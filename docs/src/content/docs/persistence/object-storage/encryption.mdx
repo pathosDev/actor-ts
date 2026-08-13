@@ -240,6 +240,71 @@ re-encryption sweep can migrate the rest.
 See [key rotation](/persistence/object-storage/key-rotation/)
 for the rotation flow.
 
+## Body integrity (HMAC)
+
+Encryption is not integrity.  An **unencrypted** body is plain JSON
+sitting in a bucket: anyone who can write the object can edit it — and
+for `ObjectStorageDurableStateStore` that includes the `revision` field
+the compare-and-swap check is built on.
+
+Opt in with an `integrity` config.  Its key is 32 bytes and **separate
+from the encryption master key**, because the threat here is tampering,
+not disclosure:
+
+```ts
+const integrityKey = Buffer.from(process.env.INTEGRITY_KEY_V1!, 'base64'); // 32 bytes
+
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey });
+const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
+```
+
+Every write now appends an HMAC-SHA256 tag (truncated to 16 bytes) over
+the **whole framed body** — the manifest header included, so the
+compression and encryption flags are covered as well — and every read
+verifies it before a single payload byte reaches the store layer.
+
+### The tag is required, not merely checked
+
+Configuring integrity makes a tag **mandatory on read**.  A body that
+arrives without one is refused:
+
+```
+BodyCodec: body carries no integrity tag but an integrityKey was
+supplied for decoding.
+```
+
+That is the point of the control rather than a rough edge.  The bit
+that records "this body has a tag" lives *in the body*, so whoever can
+rewrite the object can also clear it and drop the 16 tag bytes.  If an
+absent tag meant "skip verification", the check would protect nobody:
+stripping a tag is far easier than forging one.
+
+### Migrating a bucket written before integrity
+
+Bodies written before you turned integrity on carry no tag, so they meet
+the same rule.  Open the migration window explicitly:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey })
+  .withAllowUntaggedBodies(true);
+```
+
+Then rewrite every object — a `load` followed by an `upsert` per
+`persistenceId` re-frames it with a tag — and **remove the option
+again**.  While it is set, an untagged body is accepted from anyone; a
+body that *does* carry a tag is still verified, but the downgrade route
+is open for as long as the window is.
+
+**Integrity and master-key rotation do not compose yet.**
+`reEncryptObjectStorage` supplies no integrity key, so it cannot read
+tagged bodies and a sweep over them fails
+([#739](https://github.com/pathosDev/actor-ts/issues/739)).  Finish
+any pending key rotation before you enable integrity on a bucket.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lose the key, lose the data">

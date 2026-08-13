@@ -252,6 +252,76 @@ migrieren.
 Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/)
 für den Rotation-Flow.
 
+## Body-Integrität (HMAC)
+
+Verschlüsselung ist keine Integrität.  Ein **unverschlüsselter** Body
+ist schlichtes JSON in einem Bucket: Wer das Objekt schreiben kann,
+kann es auch ändern — und beim `ObjectStorageDurableStateStore`
+gehört dazu das Feld `revision`, auf dem der Compare-and-Swap-Check
+aufsetzt.
+
+Aktiviere den Schutz über eine `integrity`-Konfiguration.  Ihr
+Schlüssel ist 32 Bytes lang und **vom Encryption-Master-Key getrennt**,
+denn die Bedrohung ist hier Manipulation, nicht Offenlegung:
+
+```ts
+const integrityKey = Buffer.from(process.env.INTEGRITY_KEY_V1!, 'base64'); // 32 bytes
+
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey });
+const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
+```
+
+Jeder Write hängt jetzt ein HMAC-SHA256-Tag (auf 16 Bytes gekürzt) über
+den **gesamten gerahmten Body** an — inklusive Manifest-Header, womit
+auch die Kompressions- und Verschlüsselungs-Flags abgedeckt sind — und
+jeder Read prüft es, bevor ein einziges Payload-Byte die Store-Schicht
+erreicht.
+
+### Das Tag ist Pflicht, nicht bloß geprüft
+
+Eine konfigurierte Integrität macht das Tag beim Lesen **verbindlich**.
+Ein Body, der ohne Tag ankommt, wird abgelehnt:
+
+```
+BodyCodec: body carries no integrity tag but an integrityKey was
+supplied for decoding.
+```
+
+Das ist der Sinn des Mechanismus, keine Härte am Rand.  Das Bit, das
+„dieser Body hat ein Tag“ festhält, liegt *im Body* — wer das Objekt
+überschreiben kann, kann es also ebenso löschen und die 16 Tag-Bytes
+abschneiden.  Hieße ein fehlendes Tag „Prüfung überspringen“, schützte
+die Prüfung niemanden: Ein Tag zu entfernen ist weit einfacher, als
+eines zu fälschen.
+
+### Ein Bucket von vor der Integrität migrieren
+
+Bodies, die vor der Aktivierung geschrieben wurden, tragen kein Tag und
+fallen damit unter dieselbe Regel.  Öffne das Migrationsfenster
+ausdrücklich:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey })
+  .withAllowUntaggedBodies(true);
+```
+
+Schreibe anschließend jedes Objekt neu — ein `load` gefolgt von einem
+`upsert` pro `persistenceId` rahmt es mit Tag — und **entferne die
+Option wieder**.  Solange sie gesetzt ist, wird ein Body ohne Tag von
+jedem akzeptiert; ein Body *mit* Tag wird weiterhin geprüft, aber der
+Downgrade-Weg steht so lange offen wie das Fenster.
+
+**Integrität und Master-Key-Rotation greifen noch nicht ineinander.**
+`reEncryptObjectStorage` übergibt keinen Integritätsschlüssel, kann
+getaggte Bodies also nicht lesen, und ein Sweep darüber scheitert
+([#739](https://github.com/pathosDev/actor-ts/issues/739)).  Schließe
+eine anstehende Schlüsselrotation ab, bevor du Integrität auf einem
+Bucket aktivierst.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Schlüssel verlieren, Daten verlieren">
