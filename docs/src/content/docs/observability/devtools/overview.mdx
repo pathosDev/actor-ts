@@ -103,17 +103,35 @@ To put DevTools next to your
 on a port of its own, take the routes and bind them yourself:
 
 ```ts
-import { concat, path } from 'actor-ts';
-import { DevTools } from 'actor-ts/devtools';
+import { BearerTokenAuth, concat, path } from 'actor-ts';
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const devtoolsOptions = DevToolsOptions.create()
+  .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
 
 const routes = concat(
   managementRoutes(system, cluster).routes,
-  path('devtools', DevTools.mount(system)),
+  path('devtools', DevTools.mount(system, devtoolsOptions)),
 );
 await system.http(8558, { host: '127.0.0.1' }).bind(routes);
 ```
 
 Whatever middleware wraps that subtree applies to DevTools too.
+
+`mount` asks for the gate up front, and this is why: unlike `attach` it
+never learns where its routes end up.  `host` is not read on this path —
+the caller binds — so DevTools cannot tell a private port from a public
+one, and it will not guess.  Passing `auth` or `ipAllowlist` is the
+direct answer and the sturdier one: both wrap the tree that is returned,
+so the gate travels with it wherever it is mounted.  When the surrounding
+server already gates the mount point, say so instead:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withAllowUngatedMount();
+```
+
+DevTools then logs one line recording that it is running without a gate
+of its own, and the rest is yours to get right.
 
 ## Options
 
@@ -133,7 +151,8 @@ const devtoolsOptions = DevToolsOptions.create()
 | `port` | `9333` | Port to bind; `0` picks a free one. |
 | `auth` | — | Middleware wrapping the whole tree (e.g. `BearerTokenAuth`). |
 | `ipAllowlist` | — | Middleware wrapping the whole tree. |
-| `allowRemote` | `false` | Acknowledge an ungated, routable bind. |
+| `allowRemote` | `false` | Acknowledge an ungated, routable bind (`attach`). |
+| `allowUngatedMount` | `false` | Acknowledge a mounted tree DevTools does not gate (`mount`). |
 | `backend` | framework default | HTTP backend for the DevTools server. |
 | `serveUi` | `true` | `false` leaves the tap without the UI. |
 | `allowedOrigins` | same-origin | Origins allowed to open the WebSocket. |
@@ -160,10 +179,17 @@ DevTools is a debugger, and the defaults treat it as one.
 
 - **Loopback by default.** `host` is `127.0.0.1`, so nothing outside the
   machine can reach it.
-- **A routable bind must be deliberate.** Setting `host` to anything
-  that is not loopback throws unless you also pass `auth`,
+- **A routable bind must be deliberate.** On `attach`, setting `host` to
+  anything that is not loopback throws unless you also pass `auth`,
   `ipAllowlist`, or `allowRemote: true`.  The error names all three, so
   a typo in a host string cannot quietly publish your actor state.
+- **A mount must be deliberate too.** `mount` hands its routes to a
+  server DevTools never sees, so it cannot check the host the way
+  `attach` does — `host` is not even read on that path.  It therefore
+  asks up front: `auth`, `ipAllowlist`, or `allowUngatedMount: true`,
+  which acknowledges that whatever gates this tree is outside DevTools
+  (and gets a line in the log saying so).  The loopback default does not
+  count as a gate here, because it is not what the caller will bind.
 - **Gates cover everything.** `auth` and `ipAllowlist` wrap the UI, the
   JSON endpoints *and* the WebSocket upgrade — a gate on only the JSON
   would leave the actual data channel open.

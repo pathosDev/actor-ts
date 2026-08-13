@@ -23,7 +23,11 @@ export {
   DevToolsOptionsValidator,
   isLoopbackHost,
 } from './DevToolsOptions.js';
-export type { DevToolsOptionsType, DevToolsPanelOptionsType } from './DevToolsOptions.js';
+export type {
+  DevToolsExposure,
+  DevToolsOptionsType,
+  DevToolsPanelOptionsType,
+} from './DevToolsOptions.js';
 
 export { DevToolsServer } from './DevToolsServer.js';
 export type {
