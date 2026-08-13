@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import net from 'node:net';
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -122,7 +122,7 @@ describe('ExpressBackend — native app.use middleware at the WebSocket upgrade 
 
   /** Bind `routes` on an injected Express app carrying `middleware`. */
   async function bindWithApp(
-    middleware: (request: { url: string; headers: Record<string, unknown> }, response: { status: (code: number) => { end: (body?: string) => void } }, next: () => void) => void,
+    middleware: RequestHandler,
     makeRoutes: (server: ReturnType<ActorSystem['spawn']>) => Route,
   ): Promise<{ base: string; port: number }> {
     const systemOptions = ActorSystemOptions.create()
@@ -131,7 +131,7 @@ describe('ExpressBackend — native app.use middleware at the WebSocket upgrade 
     const system = ActorSystem.create('ws-express-native', systemOptions);
     systems.push(system);
     const application = express();
-    application.use(middleware as Parameters<typeof application.use>[0]);
+    application.use(middleware);
     const backendOptions = ExpressBackendOptions.create().withApp(application);
     const server = system.spawn(EchoServer, 'echo');
     const binding = await system
@@ -176,7 +176,7 @@ describe('ExpressBackend — native app.use middleware at the WebSocket upgrade 
 
     const socket = await openSocket(`${base}/ws`);
     socket.send(JSON.stringify({ kind: 'ping', n: 5 }));
-    expect(await nextMessage(socket)).toEqual({ kind: 'pong', n: 5 });
+    expect(await nextMessage<Pong>(socket)).toEqual({ kind: 'pong', n: 5 });
     socket.close();
     expect(calls).toBeGreaterThanOrEqual(1);
   });
@@ -197,7 +197,7 @@ describe('ExpressBackend — native app.use middleware at the WebSocket upgrade 
 
     const socket = await openSocket(`${base}/ws?token=ok`);
     socket.send(JSON.stringify({ kind: 'ping', n: 1 }));
-    expect(await nextMessage(socket)).toEqual({ kind: 'pong', n: 1 });
+    expect(await nextMessage<Pong>(socket)).toEqual({ kind: 'pong', n: 1 });
     socket.close();
     // Every handshake contributes exactly this pair, in this order — the
     // slice keeps the assertion true if a client retried the refused one.
