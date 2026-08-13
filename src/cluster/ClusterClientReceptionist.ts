@@ -21,11 +21,15 @@
  *
  *   {
  *     kind: 'cluster-client-envelope',
- *     from: NodeAddressData,          // synthetic client address
  *     to: '/user/some/actor',          // actor path on the cluster
  *     askId: 'a-42' | undefined,       // present for ask
  *     body: unknown,                   // user payload
  *   }
+ *
+ * The envelope carries **no sender field** (#121).  A client states its
+ * identity once, in the `hello` handshake, where the transport binds it to
+ * the connection — and that binding is what the reply is routed on.  Repeating
+ * it per envelope only offered a second, unauthenticated place to say it.
  *
  *   {
  *     kind: 'cluster-client-reply',
@@ -45,20 +49,32 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
+import { metricsOf } from '../metrics/MetricsExtension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
-import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
+import { NodeAddress } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
+import { isNodeAddressData } from './WireValidation.js';
 import type { Cluster } from './Cluster.js';
 import { ClusterClientReceptionistOptionsValidator } from './ClusterClientReceptionistOptions.js';
 import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 
 /* ============================ wire shapes =========================== */
 
-/** Inbound: a client wants to deliver `body` to actor at `to`. */
+/**
+ * Inbound: a client wants to deliver `body` to actor at `to`.
+ *
+ * **No sender field, on purpose (#121, BREAKING).**  It used to carry
+ * `from: NodeAddressData`, and after #711 stopped reading it the field had
+ * exactly one correct value — the address the receiver already holds from the
+ * handshake.  A field whose only correct value is one the reader can derive is
+ * not information, it is a second answer to a question that already had one,
+ * and the next reader to reach for the cheaper of the two reintroduces the
+ * defect #711 closed.  {@link ClusterClientReceptionist.countSenderMismatch}
+ * counts what still arrives in it.
+ */
 export type ClusterClientEnvelopeMessage = {
   readonly kind: 'cluster-client-envelope';
-  readonly from: NodeAddressData;
   readonly to: string;
   readonly askId?: string;
   readonly body: unknown;
@@ -108,8 +124,10 @@ export class ClusterClientReceptionist implements Extension {
       // outright when `from` was absent — a TypeError from inside the
       // frame-dispatch loop (#711) — and when present but forged it made this
       // node send the reply, and open a connection, to an address of the
-      // sender's choosing.
+      // sender's choosing.  The field is gone from the wire type now (#121);
+      // anything still arriving in it is counted and otherwise ignored.
       const from = peer;
+      this.countSenderMismatch(message, peer, log);
 
       // Resolve the target locally.  We use the synchronous `_resolvePath`
       // rather than `actorSelection().resolveOne()` because the client
@@ -165,6 +183,63 @@ export class ClusterClientReceptionist implements Extension {
   }
 
   /* --------------------------- internals ---------------------------- */
+
+  /**
+   * Count an envelope whose payload names a sender other than the connection
+   * it arrived on.
+   *
+   * Nothing this node does depends on the field any more — the reply goes down
+   * the connection either way (#711), and the field is no longer part of
+   * {@link ClusterClientEnvelopeMessage} at all (#121).  What is left is worth
+   * a number rather than nothing: a claim that contradicts the connection is
+   * either a client old enough to still send the field and wrong about its own
+   * address, or someone probing whether this node routes on payload.  An
+   * operator wants to see both; neither is worth refusing the envelope over,
+   * because the envelope is fine — only the hint in it is not.
+   *
+   * A claim that **matches** is not counted.  An old client naming the address
+   * its own `hello` already established says nothing new, and that is exactly
+   * the compatibility direction that has to keep working: a pre-#121 client
+   * against a current node.
+   *
+   * **Why the log line is `debug` and the counter carries the signal.**  Gossip
+   * folds a frame's worth of refusals into a single WARN precisely so a peer
+   * that just lost its exploit is not handed log amplification instead (#131).
+   * Here every envelope *is* a frame, so there is nothing to fold — a WARN per
+   * envelope would let a client write this node's log at line rate.  A counter
+   * costs one series however many envelopes arrive, which is what an alert
+   * should be built on.
+   *
+   * **Why the claimed address appears in neither.**  As a label it is the
+   * cardinality trap #131 capped: one time series per address a sender cares
+   * to invent, kept forever. As log text it is an unvalidated payload string,
+   * the shape that forged entire log lines in #573.  The connection's peer is
+   * both trustworthy and the more useful of the two anyway — it is the party
+   * an operator would firewall; the claimed address is only what the sender
+   * wanted them to look at.
+   *
+   * The `frame` label is the wire kind, drawn from code and never from the
+   * payload, so the series count is bounded by how many handlers make this
+   * check rather than by what anyone sends.  It exists so the same question
+   * asked of another wire seam lands as a second label value instead of a
+   * second metric name.
+   */
+  private countSenderMismatch(message: WireMessage, peer: NodeAddress, log: Logger): void {
+    const claimed = (message as { readonly from?: unknown }).from;
+    if (claimed === undefined || claimed === null) return;
+    if (isNodeAddressData(claimed) && NodeAddress.fromJSON(claimed).equals(peer)) return;
+
+    log.debug(
+      `cluster-client envelope on the connection from ${peer} names a different sender — ignored`,
+    );
+    metricsOf(this.system).counter(
+      'cluster_envelope_from_mismatch_total', { frame: 'cluster-client-envelope' },
+      {
+        help: 'Cumulative count of envelopes whose payload named a sender other than '
+          + 'the connection they arrived on.',
+      },
+    ).inc();
+  }
 
   /**
    * Answer a failed ask without quoting the failure.
