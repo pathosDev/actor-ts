@@ -15,6 +15,8 @@ import { ParseableSink } from './ParseableSink.js';
 import { isParseableSinkEnabled, readParseableSinkOptionsFromConfig } from './ParseableSinkOptions.js';
 import { SeqSink } from './SeqSink.js';
 import { isSeqSinkEnabled, readSeqSinkOptionsFromConfig } from './SeqSinkOptions.js';
+import { SplunkSink } from './SplunkSink.js';
+import { isSplunkSinkEnabled, readSplunkSinkOptionsFromConfig } from './SplunkSinkOptions.js';
 import { parseLogLevel } from './LogLevelName.js';
 import type { LogSink } from './LogSink.js';
 import { MultiSinkLogger } from './MultiSinkLogger.js';
@@ -78,6 +80,9 @@ export function buildLoggerFromConfig(
   }
   if (isSeqSinkEnabled(config)) {
     sinks.push(new SeqSink(readSeqSinkOptionsFromConfig(config)));
+  }
+  if (isSplunkSinkEnabled(config)) {
+    sinks.push(new SplunkSink(readSplunkSinkOptionsFromConfig(config)));
   }
   if (sinks.length === 0) return undefined;
   return new MultiSinkLogger({

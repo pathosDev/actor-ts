@@ -48,6 +48,7 @@ export const ConfigKeys = {
       otlp: 'actor-ts.logger.sinks.otlp',
       parseable: 'actor-ts.logger.sinks.parseable',
       seq: 'actor-ts.logger.sinks.seq',
+      splunk: 'actor-ts.logger.sinks.splunk',
     },
   },
 

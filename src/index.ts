@@ -169,6 +169,10 @@ export {
   DEFAULT_SEQ_MIN_LEVEL,
   DEFAULT_SEQ_REQUEST_TIMEOUT_MS,
   DEFAULT_SINK_CLOSE_TIMEOUT_MS,
+  DEFAULT_SPLUNK_MIN_LEVEL,
+  DEFAULT_SPLUNK_REQUEST_TIMEOUT_MS,
+  DEFAULT_SPLUNK_SOURCE,
+  DEFAULT_SPLUNK_SOURCETYPE,
   FileSink,
   FileSinkOptions,
   FileSinkOptionsBuilder,
@@ -229,6 +233,7 @@ export type {
   SentrySdkLike,
   SentrySinkOptionsType,
   SeqSinkOptionsType,
+  SplunkSinkOptionsType,
   MultiSinkLoggerOptionsType,
 } from './logging/index.js';
 
