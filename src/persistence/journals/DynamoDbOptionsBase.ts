@@ -1,4 +1,5 @@
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
 
@@ -146,12 +147,16 @@ export function assertDynamoDbTableName(optionsName: string, field: string, name
  */
 function assertEndpointUrl(optionsName: string, endpoint: string): void {
   const fail = (): never => {
+    // Same treatment as every other URL rule, even though a DynamoDB endpoint
+    // override does not conventionally carry userinfo: it is
+    // operator-supplied, and the rendering path ends in an ERROR log (#590).
+    const redacted = redactUrlCredentials(endpoint);
     throw new OptionsError(
       `${optionsName}: endpoint must be a valid http(s) URL, e.g. http://localhost:8000 `
-      + `(got ${JSON.stringify(endpoint)})`,
+      + `(got ${JSON.stringify(redacted)})`,
       optionsName,
       'endpoint',
-      endpoint,
+      redacted,
     );
   };
   let parsed: URL;

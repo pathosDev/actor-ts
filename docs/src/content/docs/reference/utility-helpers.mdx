@@ -395,6 +395,47 @@ being built.
   [serializer](/serialization/overview/).
 </Aside>
 
+## Logging a URL without logging the password
+
+A connection URL is the one string in a configuration that routinely carries a
+secret inline — `amqp://user:pass@host/vhost`, `mongodb+srv://user:pass@cluster`
+— and the places that print one are the places least likely to be reviewed for
+disclosure: a rejection message, a reconnect warning, a frame a remote peer
+sent. Two renderings, for two different jobs.
+
+```ts
+import { redactUrlCredentials, redactedUrlLabel } from 'actor-ts';
+
+redactUrlCredentials('amqp://user:pass@rabbit:5672/vhost');
+// → 'amqp://***@rabbit:5672/vhost'
+
+redactedUrlLabel('wss://user:pass@example.com/ws/orders?token=abc');
+// → 'wss://example.com/ws/orders'
+```
+
+`redactUrlCredentials(value)` masks the userinfo and changes **nothing else** —
+no normalisation, no trailing slash, no lowercased host — so an operator still
+recognises the value they typed. It is a strict no-op on anything without a
+`scheme://…@` authority, which is what makes it safe to apply unconditionally to
+a value that only *might* be a URL (`':memory:'`, `'file:local.db'`,
+`'not a url'` all come back verbatim). This is what the framework's own
+[option validation](/reference/configuration/) puts into every `OptionsError`
+that rejects a URL.
+
+`redactedUrlLabel(value)` goes further and reduces a URL to a stable identity:
+scheme, host, port and path, with the userinfo *and* the query string dropped —
+a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
+kept deliberately, since it is what tells two connections to the same host
+apart. Use it for a line you emit repeatedly, such as a per-frame warning; the
+`WebsocketClientActor` uses it for exactly that.
+
+<Aside type="tip" title="One place to catch what slipped through">
+  Neither function can help with a credential that reached a log record's
+  fields rather than its message. For that, `MultiSinkLogger` takes a
+  `transform` — one hook, applied once before fan-out — and these two functions
+  are what you call inside it. See [logging](/fundamentals/logging/).
+</Aside>
+
 ## Optional peer dependencies
 
 `lazyImportModule(name, options?)` imports a module dynamically and, when it is
@@ -469,7 +510,9 @@ for bespoke rules) take **only the field name** — it is typo-checked against
 your options type, and a helper on a field of the wrong type is a compile
 error. Every one is a no-op when the field is `undefined`, so an unset optional
 always passes and required-ness stays wherever you enforce it. A rejected value
-throws `OptionsError`, exported alongside so you can catch it specifically.
+throws `OptionsError`, exported alongside so you can catch it specifically —
+and when the rejected value is a URL, `url` reports it with its credentials
+masked (*Logging a URL without logging the password*, above).
 
 Validation runs once, at consume time, on the merged settings — so the builder,
 a plain object and HOCON are all covered, and cross-field rules see the final

@@ -1,5 +1,6 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import type { LibSqlClientLike, LibSqlConnection } from './LibSqlClient.js';
 
 /** URL schemes a remote libSQL database can be reached on. */
@@ -100,7 +101,15 @@ export class LibSqlJournalOptionsValidator extends OptionsValidator<LibSqlJourna
 export function assertRemoteLibSqlUrl(optionsName: string, url: string | undefined): void {
   if (url === undefined) return;
   const fail = (reason: string): never => {
-    throw new OptionsError(`${optionsName}: url ${reason} (got ${JSON.stringify(url)})`, optionsName, 'url', url);
+    // A Turso URL is handed out with its auth token, and this message reaches
+    // an ERROR log when it fails a store's construction (#590).
+    const redacted = redactUrlCredentials(url);
+    throw new OptionsError(
+      `${optionsName}: url ${reason} (got ${JSON.stringify(redacted)})`,
+      optionsName,
+      'url',
+      redacted,
+    );
   };
   if (url === ':memory:' || url.startsWith('file:')) {
     fail(

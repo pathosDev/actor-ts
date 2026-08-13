@@ -115,6 +115,14 @@ request id. Keep `403`/`404` responses unspecific — the static-file layer
 returns a uniform `404` for every rejected path so it never reveals what
 exists.
 
+The server-side copy needs hygiene too, and the usual leak there is a
+connection URL: a rejected option value and the WebSocket client's
+oversize-frame warning both name one, and both are written with the
+userinfo masked. When you log a URL yourself, run it through
+[`redactUrlCredentials` or `redactedUrlLabel`](/reference/utility-helpers/)
+— a password that has reached a log aggregator has to be rotated, not
+deleted.
+
 ## Redirects
 
 `redirect(target)` takes **same-origin targets only** — a relative
