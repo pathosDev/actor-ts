@@ -26,11 +26,21 @@ type WorkflowFile = {
   readonly lines: readonly string[];
 };
 
+/**
+ * Split on `\r?\n`, not on `\n`.  These files are read from the working tree,
+ * so their line endings are whatever the checkout produced — CRLF on a Windows
+ * clone under the repository's `text` attribute, LF on the CI runner.  A
+ * trailing `\r` is invisible in every assertion below except the ones anchored
+ * with `$`, and `.` does not match `\r` in JavaScript (it is a line
+ * terminator), so `uses: x@sha # v1.2.3\r` silently matched nothing and every
+ * pin assertion passed vacuously — on Linux CI it would have stayed green
+ * forever while being red for anyone developing on Windows.
+ */
 const workflows: readonly WorkflowFile[] = readdirSync(WORKFLOW_DIRECTORY)
   .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
   .map((name) => ({
     name,
-    lines: readFileSync(join(WORKFLOW_DIRECTORY, name), 'utf8').split('\n'),
+    lines: readFileSync(join(WORKFLOW_DIRECTORY, name), 'utf8').split(/\r?\n/),
   }));
 
 type ActionReference = {
