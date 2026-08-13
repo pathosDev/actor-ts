@@ -53,8 +53,11 @@ jobs:
         with:
           bun-version: latest
 
+      # Frozen, like every other install in CI: an unfrozen resolve can
+      # green-light a dependency set no lockfile records, so the check
+      # passes against something nobody can reproduce.  #622
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       # publint and attw both inspect the built package, so `dist/` has to exist
       # first.  Built once here rather than by `lint:package`, so the job does

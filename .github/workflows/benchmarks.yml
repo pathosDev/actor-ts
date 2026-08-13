@@ -66,8 +66,11 @@ jobs:
         with:
           bun-version: latest
 
+      # Frozen, like every other install in CI: an unfrozen resolve can
+      # green-light a dependency set no lockfile records, so the check
+      # passes against something nobody can reproduce.  #622
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Typecheck benchmarks
         # The stricter of the two checks for this failure class: a missing

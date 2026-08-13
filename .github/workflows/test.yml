@@ -52,28 +52,52 @@ concurrency:
 
 jobs:
   test:
-    # Single job — typecheck, run the suite once with `--coverage`,
-    # parse the resulting stats, and (on `main` push only) flip the
-    # README badge.  Previously the suite ran twice (a `test` job
-    # without coverage, then `update-readme` with coverage), which
-    # gave the parser a different bun output to read than the one the
-    # actual build status came from — a flaky timing-sensitive test
-    # under coverage instrumentation could push the badge to "1489
-    # of 1490" while the build itself stayed green.  One run, one
-    # source of truth.
+    # Typecheck, run the suite ONCE with `--coverage`, and parse the stats
+    # out of that single run.  The suite used to run twice (a `test` job
+    # without coverage, then `update-readme` with coverage), which gave the
+    # parser a different bun output to read than the one the build status
+    # came from — a flaky timing-sensitive test under coverage
+    # instrumentation could push the badge to "1489 of 1490" while the
+    # build itself stayed green.  One run, one source of truth; the `badge`
+    # job below consumes this job's numbers and never re-runs anything.
     runs-on: ubuntu-latest
+    # Read-only, and the checkout below drops its credential too (#622).
+    # This job installs and executes the entire devDependency tree — the
+    # last place a token that can write to the repository belongs.  The
+    # README push it used to do lives in `badge`, which runs no third-party
+    # code at all.
     permissions:
-      contents: write
+      contents: read
+    # Consumed by `badge`.  Written by the parse step even when the suite
+    # fails, which is exactly when the badge has to flip to red.
+    outputs:
+      pass: ${{ steps.stats.outputs.pass }}
+      total: ${{ steps.stats.outputs.total }}
+      lines: ${{ steps.stats.outputs.lines }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this job talks to the remote: no test, source file or
+          # script shells out to git, and `bun.lock` has no git-protocol
+          # dependencies.  So the pushable credential checkout leaves behind
+          # in `.git/config` is pure attack surface for the ~2000 packages
+          # installed one step later.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
+      # Frozen, like build.yml and publish.yml: an unfrozen install resolves
+      # whatever `package.json`'s ranges allow right now, so the required
+      # `tests` check could pass against a dependency set no lockfile ever
+      # recorded and nobody could reproduce.  Dependabot does not speak the
+      # Bun lockfile format, so its PRs fail here until `bun.lock` is
+      # regenerated — that is the intended signal, and #817 is what removes
+      # the manual step.
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
         run: bun run typecheck
@@ -180,21 +204,65 @@ jobs:
           fi
           echo "coverage-gate: PASS (${PARSED_LINES}% ≥ ${COVERAGE_LINE_FLOOR}%)"
 
-      - name: Update README badges + inline references
-        # Always run, including after a failing test step — that's
-        # exactly when the badge needs to flip to red.  PRs and
-        # non-main branches skip via the event/ref check (forks have
-        # no push rights anyway).
-        if: |
-          !cancelled() &&
-          steps.stats.outputs.pass != '' &&
-          steps.stats.outputs.lines != '' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/develop'
+  # The badge updater — the only job in this workflow that can write to the
+  # repository, and deliberately the only one that runs no third-party code
+  # (#622).  It installs nothing, builds nothing and re-runs nothing: it
+  # consumes `test`'s parsed numbers, rewrites README.md with sed, and
+  # pushes.  Before the split, `contents: write` plus a persisted git
+  # credential sat in the same job that executed the whole devDependency
+  # tree, so any postinstall script or compromised transitive package could
+  # have pushed to develop.
+  #
+  # The workflow-level `concurrency` group covers this job too, so two
+  # develop pushes still queue instead of racing on `git push`.
+  badge:
+    name: README badges
+    needs: test
+    # `!cancelled()`, not `success()` — a red suite is exactly when the
+    # badge has to flip to red.  PRs and every branch but develop skip
+    # (forks have no push rights anyway).
+    if: |
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # "The suite failed" and "the suite never ran" used to look identical
+      # from here: both left the outputs empty, both skipped the badge
+      # silently, and the README kept showing the last good numbers.  A
+      # frozen install that rejects a drifted lockfile is exactly the second
+      # case, so say so out loud instead of leaving stale figures on the
+      # front page unexplained.
+      - name: Check the suite produced numbers
+        id: parsed
+        env:
+          PASS: ${{ needs.test.outputs.pass }}
+          LINES: ${{ needs.test.outputs.lines }}
         run: |
-          PASS="${{ steps.stats.outputs.pass }}"
-          TOTAL="${{ steps.stats.outputs.total }}"
-          LINES="${{ steps.stats.outputs.lines }}"
+          if [[ -z "$PASS" || -z "$LINES" ]]; then
+            echo "::warning title=README badges not updated::The test job produced no numbers — it failed before or during the parse step (a frozen-install rejection, a typecheck error, a runner crash). The README still shows the previous run's figures."
+            echo "updatable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "updatable=true" >> "$GITHUB_OUTPUT"
+            echo "the suite reported $PASS passing at $LINES% line coverage"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.parsed.outputs.updatable == 'true'
+
+      - name: Update README badges + inline references
+        if: steps.parsed.outputs.updatable == 'true'
+        # Through `env:` rather than `${{ }}` inside the script: a workflow
+        # expression is pasted into the shell before it runs, so a parser
+        # that ever yielded something other than digits would be executing
+        # it.  Environment variables are values, never code.
+        env:
+          PASS: ${{ needs.test.outputs.pass }}
+          TOTAL: ${{ needs.test.outputs.total }}
+          LINES: ${{ needs.test.outputs.lines }}
+        run: |
           # Pick badge color from pass/total ratio:
           #   pass == total → green   (22c55e)  — all green
           #   pass <  total → red     (ef4444)  — at least one fail
@@ -236,11 +304,7 @@ jobs:
           fi
 
       - name: Commit + push README if changed
-        if: |
-          !cancelled() &&
-          steps.stats.outputs.pass != '' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/develop'
+        if: steps.parsed.outputs.updatable == 'true'
         run: |
           if [[ -n "$(git status --porcelain README.md)" ]]; then
             git config user.name "github-actions[bot]"

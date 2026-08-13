@@ -100,6 +100,29 @@ function workflowLevelScopes({ lines }: WorkflowFile): string[] {
   return out;
 }
 
+type InstallStep = {
+  readonly workflow: string;
+  readonly line: number;
+  readonly command: string;
+};
+
+/** `bun install …` invocations, as a `run:` value or inside a block scalar. */
+function installSteps({ name, lines }: WorkflowFile): InstallStep[] {
+  const out: InstallStep[] = [];
+  lines.forEach((line, index) => {
+    const match = /^\s*(?:- )?run:\s*(bun install\b.*)$/.exec(line)
+      ?? /^\s*(bun install\b.*)$/.exec(line);
+    if (!match) return;
+    out.push({ workflow: name, line: index + 1, command: (match[1] ?? '').trim() });
+  });
+  return out;
+}
+
+const installs = workflows.flatMap(installSteps);
+
+/** Anything that fetches and executes somebody else's code on the runner. */
+const INSTALL_COMMAND = /\b(bun install|bunx|npm ci|npm install|npx|pnpm install|yarn install)\b/;
+
 const declaresPermissions = (file: WorkflowFile): boolean =>
   file.lines.some((line) => /^permissions:/.test(line))
   || jobsOf(file).every((job) => job.lines.some((line) => /^\s+permissions:/.test(line)));
@@ -189,5 +212,43 @@ describe('workflow hygiene', () => {
       + 'repository default happens to be. Add a workflow-level '
       + '"permissions: contents: read", or declare one on every job.',
     ).toBe(true);
+  });
+
+  /**
+   * #622 — an unfrozen install resolves whatever the manifest's ranges allow
+   * at that moment, so a required check can pass against a dependency set no
+   * lockfile records and nobody can reproduce. Every install in CI is frozen;
+   * a Dependabot PR going red here means `bun.lock` needs regenerating (#817),
+   * which is the signal, not a bug.
+   */
+  test.each(installs)('$workflow:$line installs from the lockfile', ({ command }) => {
+    expect(
+      command,
+      `"${command}" resolves dependencies afresh instead of installing what `
+      + 'bun.lock records. Add --frozen-lockfile.',
+    ).toContain('--frozen-lockfile');
+  });
+
+  /**
+   * #622 — a job that can write to the repository must not also be the job
+   * that runs thousands of other people's postinstall scripts. test.yml used
+   * to hold `contents: write` plus a persisted git credential in the job that
+   * installed and executed the entire devDependency tree, purely so it could
+   * push a README badge afterwards; the badge now lives in its own job that
+   * installs nothing.
+   *
+   * Scoped to `contents: write` on purpose. publish.yml legitimately runs an
+   * install next to `id-token: write` — narrowing that one is #703, and
+   * asserting it here would only produce a permanent exemption entry.
+   */
+  test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
+    if (!job.lines.some((line) => /^\s+contents:\s*write\s*$/.test(line))) return;
+    const offender = job.lines.find((line) => INSTALL_COMMAND.test(line) && !line.trim().startsWith('#'));
+    expect(
+      offender,
+      `${job.workflow}#${job.name} grants contents: write and runs "${offender?.trim()}". `
+      + 'A job holding a credential that can push to the repository must not '
+      + 'execute third-party code — split the privileged step into its own job.',
+    ).toBeUndefined();
   });
 });

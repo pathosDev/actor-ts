@@ -80,9 +80,12 @@ jobs:
       # publish.yml: better-sqlite3's postinstall then resolves a prebuilt
       # binary for Bun's ABI instead of falling back to a node-gyp source
       # build.  No smoke case touches better-sqlite3, so the Bun-ABI
-      # binary is inert for the Node/Deno runs.
+      # binary is inert for the Node/Deno runs.  Frozen, like every other
+      # install in CI: an unfrozen resolve can green-light a dependency set
+      # no lockfile records, so the check passes against something nobody
+      # can reproduce.  #622
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       # Node/Deno are set up AFTER the install (see above).  Node stays on
       # 24 deliberately — it is the `engines` floor we claim to support.
@@ -131,7 +134,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
-      - run: bun install
+      # Frozen, like every other install in CI: an unfrozen resolve can
+      # green-light a dependency set no lockfile records, so the check
+      # passes against something nobody can reproduce.  #622
+      - run: bun install --frozen-lockfile
       - run: bun run typecheck
       # Worker-thread multi-node suites + LeaseMajority e2e are quarantined
       # on hosted runners (Bun can't respawn functional workers there) —
