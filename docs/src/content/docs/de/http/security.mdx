@@ -143,8 +143,15 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 
 ## Untrusted Input begrenzen
 
-- **Request-Bodies** werden vom Backend gekappt (Fastify 1 MiB Default;
-  Express/Hono ~10 MiB) — pro Backend an deine Payloads anpassen.
+- **Request-Bodies** sind auf jedem Backend bei **1 MiB** gekappt, und ein
+  größerer Body wird mit demselben `413 Payload Too Large` abgewiesen, egal
+  welches Backend bedient — bevor der Handler läuft und ohne `withErrorHandler`
+  zu fragen, denn ein Size-Cap ist eine Transport-Entscheidung und kein
+  Anwendungsfehler. Heb ihn dort an, wo ein Endpunkt wirklich mehr annimmt:
+  `withMaxBodyBytes(bytes)` in den Express- und Hono-Backend-Options,
+  `bodyLimit` in der Options-Bag von `FastifyBackend`. Der einzige Fall, der
+  weiterhin beim Eintreffen gemessen statt vorab abgewiesen wird, ist ein
+  gechunkter Body ohne `Content-Length`.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek

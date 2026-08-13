@@ -15,6 +15,10 @@ import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snaps
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import {
+  FLAG_INTEGRITY_HMAC,
+  encodeBody,
+} from '../../../../../src/persistence/object-storage/BodyCodec.js';
 
 let dir: string;
 
@@ -87,6 +91,118 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
       .withBackend({ kind: 'custom', backend: fs });
     const { backend } = await registerObjectStoragePlugins(ext, pluginOptions);
     expect(backend).toBe(fs);
+    await sys.terminate();
+  });
+});
+
+/*
+ * #613 — the one-call wiring used to forward compression, encryption,
+ * keepN, maxDecompressedBytes and the serializer, and drop integrity on
+ * the floor for BOTH stores.  The durable-state store implemented the
+ * #116 HMAC in full and there was still no way to switch it on without
+ * constructing the store by hand.
+ */
+describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
+  const INTEGRITY_KEY = new Uint8Array(32).fill(7);
+  const OTHER_KEY = new Uint8Array(32).fill(8);
+
+  /** Body manifest: ATS1 magic at 0..3, flags at byte 4, bit4 = integrity tag. */
+  function integrityFlagOf(body: Uint8Array): number {
+    return body[4]! & FLAG_INTEGRITY_HMAC;
+  }
+
+  test('both registered stores sign their bodies', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+          },
+        },
+      });
+    const sys = ActorSystem.create('obj-store-integrity', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, pluginOptions);
+
+    await ext.snapshotStore.save('p', 1, { x: 1 });
+    await durableStateStore.upsert('account-1', 0, { balance: 100 });
+
+    const snapshotBody = await backend.get('p/00000000000000000001.json');
+    const durableStateBody = await backend.get('account-1/state.json');
+    expect(integrityFlagOf(snapshotBody.toNullable()!.body)).toBe(FLAG_INTEGRITY_HMAC);
+    expect(integrityFlagOf(durableStateBody.toNullable()!.body)).toBe(FLAG_INTEGRITY_HMAC);
+
+    // …and both verify on the way back in.
+    expect((await ext.snapshotStore.loadLatest<{ x: number }>('p')).toNullable()?.state).toEqual({ x: 1 });
+    expect((await durableStateStore.load<{ balance: number }>('account-1')).toNullable()?.revision).toBe(1);
+
+    await sys.terminate();
+  });
+
+  test('a store built by the plugin refuses a body signed with another key', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('obj-store-integrity-mismatch', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, pluginOptions);
+    await durableStateStore.upsert('account-1', 0, { balance: 100 });
+
+    const forged = await encodeBody(
+      new TextEncoder().encode(JSON.stringify({ revision: 999, state: { balance: 0 }, timestamp: Date.now() })),
+      { integrity: { integrityKey: OTHER_KEY } },
+    );
+    await backend.put('account-1/state.json', forged, { contentType: 'application/json' });
+
+    durableStateStore.forgetEtagForTest('account-1');
+    await expect(durableStateStore.load('account-1')).rejects.toThrow(/integrity/);
+    await sys.terminate();
+  });
+
+  test('allowUntaggedBodies reaches both stores for the migration window', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+          },
+        },
+      });
+    const sys = ActorSystem.create('obj-store-integrity-window', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+
+    // Pre-existing untagged corpus, written before integrity was on.
+    const plainOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      .withCompression({ algorithm: 'none' });
+    const plainSystem = ActorSystem.create('obj-store-integrity-window-seed', sysOptions);
+    const plainExt = plainSystem.extension(PersistenceExtensionId);
+    const plain = await registerObjectStoragePlugins(plainExt, plainOptions);
+    await plainExt.snapshotStore.save('p', 1, { x: 1 });
+    await plain.durableStateStore.upsert('account-1', 0, { balance: 100 });
+    await plainSystem.terminate();
+
+    const migratingOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY })
+      .withAllowUntaggedBodies(true);
+    const { durableStateStore } = await registerObjectStoragePlugins(ext, migratingOptions);
+
+    expect((await ext.snapshotStore.loadLatest<{ x: number }>('p')).toNullable()?.state).toEqual({ x: 1 });
+    expect((await durableStateStore.load<{ balance: number }>('account-1')).toNullable()?.revision).toBe(1);
     await sys.terminate();
   });
 });

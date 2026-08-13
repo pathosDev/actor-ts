@@ -49,8 +49,31 @@ export type DevToolsOptionsType = {
    * `false`, and the validator rejects that combination — DevTools can
    * read every actor's state, so exposing it unauthenticated has to be
    * a deliberate act, not a typo in a host string.
+   *
+   * Only `attach` reads this: it is the acknowledgement for a *bind*, and
+   * a mount never binds.  The mount equivalent is
+   * {@link allowUngatedMount}.
    */
   readonly allowRemote?: boolean;
+  /**
+   * Acknowledge that `DevTools.mount()` may return a route tree DevTools
+   * does not gate itself.  Default `false`, and the validator rejects a
+   * mount without it.
+   *
+   * `attach` can decide on its own: it owns the port, so `host` tells it
+   * whether anything off the machine can reach the tap.  A mount owns
+   * nothing — the routes go to a server this process never sees, on an
+   * interface it is never told about — so there is no fact in these
+   * options it could reason from.  Requiring the acknowledgement is the
+   * only way the two paths hold the same line.
+   *
+   * Set it when the surrounding server already gates the subtree (its own
+   * auth middleware wraps the mount point), or when you accept an open
+   * debugger.  Passing `auth` or `ipAllowlist` instead is stronger: those
+   * ride on the returned tree, so the gate cannot be lost by mounting it
+   * in the wrong place.
+   */
+  readonly allowUngatedMount?: boolean;
   /** HTTP backend for the DevTools server.  Default: the framework default. */
   readonly backend?: HttpServerBackend;
   /** Serve the bundled UI.  Default `true`; `false` leaves a headless tap. */
@@ -150,6 +173,11 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
     return this.set('allowRemote', allow);
   }
 
+  /** Acknowledge mounting a route tree DevTools does not gate itself. */
+  withAllowUngatedMount(allow = true): this {
+    return this.set('allowUngatedMount', allow);
+  }
+
   /** HTTP backend for the DevTools server. */
   withBackend(backend: HttpServerBackend): this {
     return this.set('backend', backend);
@@ -217,11 +245,30 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
 }
 
 /**
+ * Which of the two paths a set of DevTools options is being validated
+ * for — the one fact the security rule turns on.
+ *
+ * The names are the two public entry points, `DevTools.attach` and
+ * `DevTools.mount`.  There is deliberately no default: the rule is laxer
+ * on one path than the other, and a forgotten argument must be a compile
+ * error rather than a silent downgrade to the laxer one.
+ */
+export type DevToolsExposure = 'attach' | 'mount';
+
+/**
  * Domain checks for {@link DevToolsOptionsType}, run once on the merged
- * settings inside `DevTools.attach`.
+ * settings inside `DevTools.attach` and `DevTools.mount`.
+ *
+ * The security rule differs between the two, so the validator is told
+ * which one it serves.  It is still one rule in one place: the *policy* —
+ * an ungated DevTools tree must be provably unreachable, or deliberately
+ * accepted — is identical, and only the available proof differs.
  */
 export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsType> {
-  constructor() {
+  constructor(
+    /** Entry point these options were handed to. */
+    private readonly exposure: DevToolsExposure,
+  ) {
     super('DevToolsOptions');
   }
 
@@ -243,11 +290,32 @@ export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsTy
 
     // The security rule this whole validator exists for: DevTools can
     // read every actor's class, mailbox and (with time travel) persisted
-    // state.  On a non-loopback interface that is a remote debugger, so
-    // it needs either a gate in front of it or an explicit opt-in.
+    // state.  Whoever reaches the tree gets all of it, so an ungated tree
+    // has to be provably unreachable — or knowingly accepted.  `auth` and
+    // `ipAllowlist` are that gate on either path; they wrap the tree
+    // itself, so they hold wherever it ends up.
+    const gated = s.auth !== undefined || s.ipAllowlist !== undefined;
+    if (this.exposure === 'mount') {
+      // Nothing here can stand in for the host check below.  `host` is
+      // never read on this path (only `bind` looks at it), so the loopback
+      // default would make every mount look safe while the caller binds
+      // the returned routes to 0.0.0.0.  The acknowledgement is the only
+      // signal that anybody thought about it.
+      if (!gated && s.allowUngatedMount !== true) {
+        this.fail(
+          'allowUngatedMount',
+          'must be `true` to mount DevTools without `auth` or `ipAllowlist`: '
+          + '`mount()` hands its routes to a server DevTools cannot inspect, so '
+          + 'it cannot tell a loopback port from a public one.  Pass `auth` or '
+          + '`ipAllowlist` to gate the tree itself, or set '
+          + '`allowUngatedMount: true` if the surrounding server already gates '
+          + 'the mount point — or you accept an unauthenticated debugger',
+        );
+      }
+      return;
+    }
     const host = s.host;
     if (host !== undefined && !isLoopbackHost(host)) {
-      const gated = s.auth !== undefined || s.ipAllowlist !== undefined;
       if (!gated && s.allowRemote !== true) {
         this.fail(
           'host',
@@ -279,6 +347,7 @@ export const DEVTOOLS_DEFAULTS = {
   host: '127.0.0.1',
   port: 9333,
   allowRemote: false,
+  allowUngatedMount: false,
   serveUi: true,
   mailboxSampleIntervalMs: 1_000,
   mailboxSampleLimit: 50,

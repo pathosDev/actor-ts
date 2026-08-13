@@ -137,8 +137,14 @@ the [Route DSL](/http/route-dsl/).
 
 ## Capping untrusted input
 
-- **Request bodies** are capped by the backend (Fastify 1 MiB default;
-  Express/Hono ~10 MiB) — tune per backend for your payloads.
+- **Request bodies** are capped at **1 MiB** on every backend, and a body over
+  it is refused with the same `413 Payload Too Large` whichever backend serves
+  it — before the handler runs, and without consulting `withErrorHandler`,
+  because a size cap is a transport decision rather than an application error.
+  Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
+  the Express and Hono backend options, `bodyLimit` in the options bag of
+  `FastifyBackend`. A chunked body that declares no `Content-Length` is the one
+  case still measured while it arrives rather than refused up front.
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.

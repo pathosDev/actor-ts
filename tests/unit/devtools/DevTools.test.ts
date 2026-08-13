@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { LogContextData } from '../../../src/LogContext.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { DevTools } from '../../../src/devtools/DevTools.js';
 import { DevToolsOptions } from '../../../src/devtools/DevToolsOptions.js';
 import { devtoolsOf } from '../../../src/devtools/DevToolsExtension.js';
@@ -22,10 +24,37 @@ afterEach(async () => {
 });
 
 function newSystem(name = 'devtools-test'): ActorSystem {
-  const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  return newSystemWith(new NoopLogger(), name);
+}
+
+/** Same, with a logger the test can read back — see the mount warning. */
+function newSystemWith(logger: Logger, name = 'devtools-test'): ActorSystem {
+  const options = ActorSystemOptions.create().withLogger(logger).withLogLevel(logger.level);
   const system = ActorSystem.create(name, options);
   systems.push(system);
   return system;
+}
+
+type EmittedRecord = { readonly level: string; readonly message: string };
+
+/** Collects every line the system logger was told, `withSource` included. */
+class RecordingLogger implements Logger {
+  readonly records: EmittedRecord[] = [];
+
+  constructor(
+    readonly level: LogLevel = LogLevel.Debug,
+    private readonly root: RecordingLogger | null = null,
+  ) {}
+
+  private get sink(): RecordingLogger { return this.root ?? this; }
+  private record(level: string, message: string): void { this.sink.records.push({ level, message }); }
+
+  debug(message: string): void { this.record('debug', message); }
+  info(message: string): void { this.record('info', message); }
+  warn(message: string): void { this.record('warn', message); }
+  error(message: string): void { this.record('error', message); }
+  withSource(_source: string): Logger { return new RecordingLogger(this.level, this.sink); }
+  withFields(_fields: LogContextData): Logger { return new RecordingLogger(this.level, this.sink); }
 }
 
 /** Attach on an ephemeral port so parallel test files never collide. */
@@ -251,7 +280,9 @@ describe('DevTools tap handshake', () => {
 describe('DevTools.mount', () => {
   test('produces routes an existing server can host under a prefix', async () => {
     const system = newSystem('mounted-system');
-    const devtoolsOptions = DevToolsOptions.create().withServeUi(false);
+    const devtoolsOptions = DevToolsOptions.create()
+      .withServeUi(false)
+      .withAllowUngatedMount();
     const routes = DevTools.mount(system, devtoolsOptions);
     const { path } = await import('../../../src/http/Route.js');
     const { HttpExtensionId } = await import('../../../src/http/HttpExtension.js');
@@ -266,6 +297,92 @@ describe('DevTools.mount', () => {
     } finally {
       await binding.unbind();
     }
+  });
+});
+
+/**
+ * #594 — `attach` refuses a routable bind that nothing gates, and `mount`
+ * used to hand out the identical route tree with no check at all: the
+ * whole tap, including the socket that answers `journal.read`, on whatever
+ * interface the caller happened to bind.  `host` cannot save this path —
+ * only `bind()` reads it, so its loopback default made every mount look
+ * safe — which is why the acknowledgement has to be explicit.
+ */
+describe('DevTools.mount — the gate the bind path has', () => {
+  test('refuses an ungated mount, naming the ways out', () => {
+    const system = newSystem();
+    expect(() => DevTools.mount(system)).toThrow(OptionsError);
+    try {
+      DevTools.mount(system);
+    } catch (error) {
+      expect((error as OptionsError).field).toBe('allowUngatedMount');
+    }
+  });
+
+  test('the loopback default is not a gate', () => {
+    // A mount never binds, so the host it would have bound proves nothing.
+    const system = newSystem();
+    expect(() => DevTools.mount(system, { host: '127.0.0.1' })).toThrow(OptionsError);
+  });
+
+  test('a refused mount installs nothing', () => {
+    // Same contract as the failed bind above: the rejection must leave the
+    // system exactly as it was, or the retry with the gate in place would
+    // trip over our own half-attachment.
+    const system = newSystem();
+    expect(() => DevTools.mount(system)).toThrow(OptionsError);
+    expect(devtoolsOf(system).isAttached()).toBe(false);
+
+    const devtoolsOptions = DevToolsOptions.create()
+      .withServeUi(false)
+      .withAllowUngatedMount();
+    expect(() => DevTools.mount(system, devtoolsOptions)).not.toThrow();
+    expect(devtoolsOf(system).isAttached()).toBe(true);
+  });
+
+  test('auth on the tree itself is gate enough', async () => {
+    // The gate rides on the returned routes, so it holds wherever they are
+    // bound — no acknowledgement, and no unauthenticated hole either.
+    const system = newSystem('gated-mount');
+    const devtoolsOptions = DevToolsOptions.create()
+      .withServeUi(false)
+      .withAuth(BearerTokenAuth({ tokens: ['secret'] }));
+    const routes = DevTools.mount(system, devtoolsOptions);
+    const { path } = await import('../../../src/http/Route.js');
+    const { HttpExtensionId } = await import('../../../src/http/HttpExtension.js');
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(path('devtools', routes));
+    try {
+      const url = `http://127.0.0.1:${binding.port}/devtools/api/info`;
+      expect((await fetch(url)).status).toBe(401);
+      const authorized = await fetch(url, { headers: { authorization: 'Bearer secret' } });
+      expect(authorized.status).toBe(200);
+    } finally {
+      await binding.unbind();
+    }
+  });
+
+  test('an acknowledged, ungated mount says so in the log', () => {
+    // The `attach` path warns when it binds something routable; a mount
+    // has no host to key that on, so the acknowledgement is what it warns
+    // about.  It stays quiet for a gated mount — a warning nobody can act
+    // on is how the one that matters gets ignored.
+    const logger = new RecordingLogger();
+    const system = newSystemWith(logger, 'ungated-mount');
+    DevTools.mount(system, DevToolsOptions.create()
+      .withServeUi(false)
+      .withAllowUngatedMount());
+    const warnings = logger.records.filter((record) => record.level === 'warn');
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings.some((record) => record.message.includes('allowUngatedMount'))).toBe(true);
+
+    const gatedLogger = new RecordingLogger();
+    const gated = newSystemWith(gatedLogger, 'gated-mount-quiet');
+    DevTools.mount(gated, DevToolsOptions.create()
+      .withServeUi(false)
+      .withAuth(BearerTokenAuth({ tokens: ['secret'] })));
+    expect(gatedLogger.records.filter((record) => record.level === 'warn')).toEqual([]);
   });
 });
 

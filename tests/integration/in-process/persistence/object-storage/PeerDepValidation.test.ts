@@ -39,6 +39,7 @@ import {
   knownConfigsOf,
 } from '../../../../../src/persistence/object-storage/PluginConfig.js';
 import { probeEncryptionAvailability } from '../../../../../src/persistence/object-storage/Encryption.js';
+import { probeIntegrityAvailability } from '../../../../../src/persistence/object-storage/Integrity.js';
 
 let dir: string;
 
@@ -202,6 +203,38 @@ describe('eager peer-dep validation (#18, #59)', () => {
       .withEncryption({ mode: 'sse-kms', kmsKeyId: 'k1' });
     await expect(registerObjectStoragePlugins(ext, sseKmsPluginOptions)).resolves.toBeDefined();
     await sys.terminate();
+  });
+
+  /*
+   * #613 — integrity needs a probe of its own rather than riding along
+   * with the encryption one.  HMAC-SHA256 goes through the same
+   * SubtleCrypto, but a deployment can configure integrity with no
+   * client-side encryption anywhere, and then nothing else probes.
+   */
+  test('integrity probe: throws clear "WebCrypto not available" when SubtleCrypto missing', async () => {
+    const realCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { ...realCrypto, subtle: undefined },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      await expect(probeIntegrityAvailability())
+        .rejects.toThrow(/SubtleCrypto is not available/);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        value: realCrypto,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  test('integrity probe: an hmac-sha256 config passes the stand-alone pre-flight', async () => {
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: new Uint8Array(32).fill(7) });
+    await expect(validateObjectStoragePeerDeps(pluginOptions)).resolves.toBeUndefined();
   });
 });
 

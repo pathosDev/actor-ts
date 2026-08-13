@@ -34,10 +34,14 @@ import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
  * the legacy single-key `masterKey` config or `masterKeys.active.version
  * === 0`.  Mixing old and new bodies in one bucket is therefore safe.
  *
- * Same back-compat story for integrity (#116): bodies written before
- * bit4 landed have it unset and decode without an HMAC check.  Callers
- * who want to refuse legacy bodies after a migration can pass
- * `requireIntegrity: true` on decode to enforce.
+ * Integrity (#116) deliberately does NOT get the same treatment.  Bit4
+ * is attacker-controlled like every other manifest byte, so reading an
+ * absent tag as "this body simply predates integrity" hands anyone with
+ * write access a downgrade: clear bit4, drop the 16 tag bytes, and the
+ * verification the operator configured never runs (#579).  A decode
+ * given an `integrityKey` therefore REQUIRES a tag.  A corpus that
+ * still holds pre-integrity bodies re-admits them for the duration of
+ * its read-then-write migration with `allowUntaggedBodies: true`.
  */
 
 export const ATS1_MAGIC = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
@@ -130,16 +134,22 @@ export type DecodeOptions = {
     | { readonly subKey: Uint8Array }
     | { readonly subKeyFor: SubKeyResolver };
   /**
-   * When the manifest carries `FLAG_INTEGRITY_HMAC`, the codec verifies
-   * the appended HMAC tag against this key.  Mismatch throws — body
-   * has been tampered.  Setting `requireIntegrity: true` AND providing
-   * a key forces the codec to also REJECT bodies that DON'T carry the
-   * flag (use after a migration to ensure no legacy/unprotected
-   * bodies slip through).
+   * Verification key for the appended HMAC tag.  Supplying it is the
+   * assertion *"this corpus is integrity-protected"*, and the codec
+   * holds the body to it both ways: a body carrying
+   * `FLAG_INTEGRITY_HMAC` is verified against the key, and a body
+   * carrying no tag is REJECTED — the flag that claims there is no tag
+   * sits in the same bytes the tamperer just wrote (#579).
+   *
+   * `allowUntaggedBodies: true` re-admits untagged bodies for the
+   * migration window of a corpus written before integrity was enabled.
+   * That is the only route back to unverified reads, and it has to be
+   * spelled out: no combination of *unset* options can silently turn
+   * verification off.
    */
   readonly integrity?: {
     readonly integrityKey: Uint8Array;
-    readonly requireIntegrity?: boolean;
+    readonly allowUntaggedBodies?: boolean;
   };
   /**
    * Cap on the decompressed payload size in bytes.  Defaults to
@@ -258,11 +268,16 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       throw new Error('BodyCodec: integrity check failed — body tampered or wrong integrity key.');
     }
     bodyForRest = signed;
-  } else if (options.integrity?.requireIntegrity) {
+  } else if (options.integrity?.integrityKey !== undefined && options.integrity.allowUntaggedBodies !== true) {
+    // An integrityKey was supplied, so this corpus is protected — and a
+    // body without a tag is either older than the protection or an
+    // attacker's downgrade.  The two are indistinguishable from here,
+    // which is exactly why the safe reading is the default one (#579).
     throw new Error(
-      'BodyCodec: body has no integrity tag but requireIntegrity=true was set.  '
-      + 'Body was either written before integrity was enabled, or is being injected '
-      + 'as part of a downgrade attack.',
+      'BodyCodec: body carries no integrity tag but an integrityKey was supplied for '
+      + 'decoding.  It was either written before integrity was enabled — set '
+      + 'allowUntaggedBodies: true for the read-then-write migration window — or its '
+      + 'tag was stripped as part of a downgrade attack.',
     );
   }
 

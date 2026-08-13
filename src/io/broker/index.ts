@@ -116,6 +116,17 @@ export type {
   StreamEndMessage,
   StreamErrorMessage,
   RpcErrorMessage,
+  // Exported so a `createServiceClient` override — the test seam in front
+  // of the client's call sites — can be typed without `@grpc/grpc-js`.
+  GrpcServiceClient,
+  GrpcCallOptions,
+  GrpcUnaryFunction,
+  GrpcServerStreamFunction,
+  GrpcClientStreamFunction,
+  GrpcBidiFunction,
+  GrpcReadableCall,
+  GrpcWritableCall,
+  GrpcDuplexCall,
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';

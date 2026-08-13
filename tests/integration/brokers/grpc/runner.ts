@@ -28,6 +28,7 @@ import { scenario as unaryScenario } from './scenarios/01-unary.js';
 import { scenario as serverStreamScenario } from './scenarios/02-server-stream.js';
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';
 import { scenario as clientStreamScenario } from './scenarios/04-client-stream.js';
+import { scenario as deadlineScenario } from './scenarios/05-deadline.js';
 
 export interface GrpcContext extends BrokerScenarioContext {
   readonly endpoint: string;
@@ -43,9 +44,19 @@ function requireEnv(name: string): string {
 
 /* --------------------------- Server-side handlers ----------------------- */
 
+/**
+ * Request text the unary handler deliberately never answers.
+ *
+ * The deadline scenario (#577) needs the one thing an echo server does
+ * not naturally provide — a call that hangs — and a hostile-server
+ * container would be a lot of machinery for one assertion.
+ */
+export const HANG_REQUEST_TEXT = '__hang__';
+
 class UnaryEchoHandler extends Actor<GrpcUnaryCall> {
   override onReceive(call: GrpcUnaryCall): void {
     const request = call.request as { text?: string };
+    if (request.text === HANG_REQUEST_TEXT) return;  // never responds — see 05-deadline
     call.respond({ text: request.text ?? '', sequence: 0 });
   }
 }
@@ -168,6 +179,7 @@ async function main(): Promise<void> {
       serverStreamScenario,
       bidiScenario,
       clientStreamScenario,
+      deadlineScenario,
     ];
     await runScenarios(scenarios, context);
   } finally {

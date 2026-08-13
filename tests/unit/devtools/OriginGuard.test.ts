@@ -88,10 +88,13 @@ describe('DevTools WebSocket origin guard (#566)', () => {
   });
 
   test('mount() into an application server is covered too', async () => {
-    // `DevTools.mount()` bypasses the routable-bind guard entirely, so the
-    // tap can end up on a public server behind ambient cookie auth — the
-    // classic remote-CSWSH shape.  The guard rides on the route tree, so it
-    // comes along wherever the tree is mounted.
+    // A mounted tap can end up on a public server behind ambient cookie
+    // auth — the classic remote-CSWSH shape.  The guard rides on the route
+    // tree, so it comes along wherever the tree is mounted.  Since #594 an
+    // ungated mount also has to be acknowledged, but that is a second lock
+    // on the same door and not a replacement for this one: the case it
+    // admits, `allowUngatedMount`, is precisely the case where this guard
+    // is the only thing left.
     const guard = tapUpgradeGuard({ host: '0.0.0.0' });
     expect((await guard.authorize(upgrade({
       origin: 'https://evil.example', host: 'app.internal:8080',

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../types.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -32,6 +33,19 @@ const fastifyWebsocketLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {
 type FastifyLike = ReturnType<typeof Fastify>;
 
 /**
+ * True for the error Fastify raises when a body outgrows `bodyLimit`.
+ *
+ * Matched on `code` rather than on the class: `FastifyError` is not exported
+ * as a value, and the code is the part of that contract Fastify documents.
+ * @internal — exported for testing.
+ */
+export function isBodyTooLargeError(err: unknown): boolean {
+  return typeof err === 'object'
+    && err !== null
+    && (err as { code?: unknown }).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
+}
+
+/**
  * Fastify-based default HTTP backend.  Leans on Fastify for fast routing,
  * body parsing (including raw-body support), and its plugin ecosystem.
  * The directives DSL compiles down to plain Fastify route registrations —
@@ -48,17 +62,30 @@ export class FastifyBackend implements HttpServerBackend {
     | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
-  constructor(options: object = { logger: false }) {
-    this.app = (Fastify as (o?: object) => FastifyLike)(options);
+  constructor(options: object = {}) {
+    // `bodyLimit` is spelled out rather than left to Fastify's own default so
+    // the cap is the framework's decision and matches what the Express and
+    // Hono backends enforce (#357).  Defaults go in first, so a caller-supplied
+    // `bodyLimit` — or `logger` — still wins.
+    this.app = (Fastify as (o?: object) => FastifyLike)({
+      logger: false,
+      bodyLimit: DEFAULT_HTTP_MAX_BODY_BYTES,
+      ...options,
+    });
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
     // `application/json` bodies otherwise.
+    //
+    // None of them names a per-parser `bodyLimit`: that would SHADOW the
+    // global one for the content types it covers, which is every one of them,
+    // and the cap would then depend on which parser matched.
     const rawParser = (_req: unknown, body: unknown, done: (err: Error | null, value: unknown) => void) => done(null, body);
     this.app.removeContentTypeParser(['application/json', 'text/plain']);
     this.app.addContentTypeParser('*', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawParser);
     this.app.addContentTypeParser('application/cbor', { parseAs: 'buffer' }, rawParser);
+    this.installErrorHandler();
   }
 
   /** Escape hatch: register a native Fastify plugin (e.g. @fastify/cors). */
@@ -103,14 +130,12 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
-    // Record the handler so errors thrown by our route handlers — caught
-    // in registerRoute's try/catch, which never reaches Fastify core —
-    // route through it too.  The app-level hook still covers
-    // framework-internal errors (body-parse failures, etc.).
+    // Only recorded, never re-registered: the app-level hook installed in the
+    // constructor reads this field on every error, so it picks the handler up
+    // the moment it is set.  Recording it is what makes errors thrown by our
+    // route handlers — caught in registerRoute's try/catch, which never
+    // reaches Fastify core — route through it too.
     this.userErrorHandler = handler;
-    this.app.setErrorHandler(async (err: unknown, req: FastifyRequest, reply: FastifyReply) => {
-      await this.emitError(reply, this.adaptRequest(req), err);
-    });
   }
 
   async listen(host: string, port: number): Promise<ServerBinding> {
@@ -222,6 +247,36 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   /* -------------------------------- Helpers ------------------------------- */
+
+  /**
+   * Install the app-level error hook once, at construction.
+   *
+   * Unconditional — not only when the application calls `withErrorHandler` —
+   * because a body over `bodyLimit` never reaches a route and so is only
+   * answerable here, and Fastify's own answer for it is a JSON envelope no
+   * other backend emits (#357).  Normalising it needs the hook to be in place
+   * even for an application that installed no error handler at all.
+   *
+   * Everything else without a user handler is handed straight back to Fastify:
+   * re-sending the error object is the documented way to reach the default
+   * serialiser, so a framework error that carries its own status keeps it
+   * instead of being flattened into our generic 500 — which is what a server
+   * that never asked for an error handler already got, since before this the
+   * hook was only installed when one was set.
+   */
+  private installErrorHandler(): void {
+    this.app.setErrorHandler(async (err: unknown, req: FastifyRequest, reply: FastifyReply) => {
+      if (isBodyTooLargeError(err)) {
+        this.writeResponse(reply, PAYLOAD_TOO_LARGE_RESPONSE);
+        return;
+      }
+      if (!this.userErrorHandler) {
+        reply.send(err as Error);
+        return;
+      }
+      await this.emitError(reply, this.adaptRequest(req), err);
+    });
+  }
 
   private adaptRequest(req: FastifyRequest): HttpRequest {
     const headers: Record<string, string> = {};

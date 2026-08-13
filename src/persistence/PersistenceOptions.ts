@@ -137,21 +137,26 @@ export type EncryptionConfig =
 
 /**
  * Body integrity directive (#116).  Protects unencrypted bodies
- * against tamper-in-place at the object-storage layer; encrypted
- * bodies are already protected by AES-GCM's auth tag.
+ * against tamper-in-place at the object-storage layer.  An encrypted
+ * body already carries AES-GCM's auth tag over its ciphertext, so a
+ * forgery there needs the master key — but the tag authenticates the
+ * bytes, not *which* object or revision they belong to (#612), so
+ * integrity remains worthwhile defense-in-depth.
  *
- *   - `mode: 'none'` (default) — back-compat, no integrity check.
- *   - `mode: 'hmac-sha256'`    — HMAC-SHA256 over the payload with
+ *   - `mode: 'none'` (default) — nothing is signed and nothing is checked.
+ *   - `mode: 'hmac-sha256'`    — HMAC-SHA256 over the framed body with
  *     `integrityKey`, truncated to 16 bytes (128-bit MAC strength),
  *     appended to the body and verified at decode.  Key is separate
  *     from the encryption master key — the threat here is tampering,
  *     not confidentiality.
  *
- * Bodies written before integrity landed have the integrity flag
- * unset and decode normally even when integrity is configured on the
- * reader (legacy-safe).  Use the `requireIntegrity` decode option
- * (per-call or per-store) to refuse such bodies once a deployment
- * has been fully migrated.
+ * Configuring `hmac-sha256` makes the tag **mandatory on read**: a
+ * body that carries none is refused rather than waved through, because
+ * the manifest bit that says "no tag here" is written by whoever wrote
+ * the body (#579).  A corpus that still holds pre-integrity bodies
+ * re-admits them for its read-then-write migration with the
+ * store-level `allowUntaggedBodies` option, and drops that option once
+ * the sweep is done.
  */
 export type IntegrityConfig =
   | { readonly mode: 'none' }
