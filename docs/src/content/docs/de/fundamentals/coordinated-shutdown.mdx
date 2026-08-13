@@ -269,6 +269,13 @@ Bis das Promise resolved:
 - Der eingebaute `actor-system-terminate`-Task hat
   `system.terminate()` aufgerufen, was jeden Actor gestoppt und den
   Dispatcher und Scheduler geschlossen hat.
+- Die **Log-Sinks sind geflusht und geschlossen**, begrenzt durch
+  `actor-ts.logger.close-timeout` (Standard 3 s) — die letzten Records
+  eines bündelnden Sinks liegen also auf der Platte oder auf dem Draht,
+  bevor der Prozess geht.  Dieser Flush sitzt in `terminate()` statt in
+  einer Phase und deckt damit auch ein Programm ab, das `terminate()`
+  direkt aufruft; siehe
+  [Multi-Sink-Logging](/de/observability/logging/multi-sink/#shutdown).
 - Der Prozess ist frei zu beenden (`process.exit(0)`).  Nichts mehr
   zu tun.
 

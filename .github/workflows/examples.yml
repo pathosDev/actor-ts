@@ -52,6 +52,12 @@ on:
       - '.github/workflows/examples.yml'
   workflow_dispatch:
 
+# Least privilege, stated rather than inherited: the repository default is
+# read-only today, but a settings flip would otherwise hand a write token to
+# a job that installs and runs the whole dependency tree.  #621
+permissions:
+  contents: read
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
@@ -73,7 +79,7 @@ jobs:
           - examples/voice/frontend-svelte
     name: ${{ matrix.directory }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 24 for the same reason multi-runtime.yml pins its Node leg there:
       # it is the `engines` floor the package claims to support, so the
@@ -84,7 +90,7 @@ jobs:
       # need 24.15 or newer.  `node-version: '24'` resolves to the latest
       # 24.x and satisfies that; pinning a narrower 24.x would not.
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: npm
