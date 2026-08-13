@@ -10,8 +10,13 @@ import {
   type DevToolsOptionsType,
 } from '../../../src/devtools/DevToolsOptions.js';
 
+/** What `DevTools.attach` runs: defaults merged under the caller's options. */
 const validate = (options: Partial<DevToolsOptionsType>): void =>
-  new DevToolsOptionsValidator().validate({ ...DEVTOOLS_DEFAULTS, ...options });
+  new DevToolsOptionsValidator('attach').validate({ ...DEVTOOLS_DEFAULTS, ...options });
+
+/** The same for `DevTools.mount` — the path with no host to reason from. */
+const validateMount = (options: Partial<DevToolsOptionsType> = {}): void =>
+  new DevToolsOptionsValidator('mount').validate({ ...DEVTOOLS_DEFAULTS, ...options });
 
 describe('DevToolsOptions builder', () => {
   test('a builder is structurally its settings', () => {
@@ -26,6 +31,15 @@ describe('DevToolsOptions builder', () => {
     expect(Object.keys({ ...DevToolsOptions.create().withPort(1) })).toEqual(['port']);
   });
 
+  test('the two acknowledgements are separate fields', () => {
+    // Naming lockstep, and a reminder that they are not interchangeable:
+    // one accepts a routable bind, the other an ungated mount.
+    expect({ ...DevToolsOptions.create().withAllowUngatedMount() })
+      .toEqual({ allowUngatedMount: true });
+    expect({ ...DevToolsOptions.create().withAllowUngatedMount(false) })
+      .toEqual({ allowUngatedMount: false });
+  });
+
   test('panels are set as a whole object', () => {
     const options = DevToolsOptions.create().withPanels({ timeTravel: false });
     expect({ ...options }).toEqual({ panels: { timeTravel: false } });
@@ -38,6 +52,7 @@ describe('DevToolsOptions defaults', () => {
       host: '127.0.0.1',
       port: 9333,
       allowRemote: false,
+      allowUngatedMount: false,
       serveUi: true,
       mailboxSampleIntervalMs: 1_000,
       mailboxSampleLimit: 50,
@@ -107,5 +122,58 @@ describe('DevToolsOptionsValidator', () => {
 
   test('accepts a non-loopback bind when the operator opts in explicitly', () => {
     expect(() => validate({ host: '0.0.0.0', allowRemote: true })).not.toThrow();
+  });
+});
+
+// #594 — the attach rule reads `host`, which is exactly the fact a mount
+// does not have: the routes go to a server this process never sees, bound
+// to an interface it is never told about.  With the loopback default
+// merged in, every ungated mount used to look as safe as a laptop's.
+describe('DevToolsOptionsValidator — the mount path', () => {
+  test('refuses a mount that has no gate in front of it', () => {
+    expect(() => validateMount()).toThrow(OptionsError);
+    try {
+      validateMount();
+    } catch (error) {
+      expect((error as OptionsError).field).toBe('allowUngatedMount');
+      // The message has to name every way out, the same as the bind rule's.
+      expect((error as OptionsError).message).toContain('auth');
+      expect((error as OptionsError).message).toContain('ipAllowlist');
+      expect((error as OptionsError).message).toContain('allowUngatedMount');
+    }
+  });
+
+  test('a loopback host does not stand in for the gate', () => {
+    // The trap this fix exists for.  `host` defaults to loopback and is
+    // never read on the mount path, so accepting it as proof would leave
+    // the default configuration ungated — which is what it did.
+    expect(() => validateMount({ host: '127.0.0.1' })).toThrow(OptionsError);
+  });
+
+  test('`allowRemote` is not the mount acknowledgement', () => {
+    // Deliberately distinct: `allowRemote` says "I accept this *bind*",
+    // and a mount never binds.  Reusing it would let an operator who
+    // configured the attach path inherit a decision they never made.
+    expect(() => validateMount({ allowRemote: true })).toThrow(OptionsError);
+  });
+
+  test('accepts a mount gated by auth or an IP allowlist', () => {
+    // Both wrap the returned tree itself, so the gate travels with it
+    // wherever the caller binds it — no acknowledgement needed.
+    expect(() => validateMount({ auth: BearerTokenAuth({ tokens: ['secret'] }) })).not.toThrow();
+    expect(() => validateMount({ ipAllowlist: IpAllowlist({ allow: ['10.0.0.0/8'] }) }))
+      .not.toThrow();
+  });
+
+  test('accepts a mount the operator acknowledges', () => {
+    expect(() => validateMount({ allowUngatedMount: true })).not.toThrow();
+  });
+
+  test('the non-security rules apply on both paths', () => {
+    // The exposure switch must not become an early return that skips the
+    // field checks — it sits after them for that reason.
+    expect(() => validateMount({ allowUngatedMount: true, port: 70_000 })).toThrow(OptionsError);
+    expect(() => validateMount({ allowUngatedMount: true, mailboxSampleLimit: 0 }))
+      .toThrow(OptionsError);
   });
 });
