@@ -29,7 +29,7 @@ import {
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(namespace)
-  .withServiceName(labelSelector)
+  .withServiceName(serviceName)
   .withSystemName('my-app')
   .withPort(2552);
 const dnsSeedProviderOptions = DnsSeedProviderOptions.create()

@@ -452,6 +452,47 @@ describe('discovery option validators', () => {
     expect(() => check({ namespace: 'ns', serviceName: 'svc', systemName: 'sys', port: 0 })).toThrow(OptionsError);
   });
 
+  // #597: both names are interpolated into the K8s API path by the default
+  // fetcher.  `endpointsPath` percent-encodes them, which contains the
+  // traversal; this rule is the half that turns the resulting puzzling 404
+  // into a rejection naming the field.
+  test('KubernetesApiSeedProvider: names must be DNS-1123 (#597)', () => {
+    const check = (s: Partial<KubernetesApiSeedProviderOptionsType>): void =>
+      new KubernetesApiSeedProviderOptionsValidator().validate(s);
+    const base = { namespace: 'actors', serviceName: 'actor-ts', systemName: 'sys', port: 2552 };
+    expect(() => check(base)).not.toThrow();
+
+    expect(() => check({ ...base, serviceName: 'app/../../../namespaces/other/endpoints/decoy' }))
+      .toThrow(/serviceName/);
+    expect(() => check({ ...base, serviceName: 'actor-ts?watch=true' })).toThrow(OptionsError);
+    expect(() => check({ ...base, namespace: '../kube-system' })).toThrow(/namespace/);
+    // `$` in a JS regex also matches before a trailing newline, so an
+    // `^…$` rule would have waved this one through.
+    expect(() => check({ ...base, serviceName: 'actor-ts\n' })).toThrow(/serviceName/);
+    // Kubernetes names are lowercase, and a namespace is a label: no dots,
+    // at most 63 characters.
+    expect(() => check({ ...base, serviceName: 'Actor-TS' })).toThrow(/serviceName/);
+    expect(() => check({ ...base, namespace: 'kube.system' })).toThrow(/namespace/);
+    expect(() => check({ ...base, namespace: 'n'.repeat(64) })).toThrow(/namespace/);
+
+    // An Endpoints object may carry a dotted name, so `serviceName` is the
+    // wider subdomain form — a label rule would lock those out.
+    expect(() => check({ ...base, serviceName: 'actor-ts.default.svc' })).not.toThrow();
+  });
+
+  test('KubernetesApiSeedProvider: a custom fetchEndpoints lifts the name shape rule (#597)', () => {
+    // The shape rule exists because the DEFAULT fetcher builds an API path
+    // out of the two names.  A caller-supplied fetcher builds its own
+    // request, so there its names are plain labels.
+    const check = (s: Partial<KubernetesApiSeedProviderOptionsType>): void =>
+      new KubernetesApiSeedProviderOptionsValidator().validate(s);
+    const base = { namespace: 'Consul DC', serviceName: 'Not A K8s Name', systemName: 'sys', port: 2552 };
+    expect(() => check(base)).toThrow(OptionsError);
+    expect(() => check({ ...base, fetchEndpoints: async () => ['10.244.0.1'] })).not.toThrow();
+    // …but they are still required to be non-empty.
+    expect(() => check({ ...base, serviceName: '', fetchEndpoints: async () => [] })).toThrow(/serviceName/);
+  });
+
   test('Receptionist: non-positive gossipIntervalMs', () => {
     const check = (s: Partial<ReceptionistOptionsType>): void =>
       new ReceptionistOptionsValidator().validate(s);
