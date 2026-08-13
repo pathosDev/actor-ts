@@ -25,8 +25,8 @@ const routes =
   withMiddleware(securityHeaders(),
   cors(corsOptions,
   withMiddleware(requestTimeout(15_000),
-  withMiddleware(csrf,
   handleErrors(errorMapper,
+  withMiddleware(csrf,
     concat(
       appRoutes,
       fallback(notFound),
@@ -36,11 +36,11 @@ const routes =
 | Layer | Why here |
 | --- | --- |
 | `requestId` | outermost, so every log line (including errors) has an id |
-| `securityHeaders` | stamp headers on **every** response, even short-circuits |
+| `securityHeaders` | above everything that rejects, so those responses carry the headers too |
 | `cors` | **outside** auth — preflights are anonymous by spec |
 | `requestTimeout` | bound latency before doing real work |
+| `handleErrors` | **outside `csrf`**, so it maps that middleware's own 403 — and inside the header layers, so what it hands back still flows through them |
 | `csrf` | browser apps only; after CORS, before handlers |
-| `handleErrors` | map thrown errors to responses close to the routes |
 | `fallback` | at the root — answers anything unmatched |
 
 ## What every response already carries
@@ -79,9 +79,13 @@ same-origin` and the rest. A plain object works as well
 `withSecurityHeaders(false)` turns the mechanism off entirely.
 
 Server-wide or as `securityHeaders()` middleware — both stamp the same set.
-Reach for the middleware when only a route subtree needs it; reach for the
-builder when the whole server does, because the middleware is skipped
-wherever a response never comes back through it.
+The middleware covers its own subtree, and that includes a **short-circuit
+that throws**: an `HttpError` from a layer below it — a CSRF 403, an auth
+401 — carries the headers out with it. What it never sees is a response
+raised outside its subtree: the backend's own 404, the body-too-large 413,
+and the generic 500 that a non-`HttpError` throw maps to. Reach for the
+middleware when only a route subtree needs it; reach for the builder when
+the whole server does.
 
 ## Operational environment
 
@@ -148,7 +152,7 @@ so it gates the handshake.
 | Measure | How |
 | --- | --- |
 | MIME-sniffing disabled on every response | nothing — on by default |
-| Security headers on every response | `securityHeaders()`, or `withSecurityHeaders(...)` server-wide |
+| Security headers on every response | `withSecurityHeaders(...)` server-wide — `securityHeaders()` covers a subtree, rejections included |
 | HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
 | Cross-origin controlled | `cors(...)` |
 | CSRF (browser forms) | `csrfProtection(...)` |

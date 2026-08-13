@@ -7,6 +7,10 @@ description: securityHeaders() ist ein kleines Helmet-artiges Bündel (nosniff, 
 Jeder Header ist einzeln überschreibbar, `false` lässt einen weg, und ein
 vom Handler bereits gesetzter Header gewinnt immer.
 
+Abgedeckt ist der gesamte Teilbaum, Ablehnungen eingeschlossen: Eine
+Schicht darunter, die per `HttpError` kurzschließt — CSRF, Auth, ein
+Rate-Limit —, erzeugt eine Response, die die Header ebenfalls trägt.
+
 <Aside type="caution" title="`false` lässt einen Header weg, es entfernt ihn nicht">
   Das Bündel **ergänzt** nur. Als Middleware läuft es auf dem auf, was das
   Backend ohnehin schreibt — `false` heißt also "diese Middleware fügt ihn
@@ -21,8 +25,9 @@ vom Handler bereits gesetzter Header gewinnt immer.
   `withSecurityHeaders(false)` für gar keinen davon.
 
   Ein Opt-out pro Teilbaum gibt es bewusst nicht: Die Kopie des Backends hat
-  das letzte Wort, gerade damit auch die 404s, Body-Parse-413s und
-  Error-Kurzschlüsse abgedeckt sind, die nie eine Middleware erreichen.
+  das letzte Wort, gerade damit auch die Responses abgedeckt sind, die nie
+  eine Middleware sieht — die backend-eigenen 404s, die Body-Parse-413s und
+  die generische 500, auf die ein unbehandelter Wurf gemappt wird.
 </Aside>
 
 ```ts

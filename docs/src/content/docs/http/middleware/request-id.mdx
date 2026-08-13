@@ -21,6 +21,12 @@ An incoming id is accepted only if it is well-formed
 header; otherwise a fresh id is generated with
 [`randomUuid`](/reference/utility-helpers/#random-strings-and-identifiers).
 
+A **short-circuit that throws** is echoed too: the 401 or 403 an auth or
+CSRF layer below throws comes back carrying the id, which is exactly the
+response whose log line someone will later go looking for. An unhandled
+throw is the exception — it maps to the generic 500, which deliberately
+carries nothing from the thrown value, so that one arrives without an id.
+
 ## Reading the id back
 
 `requestIdOf(request)` returns the id the request carries, or `undefined`

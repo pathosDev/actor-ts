@@ -26,6 +26,13 @@ The baseline (`useDefaults`, on by default) is `default-src 'self'`,
 set a directive to `[]` to remove it, or call `withoutDefaults()` to emit
 only what you specify.
 
+The header rides on a **short-circuit that throws** as well — an
+`HttpError` from a layer below carries the policy out with it. That matters
+more here than for the rest of the header bundle: a policy is far too
+app-specific to sit in the server-wide `withSecurityHeaders(...)`, so this
+middleware is the only seam that emits one, and a response raised outside
+its subtree (the backend's own 404, the generic 500) carries none.
+
 ## Configuration
 
 | Builder method | Purpose |
