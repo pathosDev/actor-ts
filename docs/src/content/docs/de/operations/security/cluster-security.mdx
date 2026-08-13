@@ -536,13 +536,25 @@ Regeln:
 
 Beide Regeln hängen am Peer der **Verbindung**, nicht am
 `from`-Feld des Payloads: genau dieses Feld kontrolliert ein
-Angreifer vollständig. Dieselbe Überlegung deckt zwei Nachbarn
-mit ab: ein `leave` wird nur vom scheidenden Knoten selbst
-akzeptiert, und ein Heartbeat frischt den Failure Detector für
-den *sendenden* Peer auf statt für die Adresse, die er nennt —
-letzteres ließ vorher einen Peer einen toten Knoten dauerhaft
-gesund erscheinen und brachte den Empfänger dazu, einen
-angreiferbestimmten Host anzuwählen.
+Angreifer vollständig. Dieselbe Überlegung deckt drei Nachbarn
+mit ab. Ein `leave` wird nur vom scheidenden Knoten selbst
+akzeptiert. Ein Heartbeat frischt den Failure Detector für den
+*sendenden* Peer auf statt für die Adresse, die er nennt —
+das ließ vorher einen Peer einen toten Knoten dauerhaft gesund
+erscheinen und brachte den Empfänger dazu, einen
+angreiferbestimmten Host anzuwählen. Und ein `ClusterClient`-ask
+wird über die Verbindung beantwortet, auf der das Envelope
+ankam: auf der Payload zu routen ließ jede verbundene
+Gegenstelle die Adresse wählen, an die dieser Knoten antwortete
+und zu der er eine Verbindung aufbaute.
+
+Das Client-Envelope trägt überhaupt kein Absenderfeld mehr —
+nach der obigen Regel hatte es genau einen richtigen Wert, und
+zwar den, den der Empfänger ohnehin schon hat. Ein Envelope,
+das weiterhin eine andere Adresse als seine eigene Verbindung
+nennt, wird auf `cluster_envelope_from_mismatch_total{frame}`
+gezählt und sonst ignoriert; siehe
+[ClusterClient](/de/cluster/cluster-client/).
 
 Unerreichbarkeit ist bewusst **nicht** von diesen Regeln
 erfasst: „Ich erreiche C nicht" ist naturgemäß eine

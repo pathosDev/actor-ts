@@ -504,12 +504,23 @@ sit in front of the merge:
 
 Both rules key on the **connection's** peer, not on the
 payload's `from` field, since that field is the one thing an
-attacker fully controls. The same reasoning covers two
-neighbours: a `leave` is only accepted from the node that is
-leaving, and a heartbeat refreshes the failure detector for
-the peer that sent it rather than the address it names — the
-latter previously let a peer keep a dead node looking healthy
-and made the receiver dial an attacker-chosen host.
+attacker fully controls. The same reasoning covers three
+neighbours. A `leave` is only accepted from the node that is
+leaving. A heartbeat refreshes the failure detector for the
+peer that sent it rather than the address it names — that one
+previously let a peer keep a dead node looking healthy, and
+made the receiver dial an attacker-chosen host. And a
+`ClusterClient` ask is answered down the connection the
+envelope arrived on: routing on the payload let any connected
+party choose the address this node replied to, and opened a
+connection to.
+
+The client envelope no longer carries a sender field at all —
+after the rule above it had exactly one correct value, which
+is the one the receiver already holds. An envelope that still
+names an address other than its own connection is counted on
+`cluster_envelope_from_mismatch_total{frame}` and otherwise
+ignored; see [ClusterClient](/cluster/cluster-client/).
 
 Unreachability is deliberately **not** covered by these
 rules: "I cannot reach C" is inherently a third-party
