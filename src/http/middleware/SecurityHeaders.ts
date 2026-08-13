@@ -16,7 +16,7 @@
  * (#1060).
  */
 import type { Middleware } from '../Route.js';
-import { applyHeaders } from './headers.js';
+import { headerDecorator } from './headers.js';
 import { hstsHeaderValue, resolveHsts } from './Hsts.js';
 import type { SecurityHeadersOptions, SecurityHeadersOptionsType } from './SecurityHeadersOptions.js';
 
@@ -78,8 +78,14 @@ export function resolveSecurityHeaders(options: SecurityHeadersOptions = {}): Re
   return headers;
 }
 
-/** Build a middleware that adds the configured security headers to every response. */
+/**
+ * Build a middleware that adds the configured security headers to every
+ * response its subtree produces — the ones handlers return and the ones a
+ * thrown `HttpError` short-circuit produces (#606).  What it still cannot
+ * reach is what never enters its subtree: the backend's own 404, its
+ * body-parse 413, and the generic 500 a non-`HttpError` throw maps to.
+ * Those want the server-wide `newServerAt(…).withSecurityHeaders(…)`.
+ */
 export function securityHeaders(options: SecurityHeadersOptions = {}): Middleware {
-  const headers = resolveSecurityHeaders(options);
-  return async (_req, next) => applyHeaders(await next(), headers);
+  return headerDecorator(resolveSecurityHeaders(options));
 }

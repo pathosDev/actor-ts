@@ -2,11 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { hsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
 import { HstsOptions } from '../../../../src/http/middleware/HstsOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>
   Promise.resolve(mw(request, async () => ({ status: Status.OK, body: 'x', headers: handlerHeaders })));
+/** Drive the middleware over a `next` that throws — the idiomatic short-circuit. */
+const rethrownBy = (mw: Middleware, error: unknown): Promise<unknown> =>
+  Promise.resolve(mw(request, () => Promise.reject(error))).then(() => null, (rethrown: unknown) => rethrown);
 
 describe('strictTransportSecurity', () => {
   test('default header value', async () => {
@@ -38,5 +41,13 @@ describe('strictTransportSecurity', () => {
   test('does not clobber a handler-set STS header', async () => {
     const response = await run(strictTransportSecurity(), { 'strict-transport-security': 'max-age=1' });
     expect(response.headers?.['strict-transport-security']).toBe('max-age=1');
+  });
+
+  test('the pin rides on a thrown HttpError short-circuit (#606)', async () => {
+    // A first-contact client whose very first request is the rejected one
+    // is exactly who needs the pin, and used to be the one who never got it.
+    const rethrown = await rethrownBy(strictTransportSecurity(), new HttpError(Status.Unauthorized, 'no'));
+    expect(rethrown).toBeInstanceOf(HttpError);
+    expect((rethrown as HttpError).headers?.['strict-transport-security']).toBe('max-age=15552000; includeSubDomains');
   });
 });

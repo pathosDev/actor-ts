@@ -3,11 +3,14 @@ import { DEFAULT_RESPONSE_SECURITY_HEADERS } from '../../../../src/http/backend/
 import { resolveSecurityHeaders, securityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
 import { SecurityHeadersOptions } from '../../../../src/http/middleware/SecurityHeadersOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>
   Promise.resolve(mw(request, async () => ({ status: Status.OK, body: 'x', headers: handlerHeaders })));
+/** Drive the middleware over a `next` that throws — the idiomatic short-circuit. */
+const rethrownBy = (mw: Middleware, error: unknown): Promise<unknown> =>
+  Promise.resolve(mw(request, () => Promise.reject(error))).then(() => null, (rethrown: unknown) => rethrown);
 
 describe('securityHeaders', () => {
   test('emits the default header set', async () => {
@@ -73,5 +76,31 @@ describe('securityHeaders', () => {
   test('COEP is emitted when opted in', async () => {
     const headers = (await run(securityHeaders(SecurityHeadersOptions.create().withCrossOriginEmbedderPolicy('require-corp')))).headers ?? {};
     expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
+  });
+
+  test('the bundle rides on a thrown HttpError short-circuit (#606)', async () => {
+    // What a CSRF/auth rejection below this middleware throws — the case
+    // that used to escape the whole decorator, because a rejected `await`
+    // never reached the decoration.
+    const rethrown = await rethrownBy(securityHeaders(), new HttpError(Status.Forbidden, 'CSRF verification failed'));
+    expect(rethrown).toBeInstanceOf(HttpError);
+    const error = rethrown as HttpError;
+    expect(error.status).toBe(Status.Forbidden);
+    expect(error.message).toBe('CSRF verification failed');
+    expect(error.headers?.['x-frame-options']).toBe('DENY');
+    expect(error.headers?.['referrer-policy']).toBe('no-referrer');
+    expect(error.headers?.['cross-origin-opener-policy']).toBe('same-origin');
+  });
+
+  test('a header the thrower set itself still wins', async () => {
+    const thrown = new HttpError(Status.Unauthorized, 'no', undefined, { 'www-authenticate': 'Basic', 'x-frame-options': 'SAMEORIGIN' });
+    const headers = ((await rethrownBy(securityHeaders(), thrown)) as HttpError).headers ?? {};
+    expect(headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(headers['www-authenticate']).toBe('Basic');
+  });
+
+  test('a non-HttpError throw is rethrown untouched — a crash stays a crash', async () => {
+    const boom = new Error('kaboom');
+    expect(await rethrownBy(securityHeaders(), boom)).toBe(boom);
   });
 });
