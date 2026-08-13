@@ -204,6 +204,25 @@ describe('KubernetesLease — required options (#596)', () => {
   });
 });
 
+describe('KubernetesLease — API-server credentials (#599)', () => {
+  test('rejects an apiServerUrl without its token and CA cert', () => {
+    // Accepting it meant the Pod's mounted ServiceAccount token was sent
+    // to whatever host the caller named.
+    const partialCredential = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withOwner('test-pod')
+      .withTtlMs(5_000)
+      .withApiServerUrl('https://k8s.example.internal');
+    expect(() => new KubernetesLease(partialCredential)).toThrow(OptionsError);
+    expect(() => new KubernetesLease(partialCredential)).toThrow(/authToken \+ caCert/);
+  });
+
+  test('accepts the complete triple', () => {
+    expect(() => new KubernetesLease(baseOptions())).not.toThrow();
+  });
+});
+
 describe('KubernetesLease — acquire (no existing lease)', () => {
   test('creates the lease object and sets holderIdentity', async () => {
     const lease = new KubernetesLease(baseOptions());

@@ -71,7 +71,17 @@ export class KubernetesLease implements Lease {
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
   }
 
-  /** Resolve credentials lazily — once on first call, cached after. */
+  /**
+   * Resolve credentials lazily — once on first call, cached after.
+   *
+   * Either source is used **whole** (#599).  The per-field `??` merge this
+   * replaces let a caller-supplied `apiServerUrl` be paired with the Pod's
+   * mounted ServiceAccount token, i.e. the cluster's own bearer credential
+   * sent to a host the operator named.  `KubernetesLeaseOptionsValidator`
+   * rejects a partial triple at construction; keeping the invariant here
+   * too means no future caller can reintroduce the mix by reaching past
+   * the validator.
+   */
   private async getCreds(): Promise<K8sCredentials> {
     if (this.creds) return this.creds;
     if (this.options.apiServerUrl && this.options.authToken && this.options.caCert) {
@@ -90,12 +100,7 @@ export class KubernetesLease implements Lease {
         + `(${'/var/run/secrets/kubernetes.io/serviceaccount'}).`,
       );
     }
-    this.creds = {
-      apiServerUrl: this.options.apiServerUrl ?? inCluster.apiServerUrl,
-      authToken: this.options.authToken ?? inCluster.authToken,
-      caCert: this.options.caCert ?? inCluster.caCert,
-      defaultNamespace: inCluster.defaultNamespace,
-    };
+    this.creds = inCluster;
     return this.creds;
   }
 

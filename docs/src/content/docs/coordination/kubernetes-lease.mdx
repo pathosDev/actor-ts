@@ -42,25 +42,54 @@ type KubernetesLeaseOptionsType = {
 
   // K8s-specific:
   namespace:             string;
-  apiServerUrl?:         string;     // override the in-cluster default
-  authToken?:            string;     // override the in-cluster default
-  caCert?:               string;     // override the in-cluster default
+  apiServerUrl?:         string;     // all three together, or none of them
+  authToken?:            string;     // all three together, or none of them
+  caCert?:               string;     // all three together, or none of them
 };
 ```
 
 | K8s field | Default | What |
 | --- | --- | --- |
 | `namespace` | required | K8s namespace where the Lease resource lives. |
-| `apiServerUrl` | in-cluster | The K8s API server URL — defaults to `https://kubernetes.default.svc`. |
-| `authToken` | in-cluster | The pod's service account token — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`. |
-| `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. |
+| `apiServerUrl` | in-cluster | The K8s API server URL — `https://kubernetes.default.svc` when unset. Requires `authToken` + `caCert`. |
+| `authToken` | in-cluster | Bearer token for the API server — `/var/run/secrets/kubernetes.io/serviceaccount/token` when unset. Requires `apiServerUrl` + `caCert`. |
+| `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` when unset. Requires `apiServerUrl` + `authToken`. |
 
 For pods running in-cluster, you only need `namespace` and `name`
 (+ the standard `LeaseOptionsType` fields).  The framework reads the
-API URL and token from the standard locations.
+API URL, token and CA cert from the standard locations.
 
 For tests / dev pointing at a local K8s API (kind, minikube),
 override `apiServerUrl` + `authToken` + `caCert`.
+
+### The three connection fields are one credential
+
+They are all-or-nothing: supply all three, or none of them.  A
+partial set throws `OptionsError` at construction.
+
+```ts
+const partialOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withNamespace('my-app')
+  .withApiServerUrl('https://k8s.example.internal');
+new KubernetesLease(partialOptions);
+// OptionsError: KubernetesLeaseOptions: authToken + caCert must be supplied
+// together with apiServerUrl — explicit API-server credentials are
+// all-or-nothing
+```
+
+Each field used to fall back to the in-cluster mount on its own, so
+naming an `apiServerUrl` and nothing else sent the **pod's own
+ServiceAccount token** to that host.  The TLS pin limited the damage
+— the target still had to present a chain to the cluster CA — but a
+cluster credential should never travel to an address it was not
+issued for.
+
+`apiServerUrl` must use `https`.  The client dials `node:https`
+regardless of what the URL says, so an `http://` URL never produced
+a plaintext connection; it produced a confusing one.
 
 ### Required fields are enforced at construction
 
