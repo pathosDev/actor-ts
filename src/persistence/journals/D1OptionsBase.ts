@@ -1,4 +1,5 @@
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { D1ClientLike, D1Connection } from './D1Client.js';
 
@@ -83,11 +84,15 @@ export abstract class D1OptionsValidatorBase<T extends D1OptionsBaseType> extend
  */
 export function assertD1BaseUrl(optionsName: string, baseUrl: string): void {
   const fail = (): never => {
+    // Same treatment as every other URL rule, even though a Cloudflare API
+    // base URL does not conventionally carry userinfo: an override is
+    // operator-supplied, and the rendering path ends in an ERROR log (#590).
+    const redacted = redactUrlCredentials(baseUrl);
     throw new OptionsError(
-      `${optionsName}: baseUrl must be a valid http(s) URL (got ${JSON.stringify(baseUrl)})`,
+      `${optionsName}: baseUrl must be a valid http(s) URL (got ${JSON.stringify(redacted)})`,
       optionsName,
       'baseUrl',
-      baseUrl,
+      redacted,
     );
   };
   let parsed: URL;

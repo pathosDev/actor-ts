@@ -1,5 +1,6 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import type { MongoClientLike, MongoConnection } from './MongoClient.js';
 
 /** URL schemes a MongoDB deployment can be reached on. */
@@ -87,7 +88,15 @@ export class MongoJournalOptionsValidator extends OptionsValidator<MongoJournalO
 export function assertMongoUrl(optionsName: string, url: string | undefined): void {
   if (url === undefined) return;
   const fail = (reason: string): never => {
-    throw new OptionsError(`${optionsName}: url ${reason} (got ${JSON.stringify(url)})`, optionsName, 'url', url);
+    // `mongodb://user:pass@host/db` is the documented shape, and this message
+    // reaches an ERROR log when it fails a store's construction (#590).
+    const redacted = redactUrlCredentials(url);
+    throw new OptionsError(
+      `${optionsName}: url ${reason} (got ${JSON.stringify(redacted)})`,
+      optionsName,
+      'url',
+      redacted,
+    );
   };
   let parsed: URL;
   try {

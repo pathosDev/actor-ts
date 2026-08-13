@@ -615,6 +615,24 @@ type, missing path) and `BrokerOptionsError` (a required broker setting
 absent from every layer).  Unset optional fields never trigger it; they
 fall through to their defaults.
 
+<Aside type="note" title="A rejected URL is reported with its credentials masked">
+  ```text
+  MqttOptions: brokerUrl must use protocol mqtt, mqtts (got "amqp://***@rabbit:5672/vhost")
+  ```
+  Every rule that rejects a URL — the `url` check helper, and the
+  connection-URL rules of the Mongo, libSQL, D1 and DynamoDB stores —
+  replaces the userinfo with `***` in **both** the message and
+  `OptionsError.value`.  A rejected broker URL is logged at ERROR when it
+  fails an actor's `preStart`, and a password that has reached a log
+  aggregator has to be rotated, not deleted.
+
+  Nothing else about the value is touched — no normalisation, no trailing
+  slash, no lowercased host — so you still recognise what you typed, and a
+  value that is not a URL at all (`":memory:"`, `"file:local.db"`) comes
+  back verbatim.  The same masking is available to your own code as
+  [`redactUrlCredentials`](/reference/utility-helpers/).
+</Aside>
+
 ```ts
 import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';
 
