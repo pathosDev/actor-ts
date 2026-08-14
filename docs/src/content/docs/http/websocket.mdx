@@ -106,6 +106,36 @@ The frame-size cap is enforced on the **raw frame before decode**.
 `onInvalidMessage: 'hook'` routes decode failures to the actor's
 `onInvalidMessage` hook instead of closing.
 
+#### Where the cap is enforced
+
+`maxFrameBytes` is checked twice, at two different moments:
+
+- **In the transport**, at **1 MiB** — the built-in default, handed to the
+  runtime's own socket when the server binds.  A frame over it is refused
+  *while it arrives*, so a hostile peer cannot make the process buffer a
+  16 MiB (Bun) or 100 MiB (`ws`) frame just to have it thrown away
+  afterwards.  Because the runtime hangs up rather than sending a policy
+  close, the client sees an abnormal close (**1006**) here, not 1009.
+- **In the connection actor**, at your `maxFrameBytes` — on the fully
+  received frame, before the codec decodes it, closing with **1009**.
+
+The consequence worth knowing: the transport cap is the framework default,
+not your route's number.  Lowering `maxFrameBytes` works exactly as
+written; **raising it above 1 MiB does not raise the transport cap**, so
+frames between 1 MiB and your limit are still cut off.  Backends cannot see
+a route's policy at bind time — it is resolved on the first connection —
+which is what a configurable transport cap still has to solve.
+
+<Aside type="caution" title="Deno has no transport cap">
+On Deno the first layer does not exist.  `Deno.upgradeWebSocket` accepts a
+subprotocol and an idle timeout and no payload limit, so there is nothing
+for the framework to set: an oversize frame is fully buffered by the
+runtime and only then rejected by the connection actor.  The guarantee
+holds — the frame never reaches your actor — but the memory is spent
+before it is refused.  For an internet-facing WebSocket endpoint under
+Deno, put a proxy with its own frame limit in front of it.
+</Aside>
+
 ### Origin allowlist (CSWSH defence)
 
 Browsers attach the user's cookies to a WebSocket upgrade automatically, so a

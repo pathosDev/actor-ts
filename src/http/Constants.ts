@@ -25,3 +25,22 @@
  * accept-anything window for every application that never made a choice.
  */
 export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Default cap on a single inbound WebSocket frame — 1 MiB.
+ *
+ * **Why this exists (security):** a malicious or compromised peer can send
+ * arbitrarily-large frames.  Without a cap, a stalled downstream consumer plus
+ * one 100-MiB frame exhausts the process.  The cap is enforced on the raw
+ * frame *before* the codec decodes it.
+ *
+ * It lives here rather than in one options file because it is the fallback of
+ * *two* separate options families — the server-side route policy
+ * (`WebsocketPolicy`) and the client (`WebsocketClientOptions`) — and, since
+ * #586, also the number every backend hands its runtime as the *transport*
+ * frame limit, so that a frame over it is refused while it arrives instead of
+ * after it has been fully buffered.  No single `XOptions.ts` owns all three
+ * readers, and writing the number down per reader is what let the transport
+ * side drift open in the first place.
+ */
+export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;

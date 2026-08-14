@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../../src/http/Constants.js';
 import {
-  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
   normalizeInbound,
   utf8ByteLength,
