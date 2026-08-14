@@ -1,7 +1,7 @@
 /**
  * Singleton actor used by scenario 05 (Cluster Singleton failover).
  * Defined in its own file so `NodeRunner.ts` (which spawns it)
- * and `control-routes.ts` (which forwards messages to its proxy)
+ * and `ControlRoutes.ts` (which forwards messages to its proxy)
  * share the same message-type identities.
  *
  * **Plain-object discriminant** (not class instances).  Class
@@ -25,7 +25,7 @@ export type SingletonIncrement = {
 /**
  * "Who are you?" — the singleton replies with its host node name +
  * current counter value.  `replyTo` is a one-shot collector spawned
- * per HTTP request in `control-routes.ts`.
+ * per HTTP request in `ControlRoutes.ts`.
  */
 export type SingletonWho = {
   readonly kind: 'who';

@@ -19,7 +19,7 @@ import {
 } from '../../../../src/index.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
-import type { WebsocketFrame } from '../../../../src/http/websocket/types.js';
+import type { WebsocketFrame } from '../../../../src/http/websocket/Types.js';
 import type { Subscribe, Unsubscribe } from '../../../../src/cluster/pubsub/Messages.js';
 import {
   UserSessionActor,

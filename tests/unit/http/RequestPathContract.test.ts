@@ -1,6 +1,6 @@
 /**
  * `HttpRequest.path` is the bare pathname on EVERY backend — the contract
- * stated on the field in `src/http/types.ts`.
+ * stated on the field in `src/http/Types.ts`.
  *
  * Fastify used to hand over `req.url`, the raw request target, so the query
  * string leaked into `path` on the default backend while Express and Hono

@@ -15,7 +15,7 @@
 > material.
 >
 > The harness uses a runtime-neutral timer (`highResNow()` in
-> [src/runtime/detect.ts](../src/runtime/detect.ts)) — `Bun.nanoseconds()`
+> [src/runtime/Detect.ts](../src/runtime/Detect.ts)) — `Bun.nanoseconds()`
 > on Bun, `performance.now() × 1e6` elsewhere.  Most benchmark files work
 > unchanged on every runtime; a few (`worker-count-scaling.ts` using Web
 > Workers, `rest-comparison.ts` spinning up an HTTP listener) rely on

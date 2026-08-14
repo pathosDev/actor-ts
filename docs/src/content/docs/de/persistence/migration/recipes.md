@@ -335,12 +335,12 @@ frisches Target.
 
 | Werkzeug                    | Modul                            | Verwenden, wenn                          |
 | --------------------------- | --------------------------------- | ----------------------------------------- |
-| `defaultsAdapter`           | `src/persistence/migration/defaultsAdapter.ts` | Nur additiv                  |
+| `defaultsAdapter`           | `src/persistence/migration/DefaultsAdapter.ts` | Nur additiv                  |
 | `MigrationChain` + `migratingAdapter` | `src/persistence/migration/{MigrationChain,migratingAdapter}.ts` | Alles andere  |
 | `InMemorySchemaRegistry`    | `src/persistence/migration/SchemaRegistry.ts`  | Multi-Service / Multi-Version-Koexistenz |
-| `validatedEventAdapter`     | `src/persistence/migration/validatedAdapter.ts` | On-Write-Validierung    |
-| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/wrapLegacy.ts` | Pre-Envelope-Journal nachrüsten |
-| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/journalMigration.ts` | Kopieren + transformieren zwischen zwei Backends |
+| `validatedEventAdapter`     | `src/persistence/migration/ValidatedAdapter.ts` | On-Write-Validierung    |
+| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/WrapLegacy.ts` | Pre-Envelope-Journal nachrüsten |
+| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/JournalMigration.ts` | Kopieren + transformieren zwischen zwei Backends |
 
 Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.
 

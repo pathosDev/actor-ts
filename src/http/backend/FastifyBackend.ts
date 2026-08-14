@@ -294,7 +294,7 @@ export class FastifyBackend implements HttpServerBackend {
       ?? (req as unknown as { socket?: { remoteAddress?: string } }).socket?.remoteAddress;
     // `req.url` is Fastify's RAW request target — query string included.
     // `HttpRequest.path` is contractually the bare pathname (see
-    // `src/http/types.ts`), which is what Express and Hono already report,
+    // `src/http/Types.ts`), which is what Express and Hono already report,
     // so split at the first `?`.  A pathname can never contain a literal
     // one (it is percent-encoded as `%3F`), and the parameters are in
     // `query` anyway.  Leaving the query in `path` made every consumer that

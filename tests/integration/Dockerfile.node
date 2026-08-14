@@ -2,7 +2,7 @@
 # (both the cluster-node containers AND the controller).  One image,
 # many roles — the entrypoint is overridden per service.
 #
-# `iproute2` provides `tc` (used by tests/integration/lib/partition.ts
+# `iproute2` provides `tc` (used by tests/integration/lib/Partition.ts
 # to inject latency).  `iptables-nft` provides packet-drop rules used
 # to simulate partitions inside the container without privileged-mode
 # tricks on the host — each container gets NET_ADMIN via the compose
@@ -17,7 +17,7 @@
 #
 # Debian over Alpine because we need `apt-get` for `iproute2` +
 # `iptables` (the `tc` / `iptables` binaries that
-# `lib/partition.ts` shells out to).  `slim` would also work and
+# `lib/Partition.ts` shells out to).  `slim` would also work and
 # would save ~50 MB; sticking with the full `debian` for the more-
 # standard userland (less surprise debugging container internals).
 FROM oven/bun:1.3-debian

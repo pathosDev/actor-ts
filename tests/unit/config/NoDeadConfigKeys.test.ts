@@ -105,7 +105,7 @@ function coveringAccessor(leaf: string): string[] | null {
 /** Files that could plausibly be the reader — everything but the two config files. */
 const readerSources = sourceFiles(SOURCE_ROOT)
   .filter((file) => !file.endsWith(join('config', 'ConfigKeys.ts')))
-  .filter((file) => !file.endsWith(join('config', 'reference.ts')))
+  .filter((file) => !file.endsWith(join('config', 'Reference.ts')))
   .map((file) => ({ file, text: readFileSync(file, 'utf8') }));
 
 /**

@@ -98,7 +98,7 @@ change touches transport / cluster / downing code.
 
 The `Scenario.run(ctx)` function receives a `ControllerContext`
 with `nodes: string[]`, `mgmtToken`, `controlPort`, `mgmtPort`.
-Use `waitFor` from `scenarios/types.ts` for any "wait until X"
+Use `waitFor` from `scenarios/Types.ts` for any "wait until X"
 step — it gives a deterministic deadline message on failure
 rather than a flaky 30-second timeout.
 

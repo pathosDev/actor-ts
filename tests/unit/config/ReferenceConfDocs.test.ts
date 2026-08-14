@@ -43,7 +43,7 @@ describe('the docs reproduce reference.conf verbatim', () => {
     expect(block, `${path} has no fenced hocon block starting with "actor-ts {"`).not.toBeNull();
     expect(
       block,
-      'The published reference configuration has drifted from src/config/reference.ts. '
+      'The published reference configuration has drifted from src/config/Reference.ts. '
       + 'Copy REFERENCE_CONF into the hocon block on both language pages.',
     ).toBe(REFERENCE_CONF.replace(/\r\n/g, '\n'));
   });
