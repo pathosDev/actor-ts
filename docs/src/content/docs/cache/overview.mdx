@@ -227,6 +227,19 @@ await cache.mset(new Map([
   objects from the DB.
 </Aside>
 
+<Aside type="caution" title="Don't share one instance between a guarantee and a key flood">
+  ```ts
+  const cache = system.extension(CacheExtensionId).cache();   // ✗ one instance for everything
+  ```
+  A bounded cache evicts on recency alone, so an entry carrying a
+  guarantee — a rate-limit counter, an idempotency record, a lock —
+  goes as readily as a cached response body.  Give each consumer its
+  own named instance (`cache('rate-limit')`, `cache('idempotency')`),
+  so a caller who enumerates one consumer's key space cannot reach
+  another's state.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+</Aside>
+
 ## Where to next
 
 - **[In-memory cache](/cache/in-memory/)** — the
