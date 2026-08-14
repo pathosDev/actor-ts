@@ -137,6 +137,35 @@ const declaresPermissions = (file: WorkflowFile): boolean =>
   file.lines.some((line) => /^permissions:/.test(line))
   || jobsOf(file).every((job) => job.lines.some((line) => /^\s+permissions:/.test(line)));
 
+/**
+ * `test.yml` alone maintains the README badges, so the two assertions below are
+ * scoped to it by name — a repo-wide version would match nothing in the other
+ * ten workflows and would need a permanent exemption list to say so.
+ */
+const badgeWorkflowLines: readonly string[] =
+  workflows.find((workflow) => workflow.name === 'test.yml')?.lines ?? [];
+
+/** Executable lines — the comments below quote the very shapes being banned. */
+const badgeStatements: readonly { readonly text: string; readonly line: number }[] =
+  badgeWorkflowLines
+    .map((line, index) => ({ text: line.trim(), line: index + 1 }))
+    .filter(({ text }) => text !== '' && !text.startsWith('#'));
+
+/** The counts and percentages the README badges are rendered from. */
+const BADGE_STATISTIC = 'PASS|TOTAL|FAIL|FAILURES|TESTS|SKIPPED|LINES|LINES_INT';
+
+/**
+ * Shell that turns "the parser found nothing" into a number — `PASS=${PASS:-0}`
+ * and `[[ -z "$PASS" ]] && PASS=0`.
+ */
+const ZERO_DEFAULTS: readonly RegExp[] = [
+  new RegExp(`\\$\\{(?:${BADGE_STATISTIC})(?::-|:=)0\\}`),
+  new RegExp(`-z\\s+"?\\$(?:${BADGE_STATISTIC})"?\\s*\\]\\]\\s*&&\\s*(?:${BADGE_STATISTIC})=0`),
+];
+
+/** A `grep` anchored on bun's human-readable ` N pass` / ` N fail` summary. */
+const CONSOLE_SCRAPE = /grep\b[^|]*\b(?:pass|fail)\\?\$/;
+
 describe('workflow hygiene', () => {
   test('the workflow directory actually parsed', () => {
     // Guards the guard: a path or parser regression that yielded nothing
@@ -146,6 +175,57 @@ describe('workflow hygiene', () => {
     expect(references.length).toBeGreaterThanOrEqual(30);
     expect(jobs.length).toBeGreaterThanOrEqual(workflows.length);
     expect(jobs.map((job) => `${job.workflow}#${job.name}`)).toContain('docs.yml#deploy');
+    expect(badgeStatements.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * #1194 — the badge counts used to be scraped out of bun's console summary
+   * (`grep -E "^[[:space:]]+[0-9]+ pass$"`). bun 1.3.14 stopped printing that
+   * block under GitHub Actions, the grep matched nothing, and because the job
+   * pins `bun-version: latest` the change arrived without a commit to blame.
+   *
+   * The JUnit report is a contract that survives a reporter's cosmetic
+   * changes; the rendered console output never was one. Asserting the negative
+   * too, because the scrape is the tempting thing to reach for again — it
+   * needs no extra flag and looks like it works right up until it doesn't.
+   */
+  test('test.yml reads the badge counts from a machine-readable report', () => {
+    expect(
+      badgeWorkflowLines.join('\n'),
+      'The README badge counts must come from a JUnit report '
+      + '(--reporter=junit --reporter-outfile=…), whose <testsuites tests/failures/'
+      + 'skipped> attributes are stable across bun releases.',
+    ).toContain('--reporter=junit');
+
+    const scrapes = badgeStatements.filter(({ text }) => CONSOLE_SCRAPE.test(text));
+    expect(
+      scrapes,
+      'A grep anchored on bun\'s " N pass" / " N fail" console summary is back in '
+      + 'test.yml. That output is presentation, not an interface — it already '
+      + 'disappeared once under GitHub Actions (#1194). Parse the JUnit report.',
+    ).toEqual([]);
+  });
+
+  /**
+   * #1194 — the parser breaking was survivable; defaulting its miss to `0` is
+   * what published `tests-0 of 0` from an all-green run. A zero denominator is
+   * indistinguishable from a real measurement, so it passed the `badge` job's
+   * "did we get numbers?" guard, picked the green colour via `PASS == TOTAL`,
+   * and overwrote the front page unchallenged.
+   *
+   * An unreadable statistic has to stay empty: the guard then skips the update
+   * and the README keeps figures that were true when they were measured.
+   */
+  test('test.yml never defaults an unreadable badge statistic to zero', () => {
+    const offenders = badgeStatements.filter(
+      ({ text }) => ZERO_DEFAULTS.some((pattern) => pattern.test(text)),
+    );
+    expect(
+      offenders,
+      'A badge statistic falls back to 0 when it cannot be parsed, which is how '
+      + '"0 of 0" reached README.md from a green run (#1194). Leave it empty and '
+      + 'let the badge job skip the update instead.',
+    ).toEqual([]);
   });
 
   /**
