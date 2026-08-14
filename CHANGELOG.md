@@ -324,19 +324,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   counter carries the signal, because every envelope is its own frame and a
   warning per envelope would let a client write the node's log at line rate.
 
-- **Snapshots stored in object storage can now be integrity-protected**
-  (#613).  `ObjectStorageSnapshotStore` had no integrity plumbing at all and
-  silently discarded `PersistenceOptions.integrity` on both the write and
-  the read path — and recovery folds events *on top of* a snapshot, so
-  whoever could rewrite one dictated the state an actor came back as.  It now
-  takes `integrity` and `allowUntaggedBodies`, signs bodies on `save`, and
-  verifies on `loadLatest` and `loadBefore`.  `registerObjectStoragePlugins`
-  forwards both to the snapshot store **and** the durable-state store, which
-  previously had no way to reach the option through the one-call wiring
-  either.  `IntegrityConfig`, `IntegrityResolver` and `resolveIntegrity` are
-  exported from the package — the option was typed with names it did not
-  export.
-
 - **A gRPC client can now be faked without installing the `@grpc/*` peer
   dependencies** (#1040).  `GrpcClientActor.createServiceClient()` is a
   protected hook holding the module load and client construction that used
@@ -514,6 +501,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   false`, and a plain-HTTP deployment needs `secure: false`; a scope
   narrower than `/` needs `path` spelled out.
 
+- **BREAKING — `@hono/node-ws` must be 1.2.0 or newer for `websocket()` routes
+  on the Hono backend under Node** (#586).  The transport frame cap added in
+  this same release installs itself by writing `maxPayload` onto the `ws`
+  server the adapter exposes as `wss` — a member that only exists from 1.2.0.
+  On 1.0.x and 1.1.x that server is a closure variable with no way out, so the
+  cap cannot be installed at all, and the backend refuses to build the
+  WebSocket bridge rather than bind an uncapped socket where a peer could
+  buffer 100 MiB per frame.  The declared peer range moves from `^1.0.0` to
+  `^1.2.0` so the supported window matches what the code can actually run on;
+  it was previously wider than the implementation, which turned a working
+  server into a startup error for anyone pinned below 1.2.0.
+
+  *Migration:* on the Hono backend under Node, upgrade the peer dependency —
+  `npm install @hono/node-ws@^1.2.0`.  Nothing else is affected: Bun and Deno
+  get their WebSocket helpers from `hono` itself and never load this package,
+  and a Node application with no `websocket()` route never reaches the bridge.
+
 ### Removed
 
 - **BREAKING — the ClusterClient envelope no longer carries a sender field**
@@ -536,7 +540,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   pre-upgrade client that sends the field — the value is ignored, and a
   value that contradicts the connection is counted on the new mismatch
   metric.  The reverse does not work: a current client against a node older
-  than v0.13.0 hits `NodeAddress.fromJSON(undefined)` and throws out of that
+  than v0.14.0 hits `NodeAddress.fromJSON(undefined)` and throws out of that
   node's frame-dispatch loop.  Upgrade the cluster nodes before the clients.
 
 - **The internal WebSocket path matcher is gone** (#623).
@@ -579,8 +583,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   to undo was still in flight — and a lease is a no-op to release before its
   acquire resolves, so the abandoned attempt went on to land, take the lease
   and renew it forever on a node whose own strategy had written the attempt
-  off.  The undo now waits for the abandoned attempt to report back and
-  releases only if it won, and no fresh acquire starts in the meantime: a
+  off.  An acquire is abandoned two ways: it blows `acquireTimeoutMs`, or a
+  partition heal or changed unreachable set retires its epoch — the second being
+  the likelier, since the acquire budget is 5 s by default.  Both are now
+  tracked the same way: the undo waits for the abandoned attempt to report back
+  and releases only if it won, and no fresh acquire starts in the meantime — a
   same-owner re-acquire would win trivially and claim survival, and a release
   landing after that would delete the very record being claimed.  The fail-safe
   on a failed release, previously unreachable for both shipped backends, is now
@@ -608,13 +615,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   WebSocket handlers received a query-bearing `upgrade.path`.  All four
   follow from the pathname fix and needed no change of their own.
 
-- **TCP `lines` framing no longer re-decodes the whole pending buffer on
-  every inbound chunk** (#610).  The extractor decoded all buffered bytes and
+- **A TCP peer can no longer stall the event loop by never completing a
+  frame** (#610).  The `lines` extractor decoded all buffered bytes and
   restarted the delimiter search at offset 0 per chunk — O(buffered) each
-  time, O(N²) over a delimiter-free stream, so a peer could stall the event
-  loop entirely inside a cap the docs call a DoS limit.  The scan now runs
-  over the raw bytes against the encoded delimiter, only completed lines are
-  decoded, and the search position is carried across chunks.  The same
+  time, O(N²) over a delimiter-free stream, entirely inside a cap the docs
+  call a DoS limit.  The scan now runs over the raw bytes against the encoded
+  delimiter, only completed lines are decoded, and the search position is
+  carried across chunks.  Appending the chunk was the other half, and the
+  larger one: the inbound buffer was re-allocated and copied in full per
+  chunk, so the stream stayed O(N²) with the scan already fixed.  Both TCP
+  actors now accumulate into a buffer grown by doubling behind a read cursor —
+  sized from what arrived rather than from any length a peer claims, compacted
+  in place instead of reallocated, and released once it drains above 64 KiB.
+  256 KiB delivered in 64-byte chunks now moves 516 KiB instead of 512 MiB,
+  and `length-prefixed` loses its per-pass re-slice of the leftover along the
+  way.  The same
   rewrite fixes a corruption bug: a chunk boundary splitting a multi-byte
   character used to be decoded to U+FFFD and re-encoded into the leftover,
   so the continuation byte arriving next could never repair it.  Applies to
@@ -636,9 +651,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   same code under Node delivered the full response.  Routing the rejection
   through a `ServerResponse` bound to that socket delivers it on both.  Deno
   delivers neither, before or after: its `'upgrade'` socket is write-only in
-  the direction of a completed handshake, so a refused client there still
-  just sees the connection go.  The handshake is refused correctly on all
-  three either way — only the explanatory body was missing.
+  the direction of a completed handshake, so a refused client there sees no
+  response *and* no close, and only notices when its own timeout fires.  The
+  handshake is refused correctly on all three either way — only the
+  explanatory body was missing.
 
 - **A body-size refusal now reads the same whichever backend served it**
   (#357).  All three answer 413 with the `text/plain` body `Payload Too
@@ -659,8 +675,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   read and buffered before the 413 went out.  Hono and Fastify already
   refused up front; the shared predicate now sits beside the backend
   contract in `HttpServerBackend.ts`.  A chunked body that declares no length
-  is still measured as it arrives — that is the one path a size cap cannot
-  short-circuit without help from the runtime adapters.
+  is measured as it arrives on Express and Fastify — that is the one path a
+  size cap cannot short-circuit without help from the runtime adapters.  On
+  Hono it is still buffered whole before the check, because the adapter hands
+  the body over as one `arrayBuffer()`; that gap is not closed here.
 
 - **A work unit that throws on a dispatcher now reaches the system logger
   and the event stream** (#410).  It went to `console.error` and nowhere
@@ -737,8 +755,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (relevant to #590, #592, #741).  No sink option that carries a credential
   is readable from HOCON.
 
-- **BREAKING — a recorded gossip frame can no longer be played back** (#112,
-  relates to #940).  A gossip frame is a snapshot of the member map, and a
+- **BREAKING — a recorded gossip frame can no longer be played back while its
+  sender is still a member** (#112, relates to #940).  A gossip frame is a
+  snapshot of the member map, and a
   member's version only moves when its status does, so a frame captured off
   the wire stayed valid indefinitely.  Against a converged receiver that was
   harmless — every record lost the "higher version wins" comparison — but not
@@ -790,10 +809,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   congested link is never punished for being slow.  Concurrent inbound
   connections are capped at 1024, refusing the newest rather than evicting an
   established peer, because eviction would let an attacker push real members
-  off the node.  Until now only outbound dials had any deadline
-  (`HANDSHAKE_TIMEOUT_MS`), and that one stops mattering the moment the
-  handshake lands, so an unauthenticated socket could hold decode memory
-  indefinitely and multiply it by opening sockets in a loop.
+  off the node.  The handshake itself is on the same clock in both directions,
+  from the moment each connection exists: an accepted socket that has not sent
+  its `hello` within `HANDSHAKE_TIMEOUT_MS` is closed and gives its slot back.
+  That is the case a stall deadline cannot see — a socket sending nothing is not
+  stuck mid-frame, so nothing about it is tracked — and without it the cap would
+  have become the exploit rather than the defence, since silent sockets held
+  every slot for the life of the process.  Only the outbound dial was ever
+  bounded before; on Bun the inbound gap was reachable even under mTLS, because
+  a socket's `open` callback fires before the TLS handshake completes, so the
+  slot was taken while there was still no certificate to check.  The bound is on
+  the handshake and not on the connection, and it is the same deadline the
+  dialling side already applies to itself from an earlier moment, so a peer that
+  is still trying has always given up first and an established peer idle between
+  gossip rounds is never dropped.
 
 - **BREAKING — `getFromDirectory` enforces `symlinks: 'within-root'` on every
   filesystem hop** (#575).  The confinement check ran once, against the path a
@@ -916,8 +945,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **Base64 decoding no longer hands out a view into the shared `Buffer` pool**
   (#619).  On Node and Deno, `Buffer.from(str, 'base64')` decodes into a pool
-  and returns a view at an arbitrary offset, so a decoded `__bytes__` or
-  `__typedarray__` payload exposed unrelated payloads' plaintext to anything
+  and returns a view at an arbitrary offset, so a decoded `__bytes__`
+  payload exposed unrelated payloads' plaintext to anything
   that read its `.buffer` instead of the view — measured at `byteOffset` 1656
   of a 65536-byte pool on Node 26.7.0 and offset 96 of an 8192-byte pool on
   Deno 2.6.8, at every size from 1 byte to 8 KB.  It reached user code through
@@ -1065,13 +1094,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Dependabot does not regenerate `bun.lock`, so its pull requests fail until it
   is synced by hand (#817).
 
-- **The generated DevTools UI bundle is visible in diffs again** (#620).
-  `.gitattributes` marked `src/devtools/generated/uiAssets.ts` `-diff`, which
-  made git and GitHub report it as binary.  `bun run check:ui` proves only that
-  the committed `source-hash` matches the UI sources it claims — it deliberately
-  does not compare the bundle's bytes, since those are not reproducible across
-  operating systems and Bun releases — so review is the only check the embedded
-  payload ever gets, and `-diff` removed it.  A payload edited without touching
+- **The generated DevTools UI bundle shows up in diffs** (#620).
+  `.gitattributes` had marked `src/devtools/generated/uiAssets.ts` `-diff` since
+  the rule was first written, which made git and GitHub report it as binary.
+  `bun run check:ui` proves only that the committed `source-hash` matches the UI
+  sources it claims — it deliberately does not compare the bundle's bytes, since
+  those are not reproducible across operating systems and Bun releases — so
+  nothing binds the embedded payload to those sources, and `-diff` removed the
+  one remaining way a human could notice.  (GitHub still collapses a
+  `linguist-generated` file by default, so a reviewer has to expand it.)  A payload edited without touching
   `devtools-ui/**` now shows up as `gzipBase64`, `size` and `etag` moving while
   `source-hash` stays put.  `linguist-generated`, `text` and `eol=lf` are
   unchanged, and a regenerate is 7 changed lines, only 2 of them large.
@@ -1092,8 +1123,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   still recognise what you typed, and a value that is not a URL at all
   (`":memory:"`, `"file:local.db"`) comes back verbatim.  All fourteen `url`
   rule call sites benefit, including the six log-shipping sinks (Loki,
-  Splunk, Seq, GELF, Parseable, OTLP), whose endpoints are among the most
-  likely to carry a token.
+  Splunk, Seq, GELF, Parseable, OTLP).  Note this masks the userinfo half only:
+  a credential a sink carries in a query parameter is not touched, and in this
+  framework those sinks take their token in a separate option field anyway.
 
   *Migration:* `OptionsError.value` now holds the redacted string rather
   than the raw one.  Code that catches an `OptionsError` to re-derive the
@@ -1243,11 +1275,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   construction instead of arriving later as a puzzling 404.
 
   *Migration:* a `namespace` or `serviceName` outside the DNS-1123 shape is
-  now an `OptionsError` at construction.  The rule is scoped to the default
-  in-cluster fetcher — supply `fetchEndpoints` if you use those two fields
-  as plain labels rather than to address a Kubernetes object.  On the
-  `autoDiscovery` ladder an out-of-shape `CLUSTER_SERVICE_NAME` now fails
-  the bootstrap instead of silently falling through to DNS.
+  now an `OptionsError` at construction, and `Cluster.bootstrap({ discovery:
+  'kubernetes' })` still fails loudly on one.  The rule is scoped to the
+  default in-cluster fetcher — supply `fetchEndpoints` if you use those two
+  fields as plain labels rather than to address a Kubernetes object.  On the
+  env-driven `autoDiscovery` ladder only the rejected rung is dropped: the
+  rest of the chain still runs.
+
+- **One rejected rung no longer takes down the whole discovery ladder**
+  (#597).  `autoDiscovery` builds every rung up front, so the DNS-1123 shape
+  rule above threw from outside `AggregateSeedProvider.lookup()`'s
+  fall-through and outside `ClusterBootstrap`'s lookup `.catch()` — one
+  out-of-shape environment variable killed bootstrap before any provider ran,
+  including the `ConfigSeedProvider` already built from `CLUSTER_SEEDS`, which
+  does not read `serviceName` at all.  That mattered because the same variable
+  drives the DNS rung, where SRV names (`_actor-ts._tcp.example.com`),
+  trailing-dot FQDNs and uppercase are all legal hostnames and none is a
+  DNS-1123 subdomain.  Each rung's construction is now guarded: a rejected
+  rung is dropped and reported through the bootstrap log, and the rest of the
+  chain runs.  The guard covers all three rungs — a `CLUSTER_SEEDS` value that
+  parses to nothing failed the same way.
 
 - **BREAKING — `DevTools.mount()` now demands the same acknowledgement a
   routable `attach()` does** (#594).  `attach` refuses a non-loopback bind
@@ -1459,6 +1506,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   shipped `false` out stays silent.  Reading the key also empties the
   dead-key guard's exemption list: no key in `reference.conf` is excused
   today.  TLS for the built-in transport is still not implemented.
+
+- **Snapshots stored in object storage can now be integrity-protected**
+  (#613).  `ObjectStorageSnapshotStore` had no integrity plumbing at all and
+  silently discarded `PersistenceOptions.integrity` on both the write and
+  the read path — and recovery folds events *on top of* a snapshot, so
+  whoever could rewrite one dictated the state an actor came back as.  It now
+  takes `integrity` and `allowUntaggedBodies`, signs bodies on `save`, and
+  verifies on `loadLatest` and `loadBefore`.  `registerObjectStoragePlugins`
+  forwards both to the snapshot store **and** the durable-state store, which
+  previously had no way to reach the option through the one-call wiring
+  either.  `IntegrityConfig`, `IntegrityResolver` and `resolveIntegrity` are
+  exported from the package — the option was typed with names it did not
+  export.
 
 ## [0.15.0] — 2026-08-12
 

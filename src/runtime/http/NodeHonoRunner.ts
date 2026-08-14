@@ -86,7 +86,14 @@ export class NodeHonoRunner implements HonoServerRunner {
 export type CreateNodeWebSocketFunction = (options: { app: unknown }) => {
   upgradeWebSocket: unknown;
   injectWebSocket: (server: unknown) => void;
-  /** The `ws` server the adapter built for itself; see {@link buildNodeWebsocketBridge}. */
+  /**
+   * The `ws` server the adapter built for itself; see
+   * {@link buildNodeWebsocketBridge}.  Optional even though the declared peer
+   * floor guarantees it: an *optional* peer range is advisory — package
+   * managers warn on a violation rather than refuse the install — so the
+   * runtime check has to stay reachable, and it only type-checks while this
+   * stays optional.
+   */
   wss?: WebsocketServerLike;
 };
 
@@ -110,6 +117,13 @@ type WebsocketServerLike = { options?: { maxPayload?: number } };
  * upgrade wiring loudly is the safer half of that trade — a silently ignored
  * cap is exactly the defect this closes.
  *
+ * The two ways that verification can fail have nothing to do with each other,
+ * so they are reported apart.  `wss` itself is not a `ws` internal at all: the
+ * adapter only started returning it in **1.2.0**, which is why that is the
+ * declared peer floor.  An installation below it is an old dependency, not a
+ * regression, and one message covering both would send its reader hunting a
+ * `ws` change that never happened.
+ *
  * @internal — exported so a test can drive it with a captured `wss`.
  */
 export function buildNodeWebsocketBridge(
@@ -118,13 +132,22 @@ export function buildNodeWebsocketBridge(
   maxFrameBytes: number,
 ): HonoWebsocketBridge {
   const { upgradeWebSocket, injectWebSocket, wss } = createNodeWebSocket({ app });
-  const options = wss?.options;
+  if (!wss) {
+    throw new Error(
+      'NodeHonoRunner: cannot install the WebSocket frame cap — the installed '
+        + '"@hono/node-ws" does not return its "ws" server as "wss".  That member was added '
+        + 'in 1.2.0, so this is a version below the supported floor rather than a '
+        + 'regression: install "@hono/node-ws" >= 1.2.0.  Running without the cap would let '
+        + 'a peer buffer frames far larger than maxFrameBytes.',
+    );
+  }
+  const options = wss.options;
   if (!options || typeof options.maxPayload !== 'number') {
     throw new Error(
-      'NodeHonoRunner: cannot install the WebSocket frame cap — "@hono/node-ws" no longer '
-        + 'exposes a "ws" server with a numeric options.maxPayload.  Pin "@hono/node-ws" and '
-        + '"ws" to a version that does; running without the cap would let a peer buffer '
-        + 'frames far larger than maxFrameBytes.',
+      'NodeHonoRunner: cannot install the WebSocket frame cap — the "ws" server behind '
+        + '"@hono/node-ws" no longer exposes a numeric options.maxPayload.  Pin "ws" to a '
+        + 'version that does; running without the cap would let a peer buffer frames far '
+        + 'larger than maxFrameBytes.',
     );
   }
   options.maxPayload = maxFrameBytes;

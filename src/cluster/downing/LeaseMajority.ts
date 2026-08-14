@@ -36,21 +36,26 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  * an empty decision.  Better to wait than to risk both sides
  * surviving.
  *
- * **Slow / hung acquire (#142 split-brain hardening)**
+ * **Abandoned acquire (#142 split-brain hardening)**
  *
- * If `lease.acquire()` hasn't resolved by `acquireTimeoutMs`, the
- * defence-in-depth logic kicks in:
+ * An acquire is *abandoned* when it is still on the wire but its
+ * result is no longer wanted — either it hasn't resolved by
+ * `acquireTimeoutMs`, or the partition view moved on under it (a
+ * heal or a different unreachable set, i.e. `reset()`).  The second
+ * is the likelier of the two: the acquire budget is 5 s by default,
+ * and a membership change inside that window needs no stall at all.
+ * Both go through the same defence-in-depth logic:
  *
  *   - **Epoch invalidation** — every kickoff captures a monotonic
- *     `acquireEpoch`.  The timeout-recovery bumps the epoch, so a
- *     late-arriving result from the timed-out attempt is dropped
+ *     `acquireEpoch`.  Abandoning bumps the epoch, so a
+ *     late-arriving result from the abandoned attempt is dropped
  *     (it can't write a stale `decision`).
- *   - **Release-on-abandon** — an acquire that timed out on the
- *     client but succeeded on the server leaves the lease record
+ *   - **Release-on-abandon** — an acquire the client walked away
+ *     from but that succeeded on the server leaves the lease record
  *     claimed with nobody observing the win, and the backend then
  *     renews it forever.  So the abandoned attempt is *tracked*, and
  *     when it finally reports back a win, `lease.release()` undoes
- *     it.  The release deliberately does not fire at timeout time
+ *     it.  The release deliberately does not fire at abandon time
  *     (#600): the backend has not taken the lease yet at that point,
  *     and `Lease.release()` is contractually a no-op when not held,
  *     so a release fired there could never undo anything.
@@ -112,12 +117,13 @@ export class LeaseMajority implements DowningProvider {
   private failSafe = false;
 
   /**
-   * Epoch of an acquire we timed out on and stopped watching, until it
-   * reports back.  Non-null means an attempt is still in flight with
-   * nobody accepting its result — a win has to be released before any
-   * fresh attempt may start, so `decide()` waits.  Survives `reset()`
-   * on purpose: a partition healing does not make the outstanding
-   * ownership go away.  See #600.
+   * Epoch of an acquire we stopped watching — because it blew its
+   * deadline, or because a `reset()` (partition heal / changed partition
+   * view) retired its epoch — until it reports back.  Non-null means an
+   * attempt is still in flight with nobody accepting its result — a win
+   * has to be released before any fresh attempt may start, so `decide()`
+   * waits.  Survives `reset()` on purpose: a partition healing does not
+   * make the outstanding ownership go away.  See #600.
    *
    * It clears however the attempt reports — won, lost or rejected — so
    * the wait lasts exactly as long as the backend takes to settle.  A
@@ -322,13 +328,28 @@ export class LeaseMajority implements DowningProvider {
 
   private reset(): void {
     this.decision = null;
-    this.acquiring = false;
     this.lastFingerprint = null;
     this.failSafe = false;
-    // `abandonedAcquireEpoch` is deliberately NOT cleared: an attempt we
-    // stopped watching may still take the lease on the wire, and a healed
-    // partition does nothing about that.  It clears when that attempt
-    // reports back and has been undone.
+    // An acquire that is still in flight loses its watcher here exactly as
+    // it does on timeout — the epoch bump below makes its result
+    // unusable — so it has to be tracked the same way (#600).  Without
+    // this the attempt is orphaned: a late win falls through the
+    // stale-resolve branch with nothing to match, never gets released, and
+    // the backend renews the record forever on a node whose own strategy
+    // dropped the result.  On a changed partition view it is worse still,
+    // because `decide()` runs on past this point and would start a second
+    // acquire alongside the first.
+    //
+    // `acquiring` implies no attempt is already tracked: `decide()` starts
+    // one only while `abandonedAcquireEpoch` is null.
+    if (this.acquiring) {
+      this.abandonedAcquireEpoch = this.acquireEpoch;
+    }
+    this.acquiring = false;
+    // Otherwise `abandonedAcquireEpoch` is deliberately NOT cleared: an
+    // attempt we stopped watching may still take the lease on the wire,
+    // and a healed partition does nothing about that.  It clears when that
+    // attempt reports back and has been undone.
     // Bump the epoch so any in-flight runAcquire from before the
     // reset drops its result instead of writing to the cleared
     // decision.
