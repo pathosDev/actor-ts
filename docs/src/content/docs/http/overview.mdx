@@ -101,6 +101,44 @@ The shared client wraps the runtime's native `fetch`.  Works
 identically on Bun, Node, and Deno (every supported runtime
 has fetch built in).
 
+### Bounds every call carries
+
+A response is buffered in memory before you see it, so the two
+things the remote peer controls are bounded by default:
+
+| Bound | Default | Per-request override |
+| --- | --- | --- |
+| Deadline | 30 s | `timeoutMs` — `0` opts one call out entirely |
+| Response body | 8 MiB | `maxResponseBytes` |
+
+Past the ceiling the request is **aborted while the body is still
+arriving** and the call throws `HttpResponseTooLargeError`, so an
+oversized or endless response never finishes allocating.  Past the
+deadline it aborts exactly as an explicit `timeoutMs` always did —
+what changed is that a call naming no deadline now has one.
+
+Raise them per call when a single endpoint is the exception:
+
+```ts
+const report = await system.extension(HttpExtensionId).client.get(
+  'https://api.example.com/exports/daily',
+  { maxResponseBytes: 64 * 1024 * 1024, timeoutMs: 120_000 },
+);
+```
+
+Or give a whole integration its own client, instead of loosening
+the one every actor in the system shares:
+
+```ts
+import { HttpClientOptions } from 'actor-ts/http';
+
+const exportClientOptions = HttpClientOptions.create()
+  .withMaxResponseBytes(64 * 1024 * 1024)
+  .withDefaultTimeoutMs(120_000);
+
+const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
+```
+
 For more elaborate client patterns (retries, caching), wrap the
 client in a [retry](/patterns/retry/) +
 [circuit-breaker](/patterns/circuit-breaker/) call.

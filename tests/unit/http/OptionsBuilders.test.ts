@@ -11,6 +11,7 @@ import {
   CspOptions,
   CsrfOptions,
   HstsOptions,
+  HttpClientOptions,
   RequestIdOptions,
   SameOriginOptions,
   SecurityHeadersOptions,
@@ -123,6 +124,15 @@ describe('option builders — every withX sets its field', () => {
     const fields = bag(builder);
     expect(fields.ms).toBe(1234);
     expect(fields.onTimeout).toBe(onTimeout);
+  });
+
+  test('HttpClientOptions', () => {
+    const builder = HttpClientOptions.create()
+      .withMaxResponseBytes(2048)
+      .withDefaultTimeoutMs(7_500);
+    const fields = bag(builder);
+    expect(fields.maxResponseBytes).toBe(2048);
+    expect(fields.defaultTimeoutMs).toBe(7_500);
   });
 
   test('StaticFilesOptions', () => {

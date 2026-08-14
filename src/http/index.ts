@@ -121,8 +121,16 @@ export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 export { parseCookies, serializeCookie } from './cookies.js';
 export type { CookieAttributes } from './cookies.js';
 
-export { HttpClient } from './HttpClient.js';
+export { HttpClient, HttpResponseTooLargeError } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
+export {
+  HttpClientOptions,
+  HttpClientOptionsBuilder,
+  HttpClientOptionsValidator,
+  DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+  DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+} from './HttpClientOptions.js';
+export type { HttpClientOptionsType } from './HttpClientOptions.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';

@@ -104,6 +104,47 @@ Der gemeinsame Client umschließt das native `fetch` der Runtime.
 Funktioniert identisch auf Bun, Node und Deno (jede unterstützte
 Runtime hat fetch eingebaut).
 
+### Schranken, die jeder Aufruf mitbringt
+
+Eine Antwort wird im Speicher gepuffert, bevor du sie siehst —
+deshalb sind die beiden Dinge, die die Gegenstelle kontrolliert,
+standardmäßig begrenzt:
+
+| Schranke | Default | Override pro Request |
+| --- | --- | --- |
+| Deadline | 30 s | `timeoutMs` — `0` nimmt einen Aufruf ganz heraus |
+| Response-Body | 8 MiB | `maxResponseBytes` |
+
+Jenseits der Obergrenze wird der Request **abgebrochen, während
+der Body noch eintrifft**, und der Aufruf wirft
+`HttpResponseTooLargeError` — eine übergroße oder endlose Antwort
+alloziert also nie zu Ende.  Jenseits der Deadline bricht er
+genauso ab wie bisher schon bei explizitem `timeoutMs`; neu ist
+nur, dass ein Aufruf ohne genannte Deadline jetzt eine hat.
+
+Hebe sie pro Aufruf an, wenn ein einzelner Endpunkt die Ausnahme
+ist:
+
+```ts
+const report = await system.extension(HttpExtensionId).client.get(
+  'https://api.example.com/exports/daily',
+  { maxResponseBytes: 64 * 1024 * 1024, timeoutMs: 120_000 },
+);
+```
+
+Oder gib einer ganzen Integration ihren eigenen Client, statt den
+zu lockern, den sich alle Aktoren im System teilen:
+
+```ts
+import { HttpClientOptions } from 'actor-ts/http';
+
+const exportClientOptions = HttpClientOptions.create()
+  .withMaxResponseBytes(64 * 1024 * 1024)
+  .withDefaultTimeoutMs(120_000);
+
+const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
+```
+
 Für aufwendigere Client-Muster (Retries, Caching) wickle den
 Client in einen [Retry](/de/patterns/retry/)- +
 [Circuit-Breaker](/de/patterns/circuit-breaker/)-Aufruf.
