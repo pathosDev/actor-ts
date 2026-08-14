@@ -38,14 +38,14 @@ import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtensi
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { MetricsExtensionId } from '../../src/metrics/MetricsExtension.js';
-import { CounterSingleton } from './lib/singleton.js';
+import { CounterSingleton } from './lib/Singleton.js';
 import {
   SHARDING_TYPE_NAME,
   ShardedCounter,
   type ShardedCommand,
-} from './lib/sharded-counter.js';
-import { EchoActor } from './lib/echo.js';
-import { makeControlRoutes, WORKER_KEY } from './lib/control-routes.js';
+} from './lib/ShardedCounter.js';
+import { EchoActor } from './lib/Echo.js';
+import { makeControlRoutes, WORKER_KEY } from './lib/ControlRoutes.js';
 
 const SYSTEM_NAME = process.env.SYSTEM_NAME ?? 'integration';
 const NODE_NAME = process.env.NODE_NAME ?? 'node-x';
@@ -74,7 +74,7 @@ function parseLevel(name: string): LogLevel {
 
 async function main(): Promise<void> {
   const logger = new JsonLogger(parseLevel(LOG_LEVEL), '', { node: NODE_NAME });
-  logger.info('node-runner starting', { host: HOST, clusterPort: CLUSTER_PORT, seeds: SEEDS });
+  logger.info('NodeRunner starting', { host: HOST, clusterPort: CLUSTER_PORT, seeds: SEEDS });
 
   const systemOptions = ActorSystemOptions.create()
     .withLogger(logger);
@@ -259,6 +259,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  console.error('node-runner fatal:', e);
+  console.error('NodeRunner fatal:', e);
   process.exit(1);
 });

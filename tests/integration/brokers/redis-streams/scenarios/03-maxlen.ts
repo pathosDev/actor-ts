@@ -3,8 +3,8 @@
  * stream exceeds N.  The framework adapter sets this via the
  * `maxLenApprox` field; verifies the cap actually trims the stream.
  */
-import { spawnRedis, type RedisContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnRedis, type RedisContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<RedisContext> = {
   name: 'MAXLEN ~ N caps stream length',

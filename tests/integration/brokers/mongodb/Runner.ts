@@ -19,9 +19,9 @@ import { MongoJournal } from '../../../../src/persistence/journals/MongoJournal.
 import { MongoJournalOptions } from '../../../../src/persistence/journals/MongoJournalOptions.js';
 import { MongoSnapshotStore } from '../../../../src/persistence/snapshot-stores/MongoSnapshotStore.js';
 import { MongoSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MongoSnapshotStoreOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios } from '../lib/Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/PersistenceContract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];

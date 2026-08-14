@@ -30,7 +30,7 @@ import { ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedD
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
-import { coordinatorSegments } from '../util/systemPaths.js';
+import { coordinatorSegments } from '../util/SystemPaths.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };

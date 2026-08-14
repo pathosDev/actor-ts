@@ -32,7 +32,7 @@ import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { DistributedDataCoordinatorStateStore } from '../../src/cluster/sharding/CoordinatorState.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
-import { coordinatorSegments } from '../util/systemPaths.js';
+import { coordinatorSegments } from '../util/SystemPaths.js';
 import { DistributedDataId } from '../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';

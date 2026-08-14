@@ -3,8 +3,8 @@
  * the live Docker suites (#390).
  */
 import { DurableStateConcurrencyError } from '../../../../../src/persistence/DurableStateStore.js';
-import { assert, assertEqual, expectThrows } from './assert.js';
-import { closeQuietly, type ContractScenario, type DurableStateHarness } from './types.js';
+import { assert, assertEqual, expectThrows } from './Assert.js';
+import { closeQuietly, type ContractScenario, type DurableStateHarness } from './Types.js';
 
 export function durableStateContractScenarios(): ContractScenario<DurableStateHarness>[] {
   return [

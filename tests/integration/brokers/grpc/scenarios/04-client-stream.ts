@@ -10,8 +10,8 @@
  */
 import type { GrpcClientCommand, GrpcStreamHandle } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnCollector, type CollectorActor, type GrpcContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnCollector, type CollectorActor, type GrpcContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 async function openStream(
   client: ActorRef<GrpcClientCommand>,

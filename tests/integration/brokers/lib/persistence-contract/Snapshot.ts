@@ -2,8 +2,8 @@
  * `SnapshotStore` contract scenarios — shared by the in-process suite and
  * the live Docker suites (#390).
  */
-import { assert, assertEqual } from './assert.js';
-import { closeQuietly, type ContractScenario, type SnapshotHarness } from './types.js';
+import { assert, assertEqual } from './Assert.js';
+import { closeQuietly, type ContractScenario, type SnapshotHarness } from './Types.js';
 
 function keepNSkip(harness: SnapshotHarness): string | null {
   return harness.capabilities?.keepN === 'none' ? 'store keeps every snapshot (no keepN)' : null;

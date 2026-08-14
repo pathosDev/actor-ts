@@ -27,7 +27,7 @@ import {
   type JournalHarness,
   type SnapshotHarness,
 } from './persistence-contract/index.js';
-import type { BrokerScenario, BrokerScenarioContext } from './scenario.js';
+import type { BrokerScenario, BrokerScenarioContext } from './Scenario.js';
 
 export interface SqlPersistenceContext extends BrokerScenarioContext {
   /** Short label — used in scenario names and to namespace persistence ids ("pg", "mariadb"). */

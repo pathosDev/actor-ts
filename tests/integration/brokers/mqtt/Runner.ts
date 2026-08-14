@@ -13,8 +13,8 @@ import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor
 import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { MqttRef } from '../../../../src/io/broker/MqttMessages.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-subscribe.js';
 import { scenario as qos1Scenario } from './scenarios/02-qos1.js';
 import { scenario as qos2Scenario } from './scenarios/03-qos2.js';

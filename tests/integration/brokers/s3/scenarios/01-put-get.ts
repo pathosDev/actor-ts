@@ -2,8 +2,8 @@
  * Round-trip: PUT then GET against a live MinIO bucket.  The
  * baseline smoke — if this fails everything downstream is moot.
  */
-import { backend, type S3Context } from '../runner.js';
-import type { BrokerScenario } from '../../lib/scenario.js';
+import { backend, type S3Context } from '../Runner.js';
+import type { BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<S3Context> = {
   name: 'put-get round-trip',

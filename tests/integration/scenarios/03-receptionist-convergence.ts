@@ -11,7 +11,7 @@
  * registrations, then heal and re-verify the full 5.
  */
 
-import { sleep, waitFor, type Scenario } from './types.js';
+import { sleep, waitFor, type Scenario } from './Types.js';
 
 type ListingResponse = {
   readonly count: number;

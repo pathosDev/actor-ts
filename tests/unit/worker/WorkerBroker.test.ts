@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { BrokeredMessage } from '../../../src/cluster/transports/MessageChannelTransport.js';
 import { WorkerBroker } from '../../../src/worker/WorkerBroker.js';
-import { FakePort } from './__fixtures__/in-memory-worker-thread.js';
+import { FakePort } from './__fixtures__/InMemoryWorkerThread.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'host', port);
 

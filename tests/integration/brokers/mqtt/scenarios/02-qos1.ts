@@ -3,8 +3,8 @@
  * adapter doesn't surface it explicitly but the message must still
  * arrive at the subscriber with the correct QoS marked on inbound.
  */
-import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'QoS 1 — at-least-once delivery',

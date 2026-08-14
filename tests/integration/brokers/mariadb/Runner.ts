@@ -14,9 +14,9 @@ import { MariaDbSnapshotStore } from '../../../../src/persistence/snapshot-store
 import { MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.js';
 import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
 import { MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios } from '../lib/Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/PersistenceContract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];

@@ -3,13 +3,13 @@
  *
  * Boots MinIO, ensures the test bucket exists, then runs every
  * scenario in `scenarios/` sequentially.  Mirrors the shape of
- * `tests/integration/controller.ts` (#313) — small, dependency-free,
+ * `tests/integration/Controller.ts` (#313) — small, dependency-free,
  * exit 0 / exit 1.
  */
 import { S3ObjectStorageBackend } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
 import { S3ObjectStorageOptions } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
 import { scenario as putGetScenario } from './scenarios/01-put-get.js';
 import { scenario as listScenario } from './scenarios/02-list.js';
 import { scenario as casScenario } from './scenarios/03-cas.js';

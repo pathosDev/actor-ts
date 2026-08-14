@@ -23,10 +23,10 @@
  * Caveat: this scenario REDUCES the cluster size by one — it
  * should run near the end of the suite.  Subsequent scenarios that
  * need full membership won't have it; this is acknowledged at the
- * top of `controller.ts`.
+ * top of `Controller.ts`.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './Types.js';
 
 type WhoResponse = {
   readonly host: string;

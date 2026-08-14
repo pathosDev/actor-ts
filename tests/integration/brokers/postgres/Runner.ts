@@ -13,9 +13,9 @@ import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stor
 import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
 import { PostgresDurableStateStore } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
 import { PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios } from '../lib/Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/PersistenceContract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];

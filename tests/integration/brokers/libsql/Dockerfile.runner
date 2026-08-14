@@ -23,4 +23,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/libsql/runner.ts"]
+CMD ["bun", "tests/integration/brokers/libsql/Runner.ts"]

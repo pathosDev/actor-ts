@@ -9,8 +9,8 @@
  * backend's hand-written suite happened to prompt it (#390).
  */
 import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
-import { assert, assertEqual, expectThrows } from './assert.js';
-import { closeQuietly, type ContractScenario, type JournalHarness } from './types.js';
+import { assert, assertEqual, expectThrows } from './Assert.js';
+import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
 export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
   return [

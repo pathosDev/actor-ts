@@ -23,9 +23,9 @@ import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJo
 import { PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournalOptions.js';
 import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
 import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
-import { waitForPort } from './wait-for-port.js';
-import { runScenarios } from './scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from './persistence-contract.js';
+import { waitForPort } from './WaitForPort.js';
+import { runScenarios } from './Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from './PersistenceContract.js';
 
 export type PgWireSuiteOptions = {
   /** Display name for the readiness wait ("CockroachDB", "YugabyteDB"). */

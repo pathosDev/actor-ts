@@ -9,7 +9,7 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
-import { regionSegments } from '../../../../util/systemPaths.js';
+import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 

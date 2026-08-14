@@ -6,8 +6,8 @@
  * eventually receives the record, but not both" — i.e. the message
  * is delivered exactly once across the group.
  */
-import { spawnInbox, spawnKafka, type KafkaContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnKafka, type KafkaContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'consumer-group exactly-once fan-out across two consumers',

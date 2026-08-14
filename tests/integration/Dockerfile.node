@@ -59,4 +59,4 @@ ENV NODE_ENV=production
 # The default CMD runs a cluster node.  The controller service in
 # docker-compose.integration.yml overrides it with the controller
 # entry point.
-CMD ["bun", "tests/integration/node-runner.ts"]
+CMD ["bun", "tests/integration/NodeRunner.ts"]

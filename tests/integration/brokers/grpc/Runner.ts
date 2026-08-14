@@ -23,7 +23,7 @@ import {
 } from '../../../../src/io/broker/GrpcServerActor.js';
 import { GrpcServerOptions } from '../../../../src/io/broker/GrpcServerOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
 import { scenario as unaryScenario } from './scenarios/01-unary.js';
 import { scenario as serverStreamScenario } from './scenarios/02-server-stream.js';
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';

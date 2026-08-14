@@ -2,8 +2,8 @@
  * Baseline NATS publish/subscribe — single subject.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
-import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnNats, type NatsContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<NatsContext> = {
   name: 'publish/subscribe round-trip',

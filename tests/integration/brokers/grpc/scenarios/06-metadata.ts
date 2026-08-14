@@ -19,8 +19,8 @@
  */
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
-import { METADATA_REQUEST_TEXT, spawnCollector, type GrpcContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { METADATA_REQUEST_TEXT, spawnCollector, type GrpcContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 /** Sent on every call grpc-js makes, as `grpc-node-js/<version>`. */
 const ALWAYS_SENT_HEADER = 'user-agent';

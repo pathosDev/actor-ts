@@ -3,7 +3,7 @@
  * scenario — proves the harness can drive worker-thread cluster
  * tests with the same shape as the in-process variant.
  *
- * Uses the `parallel-pubsub-scenario.ts` module: each worker hosts
+ * Uses the `ParallelPubSubScenario.ts` module: each worker hosts
  * a `DistributedPubSub` mediator + a per-topic `TestProbe`.  The
  * harness drives `subscribe` / `publish` / `drain` via `runIn`.
  *
@@ -35,7 +35,7 @@ describeMns('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
       gossipIntervalMs: 100,
-      scenarioModule: new URL('./internal/parallel-pubsub-scenario.ts', import.meta.url),
+      scenarioModule: new URL('./internal/ParallelPubSubScenario.ts', import.meta.url),
     });
     try {
       await spec.start();

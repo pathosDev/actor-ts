@@ -4,8 +4,8 @@
  * scenario's inbox just records, doesn't ack, but the actor's
  * connect path auto-creates the group with `createIfMissing`).
  */
-import { spawnInbox, spawnRedis, type RedisContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnRedis, type RedisContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<RedisContext> = {
   name: 'XREADGROUP — consumer group delivers entries to target',

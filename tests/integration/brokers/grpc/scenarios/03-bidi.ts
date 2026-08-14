@@ -5,8 +5,8 @@
  */
 import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnCollector, type GrpcContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnCollector, type GrpcContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<GrpcContext> = {
   name: 'bidi — client sends N, server echoes N, client closes',

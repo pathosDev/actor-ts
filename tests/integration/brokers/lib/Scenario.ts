@@ -1,7 +1,7 @@
 /**
  * Minimal scenario runner shared across all broker-integration suites
  * (B.2-B.9).  Same idea as the cluster-scenario runner under
- * `tests/integration/controller.ts`, but trimmed for the single-
+ * `tests/integration/Controller.ts`, but trimmed for the single-
  * service shape of broker tests:
  *
  *   - No cluster topology — each scenario gets a fresh connection to
@@ -11,7 +11,7 @@
  *     framework's adapter against a REAL broker (vs the mock fakes
  *     in unit tests).
  *
- * Every broker suite ships a `<broker>/runner.ts` that:
+ * Every broker suite ships a `<broker>/Runner.ts` that:
  *   1. imports its scenarios from `<broker>/scenarios/*.ts`
  *   2. calls `runScenarios(scenarios, context)` from this module
  *   3. exits 0 on all-pass, 1 on any-fail

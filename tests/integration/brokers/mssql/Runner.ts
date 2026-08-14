@@ -18,9 +18,9 @@ import { MsSqlJournal } from '../../../../src/persistence/journals/MsSqlJournal.
 import { MsSqlJournalOptions } from '../../../../src/persistence/journals/MsSqlJournalOptions.js';
 import { MsSqlSnapshotStore } from '../../../../src/persistence/snapshot-stores/MsSqlSnapshotStore.js';
 import { MsSqlSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MsSqlSnapshotStoreOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios } from '../lib/Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/PersistenceContract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];

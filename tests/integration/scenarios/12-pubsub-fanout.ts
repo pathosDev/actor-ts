@@ -19,7 +19,7 @@
  * after both publish bursts settle.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './Types.js';
 
 type PubSubSnapshot = {
   readonly received: number;

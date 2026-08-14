@@ -40,8 +40,8 @@ bun run test:integration:teardown
 tests/integration/
 ├── Dockerfile.node                        # Bun + iproute2 + iptables image
 ├── docker-compose.integration.yml         # 5 nodes + 1 controller
-├── node-runner.ts                         # per-node Bun entrypoint
-├── controller.ts                          # scenario runner
+├── NodeRunner.ts                         # per-node Bun entrypoint
+├── Controller.ts                          # scenario runner
 ├── lib/
 │   ├── partition.ts                       # iptables + tc helpers
 │   └── control-routes.ts                  # HTTP surface for the helpers
@@ -55,7 +55,7 @@ tests/integration/
 
 ## Architecture
 
-Each cluster-node container runs `node-runner.ts`, which:
+Each cluster-node container runs `NodeRunner.ts`, which:
 
 1. Boots an `ActorSystem` with `JsonLogger` (so the docker logs
    are jq-friendly).
@@ -93,7 +93,7 @@ change touches transport / cluster / downing code.
 ## Adding a scenario
 
 1. Drop a new file in `scenarios/` exporting `scenario: Scenario`.
-2. Add the import to `controller.ts`'s `scenarios` list.
+2. Add the import to `Controller.ts`'s `scenarios` list.
 3. Test locally with `bun run test:integration`.
 
 The `Scenario.run(ctx)` function receives a `ControllerContext`

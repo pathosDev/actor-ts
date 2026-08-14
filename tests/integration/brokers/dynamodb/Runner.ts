@@ -18,9 +18,9 @@ import { DynamoDbJournal } from '../../../../src/persistence/journals/DynamoDbJo
 import { DynamoDbJournalOptions } from '../../../../src/persistence/journals/DynamoDbJournalOptions.js';
 import { DynamoDbSnapshotStore } from '../../../../src/persistence/snapshot-stores/DynamoDbSnapshotStore.js';
 import { DynamoDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
-import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios } from '../lib/Scenario.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/PersistenceContract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];

@@ -20,7 +20,7 @@ services:
     # NATS image is built on `scratch` and ships no shell / curl /
     # wget / nc, so docker-compose has no way to probe readiness
     # from inside the container.  Instead the runner's own
-    # `waitForPort` (lib/wait-for-port.ts) polls the client port
+    # `waitForPort` (lib/WaitForPort.ts) polls the client port
     # until it accepts a TCP connection — same readiness shape,
     # just from the OUTSIDE.
     command: ["-p", "4222"]

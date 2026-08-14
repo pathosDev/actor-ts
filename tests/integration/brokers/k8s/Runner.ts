@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { Agent, type RequestOptions, request } from 'node:https';
 import { endpointsPath, KubernetesApiSeedProvider } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
 import { KubernetesApiSeedProviderOptions } from '../../../../src/discovery/KubernetesApiSeedProviderOptions.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
 import { scenario as basicLookupScenario } from './scenarios/01-basic-lookup.js';
 import { scenario as emptyEndpointsScenario } from './scenarios/02-empty-endpoints.js';
 

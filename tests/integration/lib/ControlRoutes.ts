@@ -36,16 +36,16 @@ import { DistributedDataId } from '../../../src/crdt/index.js';
 import {
   type SingletonMessage,
   type SingletonWhoReply,
-} from './singleton.js';
+} from './Singleton.js';
 import {
   ShardedWhoReply,
   type ShardedCommand,
-} from './sharded-counter.js';
+} from './ShardedCounter.js';
 import {
   PersistentCounter,
   type CounterCommand,
   type CounterStateReply,
-} from './persistent-counter.js';
+} from './PersistentCounter.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
 import { DistributedPubSubId } from '../../../src/cluster/pubsub/DistributedPubSubExtension.js';
 import {
@@ -65,7 +65,7 @@ import {
   delayAllEgress,
   healPeer,
   partitionPeer,
-} from './partition.js';
+} from './Partition.js';
 
 /**
  * Per-key shared `ServiceKey` for the Receptionist scenarios.  Every
@@ -73,13 +73,13 @@ import {
  * Listing on any node should contain all live registrations after
  * convergence.
  *
- * Exported so `node-runner.ts` can do the registration at startup
+ * Exported so `NodeRunner.ts` can do the registration at startup
  * time — earlier iteration relied on a lazy-on-first-hit
  * registration which created a wire-handler race: nodes that never
  * received an HTTP hit had their Receptionist NOT yet subscribed to
  * the `receptionist-gossip` wire kind, so gossip from
  * already-started peers got silently dropped on the receiver side.
- * Same shape for `DistributedDataId` — see `node-runner.ts` for the
+ * Same shape for `DistributedDataId` — see `NodeRunner.ts` for the
  * bootstrap path.
  */
 export const WORKER_KEY = ServiceKey.of<unknown>('workers');
@@ -150,7 +150,7 @@ class SnapshotCollector extends Actor<SubscriberSnapshot> {
 /**
  * Plain spawnable IdleWorker used by scenarios 08 to add/remove
  * registrations on demand.  Same shape as the auto-registered
- * worker in `node-runner.ts` — duplicated here because the worker
+ * worker in `NodeRunner.ts` — duplicated here because the worker
  * type there is a closure-local class.
  */
 class ExtraWorker extends Actor<unknown> {
@@ -467,7 +467,7 @@ export function makeControlRoutes(
     // Asks the local Receptionist for the current Listing under the
     // shared "workers" key.  Returns `{ refs: [paths], count }`.
     // Receptionist + auto-registered IdleWorker are wired in
-    // `node-runner.ts` at boot time so the wire handlers are
+    // `NodeRunner.ts` at boot time so the wire handlers are
     // already subscribed before any scenario runs (no microtask race
     // between lazy-start and incoming gossip).
     path('receptionist', path('listing', get(async () => {

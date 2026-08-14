@@ -1,6 +1,6 @@
 /**
  * Singleton actor used by scenario 05 (Cluster Singleton failover).
- * Defined in its own file so `node-runner.ts` (which spawns it)
+ * Defined in its own file so `NodeRunner.ts` (which spawns it)
  * and `control-routes.ts` (which forwards messages to its proxy)
  * share the same message-type identities.
  *

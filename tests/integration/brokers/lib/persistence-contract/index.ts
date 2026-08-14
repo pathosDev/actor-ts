@@ -8,10 +8,10 @@
  * copy of the tests; fixing a behaviour means changing one scenario, and
  * every backend is re-checked against it.
  */
-export { assert, assertEqual, expectThrows } from './assert.js';
-export { durableStateContractScenarios } from './durable-state.js';
-export { journalContractScenarios } from './journal.js';
-export { snapshotContractScenarios } from './snapshot.js';
+export { assert, assertEqual, expectThrows } from './Assert.js';
+export { durableStateContractScenarios } from './DurableState.js';
+export { journalContractScenarios } from './Journal.js';
+export { snapshotContractScenarios } from './Snapshot.js';
 export {
   closeQuietly,
   type ContractScenario,
@@ -20,4 +20,4 @@ export {
   type JournalHarness,
   type SnapshotCapabilities,
   type SnapshotHarness,
-} from './types.js';
+} from './Types.js';

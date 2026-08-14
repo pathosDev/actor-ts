@@ -10,8 +10,8 @@
  */
 import { MqttActor, type MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
-import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 type Reading = {
   readonly sensor: string;

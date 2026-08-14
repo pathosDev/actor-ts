@@ -14,7 +14,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   autoHandshake,
   FakeWorkerBackend,
-} from './__fixtures__/in-memory-worker-thread.js';
+} from './__fixtures__/InMemoryWorkerThread.js';
 import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
 import { WorkerClusterOptions } from '../../../src/worker/WorkerClusterOptions.js';
 

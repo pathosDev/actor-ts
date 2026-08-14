@@ -29,7 +29,7 @@ services:
     # No `service_healthy` gate: the sqld image is distroless-ish and ships
     # neither a shell nor curl, so a compose healthcheck has nothing to run.
     # The runner waits on the port itself via `waitForPort`, then retries its
-    # first statement — see runner.ts.
+    # first statement — see Runner.ts.
     depends_on:
       libsql:
         condition: service_started

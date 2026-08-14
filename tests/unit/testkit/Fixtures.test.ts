@@ -9,7 +9,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { MultiNodeClusterFixture } from '../../../src/testkit/MultiNodeClusterFixture.js';
-import { systemFixture, testKitFixture } from '../__shared__/system-fixture.js';
+import { systemFixture, testKitFixture } from '../__shared__/SystemFixture.js';
 
 describe('systemFixture', () => {
   const sys = systemFixture('shared-sys-test');

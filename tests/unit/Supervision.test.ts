@@ -14,7 +14,7 @@ import {
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
-import { systemFixture } from './__shared__/system-fixture.js';
+import { systemFixture } from './__shared__/SystemFixture.js';
 
 class FooError extends Error { constructor() { super('foo'); this.name = 'FooError'; } }
 class BarError extends Error { constructor() { super('bar'); this.name = 'BarError'; } }
