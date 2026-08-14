@@ -105,15 +105,67 @@ semantics for a fixed-window rate limiter.
 
 `InMemoryCache` is **LRU-bounded** at `maxEntries` (default 10 000):
 inserting a new key beyond the cap evicts the least-recently-used
-entry.  `get`/`incr`/`setIfAbsent` count as a use and move a key to the
-most-recently-used end, so hot keys survive and cold ones are evicted
-first.  This is what keeps a flood of distinct, never-re-read keys —
+entry.  This is what keeps a flood of distinct, never-re-read keys —
 attacker-chosen `Idempotency-Key` or rate-limit keys, for instance —
 from growing the map without limit.
+
+**Only a read counts as a use.**  `get`, `incr` and `mget` move a key
+to the most-recently-used end; `set`, `mset` and `setIfAbsent` do not.
+So a hot key survives, but an entry that is written once and never read
+back — an idempotency record still waiting for the client's retry —
+ages towards eviction from the moment it is stored.
 
 Set `maxEntries: Infinity` to opt out of eviction entirely.  Only do
 this when you control the key space — an unbounded map OOMs the process
 eventually.
+
+## Eviction is blind to what an entry protects
+
+Recency is the *only* criterion.  A rate-limit counter and an
+idempotency record are evicted exactly as readily as a cached response
+body — and dropping one silently voids the guarantee it carried:
+
+- **Rate limit** — the counter disappears, so the next request from
+  that client starts a fresh window at 1.  The limit resets without
+  anyone hitting it.
+- **Idempotency** — the stored response disappears, so the client's
+  honest retry finds no record, re-claims the key and **runs the
+  handler a second time**.  That is a double charge on a payments
+  endpoint.
+
+Neither leaves a trace: the entry is simply gone, well inside its TTL.
+
+The exposure comes from **sharing one cache instance** between a
+consumer that carries a guarantee and one whose key space a caller can
+enumerate.  A response cache keyed on a path parameter and an
+`idempotent` wrapper keyed on a client-supplied header are both in the
+second category, so a caller who varies either one turns the whole map
+over.  With the default 10 000-entry bound and a permissive limit of
+100 requests per second, that takes about 100 seconds — entirely
+*inside* the documented rate limit.
+
+The fix is one cache per consumer:
+
+```ts
+import { CacheExtensionId } from 'actor-ts';
+
+const extension = system.extension(CacheExtensionId);
+
+const limiterCache     = extension.cache('rate-limit');
+const idempotencyCache = extension.cache('idempotency');
+const responseCache    = extension.cache('response-cache');
+```
+
+Each name resolves to its own instance, so a flood through one cannot
+reach the others.  Size each one's `maxEntries` for that consumer's key
+space alone.
+
+This narrows the blast radius rather than removing it: a middleware
+whose own key space is attacker-controlled can still evict its own
+entries — a client with an IPv6 `/64` mints rate-limit keys all day.
+Where that matters, back the security-relevant consumer with Redis
+(which you size and monitor independently) instead of an in-process
+LRU.
 
 ## Sharing across the system
 

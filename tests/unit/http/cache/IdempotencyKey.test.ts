@@ -131,6 +131,114 @@ describe('idempotent — TTL / config guards', () => {
     expect(() => idempotent({ cache, ttlMs: 0 })).toThrow();
     expect(() => idempotent({ cache, ttlMs: -1 })).toThrow();
   });
+
+  test('rejects invalid maxKeyLength', () => {
+    const cache = new InMemoryCache();
+    expect(() => idempotent({ cache, maxKeyLength: 0 })).toThrow();
+    expect(() => idempotent({ cache, maxKeyLength: 1.5 })).toThrow();
+  });
+});
+
+/* ------------------------- security: bounding the minted key ----------------------- */
+
+describe('idempotent — Idempotency-Key validation', () => {
+  /**
+   * The header value is attacker-chosen and is concatenated verbatim
+   * into a cache key that the whole application shares.  Without a
+   * cap, one request decides how much of that cache it occupies —
+   * a header-sized string per minted key.  255 is Stripe's published
+   * limit; every real client sends a UUID or a short token.
+   */
+  test('a key longer than the default 255 characters is refused with 400', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { ok: true });
+    });
+
+    const response = await handler(makeReq({ 'idempotency-key': 'k'.repeat(256) }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(invocations).toBe(0);          // handler never ran
+    expect(cache.sizeForTest()).toBe(0);  // and nothing was stored
+  });
+
+  test('a key of exactly 255 characters still works', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const response = await handler(makeReq({ 'idempotency-key': 'k'.repeat(255) }));
+    expect(response.status).toBe(Status.OK);
+  });
+
+  test('maxKeyLength is configurable in both directions', async () => {
+    const strictCache = new InMemoryCache();
+    const strict = idempotent({ cache: strictCache, maxKeyLength: 8 })(() => complete(Status.OK, {}));
+    expect((await strict(makeReq({ 'idempotency-key': '123456789' }))).status).toBe(Status.BadRequest);
+    expect((await strict(makeReq({ 'idempotency-key': '12345678' }))).status).toBe(Status.OK);
+
+    const roomyCache = new InMemoryCache();
+    const roomy = idempotent({ cache: roomyCache, maxKeyLength: 1024 })(() => complete(Status.OK, {}));
+    expect((await roomy(makeReq({ 'idempotency-key': 'k'.repeat(256) }))).status).toBe(Status.OK);
+  });
+
+  /**
+   * Control characters and the space are command delimiters in
+   * Memcached's text protocol and CR/LF are the classic
+   * header-injection pair — a key carrying one would be safe only for
+   * as long as a particular `Cache` implementation sits behind the
+   * middleware.  Rejecting at the edge makes that independent of the
+   * backend that happens to be wired in.
+   */
+  test.each([
+    ['CR', 'abc\rdef'],
+    ['LF', 'abc\ndef'],
+    ['NUL', 'abc\0def'],
+    ['TAB', 'abc\tdef'],
+    ['space', 'abc def'],
+    ['DEL', 'abc\x7Fdef'],
+  ])('a key containing %s is refused with 400', async (_name, userKey) => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { ok: true });
+    });
+
+    const response = await handler(makeReq({ 'idempotency-key': userKey }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(invocations).toBe(0);
+    expect(cache.sizeForTest()).toBe(0);
+  });
+
+  test('the rejection never echoes the key back into the response body', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, {}));
+
+    const marker = 'CANARY-'.repeat(64);   // 448 chars — over the cap
+    const response = await handler(makeReq({ 'idempotency-key': marker }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(JSON.stringify(response.body)).not.toContain('CANARY');
+  });
+
+  test('regression: ordinary UUID and token keys are unaffected', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { n: invocations });
+    });
+
+    for (const userKey of [
+      '018f3b6c-2a4d-7c3e-9a11-6b7c8d9e0f12',
+      'tx-1684923847-abc',
+      'a',
+      'A1_-.~%2Fslash',
+    ]) {
+      expect((await handler(makeReq({ 'idempotency-key': userKey }))).status).toBe(Status.OK);
+    }
+    expect(invocations).toBe(4);
+  });
 });
 
 /* ------------------------- security: request-body binding -------------------------- */
