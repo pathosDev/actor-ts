@@ -11,17 +11,23 @@ import { Lazy } from '../../util/Lazy.js';
  *     (default 3).
  *
  * Runtime support differs by DIRECTION:
- *   - COMPRESS (write): native only — Bun (`Bun.zstdCompressSync`) or
- *     Node (`zlib.zstdCompressSync`; every supported Node ships it).
- *     There is NO pure-JS
+ *   - COMPRESS (write): native only — Bun (`Bun.zstdCompressSync`) then
+ *     Node (`zlib.zstdCompressSync`; every supported Node ships it).  The
+ *     order is free here: neither takes an output bound, and only reads
+ *     need one.  There is NO pure-JS
  *     fallback for writing: `fzstd` is decompress-only (it exposes no
  *     `compress`).  Selecting `zstd` on a runtime without native support
  *     throws a clear error — eagerly at plugin-init via
  *     `probeCompressionAvailability`, not cryptically on first write.
- *   - DECOMPRESS (read): native first, then the optional `fzstd` peer-dep
- *     so a non-native runtime can still READ zstd bodies written
- *     elsewhere.  `fzstd` caps the back-reference window at 2^25 (32 MB)
- *     and may reject ultra-level (≥20) frames.
+ *   - DECOMPRESS (read): `node:zlib` first — it is the only implementation
+ *     that takes an allocation-time output bound (#580) — then Bun's
+ *     global, then the optional `fzstd` peer-dep so a non-native runtime
+ *     can still READ zstd bodies written elsewhere.  `fzstd` caps the
+ *     back-reference window at 2^25 (32 MB) and may reject ultra-level
+ *     (≥20) frames.
+ *
+ * Both resolvers pick by CALLING a candidate, never by testing that the
+ * symbol exists — see {@link decodesZstdCanary}.
  *
  * The level is an encoder-only setting — it never travels on the wire and
  * decompression doesn't need it, so changing it requires no migration.
@@ -34,9 +40,21 @@ export interface Compressor {
   compress(input: Uint8Array, level?: number): Promise<Uint8Array>;
   /**
    * Decompress `input`.  `maxOutputBytes`, when set and finite, bounds the
-   * decompressed size to defeat a decompression bomb (security audit #3):
-   * gzip enforces it at allocation time via zlib's `maxOutputLength`; the
-   * other paths assert the size once decoded.  Exceeding it throws.
+   * decompressed size to defeat a decompression bomb (security audit #3).
+   *
+   * gzip and zstd both enforce it at ALLOCATION time via zlib's
+   * `maxOutputLength`, so the bomb never gets the memory it was built to
+   * claim; a post-decode assertion backs that up for the paths that cannot
+   * express a bound (Bun's zstd global, `fzstd`) and for a zlib that
+   * ignores the option.  Either way exceeding the cap throws with the same
+   * `maxOutputBytes=…` wording — see {@link decompressWithinCap}.
+   *
+   * The bound is on the OUTPUT buffer, not on the decoder's internal
+   * window: a frame declaring a large back-reference window can still cost
+   * that window's worth of memory even when the cap trips on the first
+   * block.  That residue is bounded by the window the frame header
+   * declares and is not amplified by the frame's declared content size —
+   * which is the unbounded quantity a decompression bomb is built around.
    */
   decompress(input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array>;
 }
@@ -58,30 +76,97 @@ const gzipLazy: Lazy<Promise<{
     // `maxOutputLength` makes zlib abort (RangeError) BEFORE allocating past
     // the cap — real protection against a gzip bomb, not just a post-check.
     gunzip: async (input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
-      zlib.gunzipSync(
-        input,
-        maxOutputBytes !== undefined && Number.isFinite(maxOutputBytes)
-          ? { maxOutputLength: maxOutputBytes }
-          : undefined,
-      ),
+      zlib.gunzipSync(input, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined),
   };
 });
 
 const gzipCompressor: Compressor = {
   async compress(input, level) { return (await gzipLazy.get()).gzip(input, level); },
   async decompress(input, maxOutputBytes) {
-    const out = await (await gzipLazy.get()).gunzip(input, maxOutputBytes);
-    // `maxOutputLength` already aborts allocation on Node; the assertion is a
-    // portable backstop in case a runtime's zlib ignores the option (#3).
-    assertWithinCap(out.length, maxOutputBytes, 'gzip');
-    return out;
+    // `maxOutputLength` already aborts allocation; the post-decode assertion
+    // inside `decompressWithinCap` is a portable backstop in case a
+    // runtime's zlib ignores the option (#3).
+    return decompressWithinCap('gzip', maxOutputBytes, async () =>
+      (await gzipLazy.get()).gunzip(input, maxOutputBytes));
   },
 };
 
 /* ------------------------------- zstd ----------------------------------- */
 
 type ZstdCompressFunction = (input: Uint8Array, level?: number) => Promise<Uint8Array>;
-type ZstdDecompressFunction = (input: Uint8Array) => Promise<Uint8Array>;
+/**
+ * `maxOutputBytes` is an ALLOCATION-time bound, honoured by the resolved
+ * implementation when it can express one (`node:zlib`'s `maxOutputLength`)
+ * and ignored by the ones that cannot (Bun's global takes no options at
+ * all, `fzstd` decodes into a buffer it sizes itself).  A caller must
+ * therefore still check the returned length — `decompressWithinCap` does.
+ */
+type ZstdDecompressFunction = (input: Uint8Array, maxOutputBytes?: number) => Promise<Uint8Array>;
+
+/**
+ * A 17-byte zstd frame whose single raw block holds the 8 ASCII bytes
+ * `ATS1zstd`.  Both native encoders produce these exact bytes for that
+ * input, and it is the smallest frame that exercises a real decode.
+ *
+ * It exists because "is the symbol there?" and "does it work?" are
+ * different questions on some runtimes: Deno's `node:zlib` exports a
+ * `zstdDecompressSync` whose native binding is absent, so a presence check
+ * accepts it and every zstd read then dies on
+ * `binding.ZstdDecompress is not a constructor` — with the documented
+ * `fzstd` fallback sitting unreachable underneath.  Resolution therefore
+ * CALLS each candidate against this frame.  The cost is one 17-byte decode
+ * per process, memoised by `Lazy` along with the implementation it picked.
+ */
+const ZSTD_CANARY_FRAME = new Uint8Array([
+  0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x08, 0x41, 0x00, 0x00,
+  0x41, 0x54, 0x53, 0x31, 0x7a, 0x73, 0x74, 0x64,
+]);
+
+/** The 8 bytes {@link ZSTD_CANARY_FRAME} decodes to — its raw block, verbatim (copied, not aliased). */
+const ZSTD_CANARY_PLAINTEXT = ZSTD_CANARY_FRAME.slice(9);
+
+/** zstd's frame magic — the first four bytes of any frame, {@link ZSTD_CANARY_FRAME} included. */
+const ZSTD_MAGIC = ZSTD_CANARY_FRAME.slice(0, 4);
+
+/** True when `decode` really decodes — see {@link ZSTD_CANARY_FRAME} for why this is a call. */
+function decodesZstdCanary(decode: (input: Uint8Array) => Uint8Array): boolean {
+  try {
+    return bytesEqual(decode(ZSTD_CANARY_FRAME), ZSTD_CANARY_PLAINTEXT);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `decode` ABORTS on a `maxOutputLength` below the frame's output
+ * size — the property that makes an implementation bomb-safe (#580) rather
+ * than merely correct.  Accepting the option is not evidence of enforcing
+ * it: one that quietly ignored it would decode the canary perfectly and
+ * still hand a bomb all the memory it asked for.
+ */
+function enforcesZstdOutputCap(
+  decode: (input: Uint8Array, options: { maxOutputLength: number }) => Uint8Array,
+): boolean {
+  try {
+    decode(ZSTD_CANARY_FRAME, { maxOutputLength: 1 });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** True when `encode` produces a real zstd frame rather than throwing — the compress-side canary. */
+function encodesZstdCanary(encode: (input: Uint8Array) => Uint8Array): boolean {
+  try {
+    return bytesEqual(encode(ZSTD_CANARY_PLAINTEXT).subarray(0, ZSTD_MAGIC.length), ZSTD_MAGIC);
+  } catch {
+    return false;
+  }
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && right.every((byte, index) => left[index] === byte);
+}
 
 /**
  * zstd COMPRESS resolution — native only.  Bun (`Bun.zstdCompressSync`)
@@ -91,6 +176,14 @@ type ZstdDecompressFunction = (input: Uint8Array) => Promise<Uint8Array>;
  * here instead of the cryptic `fzstd.compress is not a function` the
  * combined resolver used to produce on first write.
  *
+ * Each candidate is accepted only once it has ENCODED the canary, for the
+ * same reason the decompress side does (#321's guarantee — a clear error,
+ * never a cryptic native one — otherwise regresses on Deno, whose
+ * `zlib.zstdCompressSync` is present and throws
+ * `binding.ZstdCompress is not a constructor` on first use, downstream of
+ * the `probeCompressionAvailability` call that exists to catch exactly
+ * this at plugin-init).
+ *
  * Level spelling differs by runtime — Bun takes `{ level }`, Node takes
  * `{ params: { [ZSTD_c_compressionLevel]: N } }` — but the 1..22 scale
  * (default 3) is the same.
@@ -99,10 +192,10 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
   const bun = (globalThis as { Bun?: {
     zstdCompressSync?: (input: Uint8Array, opts?: { level?: number }) => Uint8Array;
   } }).Bun;
-  if (bun?.zstdCompressSync) {
-    const compressFunction = bun.zstdCompressSync;
+  const bunCompress = bun?.zstdCompressSync;
+  if (bunCompress && encodesZstdCanary((i) => bunCompress(i))) {
     return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
-      compressFunction(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
+      bunCompress(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
   }
 
   try {
@@ -111,8 +204,8 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
       zstdCompressSync?: (input: Uint8Array, opts?: { params?: Record<number, number> }) => Uint8Array;
       constants?: { ZSTD_c_compressionLevel?: number };
     };
-    if (zlib.zstdCompressSync) {
-      const compressFunction = zlib.zstdCompressSync;
+    const compressFunction = zlib.zstdCompressSync;
+    if (compressFunction && encodesZstdCanary((i) => compressFunction(i))) {
       const levelParam = zlib.constants?.ZSTD_c_compressionLevel;
       return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
         level !== undefined && levelParam !== undefined
@@ -131,37 +224,68 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
 });
 
 /**
- * zstd DECOMPRESS resolution — native first (Bun, Node), then the
- * pure-JS `fzstd` peer-dep so a runtime without native zstd can still
+ * zstd DECOMPRESS resolution — `node:zlib` first, then Bun's global, then
+ * the pure-JS `fzstd` peer-dep so a runtime without native zstd can still
  * READ zstd bodies written elsewhere.  Note fzstd caps the back-reference
  * window at 2^25 (32 MB) and may fail on ultra-level (≥20) frames — see
  * `CompressionConfig.level`.
+ *
+ * **`node:zlib` outranks Bun's own global on Bun, and that ordering is the
+ * security control (#580).**  `Bun.zstdDecompressSync` takes no options at
+ * all: it materialises the frame's full output and returns it, so a cap
+ * checked afterwards is a post-mortem, not a defence.  Measured on Bun
+ * 1.3.1 against a 9,619-byte frame declaring 300 MB of output — the Bun
+ * global returned all 314,572,800 bytes for a 317 MB resident-set growth,
+ * while `zlib.zstdDecompressSync(frame, { maxOutputLength: 1024 })` threw
+ * `ERR_BUFFER_TOO_LARGE` and grew the resident set by 0 MB.  Bun's
+ * `node:zlib` shim honours the bound exactly as Node's does, so preferring
+ * it costs nothing and closes the hole on both native runtimes.
+ *
+ * A candidate has to prove BOTH properties by being called — that it
+ * decodes at all ({@link decodesZstdCanary}) and that it enforces the
+ * bound ({@link enforcesZstdOutputCap}).  One that decodes but ignores the
+ * bound is not rejected outright, it just loses its priority: falling
+ * through to an equally uncapped implementation would trade a working
+ * decoder for nothing.
  */
 const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
-  const bun = (globalThis as { Bun?: {
-    zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
-  } }).Bun;
-  if (bun?.zstdDecompressSync) {
-    const decompressFunction = bun.zstdDecompressSync;
-    return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
-  }
+  let uncappedFallback: ZstdDecompressFunction | undefined;
 
   try {
     const zlibName = 'node:zlib';
     const zlib = (await import(zlibName)) as {
-      zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
+      zstdDecompressSync?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array;
     };
-    if (zlib.zstdDecompressSync) {
-      const decompressFunction = zlib.zstdDecompressSync;
-      return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
+    const decompressFunction = zlib.zstdDecompressSync;
+    if (decompressFunction && decodesZstdCanary((i) => decompressFunction(i))) {
+      const capped = async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+        decompressFunction(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
+      if (enforcesZstdOutputCap(decompressFunction)) return capped;
+      uncappedFallback = capped;
     }
-  } catch { /* node:zlib unavailable — fall through to fzstd */ }
+  } catch { /* node:zlib unavailable — fall through to Bun's global */ }
+
+  const bun = (globalThis as { Bun?: {
+    zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
+  } }).Bun;
+  const bunDecompress = bun?.zstdDecompressSync;
+  if (bunDecompress && decodesZstdCanary(bunDecompress)) {
+    // No options parameter to pass a bound through, so `maxOutputBytes` is
+    // dropped here and only the post-decode assertion remains.
+    uncappedFallback ??= async (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
+  }
+  if (uncappedFallback) return uncappedFallback;
 
   try {
     const fzstdName = 'fzstd';
     const fzstd = (await import(fzstdName)) as {
       decompress: (input: Uint8Array) => Uint8Array;
     };
+    // Not canary-checked: fzstd is pure JS with no native binding to be
+    // missing, so a successful import already answers "does it work?".  It
+    // sizes its own output buffer and takes no bound, so this branch too
+    // rests on the post-decode assertion (#780 blocks testing it — fzstd
+    // has no devDependency, so it is never installed here).
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(
@@ -176,21 +300,67 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
 const zstdCompressor: Compressor = {
   async compress(input, level) { return (await zstdCompressLazy.get())(input, level); },
   async decompress(input, maxOutputBytes) {
-    // No portable allocation-time cap across the zstd impls (Bun native /
-    // Node native / fzstd), so assert the decoded size (security audit #3).
-    const out = await (await zstdDecompressLazy.get())(input);
-    assertWithinCap(out.length, maxOutputBytes, 'zstd');
-    return out;
+    // The bound goes INTO the decoder now, so an over-cap frame is refused
+    // before its output is allocated rather than measured afterwards
+    // (#580).  `decompressWithinCap` keeps the post-decode assertion for
+    // the implementations that cannot take it.
+    return decompressWithinCap('zstd', maxOutputBytes, async () =>
+      (await zstdDecompressLazy.get())(input, maxOutputBytes));
   },
 };
 
 /* ------------------------------- public --------------------------------- */
 
+/** A cap binds only when it is set and finite — `Infinity` is the documented opt-out. */
+function capApplies(maxOutputBytes: number | undefined): maxOutputBytes is number {
+  return maxOutputBytes !== undefined && Number.isFinite(maxOutputBytes);
+}
+
 /** Throw when a decoded size exceeds a finite `maxOutputBytes` cap (#3). */
-function assertWithinCap(size: number, maxOutputBytes: number | undefined, algo: string): void {
-  if (maxOutputBytes !== undefined && Number.isFinite(maxOutputBytes) && size > maxOutputBytes) {
-    throw new Error(`${algo} decompression exceeded maxOutputBytes=${maxOutputBytes} (got ${size})`);
+function assertWithinCap(size: number, maxOutputBytes: number | undefined, algorithm: string): void {
+  if (capApplies(maxOutputBytes) && size > maxOutputBytes) {
+    throw new Error(`${algorithm} decompression exceeded maxOutputBytes=${maxOutputBytes} (got ${size})`);
   }
+}
+
+/**
+ * Run `decode` under the `maxOutputBytes` cap and report a violation the
+ * same way no matter which of the two mechanisms caught it.
+ *
+ * zlib aborts an over-cap decode with `RangeError [ERR_BUFFER_TOO_LARGE]`,
+ * whose message names a byte count and nothing else — not the algorithm,
+ * not that a cap the operator configured is what stopped the read.  That
+ * wording travels: `ObjectStorageSnapshotStore` surfaces a decode failure
+ * as-is and `ObjectStorageDurableStateStore` wraps it in a `JournalError`
+ * whose own message says "integrity / decode failure", so the inner text is
+ * the only thing that tells an operator to look at `maxDecompressedBytes`.
+ * Translating here keeps ONE wording across all three algorithms and both
+ * mechanisms, which is also what lets a test tell them apart: an
+ * allocation-time abort and a post-decode assertion differ in the tail of
+ * the message, never in whether they throw.
+ */
+async function decompressWithinCap(
+  algorithm: string,
+  maxOutputBytes: number | undefined,
+  decode: () => Promise<Uint8Array>,
+): Promise<Uint8Array> {
+  let out: Uint8Array;
+  try {
+    out = await decode();
+  } catch (e) {
+    // Only when a cap was actually passed down: with no cap, zlib's own
+    // ceiling is `buffer.kMaxLength`, and hitting THAT is a genuine
+    // "too big for a Buffer" that must not be relabelled as a cap hit.
+    if (capApplies(maxOutputBytes) && (e as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(
+        `${algorithm} decompression exceeded maxOutputBytes=${maxOutputBytes} `
+        + '(aborted before the output was allocated)',
+      );
+    }
+    throw e;
+  }
+  assertWithinCap(out.length, maxOutputBytes, algorithm);
+  return out;
 }
 
 const noneCompressor: Compressor = {
@@ -202,9 +372,9 @@ const noneCompressor: Compressor = {
 };
 
 /** Get a `Compressor` for the requested algorithm.  Cached per-algorithm. */
-export function compressorFor(algo: CompressionAlgo): Compressor {
+export function compressorFor(algorithm: CompressionAlgo): Compressor {
   // Exhaustive — adding a new CompressionAlgo variant forces this site.
-  return match(algo)
+  return match(algorithm)
     .with('none', () => noneCompressor)
     .with('gzip', () => gzipCompressor)
     .with('zstd', () => zstdCompressor)
@@ -220,8 +390,8 @@ export function compressorFor(algo: CompressionAlgo): Compressor {
  * Used by `registerObjectStoragePlugins` to surface peer-dep failures
  * at plugin-init time rather than on the first persist call (#18, #59).
  */
-export async function probeCompressionAvailability(algo: CompressionAlgo): Promise<void> {
-  await match(algo)
+export async function probeCompressionAvailability(algorithm: CompressionAlgo): Promise<void> {
+  await match(algorithm)
     .with('none', async () => undefined)
     .with('gzip', async () => { await gzipLazy.get(); })
     // Probe the COMPRESS path: configuring `zstd` expresses write intent,
