@@ -1,4 +1,4 @@
-import { detectRuntime, type RuntimeKind } from '../detect.js';
+import { detectRuntime, type RuntimeKind } from '../Detect.js';
 import type { HonoServerRunner } from './HonoServerRunner.js';
 
 export type {

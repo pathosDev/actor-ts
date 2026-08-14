@@ -9,5 +9,5 @@ export {
 } from './HoconParser.js';
 export { parseDuration } from './Duration.js';
 export { parseSize } from './Size.js';
-export { REFERENCE_CONF } from './reference.js';
+export { REFERENCE_CONF } from './Reference.js';
 export { ConfigKeys } from './ConfigKeys.js';

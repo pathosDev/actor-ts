@@ -1,4 +1,4 @@
-import { highResNow } from '../../src/runtime/detect.js';
+import { highResNow } from '../../src/runtime/Detect.js';
 import { ansi, ansiResetLine, formatMemoryDelta, formatNs, formatRate, statsOf, type BenchStats } from './stats.js';
 
 /** User-provided benchmark — runs a single "operation" per call to `run`. */

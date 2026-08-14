@@ -17,7 +17,7 @@
  * one must not break the traced code.
  */
 import type { RecordedSpan } from './RecordingTracer.js';
-import { highResNow } from '../runtime/detect.js';
+import { highResNow } from '../runtime/Detect.js';
 import type {
   AttributeValue,
   Span,

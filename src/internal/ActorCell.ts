@@ -22,7 +22,7 @@ import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
 import type { Behavior } from '../typed/Behavior.js';
-import { typedActor } from '../typed/spawn.js';
+import { typedActor } from '../typed/Spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,

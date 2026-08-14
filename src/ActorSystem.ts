@@ -42,7 +42,7 @@ import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
-import { typedActor } from './typed/spawn.js';
+import { typedActor } from './typed/Spawn.js';
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root

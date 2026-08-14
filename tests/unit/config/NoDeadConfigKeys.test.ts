@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { parseHocon, isPlainObject } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 

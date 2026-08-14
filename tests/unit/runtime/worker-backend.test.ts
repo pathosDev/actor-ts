@@ -5,7 +5,7 @@ import {
   WebWorkerBackend,
   NodeWorkerBackend,
 } from '../../../src/runtime/worker/index.js';
-import { setRuntimeOverride } from '../../../src/runtime/detect.js';
+import { setRuntimeOverride } from '../../../src/runtime/Detect.js';
 
 beforeEach(() => resetWorkerBackendCache());
 afterEach(() => {

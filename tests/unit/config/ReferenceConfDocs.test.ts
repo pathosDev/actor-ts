@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 
 /**
  * The docs publish the bundled reference configuration verbatim so a reader

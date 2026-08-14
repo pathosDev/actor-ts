@@ -5,7 +5,7 @@ import {
   hasDeno,
   highResNow,
   setRuntimeOverride,
-} from '../../../src/runtime/detect.js';
+} from '../../../src/runtime/Detect.js';
 
 afterEach(() => setRuntimeOverride(null));
 

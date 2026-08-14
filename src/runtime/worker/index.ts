@@ -1,4 +1,4 @@
-import { detectRuntime, type RuntimeKind } from '../detect.js';
+import { detectRuntime, type RuntimeKind } from '../Detect.js';
 import type { WorkerBackend } from './WorkerBackend.js';
 
 export type { WorkerBackend, WorkerLike, WorkerCloseEvent, WorkerMessageEvent, WorkerSpawnOptions } from './WorkerBackend.js';
