@@ -323,7 +323,10 @@ actor-ts {
       port = 2552
     }
     tls {
-      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
+      # Read but NOT honoured: the transport the cluster builds for itself is
+      # always plaintext.  Setting this to true only buys a startup WARN that
+      # says so — encrypting the wire is issue #941.
+      enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
@@ -434,7 +437,14 @@ receive no warning — the value was not rejected, it was never looked at
 
 That is now a build failure.  A test walks every leaf above and asserts it
 is both reachable from `ConfigKeys` — the typed list of paths the framework
-recognises — and referenced from the source.  One key is knowingly exempt
-and says so in place: `remote.tls.enabled` is inert until
-[#591](https://github.com/pathosDev/actor-ts/issues/591) lands, and the
-exemption is registered with that issue number rather than left implicit.
+recognises — and referenced from the source.
+
+**No key is exempt today.**  The list of deliberate exceptions still exists,
+and every entry on it has to name the issue that will remove it — it is
+simply empty.  `remote.tls.enabled` was the last one, and
+[#591](https://github.com/pathosDev/actor-ts/issues/591) emptied it by giving
+the key a reader: it now decides whether the node warns at startup that the
+cluster wire is plaintext.  Note where that puts the bar — *read*, not
+*honoured*.  Encrypting the wire is still
+[#941](https://github.com/pathosDev/actor-ts/issues/941); what this test rules
+out is a key nothing so much as looks at.

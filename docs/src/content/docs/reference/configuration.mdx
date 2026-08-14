@@ -222,7 +222,7 @@ never came near the cap themselves.
 | `remote.tcp.host` | `"0.0.0.0"` | Bind address.  Used when `ClusterOptions` leaves `host` unset. |
 | `remote.tcp.port` | `2552` | Bind port.  Used when `ClusterOptions` leaves `port` unset. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
-| `remote.tls.enabled` | `false` | **Not implemented** — see below. |
+| `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
 
 Because the bind address is readable from config, a deployment can move it
 out of code entirely:
@@ -239,14 +239,21 @@ itself.  If you construct a `TcpTransport` yourself and pass it via
 `withTransport(…)`, set its cap there — the framework will not re-cap a
 transport it did not create.
 
-:::caution[`remote.tls.enabled` does nothing]
-This key is still inert: setting it to `true` does **not** enable TLS, and
-you get no error.  TLS is currently only reachable by constructing
-`TcpTransport` with a TLS configuration and passing it to
-`ClusterOptions.withTransport(…)`.  Tracked as
-[issue #591](https://github.com/pathosDev/actor-ts/issues/591); it is
-listed as a known-dead key rather than removed, so the value keeps its
-meaning once the implementation lands.
+:::caution[`remote.tls.enabled` does not encrypt anything]
+The key is read, but not honoured.  Setting it to `true` does **not** enable
+TLS — it makes the node log a `WARN` at startup that names the key and says
+the cluster wire is plaintext, so a security setting the framework ignores
+shows up in your logs and not only on this page
+([issue #591](https://github.com/pathosDev/actor-ts/issues/591)).  Encrypting
+the transport is tracked separately as
+[issue #941](https://github.com/pathosDev/actor-ts/issues/941); until that
+lands, treat the cluster network as something you have to secure by other
+means.
+
+The warning is about the transport the cluster builds for itself.  Pass your
+own via `ClusterOptions.withTransport(…)` and the node stays quiet about this
+key: what that transport does with TLS is yours to decide, and the framework
+cannot tell from the outside whether it is encrypted.
 :::
 
 ### `actor-ts.http`
