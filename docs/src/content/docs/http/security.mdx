@@ -104,8 +104,35 @@ Prefer the `__Host-` prefix (requires `Secure`, `Path=/`, no `Domain`) and
 `SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) uses
 that prefix by default — it is what stops a sibling subdomain from planting
 a token — and is deliberately not `HttpOnly` (double-submit needs JS to read
-it); your session/auth cookie should be `HttpOnly`. `serializeCookie`
-refuses values that could inject a second header.
+it); your session/auth cookie should be `HttpOnly`.
+
+`serializeCookie` gets you there by omission. An attribute you don't
+mention resolves to the strict end — `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Path=/` — so the two-argument call is already shippable, and what it
+produces satisfies the `__Host-` rules without a word about them.
+Loosening is the part you write down:
+
+```ts
+import { serializeCookie } from 'actor-ts/http';
+
+// __Host-session=<id>; Path=/; HttpOnly; Secure; SameSite=Lax
+const sessionCookie = serializeCookie('__Host-session', sessionId);
+
+// Plain-HTTP local dev, and a cookie same-origin JS has to read.
+const readableCookie = serializeCookie('token', value, { secure: false, httpOnly: false });
+```
+
+`Path` is always emitted, because the alternative is worse: without it a
+browser derives the scope from the request URI, so the same cookie covers
+`/account` when minted from `/account/login` and `/` when minted from the
+root.
+
+It also refuses anything that could break out of the cookie it is
+building — an illegal name or value, and a `Path` or `Domain` that is not
+one. Those two reach the header verbatim, so an unchecked `Path` of
+`'/;Domain=evil.example'` would append an attribute of somebody else's
+choosing, and the *last* `Domain` is the one that counts: it would override
+yours rather than lose to it.
 
 ## Error hygiene
 
