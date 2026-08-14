@@ -4,13 +4,9 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { getTcpBackend } from '../../runtime/tcp/index.js';
 import type { TcpListener, TcpSocketLike } from '../../runtime/tcp/index.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import {
-  DEFAULT_FRAMING,
-  appendChunk,
-  extractFrames,
-  readFramingFromConfig,
-} from './TcpFraming.js';
+import { DEFAULT_FRAMING, readFramingFromConfig } from './TcpFraming.js';
 import type { TcpFrame } from './TcpFraming.js';
+import { TcpInboundBuffer } from './TcpInboundBuffer.js';
 import { TcpServerOptionsValidator } from './TcpServerOptions.js';
 import type { TcpServerOptions, TcpServerOptionsType } from './TcpServerOptions.js';
 import type { TcpOutbound } from './TcpSocketActor.js';
@@ -68,13 +64,12 @@ export type TcpServerMessage = ConnectionOpenedMessage | FrameMessage | Connecti
 type ServerConnection = {
   readonly connectionId: TcpConnectionId;
   readonly socket: TcpSocketLike;
-  /** Bytes not yet matched by the framing strategy. */
-  inboundBuffer: Uint8Array;
   /**
-   * How far into {@link inboundBuffer} the `lines` delimiter search already
-   * reached — per connection, because each peer sets its own pace (#610).
+   * Bytes not yet matched by the framing strategy — one buffer per
+   * connection, because each peer sets its own pace and each pays for its own
+   * partial frame (#610).
    */
-  inboundScanFrom: number;
+  readonly inbound: TcpInboundBuffer;
 };
 
 /**
@@ -269,8 +264,7 @@ export class TcpServerActor
     const connection: ServerConnection = {
       connectionId,
       socket,
-      inboundBuffer: new Uint8Array(0),
-      inboundScanFrom: 0,
+      inbound: new TcpInboundBuffer(),
     };
     this.connections.set(connectionId, connection);
     this.connectionsBySocket.set(socket, connection);
@@ -282,12 +276,7 @@ export class TcpServerActor
     // Data on a socket we refused or already forgot: nothing to frame it into.
     if (connection === undefined || !this.connections.has(connection.connectionId)) return;
 
-    connection.inboundBuffer = appendChunk(connection.inboundBuffer, chunk);
-    const extraction = extractFrames(
-      connection.inboundBuffer,
-      this.options.framing ?? DEFAULT_FRAMING,
-      connection.inboundScanFrom,
-    );
+    const extraction = connection.inbound.push(chunk, this.options.framing ?? DEFAULT_FRAMING);
     for (const frame of extraction.frames) {
       this.deliver({ kind: 'frame', connectionId: connection.connectionId, payload: frame });
     }
@@ -299,10 +288,7 @@ export class TcpServerActor
         `TcpServerActor: closing '${connection.connectionId}' — ${extraction.overflow}`,
       );
       this.closeConnection(connection);
-      return;
     }
-    connection.inboundBuffer = extraction.remainder;
-    connection.inboundScanFrom = extraction.scanFrom ?? 0;
   }
 
   private onSocketClosed(socket: TcpSocketLike): void {
@@ -335,8 +321,7 @@ export class TcpServerActor
     // Release the partial frame with the connection.  `connectionsBySocket` is
     // weak but the socket outlives this call, and a connection closed for
     // breaching a cap is holding the largest buffer of the lot (#578).
-    connection.inboundBuffer = new Uint8Array(0);
-    connection.inboundScanFrom = 0;
+    connection.inbound.clear();
     this.deliver({ kind: 'connectionClosed', connectionId: connection.connectionId });
   }
 

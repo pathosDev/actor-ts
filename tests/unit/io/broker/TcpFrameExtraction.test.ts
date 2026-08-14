@@ -16,17 +16,36 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_MAX_FRAME_LENGTH,
   DEFAULT_MAX_LINE_LENGTH,
-  appendChunk,
   extractFrames,
   extractLengthPrefixedFrames,
   extractLineFrames,
   findFramingViolation,
 } from '../../../../src/io/broker/TcpFraming.js';
+import type { FrameExtraction } from '../../../../src/io/broker/TcpFraming.js';
 import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
 import { TcpSocketOptionsValidator } from '../../../../src/io/broker/TcpSocketOptions.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+/**
+ * What is left pending after a pass.
+ *
+ * A count, not an array, is what the extractors report (#610): the window
+ * belongs to whoever owns the buffer, and slicing a fresh array off it per
+ * chunk is the copy the incremental buffer exists to avoid.  A view over the
+ * tail is the reading the caller applies to its own cursor.
+ */
+const pendingAfter = (buffer: Uint8Array, pass: FrameExtraction): Uint8Array =>
+  buffer.subarray(pass.consumed);
+
+/** Accumulate chunks the way `TcpInboundBuffer` does, minus its slab. */
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const merged = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { merged.set(part, offset); offset += part.length; }
+  return merged;
+}
 
 /** `[uint32 big-endian length][payload]`, the wire shape the extractor reads. */
 function lengthPrefixed(...payloads: string[]): Uint8Array {
@@ -44,31 +63,22 @@ function lengthPrefixed(...payloads: string[]): Uint8Array {
   return out;
 }
 
-describe('appendChunk', () => {
-  test('hands the chunk straight back when there is nothing pending', () => {
-    const chunk = encode('abc');
-    expect(appendChunk(new Uint8Array(0), chunk)).toBe(chunk);
-  });
-
-  test('concatenates in order when a partial frame is pending', () => {
-    expect(decode(appendChunk(encode('ab'), encode('cd')))).toBe('abcd');
-  });
-});
-
 describe('extractLineFrames', () => {
   test('delivers terminated lines and keeps the remainder', () => {
-    const result = extractLineFrames(encode('a\nbb\nccc'), '\n', 8);
+    const buffer = encode('a\nbb\nccc');
+    const result = extractLineFrames(buffer, '\n', 8);
     expect(result.frames).toEqual(['a', 'bb']);
     expect(result.overflow).toBeUndefined();
-    expect(decode(result.remainder)).toBe('ccc');
+    expect(decode(pendingAfter(buffer, result))).toBe('ccc');
   });
 
-  test('returns the input buffer untouched when nothing was consumed', () => {
+  test('consumes nothing when the line is still partial', () => {
     const buffer = encode('partial');
     const result = extractLineFrames(buffer, '\n', 8);
     expect(result.frames).toEqual([]);
-    // Same reference: no decode/encode round-trip for a still-partial line.
-    expect(result.remainder).toBe(buffer);
+    // Nothing taken: no decode/encode round-trip, and no re-slice, for a line
+    // that is still arriving.
+    expect(result.consumed).toBe(0);
   });
 
   test('an over-long TERMINATED line reports overflow and stops there', () => {
@@ -86,9 +96,10 @@ describe('extractLineFrames', () => {
   });
 
   test('honours a multi-character delimiter', () => {
-    const result = extractLineFrames(encode('a\r\nb\r\nc'), '\r\n', 64);
+    const buffer = encode('a\r\nb\r\nc');
+    const result = extractLineFrames(buffer, '\r\n', 64);
     expect(result.frames).toEqual(['a', 'b']);
-    expect(decode(result.remainder)).toBe('c');
+    expect(decode(pendingAfter(buffer, result))).toBe('c');
   });
 
   test('the cap counts BYTES, not decoded characters (#752)', () => {
@@ -116,28 +127,28 @@ describe('extractLineFrames', () => {
     const firstChunk = new Uint8Array([...encode('a\n'), 0xc3]);
     const first = extractLineFrames(firstChunk, '\n', 64);
     expect(first.frames).toEqual(['a']);
-    expect([...first.remainder]).toEqual([0xc3]);
+    expect([...pendingAfter(firstChunk, first)]).toEqual([0xc3]);
 
-    const merged = appendChunk(first.remainder, new Uint8Array([0xa4, 0x0a]));
+    const merged = concat(pendingAfter(firstChunk, first), new Uint8Array([0xa4, 0x0a]));
     const second = extractLineFrames(merged, '\n', 64, first.scanFrom);
     expect(second.frames).toEqual(['ä']);
   });
 
   test('a delimiter-free stream re-searches nothing (#610)', () => {
-    // The quadratic claim, made observable: after every chunk the reported
-    // `scanFrom` already covers the whole pending buffer, so the next pass
-    // starts at its end instead of re-decoding all of it from offset 0.
-    // Annotated: `new Uint8Array(0)` infers the narrower `ArrayBuffer`
-    // variant, which the extractor's `ArrayBufferLike` result cannot fill.
+    // Half the quadratic claim, made observable: after every chunk the
+    // reported `scanFrom` already covers the whole pending buffer, so the next
+    // pass starts at its end instead of re-decoding all of it from offset 0.
+    // (The other half — that appending the chunk does not re-copy the buffer
+    // either — is `TcpInboundBuffering.test.ts`.)
     let buffer: Uint8Array = new Uint8Array(0);
     let scanFrom = 0;
     let passes = 0;
     for (let chunk = 0; chunk < 16; chunk++) {
-      buffer = appendChunk(buffer, encode('x'.repeat(64)));
+      buffer = concat(buffer, encode('x'.repeat(64)));
       const pass = extractLineFrames(buffer, '\n', 4096, scanFrom);
       expect(pass.frames).toEqual([]);
       expect(pass.overflow).toBeUndefined();
-      buffer = pass.remainder;
+      expect(pass.consumed).toBe(0);          // no line completed, nothing taken
       scanFrom = pass.scanFrom ?? 0;
       expect(scanFrom).toBe(buffer.length);   // nothing left to look at twice
       passes++;
@@ -149,14 +160,15 @@ describe('extractLineFrames', () => {
   test('a multi-byte delimiter straddling the resume point is still found', () => {
     // The trap in resuming: stopping at the buffer's end would step over a
     // '\r' whose '\n' is in the next chunk, and that line never completes.
-    const first = extractLineFrames(encode('abc\r'), '\r\n', 64);
+    const firstChunk = encode('abc\r');
+    const first = extractLineFrames(firstChunk, '\r\n', 64);
     expect(first.frames).toEqual([]);
     expect(first.scanFrom).toBe(3);          // backed off, so the '\r' is re-read
 
-    const merged = appendChunk(first.remainder, encode('\ndef'));
+    const merged = concat(pendingAfter(firstChunk, first), encode('\ndef'));
     const second = extractLineFrames(merged, '\r\n', 64, first.scanFrom);
     expect(second.frames).toEqual(['abc']);
-    expect(decode(second.remainder)).toBe('def');
+    expect(decode(pendingAfter(merged, second))).toBe('def');
   });
 
   test('an out-of-range scanFrom cannot push the scan outside the buffer', () => {
@@ -164,26 +176,28 @@ describe('extractLineFrames', () => {
     // the previous pass reported.  A negative one must not read behind the
     // buffer, one past the end must not index outside it.
     expect(extractLineFrames(encode('a\nb'), '\n', 64, -5).frames).toEqual(['a']);
-    const beyond = extractLineFrames(encode('ab'), '\n', 64, 9_999);
+    const buffer = encode('ab');
+    const beyond = extractLineFrames(buffer, '\n', 64, 9_999);
     expect(beyond.frames).toEqual([]);
-    expect(decode(beyond.remainder)).toBe('ab');
+    expect(decode(pendingAfter(buffer, beyond))).toBe('ab');
   });
 });
 
 describe('extractLengthPrefixedFrames', () => {
   test('peels whole frames and keeps a partial tail', () => {
-    const buffer = appendChunk(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
+    const buffer = concat(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
     const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
     expect(result.frames.map((f) => decode(f as Uint8Array))).toEqual(['one', 'two']);
     expect(result.overflow).toBeUndefined();
-    expect(result.remainder.length).toBe(6);   // the 9-byte frame is still arriving
+    // The 9-byte frame is still arriving, so its 6 bytes stay pending.
+    expect(pendingAfter(buffer, result).length).toBe(6);
   });
 
   test('a header shorter than 4 bytes is kept, not misread', () => {
     const buffer = new Uint8Array([0, 0, 3]);
     const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
     expect(result.frames).toEqual([]);
-    expect(result.remainder).toBe(buffer);
+    expect(result.consumed).toBe(0);
   });
 
   test('a zero-length frame is a frame', () => {
@@ -215,7 +229,7 @@ describe('extractFrames — strategy dispatch and defaults', () => {
     const buffer = encode('anything');
     const result = extractFrames(buffer, { kind: 'bytes' });
     expect(result.frames).toEqual([buffer]);
-    expect(result.remainder.length).toBe(0);
+    expect(pendingAfter(buffer, result).length).toBe(0);
   });
 
   test('lines defaults to a newline delimiter', () => {

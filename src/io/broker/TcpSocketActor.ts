@@ -3,17 +3,9 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
-import {
-  DEFAULT_FRAMING,
-  DEFAULT_LINE_DELIMITER,
-  DEFAULT_MAX_FRAME_LENGTH,
-  DEFAULT_MAX_LINE_LENGTH,
-  appendChunk,
-  extractLengthPrefixedFrames,
-  extractLineFrames,
-  readFramingFromConfig,
-} from './TcpFraming.js';
-import type { FrameExtraction, TcpFrame } from './TcpFraming.js';
+import { DEFAULT_FRAMING, readFramingFromConfig } from './TcpFraming.js';
+import type { TcpFrame } from './TcpFraming.js';
+import { TcpInboundBuffer } from './TcpInboundBuffer.js';
 import { TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 import type { TcpSocketOptions, TcpSocketOptionsType } from './TcpSocketOptions.js';
 
@@ -35,14 +27,13 @@ export type TcpSocketCommand = SendCommand;
 
 export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCommand, TcpOutbound> {
   private socket: NetSocket | null = null;
-  /** Buffer for partial frames not yet matched by the framing strategy. */
-  private inboundBuffer: Uint8Array = new Uint8Array(0);
   /**
-   * How far into {@link inboundBuffer} the `lines` delimiter search already
-   * reached.  Carrying it across chunks is what keeps a delimiter-free peer
-   * from making every chunk re-scan everything buffered so far (#610).
+   * Partial frames not yet matched by the framing strategy.  The buffer owns
+   * the accumulation as well as the bytes: appending by re-allocating, and
+   * re-scanning from 0, are both what made a delimiter-free peer quadratic
+   * (#610).
    */
-  private inboundScanFrom = 0;
+  private readonly inbound = new TcpInboundBuffer();
 
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
@@ -92,7 +83,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     // path every reconnect goes through (#578).  It also has to run when the
     // socket is already gone — `dropConnection` nulls it, and the base class
     // still calls in here before the next connect attempt.
-    this.resetInboundBuffer();
+    this.inbound.clear();
     if (!this.socket) return;
     const sock = this.socket;
     this.socket = null;
@@ -126,48 +117,18 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 
   /* ---------------------------- framing ----------------------------- */
 
-  private handleData(chunk: Uint8Array): void {
-    this.inboundBuffer = appendChunk(this.inboundBuffer, chunk);
-    const framing = this.options.framing ?? DEFAULT_FRAMING;
-    if (framing.kind === 'bytes') {
-      this.deliver(this.inboundBuffer);
-      this.resetInboundBuffer();
-    } else if (framing.kind === 'lines') {
-      this.extractLines(
-        framing.delimiter ?? DEFAULT_LINE_DELIMITER,
-        framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH,
-      );
-    } else {
-      this.extractLengthPrefixed(framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH);
-    }
-  }
-
-  private extractLines(delimiter: string, maxLineLen: number): void {
-    this.applyExtraction(
-      extractLineFrames(this.inboundBuffer, delimiter, maxLineLen, this.inboundScanFrom),
-    );
-  }
-
-  private extractLengthPrefixed(maxFrameLen: number): void {
-    this.applyExtraction(extractLengthPrefixedFrames(this.inboundBuffer, maxFrameLen));
-  }
-
   /**
-   * Deliver what the pass completed, then either drop the connection (a cap
-   * was breached) or keep the leftover for the next chunk.
+   * Buffer the chunk, deliver what it completed, and drop the connection if a
+   * cap was breached.
    *
    * A breached cap costs the whole connection because a client actor owns
    * exactly one — the server's counterpart drops only the offending
    * connection instead.
    */
-  private applyExtraction(extraction: FrameExtraction): void {
+  private handleData(chunk: Uint8Array): void {
+    const extraction = this.inbound.push(chunk, this.options.framing ?? DEFAULT_FRAMING);
     for (const frame of extraction.frames) this.deliver(frame);
-    if (extraction.overflow !== undefined) {
-      this.dropConnection(new Error(extraction.overflow));
-      return;
-    }
-    this.inboundBuffer = extraction.remainder;
-    this.inboundScanFrom = extraction.scanFrom ?? 0;
+    if (extraction.overflow !== undefined) this.dropConnection(new Error(extraction.overflow));
   }
 
   /**
@@ -190,7 +151,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
    * `disconnectImplementation`, and that is where the buffer reset lives.
    */
   private dropConnection(cause: Error): void {
-    this.resetInboundBuffer();
+    this.inbound.clear();
     const sock = this.socket;
     this.socket = null;
     if (sock) {
@@ -198,12 +159,6 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
       try { sock.destroy(); } catch { /* already gone */ }
     }
     this.handleConnectionLost(cause);
-  }
-
-  /** Forget every pending inbound byte and the scan position that indexes it. */
-  private resetInboundBuffer(): void {
-    this.inboundBuffer = new Uint8Array(0);
-    this.inboundScanFrom = 0;
   }
 
   private deliver(frame: TcpFrame): void {
