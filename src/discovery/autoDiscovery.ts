@@ -14,13 +14,49 @@ function parseSeedList(raw: string): string[] {
 }
 
 /**
+ * Add one rung to the ladder — or drop just that rung.
+ *
+ * Each provider validates its options in its own constructor, and this
+ * builder assembles the whole ladder up front, so a rejected rung throws
+ * before `AggregateSeedProvider.lookup()` — whose contract is that an
+ * individual provider failure falls through to the next — has run at all.
+ * Without this guard one malformed environment variable took the *other*
+ * rungs down with it (#597): a `CLUSTER_SERVICE_NAME` outside Kubernetes'
+ * DNS-1123 shape also killed the `CLUSTER_SEEDS` rung, which never reads
+ * that variable and is the strongest signal on the ladder.  That name is
+ * not even necessarily wrong — the same variable drives the DNS rung,
+ * where a hostname may legally be an SRV name, root-anchored with a
+ * trailing dot, or uppercase.
+ *
+ * Building a rung is part of that rung, so a rejection is scoped to it and
+ * reported through `log` rather than swallowed.  The pinned
+ * {@link singleProviderDiscovery} form is deliberately not covered: failing
+ * loudly on one named provider is exactly what it is for.
+ */
+function addRung(
+  providers: SeedProvider[],
+  log: (message: string, error?: unknown) => void,
+  rungName: string,
+  build: () => SeedProvider,
+): void {
+  try {
+    providers.push(build());
+  } catch (error) {
+    log(`autoDiscovery: skipping the ${rungName} rung — its options were rejected`, error);
+  }
+}
+
+/**
  * Build an {@link AggregateSeedProvider} from environment variables —
  * the default discovery wiring used by `Cluster.bootstrap()` when the
  * caller doesn't pass `seeds` or `discovery:` explicitly.
  *
  * Returns an aggregate even when the env is empty, so the call site
  * always has a `SeedProvider` to invoke — the resulting `lookup()`
- * just resolves to `[]` for single-node dev.
+ * just resolves to `[]` for single-node dev.  A rung whose options the
+ * environment cannot satisfy is dropped and reported rather than thrown
+ * out of here, so one bad variable never costs the rungs that don't read
+ * it — see {@link addRung}.
  */
 export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvider {
   const resolvedOptions = options as AutoDiscoveryOptionsType;
@@ -32,7 +68,7 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
   // 1. CLUSTER_SEEDS — explicit static list.
   const rawSeeds = (env.CLUSTER_SEEDS ?? '').trim();
   if (rawSeeds.length > 0) {
-    providers.push(new ConfigSeedProvider(
+    addRung(providers, log, 'CLUSTER_SEEDS', () => new ConfigSeedProvider(
       ConfigSeedProviderOptions.create()
         .withSystemName(resolvedOptions.systemName)
         .withSeeds(parseSeedList(rawSeeds)),
@@ -42,7 +78,7 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
   // 2. Kubernetes API — only inside a pod with a matching service name.
   const serviceName = (env.CLUSTER_SERVICE_NAME ?? '').trim();
   if (env.KUBERNETES_SERVICE_HOST && serviceName.length > 0) {
-    providers.push(new KubernetesApiSeedProvider(
+    addRung(providers, log, 'Kubernetes API', () => new KubernetesApiSeedProvider(
       KubernetesApiSeedProviderOptions.create()
         .withSystemName(resolvedOptions.systemName)
         .withNamespace(env.CLUSTER_NAMESPACE ?? 'default')
@@ -53,7 +89,7 @@ export function autoDiscovery(options: AutoDiscoveryOptions): AggregateSeedProvi
 
   // 3. DNS — resolve the service hostname directly.
   if (serviceName.length > 0) {
-    providers.push(new DnsSeedProvider(
+    addRung(providers, log, 'DNS', () => new DnsSeedProvider(
       DnsSeedProviderOptions.create()
         .withSystemName(resolvedOptions.systemName)
         .withHostname(serviceName)
