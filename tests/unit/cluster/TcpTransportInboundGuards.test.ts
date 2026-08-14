@@ -2,13 +2,14 @@
  * #588 — what an unauthenticated inbound socket may hold.
  *
  * The decoder runs before the `hello` gate, so everything here is reachable by
- * anyone who can open a TCP connection to the cluster port.  Two bounds close
- * the two halves of "connected but silent":
+ * anyone who can open a TCP connection to the cluster port.  Three bounds close
+ * the three shapes of "connected but silent":
  *
  * - a **stall deadline** on a half-received frame, so a socket that sends three
- *   bytes of a length prefix and then nothing gives its buffer back.  Until now
- *   only the *outbound* dial had a deadline (`HANDSHAKE_TIMEOUT_MS`, #697), and
- *   that one stops mattering the moment the handshake lands.
+ *   bytes of a length prefix and then nothing gives its buffer back.
+ * - a **handshake deadline** on the accepted socket itself, so a socket that
+ *   sends *nothing at all* — which never reaches the stall deadline, because
+ *   there is no half-received frame to track — gives its slot back too.
  * - an **inbound connection cap**, so the per-connection cost cannot simply be
  *   multiplied by opening sockets in a loop.
  *
@@ -19,7 +20,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { NoopLogger } from '../../../src/Logger.js';
-import { INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS } from '../../../src/cluster/Constants.js';
+import {
+  HANDSHAKE_TIMEOUT_MS,
+  INCOMPLETE_FRAME_IDLE_MS,
+  MAX_INBOUND_CONNECTIONS,
+} from '../../../src/cluster/Constants.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
@@ -40,18 +45,36 @@ function mockSocket(): MockSocket {
   };
 }
 
+/** The slice of a `Connection` these tests assert on. */
+type TrackedConnection = {
+  incompleteFrameTimer: unknown;
+  handshakeTimer: ReturnType<typeof setTimeout> | null;
+};
+
 /** The private socket callbacks and bookkeeping these tests reach through. */
 interface TransportInternals {
   attachInbound(socket: unknown): void;
   onData(socket: unknown, chunk: Uint8Array): void;
   onClose(socket: unknown): void;
   onIncompleteFrameTimeout(connection: object): void;
+  onHandshakeTimeout(connection: object): void;
   readonly inboundConnections: number;
-  readonly bySocket: WeakMap<object, { incompleteFrameTimer: unknown }>;
+  readonly bySocket: WeakMap<object, TrackedConnection>;
 }
 
 function internals(transport: TcpTransport): TransportInternals {
   return transport as unknown as TransportInternals;
+}
+
+/**
+ * Fire a connection's handshake deadline the way the runtime would, and cancel
+ * the real timer behind it so the callback cannot run a second time after the
+ * test that provoked it has finished.
+ */
+function fireHandshakeDeadline(transport: TcpTransport, connection: TrackedConnection): void {
+  expect(connection.handshakeTimer).not.toBeNull();
+  clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
+  internals(transport).onHandshakeTimeout(connection);
 }
 
 function newTransport(port: number): TcpTransport {
@@ -207,5 +230,126 @@ describe('inbound connections are capped', () => {
     // A fully-meshed cluster needs one inbound connection per peer, so a tight
     // cap would be a partition rather than a defence.
     expect(MAX_INBOUND_CONNECTIONS).toBeGreaterThanOrEqual(1_000);
+  });
+});
+
+describe('an inbound socket that never speaks does not keep its slot', () => {
+  test('exploit: a socket that sends not one byte is on a handshake deadline', () => {
+    // The cheapest attack on the cap there is: connect, send nothing, repeat.
+    // `trackIncompleteFrame` is reached only from `onData` and returns at once
+    // when no bytes are pending, so the stall deadline covers none of this —
+    // the accepted socket needs a deadline of its own.
+    const transport = newTransport(19_301);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    const connection = internals(transport).bySocket.get(socket)!;
+    expect(connection.incompleteFrameTimer).toBeNull();
+    expect(internals(transport).inboundConnections).toBe(1);
+
+    fireHandshakeDeadline(transport, connection);
+    expect(socket.ended).toBe(true);
+    expect(internals(transport).inboundConnections).toBe(0);
+  });
+
+  test('exploit: silent sockets can no longer saturate the cap for good', () => {
+    const transport = newTransport(19_302);
+    const silent: MockSocket[] = [];
+    for (let index = 0; index < MAX_INBOUND_CONNECTIONS; index += 1) {
+      const socket = mockSocket();
+      internals(transport).attachInbound(socket);
+      silent.push(socket);
+    }
+    // Not one byte was sent on any of them, and the cap is full: a legitimate
+    // peer dialling now is refused, which is a partition rather than a defence.
+    const refused = mockSocket();
+    internals(transport).attachInbound(refused);
+    expect(refused.ended).toBe(true);
+
+    for (const socket of silent) {
+      fireHandshakeDeadline(transport, internals(transport).bySocket.get(socket)!);
+    }
+    expect(internals(transport).inboundConnections).toBe(0);
+
+    const admitted = mockSocket();
+    internals(transport).attachInbound(admitted);
+    expect(admitted.ended).toBe(false);
+    expect(internals(transport).inboundConnections).toBe(1);
+  });
+
+  test('a socket whose data beat its open callback is on a deadline too', () => {
+    // Bun's `data`-before-`open` route builds the Connection in `onData`, and a
+    // deadline armed only on the `onOpen` route would leave that one uncovered.
+    const transport = newTransport(19_303);
+    const socket = mockSocket();
+
+    internals(transport).onData(socket, partialHello(3));
+    expect(internals(transport).bySocket.get(socket)?.handshakeTimer).not.toBeNull();
+  });
+
+  test('a peer that completes its hello is off the deadline for good', () => {
+    // The bound is on the *handshake*, not on the connection: an established
+    // inbound peer that then falls quiet — which is every peer between two
+    // gossip rounds — must never be dropped for it.
+    const transport = newTransport(19_304);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    internals(transport).onData(socket, encodeFrame({
+      kind: 'hello',
+      self: new NodeAddress('inbound-guards', '10.0.0.11', 2_552).toJSON(),
+    }));
+
+    const connection = internals(transport).bySocket.get(socket)!;
+    expect(connection.handshakeTimer).toBeNull();
+    expect(socket.writes).toHaveLength(1);   // the hello-ack
+    expect(socket.ended).toBe(false);
+
+    // And a deadline that had already been handed to the runtime when the hello
+    // landed finds nothing left to do.
+    internals(transport).onHandshakeTimeout(connection);
+    expect(socket.ended).toBe(false);
+    expect(internals(transport).inboundConnections).toBe(1);
+  });
+
+  test('a slow peer still trickling its hello keeps its connection', () => {
+    // The deadline is armed once, at accept — so a hello arriving byte by byte
+    // over a congested link is exactly the case that must survive it.  What
+    // covers those bytes is the stall deadline, re-armed on every chunk.
+    const transport = newTransport(19_305);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    const frame = encodeFrame({
+      kind: 'hello',
+      self: new NodeAddress('inbound-guards', '10.0.0.12', 2_552).toJSON(),
+    });
+    for (let index = 0; index < frame.byteLength; index += 1) {
+      internals(transport).onData(socket, frame.subarray(index, index + 1));
+    }
+
+    expect(socket.ended).toBe(false);
+    expect(internals(transport).bySocket.get(socket)?.handshakeTimer).toBeNull();
+  });
+
+  test('shutdown leaves no un-handshaken inbound socket behind', async () => {
+    // `shutdown` walks `byPeer`, which a connection still mid-handshake has not
+    // entered — so this deadline is the only thing that ever closes that socket.
+    const transport = newTransport(19_306);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    await transport.shutdown();
+    fireHandshakeDeadline(transport, internals(transport).bySocket.get(socket)!);
+    expect(socket.ended).toBe(true);
+    expect(internals(transport).inboundConnections).toBe(0);
+  });
+
+  test('the accepting side is no stricter than the dialling side already is', () => {
+    // Both ends bound the same handshake, and the dialler starts its clock
+    // before the TCP connect and the TLS handshake while this one starts after
+    // the accept — so a peer that is still trying has always given up first.
+    expect(HANDSHAKE_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(INCOMPLETE_FRAME_IDLE_MS).toBeGreaterThan(HANDSHAKE_TIMEOUT_MS);
   });
 });
