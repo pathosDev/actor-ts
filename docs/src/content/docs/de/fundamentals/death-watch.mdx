@@ -360,6 +360,104 @@ import { Aside } from '@astrojs/starlight/components';
   Actor stoppt; Death Watch ist zur Beobachtung *anderer* Actors.
 </Aside>
 
+## Ein `Terminated` ignorieren
+
+Ein Handler, der die Notification entgegennimmt und nichts damit tut,
+ist ein legitimer Endzustand: der Actor läuft weiter, nichts wird
+geloggt, nichts schlägt fehl.  Das Framework könnte gar nicht
+reagieren, selbst wenn es wollte — `onReceive` gibt `void` zurück, die
+Zelle, die den Tod dispatcht hat, kann ein ignoriertes `Terminated`
+also nicht von einem behandelten unterscheiden.
+
+"Ignoriert" heißt allerdings *der Handler lief und tat nichts*.  Ein
+Tod, den der Handler nie erreicht, ist eine andere Geschichte — und die
+APIs beantworten sie unterschiedlich:
+
+| Watcher | Ein `Terminated`, auf das der Handler nicht reagiert |
+| --- | --- |
+| `Actor.onReceive` ohne Branch dafür | Nichts passiert; der Actor läuft weiter. |
+| `match(message)` … `.exhaustive()` ohne Arm dafür | ts-pattern wirft einen Fehler.  Das ist ein gewöhnlicher Fehler, geht also durch die Supervision — unter der Default-Strategie **restartet** der Watcher. |
+| `Behaviors.receiveWithSignal`, dessen Signal-Handler `Behaviors.unhandled` antwortet | Nichts passiert. |
+| Ein typed Behavior ohne Signal-Handler, dessen Receive `Behaviors.unhandled` antwortet | Das `Terminated` geht zu Dead Letters. |
+
+Die zweite Zeile ist die, über die man stolpert: `.exhaustive()` ist
+das Idiom, das diese Seite überall verwendet, und es macht aus "dieser
+Tod betrifft mich nicht" eine Restart-Schleife, solange kein Arm ihn
+abdeckt.  Ergänze den Arm — oder `watch`e gar nicht erst.
+
+### `DeathPactError` ist deiner zum Werfen
+
+Manche Watcher können wirklich nicht weitermachen — eine Session, deren
+Connection gestorben ist, ein Saga-Schritt, dessen Worker verschwunden
+ist.  Genau dafür ist `DeathPactError` exportiert, und **die Runtime
+wirft ihn nie selbst**: einen automatischen Death Pact gibt es in
+actor-ts nicht.  Du wirfst ihn selbst, aus deinem eigenen Handler, und
+er läuft durch die Supervision wie jeder andere Fehler:
+
+```ts
+import { match, P } from 'ts-pattern';
+import {
+  Actor,
+  ActorOptions,
+  DeathPactError,
+  decideBy,
+  Directive,
+  OneForOneStrategy,
+  Terminated,
+  type ActorRef,
+} from 'actor-ts';
+
+type QueryCommand = { kind: 'query'; sql: string };
+type SessionMessage = QueryCommand | Terminated;
+
+class Session extends Actor<SessionMessage> {
+  constructor(private readonly connection: ActorRef) {
+    super();
+  }
+
+  override preStart(): void {
+    this.context.watch(this.connection);
+  }
+
+  override onReceive(message: SessionMessage): void {
+    match(message)
+      .with(P.instanceOf(Terminated), (t) => this.onTerminated(t))
+      .with({ kind: 'query' }, (c) => this.onQuery(c))
+      .exhaustive();
+  }
+
+  /** No connection, no session — break the pact and let the parent decide. */
+  private onTerminated(signal: Terminated): void {
+    throw new DeathPactError(signal.actor.path.toString());
+  }
+
+  private onQuery(command: QueryCommand): void {
+    // ... run it against the connection
+  }
+}
+
+// A restart is the wrong answer for a broken pact: the dependency is gone,
+// so a fresh instance fails the same way.  Say so, or the default strategy
+// will restart it ten times a minute.
+const pactStrategy = new OneForOneStrategy(
+  decideBy([{ match: DeathPactError, then: Directive.Stop }]),
+);
+const sessionOptions = ActorOptions.create().withSupervisorStrategy(pactStrategy);
+
+const session = system.spawn(() => new Session(connection), 'session-42', sessionOptions);
+```
+
+`actorPath` trägt den Pfad des Actors, dessen Tod den Pakt gebrochen
+hat — ein Watcher, der von mehreren Actors abhängt, kann also allein am
+Fehler ablesen, welche Abhängigkeit er verloren hat.
+
+Dass der Wurf bei dir liegt, ist der Punkt und keine Lücke.  Ein Death
+Pact ist eine Policy über *diesen* Watcher — zwei Actors, die denselben
+Worker beobachten, wollen durchaus unterschiedliche Antworten — und das
+Framework kann sie ihnen nicht abnehmen: `onReceive` gibt ihm kein
+Signal, mit dem es einen Handler, der den Tod ignoriert hat, von einem
+unterscheiden könnte, der ihn still erledigt hat.
+
 ## Watch + Supervision — wann welches verwenden
 
 Die beiden Mechanismen decken verschiedene Fälle ab:
