@@ -103,13 +103,14 @@ has fetch built in).
 
 ### Bounds every call carries
 
-A response is buffered in memory before you see it, so the two
+A response is buffered in memory before you see it, so the three
 things the remote peer controls are bounded by default:
 
 | Bound | Default | Per-request override |
 | --- | --- | --- |
 | Deadline | 30 s | `timeoutMs` — `0` opts one call out entirely |
 | Response body | 8 MiB | `maxResponseBytes` |
+| Redirect hops | 5, followed | `redirect`, `maxRedirects` |
 
 Past the ceiling the request is **aborted while the body is still
 arriving** and the call throws `HttpResponseTooLargeError`, so an
@@ -138,6 +139,45 @@ const exportClientOptions = HttpClientOptions.create()
 
 const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
 ```
+
+### Where a redirect may take you
+
+The client follows redirects itself rather than handing them to
+the platform, so the decisions happen **between** hops:
+
+| `redirect` | What happens on a 3xx with a `Location` |
+| --- | --- |
+| `'follow'` *(default)* | Chase it, up to `maxRedirects` hops |
+| `'error'` | Throw `HttpRedirectError`; the target is never contacted |
+| `'manual'` | Return the 3xx as-is, `Location` readable in `headers` |
+
+Following is bounded at **5 hops** (the platform allows 20), and a
+followed hop is not a blind replay of the original request:
+
+- A hop that **crosses origins** loses `authorization`, `cookie`
+  and `proxy-authorization`, so a redirect cannot walk a bearer
+  token to a host you never chose.
+- A **`303`** — and a `301`/`302` after a `POST` — continues as a
+  `GET` with the body and its `content-type` dropped, matching the
+  Fetch spec, so a write is never replayed against a second host.
+- A target that is **not `http:` or `https:`** is refused outright.
+- The deadline and the byte ceiling are **cumulative over the whole
+  chain**, not per hop; intermediate 3xx bodies are discarded.
+
+Refusals happen before the hop is issued — that is the point. A
+check on where a chain *ended up* has already made every request
+in it, and making the request is the side effect worth preventing.
+
+```ts
+const webhookClientOptions = HttpClientOptions.create()
+  .withRedirect('error')
+  .withMaxResponseBytes(256 * 1024);
+
+const webhookClient = system.extension(HttpExtensionId).newClient(webhookClientOptions);
+```
+
+`response.url` names the hop that actually answered, which is what
+to assert on when it matters *which host* served the bytes.
 
 For more elaborate client patterns (retries, caching), wrap the
 client in a [retry](/patterns/retry/) +

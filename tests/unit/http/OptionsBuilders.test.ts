@@ -129,10 +129,14 @@ describe('option builders — every withX sets its field', () => {
   test('HttpClientOptions', () => {
     const builder = HttpClientOptions.create()
       .withMaxResponseBytes(2048)
-      .withDefaultTimeoutMs(7_500);
+      .withDefaultTimeoutMs(7_500)
+      .withRedirect('manual')
+      .withMaxRedirects(2);
     const fields = bag(builder);
     expect(fields.maxResponseBytes).toBe(2048);
     expect(fields.defaultTimeoutMs).toBe(7_500);
+    expect(fields.redirect).toBe('manual');
+    expect(fields.maxRedirects).toBe(2);
   });
 
   test('StaticFilesOptions', () => {

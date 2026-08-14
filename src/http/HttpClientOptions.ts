@@ -66,6 +66,51 @@ export const DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
  */
 export const DEFAULT_HTTP_CLIENT_TIMEOUT_MS = 30_000;
 
+/**
+ * What the client does with a 3xx that carries a `Location`.
+ *
+ *   - `'follow'` — chase it, up to `maxRedirects` hops, dropping
+ *     `authorization` / `cookie` / `proxy-authorization` on any hop that
+ *     crosses origins.
+ *   - `'error'` — refuse it: the call throws `HttpRedirectError` and no
+ *     request is ever issued against the target.
+ *   - `'manual'` — hand the 3xx back untouched, `Location` readable in
+ *     `headers`, so the caller decides.
+ */
+export type HttpRedirectMode = 'follow' | 'error' | 'manual';
+
+/**
+ * What an unconfigured client does with a redirect — follow it.
+ *
+ * Following is what every caller already got (the platform default) and what
+ * the overwhelming majority of real endpoints need: `http` → `https`, a
+ * missing trailing slash, a moved API version.  Defaulting to `'error'`
+ * instead would break those silently at the first deploy for a risk that has
+ * no attacker-reachable path in this repo — the point of #625 is that the safe
+ * behaviour was *unreachable*, not that the unsafe one was common.
+ *
+ * What "follow" means is now this client's business rather than the
+ * platform's, which is where the actual hardening lives: a bounded hop count,
+ * an explicit credential-stripping rule, and a refusal to leave HTTP(S).
+ */
+export const DEFAULT_HTTP_CLIENT_REDIRECT_MODE: HttpRedirectMode = 'follow';
+
+/**
+ * Hops a followed redirect chain may take before the call is refused — 5.
+ *
+ * Down from the platform's 20, because 20 is a browser's budget for
+ * hand-written navigation chains and a service client has no comparable
+ * need: an endpoint that needs more than a handful of hops is either
+ * misconfigured or walking the caller somewhere on purpose, and every hop is
+ * one more host that gets to nominate the next one.  5 clears every
+ * legitimate chain observed in practice (scheme upgrade, canonical host,
+ * trailing slash, a version alias) with room to spare.
+ *
+ * `0` refuses the first redirect outright, which is `'error'` by another
+ * name — it is allowed so a caller can express the policy as a number.
+ */
+export const DEFAULT_HTTP_CLIENT_MAX_REDIRECTS = 5;
+
 /** Plain settings shape accepted by the {@link HttpClient} constructor. */
 export type HttpClientOptionsType = {
   /**
@@ -78,6 +123,17 @@ export type HttpClientOptionsType = {
    * request's own `timeoutMs` wins, and `0` there means "no deadline".
    */
   readonly defaultTimeoutMs?: number;
+  /**
+   * What to do with a 3xx carrying a `Location`.  Default `'follow'`; a
+   * request's own `redirect` wins.
+   */
+  readonly redirect?: HttpRedirectMode;
+  /**
+   * Hops a followed chain may take before the call is refused.  Default 5;
+   * `0` refuses the first redirect.  Only consulted when `redirect` is
+   * `'follow'`.
+   */
+  readonly maxRedirects?: number;
 };
 
 /** Fluent builder for {@link HttpClientOptionsType}. */
@@ -96,17 +152,31 @@ export class HttpClientOptionsBuilder extends OptionsBuilder<HttpClientOptionsTy
   withDefaultTimeoutMs(ms: number): this {
     return this.set('defaultTimeoutMs', ms);
   }
+
+  /** What to do with a 3xx carrying a `Location`.  Default `'follow'`. */
+  withRedirect(mode: HttpRedirectMode): this {
+    return this.set('redirect', mode);
+  }
+
+  /** Hops a followed chain may take before the call is refused.  Default 5. */
+  withMaxRedirects(hops: number): this {
+    return this.set('maxRedirects', hops);
+  }
 }
 
 /**
  * Validates resolved {@link HttpClientOptionsType} settings.
  *
- * Both fields are ceilings that only mean anything above zero, and both are
- * silently catastrophic when mis-set: a `maxResponseBytes` of `0` or `NaN`
- * would refuse every response, and a `defaultTimeoutMs` of `NaN` would arm a
- * timer that never fires — reinstating exactly the unbounded wait the default
- * exists to close.  Neither shows up as a type error, so the check runs once
- * at construction on the merged settings.
+ * Every field here is silently catastrophic when mis-set, and none of the
+ * failures show up as a type error: a `maxResponseBytes` of `0` or `NaN`
+ * refuses every response, a `defaultTimeoutMs` of `NaN` arms a timer that
+ * never fires — reinstating exactly the unbounded wait the default exists to
+ * close — and a misspelled `redirect` read from an untyped config would be
+ * neither of the three modes, which is a redirect policy nobody chose.  So
+ * the check runs once at construction on the merged settings.
+ *
+ * `maxRedirects` is the one bound allowed to be zero: refusing the first
+ * redirect is a policy, not a mistake.
  */
 export class HttpClientOptionsValidator extends OptionsValidator<HttpClientOptionsType> {
   constructor() {
@@ -115,6 +185,8 @@ export class HttpClientOptionsValidator extends OptionsValidator<HttpClientOptio
   protected rules(_s: Partial<HttpClientOptionsType>): void {
     this.positiveInt('maxResponseBytes');
     this.positiveNumber('defaultTimeoutMs');
+    this.oneOf('redirect', ['follow', 'error', 'manual']);
+    this.nonNegativeInt('maxRedirects');
   }
 }
 
