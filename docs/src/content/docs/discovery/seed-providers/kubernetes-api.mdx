@@ -87,6 +87,18 @@ Supplying `fetchEndpoints` lifts the shape rule: your fetcher builds
 its own request, so there the two fields are plain labels and only
 have to be non-empty.
 
+On the env-driven ladder — `Cluster.bootstrap()` with neither `seeds`
+nor `discovery` — a rejected name costs **only this rung**.  The
+Kubernetes provider is dropped, the rejection is reported through the
+bootstrap log, and the `CLUSTER_SEEDS` and DNS rungs still run.  That
+matters because `CLUSTER_SERVICE_NAME` drives the DNS rung as well,
+and a DNS hostname is the wider form: an SRV name like
+`_actor-ts._tcp.example.com`, a root-anchored FQDN with a trailing
+dot, and uppercase are all legal there, and none of them is a
+DNS-1123 subdomain.  The pinned form
+`Cluster.bootstrap({ discovery: 'kubernetes' })` keeps failing loudly
+— pinning one provider is a statement that you want no fallback.
+
 ## Pinning the pod CIDR
 
 An `Endpoints` object may name **any** IP, including one no pod in

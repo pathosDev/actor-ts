@@ -89,6 +89,19 @@ als rätselhafter 404 aufzuschlagen.
 Fetch-Funktion baut ihre eigene Anfrage, dort sind die beiden
 Felder also reine Labels und müssen nur nicht-leer sein.
 
+Auf der env-getriebenen Leiter — `Cluster.bootstrap()` ohne `seeds`
+und ohne `discovery` — kostet ein abgelehnter Name **nur diese
+Sprosse**.  Der Kubernetes-Provider fällt weg, die Ablehnung wird
+über das Bootstrap-Log gemeldet, und die Sprossen `CLUSTER_SEEDS`
+und DNS laufen weiter.  Das ist wichtig, weil `CLUSTER_SERVICE_NAME`
+auch die DNS-Sprosse treibt und ein DNS-Hostname die weitere Form
+ist: ein SRV-Name wie `_actor-ts._tcp.example.com`, ein
+wurzelverankerter FQDN mit Schlusspunkt und Großschreibung sind dort
+allesamt zulässig, und keines davon ist eine DNS-1123-Subdomain.
+Die gepinnte Form `Cluster.bootstrap({ discovery: 'kubernetes' })`
+scheitert weiterhin laut — genau einen Provider zu pinnen ist die
+Aussage, dass du keinen Fallback willst.
+
 ## Das Pod-CIDR pinnen
 
 Ein `Endpoints`-Objekt darf **jede beliebige** IP nennen, auch
