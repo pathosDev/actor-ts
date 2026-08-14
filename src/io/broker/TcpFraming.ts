@@ -10,10 +10,12 @@
  * be fixed twice, by someone who knows the copy exists.
  *
  * The extractors are pure functions over `(buffer, caps)` rather than methods
- * on a framer object because the two callers own their buffer differently —
- * the client actor keeps one field, the server keeps one per connection — and
- * a function that returns the leftover lets each caller store it where it
- * already stores it.
+ * on a framer object: what they read is a window of bytes, and who owns that
+ * window differs per caller — the client actor keeps one, the server keeps one
+ * per accepted connection.  Reporting how much of it was consumed lets the
+ * owner apply that to its own bookkeeping; `TcpInboundBuffer` is what both
+ * callers use for it, and it imports this module rather than the other way
+ * round.
  */
 import type { Config } from '../../config/Config.js';
 
@@ -55,9 +57,14 @@ export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
 /**
  * What one extraction pass produced.
  *
- * `remainder` is only meaningful when `overflow` is unset: a breached cap
- * leaves the caller's buffer untouched, because the connection is about to go
- * away and re-slicing a buffer nobody will read again would only obscure that.
+ * A **count** rather than the leftover bytes, because the leftover is not the
+ * extractor's to hand out: the caller owns the window this ran over, and
+ * slicing a fresh array off it per chunk is the copy #610 exists to remove.
+ * `consumed` is what the owner applies to its own cursor.
+ *
+ * It is `0` on a breached cap — the buffer is left untouched, because the
+ * connection is about to go away and consuming from a buffer nobody will read
+ * again would only obscure that.
  *
  * "About to go away" is the caller's half of the contract, and both callers
  * owe it: the listener closes the offending connection, the client discards
@@ -67,13 +74,14 @@ export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
 export type FrameExtraction = {
   /** Frames completed in this pass, in arrival order. */
   readonly frames: readonly TcpFrame[];
-  /** Bytes left over for the next chunk — assign back to the caller's buffer. */
-  readonly remainder: Uint8Array;
+  /** Bytes taken off the front of `buffer`; the rest stays pending. */
+  readonly consumed: number;
   /**
-   * How far into `remainder` the delimiter search already reached: those bytes
-   * are known to hold no delimiter, so the next pass may start there instead
-   * of at 0.  Hand it back as the `scanFrom` argument and a delimiter-free
-   * peer costs O(chunk) per chunk rather than O(buffered) (#610).
+   * How far into the bytes that stay pending the delimiter search already
+   * reached: those are known to hold no delimiter, so the next pass may start
+   * there instead of at 0.  Hand it back as the `scanFrom` argument and a
+   * delimiter-free peer costs O(chunk) per chunk rather than O(buffered)
+   * (#610).
    *
    * Unset on a breached cap, and unset for the strategies that keep no scan
    * state — `0` is always the safe reading.
@@ -93,19 +101,6 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 /**
- * Append `chunk` to `buffer`, avoiding the copy when there is nothing to
- * append to — which is the common case for a stream whose frames arrive
- * whole.
- */
-export function appendChunk(buffer: Uint8Array, chunk: Uint8Array): Uint8Array {
-  if (buffer.length === 0) return chunk;
-  const merged = new Uint8Array(buffer.length + chunk.length);
-  merged.set(buffer, 0);
-  merged.set(chunk, buffer.length);
-  return merged;
-}
-
-/**
  * Run `framing`'s extractor over `buffer`, filling in the unset caps.
  *
  * `scanFrom` is the previous pass' {@link FrameExtraction.scanFrom} for this
@@ -116,7 +111,7 @@ export function extractFrames(
   framing: TcpFraming,
   scanFrom = 0,
 ): FrameExtraction {
-  if (framing.kind === 'bytes') return { frames: [buffer], remainder: new Uint8Array(0) };
+  if (framing.kind === 'bytes') return { frames: [buffer], consumed: buffer.length };
   if (framing.kind === 'lines') {
     return extractLineFrames(
       buffer,
@@ -181,7 +176,7 @@ export function extractLineFrames(
     const index = indexOfBytes(buffer, delimiterBytes, searchFrom);
     if (index < 0) break;
     if (index - lineStart > maxLineLen) {
-      return { frames, remainder: buffer, overflow: `line exceeds maxLineLen=${maxLineLen}` };
+      return { frames, consumed: 0, overflow: `line exceeds maxLineLen=${maxLineLen}` };
     }
     frames.push(textDecoder.decode(buffer.subarray(lineStart, index)));
     lineStart = index + delimiterBytes.length;
@@ -190,7 +185,7 @@ export function extractLineFrames(
   if (buffer.length - lineStart > maxLineLen) {
     return {
       frames,
-      remainder: buffer,
+      consumed: 0,
       overflow: `unterminated line exceeds maxLineLen=${maxLineLen}`,
     };
   }
@@ -198,10 +193,9 @@ export function extractLineFrames(
   // delimiter straddling the boundary would otherwise be stepped over, and
   // that line would never complete.
   const searched = Math.max(buffer.length - delimiterBytes.length + 1, lineStart);
-  // Nothing consumed → hand the buffer straight back rather than pay for a
-  // view onto a chunk that is still one partial line.
-  if (lineStart === 0) return { frames, remainder: buffer, scanFrom: searched };
-  return { frames, remainder: buffer.subarray(lineStart), scanFrom: searched - lineStart };
+  // `scanFrom` is relative to what stays pending, so it is measured from the
+  // end of what this pass consumed.
+  return { frames, consumed: lineStart, scanFrom: searched - lineStart };
 }
 
 /**
@@ -247,13 +241,16 @@ export function extractLengthPrefixedFrames(
     const length = (buffer[cursor]! << 24 | buffer[cursor + 1]! << 16
                   | buffer[cursor + 2]! << 8 | buffer[cursor + 3]!) >>> 0;
     if (length > maxFrameLen) {
-      return { frames, remainder: buffer, overflow: `frame exceeds maxFrameLen=${maxFrameLen}` };
+      return { frames, consumed: 0, overflow: `frame exceeds maxFrameLen=${maxFrameLen}` };
     }
     if (buffer.length - cursor - 4 < length) break;
+    // `slice`, not `subarray`: a frame handed to a subscriber outlives this
+    // pass, and the bytes behind it are about to be overwritten by the next
+    // chunk.
     frames.push(buffer.slice(cursor + 4, cursor + 4 + length));
     cursor += 4 + length;
   }
-  return { frames, remainder: cursor === 0 ? buffer : buffer.slice(cursor) };
+  return { frames, consumed: cursor };
 }
 
 /** Read a `framing { … }` block off a broker actor's HOCON config. */
