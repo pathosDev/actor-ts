@@ -459,6 +459,61 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   GrpcCallMetadata` and supplies `getMap()` in place of the former `get()`;
   the type is re-exported from the broker barrel.
 
+- **BREAKING — `DEFAULT_MIME_TYPES` now has a null prototype instead of only
+  being frozen** (#608).  Freezing blocked writes and said nothing about
+  reads, and the table is public API — a downstream
+  `DEFAULT_MIME_TYPES[ext]` reproduced the same prototype-chain defect in
+  the caller's own file.  Bracket reads, `Object.keys`, `in`, spreading and
+  `JSON.stringify` are unaffected, and the 44 entries are unchanged.
+
+  *Migration:* `DEFAULT_MIME_TYPES.hasOwnProperty(ext)` and string-coercing
+  the map now throw — use `Object.hasOwn(DEFAULT_MIME_TYPES, ext)` and
+  `JSON.stringify(...)`.  It also logs as `[Object: null prototype] { … }`.
+
+- **`DeathPactError` is documented as manual-use only, and tests now hold
+  that line** (#453).  The class is public API with no producer anywhere in
+  `src/`, and both halves of that are the contract: the runtime never raises
+  it, and an application throws it deliberately when a watched actor's death
+  leaves the watcher without a purpose.  Until now that contract lived in a
+  single JSDoc line, reachable only through the generated API reference —
+  nothing stopped it from being deleted, and a half-implemented automatic
+  throw would have turned nothing red.  The death-watch page (EN + DE) gained
+  an *Ignoring a `Terminated`* section covering what an ignored death
+  actually costs in each API — a silent no-op under `Actor.onReceive`, a
+  supervision restart under the `match(…).exhaustive()` idiom this project
+  documents everywhere, dead letters in the typed API — plus a worked
+  example of raising the error yourself and letting a decider, rather than
+  the framework, price a broken pact.  Three tests in `DeathWatch.test.ts`
+  pin it: an ignored `Terminated` raises nothing and the watcher keeps
+  processing; an application-thrown `DeathPactError` reaches supervision
+  carrying the dead actor's path; and a `Terminated` that no `.exhaustive()`
+  arm covers fails as ts-pattern's own error rather than as a death pact.
+  The JSDoc's "an unhandled Terminated is swallowed" went with it, because
+  there is no framework-level swallow: the cell dispatches the signal and
+  reads nothing back.  That is also precisely why no pact can be automatic —
+  `Actor.onReceive` returns `void`, so "handled" and "ignored" are
+  indistinguishable from the outside.  Raising it automatically still waits
+  on the dedicated termination hook in #662.
+
+- **BREAKING — `serializeCookie` is now safe by omission** (#626).  An
+  attribute the caller does not mention resolves to the strict end —
+  `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` — so
+  `serializeCookie('session', id)`, previously a bare `session=<id>` with no
+  protection at all, is a cookie you can ship, and one that satisfies the
+  `__Host-` prefix rules without further argument.  `Path` is always emitted,
+  because omitting it lets the browser derive the scope from the request
+  URI, covering `/account` or `/` depending on which endpoint happened to
+  mint the cookie.  The three Secure-related throws (`SameSite=None`,
+  `__Secure-`, `__Host-`) consequently fire only on an explicit `secure:
+  false`, which is the point: they existed to catch a cookie the browser
+  would silently drop, and an omitted attribute no longer produces one.  The
+  CSRF middleware is unaffected — it already passed every attribute
+  explicitly.
+
+  *Migration:* a cookie that same-origin JS must read now needs `httpOnly:
+  false`, and a plain-HTTP deployment needs `secure: false`; a scope
+  narrower than `/` needs `path` spelled out.
+
 ### Removed
 
 - **BREAKING — the ClusterClient envelope no longer carries a sender field**
@@ -1275,6 +1330,91 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   consumer, and say plainly that this narrows the blast radius rather than
   removing it: an attacker-controlled key space still floods its own cache,
   which is where Redis belongs.
+
+- **BREAKING — Every `HttpClient` call now carries a deadline and a
+  response-size ceiling** (#602).  The client buffered a whole response with
+  `res.arrayBuffer()` and armed its abort timer only when the caller named a
+  `timeoutMs`, so both of the things a remote peer controls — how long it
+  takes to answer and how many bytes it sends — were unbounded.  The deadline
+  is the load-bearing half: fetch's abort signal tears down an in-flight
+  body read, so a request *with* a timeout was already bounded by bandwidth
+  times deadline, while one without was bounded by nothing.  Defaults are 30
+  s and 8 MiB, both configurable through the new `HttpClientOptions` family
+  and overridable per request.  The body is now read chunk by chunk and
+  refused at the crossing chunk with `HttpResponseTooLargeError`, because a
+  cap checked on `arrayBuffer()`'s result is a cap enforced after the
+  allocation it was meant to prevent.  BREAKING: a call that previously ran
+  without a deadline now aborts after 30 s, and a response over 8 MiB now
+  throws.
+
+  *Migration:* pass `timeoutMs: 0` on a request that legitimately has no
+  deadline; raise `maxResponseBytes` on the request or on the client for one
+  that legitimately downloads more than 8 MiB.
+
+- **BREAKING — `HttpClient` has a redirect policy of its own instead of
+  inheriting the platform's** (#625).  No `redirect` was ever passed to
+  fetch, so redirects were followed unconditionally, 20 hops deep, with no
+  way for any caller to opt out.  Severity is low and honestly so — there is
+  no attacker-reachable path to it in this repo, and the runtime already
+  strips credentials on a cross-origin hop — but the safe behaviour was
+  simply unreachable from the API, which is the actual defect.  `redirect`
+  (`'follow'` | `'error'` | `'manual'`) and `maxRedirects` join the same
+  options family, per client and per request.  Following now happens in the
+  client rather than the platform, so the decisions land between hops rather
+  than after them: a cross-origin hop drops
+  `authorization`/`cookie`/`proxy-authorization`, a 303 (and a 301/302 after
+  a POST) continues as a GET with the body dropped per the Fetch spec, a
+  non-HTTP(S) target is refused outright, and the deadline and byte ceiling
+  stay cumulative across the chain.  `HttpClientResponse` gains `url`, the
+  hop that actually answered.  BREAKING: the hop budget drops from 20 to 5.
+
+  *Migration:* raise `maxRedirects` on the client or the request if a chain
+  legitimately needs more than 5 hops; `redirect: 'follow'` remains the
+  default, so nothing else changes.
+
+- **CORS decoration no longer discards a handler's own `Vary` header**
+  (#603).  The decorator resolved the response's existing `Vary` with an
+  exact-key `headers['vary']` lookup, and nothing normalises a handler's
+  header record on the way there — so a handler that answered `Vary: Cookie`
+  was invisible and the response went out as a bare `Vary: Origin`.  That
+  tells shared caches the response does not depend on the cookie, which lets
+  one user's response be served to the next.  The existing value is now
+  resolved case-insensitively and merged, so the response carries a single
+  `Vary: Cookie, Origin`.  Relatedly, `applyHeaders(…, { overwrite: true })`
+  now replaces a differently-cased key instead of leaving two spellings of
+  one header name in the record, where only insertion order decided which
+  reached the wire.
+
+- **A file extension can no longer resolve a content-type through the
+  prototype chain** (#608).  `contentTypeFor` indexed both its override map
+  and the built-in table with a bare `map[ext]`, and the extension comes
+  straight off the request path.  A served file named `report.constructor`
+  therefore threw a `TypeError` out of the static-file handler — a 500 where
+  the documented answer is `application/octet-stream` — and when an override
+  map was passed, the same lookup returned the `Object` function itself out
+  of a signature that promises `string`, which nothing downstream catches
+  because `HttpResponse.contentType` is typed `string | undefined`.  Both
+  reads are now gated on `Object.hasOwn` and narrowed to a non-empty string,
+  stated positively rather than as a list of names to refuse: an own key a
+  caller deliberately maps still wins, an inherited member never does.  Only
+  `constructor` and `__proto__` were ever reachable, since the extension is
+  lowercased before lookup.
+
+- **`serializeCookie` validates the `Path` and `Domain` attributes it
+  writes** (#626).  Both were interpolated into the header verbatim while the
+  guard block covered only the cookie name, the value, the two prefixes and
+  `maxAgeSeconds` — so a `Path` of `/;Domain=evil.example` appended an
+  attribute of somebody else's choosing, and because `Domain=` is emitted
+  before `Path=` and RFC 6265 §5.3 keeps the *last* `Domain` it saw, the
+  smuggled one overrode a legitimate one rather than losing to it.  `Path`
+  must now be a slash-rooted printable-ASCII string free of `;`, `,` and
+  space; `Domain` must be RFC 1123 labels, optionally with the legacy
+  leading dot, which means an internationalised domain has to arrive
+  punycoded.  An invalid `expires` Date is rejected too, instead of
+  stringifying to `Expires=Invalid Date` and sessionising the cookie
+  unnoticed.  Nothing shipped was exploitable: the only in-repo caller is the
+  CSRF middleware, which passes a constant attribute bag, so this is
+  hardening rather than the closing of a live hole.
 
 ## [0.15.0] — 2026-08-12
 

@@ -104,6 +104,93 @@ Der gemeinsame Client umschließt das native `fetch` der Runtime.
 Funktioniert identisch auf Bun, Node und Deno (jede unterstützte
 Runtime hat fetch eingebaut).
 
+### Schranken, die jeder Aufruf mitbringt
+
+Eine Antwort wird im Speicher gepuffert, bevor du sie siehst —
+deshalb sind die drei Dinge, die die Gegenstelle kontrolliert,
+standardmäßig begrenzt:
+
+| Schranke | Default | Override pro Request |
+| --- | --- | --- |
+| Deadline | 30 s | `timeoutMs` — `0` nimmt einen Aufruf ganz heraus |
+| Response-Body | 8 MiB | `maxResponseBytes` |
+| Redirect-Hops | 5, gefolgt | `redirect`, `maxRedirects` |
+
+Jenseits der Obergrenze wird der Request **abgebrochen, während
+der Body noch eintrifft**, und der Aufruf wirft
+`HttpResponseTooLargeError` — eine übergroße oder endlose Antwort
+alloziert also nie zu Ende.  Jenseits der Deadline bricht er
+genauso ab wie bisher schon bei explizitem `timeoutMs`; neu ist
+nur, dass ein Aufruf ohne genannte Deadline jetzt eine hat.
+
+Hebe sie pro Aufruf an, wenn ein einzelner Endpunkt die Ausnahme
+ist:
+
+```ts
+const report = await system.extension(HttpExtensionId).client.get(
+  'https://api.example.com/exports/daily',
+  { maxResponseBytes: 64 * 1024 * 1024, timeoutMs: 120_000 },
+);
+```
+
+Oder gib einer ganzen Integration ihren eigenen Client, statt den
+zu lockern, den sich alle Aktoren im System teilen:
+
+```ts
+import { HttpClientOptions } from 'actor-ts/http';
+
+const exportClientOptions = HttpClientOptions.create()
+  .withMaxResponseBytes(64 * 1024 * 1024)
+  .withDefaultTimeoutMs(120_000);
+
+const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
+```
+
+### Wohin ein Redirect dich bringen darf
+
+Der Client folgt Redirects selbst, statt sie der Plattform zu
+überlassen — so fallen die Entscheidungen **zwischen** den Hops:
+
+| `redirect` | Verhalten bei einem 3xx mit `Location` |
+| --- | --- |
+| `'follow'` *(Default)* | Folgen, bis zu `maxRedirects` Hops |
+| `'error'` | `HttpRedirectError`; das Ziel wird nie kontaktiert |
+| `'manual'` | Den 3xx unverändert zurückgeben, `Location` in `headers` lesbar |
+
+Gefolgt wird höchstens **5 Hops** weit (die Plattform erlaubt 20),
+und ein gefolgter Hop ist kein blindes Wiederholen des
+ursprünglichen Requests:
+
+- Ein Hop, der **die Origin wechselt**, verliert `authorization`,
+  `cookie` und `proxy-authorization` — ein Redirect kann ein
+  Bearer-Token also nicht zu einem Host tragen, den du nie
+  ausgewählt hast.
+- Ein **`303`** — und ein `301`/`302` nach einem `POST` — läuft als
+  `GET` weiter, ohne Body und ohne dessen `content-type`, genau wie
+  die Fetch-Spezifikation es vorschreibt; ein Schreibzugriff wird
+  so nie gegen einen zweiten Host wiederholt.
+- Ein Ziel, das **nicht `http:` oder `https:`** ist, wird
+  rundheraus abgelehnt.
+- Deadline und Byte-Obergrenze gelten **kumulativ über die ganze
+  Kette**, nicht pro Hop; Bodies von Zwischen-3xx werden verworfen.
+
+Abgelehnt wird, bevor der Hop überhaupt abgesetzt wird — darum geht
+es: Eine Prüfung, wo eine Kette *gelandet ist*, hat jeden Request
+darin bereits gestellt, und genau das Absetzen des Requests ist der
+Seiteneffekt, den es zu verhindern gilt.
+
+```ts
+const webhookClientOptions = HttpClientOptions.create()
+  .withRedirect('error')
+  .withMaxResponseBytes(256 * 1024);
+
+const webhookClient = system.extension(HttpExtensionId).newClient(webhookClientOptions);
+```
+
+`response.url` nennt den Hop, der tatsächlich geantwortet hat —
+darauf prüfst du, wenn es darauf ankommt, *welcher Host* die Bytes
+geliefert hat.
+
 Für aufwendigere Client-Muster (Retries, Caching) wickle den
 Client in einen [Retry](/de/patterns/retry/)- +
 [Circuit-Breaker](/de/patterns/circuit-breaker/)-Aufruf.

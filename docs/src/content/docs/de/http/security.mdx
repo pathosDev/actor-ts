@@ -109,8 +109,35 @@ und `SameSite=Lax` oder `Strict`. Das [CSRF-Cookie](/de/http/middleware/csrf/)
 nutzt dieses Präfix per Default — es ist das, was eine Geschwister-Subdomain
 am Platzieren eines Tokens hindert — und ist bewusst nicht `HttpOnly`
 (Double-Submit braucht JS zum Lesen); dein Session-/Auth-Cookie sollte
-`HttpOnly` sein. `serializeCookie` verweigert Werte, die einen zweiten
-Header injizieren könnten.
+`HttpOnly` sein.
+
+`serializeCookie` bringt dich per Weglassen dorthin. Ein Attribut, das du
+nicht nennst, löst sich zum strikten Ende hin auf — `Secure`, `HttpOnly`,
+`SameSite=Lax`, `Path=/` —, der Aufruf mit zwei Argumenten ist also schon
+auslieferbar, und was dabei herauskommt, erfüllt die `__Host-`-Regeln, ohne
+dass ein Wort darüber fällt. Aufweichen ist der Teil, den du hinschreibst:
+
+```ts
+import { serializeCookie } from 'actor-ts/http';
+
+// __Host-session=<id>; Path=/; HttpOnly; Secure; SameSite=Lax
+const sessionCookie = serializeCookie('__Host-session', sessionId);
+
+// Plain-HTTP local dev, and a cookie same-origin JS has to read.
+const readableCookie = serializeCookie('token', value, { secure: false, httpOnly: false });
+```
+
+`Path` wird immer geschrieben, weil die Alternative schlimmer ist: ohne das
+Attribut leitet der Browser den Geltungsbereich aus der Request-URI ab —
+dasselbe Cookie deckt dann `/account` ab, wenn es von `/account/login` kommt,
+und `/`, wenn es von der Wurzel kommt.
+
+Ebenso verweigert die Funktion alles, was aus dem Cookie ausbrechen könnte,
+das sie gerade baut — einen unzulässigen Namen oder Wert und einen `Path`
+oder eine `Domain`, die keine sind. Diese beiden landen unverändert im
+Header: ein ungeprüfter `Path` von `'/;Domain=evil.example'` würde ein
+Attribut nach fremder Wahl anhängen, und die *letzte* `Domain` ist die, die
+zählt — sie würde deine überschreiben, statt gegen sie zu verlieren.
 
 ## Fehlerhygiene
 

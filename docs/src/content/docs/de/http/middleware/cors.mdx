@@ -44,7 +44,9 @@ erhält `204` mit den `Access-Control-Allow-*`-Headern, und die eigentlichen
 `Access-Control-Allow-Origin` echot den Request-Origin (das literale `*`
 wird nur bei `withAnyOrigin()` **ohne** Credentials gesendet), und
 `Vary: Origin` wird ergänzt, sobald der Origin geechot wird, damit Caches
-nicht falsch ausliefern.
+nicht falsch ausliefern. Das Ergänzen ist case-insensitiv und additiv: Ein
+Handler, der bereits mit `Vary: Cookie` geantwortet hat, behält dieses Feld —
+die Response geht als ein einzelnes `Vary: Cookie, Origin` raus.
 
 import { Aside } from '@astrojs/starlight/components';
 

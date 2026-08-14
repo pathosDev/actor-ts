@@ -9,6 +9,7 @@ import type { Logger } from '../Logger.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
+import type { HttpClientOptions } from './HttpClientOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
@@ -58,10 +59,30 @@ export interface ServerBuilder {
  * server via `builder.useBackend(new HonoBackend())`.
  */
 export class HttpExtension implements Extension {
-  /** Shared HTTP client — uses the global fetch. */
+  /**
+   * Shared HTTP client — uses the global fetch, on the built-in limits (30 s
+   * deadline, 8 MiB response ceiling).  For different limits use
+   * {@link newClient} rather than mutating this one: it is shared by every
+   * actor in the system, so raising a bound for one integration would raise it
+   * for all of them.
+   */
   readonly client: HttpClient = new HttpClient();
 
   constructor(private readonly system: ActorSystem) {}
+
+  /**
+   * A client of your own, configured independently of {@link client}.
+   *
+   * The seam exists because the limits are per-client and deliberately strict:
+   * an integration that legitimately downloads a large export, or that talks
+   * to an endpoint slower than the default deadline, needs its own bounds
+   * without loosening the ones every other caller inherits.  Per-request
+   * overrides (`maxResponseBytes`, `timeoutMs`) cover the one-off case; this
+   * covers a whole integration.
+   */
+  newClient(options?: HttpClientOptions): HttpClient {
+    return new HttpClient(options);
+  }
 
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
