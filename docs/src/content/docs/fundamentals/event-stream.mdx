@@ -253,6 +253,7 @@ The framework publishes several event types you can subscribe to:
 | Event | Where it comes from |
 | --- | --- |
 | `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
+| `DispatcherError` | A unit of work scheduled on a dispatcher threw where no supervisor could see it.  Carries the dispatcher `id`, the `cause`, and the `ActorRef` whose turn it was (`null` for work belonging to no actor).  Quiet by design — see [Dispatchers](/fundamentals/dispatchers/#when-a-work-unit-throws). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Concrete cluster membership events published by the cluster extension.  Subscribe to each class directly — `ClusterEvent` is a union type, not a subscribable base class.  See [Cluster](/cluster/overview/). |
 | `ReachabilityChanged` | The publishing node's own failure detector gained or lost sight of a peer — a local observation, unlike `MemberUnreachable`, which may have arrived in gossip.  See [Failure detector](/cluster/failure-detector/). |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |

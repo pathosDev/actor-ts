@@ -85,11 +85,15 @@ Das `Dispatcher`-Interface ist winzig:
 interface Dispatcher {
   readonly id: string;
   execute(task: () => void | Promise<void>): void;
+  onError?: (error: unknown, dispatcherId: string) => void;
 }
 ```
 
-Implementiere diese zwei, und du hast einen eigenen Dispatcher.
-Häufige Gründe dafür:
+Implementiere die ersten beiden, und du hast einen eigenen
+Dispatcher; `onError` ist optional und wird vom Framework gefüllt
+(siehe [Wenn eine Arbeitseinheit
+wirft](#wenn-eine-arbeitseinheit-wirft)).  Häufige Gründe, einen zu
+schreiben:
 
 - **Tracing**: Wrap die Arbeitseinheit, um einen OpenTelemetry-Span
   anzuhängen, damit jede Actor-Nachricht ihren eigenen
@@ -155,6 +159,55 @@ Die meisten Apps brauchen keine Per-Actor-Dispatcher — der
 System-Level-Dispatcher gilt uniform.  Greife dazu, wenn du eine
 gemischte Workload hast, bei der manche Actors Durchsatz brauchen,
 während andere Fairness mit I/O auf demselben Node brauchen.
+
+## Wenn eine Arbeitseinheit wirft
+
+Ein Wurf aus deinem `onReceive` erreicht den Dispatcher nie — er geht
+an die [Supervision](/de/fundamentals/supervision/)-Strategie des
+Parents.  Was der Dispatcher sieht, ist der seltenere Fall: ein
+Fehler in der Maschinerie *um* den Handler herum, oder in einem Task,
+der direkt an `dispatcher.execute` übergeben wurde.  Nichts
+supervidiert diese, deshalb meldet das Framework sie doppelt:
+
+- **Der System-Logger** bekommt einen `error`-Record — so erreicht der
+  Fehler jeden konfigurierten
+  [Log-Sink](/de/observability/logging/multi-sink/) zusammen mit allem
+  anderen, MDC eingeschlossen.
+- **Der Event-Stream** bekommt einen `DispatcherError`, mit der `id`
+  des fehlgeschlagenen Dispatchers, der `cause` und der `ActorRef`,
+  deren Zug es war (`null` für Arbeit, die zu keinem Actor gehört).
+
+```ts
+import { Actor, DispatcherError } from 'actor-ts';
+
+class DispatcherAlarm extends Actor<DispatcherError> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DispatcherError);
+  }
+  override onReceive(event: DispatcherError): void {
+    this.log.error(`dispatcher ${event.dispatcherId} lost a turn`, event.cause);
+  }
+}
+```
+
+Das gilt für **jeden** Dispatcher, auf dem ein Actor läuft, auch für
+eine Per-Actor-Instanz und eine Fremdimplementierung, die das System
+nie sieht — das Framework fängt den Fehler an der Actor-Cell ab, bevor
+der Dispatcher überhaupt beteiligt ist.
+
+`console.error` bleibt nur als letzte Rettung, für einen Dispatcher,
+der außerhalb eines Actor-Systems benutzt wird: `onError` ist ungesetzt,
+bis ein `ActorSystem` die Instanz übernimmt, und ein Fehler, der
+niemanden erreicht, ist schlimmer als einer, der ein Terminal erreicht.
+Ein Sink, den du selbst setzt, wird nie übernommen — das System
+verdrahtet seinen eigenen nur in einen freien Slot.
+
+<Aside type="note" title="Ein DispatcherError ist ein Alarm, keine Metrik">
+  Diese feuern für Fehler, die Supervision strukturell nicht sehen
+  kann, der Kanal ist also von Natur aus ruhig.  Verkehr darauf
+  bedeutet, dass etwas *unterhalb* deiner Actors kaputt ist —
+  behandle einen davon als Page, nicht als Zähler.
+</Aside>
 
 ## Wie es weitergeht
 

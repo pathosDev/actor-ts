@@ -114,6 +114,40 @@ export class ActorRestarted extends ActorLifecycleEvent {
   toString(): string { return `ActorRestarted(${this.actor.path}, ${this.cause.message})`; }
 }
 
+/**
+ * A unit of work scheduled on a dispatcher threw, and supervision was not
+ * going to hear about it.
+ *
+ * Deliberately *not* an {@link ActorLifecycleEvent}: it is not a
+ * transition in an actor's life, and its `actor` may be `null` — a task
+ * handed straight to `dispatcher.execute` belongs to no cell.  Subscribing
+ * to the lifecycle base must not start delivering failures.
+ *
+ * Everything supervision can catch is already caught before it gets here:
+ * a throw out of `onReceive` goes to the parent's strategy.  What lands on
+ * this channel is what supervision structurally cannot see — a failure in
+ * the machinery *around* the handler, or in a task the framework never
+ * owned.  That makes it low-volume and worth alerting on, which is exactly
+ * why it needed a channel instead of a console line (#410).
+ */
+export class DispatcherError {
+  constructor(
+    /** `id` of the dispatcher whose unit failed. */
+    public readonly dispatcherId: string,
+    /** The failure, normalised to an `Error` even when a non-Error was thrown. */
+    public readonly cause: Error,
+    /**
+     * The actor whose turn failed, or `null` when the failing unit came
+     * straight from `dispatcher.execute` and belongs to no cell.
+     */
+    public readonly actor: ActorRef | null = null,
+  ) {}
+  toString(): string {
+    const where = this.actor === null ? this.dispatcherId : String(this.actor.path);
+    return `DispatcherError(${where}, ${this.cause.message})`;
+  }
+}
+
 /** Thrown when an actor handles a Kill system message. */
 export class ActorKilledError extends Error {
   constructor() {
