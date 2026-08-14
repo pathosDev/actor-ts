@@ -160,7 +160,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `benchmarks` workflow gates both. The benchmarks are part of the
   adoption sweep for a breaking change, exactly like tests and examples.
 - **DevTools UI:** a change under `devtools-ui/` needs **`bun run
-  build:ui`** in the same commit — `src/devtools/generated/uiAssets.ts`
+  build:ui`** in the same commit — `src/devtools/generated/UiAssets.ts`
   is generated but committed, and a stale one is valid TypeScript, so
   nothing else notices. **`bun run check:ui`** asserts it (and gates the
   `build` workflow) by comparing a `source-hash` over the UI sources,
@@ -168,7 +168,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   not compare the bundle's bytes: those vary with the OS and the Bun
   release that produced them, so a byte diff is not a staleness signal.
   Which means **review is the only thing that ever looks at the embedded
-  payload** — hence `.gitattributes` gives `uiAssets.ts` a plain textual
+  payload** — hence `.gitattributes` gives `UiAssets.ts` a plain textual
   `diff` and not `-diff`. Restoring `-diff` (or otherwise hiding those
   bytes) removes the last check on them; the `git show` noise it saves is
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec

@@ -50,7 +50,7 @@ import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
 import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
-import { UI_ASSETS } from './generated/uiAssets.js';
+import { UI_ASSETS } from './generated/UiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
 import { freeActorName } from './internal/ActorNames.js';
 import { NodeSampler } from './internal/NodeSampler.js';

@@ -6,7 +6,7 @@ import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { concat, path, type Route } from '../../../src/http/Route.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { uiAssetRoutes, type UiAsset } from '../../../src/devtools/UiAssetRoutes.js';
-import { UI_ASSETS } from '../../../src/devtools/generated/uiAssets.js';
+import { UI_ASSETS } from '../../../src/devtools/generated/UiAssets.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 
 /** Build a fake asset the way the build script would. */

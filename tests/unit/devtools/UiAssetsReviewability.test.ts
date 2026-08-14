@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
 /**
- * `src/devtools/generated/uiAssets.ts` carries the DevTools UI as base64,
+ * `src/devtools/generated/UiAssets.ts` carries the DevTools UI as base64,
  * and **review is the only thing that ever looks at those bytes.**
  *
  * `bun run check:ui` proves the committed `source-hash` matches the sources
@@ -22,14 +22,14 @@ import { describe, expect, test } from 'bun:test';
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
-const GENERATED_MODULE = 'src/devtools/generated/uiAssets.ts';
+const GENERATED_MODULE = 'src/devtools/generated/UiAssets.ts';
 
 const rule = readFileSync(join(REPOSITORY_ROOT, '.gitattributes'), 'utf8')
   .split('\n')
   .map((line) => line.trim())
   .find((line) => line.startsWith(GENERATED_MODULE));
 
-describe('uiAssets.ts stays reviewable', () => {
+describe('UiAssets.ts stays reviewable', () => {
   test('.gitattributes has a rule for the generated module', () => {
     // Guards the guard: without the rule, every assertion below is vacuous.
     expect(rule, `no .gitattributes line covers ${GENERATED_MODULE}`).toBeDefined();
@@ -38,7 +38,7 @@ describe('uiAssets.ts stays reviewable', () => {
   test('the generated bundle is not hidden from diffs', () => {
     expect(
       rule?.split(/\s+/),
-      'Restoring "-diff" makes git and GitHub report uiAssets.ts as binary. '
+      'Restoring "-diff" makes git and GitHub report UiAssets.ts as binary. '
       + 'check:ui hashes the UI sources, not the embedded payload, so review '
       + 'is the only check the payload ever gets — see AGENTS.md, DevTools UI.',
     ).not.toContain('-diff');

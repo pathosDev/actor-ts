@@ -22,7 +22,7 @@
 # `eol=lf` matters as much as the rest: the build writes LF, so without
 # it a CRLF checkout reports the file as modified after every build —
 # permanent noise in `git status` for every Windows contributor.
-src/devtools/generated/uiAssets.ts linguist-generated diff text eol=lf
+src/devtools/generated/UiAssets.ts linguist-generated diff text eol=lf
 
 # The DevTools UI sources are bundled into the generated module above
 # and fingerprinted by its `source-hash`, so their bytes must not depend
