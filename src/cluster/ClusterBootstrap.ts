@@ -5,7 +5,7 @@ import {
   ReceptionistId,
   type SeedProvider,
 } from '../discovery/index.js';
-import { autoDiscovery, singleProviderDiscovery } from '../discovery/autoDiscovery.js';
+import { autoDiscovery, singleProviderDiscovery } from '../discovery/AutoDiscovery.js';
 import { AutoDiscoveryOptions } from '../discovery/AutoDiscoveryOptions.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';

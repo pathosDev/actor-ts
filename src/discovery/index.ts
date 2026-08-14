@@ -9,7 +9,7 @@ export { AggregateSeedProvider } from './AggregateSeedProvider.js';
 export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
 export { KubernetesApiSeedProviderOptions, KubernetesApiSeedProviderOptionsBuilder, KubernetesApiSeedProviderOptionsValidator } from './KubernetesApiSeedProviderOptions.js';
 export type { KubernetesApiSeedProviderOptionsType } from './KubernetesApiSeedProviderOptions.js';
-export { autoDiscovery, singleProviderDiscovery } from './autoDiscovery.js';
+export { autoDiscovery, singleProviderDiscovery } from './AutoDiscovery.js';
 export { AutoDiscoveryOptions, AutoDiscoveryOptionsBuilder, AutoDiscoveryOptionsValidator } from './AutoDiscoveryOptions.js';
 export type { AutoDiscoveryOptionsType } from './AutoDiscoveryOptions.js';
 export { ServiceKey } from './ServiceKey.js';
