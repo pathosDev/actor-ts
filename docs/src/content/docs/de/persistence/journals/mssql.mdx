@@ -39,13 +39,15 @@ import sql from 'mssql';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   MsSqlDurableStateStoreOptions,
   MsSqlJournalOptions,
   MsSqlSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterMsSqlPluginsOptions,
   registerMsSqlPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Die SQL-Server-Plugins als aktives Journal + Snapshot-Store auswählen.

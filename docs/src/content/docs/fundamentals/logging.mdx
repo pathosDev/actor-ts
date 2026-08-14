@@ -121,7 +121,8 @@ platform, each with its own minimum level — reach for
 [multi-sink logging](/observability/logging/multi-sink/).
 
 ```ts
-import { ActorSystem, ActorSystemOptions, ConsoleSink } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { ConsoleSink } from 'actor-ts/logging';
 
 const consoleSink = new ConsoleSink();
 const actorSystemOptions = ActorSystemOptions.create().withLogSinks([consoleSink]);
@@ -197,7 +198,8 @@ the OTel Logs API instead of stdout-JSON:
 
 ```ts
 import * as logsApi from '@opentelemetry/api-logs';
-import { ActorSystem, ActorSystemOptions, otelLogger } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { otelLogger } from 'actor-ts/tracing';
 
 // (SDK setup: register a LoggerProvider + OTLP exporter — out of scope here.)
 

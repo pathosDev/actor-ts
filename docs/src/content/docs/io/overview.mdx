@@ -98,7 +98,7 @@ any state.
 Subscribe to the lifecycle events via the event stream:
 
 ```ts
-import { BrokerConnected, BrokerDisconnected, BrokerReconnectAttempt } from 'actor-ts';
+import { BrokerConnected, BrokerDisconnected, BrokerReconnectAttempt } from 'actor-ts/io';
 
 class Monitor extends Actor<BrokerConnected | BrokerDisconnected | BrokerReconnectAttempt> {
   override preStart(): void {
@@ -241,7 +241,7 @@ import { Aside } from '@astrojs/starlight/components';
 Implement the three abstract methods and wire up settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }

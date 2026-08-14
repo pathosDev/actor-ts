@@ -14,7 +14,7 @@ import {
   ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 bytes
 

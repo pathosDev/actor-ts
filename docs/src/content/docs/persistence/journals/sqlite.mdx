@@ -12,13 +12,15 @@ workloads.
 
 ```ts
 import {
+  ActorSystem,
+} from 'actor-ts';
+import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
   PersistenceExtensionId,
-  ActorSystem,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
@@ -253,7 +255,7 @@ Alongside the journal and snapshot store, SQLite has a
 event log and no replay:
 
 ```ts
-import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts/persistence';
 
 const stateOptions = SqliteDurableStateStoreOptions.create()
   .withPath('./state.db');
@@ -265,7 +267,7 @@ the durable-state store, open it yourself and pass it in — the store
 then leaves closing it to you:
 
 ```ts
-import { getSqliteDriver } from 'actor-ts';
+import { getSqliteDriver } from 'actor-ts/persistence';
 
 const driver = await getSqliteDriver();
 const database = driver.open('./app.db');

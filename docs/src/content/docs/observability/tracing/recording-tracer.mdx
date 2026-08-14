@@ -9,7 +9,8 @@ Instead of exporting spans, it **stores them in memory** —
 tests assert on the recorded spans.
 
 ```ts
-import { TestKit, RecordingTracer, TracingExtensionId } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
+import { RecordingTracer, TracingExtensionId } from 'actor-ts/tracing';
 
 const tracer = new RecordingTracer();
 const tk = TestKit.create();

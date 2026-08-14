@@ -26,8 +26,10 @@ Single-Writer-System** mit den Recovery-Semantiken von
 Replicated-ES darunter.
 
 ```ts
-import { ReplicatedEventSourcedActor, KubernetesLease, KubernetesLeaseOptions, LastWriterWinsResolver } from 'actor-ts';
-import type { Lease, ConflictResolver } from 'actor-ts';
+import { KubernetesLease, KubernetesLeaseOptions } from 'actor-ts/coordination';
+import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts/persistence';
+import type { Lease } from 'actor-ts/coordination';
+import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Account extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = `account-${this.userId}`;

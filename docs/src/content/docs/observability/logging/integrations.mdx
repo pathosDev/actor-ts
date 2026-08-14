@@ -19,7 +19,8 @@ place where OTLP does not reach or loses something.
 ## OTLP — OpenTelemetry over HTTP
 
 ```ts
-import { ActorSystem, ActorSystemOptions, OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts/logging';
 
 const otlpSinkOptions = OtlpHttpSinkOptions.create()
   .withUrl('http://collector:4318/v1/logs')
@@ -93,7 +94,8 @@ environment and pass it here.
 ## Graylog — GELF
 
 ```ts
-import { ActorSystem, ActorSystemOptions, GelfSink, GelfSinkOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { GelfSink, GelfSinkOptions } from 'actor-ts/logging';
 
 const gelfSinkOptions = GelfSinkOptions.create()
   .withHost('graylog.internal')
@@ -166,7 +168,8 @@ const gelfSinkOptions = GelfSinkOptions.create()
 ## Parseable
 
 ```ts
-import { ActorSystem, ActorSystemOptions, ParseableSink, ParseableSinkOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { ParseableSink, ParseableSinkOptions } from 'actor-ts/logging';
 
 const parseableSinkOptions = ParseableSinkOptions.create()
   .withUrl('https://parseable.internal')
@@ -210,7 +213,8 @@ on OTLP.
 ## Grafana Loki
 
 ```ts
-import { ActorSystemOptions, LokiSink, LokiSinkOptions } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { LokiSink, LokiSinkOptions } from 'actor-ts/logging';
 
 const lokiSinkOptions = LokiSinkOptions.create()
   .withUrl('http://loki:3100')
@@ -257,7 +261,8 @@ standardised on OTLP.
 ## Seq
 
 ```ts
-import { ActorSystemOptions, SeqSink, SeqSinkOptions } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { SeqSink, SeqSinkOptions } from 'actor-ts/logging';
 
 const seqSinkOptions = SeqSinkOptions.create()
   .withUrl('http://seq:5341')
@@ -291,7 +296,8 @@ the cluster wire cannot forge the record's timestamp.
 ## Splunk
 
 ```ts
-import { ActorSystemOptions, SplunkSink, SplunkSinkOptions } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { SplunkSink, SplunkSinkOptions } from 'actor-ts/logging';
 
 const splunkSinkOptions = SplunkSinkOptions.create()
   .withUrl('https://splunk.internal:8088')
@@ -333,7 +339,8 @@ into a config file.
 ## Sentry
 
 ```ts
-import { ActorSystemOptions, ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts/logging';
 
 const sentry = await import('@sentry/node');
 sentry.init({ dsn: process.env['SENTRY_DSN'] });
@@ -389,7 +396,8 @@ duplicate badly or lose.
 ## Syslog (RFC 5424)
 
 ```ts
-import { ActorSystemOptions, SyslogSink, SyslogSinkOptions } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { SyslogSink, SyslogSinkOptions } from 'actor-ts/logging';
 
 const syslogSinkOptions = SyslogSinkOptions.create()
   .withHost('logs.internal')

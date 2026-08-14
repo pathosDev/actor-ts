@@ -170,7 +170,8 @@ Extensions.  Du registrierst sie einmal auf System-Ebene und erreichst
 sie dann über `system.extension(...)`:
 
 ```ts
-import { Cluster, ClusterOptions, DistributedDataId } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DistributedDataId } from 'actor-ts/crdt';
 
 const cluster = await Cluster.join(system, ClusterOptions.create() /* ... */);
 const dd = system.extension(DistributedDataId).start(cluster);

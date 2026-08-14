@@ -175,7 +175,7 @@ Für größere Codebases mit vielen Event-Typen gibt die
 Event-Formen + ihrer Versionen:
 
 ```ts
-import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts/persistence';
 
 const registry = new InMemorySchemaRegistry();
 
@@ -202,7 +202,7 @@ hat, haben sie keine Envelopes — sie sind rohe Payloads.  Der
 **WrapLegacy**-Helper überbrückt:
 
 ```ts
-import { migrateInMemoryJournal } from 'actor-ts';
+import { migrateInMemoryJournal } from 'actor-ts/persistence';
 
 // One-shot bulk rewrite — wrap every raw event as a v1 envelope
 // BEFORE the actor with the new adapter recovers.

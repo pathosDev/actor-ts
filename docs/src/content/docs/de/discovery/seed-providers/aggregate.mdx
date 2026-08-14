@@ -18,6 +18,8 @@ Ergebnis zurück.  Nützlich, wenn:
 import {
   Cluster,
   ClusterOptions,
+} from 'actor-ts/cluster';
+import {
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
   KubernetesApiSeedProviderOptions,
@@ -25,7 +27,7 @@ import {
   DnsSeedProviderOptions,
   ConfigSeedProvider,
   ConfigSeedProviderOptions,
-} from 'actor-ts';
+} from 'actor-ts/discovery';
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(namespace)

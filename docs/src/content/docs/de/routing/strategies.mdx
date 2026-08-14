@@ -250,7 +250,7 @@ verschlucken.
 ### Die Cluster-Variante
 
 ```ts
-import { ClusterRouter, ClusterRouterOptions } from 'actor-ts';
+import { ClusterRouter, ClusterRouterOptions } from 'actor-ts/cluster';
 
 const clusterRouterOptions = ClusterRouterOptions.create()
   .withCluster(cluster)
@@ -284,7 +284,7 @@ ein Node braucht, der Routees, aber keinen Router hostet.
 ## Consistent-Hashing *(nur Cluster)*
 
 ```ts
-import { ClusterRouter } from 'actor-ts';
+import { ClusterRouter } from 'actor-ts/cluster';
 
 ClusterRouter.factory({
   cluster,

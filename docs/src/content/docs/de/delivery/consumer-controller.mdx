@@ -15,7 +15,7 @@ Zustellung.  Er:
   retransmittiert.
 
 ```ts
-import { ConsumerController } from 'actor-ts';
+import { ConsumerController } from 'actor-ts/delivery';
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>({

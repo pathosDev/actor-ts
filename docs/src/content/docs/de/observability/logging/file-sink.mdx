@@ -14,7 +14,8 @@ logs/
 ```
 
 ```ts
-import { ActorSystem, ActorSystemOptions, FileSink, FileSinkOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { FileSink, FileSinkOptions } from 'actor-ts/logging';
 
 const fileSinkOptions = FileSinkOptions.create()
   .withDirectory('/var/log/my-app')

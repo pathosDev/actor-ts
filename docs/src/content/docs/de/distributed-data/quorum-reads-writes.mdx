@@ -202,7 +202,7 @@ Zwei Settings begrenzen diese Menge, im Code oder über
 [`actor-ts.distributed-data`](/de/reference/configuration/#actor-tsdistributed-data):
 
 ```ts
-import { DistributedDataId, DistributedDataOptions } from 'actor-ts';
+import { DistributedDataId, DistributedDataOptions } from 'actor-ts/crdt';
 
 const distributedDataOptions = DistributedDataOptions.create()
   .withMaxPendingQuorumRequests(1_000)

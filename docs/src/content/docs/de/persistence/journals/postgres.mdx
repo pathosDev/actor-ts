@@ -40,13 +40,15 @@ import { Pool } from 'pg';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   PersistenceExtensionId,
   PostgresJournalOptions,
   PostgresSnapshotStoreOptions,
   PostgresDurableStateStoreOptions,
   RegisterPostgresPluginsOptions,
   registerPostgresPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Postgres-Plugins als aktives Journal + Snapshot-Store wählen.

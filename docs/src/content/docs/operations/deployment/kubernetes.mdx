@@ -239,7 +239,10 @@ expose these endpoints.
 ## App-side wiring
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions, managementRoutes } from 'actor-ts';
+import { ActorSystem, CoordinatedShutdownId } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
+import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
 const cs     = system.extension(CoordinatedShutdownId);

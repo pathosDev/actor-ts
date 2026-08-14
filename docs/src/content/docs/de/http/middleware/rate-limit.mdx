@@ -11,7 +11,7 @@ willst.  Überschüssige Requests bekommen **429** mit einem
 
 ```ts
 import { rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
   cache:    new InMemoryCache(),
@@ -113,7 +113,7 @@ Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
 ## Cluster-fähiges Rate-Limiting
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 rateLimit({

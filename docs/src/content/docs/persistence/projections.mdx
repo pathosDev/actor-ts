@@ -36,8 +36,8 @@ from read throughput (denormalized, query-optimized).
 
 ```ts
 import { match } from 'ts-pattern';
-import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts/persistence';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
@@ -114,7 +114,7 @@ complex, not provided out of the box.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts/persistence';
 
 // Default (lost on restart):
 new InMemoryOffsetStore();

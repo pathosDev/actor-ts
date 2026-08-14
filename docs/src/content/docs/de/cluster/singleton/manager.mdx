@@ -48,7 +48,7 @@ tut das, am bekannten Pfad, den Proxies adressieren, und die
 Start-Options unten sind das, was dabei konfiguriert wird:
 
 ```ts
-import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+import { SingletonKey, StartSingletonOptions } from 'actor-ts/cluster';
 
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
@@ -100,7 +100,7 @@ Wenn du falsch benennst, kann der Proxy nicht routen — stiller
 Bruch. Immer:
 
 ```ts
-import { singletonManagerPath } from 'actor-ts';
+import { singletonManagerPath } from 'actor-ts/cluster';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
 // "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
@@ -240,7 +240,7 @@ Direkter Manager-Kontakt ist nur nützlich für:
 ## Diagnostik
 
 ```ts
-import { MemberUp, LeaderChanged } from 'actor-ts';
+import { MemberUp, LeaderChanged } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof LeaderChanged) {

@@ -47,13 +47,15 @@ Du brauchst eine D1-Datenbank und ein API-Token mit der
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   D1DurableStateStoreOptions,
   D1JournalOptions,
   D1SnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterD1PluginsOptions,
   registerD1Plugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Die D1-Plugins als aktives Journal + Snapshot-Store auswählen.

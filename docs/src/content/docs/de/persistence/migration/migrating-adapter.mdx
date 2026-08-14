@@ -11,7 +11,7 @@ ausführt: eine Sequenz typisierter **Upcaster**.  Du baust die
 Chain und wickelst sie dann ein:
 
 ```ts
-import { migratingAdapter, MigrationChain, type EventAdapter } from 'actor-ts';
+import { migratingAdapter, MigrationChain, type EventAdapter } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; cents: number; currency: string };
@@ -193,7 +193,7 @@ Durable-State-Datensatz regiert, nimm `migratingSnapshotAdapter` —
 dieselbe Chain, gibt einen `SnapshotAdapter` zurück:
 
 ```ts
-import { migratingSnapshotAdapter } from 'actor-ts';
+import { migratingSnapshotAdapter } from 'actor-ts/persistence';
 
 const adapter = migratingSnapshotAdapter(chain);
 ```

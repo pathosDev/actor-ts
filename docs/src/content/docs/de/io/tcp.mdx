@@ -20,7 +20,8 @@ denselben [Framing](#framing)-Strategien.
 ## Hinauswählen — `TcpSocketActor`
 
 ```ts
-import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
@@ -72,7 +73,7 @@ er wird auf `system.eventStream` als `BrokerConnected`- /
 teilen:
 
 ```ts
-import { BrokerConnected, BrokerDisconnected } from 'actor-ts';
+import { BrokerConnected, BrokerDisconnected } from 'actor-ts/io';
 
 system.eventStream.subscribe(monitorRef, BrokerConnected);
 system.eventStream.subscribe(monitorRef, BrokerDisconnected);
@@ -81,7 +82,7 @@ system.eventStream.subscribe(monitorRef, BrokerDisconnected);
 ## Framing
 
 ```ts
-import { TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost(host)
@@ -143,7 +144,8 @@ TCP-Schicht auf wie der Cluster-Transport — Bun, Node und Deno,
 und TLS, kommen also aus einer Hand.
 
 ```ts
-import { ActorSystem, TcpServerActor, TcpServerOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpServerActor, TcpServerOptions } from 'actor-ts/io';
 
 const tcpServerOptions = TcpServerOptions.create()
   .withBindHost('0.0.0.0')
@@ -194,7 +196,7 @@ kann also die Variante nehmen, um die es ihm geht, statt die Union
 in jedem Arm einzuengen:
 
 ```ts
-import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts';
+import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts/io';
 ```
 
 Ein Echo-Server sind dann die naheliegenden drei Zeilen:

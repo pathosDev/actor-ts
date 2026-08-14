@@ -25,7 +25,7 @@ hand — create the `ActorSystem`, resolve seeds, `Cluster.join`,
 hook up `SIGTERM`/`SIGINT` — into a single call:
 
 ```ts
-import { Cluster, ClusterBootstrapOptions } from 'actor-ts';
+import { Cluster, ClusterBootstrapOptions } from 'actor-ts/cluster';
 
 // Local dev — no env vars, no seeds: single-node cluster.
 const { system, cluster, shutdown } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
@@ -48,7 +48,8 @@ For full control (custom dispatcher, manual signal handling,
 own discovery loop) the lower-level pair still works:
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const system  = ActorSystem.create('my-app');
 const clusterOptions = ClusterOptions.create()
@@ -174,7 +175,7 @@ run still learns the world it joined instead of waiting for the next
 change.  Two forms, chosen per subscription:
 
 ```ts
-import { CurrentClusterState } from 'actor-ts';
+import { CurrentClusterState } from 'actor-ts/cluster';
 
 // 'events' (the default) — the membership as the events that built it:
 // MemberJoined per member, then the status event that member has reached,

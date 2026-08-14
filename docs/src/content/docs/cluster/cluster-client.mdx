@@ -9,7 +9,7 @@ no gossip, no membership state — but it can `tell` and `ask`
 cluster-internal actors via known **receptionist contacts**.
 
 ```ts
-import { ClusterClient, ClusterClientOptions } from 'actor-ts';
+import { ClusterClient, ClusterClientOptions } from 'actor-ts/cluster';
 
 const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
 const client = new ClusterClient(
@@ -86,7 +86,7 @@ whose addresses become the client's contact points.
 ## Server side — ClusterClientReceptionist
 
 ```ts
-import { ClusterClientReceptionistId } from 'actor-ts';
+import { ClusterClientReceptionistId } from 'actor-ts/cluster';
 
 // The receptionist is a per-system extension — start it on each
 // node that should accept outside-in client connections:

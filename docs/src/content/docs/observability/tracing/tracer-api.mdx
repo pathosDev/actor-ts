@@ -16,7 +16,8 @@ distributed tracing**.  Designed so that:
 
 ```ts
 import * as otel from '@opentelemetry/api';
-import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts/tracing';
 
 const system = ActorSystem.create('my-app');
 

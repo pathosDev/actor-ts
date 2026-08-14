@@ -36,7 +36,7 @@ walk-and-rewrite.  You supply a `manifestFor` that derives the
 stable `_t` discriminator from each event:
 
 ```ts
-import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts';
+import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts/persistence';
 
 const result = await migrateInMemoryJournal(
   journal,
@@ -60,7 +60,7 @@ Postgres / S3 journals each need a backend-specific rewrite path
 primitive `wrapEventAsEnvelope` as the building block:
 
 ```ts
-import { wrapEventAsEnvelope } from 'actor-ts';
+import { wrapEventAsEnvelope } from 'actor-ts/persistence';
 
 // Inside your own per-row rewrite loop:
 for (const row of rows) {
@@ -84,7 +84,7 @@ wraps the latest snapshot per persistence id (sourced from the
 journal), using `wrapStateAsEnvelope` under the hood:
 
 ```ts
-import { migrateSnapshotStore } from 'actor-ts';
+import { migrateSnapshotStore } from 'actor-ts/persistence';
 
 const persistenceIds   = await journal.persistenceIds();
 const result = await migrateSnapshotStore(store, persistenceIds, (s) => 'BankAccount.State');

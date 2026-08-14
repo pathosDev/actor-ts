@@ -17,7 +17,7 @@ Für Formate jenseits von JSON / CBOR gibt es zwei Wege:
   gebunden.
 
 ```ts
-import { Serializer, SerializationExtensionId } from 'actor-ts';
+import { Serializer, SerializationExtensionId } from 'actor-ts/serialization';
 
 class ProtoOrderSerializer implements Serializer<Order> {
   readonly id = 100;
@@ -122,7 +122,7 @@ alles mit der passenden Form; generierter statischer Code (`pbjs`,
 
 ```ts
 import avsc from 'avsc';
-import { AvroSerializer, AvroSerializerOptions } from 'actor-ts';
+import { AvroSerializer, AvroSerializerOptions } from 'actor-ts/serialization';
 
 const avroType = avsc.Type.forSchema({
   name: 'Deposited',
@@ -141,7 +141,7 @@ const avroSerializer = new AvroSerializer(avroOptions);
 
 ```ts
 import protobuf from 'protobufjs';
-import { ProtobufSerializer, ProtobufSerializerOptions } from 'actor-ts';
+import { ProtobufSerializer, ProtobufSerializerOptions } from 'actor-ts/serialization';
 
 const root = protobuf.parse(`
   syntax = "proto3";
@@ -225,7 +225,7 @@ das aus der Nachricht gelesen wird —, implementierst du das
 Interface direkt:
 
 ```ts
-import { Serializer } from 'actor-ts';
+import { Serializer } from 'actor-ts/serialization';
 import { Order } from './generated/order_pb.js';
 
 class OrderProtoSerializer implements Serializer<Order> {
@@ -325,7 +325,7 @@ Serializer als Codec und registrierst ihn pro Version in der
 [SchemaRegistry](/de/persistence/migration/schema-registry/):
 
 ```ts
-import { serializerCodec } from 'actor-ts';
+import { serializerCodec } from 'actor-ts/persistence';
 
 registry.register('BankAccount.Deposited', 1, {
   codec: serializerCodec(avroSerializer),

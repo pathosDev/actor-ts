@@ -13,7 +13,7 @@ separate from your app's main HTTP server, exposing:
 - **Admin endpoints** — leave / down (optional, off by default).
 
 ```ts
-import { managementRoutes } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 // Build the routes (cluster is optional — pass null to skip /cluster/*),
 // then bind them on a dedicated port.
@@ -154,7 +154,8 @@ dedicated port at all — `concat` them into your app's existing
 [HTTP routes](/http/overview/):
 
 ```ts
-import { managementRoutes, concat } from 'actor-ts';
+import { concat } from 'actor-ts/http';
+import { managementRoutes } from 'actor-ts/management';
 
 const { routes: mgmt } = managementRoutes(system, cluster);
 await system.http(8080).bind(concat(appRoutes, mgmt));

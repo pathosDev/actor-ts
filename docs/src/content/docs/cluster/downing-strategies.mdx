@@ -54,7 +54,7 @@ the picking section below).
 ## Configuration
 
 ```ts
-import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts';
+import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts/cluster';
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)
@@ -75,7 +75,7 @@ down.  Returning an empty set means "no decision yet — wait."
 ## KeepMajority
 
 ```ts
-import { KeepMajority } from 'actor-ts';
+import { KeepMajority } from 'actor-ts/cluster';
 
 new KeepMajority();
 ```
@@ -101,7 +101,7 @@ special-purpose deployments.
 ## KeepOldest
 
 ```ts
-import { KeepOldest, KeepOldestOptions } from 'actor-ts';
+import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
 const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
@@ -137,7 +137,7 @@ declaring itself the cluster after a total split.
 ## KeepReferee
 
 ```ts
-import { KeepReferee, KeepRefereeOptions } from 'actor-ts';
+import { KeepReferee, KeepRefereeOptions } from 'actor-ts/cluster';
 
 const keepRefereeOptions = KeepRefereeOptions.create()
   .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
@@ -169,7 +169,7 @@ neutral location (a third DC, a control-plane K8s namespace).
 ## StaticQuorum
 
 ```ts
-import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
+import { StaticQuorum, StaticQuorumOptions } from 'actor-ts/cluster';
 
 const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
@@ -195,7 +195,7 @@ survival.
 ## LeaseMajority
 
 ```ts
-import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
+import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts/cluster';
 
 const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(someLeaseImplementation);
 new LeaseMajority(

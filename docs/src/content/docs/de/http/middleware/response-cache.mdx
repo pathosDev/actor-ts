@@ -10,7 +10,7 @@ aufzurufen.
 
 ```ts
 import { cached, path, get } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const productCache = cached({
   cache: new InMemoryCache(),
@@ -119,7 +119,7 @@ versehenen Key direkt `delete`n, wenn ein Write ihn invalidieren soll.
 ## Geteilter Cache über Pods
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 const productCache = cached({

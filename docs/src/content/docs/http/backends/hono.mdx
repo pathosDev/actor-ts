@@ -9,7 +9,8 @@ Workers, AWS Lambda, Vercel, etc.  `HonoBackend` wraps it for
 actor-ts.
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 import { HonoBackend, HonoBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);

@@ -8,7 +8,7 @@ Production-ready, multi-pod-safe, with single-round-trip bulk
 operations.
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://redis.example.com:6379');
 const cache = new RedisCache(

@@ -270,7 +270,7 @@ Doku, je nachdem, was Du tun willst:
   verdrahtet `SIGTERM` / `SIGINT`-Shutdown in einem Call:
 
   ```ts
-  import { Cluster } from 'actor-ts';
+  import { Cluster } from 'actor-ts/cluster';
 
   const { system } = await Cluster.bootstrap({ name: 'hello' });
   const ref = system.spawn(Greeter, 'greeter');

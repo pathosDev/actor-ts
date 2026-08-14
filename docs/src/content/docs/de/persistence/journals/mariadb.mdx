@@ -32,13 +32,15 @@ Beim ersten Zugriff lazy-importiert, wie jeder andere Adapter.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   PersistenceExtensionId,
   MariaDbJournalOptions,
   MariaDbSnapshotStoreOptions,
   MariaDbDurableStateStoreOptions,
   RegisterMariaDbPluginsOptions,
   registerMariaDbPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
     'actor-ts': {

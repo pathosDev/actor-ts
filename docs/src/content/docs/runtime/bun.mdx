@@ -90,7 +90,7 @@ For Bun-specific test features, see the [Bun docs](https://bun.sh/docs/cli/test)
 ## SQLite on Bun
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions } from 'actor-ts/persistence';
 
 // Bun auto-detects bun:sqlite — no driver setup needed.
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');

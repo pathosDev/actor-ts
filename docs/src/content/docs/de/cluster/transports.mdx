@@ -38,7 +38,7 @@ eingehender Wire-Nachrichten samt Absenderadresse.
 ## TcpTransport (Standard)
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts';
+import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
 
 const clusterOptions = ClusterOptions.create()
   .withHost('0.0.0.0')
@@ -81,7 +81,7 @@ Runtime.
 ### Optionales TLS
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts';
+import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
@@ -123,7 +123,7 @@ Durchsatz — sie sind nur für einzelne große Nachrichten relevant.
 ## InMemoryTransport (Tests)
 
 ```ts
-import { InMemoryTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
+import { InMemoryTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { TestKit } from 'actor-ts/testkit';
 
 // Kein Bus zu verdrahten — In-Memory-Transports finden einander über eine

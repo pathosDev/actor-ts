@@ -11,7 +11,7 @@ zurückgewinnt.  In-Process, keine Abhängigkeiten, geht bei Neustart
 verloren.
 
 ```ts
-import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts';
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts/cache';
 
 // Defaults: maxEntries 10 000, cleanupMs 60 000.
 const cache = new InMemoryCache();
@@ -157,7 +157,7 @@ dokumentierten Rate-Limits.
 Die Abhilfe ist ein Cache pro Consumer:
 
 ```ts
-import { CacheExtensionId } from 'actor-ts';
+import { CacheExtensionId } from 'actor-ts/cache';
 
 const extension = system.extension(CacheExtensionId);
 
@@ -180,7 +180,7 @@ dimensionierst und überwachst) statt mit einer prozesslokalen LRU.
 ## Über das System teilen
 
 ```ts
-import { CacheExtensionId, InMemoryCache } from 'actor-ts';
+import { CacheExtensionId, InMemoryCache } from 'actor-ts/cache';
 
 // The extension's `default` cache is an InMemoryCache out of the box:
 const cache = system.extension(CacheExtensionId).cache();

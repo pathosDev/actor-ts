@@ -12,8 +12,8 @@ dem sie war.
 
 ```ts
 import { match } from 'ts-pattern';
-import { PersistentFSM } from 'actor-ts';
-import type { FsmStateData, FsmTransitionMap } from 'actor-ts';
+import { PersistentFSM } from 'actor-ts/fsm';
+import type { FsmStateData, FsmTransitionMap } from 'actor-ts/fsm';
 
 type State   = 'created' | 'submitted' | 'approved' | 'rejected';
 type Data    = { id: string; reviewer?: string; reason?: string };

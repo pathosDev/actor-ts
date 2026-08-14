@@ -19,7 +19,8 @@ import * as otel from '@opentelemetry/api';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts/tracing';
 
 // 1. Set up the OTel SDK (exports spans to your backend)
 const provider = new NodeTracerProvider({

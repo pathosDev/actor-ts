@@ -8,7 +8,8 @@ Seed-Adressen — aus einem Constructor-Argument oder Env-Vars.
 Keine Discovery-Logik; was du konfigurierst, das bekommst du.
 
 ```ts
-import { Cluster, ClusterOptions, ConfigSeedProvider, ConfigSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { ConfigSeedProvider, ConfigSeedProviderOptions } from 'actor-ts/discovery';
 
 const configSeedProviderOptions = ConfigSeedProviderOptions.create()
   .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'])

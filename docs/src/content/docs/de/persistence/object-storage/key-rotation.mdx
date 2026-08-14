@@ -31,7 +31,7 @@ Eintrag paart eine numerische `version` (im Payload-Manifest
 eingebettet) mit dem 32-Byte-AES-256-Key:
 
 ```ts
-import type { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts/persistence';
 
 const keyring: MasterKeyRing = {
   active:  { version: 2, key: newKey },       // neue Writes nutzen diesen
@@ -86,7 +86,7 @@ in der ein breiteres helfen würde, ohnehin auflöst.
 ## Der Sweep
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 const result = await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',                      // welche Keys verarbeitet werden
@@ -124,7 +124,7 @@ Buckets).  Für Millionen-Objekt-Stores übergib einen
 Abbruchstelle fortsetzt statt von vorn zu scannen:
 
 ```ts
-import { InMemoryReEncryptProgressStore } from 'actor-ts';
+import { InMemoryReEncryptProgressStore } from 'actor-ts/persistence';
 
 await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',

@@ -59,7 +59,7 @@ import {
   MigrationChain,
   migratingAdapter,
   PersistentActor,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // 1. Beide Versionen in der Chain definieren.
 const chain = MigrationChain
@@ -169,7 +169,7 @@ dem Hot Path mehr gelesen werden dürften, kannst du:
    One-Shot-Helfer:
 
     ```ts
-    import { migrateInMemoryJournal, migrateSnapshotStore } from 'actor-ts';
+    import { migrateInMemoryJournal, migrateSnapshotStore } from 'actor-ts/persistence';
 
     // Jedes Event für jede persistenceId in die v2-Form umschreiben.
     await migrateInMemoryJournal(journal, (event) => chain.manifestFor(event, 2));
@@ -227,7 +227,7 @@ Liefer den neuen Schlüssel als `active` aus, behalte den alten als
 `retired`.
 
 ```ts
-import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
+import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts/persistence';
 
 const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...) etc.
@@ -259,7 +259,7 @@ verschlüssele jeden historischen Body unter dem neuen Schlüssel neu
 mit dem `reEncryptObjectStorage`-Helfer (v0.8.0):
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 const result = await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',
@@ -308,7 +308,7 @@ import {
   reEncryptObjectStorage,
   InMemoryReEncryptProgressStore,
   type ReEncryptProgressStore,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // File-backed Progress-Store — übersteht einen Prozess-Crash.
 // (Der mitgelieferte `InMemoryReEncryptProgressStore` ist der

@@ -101,7 +101,7 @@ npm install better-sqlite3
 Dann:
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions } from 'actor-ts/persistence';
 
 // Erkennt automatisch better-sqlite3 auf Node.
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');

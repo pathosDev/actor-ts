@@ -167,7 +167,7 @@ in den Cluster eingebunden — der Cluster fährt immer den einfachen
 ## Failure-Detector-Entscheidungen diagnostizieren
 
 ```ts
-import { MemberUnreachable, MemberReachable } from 'actor-ts';
+import { MemberUnreachable, MemberReachable } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof MemberUnreachable) {
@@ -201,7 +201,7 @@ zum falschen Signal für zwei Fragen, die es zu beantworten scheint:
 beide Einschränkungen:
 
 ```ts
-import { ReachabilityChanged } from 'actor-ts';
+import { ReachabilityChanged } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof ReachabilityChanged) {

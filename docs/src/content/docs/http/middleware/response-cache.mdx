@@ -9,7 +9,7 @@ stored response without invoking the underlying handler.
 
 ```ts
 import { cached, path, get } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const productCache = cached({
   cache: new InMemoryCache(),
@@ -117,7 +117,7 @@ directly when a write should invalidate it.
 ## Shared cache across pods
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 const productCache = cached({

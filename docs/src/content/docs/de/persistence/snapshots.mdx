@@ -29,7 +29,7 @@ Der Actor deklariert **wann** gesnappshottet werden soll, per
 `snapshotPolicy()`:
 
 ```ts
-import { PersistentActor, everyNEvents } from 'actor-ts';
+import { PersistentActor, everyNEvents } from 'actor-ts/persistence';
 
 class Account extends PersistentActor<Command, Event, State> {
   // ...
@@ -99,7 +99,8 @@ Snapshots werden in einem **separaten** Snapshot Store gespeichert,
 bei der System-Erstellung via `withPersistence` verdrahtet:
 
 ```ts
-import { ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts/persistence';
 
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),

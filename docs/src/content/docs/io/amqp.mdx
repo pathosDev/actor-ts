@@ -8,7 +8,8 @@ brokers).  Supports exchanges (direct / topic / fanout / headers),
 queues, routing keys, ack/nack semantics.
 
 ```ts
-import { ActorSystem, AmqpActor, AmqpOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { AmqpActor, AmqpOptions } from 'actor-ts/io';
 
 const amqpOptions = AmqpOptions.create()
   .withUrl('amqp://guest:guest@rabbitmq:5672')

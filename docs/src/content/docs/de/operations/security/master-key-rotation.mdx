@@ -15,7 +15,7 @@ mit der sie verschlüsselt wurden; ein Hintergrund-Sweep verschlüsselt
 ältere Daten irgendwann neu.
 
 ```ts
-import type { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts/persistence';
 
 // Jeder Schlüssel ist 32 rohe Bytes (AES-256) — dekodiert aus einer
 // base64-Env-Var, einem gemounteten Secret oder einem KMS-Unwrap
@@ -115,7 +115,7 @@ verschlüsselt werden.
 ## Schritt 3 — Re-Encryption-Sweep
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 // `backend` ist das ObjectStorageBackend, durch das dein Store
 // schreibt (ein FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).

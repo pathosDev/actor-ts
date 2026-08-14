@@ -28,7 +28,7 @@ verdrahten würdest — das `ActorSystem` erstellen, Seeds auflösen,
 einzigen Aufruf:
 
 ```ts
-import { Cluster, ClusterBootstrapOptions } from 'actor-ts';
+import { Cluster, ClusterBootstrapOptions } from 'actor-ts/cluster';
 
 // Lokale Entwicklung — keine Env-Variablen, keine Seeds: Single-Node-Cluster.
 const { system, cluster, shutdown } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
@@ -52,7 +52,8 @@ eigene Discovery-Schleife) bleibt das Low-Level-Paar weiter
 verfügbar:
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const system  = ActorSystem.create('my-app');
 const clusterOptions = ClusterOptions.create()
@@ -184,7 +185,7 @@ beitritt, statt auf die nächste Änderung zu warten.  Zwei Formen, pro
 Subscription wählbar:
 
 ```ts
-import { CurrentClusterState } from 'actor-ts';
+import { CurrentClusterState } from 'actor-ts/cluster';
 
 // 'events' (der Standard) — die Mitgliedschaft als die Events, die sie
 // gebaut haben: MemberJoined pro Member, dann das Status-Event, das dieses

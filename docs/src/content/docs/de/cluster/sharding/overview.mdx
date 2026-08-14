@@ -54,7 +54,8 @@ woandershin und die Entities werden dort neu gespawnt.
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
+import { Actor } from 'actor-ts';
+import { Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts/cluster';
 
 type AddCommand = { entityId: string; kind: 'add'; sku: string };
 type ViewCommand = { entityId: string; kind: 'view'; replyTo: ActorRef<Cart> };
@@ -345,7 +346,8 @@ sobald sie zurückkommt:
 
 ```ts
 import { match } from 'ts-pattern';
-import { Passivate, PoisonPill, Actor } from 'actor-ts';
+import { PoisonPill, Actor } from 'actor-ts';
+import { Passivate } from 'actor-ts/cluster';
 
 type AddCommand = { entityId: string; kind: 'add'; sku: string };
 type CheckoutCommand = { entityId: string; kind: 'checkout' };

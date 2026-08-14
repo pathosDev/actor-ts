@@ -139,7 +139,8 @@ defaults to `setTimeout`, so you never need it in production —
 override it in tests to take the retry loop off the wall clock:
 
 ```ts
-import { ManualScheduler, retry } from 'actor-ts';
+import { retry } from 'actor-ts';
+import { ManualScheduler } from 'actor-ts/testkit';
 
 const scheduler = new ManualScheduler();
 const attemptTimes: number[] = [];

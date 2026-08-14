@@ -24,7 +24,8 @@ The default logger writes to one place.  Point it at several at once —
 each with its own minimum level — with `withLogSinks`:
 
 ```ts
-import { ActorSystem, ActorSystemOptions, ConsoleSink, FileSink, FileSinkOptions, LogLevel } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, LogLevel } from 'actor-ts';
+import { ConsoleSink, FileSink, FileSinkOptions } from 'actor-ts/logging';
 
 const fileSinkOptions = FileSinkOptions.create()
   .withDirectory('/var/log/my-app')
@@ -65,7 +66,8 @@ binary protocol for no reach.
 ## Metrics
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const system = ActorSystem.create('my-app');
 const metrics = system.extension(MetricsExtensionId);
@@ -130,7 +132,8 @@ messages?" out of the box without writing any metric code.
 
 ```ts
 import * as otel from '@opentelemetry/api';
-import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts/tracing';
 
 const system = ActorSystem.create('my-app');
 const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
@@ -175,7 +178,8 @@ exists for tests.
 ## Management endpoints
 
 ```ts
-import { managementRoutes, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
 

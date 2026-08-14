@@ -69,7 +69,8 @@ probably what you want.
 ## A minimal example
 
 ```ts
-import { Actor, ActorSystem, Cluster, ClusterOptions, SingletonKey } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions, SingletonKey } from 'actor-ts/cluster';
 
 class JobScheduler extends Actor<JobCommand> {
   static readonly singleton = SingletonKey.of<JobCommand>('job-scheduler');

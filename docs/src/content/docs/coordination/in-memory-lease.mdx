@@ -122,7 +122,7 @@ reset shared lease state between tests, clear the exported
 import { describe, it, expect } from 'bun:test';
 import { TestKit } from 'actor-ts/testkit';
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
-import { StartSingletonOptions } from 'actor-ts';
+import { StartSingletonOptions } from 'actor-ts/cluster';
 
 describe('SingletonManager with lease', () => {
   it('only one holder spawns the singleton', async () => {

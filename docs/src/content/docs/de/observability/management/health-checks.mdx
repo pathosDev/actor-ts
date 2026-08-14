@@ -16,7 +16,7 @@ Feld `health`), auf der du **eigene Checks** für app-spezifische
 Gesundheit registrierst:
 
 ```ts
-import { managementRoutes } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 const { routes, health } = managementRoutes(system, cluster);
 
@@ -140,7 +140,7 @@ jedes Checks true ist.
 ## Checks testen
 
 ```ts
-import { HealthCheckRegistry } from 'actor-ts';
+import { HealthCheckRegistry } from 'actor-ts/management';
 
 it('readiness fails when the DB is down', async () => {
   const health = new HealthCheckRegistry();

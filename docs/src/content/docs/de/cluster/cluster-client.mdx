@@ -10,7 +10,7 @@ er kann cluster-interne Actors per bekannten
 **Receptionist-Kontakten** mit `tell` und `ask` ansprechen.
 
 ```ts
-import { ClusterClient, ClusterClientOptions } from 'actor-ts';
+import { ClusterClient, ClusterClientOptions } from 'actor-ts/cluster';
 
 const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
 const client = new ClusterClient(
@@ -91,7 +91,7 @@ deren Adressen zu den Kontaktpunkten des Clients werden.
 ## Serverseite — ClusterClientReceptionist
 
 ```ts
-import { ClusterClientReceptionistId } from 'actor-ts';
+import { ClusterClientReceptionistId } from 'actor-ts/cluster';
 
 // Der Receptionist ist eine Per-System-Extension — starte ihn auf
 // jedem Node, der Outside-in-Client-Verbindungen annehmen soll:

@@ -11,8 +11,8 @@ the pair**.  That's the **conflict resolver** — a strategy you
 supply by overriding `resolver()` on the actor.
 
 ```ts
-import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts';
-import type { ConflictResolver } from 'actor-ts';
+import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts/persistence';
+import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   // The default is last-writer-wins; override to change it:
@@ -83,7 +83,7 @@ you have domain knowledge LWW doesn't capture (e.g. two
 concurrent deposits simply add):
 
 ```ts
-import { CustomMergeResolver } from 'actor-ts';
+import { CustomMergeResolver } from 'actor-ts/persistence';
 
 protected override resolver(): ConflictResolver<Event> {
   return new CustomMergeResolver<Event>((a, b) => ({
