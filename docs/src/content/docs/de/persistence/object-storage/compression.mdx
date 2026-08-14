@@ -76,9 +76,21 @@ zstd-Support unterscheidet sich je **Richtung**:
   kann **nur dekomprimieren**.  `zstd` auf einem Runtime ohne native
   Unterstützung schlägt früh fehl — eager bei der Plugin-Registrierung,
   nicht kryptisch beim ersten Persist.
-- **Decompress (Read)** — erst nativ, dann die optionale
-  `fzstd`-Peer-Dependency, sodass ein Runtime ohne natives zstd
-  anderswo geschriebene zstd-Bodies trotzdem **lesen** kann.
+- **Decompress (Read)** — zuerst `node:zlib` (die einzige
+  zstd-Implementierung, die eine Output-Grenze zur Allokationszeit
+  entgegennimmt — siehe
+  [Dekompressions-Limit](#dekompressions-limit-bomb-schutz)), dann
+  Buns Global, dann die optionale `fzstd`-Peer-Dependency, sodass ein
+  Runtime ohne natives zstd anderswo geschriebene zstd-Bodies
+  trotzdem **lesen** kann, sobald `fzstd` installiert ist.
+
+Beide Richtungen wählen eine Implementierung, indem sie sie
+**aufrufen** — nicht, indem sie prüfen, ob die Funktion existiert.
+Auf Deno fällt beides auseinander: `node:zlib` exportiert dort
+zstd-Einsprungpunkte, hinter denen kein Binding steht.  So bekommt ein
+Runtime ohne funktionierendes zstd die Meldung des Frameworks, die die
+fehlende Fähigkeit benennt, und der `fzstd`-Fallback darunter bleibt
+erreichbar.
 
 `gzip` nutzt `node:zlib` und läuft überall (Bun, Node, Deno) ohne
 Zusatz-Dependency.
@@ -111,10 +123,22 @@ Objekt dekodiert gemäß seinem eigenen Manifest.
 Die Dekompression beim Lesen ist standardmäßig auf **512 MiB** Output
 begrenzt, damit ein manipulierter oder bösartiger komprimierter Body (wenige
 KB, die sich auf viele GB aufblähen) beim Recovery nicht den Speicher sprengt
-(security audit #3).  gzip erzwingt das Limit bereits zur Allokationszeit
-über zlibs `maxOutputLength`; jeder Pfad prüft zusätzlich die dekodierte
-Größe.  Ein Body, der das Limit überschreiten würde, lässt den Read mit einem
-Fehler scheitern, statt den Prozess mit OOM zu beenden.  Snapshots /
+(security audit #3).
+
+**gzip und zstd reichen die Grenze an den Decoder durch** — über zlibs
+`maxOutputLength` —, sodass ein Body über dem Limit abgelehnt wird, *bevor*
+sein Output allokiert ist: Die Bombe bekommt den Speicher, für den sie
+gebaut wurde, gar nicht erst.  Jeder Pfad prüft zusätzlich die dekodierte
+Größe, und genau das begrenzt die beiden Pfade, die die Option nicht
+entgegennehmen können (Buns `Bun.zstdDecompressSync`, das nur auf einem Bun
+ohne zstd in `node:zlib` überhaupt drankommt, und der `fzstd`-Fallback).
+Dort gilt das Limit weiterhin, aber erst, wenn der Output existiert — auf
+einem Runtime, das auf einen der beiden zurückfällt, ist die Grenze also
+eher eine Korrektheitsprüfung als ein Bomb-Schutz.
+
+So oder so scheitert der Read mit einem Fehler, statt den Prozess mit OOM zu
+beenden, und der Fehler benennt die Grenze (`maxOutputBytes=…`), damit klar
+ist, an welcher Einstellung zu drehen ist.  Snapshots /
 Durable-State sind in der Praxis weit kleiner; wer legitim größere Bodies
 speichert, hebt das Limit mit `withMaxDecompressedBytes` auf den Store- (oder
 Plugin-)Optionen an:

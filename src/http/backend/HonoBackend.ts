@@ -7,7 +7,7 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
@@ -211,12 +211,20 @@ export class HonoBackend implements HttpServerBackend {
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
     // and fold the bridge's serve options in (Bun needs `{ websocket }`).
+    //
+    // The runner also gets the frame cap so the *runtime* refuses an oversize
+    // frame while it arrives, matching what Express and Fastify hand `ws`.
+    // Until #373 threads the resolved per-route policy down here, backends
+    // cannot see a route's own `maxFrameBytes` at listen() time — the policy
+    // is resolved on first connect — so every backend installs the shared
+    // default and a route that raises `maxFrameBytes` past it is still cut
+    // off at 1 MiB by the transport.
     let bridge: HonoWebsocketBridge | null = null;
     if (this.wsRegistered.length > 0) {
       if (!runner.webSocket) {
         throw new Error('HonoBackend: this runtime\'s Hono runner does not support websocket() routes.');
       }
-      bridge = await runner.webSocket(app);
+      bridge = await runner.webSocket(app, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 

@@ -111,27 +111,27 @@ Client in einen [Retry](/de/patterns/retry/)- +
 ## Middleware
 
 ```ts
-import { cached, rateLimit } from 'actor-ts/http';
+import { cached, get, path, rateLimit } from 'actor-ts/http';
 import { InMemoryCache } from 'actor-ts';
 
-const cache = new InMemoryCache();
+// One cache per middleware — never one shared instance (see below).
+const limiterCache = new InMemoryCache();
+const responseCache = new InMemoryCache();
 
-const routes = concat(
-  rateLimit({
-    cache,
-    windowMs: 1_000,
-    max: 100,
-    key: (request) => request.remoteAddress ?? 'unknown',
-  })(
-    cached({
-      cache,
-      ttlMs: 30_000,
-      key: (request) => request.path,
-    })(
-      path('api', /* ... */),
-    ),
-  ),
-);
+const limited = rateLimit({
+  cache: limiterCache,
+  windowMs: 1_000,
+  max: 100,
+  key: (request) => request.remoteAddress ?? 'unknown',
+});
+
+const readThrough = cached({
+  cache: responseCache,
+  ttlMs: 30_000,
+  key: (request) => request.path,
+});
+
+const routes = path('api', get(limited(readThrough(apiHandler))));
 ```
 
 Das Framework liefert drei:
@@ -147,6 +147,26 @@ auf und übergibst der zurückgegebenen Funktion den Handler, der
 geschützt werden soll.  Kombiniere durch Verschachteln auf
 Handler-Ebene.  Siehe die
 [Middleware-Seiten](/de/http/middleware/response-cache/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Jede Middleware bekommt ihren eigenen Cache">
+  ```ts
+  const cache = new InMemoryCache();
+  rateLimit({ cache, /* ... */ });   // ✗ same instance
+  cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
+  ```
+  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge), und seine
+  Eviction ist blind dafür, was ein Eintrag schützt.  Teilst du eine
+  Instanz, evictet ein Aufrufer, der den Response-Cache-Key — oder den
+  `Idempotency-Key`-Header — variiert, die Rate-Limit-Zähler und
+  Idempotency-Records *anderer* Clients: deren Limits setzen sich
+  zurück, und deren Retries führen Handler erneut aus.  Getrennte
+  Instanzen (oder `ext.cache('rate-limit')` / `ext.cache('idempotency')`)
+  halten die Key-Flut der einen Middleware aus dem State der anderen
+  heraus.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+</Aside>
 
 ## HTTP an Actors anschließen
 
@@ -172,8 +192,6 @@ Das ist **das** häufige Muster — HTTP-Handler sind ein dünner
 Adapter: Request parsen, einen Actor fragen, die Antwort
 marshallen.  Halte Business-Logik in Actors; HTTP-Handler bleiben
 kurz.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Teile keinen State in Routen-Handlern">
   ```ts

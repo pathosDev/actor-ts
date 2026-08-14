@@ -35,7 +35,17 @@ export class DenoHonoRunner implements HonoServerRunner {
     };
   }
 
-  async webSocket(_app: unknown): Promise<HonoWebsocketBridge> {
+  /**
+   * `maxFrameBytes` is accepted for signature parity and then deliberately
+   * dropped: Deno has no transport-level frame cap to install.  Hono's Deno
+   * adapter forwards its option bag straight into `Deno.upgradeWebSocket`,
+   * whose options are `protocol` and `idleTimeout` only — there is no
+   * payload-size member to set.  So on Deno an oversize frame is still fully
+   * buffered by the runtime before `maxFrameBytes` rejects it, and the
+   * bridge reports that honestly by leaving `transportFrameCapBytes` unset
+   * (#586).  Bun and Node do install the cap.
+   */
+  async webSocket(_app: unknown, _maxFrameBytes: number): Promise<HonoWebsocketBridge> {
     let mod: { upgradeWebSocket: unknown };
     try {
       const name = 'hono/deno';

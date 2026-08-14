@@ -187,6 +187,24 @@ import { Aside } from '@astrojs/starlight/components';
   Siehe [In-Memory-Cache](/de/cache/in-memory/).
 </Aside>
 
+<Aside type="caution" title="Hier entstehen die Keys — teile die Instanz nicht">
+  ```ts
+  const responseCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  `key(request)` leitet sich fast immer aus etwas ab, das der Client
+  kontrolliert — einem Pfadparameter, einem Mandanten-Header.  Wer das
+  variiert, erzeugt pro Request einen neuen Eintrag.  Hier ist das
+  harmlos: die LRU-Schranke ist genau das, was den Response-Cache am
+  unbegrenzten Wachsen hindert.  In einer Instanz, die mit `rateLimit`
+  oder `idempotent` geteilt wird, ist es das nicht — die Eviction nimmt
+  den am längsten nicht genutzten Eintrag, ohne zu wissen, dass er
+  einen Rate-Limit-Zähler oder einen Record hält, der eine doppelte
+  Zahlung verhindert.  Gib dieser Middleware eine eigene Instanz — oder
+  `ext.cache('response-cache')` — statt der, die eine Garantie
+  durchsetzt.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+</Aside>
+
 ## Wohin als Nächstes
 
 - **[HTTP-Übersicht](/de/http/overview/)** — das große

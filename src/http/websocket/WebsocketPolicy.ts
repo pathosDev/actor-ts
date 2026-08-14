@@ -7,7 +7,7 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from './types.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 
 /** What to do with an inbound frame that exceeds `maxFrameBytes`. */
 export type OversizeFramePolicy = 'close' | 'drop';

@@ -1,6 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
@@ -10,7 +10,6 @@ import type {
 } from './HttpServerBackend.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 // `@fastify/websocket` is an optional peer dep — lazy-import it (cached),
 // so projects that never use websocket() routes don't pull it in.

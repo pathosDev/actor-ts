@@ -183,6 +183,23 @@ import { Aside } from '@astrojs/starlight/components';
   cache keys you expect.  See [In-memory cache](/cache/in-memory/).
 </Aside>
 
+<Aside type="caution" title="This is the key-minting side — don't share the instance">
+  ```ts
+  const responseCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  `key(request)` almost always derives from something the client
+  controls — a path parameter, a tenant header — so a caller who varies
+  it mints a new entry per request.  Harmless here: the LRU bound is
+  exactly what stops the response cache growing without limit.  Not
+  harmless in an instance shared with `rateLimit` or `idempotent`,
+  because eviction picks the least-recently-used entry with no idea it
+  is holding a rate-limit counter or a record that stops a payment
+  being taken twice.  Hand this middleware a dedicated instance — or
+  `ext.cache('response-cache')` — rather than the one enforcing a
+  guarantee.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+</Aside>
+
 ## Where to next
 
 - **[HTTP overview](/http/overview/)** — the bigger

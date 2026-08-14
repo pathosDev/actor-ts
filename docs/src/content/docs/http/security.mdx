@@ -145,7 +145,15 @@ the [Route DSL](/http/route-dsl/).
   the Express and Hono backend options, `bodyLimit` in the options bag of
   `FastifyBackend`. A chunked body that declares no `Content-Length` is the one
   case still measured while it arrives rather than refused up front.
-- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default).
+- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default), and the
+  default is also handed to the runtime's own socket so an oversize frame is
+  refused *while it arrives* rather than after the process has buffered it —
+  otherwise a peer could force 16 MiB (Bun) or 100 MiB (`ws`) of buffering per
+  frame that the framework would then discard. The one exception is Hono on
+  **Deno**, whose `upgradeWebSocket` exposes no payload limit: there the frame
+  is buffered first and rejected second. Raising `maxFrameBytes` past 1 MiB
+  does not raise the transport limit with it. See
+  [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
 

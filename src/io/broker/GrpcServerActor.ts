@@ -33,6 +33,7 @@ export type GrpcRequestStreamInbound = GrpcChunkMessage | GrpcEndMessage;
 export interface GrpcUnaryCall {
   readonly method: string;
   readonly request: unknown;
+  /** The client's request headers — see {@link GrpcCallMetadata}. */
   readonly metadata: Readonly<Record<string, string>>;
   /** Reply with success (status OK). */
   respond(response: unknown): void;
@@ -44,6 +45,7 @@ export interface GrpcUnaryCall {
 export interface GrpcServerStreamCall {
   readonly method: string;
   readonly request: unknown;
+  /** The client's request headers — see {@link GrpcCallMetadata}. */
   readonly metadata: Readonly<Record<string, string>>;
   send(chunk: unknown): void;
   complete(): void;
@@ -61,6 +63,7 @@ export interface GrpcServerStreamCall {
  */
 export interface GrpcClientStreamCall {
   readonly method: string;
+  /** The client's request headers — see {@link GrpcCallMetadata}. */
   readonly metadata: Readonly<Record<string, string>>;
   /** Subscribe an actor to receive every inbound chunk + the end signal. */
   onData(target: ActorRef<GrpcRequestStreamInbound>): void;
@@ -73,6 +76,7 @@ export interface GrpcClientStreamCall {
 /** Bidi call — handler receives chunks via `data` callback, sends via `send`. */
 export interface GrpcBidiCall {
   readonly method: string;
+  /** The client's request headers — see {@link GrpcCallMetadata}. */
   readonly metadata: Readonly<Record<string, string>>;
   /** Subscribe an actor to receive every inbound chunk + the end signal. */
   onData(target: ActorRef<GrpcRequestStreamInbound>): void;
@@ -527,17 +531,66 @@ const PROTO_LOADER_OPTIONS = {
   keepCase: true, longs: String, enums: String, defaults: true, oneofs: true,
 };
 
-function extractMetadata(md: { get?: (key: string) => string[] } | undefined): Readonly<Record<string, string>> {
-  // grpc-js Metadata has an opaque internal representation; for tests we
-  // return an empty object and let real users dig into the raw call if
-  // they need full headers.
-  void md;
-  return {};
+/**
+ * The slice of grpc-js `Metadata` the server reads off an inbound call.
+ *
+ * Declared structurally rather than imported: `@grpc/grpc-js` is an
+ * optional peer dependency, so naming its types here would make this
+ * module unloadable without it — and the same structural shape is what
+ * lets the unit suite drive all four call classes with a plain fake.
+ */
+export type GrpcCallMetadata = {
+  /**
+   * grpc-js `Metadata.getMap()`.  Optional because a call may arrive
+   * without metadata at all; the values are `unknown` rather than
+   * `string` because grpc-js hands back a `Buffer` for every `-bin` key.
+   */
+  getMap?: () => Record<string, unknown>;
+};
+
+/**
+ * The suffix gRPC reserves for binary headers.  Their values arrive as a
+ * `Buffer`, which `Readonly<Record<string, string>>` cannot hold, so they
+ * are dropped rather than given some invented encoding that would collide
+ * with a same-named text header.
+ */
+const GRPC_BINARY_HEADER_SUFFIX = '-bin';
+
+/**
+ * Read the request headers off an inbound call.
+ *
+ * Built on a **null-prototype** object, because every key here is
+ * attacker-controlled: `__proto__` and `constructor` both match the token
+ * grammar gRPC validates header names against, so a client may legally
+ * send either.  Without a prototype, `record[key] = value` has no
+ * inherited setter to reach — and, the subtler half, a lookup of a header
+ * nobody sent answers `undefined` instead of some `Object.prototype`
+ * member.  On a plain `{}` this record would make `metadata['constructor']`
+ * truthy on *every* call, which is exactly the kind of vacuous pass a
+ * per-call header check exists to prevent.
+ *
+ * Two documented lossy edges, both forced by the `string` value type:
+ * `getMap()` collapses a repeated header to its first value, and binary
+ * (`-bin`) headers are omitted entirely.
+ */
+function extractMetadata(metadata: GrpcCallMetadata | undefined): Readonly<Record<string, string>> {
+  const record: Record<string, string> = Object.create(null) as Record<string, string>;
+  const headers = metadata?.getMap?.();
+  if (!headers) return record;
+  for (const [key, value] of Object.entries(headers)) {
+    // Both guards earn their place: the suffix is the protocol's own rule,
+    // and the `typeof` check is what stops the declared type from being a
+    // lie whatever a given grpc-js release decides to hand back.
+    if (key.endsWith(GRPC_BINARY_HEADER_SUFFIX)) continue;
+    if (typeof value !== 'string') continue;
+    record[key] = value;
+  }
+  return record;
 }
 
 export type GrpcServerUnaryRequest = {
   request: unknown;
-  metadata?: { get?: (key: string) => string[] };
+  metadata?: GrpcCallMetadata;
 };
 
 export interface GrpcUnaryCallback {
@@ -546,7 +599,7 @@ export interface GrpcUnaryCallback {
 
 type GrpcServerStreamRequest = {
   request: unknown;
-  metadata?: { get?: (key: string) => string[] };
+  metadata?: GrpcCallMetadata;
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
@@ -558,13 +611,13 @@ type GrpcServerStreamRequest = {
  * `write` / `end` of its own.
  */
 export type GrpcServerReadableCall = {
-  metadata?: { get?: (key: string) => string[] };
+  metadata?: GrpcCallMetadata;
   on(event: 'data', listener: (chunk: unknown) => void): void;
   on(event: 'end', listener: () => void): void;
 };
 
 type GrpcServerDuplexCall = {
-  metadata?: { get?: (key: string) => string[] };
+  metadata?: GrpcCallMetadata;
   on(event: 'data', listener: (chunk: unknown) => void): void;
   on(event: 'end', listener: () => void): void;
   write(chunk: unknown): void;

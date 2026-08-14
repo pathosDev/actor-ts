@@ -3,7 +3,9 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import {
   buildGrpcMethodImplementation,
   type GrpcBidiCall,
+  type GrpcCallMetadata,
   type GrpcClientStreamCall,
+  type GrpcHandler,
   type GrpcRequestStreamInbound,
   type GrpcServerStreamCall,
   type GrpcUnaryCall,
@@ -29,10 +31,20 @@ function recordingRef<T>(sink: T[]): ActorRef<T> {
   return { tell: (message: T) => { sink.push(message); } } as unknown as ActorRef<T>;
 }
 
+/**
+ * Stands in for grpc-js `Metadata` — the one method the server reads.
+ * The value type is `unknown` on purpose: grpc-js answers with a `Buffer`
+ * for every `-bin` key, and a fake that could not express that would not
+ * be able to prove those keys are dropped.
+ */
+function grpcMetadata(headers: Record<string, unknown>): GrpcCallMetadata {
+  return { getMap: () => headers };
+}
+
 /** Stands in for grpc-js `ServerReadableStream` / `ServerDuplexStream`. */
-function fakeReadableCall(): {
+function fakeReadableCall(metadata?: GrpcCallMetadata): {
   call: {
-    metadata?: { get?: (key: string) => string[] };
+    metadata?: GrpcCallMetadata;
     on(event: 'data', listener: (chunk: unknown) => void): void;
     on(event: 'end', listener: () => void): void;
     write(chunk: unknown): void;
@@ -52,6 +64,7 @@ function fakeReadableCall(): {
   const errors: Array<{ code: number; message: string }> = [];
   return {
     call: {
+      ...(metadata ? { metadata } : {}),
       on: ((event: 'data' | 'end', listener: ((chunk: unknown) => void) & (() => void)): void => {
         if (event === 'data') dataListeners.push(listener);
         else endListeners.push(listener);
@@ -70,7 +83,10 @@ function fakeReadableCall(): {
 
 type ClientStreamImplementation = (call: unknown, callback: GrpcUnaryCallback) => void;
 type ReadableImplementation = (call: unknown) => void;
-type UnaryImplementation = (call: { request: unknown }, callback: GrpcUnaryCallback) => void;
+type UnaryImplementation = (
+  call: { request: unknown; metadata?: GrpcCallMetadata },
+  callback: GrpcUnaryCallback,
+) => void;
 
 describe('buildGrpcMethodImplementation — client-stream (#5)', () => {
   test('hands the handler a call with the method name and no request message', () => {
@@ -84,6 +100,8 @@ describe('buildGrpcMethodImplementation — client-stream (#5)', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.method).toBe('Collect');
+    // Empty because *this* fake carries no metadata, not because the
+    // field is a stub — see the `metadata` block below (#611).
     expect(calls[0]!.metadata).toEqual({});
     // A client-streaming RPC has no single request message — that is
     // precisely what separates it from a unary call.
@@ -205,6 +223,147 @@ describe('buildGrpcMethodImplementation — the other three call classes still h
     calls[0]!.complete();
     expect(fake.written).toEqual([{ text: 'echo' }]);
     expect(fake.ended).toHaveLength(1);
+  });
+});
+
+/**
+ * One call class, reduced to the only thing this block cares about:
+ * drive it with `metadata` attached and hand back what the handler saw.
+ * All four exist because the stub was wired at all four call sites, so a
+ * fix that reached only the unary path would still leave three
+ * authorisation checks passing vacuously (#611).
+ */
+type CallClassCase = {
+  readonly kind: GrpcHandler['kind'];
+  readonly observe: (metadata?: GrpcCallMetadata) => Readonly<Record<string, string>>;
+};
+
+const CALL_CLASSES: CallClassCase[] = [
+  {
+    kind: 'unary',
+    observe: (metadata) => {
+      const calls: GrpcUnaryCall[] = [];
+      const implementation = buildGrpcMethodImplementation(
+        'Get', { kind: 'unary', target: recordingRef(calls) },
+      ) as UnaryImplementation;
+      implementation({ request: { id: 'rt-7' }, ...(metadata ? { metadata } : {}) }, () => { /* unused */ });
+      return calls[0]!.metadata;
+    },
+  },
+  {
+    kind: 'serverStream',
+    observe: (metadata) => {
+      const calls: GrpcServerStreamCall[] = [];
+      const implementation = buildGrpcMethodImplementation(
+        'Watch', { kind: 'serverStream', target: recordingRef(calls) },
+      ) as ReadableImplementation;
+      implementation({ ...fakeReadableCall(metadata).call, request: { limit: 2 } });
+      return calls[0]!.metadata;
+    },
+  },
+  {
+    kind: 'clientStream',
+    observe: (metadata) => {
+      const calls: GrpcClientStreamCall[] = [];
+      const implementation = buildGrpcMethodImplementation(
+        'Collect', { kind: 'clientStream', target: recordingRef(calls) },
+      ) as ClientStreamImplementation;
+      implementation(fakeReadableCall(metadata).call, () => { /* unused */ });
+      return calls[0]!.metadata;
+    },
+  },
+  {
+    kind: 'bidi',
+    observe: (metadata) => {
+      const calls: GrpcBidiCall[] = [];
+      const implementation = buildGrpcMethodImplementation(
+        'Chat', { kind: 'bidi', target: recordingRef(calls) },
+      ) as ReadableImplementation;
+      implementation(fakeReadableCall(metadata).call);
+      return calls[0]!.metadata;
+    },
+  },
+];
+
+describe('buildGrpcMethodImplementation — request metadata (#611)', () => {
+  test('the table covers every call class', () => {
+    expect(CALL_CLASSES.map((c) => c.kind)).toEqual(['unary', 'serverStream', 'clientStream', 'bidi']);
+  });
+
+  test.each([...CALL_CLASSES])('$kind hands the handler the real request headers', ({ observe }) => {
+    const seen = observe(grpcMetadata({ authorization: 'Bearer t0ken', 'x-tenant': 'acme' }));
+
+    expect(seen).toEqual({ authorization: 'Bearer t0ken', 'x-tenant': 'acme' });
+    // The point of the whole issue: a header check must be able to fail.
+    expect(seen['authorization']).toBe('Bearer t0ken');
+  });
+
+  test.each([...CALL_CLASSES])('$kind yields an empty record when the call carries no metadata', ({ observe }) => {
+    expect(observe()).toEqual({});
+    expect(observe(grpcMetadata({}))).toEqual({});
+    // A `Metadata` without the method the server reads must not throw.
+    expect(observe({})).toEqual({});
+  });
+
+  test('binary (`-bin`) headers are dropped, text headers beside them survive', () => {
+    const seen = CALL_CLASSES[0]!.observe(grpcMetadata({
+      'x-trace-bin': Buffer.from([0x01, 0x02]),
+      'x-trace': 'readable',
+    }));
+
+    // `Readonly<Record<string, string>>` cannot hold a Buffer, so carrying
+    // the key would make the declared type a lie.
+    expect(seen).toEqual({ 'x-trace': 'readable' });
+    expect('x-trace-bin' in seen).toBe(false);
+
+    // The omission is keyed on the *name*, not on what the value happens
+    // to be: the docs promise `-bin` headers are absent, and that has to
+    // hold even if some grpc-js release hands one back already decoded.
+    expect(CALL_CLASSES[0]!.observe(grpcMetadata({ 'x-trace-bin': 'already-text' }))).toEqual({});
+  });
+
+  test('a non-string value under a text key is dropped too', () => {
+    // Belt and braces: the `-bin` suffix is the protocol's rule, but the
+    // type contract must hold whatever a grpc-js release hands back.
+    const seen = CALL_CLASSES[0]!.observe(grpcMetadata({ ok: 'yes', weird: Buffer.from('x'), missing: undefined }));
+
+    expect(seen).toEqual({ ok: 'yes' });
+  });
+
+  test('a client-sent `__proto__` header is carried as data and pollutes nothing', () => {
+    // Built with `JSON.parse`, NOT an object literal: `{ __proto__: … }`
+    // is the literal's prototype-setter syntax, so it never produces the
+    // own property this test is about — a fake written that way asserts
+    // nothing at all.
+    const headers = JSON.parse(
+      '{"__proto__":"from-the-wire","constructor":"from-the-wire","authorization":"Bearer t0ken"}',
+    ) as Record<string, unknown>;
+    const seen = CALL_CLASSES[0]!.observe(grpcMetadata(headers));
+
+    // On a plain `{}` target this assignment reaches the inherited
+    // `__proto__` setter, which ignores a string — so the header would
+    // vanish without a trace instead of arriving as data.
+    expect(Object.keys(seen)).toContain('__proto__');
+    expect(seen['__proto__']).toBe('from-the-wire');
+    expect(seen['constructor']).toBe('from-the-wire');
+    expect(seen['authorization']).toBe('Bearer t0ken');
+    // …and nothing may leak into every other object in the process.
+    expect(({} as Record<string, unknown>)['authorization']).toBeUndefined();
+    expect(Object.getPrototypeOf({})).toBe(Object.prototype);
+  });
+
+  test('a header nobody sent reads as undefined, including Object.prototype member names', () => {
+    const seen = CALL_CLASSES[0]!.observe(grpcMetadata({ authorization: 'Bearer t0ken' }));
+
+    // The record has no prototype, so `metadata[name]` is a pure header
+    // lookup.  On a plain `{}` these three would be truthy on every call
+    // — a check keyed on a configurable header name would pass vacuously,
+    // which is the failure mode #611 is about.
+    expect(Object.getPrototypeOf(seen)).toBeNull();
+    expect(seen['constructor']).toBeUndefined();
+    expect(seen['toString']).toBeUndefined();
+    expect(seen['hasOwnProperty']).toBeUndefined();
+    expect(seen['x-absent']).toBeUndefined();
   });
 });
 

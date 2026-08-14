@@ -59,6 +59,7 @@ type IdempotencyOptions = {
   ttlMs?:         number;                              // Default 24 h
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
+  maxKeyLength?:  number;                              // Default 255
   missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
 };
@@ -66,10 +67,11 @@ type IdempotencyOptions = {
 
 | Feld | Zweck |
 | --- | --- |
-| `cache` | Backing-Store.  Redis ist für Multi-Pod nötig. |
+| `cache` | Backing-Store.  Redis ist für Multi-Pod nötig.  **Gib ihm eine eigene Instanz** — siehe die Warnung unten. |
 | `ttlMs` | Wie lange jeder Key gemerkt wird.  Default 24 Stunden. |
 | `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
+| `maxKeyLength` | Längster akzeptierter Header-Wert.  Default 255 (Stripes Schranke); ein längerer Key wird mit 400 abgelehnt. |
 | `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
 | `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4). |
 
@@ -91,6 +93,32 @@ Umsortieren ist kein anderer Request.  Die Werte eines
 *wiederholten* Keys behalten ihre ursprüngliche Reihenfolge,
 sodass `?tag=a&tag=b` von `?tag=b&tag=a` verschieden bleibt; das
 zählt für jede API, die eine solche Liste positionell liest.
+
+## Der Key selbst wird validiert
+
+Der Header-Wert ist angreiferseitig gewählt und landet unverändert in
+einem Cache-Key — er wird deshalb geprüft, bevor er dort ankommt.  Ein
+Request wird mit **400** abgelehnt, wenn der Key
+
+- **länger ist als `maxKeyLength`** (Default 255 Zeichen) oder
+- ein **ASCII-Steuerzeichen oder ein Leerzeichen** enthält — CR und LF
+  sind das klassische Header-Injection-Paar, und Leerzeichen plus der
+  Steuerzeichenbereich sind Kommando-Trenner in Memcacheds
+  Text-Protokoll; ein Key mit einem davon wäre also nur sicher, solange
+  ein bestimmter `Cache` hinter der Middleware hängt.
+
+Die Ablehnung nennt die Schranke und den betroffenen Index, nie den Key
+selbst — Angreifer-Bytes in einen Response-Body zurückzuspiegeln ist
+genau der Weg, auf dem eine Fehlermeldung zur Payload wird.
+
+Echte Clients senden eine UUID oder ein kurzes opakes Token, keine der
+beiden Regeln kostet ehrlichen Traffic also etwas.  Erhöhe
+`maxKeyLength` nur für eine Client-Flotte, die du kontrollierst und die
+tatsächlich längere Keys erzeugt.
+
+Beachte, was das begrenzt: wie viel Cache **ein** erzeugter Key kostet
+— nicht, **wie viele** ein Aufrufer erzeugen kann.  Die Eviction-Warnung
+unten ist die andere Hälfte.
 
 ## Was gecacht wird
 
@@ -226,6 +254,32 @@ import { Aside } from '@astrojs/starlight/components';
   Nach TTL ist der Key vergessen.  Ein verzögerter Retry
   verarbeitet jetzt erneut.  Wähle TTL länger als jedes
   vernünftige Retry-Fenster (24 Stunden typisch für Zahlungen).
+</Aside>
+
+<Aside type="caution" title="Teile den Cache niemals mit rateLimit() oder cached()">
+  ```ts
+  const idempotencyCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  Hier kann jeder Request einen neuen Key erzeugen, und `InMemoryCache`
+  ist LRU-begrenzt (Default 10 000 Einträge) mit einer Eviction, die
+  blind dafür ist, was ein Eintrag schützt.  Zwei Konsequenzen, beide
+  lautlos:
+
+  - Teilst du eine Instanz mit `rateLimit` oder `cached`, drängt eine
+    Key-Flut über **eine der beiden** gespeicherte Responses heraus.
+    Der Retry eines ehrlichen Clients findet dann keinen Record,
+    beansprucht den Key neu und **führt den Handler erneut aus** — auf
+    einem Payments-Endpoint eine Doppelbelastung.
+  - Ein Record wird nur als zuletzt genutzt markiert, wenn er
+    **gelesen** wird.  `setIfAbsent` zählt nicht, ein beanspruchter
+    Key, den noch niemand erneut angefragt hat, altert also ab dem
+    Moment der Speicherung auf die Eviction zu.
+
+  Übergib eine eigene Instanz — oder `ext.cache('idempotency')` — und
+  dimensioniere deren `maxEntries` für die Keys, die du innerhalb eines
+  `ttlMs` erwartest.  Wo die Garantie gegen einen Angreifer halten muss,
+  hinterlege sie mit Redis statt mit einer prozesslokalen LRU.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
 </Aside>
 
 <Aside type="caution" title="In-Memory-Cache + mehrere Pods">

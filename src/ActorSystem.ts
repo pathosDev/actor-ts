@@ -8,12 +8,14 @@ import { none, some, type Option } from './util/Option.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
   Dispatcher,
+  DispatcherErrorSink,
   ImmediateDispatcher,
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger } from './Logger.js';
+import { DispatcherError } from './SystemMessages.js';
 import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
@@ -112,6 +114,12 @@ export class ActorSystem {
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
 
+  /**
+   * The sink this system installed on {@link dispatcher}, kept so
+   * termination can tell it apart from one the owner installed.
+   */
+  private readonly dispatcherErrorSink: DispatcherErrorSink;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
@@ -131,6 +139,16 @@ export class ActorSystem {
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
+    // Same idea one layer down: a work unit that threw used to reach only
+    // `console.error`, which no sink, no MDC and no test can see (#410).
+    // `??=` and not `=`: `ActorSystemOptions.withDispatcher` hands in an
+    // instance the caller owns, and a sink they set on it is a decision,
+    // not a slot to claim.  It also settles the shared-dispatcher case in
+    // the only stable direction — first system wins, rather than whichever
+    // system happened to be constructed last.
+    this.dispatcherErrorSink = (error, dispatcherId) =>
+      this._reportDispatcherError(error, dispatcherId, null);
+    this.dispatcher.onError ??= this.dispatcherErrorSink;
     this.deadLetters = new DeadLetterRef(this.name, this.eventStream);
     this.extensions = new Extensions(this);
 
@@ -435,10 +453,55 @@ export class ActorSystem {
 
   get isTerminated(): boolean { return this._terminated; }
 
+  /**
+   * @internal Surface a work unit that threw on a dispatcher — through the
+   * system logger, and on the {@link EventStream} as a
+   * {@link DispatcherError}.
+   *
+   * Called from two places, and the difference is `actor`.  `ActorCell`
+   * catches its own turn and passes `self`, which is what makes the report
+   * attributable and covers per-actor and third-party dispatchers the
+   * system never sees.  The sink installed on `this.dispatcher` passes
+   * `null`, for work handed straight to `dispatcher.execute` by something
+   * that is not a cell.
+   *
+   * **Why this does not need a rate limit.**  Publishing tells the
+   * subscribers, and a `tell` schedules on the very dispatcher that just
+   * failed — so the shape of a feedback loop is there.  It cannot close,
+   * though: a throw out of `onReceive` goes to supervision and never
+   * reaches this path, so a subscriber would have to fail in its cell
+   * *machinery* to produce a second report, which is a second bug of the
+   * same rare class rather than a consequence of the first.  With no
+   * subscriber at all — the common case — reports and failures are one for
+   * one, exactly as the `console.error` this replaced.
+   *
+   * The guard is for the loop that *can* close: this method runs inside
+   * the dispatcher's own catch, so a logger or a subscriber that throws
+   * here would be reported as a dispatcher error, from inside the report
+   * of one.  Catching it ends that in one hop and still prints both
+   * failures — the original one is the one nobody else is holding.
+   */
+  _reportDispatcherError(error: unknown, dispatcherId: string, actor: ActorRef | null): void {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    try {
+      const scope = actor === null ? '' : ` while running ${actor.path}`;
+      this.log.error(`Unhandled dispatcher error on '${dispatcherId}'${scope}`, cause);
+      this.eventStream.publish(new DispatcherError(dispatcherId, cause, actor));
+    } catch (reportFailure) {
+      console.error('[actor-ts] unhandled dispatcher error:', cause);
+      console.error('[actor-ts] reporting that dispatcher error failed:', reportFailure);
+    }
+  }
+
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
     this.scheduler.shutdown();
+    // Stop reporting into a logger that is about to be closed.  Only our
+    // own sink is removed: a dispatcher passed in through
+    // `ActorSystemOptions` outlives this system, and one the owner wired
+    // themselves is theirs to keep.
+    if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
     const finish = (): void => { for (const resolve of resolvers) resolve(); };

@@ -41,8 +41,8 @@ import {
   type WebsocketClientSignal,
 } from './WebsocketMessages.js';
 import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import {
-  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
   normalizeInbound,
   type WebsocketFrame,

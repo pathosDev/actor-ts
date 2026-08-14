@@ -100,6 +100,14 @@ client-stream and bidi calls, which stream their requests), and a
 `metadata` record.  `respondError` / `fail` take an optional numeric
 status code that defaults to `13` (INTERNAL).
 
+`metadata` holds the client's request headers, so a handler can make a
+per-call decision — check an `authorization` header, read a tenant id.
+Two edges follow from the record holding strings: a header sent more
+than once collapses to its **first** value, and binary (`-bin`) headers
+are omitted entirely.  A header nobody sent reads as `undefined`, names
+like `constructor` included — the record has no prototype, so a lookup
+never succeeds by accident.
+
 An `onData` subscriber receives `GrpcRequestStreamInbound` — either
 `{ kind: 'chunk', chunk }` or `{ kind: 'end' }`.
 
@@ -174,8 +182,10 @@ client.tell({ kind: 'unary', method: 'GetSensor', request: { id: 'rt-7' }, targe
 
 The endpoint is a single `host:port` string via `withEndpoint`.
 Every call names a **`target`** actor; the actor routes the reply
-and any stream frames there.  A per-call deadline is configurable
-with `.withDeadlineMs(30000)` (the default).
+and any stream frames there.  `.withDeadlineMs(30000)` (the default)
+bounds **unary** calls only.  A gRPC deadline covers a whole RPC, and
+one value cannot both fail a request/response call promptly and let a
+long-lived stream run, so the three streaming modes are left unbounded.
 
 ### Inbound frames
 

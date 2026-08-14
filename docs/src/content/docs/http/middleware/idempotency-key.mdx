@@ -59,6 +59,7 @@ type IdempotencyOptions = {
   ttlMs?:         number;                              // default 24h
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
+  maxKeyLength?:  number;                              // default 255
   missingHeader?: 'reject' | 'pass-through';           // default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
 };
@@ -66,10 +67,11 @@ type IdempotencyOptions = {
 
 | Field | Purpose |
 | --- | --- |
-| `cache` | Backing store.  Redis is required for multi-pod. |
+| `cache` | Backing store.  Redis is required for multi-pod.  **Give it its own instance** — see the caution below. |
 | `ttlMs` | How long to remember each key.  Default 24 hours. |
 | `headerName` | Customize the header name (case-insensitive match).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-key namespace.  Default `'idem:'` so multiple idempotency wrappers in the same Redis don't collide. |
+| `maxKeyLength` | Longest accepted header value.  Default 255 (Stripe's cap); a longer key is refused with 400. |
 | `missingHeader` | What to do when the header is absent.  Default `'reject'` (400); set `'pass-through'` to run the handler without dedup when only some clients use idempotency. |
 | `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4). |
 
@@ -89,6 +91,31 @@ different request.  The values of a *repeated* key keep their
 original order, so `?tag=a&tag=b` stays distinct from
 `?tag=b&tag=a`, which matters for any API that reads such a
 list positionally.
+
+## The key itself is validated
+
+The header value is attacker-chosen and lands verbatim in a cache key,
+so it is checked before it gets there.  A request is refused with
+**400** when the key
+
+- is **longer than `maxKeyLength`** (default 255 characters), or
+- contains an **ASCII control character or a space** — CR and LF are
+  the classic header-injection pair, and space plus the control range
+  are command delimiters in Memcached's text protocol, so a key
+  carrying one is only safe depending on which `Cache` happens to be
+  wired in behind the middleware.
+
+The rejection names the limit and the offending index, never the key
+itself — echoing attacker bytes back into a response body is how a
+rejection message becomes a payload.
+
+Real clients send a UUID or a short opaque token, so neither rule costs
+honest traffic anything.  Raise `maxKeyLength` only for a client fleet
+you control that genuinely mints longer keys.
+
+Note what this bounds: how much cache **one** minted key costs, not how
+**many** a caller can mint.  The eviction caution below is the other
+half.
 
 ## What gets cached
 
@@ -222,6 +249,29 @@ import { Aside } from '@astrojs/starlight/components';
   After TTL, the key is forgotten.  A delayed retry now
   processes again.  Pick TTL longer than any reasonable retry
   window (24 hours typical for payments).
+</Aside>
+
+<Aside type="caution" title="Never share the cache with rateLimit() or cached()">
+  ```ts
+  const idempotencyCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  Every request can mint a new key here, and `InMemoryCache` is
+  LRU-bounded (10 000 entries by default) with eviction that is blind
+  to what an entry protects.  Two consequences, both silent:
+
+  - Share one instance with `rateLimit` or `cached` and a key flood
+    through **either** of them pushes stored responses out.  An honest
+    client's retry then finds no record, re-claims the key and **runs
+    the handler again** — a double charge on a payments endpoint.
+  - A record is only marked most-recently-used when it is **read**.
+    `setIfAbsent` does not count, so a claimed key that nobody has
+    retried yet ages towards eviction from the moment it is stored.
+
+  Pass a dedicated instance — or `ext.cache('idempotency')` — and size
+  its `maxEntries` for the keys you expect within one `ttlMs`.  Where
+  the guarantee has to hold under an adversary, back it with Redis
+  instead of an in-process LRU.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
 </Aside>
 
 <Aside type="caution" title="In-memory cache + multiple pods">
