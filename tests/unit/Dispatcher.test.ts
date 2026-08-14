@@ -103,10 +103,10 @@ describe('ThroughputDispatcher', () => {
   test('yields to the event loop when throughput cap is hit', async () => {
     const dispatcher = new ThroughputDispatcher(2);
     const trace: string[] = [];
-    dispatcher.execute(() => trace.push('a'));
-    dispatcher.execute(() => trace.push('b'));
-    dispatcher.execute(() => trace.push('c'));
-    dispatcher.execute(() => trace.push('d'));
+    dispatcher.execute(() => { trace.push('a'); });
+    dispatcher.execute(() => { trace.push('b'); });
+    dispatcher.execute(() => { trace.push('c'); });
+    dispatcher.execute(() => { trace.push('d'); });
     // After first drain we must see at most `throughput` entries.
     await sleep(0); // allow setImmediate
     // All 4 eventually execute; at a macro level the order is FIFO.
