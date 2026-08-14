@@ -22,16 +22,70 @@ This document tracks the planned direction.  Nothing here is committed work — 
   Underneath, constants got a placement rule (#1142) that turned up a dead
   export, five duplicated values and a second path-traversal denylist.  See
   `CHANGELOG.md` — the breaking change carries a migration note.
-- Next window is open (`[Unreleased]`).
+- Next window is open (`[Unreleased]`), and the **50-oldest bug/security
+  wave** has landed in it — 42 of the 50 oldest open defects resolved,
+  including most of the 2026-08-01 security catalogue (#575–#626).  Five
+  entries carry a BREAKING marker and a migration note; the gossip frame gains
+  a required field, so **a rolling upgrade across that change does not
+  converge** (#112).  See the entry below and `CHANGELOG.md`.
 
   The obvious heads from here: the `reference.conf` expansion tracked in
-  #887, the remaining `severity: medium` security catalogue, and #766 — whose
-  titled fix turns out to be insufficient on its own, see the issue.
+  #887, the residual security items this wave narrowed rather than closed
+  (#112 needs the incarnation identity from #940; #607 needs the eviction
+  policy from #1080), and #766 — whose titled fix turns out to be
+  insufficient on its own, see the issue.
 - ~5 170 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
+- **`[Unreleased]` — the 50-oldest bug/security wave:** the 50 oldest open
+  `bug` / `security` issues worked as one unit, in seven batches grouped by
+  which files they touch rather than by module label.  **42 resolved** — 38
+  closing on this window's push plus four closed by hand — and 12 left open on
+  purpose, each with a comment saying why.  The bulk is the 2026-08-01 audit
+  catalogue (#575–#626) plus the four May entries (#112, #118, #121, #132).
+  - **Two of the fifty were not defects at all.** #118's titled timer leak
+    cannot happen — `settle()` clears and nulls the timer and every later
+    `tell()` early-returns — and the issue body already retracted it; it was a
+    duplicate of #177, whose two unique clauses were folded across.  #132 asked
+    for redaction of a trace id that no framework path ever writes to a log
+    record; #995 owns making that bullet true first.  Neither cost a line of
+    code, and finding that out was the point of asking "are the acceptance
+    criteria met" rather than "does the defect still exist"
+  - **Five entries are BREAKING**, each with a migration note in
+    `CHANGELOG.md`.  The consequential one is **#112**: `GossipMessage` gains
+    a required `sequence`, so a cluster must be upgraded in one step — an
+    upgraded peer refuses an old node's frames and an old node ignores the new
+    field.  The others are narrower: object-storage bodies must carry their
+    integrity tag once integrity is configured (#579), the Express and Hono
+    request-body caps drop to match Fastify (#357), a documented-but-inert
+    gRPC deadline starts being enforced (#577), and an ungated
+    `DevTools.mount()` now throws (#594)
+  - **Independent verification found five regressions the wave itself
+    introduced**, all repaired before the merge, each with the failing test
+    written first.  The worst was #588's own fix: the new inbound-connection
+    cap armed no handshake deadline on the accept path, so 1024 sockets that
+    send *nothing* saturated it and refused every real peer — a defence that
+    became the attack.  Also #597 (one malformed environment variable killed
+    the whole discovery ladder, including the explicit seed list that does not
+    read it), #600 (`reset()` orphaned an in-flight acquire, so the very end
+    state the issue exists to prevent survived), #610 (the scan was fixed but
+    not the copy — 95 % of the remaining cost) and #586 (a hard throw on
+    `@hono/node-ws` versions `package.json` still declared supported)
+  - **What the wave narrowed rather than closed**, stated so it is not
+    re-derived later: #112's guard holds only while the sender is still a
+    member — deleting a member drops its high-water mark, so once the sender
+    is also evicted a recording replays again, and closing that needs #940's
+    incarnation identity.  #607's key bound is necessary but not sufficient
+    without #1080's eviction policy.  #602 deliberately has no HOCON key,
+    because one would reach `HttpExtension.client` and silently not the
+    `HttpClient` inside `D1Client` — a bound that applies to some clients and
+    not others is worse than none
+  - **Eleven release notes were corrected** after the fact, most of them
+    overclaims by the wave's own hand.  #121's migration note named the wrong
+    safe version (v0.13.0 for v0.14.0), which would have had an operator roll
+    clients out against nodes that crash on every envelope
 - **v0.15.0 — mailboxes and channels:**
   - **The unbounded mailbox is the default again (#1148)** — BREAKING, and
     the reason this window is a minor.  A mailbox cannot tell a stale sample
