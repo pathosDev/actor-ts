@@ -231,15 +231,21 @@ betrachtet.
 Richtig für paranoide Produktionsszenarien, in denen du eher
 **doppelten Aufwand** für Split-Brain-Schutz akzeptierst.
 
-### Wenn das Acquire hängt
+### Wenn ein Acquire aufgegeben wird
 
 Der interessante Fall ist nicht „die Lease sagt nein“, sondern
-„die Lease sagt gar nichts“.  Wenn `acquire()` nicht innerhalb von
-`acquireTimeoutMs` (Default 5 s) resolved, hört die Strategie auf
-zu warten — und muss dann damit rechnen, dass der Versuch auf der
-Leitung trotzdem noch erfolgreich ist und die Lease bei einem Node
-beansprucht zurücklässt, der nicht mehr glaubt, gewonnen zu haben.
-Dafür gelten drei Regeln:
+„die Lease sagt gar nichts“.  Zwei Dinge machen ein `acquire()`
+unerwünscht, während es noch auf der Leitung ist: Es resolved
+nicht innerhalb von `acquireTimeoutMs` (Default 5 s), oder die
+Partitionssicht zieht darunter weiter — die Partition heilt, oder
+das Unreachable-Set ändert sich.  Der zweite Fall ist der
+wahrscheinlichere, denn eine Mitgliedschaftsänderung innerhalb
+eines 5-Sekunden-Fensters braucht gar keine Verzögerung.  In
+beiden Fällen hört die Strategie auf, auf den Versuch zu warten,
+und muss dann damit rechnen, dass er auf der Leitung trotzdem noch
+erfolgreich ist und die Lease bei einem Node beansprucht
+zurücklässt, der nicht mehr glaubt, gewonnen zu haben.  Für beide
+gelten dieselben drei Regeln:
 
 - **Das späte Ergebnis wird verworfen.**  Jeder Versuch trägt eine
   Epoch; ein Ergebnis, das nach dem Ausmustern seiner Epoch
