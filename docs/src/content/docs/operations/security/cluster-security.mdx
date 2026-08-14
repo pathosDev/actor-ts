@@ -614,7 +614,7 @@ label is closed at `version-skew`, `map-cap`, `timestamp-skew`
 and `replayed-frame`. Logging per record would hand a peer log
 amplification in place of the growth it just lost.
 
-### A recorded frame cannot be played back
+### A recorded frame cannot be played back while its sender is a member
 
 A gossip frame is a snapshot of the member map, and a member's
 version only moves when its status does — so a frame captured
@@ -647,12 +647,23 @@ one frame numbered `Number.MAX_SAFE_INTEGER` would silence the
 real node forever, which is the exploit the version cap above
 exists to prevent.
 
-What this does **not** close is a peer that has earned standing
-and composes a *fresh* frame naming a deleted address at its old
-version. That is a forgery rather than a replay, and telling it
-apart from a genuine re-discovery needs an incarnation identity
-on the address itself — a node's restart has to be a *different*
-member at the same `host:port`. That work is tracked separately.
+Two things this does **not** close. First, a peer that has earned
+standing and composes a *fresh* frame naming a deleted address at
+its old version: that is a forgery rather than a replay, and
+telling it apart from a genuine re-discovery needs an incarnation
+identity on the address itself — a node's restart has to be a
+*different* member at the same `host:port`.
+
+Second — and it is the same missing incarnation identity — the
+mark lives only as long as the sender does. Deleting a member
+drops its mark, and a missing mark admits everything, so once the
+**sender** has itself been evicted (an ordinary partition takes
+out sender and subject together) the recorded conversation can be
+replayed in capture order: the sender's own self-record is always
+admitted, which revives it *and* re-seeds the mark from the old
+frame, and the next recorded frame then speaks for the subject.
+
+Both residuals are tracked separately.
 
 ## Per-deployment recipe
 

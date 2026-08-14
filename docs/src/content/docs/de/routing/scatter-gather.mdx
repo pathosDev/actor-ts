@@ -119,10 +119,12 @@ Um gezielt auf "zu langsam" zu prüfen, sieh dir die Mitglieder an:
 const allTimedOut = aggregate.errors.every((e) => e instanceof AskTimeoutError);
 ```
 
-`AggregateError` übersteht die Cluster-Leitung — der eingebaute
-Serializer kodiert seine Mitglieds-Fehler mit — ein Scatter hinter
-einem `ClusterRouter` schlägt auf dem aufrufenden Knoten also genauso
-fehl.
+`AggregateError` übersteht die Cluster-Leitung **nicht**. Envelopes werden
+mit einem blanken `JSON.stringify` gerahmt, das keinen Serializer erreicht
+und keine Typidentität erhält — ein Scatter hinter einem `ClusterRouter`
+liefert dem aufrufenden Knoten also ein einfaches Objekt, wo ein lokaler
+Scatter einen `AggregateError` liefert; die `instanceof`-Prüfung oben trägt
+über Knotengrenzen hinweg nicht (#450).
 
 Ein Routee, der *wirft* statt zu antworten, produziert hier keinen
 Fehler direkt: Sein Supervisor restartet ihn, und der Ask des Routers

@@ -656,7 +656,7 @@ und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
 einem Peer Log-Verstärkung schenken statt des Wachstums, das er
 gerade verloren hat.
 
-### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen
+### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen, solange sein Absender Member ist
 
 Ein Gossip-Frame ist eine Momentaufnahme der Member-Map, und die
 Version eines Members bewegt sich nur, wenn sich sein Status
@@ -692,14 +692,26 @@ einziger Frame mit `Number.MAX_SAFE_INTEGER` den echten Knoten
 für immer verstummen lassen, genau der Exploit, den die
 Versionsgrenze oben verhindert.
 
-Was das **nicht** schließt, ist ein Peer, der sich Standing
-erworben hat und einen *frischen* Frame komponiert, der eine
-gelöschte Adresse mit ihrer alten Version nennt. Das ist eine
+Zwei Dinge schließt das **nicht**. Erstens einen Peer, der sich
+Standing erworben hat und einen *frischen* Frame komponiert, der
+eine gelöschte Adresse mit ihrer alten Version nennt: Das ist eine
 Fälschung, kein Replay, und um sie von einer echten
 Wiederentdeckung zu unterscheiden, braucht die Adresse selbst
 eine Inkarnationsidentität — der Neustart eines Knotens muss ein
-*anderes* Member unter demselben `host:port` sein. Diese Arbeit
-wird separat verfolgt.
+*anderes* Member unter demselben `host:port` sein.
+
+Zweitens — und es ist dieselbe fehlende Inkarnationsidentität —
+lebt die Marke nur so lange wie ihr Absender. Ein gelöschtes
+Member verliert seine Marke, und eine fehlende Marke lässt alles
+zu. Sobald also der **Absender** selbst evakuiert wurde (eine
+gewöhnliche Partition trifft Absender und Subjekt gemeinsam),
+lässt sich die mitgeschnittene Konversation in Aufnahmereihenfolge
+abspielen: Der Selbstdatensatz des Absenders wird immer
+zugelassen, wodurch er wiederbelebt *und* die Marke aus dem alten
+Frame neu gesetzt wird — und der nächste mitgeschnittene Frame
+spricht dann für das Subjekt.
+
+Beide Restrisiken werden separat verfolgt.
 
 ## Per-Deployment-Rezept
 
