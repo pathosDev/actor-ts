@@ -45,6 +45,23 @@ describe('cors — validation + compile', () => {
     expect(optionsRoutes).toHaveLength(1);
   });
 
+  test("merges Origin into a handler's mixed-case Vary, leaving exactly one key (#603)", async () => {
+    const compiled = compile(cors(
+      CorsOptions.create().withOrigins('https://app.example'),
+      path('api', get(() => complete(Status.OK, 'data', { Vary: 'Cookie' }))),
+    ));
+    const route = compiled.find((c) => c.kind === 'http' && c.method === 'GET');
+    if (!route || route.kind !== 'http') throw new Error('expected a GET route');
+    const response = await route.handler({
+      method: 'GET', path: '/api', headers: { origin: 'https://app.example' }, query: {}, params: {}, body: null,
+    });
+    // Two spellings in the record would render correctly only by accident of
+    // insertion order, and any middleware reading Vary would see the wrong one.
+    const varyKeys = Object.keys(response.headers ?? {}).filter((k) => k.toLowerCase() === 'vary');
+    expect(varyKeys).toHaveLength(1);
+    expect(response.headers?.[varyKeys[0]!]).toBe('Cookie, Origin');
+  });
+
   test('folds an origin check into a websocket upgrade in the subtree', async () => {
     const wsLiteral: Route = { kind: 'websocket', connect: () => {} };
     const compiled = compile(cors(CorsOptions.create().withOrigins('https://ok.example'), path('ws', wsLiteral)));
@@ -115,6 +132,19 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
     expect(response.status).toBe(200);
     expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
     expect(response.headers.get('vary') ?? '').toContain('Origin');
+  });
+
+  test("keeps a handler's own Vary on the wire and merges Origin into it (#603)", async () => {
+    const url = await start(mk, cors(
+      CorsOptions.create().withOrigins(ALLOWED),
+      path('api', get(() => complete(Status.OK, 'data', { Vary: 'Cookie' }))),
+    ));
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    // Collapsing this to `Vary: Origin` lets a cache serve one user's
+    // cookie-dependent response to another.
+    const vary = (response.headers.get('vary') ?? '').toLowerCase();
+    expect(vary).toContain('cookie');
+    expect(vary).toContain('origin');
   });
 
   test('omits CORS headers for a disallowed origin', async () => {

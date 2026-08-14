@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { applyHeaders, applyHeadersToError, appendVary, headerDecorator } from '../../../../src/http/middleware/headers.js';
+import { applyHeaders, applyHeadersToError, appendVary, headerDecorator, readHeader } from '../../../../src/http/middleware/headers.js';
 import type { Middleware } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
 
@@ -24,6 +24,12 @@ describe('applyHeaders', () => {
   test('overwrite:true forces the middleware value', () => {
     const out = applyHeaders(response({ 'x-a': 'handler' }), { 'x-a': 'mw' }, { overwrite: true });
     expect(out.headers?.['x-a']).toBe('mw');
+  });
+
+  test('overwrite:true replaces a differently-cased key instead of adding a second (#603)', () => {
+    const out = applyHeaders(response({ Vary: 'Cookie' }), { vary: 'Cookie, Origin' }, { overwrite: true });
+    // Exactly one spelling survives — two would leave the wire bytes to insertion order.
+    expect(out.headers).toEqual({ vary: 'Cookie, Origin' });
   });
 
   test('does not mutate the original response', () => {
@@ -80,6 +86,20 @@ describe('headerDecorator', () => {
   test('rethrows a non-HttpError unchanged', async () => {
     const boom = new Error('kaboom');
     expect(await rethrownBy(headerDecorator({ 'x-a': '1' }), boom)).toBe(boom);
+  });
+});
+
+describe('readHeader', () => {
+  test('finds the key whatever case the handler spelled it in (#603)', () => {
+    expect(readHeader({ Vary: 'Cookie' }, 'vary')).toBe('Cookie');
+    expect(readHeader({ VARY: 'Cookie' }, 'Vary')).toBe('Cookie');
+    expect(readHeader({ vary: 'Cookie' }, 'vary')).toBe('Cookie');
+  });
+
+  test('returns undefined for a missing header and for an absent record', () => {
+    expect(readHeader({ 'x-a': '1' }, 'vary')).toBeUndefined();
+    expect(readHeader(undefined, 'vary')).toBeUndefined();
+    expect(readHeader({}, 'vary')).toBeUndefined();
   });
 });
 

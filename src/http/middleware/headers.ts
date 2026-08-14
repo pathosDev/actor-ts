@@ -7,6 +7,23 @@
 import type { Middleware } from '../Route.js';
 import { HttpError, type HttpResponse } from '../types.js';
 
+/**
+ * Read a header case-insensitively.  An `HttpResponse.headers` record is
+ * whatever the handler wrote — nothing normalises it between the handler and
+ * the middleware that decorates the response — so an exact-key lookup misses
+ * a `Vary` the caller asked for as `vary`.  That is how CORS decoration used
+ * to overwrite a handler's `Vary: Cookie` instead of merging into it (#603).
+ */
+export function readHeader(
+  headers: Readonly<Record<string, string>> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const wanted = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) if (k.toLowerCase() === wanted) return v;
+  return undefined;
+}
+
 /** Merge `add` under `existing`, skipping any key `existing` already carries (case-insensitively). */
 function mergeWithoutClobbering(
   existing: Readonly<Record<string, string>>,
@@ -22,10 +39,30 @@ function mergeWithoutClobbering(
 }
 
 /**
+ * Merge `add` over `existing`, dropping the keys `existing` spells the same
+ * way in a different case.  A plain `{ ...existing, ...add }` keeps both
+ * spellings, so the record leaves with two `Vary` entries and only the
+ * insertion order decides which one the backends put on the wire — and any
+ * middleware that later *reads* `Vary` sees the stale one (#603).  The
+ * caller's spelling is the one that survives: that is what `overwrite` asks
+ * for, and a header name is case-insensitive on the wire anyway.
+ */
+function mergeOverwriting(
+  existing: Readonly<Record<string, string>>,
+  add: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const replaced = new Set(Object.keys(add).map((k) => k.toLowerCase()));
+  const kept = Object.entries(existing).filter(([k]) => !replaced.has(k.toLowerCase()));
+  return { ...Object.fromEntries(kept), ...add };
+}
+
+/**
  * Return a copy of `response` with `add` merged into its headers.  By default a
  * key the response already carries (compared case-insensitively) is left
  * untouched — so a handler's explicit header wins over a middleware
- * default.  Pass `{ overwrite: true }` to force the middleware value.
+ * default.  Pass `{ overwrite: true }` to force the middleware value; that
+ * too matches case-insensitively, so the result never carries two spellings
+ * of one header name.
  */
 export function applyHeaders(
   response: HttpResponse,
@@ -33,7 +70,7 @@ export function applyHeaders(
   options: { readonly overwrite?: boolean } = {},
 ): HttpResponse {
   const existing = response.headers ?? {};
-  const merged = options.overwrite ? { ...existing, ...add } : mergeWithoutClobbering(existing, add);
+  const merged = options.overwrite ? mergeOverwriting(existing, add) : mergeWithoutClobbering(existing, add);
   return { ...response, headers: merged };
 }
 
