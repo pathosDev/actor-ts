@@ -101,9 +101,11 @@ Warum `kind` und nicht `type` oder `tag`:
   in TS-Land ist `kind` das häufigste Community-Idiom.
 
 Sich an die Konvention zu halten, zahlt sich an drei Stellen aus:
-die Exhaustiveness-Prüfung von ts-pattern funktioniert, der
-Serializer kann über die Wire-Grenze per `kind` dispatchen, und
-Editoren können auf der Literal-Union autovervollständigen.
+die Exhaustiveness-Prüfung von ts-pattern funktioniert, eine über
+die Leitung eingetroffene Nachricht — die keine eigene Typidentität
+trägt — kann vom empfangenden Actor trotzdem per `kind` dispatcht
+werden, und Editoren können auf der Literal-Union
+autovervollständigen.
 
 ## Häufige ts-pattern-Features
 
