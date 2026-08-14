@@ -68,6 +68,11 @@ export {
 } from './journals/SqliteClient.js';
 export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from './Constants.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
+// The per-runtime driver seam behind buildSqliteDatabase, exposed for the
+// same #124 reason: the documented "bring your own handle" route needs it,
+// and no other entry point serves it (#1002).
+export { getSqliteDriver } from '../runtime/sqlite/index.js';
+export type { SqliteDriver } from '../runtime/sqlite/index.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSnapshotStoreOptions.js';
