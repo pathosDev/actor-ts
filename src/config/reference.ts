@@ -304,7 +304,10 @@ actor-ts {
       port = 2552
     }
     tls {
-      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
+      # Read but NOT honoured: the transport the cluster builds for itself is
+      # always plaintext.  Setting this to true only buys a startup WARN that
+      # says so — encrypting the wire is issue #941.
+      enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }

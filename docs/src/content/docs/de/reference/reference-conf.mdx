@@ -324,7 +324,10 @@ actor-ts {
       port = 2552
     }
     tls {
-      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
+      # Read but NOT honoured: the transport the cluster builds for itself is
+      # always plaintext.  Setting this to true only buys a startup WARN that
+      # says so — encrypting the wire is issue #941.
+      enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
@@ -439,7 +442,15 @@ nie angeschaut (Issue #653).
 Das ist jetzt ein Build-Fehler.  Ein Test läuft über jedes Blatt oben und
 prüft, dass es sowohl von `ConfigKeys` aus erreichbar ist — der typisierten
 Liste der Pfade, die das Framework kennt — als auch im Quellcode
-referenziert wird.  Ein Key ist bewusst ausgenommen und sagt das an Ort und
-Stelle: `remote.tls.enabled` ist inert, bis
-[#591](https://github.com/pathosDev/actor-ts/issues/591) landet, und die
-Ausnahme ist mit dieser Issue-Nummer registriert statt implizit zu bleiben.
+referenziert wird.
+
+**Heute ist kein Key ausgenommen.**  Die Liste der bewussten Ausnahmen gibt
+es weiterhin, und jeder Eintrag darauf muss die Issue-Nummer nennen, die ihn
+wieder entfernt — sie ist nur leer.  `remote.tls.enabled` war der letzte
+Eintrag, und [#591](https://github.com/pathosDev/actor-ts/issues/591) hat sie
+geleert, indem der Key einen Leser bekam: er entscheidet jetzt, ob der Node
+beim Start warnt, dass die Cluster-Verbindung Klartext ist.  Beachte, wo das
+die Latte legt — *gelesen*, nicht *umgesetzt*.  Die Verbindung zu
+verschlüsseln ist weiterhin
+[#941](https://github.com/pathosDev/actor-ts/issues/941); was dieser Test
+ausschließt, ist ein Key, den niemand auch nur anschaut.

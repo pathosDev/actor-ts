@@ -229,7 +229,7 @@ spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 | `remote.tcp.host` | `"0.0.0.0"` | Bind-Adresse.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
 | `remote.tcp.port` | `2552` | Bind-Port.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
-| `remote.tls.enabled` | `false` | **Nicht implementiert** — siehe unten. |
+| `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
 
 Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
 komplett aus dem Code herausziehen:
@@ -246,14 +246,22 @@ selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
 `withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
 keinen Transport, den es nicht erzeugt hat.
 
-:::caution[`remote.tls.enabled` tut nichts]
-Dieser Key ist weiterhin inert: ihn auf `true` zu setzen aktiviert **kein**
-TLS, und du bekommst keinen Fehler.  TLS ist derzeit nur erreichbar, indem
-du einen `TcpTransport` mit TLS-Konfiguration konstruierst und ihn an
-`ClusterOptions.withTransport(…)` übergibst.  Verfolgt als
-[Issue #591](https://github.com/pathosDev/actor-ts/issues/591); der Key ist
-bewusst als bekannt-toter Key gelistet statt entfernt, damit der Wert seine
-Bedeutung behält, sobald die Implementierung landet.
+:::caution[`remote.tls.enabled` verschlüsselt nichts]
+Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen
+aktiviert **kein** TLS — der Node loggt beim Start ein `WARN`, das den Key
+nennt und sagt, dass die Cluster-Verbindung Klartext ist.  Ein
+Security-Setting, das das Framework ignoriert, taucht damit in deinen Logs
+auf und nicht nur auf dieser Seite
+([Issue #591](https://github.com/pathosDev/actor-ts/issues/591)).  Den
+Transport zu verschlüsseln ist separat verfolgt als
+[Issue #941](https://github.com/pathosDev/actor-ts/issues/941); bis das
+landet, behandle das Cluster-Netz als etwas, das du anderweitig absichern
+musst.
+
+Die Warnung gilt für den Transport, den der Cluster sich selbst baut.
+Übergibst du per `ClusterOptions.withTransport(…)` einen eigenen, bleibt der
+Node zu diesem Key still: was dieser Transport mit TLS macht, entscheidest
+du, und das Framework kann von außen nicht erkennen, ob er verschlüsselt ist.
 :::
 
 ### `actor-ts.http`
