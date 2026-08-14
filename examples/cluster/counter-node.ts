@@ -12,16 +12,18 @@
 import { match } from 'ts-pattern';
 import {
   Actor,
+  LogLevel,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterBootstrapOptions,
-  LogLevel,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
   ShardMapChanged,
   StartShardingOptions,
-} from '../../src/index.js';
+} from '../../src/cluster/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type IncrementCommand = { id: string; kind: 'increment' };

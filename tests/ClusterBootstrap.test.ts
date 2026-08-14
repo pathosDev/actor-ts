@@ -1,23 +1,27 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  AggregateSeedProvider,
-  AutoDiscoveryOptions,
-  Cluster,
-  ClusterBootstrapOptions,
-  ConfigSeedProvider,
-  DnsSeedProvider,
-  InMemoryTransport,
-  KubernetesApiSeedProvider,
-  KubernetesApiSeedProviderOptions,
   LogLevel,
-  NodeAddress,
   NoopLogger,
   OptionsError,
-  autoDiscovery,
+} from '../src/index.js';
+import {
+  Cluster,
+  ClusterBootstrapOptions,
+  InMemoryTransport,
+  NodeAddress,
   bootstrapCluster,
+} from '../src/cluster/index.js';
+import {
+  AggregateSeedProvider,
+  AutoDiscoveryOptions,
+  ConfigSeedProvider,
+  DnsSeedProvider,
+  KubernetesApiSeedProvider,
+  KubernetesApiSeedProviderOptions,
+  autoDiscovery,
   singleProviderDiscovery,
   type SeedProvider,
-} from '../src/index.js';
+} from '../src/discovery/index.js';
 
 /* -------------------------------------------------------------------------- */
 /* Cluster.bootstrap — high-level entry point                                  */

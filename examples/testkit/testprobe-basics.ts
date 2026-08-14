@@ -3,7 +3,8 @@
  *
  *   bun run examples/testkit/testprobe-basics.ts
  */
-import { Actor, TestKit } from '../../src/index.js';
+import { Actor } from '../../src/index.js';
+import { TestKit } from '../../src/testkit/index.js';
 
 class Counter extends Actor<'inc' | 'report'> {
   private n = 0;

@@ -16,9 +16,11 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   MetricsExtensionId,
   prometheusHandler,
-} from '../../src/index.js';
+} from '../../src/metrics/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<{ id: number }> {

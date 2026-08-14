@@ -20,7 +20,7 @@
  * those runtimes can't load .ts directly; that's wired into the
  * smoke:node / smoke:deno npm scripts.
  */
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -41,6 +41,17 @@ try {
   console.error(`✗ failed to import actor-ts from ${modUrl}:\n${e.stack ?? e.message ?? e}`);
   process.exit(1);
 }
+
+// The root entry is core-only; subsystems live behind their own entry
+// points.  Cases pull moved symbols through this helper, which mirrors the
+// same src/dist switch as the root import above (pattern from the devtools
+// case, which needed it before the split).
+const loadEntry = (subsystem) => {
+  const entryPath = importFromBuild
+    ? `../../dist/${subsystem}/index.js`
+    : `../../src/${subsystem}/index.ts`;
+  return import(new URL(entryPath, import.meta.url).href);
+};
 
 // Discover case files.
 const casesDir = join(__dirname, 'cases');
@@ -81,7 +92,7 @@ for (const caseFile of caseFiles) {
   const description = mod.description ?? '(no description)';
   const startedAt = Date.now();
   try {
-    await mod.run({ actorTs, runtime });
+    await mod.run({ actorTs, runtime, loadEntry });
     console.log(`✓ ${name} — ${description} (${Date.now() - startedAt}ms)`);
   } catch (e) {
     console.error(`✗ ${name} — ${description}: ${e.message}`);
@@ -90,6 +101,27 @@ for (const caseFile of caseFiles) {
     }
     failed++;
   }
+}
+
+// Exports-map sweep (#1003): in dist mode, load the built file behind every
+// declared entry point on this runtime.  attw already proves the map itself
+// resolves under node16/bundler rules at pack time; this proves the emitted
+// files actually load on bun, node and deno.
+if (importFromBuild && failed === 0) {
+  const manifest = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  );
+  const entries = Object.entries(manifest.exports).filter(([subpath]) => subpath !== './package.json');
+  for (const [subpath, target] of entries) {
+    const relative = typeof target === 'string' ? target : target.import;
+    try {
+      await import(new URL(`../../${relative}`, import.meta.url).href);
+    } catch (e) {
+      console.error(`✗ exports entry "${subpath}" -> ${relative} failed to load: ${e.message}`);
+      failed++;
+    }
+  }
+  if (failed === 0) console.log(`✓ all ${entries.length} exports entries load on ${runtime}`);
 }
 
 // Best-effort: close Node's global fetch (undici) keep-alive pool before

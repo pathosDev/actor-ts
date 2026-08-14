@@ -12,13 +12,15 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
-} from '../../src/index.js';
+} from '../../src/cluster/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class PartitionWorker extends Actor<string> {

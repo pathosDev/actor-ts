@@ -17,11 +17,9 @@ import { join } from 'node:path';
 export const name = 'static files';
 export const description = 'getFromDirectory / browsing on the default backend';
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
-    HttpExtensionId, concat, getFromDirectory, getFromBrowseableDirectory,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { HttpExtensionId, concat, getFromDirectory, getFromBrowseableDirectory } = await loadEntry('http');
 
   const root = await mkdtemp(join(tmpdir(), 'actor-ts-smoke-static-'));
   await writeFile(join(root, 'index.html'), '<h1>home</h1>');

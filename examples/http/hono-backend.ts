@@ -16,6 +16,8 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   HonoBackend,
   HonoBackendOptions,
   Status,
@@ -26,7 +28,7 @@ import {
   get,
   path,
   post,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; };

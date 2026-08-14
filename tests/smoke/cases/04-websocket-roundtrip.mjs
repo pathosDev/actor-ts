@@ -14,11 +14,9 @@
 export const name = 'websocket round-trip';
 export const description = 'client actor ↔ server actor via websocket() route';
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
-    HttpExtensionId, WebsocketServerActor, WebsocketClientActor, WebsocketClientOptions, websocket,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { HttpExtensionId, WebsocketServerActor, WebsocketClientActor, WebsocketClientOptions, websocket } = await loadEntry('http');
 
   class Echo extends WebsocketServerActor {
     onMessage(message) { this.reply({ pong: message.n }); }

@@ -8,16 +8,18 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
+  LogLevel,
+  NoopLogger,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   DistributedPubSubId,
   InMemoryTransport,
-  LogLevel,
-  NoopLogger,
   NodeAddress,
   Publish,
   Subscribe,
-} from '../../src/index.js';
+} from '../../src/cluster/index.js';
 import { runGroup } from '../lib/harness.js';
 
 let port = 42_000;

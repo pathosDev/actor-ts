@@ -18,6 +18,8 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   CorsOptions,
   CsrfOptions,
   HttpError,
@@ -39,7 +41,7 @@ import {
   requestTimeout,
   securityHeaders,
   withMiddleware,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {

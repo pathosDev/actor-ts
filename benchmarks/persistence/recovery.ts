@@ -7,15 +7,17 @@
 import {
   ActorSystem,
   ActorSystemOptions,
-  InMemoryJournal,
-  InMemorySnapshotStore,
   LogLevel,
   NoopLogger,
+} from '../../src/index.js';
+import {
+  InMemoryJournal,
+  InMemorySnapshotStore,
   PersistenceExtensionId,
   PersistentActor,
   everyNEvents,
   type SnapshotPolicy,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Command = 'get';

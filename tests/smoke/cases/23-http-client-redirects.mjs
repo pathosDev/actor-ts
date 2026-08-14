@@ -19,12 +19,9 @@
 export const name = 'http client redirects';
 export const description = 'a redirect chain is followed and bounded, and refusing one means never contacting the target';
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
-    HttpExtensionId, HttpClient, HttpRedirectError,
-    completeText, concat, get, path, redirect,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { HttpExtensionId, HttpClient, HttpRedirectError, completeText, concat, get, path, redirect } = await loadEntry('http');
 
   const systemOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('smoke-http-client-redirects', systemOptions);

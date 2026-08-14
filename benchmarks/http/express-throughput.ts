@@ -7,17 +7,19 @@
 import {
   ActorSystem,
   ActorSystemOptions,
-  ExpressBackend,
-  HttpExtensionId,
   LogLevel,
   NoopLogger,
+} from '../../src/index.js';
+import {
+  ExpressBackend,
+  HttpExtensionId,
   Status,
   complete,
   completeJson,
   concat,
   get,
   path,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {

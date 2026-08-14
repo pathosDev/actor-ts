@@ -7,7 +7,7 @@
  * cluster through the shared WorkerBroker in this process.  Each worker
  * prints a line when it registers itself.
  */
-import { WorkerCluster, WorkerClusterOptions } from '../../src/index.js';
+import { WorkerCluster, WorkerClusterOptions } from '../../src/worker/index.js';
 
 async function main(): Promise<void> {
   const workerClusterOptions = WorkerClusterOptions.create()

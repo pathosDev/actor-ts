@@ -16,6 +16,8 @@
 import { match } from 'ts-pattern';
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   completeText,
   concat,
   get,
@@ -24,7 +26,7 @@ import {
   WebsocketServerActor,
   websocket,
   type WebsocketConnection,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type SetNameMessage = { kind: 'setName'; name: string };

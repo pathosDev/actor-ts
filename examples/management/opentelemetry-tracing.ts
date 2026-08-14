@@ -26,9 +26,11 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   RecordingTracer,
   TracingExtensionId,
-} from '../../src/index.js';
+} from '../../src/tracing/index.js';
 
 class Step extends Actor<{ name: string; next?: ActorRef<{ name: string }> }> {
   override async onReceive(m: { name: string; next?: ActorRef<{ name: string }> }): Promise<void> {

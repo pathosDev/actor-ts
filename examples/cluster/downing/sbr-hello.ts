@@ -13,7 +13,7 @@ import {
   NodeAddress,
   StaticQuorum,
   StaticQuorumOptions,
-} from '../../../src/index.js';
+} from '../../../src/cluster/index.js';
 
 function addr(port: number): NodeAddress { return new NodeAddress('sys', 'h', port); }
 function upMember(port: number, roles: string[] = []): Member {

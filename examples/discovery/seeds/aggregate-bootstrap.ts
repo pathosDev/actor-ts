@@ -13,7 +13,7 @@ import {
   DnsSeedProviderOptions,
   KubernetesApiSeedProvider,
   KubernetesApiSeedProviderOptions,
-} from '../../../src/index.js';
+} from '../../../src/discovery/index.js';
 
 async function main(): Promise<void> {
   // Simulate a K8s provider that would return pod IPs in production; here we

@@ -30,6 +30,8 @@ import { join } from 'node:path';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   InMemoryJournal,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   ObjectStoragePluginOptions,
@@ -38,12 +40,12 @@ import {
   compressionByPrefix,
   everyNEvents,
   registerObjectStoragePlugins,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import type {
   CompressionConfig,
   EncryptionConfig,
   ObjectStorageBackendSpec,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };

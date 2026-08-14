@@ -218,7 +218,8 @@ mutation, no "did this write commit?" question. Same `Counter` API
 the rest of the app sees, every mutation durable.
 
 ```ts
-import { PersistentActor, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { PersistentActor } from 'actor-ts/persistence';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -264,7 +265,7 @@ and go. The `ShardRegion` ref you get back behaves like any other
 `ActorRef` to callers.
 
 ```ts
-import { Cluster } from 'actor-ts';
+import { Cluster } from 'actor-ts/cluster';
 
 // One-call bootstrap — system + cluster + receptionist + SIGTERM
 // wiring in one line.  Discovery defaults to an env-driven chain

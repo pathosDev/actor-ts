@@ -14,8 +14,8 @@
 export const name = 'sqlite journal';
 export const description = 'append / read / concurrency on an in-memory SQLite DB';
 
-export async function run({ actorTs }) {
-  const { SqliteJournal, SqliteJournalOptions, JournalConcurrencyError } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { SqliteJournal, SqliteJournalOptions, JournalConcurrencyError } = await loadEntry('persistence');
 
   const journalOptions = SqliteJournalOptions.create().withPath(':memory:');
   const journal = new SqliteJournal(journalOptions);

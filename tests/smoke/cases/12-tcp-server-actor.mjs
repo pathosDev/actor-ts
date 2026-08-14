@@ -19,8 +19,9 @@ export const description = 'bind, accept, frame and echo over a real socket';
 
 const TIMEOUT_MS = 5_000;
 
-export async function run({ actorTs }) {
-  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, TcpServerActor, TcpServerOptions } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { TcpServerActor, TcpServerOptions } = await loadEntry('io');
   const net = await import('node:net');
 
   // Echoes every inbound frame back to the connection it came from — the

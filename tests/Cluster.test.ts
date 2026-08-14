@@ -4,21 +4,23 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
+  LogLevel,
+  NoopLogger,
+} from '../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   ClusterSharding,
   InMemoryTransport,
-  LogLevel,
   Member,
   MemberDown,
   MemberUp,
-  NoopLogger,
   NodeAddress,
   StartShardingOptions,
   hashShardId,
   moduloAllocator,
   rendezvousAllocator,
-} from '../src/index.js';
+} from '../src/cluster/index.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 

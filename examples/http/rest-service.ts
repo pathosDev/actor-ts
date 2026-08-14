@@ -12,10 +12,14 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
-  HttpError,
   StartShardingOptions,
+} from '../../src/cluster/index.js';
+import {
+  HttpError,
   Status,
   complete,
   completeJson,
@@ -26,7 +30,7 @@ import {
   path,
   post,
   put,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; readonly email: string; };

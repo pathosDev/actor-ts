@@ -14,13 +14,15 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+  type ActorRef,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
   SingletonKey,
-  type ActorRef,
-} from '../../src/index.js';
+} from '../../src/cluster/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type SubscribeCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> };

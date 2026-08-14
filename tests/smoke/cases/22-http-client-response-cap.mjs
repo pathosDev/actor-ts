@@ -25,12 +25,9 @@ export const description = 'an over-cap body is refused mid-flight, an under-cap
 const BIG_BODY = 'x'.repeat(256 * 1024);
 const TINY_CAP_BYTES = 4096;
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
-    HttpExtensionId, HttpClient, HttpResponseTooLargeError,
-    complete, completeText, concat, get, path,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { HttpExtensionId, HttpClient, HttpResponseTooLargeError, complete, completeText, concat, get, path } = await loadEntry('http');
 
   const systemOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('smoke-http-client-cap', systemOptions);

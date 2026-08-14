@@ -22,9 +22,14 @@
  * running:  `npm install prom-client`.
  */
 import {
-  Actor, ActorSystem, MetricsExtensionId,
-  promClientRegistry, PromClientAdapterOptions,
+  Actor,
+  ActorSystem,
 } from '../../src/index.js';
+import {
+  MetricsExtensionId,
+  promClientRegistry,
+  PromClientAdapterOptions,
+} from '../../src/metrics/index.js';
 import { attachDevTools } from '../devtools.js';
 
 // `prom-client` is a peer dep; we resolve it lazily so the framework

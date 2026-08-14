@@ -9,17 +9,21 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   InMemoryTransport,
-  Listing,
   NodeAddress,
+} from '../../src/cluster/index.js';
+import {
+  Listing,
   ReceptionistId,
   ReceptionistOptions,
-  ReceptionistSubscribe as Subscribe,
+  Subscribe,
   Register,
   ServiceKey,
-} from '../../src/index.js';
+} from '../../src/discovery/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<string> {

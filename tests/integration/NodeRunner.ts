@@ -20,10 +20,12 @@ import { Cluster } from '../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import {
   Actor,
+} from '../../src/index.js';
+import {
   BearerTokenAuth,
   HttpExtensionId,
   IpAllowlist,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { JsonLogger, LogLevel } from '../../src/Logger.js';
 import { managementRoutes } from '../../src/management/index.js';
 import { ReceptionistId, ReceptionistOptions } from '../../src/discovery/index.js';

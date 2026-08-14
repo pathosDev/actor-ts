@@ -10,10 +10,12 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   DurableStateActor,
   DurableStateOptions,
   InMemoryDurableStateStore,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type KV = { readonly map: Record<string, string>; };

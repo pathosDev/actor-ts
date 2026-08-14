@@ -23,20 +23,24 @@ import * as path from 'node:path';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
+  StartShardingOptions,
+  StartSingletonOptions,
+} from '../../../src/cluster/index.js';
+import {
   PersistenceExtensionId,
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  StartShardingOptions,
-  StartSingletonOptions,
-} from '../../../src/index.js';
+} from '../../../src/persistence/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
