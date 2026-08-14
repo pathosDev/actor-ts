@@ -121,7 +121,7 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
 | `ws` | Serverseitige WebSocket-Upgrades auf dem Express-Backend.  (Der `WebsocketClientActor` nutzt das native `WebSocket` der Runtime — keine Peer-Dep.) |
 | `@fastify/websocket` | `websocket()`-Routen auf dem Fastify-Backend. |
-| `@hono/node-ws` | `websocket()`-Routen auf dem Hono-Backend (nur Node — Bun/Deno liefern die Helper in `hono` mit). |
+| `@hono/node-ws` **≥ 1.2.0** | `websocket()`-Routen auf dem Hono-Backend (nur Node — Bun/Deno liefern die Helper in `hono` mit).  Die Untergrenze ist echt: Das Transport-Frame-Limit wird auf den `ws`-Server geschrieben, den erst 1.2.0 und neuer herausgeben — ältere Versionen werden abgewiesen, statt unbegrenzt zu bedienen. |
 
 ### Discovery + Koordination
 

@@ -140,6 +140,16 @@ abgelehnt wird.  Für einen aus dem Internet erreichbaren WebSocket-Endpunkt
 unter Deno gehört ein Proxy mit eigenem Frame-Limit davor.
 </Aside>
 
+<Aside type="note" title="Hono auf Node braucht @hono/node-ws 1.2.0 oder neuer">
+Auf Node wird das Limit auf den `ws`-Server geschrieben, den
+`@hono/node-ws` als `wss` herausgibt — und dieses Member existiert erst ab
+**1.2.0**; 1.0.x und 1.1.x behalten den Server für sich, es gibt also
+nichts zu begrenzen.  Statt einen unbegrenzten Socket zu binden, verweigert
+das Backend den Aufbau der WebSocket-Bridge und nennt die Version im
+Fehler.  Deshalb beginnt der Peer-Range bei 1.2.0; ein einfaches
+`npm install @hono/node-ws` wählt von sich aus eine ausreichend neue Version.
+</Aside>
+
 ### Origin-Allowlist (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade
@@ -367,7 +377,7 @@ Dekodier-Fehler werfen `WebsocketDecodeError` und folgen der
 ```bash
 npm install @fastify/websocket   # Fastify (default)
 npm install ws                   # Express
-npm install @hono/node-ws        # Hono on Node only
+npm install @hono/node-ws        # Hono on Node only, 1.2.0 or newer
 ```
 
 ## HOCON-Config

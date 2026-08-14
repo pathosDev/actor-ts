@@ -136,6 +136,15 @@ before it is refused.  For an internet-facing WebSocket endpoint under
 Deno, put a proxy with its own frame limit in front of it.
 </Aside>
 
+<Aside type="note" title="Hono on Node needs @hono/node-ws 1.2.0 or newer">
+On Node the cap is written onto the `ws` server `@hono/node-ws` hands back
+as `wss`, and that member only exists from **1.2.0** — 1.0.x and 1.1.x keep
+the server to themselves, so there is nothing to cap.  Rather than bind an
+uncapped socket, the backend refuses to build the WebSocket bridge and
+names the version in the error.  That is why the peer range starts at
+1.2.0; a plain `npm install @hono/node-ws` already picks a new enough one.
+</Aside>
+
 ### Origin allowlist (CSWSH defence)
 
 Browsers attach the user's cookies to a WebSocket upgrade automatically, so a
@@ -351,7 +360,7 @@ Decode failures throw `WebsocketDecodeError` and follow the route's
 ```bash
 npm install @fastify/websocket   # Fastify (default)
 npm install ws                   # Express
-npm install @hono/node-ws        # Hono on Node only
+npm install @hono/node-ws        # Hono on Node only, 1.2.0 or newer
 ```
 
 ## HOCON config

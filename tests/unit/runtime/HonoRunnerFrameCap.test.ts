@@ -19,6 +19,8 @@
  * `Deno` global at module scope and throws on import under Bun.
  */
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
 import { BunHonoRunner } from '../../../src/runtime/http/BunHonoRunner.js';
@@ -26,6 +28,18 @@ import { buildNodeWebsocketBridge } from '../../../src/runtime/http/NodeHonoRunn
 import type { CreateNodeWebSocketFunction } from '../../../src/runtime/http/NodeHonoRunner.js';
 
 const CAP = 64 * 1024;
+
+/**
+ * The first `@hono/node-ws` that hands its `ws` server back as `wss`.
+ *
+ * 1.0.x and 1.1.x return `{ upgradeWebSocket, injectWebSocket }` and nothing
+ * else — verified against the published `dist/index.js`, where the server is a
+ * closure variable with no way out — so on those versions the transport cap
+ * cannot be installed at all and {@link buildNodeWebsocketBridge} refuses to
+ * build.  A peer range that admits them promises a working Hono-on-Node
+ * WebSocket server the package cannot deliver.
+ */
+const FIRST_NODE_WEBSOCKET_MAJOR_MINOR_WITH_WSS: readonly [number, number] = [1, 2];
 
 /** The shape `Bun.serve` receives — handlers plus socket options in one bag. */
 type BunServeOptions = { websocket?: Record<string, unknown> };
@@ -121,5 +135,71 @@ describe('NodeHonoRunner — transport frame cap', () => {
 
     expect(() => buildNodeWebsocketBridge(noServer, new Hono(), CAP)).toThrow(/frame cap/);
     expect(() => buildNodeWebsocketBridge(renamedField, new Hono(), CAP)).toThrow(/maxPayload/);
+  });
+});
+
+describe('NodeHonoRunner — the @hono/node-ws floor the cap needs', () => {
+  /** The message the builder refuses with, or `''` if it built the bridge. */
+  function refusalMessage(createNodeWebSocketFunction: CreateNodeWebSocketFunction): string {
+    try {
+      buildNodeWebsocketBridge(createNodeWebSocketFunction, new Hono(), CAP);
+      return '';
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** 1.0.x/1.1.x: the two members those versions actually returned. */
+  const preWssAdapter: CreateNodeWebSocketFunction = () => ({
+    upgradeWebSocket: () => undefined,
+    injectWebSocket: () => undefined,
+  });
+
+  test('the declared peer range does not admit a version without `wss`', () => {
+    // The cap is a hard requirement of the Node bridge, so the range the
+    // package publishes has to be the range the bridge can actually work
+    // with — otherwise a consumer inside the supported window goes from a
+    // working WebSocket server to a throw at bind() time.
+    const manifestPath = join(import.meta.dir, '..', '..', '..', 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      peerDependencies?: Record<string, string>;
+    };
+
+    const range = manifest.peerDependencies?.['@hono/node-ws'] ?? '';
+    const parsed = /^\^(\d+)\.(\d+)\.\d+$/.exec(range);
+    expect(parsed).not.toBeNull();
+
+    // Encoded as major * 1000 + minor purely so a failure prints two
+    // comparable numbers: `^1.0.0` shows as 1000 against a required 1002.
+    const [requiredMajor, requiredMinor] = FIRST_NODE_WEBSOCKET_MAJOR_MINOR_WITH_WSS;
+    const declaredFloor = Number(parsed![1]) * 1000 + Number(parsed![2]);
+    expect(declaredFloor).toBeGreaterThanOrEqual(requiredMajor * 1000 + requiredMinor);
+  });
+
+  test('an adapter without `wss` is reported as too old, not as a regression', () => {
+    const message = refusalMessage(preWssAdapter);
+
+    // "no longer exposes" is only true of a version that once did.  1.0.x and
+    // 1.1.x never did, so that wording sends the reader hunting a regression
+    // in a dependency that simply predates the feature.  The actionable fact
+    // is the floor.
+    expect(message).toContain('@hono/node-ws');
+    expect(message).toContain('1.2.0');
+    expect(message).not.toContain('no longer');
+  });
+
+  test('a ws that stopped exposing the option bag keeps its own diagnosis', () => {
+    // Different cause, different fix: the adapter is new enough and it is
+    // `ws`'s merged option bag that changed shape, so quoting the
+    // @hono/node-ws floor here would be a wrong lead.
+    const wssWithoutMaxPayload: CreateNodeWebSocketFunction = () => ({
+      upgradeWebSocket: () => undefined,
+      injectWebSocket: () => undefined,
+      wss: { options: {} },
+    });
+
+    const message = refusalMessage(wssWithoutMaxPayload);
+    expect(message).toContain('maxPayload');
+    expect(message).not.toContain('1.2.0');
   });
 });
