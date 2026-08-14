@@ -60,7 +60,7 @@ export class KubernetesApiSeedProvider implements SeedProvider {
  * Path of the `Endpoints` object backing one Service.
  *
  * Both segments are percent-encoded, exactly as `leasePath` in
- * `src/coordination/leases/k8sApi.ts` does for the sibling lease client —
+ * `src/coordination/leases/K8sApi.ts` does for the sibling lease client —
  * that client got it right and this one did not (#597).  The values reach
  * here straight out of the pod's environment (`CLUSTER_NAMESPACE` /
  * `CLUSTER_SERVICE_NAME`, via both `autoDiscovery` and

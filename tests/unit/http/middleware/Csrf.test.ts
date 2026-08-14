@@ -3,7 +3,7 @@ import { csrfProtection, readCsrfToken, requireSameOrigin } from '../../../../sr
 import { CsrfOptions, DEFAULT_CSRF_COOKIE_NAME, SameOriginOptions } from '../../../../src/http/middleware/CsrfOptions.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const ok: HttpResponse = { status: Status.OK, body: 'ok' };
 const request = (method: HttpRequest['method'], headers: Record<string, string> = {}): HttpRequest => ({

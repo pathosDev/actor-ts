@@ -19,7 +19,7 @@ import { MAXIMUM_DURATION_MS, PROGRESS_INTERVAL_MS } from '../Constants.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { DispatchObservation, DispatchObserver } from '../../internal/Instrumentation.js';
-import { detectRuntime } from '../../runtime/detect.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import {
   profilerCompletedPayload,
   profilerProgressPayload,

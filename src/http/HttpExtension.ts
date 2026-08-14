@@ -14,7 +14,7 @@ import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { compile, defaultErrorResponse, type Route } from './Route.js';
-import { HttpError, type HttpRequest, type HttpResponse } from './types.js';
+import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {

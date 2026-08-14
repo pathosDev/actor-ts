@@ -7,7 +7,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cache } from '../../cache/Cache.js';
-import type { HttpRequest } from '../types.js';
+import type { HttpRequest } from '../Types.js';
 
 /**
  * Longest `Idempotency-Key` header value accepted before the request is

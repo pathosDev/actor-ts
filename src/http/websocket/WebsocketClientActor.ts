@@ -40,13 +40,13 @@ import {
   type WebsocketClientMessage,
   type WebsocketClientSignal,
 } from './WebsocketMessages.js';
-import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
+import { websocketClientConstructor, type WebsocketLike } from './WebsocketConstructor.js';
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import {
   frameByteLength,
   normalizeInbound,
   type WebsocketFrame,
-} from './types.js';
+} from './Types.js';
 
 export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {

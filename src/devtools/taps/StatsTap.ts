@@ -16,7 +16,7 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { detectRuntime } from '../../runtime/detect.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import {
   statsSamplePayload,
   type ClusterStatsSummary,

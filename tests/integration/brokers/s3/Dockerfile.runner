@@ -26,4 +26,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/s3/runner.ts"]
+CMD ["bun", "tests/integration/brokers/s3/Runner.ts"]

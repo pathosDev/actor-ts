@@ -18,7 +18,7 @@
  * Requires at least 5 nodes — skips with a warning otherwise.
  */
 
-import { membersFrom, upCountFrom, waitFor, type Scenario } from './types.js';
+import { membersFrom, upCountFrom, waitFor, type Scenario } from './Types.js';
 
 export const scenario: Scenario = {
   name: '02-split-brain-2-vs-3',

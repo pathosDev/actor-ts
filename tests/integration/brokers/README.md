@@ -25,8 +25,8 @@ a 5-node mesh.
 ```
 tests/integration/brokers/
 ├── lib/
-│   ├── wait-for-port.ts          # TCP/HTTP readiness probe
-│   └── scenario.ts               # tiny scenario runner + waitFor
+│   ├── WaitForPort.ts          # TCP/HTTP readiness probe
+│   └── Scenario.ts               # tiny scenario runner + waitFor
 ├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
 ├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
@@ -78,7 +78,7 @@ Every suite directory follows the same shape:
 ```
 <broker>/
 ├── docker-compose.<broker>.yml   # broker service + runner service
-├── runner.ts                     # imports scenarios/*, calls runScenarios()
+├── Runner.ts                     # imports scenarios/*, calls runScenarios()
 └── scenarios/
     ├── 01-…ts
     └── 02-…ts
@@ -130,7 +130,7 @@ as a job matrix.  Skipped on PRs touching only docs / unit tests
    swap the compose-file name.
 4. (Optional) Add the suite to the CI matrix in
    `.github/workflows/integration-brokers.yml`.
-5. The scenario uses `waitForPort(host, port)` from `lib/wait-for-port.ts`
+5. The scenario uses `waitForPort(host, port)` from `lib/WaitForPort.ts`
    to guard against the "container started, broker not ready yet"
    race that's the single most common source of flake.
 

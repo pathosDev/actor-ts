@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
 import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
-import { Status, type HttpRequest } from '../../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const delay = <T>(ms: number, value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));

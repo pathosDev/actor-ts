@@ -8,8 +8,8 @@
 import { Actor } from '../../../../../src/Actor.js';
 import type { AmqpCommand, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnAmqp, type AmqpContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnAmqp, type AmqpContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 async function declareQueue(url: string, queue: string): Promise<void> {
   const amqp = await import('amqplib');

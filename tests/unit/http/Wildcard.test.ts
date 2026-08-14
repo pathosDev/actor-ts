@@ -7,7 +7,7 @@ import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { compile, complete, get, path, type Route } from '../../../src/http/Route.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { Status } from '../../../src/http/types.js';
+import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 test('compile emits a trailing-* pattern for a wildcard route', () => {

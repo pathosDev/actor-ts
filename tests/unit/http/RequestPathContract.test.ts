@@ -1,6 +1,6 @@
 /**
  * `HttpRequest.path` is the bare pathname on EVERY backend — the contract
- * stated on the field in `src/http/types.ts`.
+ * stated on the field in `src/http/Types.ts`.
  *
  * Fastify used to hand over `req.url`, the raw request target, so the query
  * string leaked into `path` on the default backend while Express and Hono
@@ -19,7 +19,7 @@ import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { completeJson, concat, fallback, get, path, type Route } from '../../../src/http/Route.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { Status, type HttpRequest } from '../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 const backends: Array<[string, () => HttpServerBackend]> = [

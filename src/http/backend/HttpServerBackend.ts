@@ -1,4 +1,4 @@
-import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
+import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */

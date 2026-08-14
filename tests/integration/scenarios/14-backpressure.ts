@@ -27,7 +27,7 @@
  *   - `withMailboxCapacity` silently ceasing to bound — half 1 reads zero.
  */
 
-import { clusterLiveNodes, sleep, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, type Scenario } from './Types.js';
 
 type DroppedResponse = {
   readonly total: number;

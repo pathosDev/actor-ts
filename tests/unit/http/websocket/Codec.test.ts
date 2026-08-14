@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { jsonCodec, rawCodec, WebsocketDecodeError, WebsocketEncodeError } from '../../../../src/http/websocket/WebsocketCodec.js';
-import type { WebsocketFrame } from '../../../../src/http/websocket/types.js';
+import type { WebsocketFrame } from '../../../../src/http/websocket/Types.js';
 
 type Out = { kind: 'pong'; n: number };
 type In = { kind: 'ping'; n: number };

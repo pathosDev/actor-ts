@@ -16,7 +16,7 @@
  * (#1060).
  */
 import type { Middleware } from '../Route.js';
-import { headerDecorator } from './headers.js';
+import { headerDecorator } from './Headers.js';
 import { hstsHeaderValue, resolveHsts } from './Hsts.js';
 import type { SecurityHeadersOptions, SecurityHeadersOptionsType } from './SecurityHeadersOptions.js';
 

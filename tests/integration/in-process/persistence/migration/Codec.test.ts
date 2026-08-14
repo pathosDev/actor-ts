@@ -15,11 +15,11 @@ import {
   zodCodec,
   type ParserLike,
 } from '../../../../../src/persistence/migration/Codec.js';
-import { defaultsAdapter } from '../../../../../src/persistence/migration/defaultsAdapter.js';
+import { defaultsAdapter } from '../../../../../src/persistence/migration/DefaultsAdapter.js';
 import {
   validatedEventAdapter,
   validatedSnapshotAdapter,
-} from '../../../../../src/persistence/migration/validatedAdapter.js';
+} from '../../../../../src/persistence/migration/ValidatedAdapter.js';
 
 /** Tiny hand-rolled `parse` validator standing in for Zod. */
 function strictNumberAmount(): ParserLike<{ amount: number; currency: 'USD' | 'EUR' }> {

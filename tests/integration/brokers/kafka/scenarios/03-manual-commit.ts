@@ -10,8 +10,8 @@
 import { Actor } from '../../../../../src/Actor.js';
 import type { KafkaCommand, KafkaRecord } from '../../../../../src/io/broker/KafkaActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnKafka, type KafkaContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnKafka, type KafkaContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 class ManualCommitter extends Actor<KafkaRecord> {
   readonly seen: KafkaRecord[] = [];

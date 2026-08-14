@@ -12,7 +12,7 @@ import {
   resolveSubstitutions,
   stripUndefined,
 } from './HoconParser.js';
-import { REFERENCE_CONF } from './reference.js';
+import { REFERENCE_CONF } from './Reference.js';
 import { parseSize } from './Size.js';
 
 /**

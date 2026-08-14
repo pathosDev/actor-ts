@@ -14,7 +14,7 @@ import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { concat, fallback, get, path, type Route } from '../../../src/http/Route.js';
-import { HttpError, Status } from '../../../src/http/types.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
 import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../src/Logger.js';
 

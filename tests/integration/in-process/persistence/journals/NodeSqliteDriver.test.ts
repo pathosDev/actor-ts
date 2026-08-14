@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { setRuntimeOverride } from '../../../../../src/runtime/detect.js';
+import { setRuntimeOverride } from '../../../../../src/runtime/Detect.js';
 import {
   NodeSqliteDriver,
   getSqliteDriver,

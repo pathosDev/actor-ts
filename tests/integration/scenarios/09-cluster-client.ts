@@ -20,7 +20,7 @@
 import { ClusterClient } from '../../../src/cluster/ClusterClient.js';
 import { ClusterClientOptions } from '../../../src/cluster/ClusterClientOptions.js';
 import { NoopLogger } from '../../../src/Logger.js';
-import { clusterLiveNodes, sleep, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, type Scenario } from './Types.js';
 
 type PongReply = {
   readonly kind: 'pong';

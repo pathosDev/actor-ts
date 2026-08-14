@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { requestId } from '../../../../src/http/middleware/RequestId.js';
 import { RequestIdOptions } from '../../../../src/http/middleware/RequestIdOptions.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request = (headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET', path: '/', headers, query: {}, params: {}, body: null,

@@ -2,8 +2,8 @@
  * Baseline — declare a queue, bind it to the default exchange via
  * routing key, publish, consume.  Auto-ack mode (the default).
  */
-import { spawnAmqp, spawnInbox, type AmqpContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnAmqp, spawnInbox, type AmqpContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 /**
  * The framework's AmqpActor expects bindings to be pre-declared by

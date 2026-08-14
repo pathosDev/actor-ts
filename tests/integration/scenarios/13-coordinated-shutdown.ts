@@ -25,7 +25,7 @@
  * Runs LAST in the suite.
  */
 
-import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, waitFor, type Scenario } from './Types.js';
 
 type TraceResponse = {
   readonly markers: ReadonlyArray<{ from: string; phase: string; ts: number }>;

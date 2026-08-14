@@ -9,7 +9,7 @@ import type {
   TraceCarrier,
   Tracer,
 } from './Tracer.js';
-import { highResNow } from '../runtime/detect.js';
+import { highResNow } from '../runtime/Detect.js';
 import {
   decodeTraceparent,
   encodeTraceparent,

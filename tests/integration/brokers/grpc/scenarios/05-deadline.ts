@@ -19,8 +19,8 @@ import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { GrpcClientActor } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcClientOptions } from '../../../../../src/io/broker/GrpcClientOptions.js';
-import { HANG_REQUEST_TEXT, spawnCollector, type GrpcContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { HANG_REQUEST_TEXT, spawnCollector, type GrpcContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 /** Short enough to keep the scenario quick, long enough to outlive the connect. */
 const DEADLINE_MS = 1_000;

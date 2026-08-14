@@ -1,5 +1,5 @@
 import type { Cache } from '../../cache/Cache.js';
-import type { HttpRequest, HttpResponse } from '../types.js';
+import type { HttpRequest, HttpResponse } from '../Types.js';
 
 /**
  * HTTP response-cache directive.  Wraps a handler with a read-through

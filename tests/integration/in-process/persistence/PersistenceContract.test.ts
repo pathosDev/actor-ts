@@ -84,7 +84,7 @@ import { FakePgPool } from './FakePgPool.js';
  *
  * Relational backends are driven by their in-process fake pools; the live
  * Docker suites run the identical scenarios against real databases via
- * `brokers/lib/persistence-contract.ts`.
+ * `brokers/lib/PersistenceContract.ts`.
  */
 
 /** In-process stores start empty, so a stable namespace is enough. */

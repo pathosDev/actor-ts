@@ -10,7 +10,7 @@ import {
   updateLease,
   type K8sCredentials,
   type K8sLeaseObject,
-} from './k8sApi.js';
+} from './K8sApi.js';
 
 /**
  * Lease backed by a Kubernetes `coordination.k8s.io/v1/Lease` object.

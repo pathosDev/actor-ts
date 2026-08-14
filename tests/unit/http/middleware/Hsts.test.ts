@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { hsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
 import { HstsOptions } from '../../../../src/http/middleware/HstsOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>

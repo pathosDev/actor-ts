@@ -1,4 +1,4 @@
-import { detectRuntime, type RuntimeKind } from '../detect.js';
+import { detectRuntime, type RuntimeKind } from '../Detect.js';
 import type { SqliteDriver } from './SqliteDriver.js';
 
 export type { SqliteDriver, SqliteDb, SqliteStatement } from './SqliteDriver.js';

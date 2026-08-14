@@ -44,7 +44,7 @@ import {
   type WebsocketCloseInfo,
   type WebsocketFrame,
   type WebsocketUpgradeInfo,
-} from './types.js';
+} from './Types.js';
 
 export type WebsocketConnectionDeps<TOut, TIn, TSelf> = {
   readonly socket: WebsocketSocketAdapter;

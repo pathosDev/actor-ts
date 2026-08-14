@@ -322,12 +322,12 @@ target.
 
 | Tool                       | Module                            | Use when                                  |
 | -------------------------- | --------------------------------- | ----------------------------------------- |
-| `defaultsAdapter`          | `src/persistence/migration/defaultsAdapter.ts` | Additive only            |
+| `defaultsAdapter`          | `src/persistence/migration/DefaultsAdapter.ts` | Additive only            |
 | `MigrationChain` + `migratingAdapter` | `src/persistence/migration/{MigrationChain,migratingAdapter}.ts` | Anything else  |
 | `InMemorySchemaRegistry`   | `src/persistence/migration/SchemaRegistry.ts`  | Multi-service / multi-version coexistence |
-| `validatedEventAdapter`    | `src/persistence/migration/validatedAdapter.ts` | On-write validation     |
-| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/wrapLegacy.ts` | Retrofit pre-envelope journal |
-| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/journalMigration.ts` | Copy + transform between two backends |
+| `validatedEventAdapter`    | `src/persistence/migration/ValidatedAdapter.ts` | On-write validation     |
+| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/WrapLegacy.ts` | Retrofit pre-envelope journal |
+| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/JournalMigration.ts` | Copy + transform between two backends |
 
 All of them are exported from the top-level `actor-ts` barrel.
 

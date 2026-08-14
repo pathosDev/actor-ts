@@ -28,9 +28,9 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Middleware } from '../Route.js';
-import { HttpError, Status, type HttpRequest } from '../types.js';
-import { parseCookies, serializeCookie } from '../cookies.js';
-import { applyHeaders } from './headers.js';
+import { HttpError, Status, type HttpRequest } from '../Types.js';
+import { parseCookies, serializeCookie } from '../Cookies.js';
+import { applyHeaders } from './Headers.js';
 import {
   CsrfOptionsValidator,
   DEFAULT_CSRF_COOKIE_NAME,

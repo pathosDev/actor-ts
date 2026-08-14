@@ -28,7 +28,7 @@ import {
   formatMigrationResult,
   migrateInMemoryJournal,
   migrateSnapshotStore,
-} from '../../src/persistence/migration/wrapLegacy.js';
+} from '../../src/persistence/migration/WrapLegacy.js';
 
 type LegacyDeposited = { kind: 'deposited'; amount: number };
 type LegacyWithdrawn = { kind: 'withdrawn'; amount: number };

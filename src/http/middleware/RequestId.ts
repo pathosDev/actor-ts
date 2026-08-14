@@ -5,9 +5,9 @@
  * client bytes back into a header.
  */
 import type { Middleware } from '../Route.js';
-import type { HttpRequest } from '../types.js';
+import type { HttpRequest } from '../Types.js';
 import { randomUuid } from '../../util/RandomString.js';
-import { applyHeaders, applyHeadersToError } from './headers.js';
+import { applyHeaders, applyHeadersToError } from './Headers.js';
 import { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 import type { RequestIdOptions, RequestIdOptionsType } from './RequestIdOptions.js';
 

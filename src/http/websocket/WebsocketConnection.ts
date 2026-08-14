@@ -12,7 +12,7 @@
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
-import type { WebsocketFrame, WebsocketUpgradeInfo } from './types.js';
+import type { WebsocketFrame, WebsocketUpgradeInfo } from './Types.js';
 
 /** Send a typed message — encoded by the route codec before it hits the wire. */
 export type OutCommand<TOut> = { readonly kind: 'out'; readonly message: TOut };

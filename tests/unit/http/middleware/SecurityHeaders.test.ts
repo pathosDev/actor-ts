@@ -3,7 +3,7 @@ import { DEFAULT_RESPONSE_SECURITY_HEADERS } from '../../../../src/http/backend/
 import { resolveSecurityHeaders, securityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
 import { SecurityHeadersOptions } from '../../../../src/http/middleware/SecurityHeadersOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>

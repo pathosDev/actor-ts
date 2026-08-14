@@ -6,7 +6,7 @@ import {
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
-import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
+import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import {
   contentLengthExceeds,

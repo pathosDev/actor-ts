@@ -608,11 +608,11 @@ export type {
 export {
   reEncryptObjectStorage,
   InMemoryReEncryptProgressStore,
-} from './object-storage/reEncryptionSweep.js';
+} from './object-storage/ReEncryptionSweep.js';
 export type {
   ReEncryptOptions,
   ReEncryptResult,
   ReEncryptProgress,
   ReEncryptResumeState,
   ReEncryptProgressStore,
-} from './object-storage/reEncryptionSweep.js';
+} from './object-storage/ReEncryptionSweep.js';

@@ -20,4 +20,4 @@ export type {
 } from './Behavior.js';
 export type { TypedActorContext } from './TypedActorContext.js';
 export { TypedActor } from './TypedActor.js';
-export { typedActor } from './spawn.js';
+export { typedActor } from './Spawn.js';

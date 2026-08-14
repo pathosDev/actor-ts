@@ -23,4 +23,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/postgres/runner.ts"]
+CMD ["bun", "tests/integration/brokers/postgres/Runner.ts"]

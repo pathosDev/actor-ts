@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { idempotent } from '../../../../src/http/cache/IdempotencyKey.js';
 import { complete } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 function makeReq(headers: Record<string, string> = {}, body: Uint8Array | null = null): HttpRequest {
   return { method: 'POST', path: '/payments', headers, query: {}, params: {}, body };

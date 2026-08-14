@@ -1,5 +1,5 @@
 import { complete } from '../Route.js';
-import { type HttpRequest, type HttpResponse, Status } from '../types.js';
+import { type HttpRequest, type HttpResponse, Status } from '../Types.js';
 import {
   RateLimitOptionsValidator,
   type RateLimitContext,

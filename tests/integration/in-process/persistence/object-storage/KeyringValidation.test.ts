@@ -37,7 +37,7 @@ import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistenc
 import { registerObjectStoragePlugins } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 import { ObjectStoragePluginOptions } from '../../../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { encryptionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
-import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/reEncryptionSweep.js';
+import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
 import {
   KEY_VERSION_EXHAUSTION_THRESHOLD,
   MAX_KEY_VERSION,

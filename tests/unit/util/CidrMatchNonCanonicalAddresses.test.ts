@@ -19,8 +19,8 @@ import net from 'node:net';
 import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
 import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
-import { HttpError, Status } from '../../../src/http/types.js';
-import type { HttpRequest } from '../../../src/http/types.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
+import type { HttpRequest } from '../../../src/http/Types.js';
 import { addressMatchesPins, addressPinRejection, cidrMatches, parseAddressPin, parseCidr } from '../../../src/util/CidrMatch.js';
 
 /**

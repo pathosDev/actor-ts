@@ -1,0 +1,106 @@
+/**
+ * Redpanda/Kafka broker runner (B.4 / #22).
+ */
+import { Actor } from '../../../../src/Actor.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
+import { KafkaActor, type KafkaRecord } from '../../../../src/io/broker/KafkaActor.js';
+import { KafkaOptions, KafkaOptionsBuilder } from '../../../../src/io/broker/KafkaOptions.js';
+import { waitForPort } from '../lib/WaitForPort.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/Scenario.js';
+import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
+import { scenario as groupScenario } from './scenarios/02-consumer-group.js';
+import { scenario as manualScenario } from './scenarios/03-manual-commit.js';
+import { scenario as headersScenario } from './scenarios/04-headers.js';
+
+export interface KafkaContext extends BrokerScenarioContext {
+  readonly brokers: ReadonlyArray<string>;
+  readonly system: ActorSystem;
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`runner: missing env var ${name}`);
+  return value;
+}
+
+/** Inbox actor — drains KafkaRecords for assertion. */
+export class InboxActor extends Actor<KafkaRecord> {
+  readonly received: KafkaRecord[] = [];
+  override onReceive(m: KafkaRecord): void { this.received.push(m); }
+}
+
+async function main(): Promise<void> {
+  const bootstrap = requireEnv('KAFKA_BROKERS');
+  const brokers = bootstrap.split(',').map((s) => s.trim()).filter(Boolean);
+
+  // Wait for the first broker socket — same flake guard as the
+  // other suites.  Redpanda's accept loop is up well before
+  // `rpk cluster info` reports healthy, so the compose healthcheck
+  // is the strict gate; this is belts-and-braces.
+  const [hostPort] = brokers;
+  const [host, port] = hostPort!.split(':');
+  await waitForPort(host!, Number(port ?? '9092'), {
+    description: 'Redpanda Kafka API', deadlineMs: 30_000,
+  });
+
+  const system = ActorSystem.create('kafka-runner', ActorSystemOptions.create()
+    .withLogger(new JsonLogger())
+    .withLogLevel(LogLevel.Info));
+  process.on('SIGTERM', () => { void system.terminate(); });
+
+  const context: KafkaContext = { env: process.env, brokers, system };
+
+  try {
+    const scenarios: BrokerScenario<KafkaContext>[] = [
+      pubsubScenario,
+      groupScenario,
+      manualScenario,
+      headersScenario,
+    ];
+    await runScenarios(scenarios, context);
+  } finally {
+    await system.terminate();
+  }
+}
+
+export type KafkaSpawnOpts = {
+  groupId?: string;
+  topics?: ReadonlyArray<string>;
+  target?: ReturnType<ActorSystem['spawnAnonymous']>;
+  commitMode?: 'auto' | 'manual';
+  fromBeginning?: boolean;
+};
+
+/** Fresh KafkaActor per scenario.  groupId default ensures isolation. */
+export function spawnKafka(context: KafkaContext, options: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
+  const builder = KafkaOptions.create()
+    .withBrokers([...context.brokers])
+    .withClientId(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    .withProducer({ allowAutoTopicCreation: true, idempotent: false });
+  if (options.groupId) {
+    builder.withConsumer({
+      groupId: options.groupId,
+      fromBeginning: options.fromBeginning ?? true,
+      commitMode: options.commitMode ?? 'auto',
+    });
+  }
+  if (options.topics) builder.withTopics(options.topics);
+  if (options.target) builder.withTarget(options.target as unknown as Parameters<KafkaOptionsBuilder['withTarget']>[0]);
+  const actor = new KafkaActor(builder);
+  return context.system.spawnAnonymous(() => actor);
+}
+
+export function spawnInbox(context: KafkaContext): {
+  ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
+} {
+  const inbox = new InboxActor();
+  const ref = context.system.spawnAnonymous(() => inbox);
+  return { ref, inbox };
+}
+
+main().catch((e) => {
+  console.error('[runner] fatal:', e);
+  process.exit(2);
+});

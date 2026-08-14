@@ -8,7 +8,7 @@
  * contexts.  For untrusted rich HTML use a dedicated sanitizer.
  */
 
-import type { HttpResponse } from './types.js';
+import type { HttpResponse } from './Types.js';
 
 const ESCAPES: Readonly<Record<string, string>> = {
   '&': '&amp;',

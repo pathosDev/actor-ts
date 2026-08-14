@@ -8,7 +8,7 @@ import type {
   K8sLeaseObject,
   K8sRequestOptions,
   K8sResponse,
-} from '../../../src/coordination/leases/k8sApi.js';
+} from '../../../src/coordination/leases/K8sApi.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 

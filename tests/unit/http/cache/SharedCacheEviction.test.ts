@@ -28,7 +28,7 @@ import { cached } from '../../../../src/http/cache/ResponseCache.js';
 import { idempotent } from '../../../../src/http/cache/IdempotencyKey.js';
 import { rateLimit } from '../../../../src/http/cache/RateLimit.js';
 import { complete } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 /** Small enough that a handful of minted keys turns the whole map over. */
 const MAX_ENTRIES = 4;

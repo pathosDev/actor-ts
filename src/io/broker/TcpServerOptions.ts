@@ -9,7 +9,7 @@
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
-import { detectRuntime } from '../../runtime/detect.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import { assertListenerTlsIsCoherent } from '../../runtime/tcp/TcpBackend.js';
 import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import { findFramingViolation } from './TcpFraming.js';

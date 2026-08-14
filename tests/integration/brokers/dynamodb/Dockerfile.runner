@@ -21,4 +21,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/dynamodb/runner.ts"]
+CMD ["bun", "tests/integration/brokers/dynamodb/Runner.ts"]

@@ -3,7 +3,7 @@ import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
 import type { WebsocketSocketAdapter } from '../../../../src/http/websocket/SocketAdapter.js';
-import type { HttpRequest } from '../../../../src/http/types.js';
+import type { HttpRequest } from '../../../../src/http/Types.js';
 
 // `wireConnection` builds the per-connection actor's factory lazily (the actor
 // is only constructed when the hub spawns it), so with a stubbed hub we can

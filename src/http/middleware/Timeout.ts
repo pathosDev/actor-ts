@@ -7,7 +7,7 @@
  * how long a response is held open, nothing more.
  */
 import type { Middleware } from '../Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
 import { TimeoutOptionsValidator, type TimeoutOptions, type TimeoutOptionsType } from './TimeoutOptions.js';
 
 /** Build a middleware that bounds handler latency.  Accepts a bare ms number or options. */

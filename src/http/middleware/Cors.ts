@@ -12,8 +12,8 @@
  * them in auth would 401 every preflight.
  */
 import type { CompiledEndpoint, Route } from '../Route.js';
-import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
-import { applyHeaders, appendVary, readHeader } from './headers.js';
+import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
+import { applyHeaders, appendVary, readHeader } from './Headers.js';
 import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
 
 /** Resolved CORS policy stored on the `cors` Route node. */

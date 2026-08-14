@@ -123,7 +123,7 @@ services:
       MGMT_TOKEN: integration-test-token
       MGMT_PORT: "8080"
       CONTROL_PORT: "8090"
-    command: ["bun", "tests/integration/controller.ts"]
+    command: ["bun", "tests/integration/Controller.ts"]
     depends_on:
       node-a: { condition: service_healthy }
       node-b: { condition: service_healthy }

@@ -26,7 +26,7 @@
  * outside the allowlist would 403 before reaching the auth layer.
  */
 
-import { clusterLiveNodes, type Scenario } from './types.js';
+import { clusterLiveNodes, type Scenario } from './Types.js';
 
 const TOKEN = 'integration-test-token';  // Mirrors MGMT_TOKEN in compose env.
 const MGMT_PORT_DEFAULT = 8080;

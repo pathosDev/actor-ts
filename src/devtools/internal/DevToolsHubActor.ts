@@ -11,7 +11,7 @@
 import { match } from 'ts-pattern';
 import { WebsocketServerActor } from '../../http/websocket/WebsocketServerActor.js';
 import type { WebsocketConnection } from '../../http/websocket/WebsocketConnection.js';
-import type { WebsocketCloseInfo } from '../../http/websocket/types.js';
+import type { WebsocketCloseInfo } from '../../http/websocket/Types.js';
 import {
   DEVTOOLS_CLOSE_VERSION_MISMATCH,
   DEVTOOLS_PROTOCOL_VERSION,

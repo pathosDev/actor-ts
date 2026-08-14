@@ -18,7 +18,7 @@
  */
 import { gunzipSync } from 'node:zlib';
 import { complete, concat, get, path, Status, type Route } from '../http/index.js';
-import type { HttpRequest, HttpResponse } from '../http/types.js';
+import type { HttpRequest, HttpResponse } from '../http/Types.js';
 
 /** One build-time-compressed UI file. */
 export type UiAsset = {

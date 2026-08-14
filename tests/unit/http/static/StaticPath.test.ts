@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { resolveStaticPath } from '../../../../src/http/static/staticPath.js';
+import { resolveStaticPath } from '../../../../src/http/static/StaticPath.js';
 
 const ROOT = '/srv/www';
 const deny = (rest: string): boolean => resolveStaticPath(ROOT, rest, { dotfiles: 'deny' }).ok === false;

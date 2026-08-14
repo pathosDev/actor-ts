@@ -6,7 +6,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import type { Middleware } from '../Route.js';
-import { HttpError, Status } from '../types.js';
+import { HttpError, Status } from '../Types.js';
 import type { BasicAuthOptions, BasicAuthOptionsType } from './BasicAuthOptions.js';
 
 /** Constant-time compare (equal length only — the length pre-check is the one known leak). */

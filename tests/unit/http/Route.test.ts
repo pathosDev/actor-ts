@@ -24,8 +24,8 @@ import {
   type CompiledRoute,
   type Middleware,
 } from '../../../src/http/Route.js';
-import { HttpError, Status } from '../../../src/http/types.js';
-import type { HttpRequest } from '../../../src/http/types.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
+import type { HttpRequest } from '../../../src/http/Types.js';
 
 /** Narrow a compiled endpoint list to the HTTP routes (asserts none are WS). */
 function httpOnly(endpoints: CompiledEndpoint[]): CompiledRoute[] {

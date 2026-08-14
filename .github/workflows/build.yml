@@ -4,7 +4,7 @@ name: build
 # type declarations) and that the committed DevTools UI bundle was
 # generated from the sources in the tree.  Only needs to run when
 # something in the build inputs changes — source, the DevTools UI
-# sources that get embedded into `src/devtools/generated/uiAssets.ts`,
+# sources that get embedded into `src/devtools/generated/UiAssets.ts`,
 # tsconfig, dependency manifest, or the workflow itself.  Skips on
 # docs-only / test-only / README changes so the actions queue stays
 # focused.

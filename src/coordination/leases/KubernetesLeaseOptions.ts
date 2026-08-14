@@ -1,6 +1,6 @@
 import { LeaseOptionsBuilder, LeaseOptionsValidator } from '../LeaseOptions.js';
 import type { LeaseOptionsType } from '../LeaseOptions.js';
-import type { K8sFetchClient } from './k8sApi.js';
+import type { K8sFetchClient } from './K8sApi.js';
 
 /**
  * K8s-specific additions to the common lease options.  `apiServerUrl`,

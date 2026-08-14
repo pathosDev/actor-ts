@@ -23,7 +23,7 @@
  * shim used in production.
  */
 
-import { clusterLiveNodes, type Scenario } from './types.js';
+import { clusterLiveNodes, type Scenario } from './Types.js';
 
 type DnsLookupResponse = {
   readonly hostname: string;

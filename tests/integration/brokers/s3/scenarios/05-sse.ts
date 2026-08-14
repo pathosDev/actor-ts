@@ -6,8 +6,8 @@
  * separate manual smoke tests.  Here we pin the AES256 path
  * end-to-end against the most common SSE mode.
  */
-import { backend, type S3Context } from '../runner.js';
-import type { BrokerScenario } from '../../lib/scenario.js';
+import { backend, type S3Context } from '../Runner.js';
+import type { BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<S3Context> = {
   name: 'SSE — AES256 round-trip',

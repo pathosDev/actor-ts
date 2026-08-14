@@ -3,4 +3,4 @@ export { StaticFilesOptions, StaticFilesOptionsBuilder, StaticFilesOptionsValida
 export type { StaticFilesOptionsType } from './StaticFilesOptions.js';
 export { renderDirectoryListing } from './DirectoryListing.js';
 export type { ListingEntry } from './DirectoryListing.js';
-export { resolveStaticPath } from './staticPath.js';
+export { resolveStaticPath } from './StaticPath.js';

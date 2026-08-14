@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { parseHocon, isPlainObject } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 
@@ -105,7 +105,7 @@ function coveringAccessor(leaf: string): string[] | null {
 /** Files that could plausibly be the reader — everything but the two config files. */
 const readerSources = sourceFiles(SOURCE_ROOT)
   .filter((file) => !file.endsWith(join('config', 'ConfigKeys.ts')))
-  .filter((file) => !file.endsWith(join('config', 'reference.ts')))
+  .filter((file) => !file.endsWith(join('config', 'Reference.ts')))
   .map((file) => ({ file, text: readFileSync(file, 'utf8') }));
 
 /**

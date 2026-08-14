@@ -7,7 +7,7 @@ import {
   HttpClientOptionsValidator,
 } from './HttpClientOptions.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
-import type { HttpMethod } from './types.js';
+import type { HttpMethod } from './Types.js';
 
 /**
  * Statuses that redirect when they carry a `Location`.  Wire vocabulary, not
