@@ -166,6 +166,9 @@ const ZERO_DEFAULTS: readonly RegExp[] = [
 /** A `grep` anchored on bun's human-readable ` N pass` / ` N fail` summary. */
 const CONSOLE_SCRAPE = /grep\b[^|]*\b(?:pass|fail)\\?\$/;
 
+/** `OUTPUT=$(bun test …)` and its backtick spelling — bun's output via a pipe. */
+const PIPED_TEST_RUN = /(?:\$\(|`)\s*bun test\b/;
+
 describe('workflow hygiene', () => {
   test('the workflow directory actually parsed', () => {
     // Guards the guard: a path or parser regression that yielded nothing
@@ -203,6 +206,31 @@ describe('workflow hygiene', () => {
       'A grep anchored on bun\'s " N pass" / " N fail" console summary is back in '
       + 'test.yml. That output is presentation, not an interface — it already '
       + 'disappeared once under GitHub Actions (#1194). Parse the JUnit report.',
+    ).toEqual([]);
+  });
+
+  /**
+   * #1194 — under GitHub Actions bun emits an annotation line per test, so
+   * this suite writes roughly 8700 lines. Capturing that with
+   * `OUTPUT=$(bun test …)` sends the whole burst through a command
+   * substitution pipe, and bun died mid-flush with `An internal error
+   * occurred (WriteFailed)`: the coverage table was truncated three-quarters
+   * in and the JUnit report never landed (oven-sh/bun#15860 is the same
+   * family — large suites, intermittent).
+   *
+   * The same command reproduces clean locally, where bun prints no per-test
+   * lines and the burst is eight times smaller, so it is the volume through
+   * the pipe rather than the flags. Redirect to a file and read it back; a
+   * regular file cannot short-write the way a pipe can.
+   */
+  test('test.yml does not pipe bun test output through a command substitution', () => {
+    const piped = badgeStatements.filter(({ text }) => PIPED_TEST_RUN.test(text));
+    expect(
+      piped,
+      'bun test\'s output is being captured through a command substitution. '
+      + 'Under GitHub Actions that is an ~8700-line burst down a pipe, which is '
+      + 'how bun came to die with WriteFailed mid-run (#1194). Redirect it to a '
+      + 'file and cat the file instead.',
     ).toEqual([]);
   });
 
