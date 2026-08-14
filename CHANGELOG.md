@@ -547,6 +547,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   has no caller.  It was never exported from a barrel, so nothing public
   changes.
 
+- **The dead raw WebSocket upgrade-response writer is gone, taking an
+  unreachable response-splitting hole with it** (#624).
+  `writeRawHttpResponse` stripped CR/LF from every app-supplied header name
+  and value but interpolated the app-supplied `contentType` raw onto the
+  content-type line above the header/body boundary, so a guard echoing
+  attacker-influenced data there could inject header lines and a body.  Its
+  only caller vanished when #623 rerouted Express upgrade rejections through
+  a synthesised `ServerResponse`, whose `setHeader` makes the runtime itself
+  reject a CR or LF — which removes the injection class structurally — so
+  the module was deleted rather than patched.  It was never exported from a
+  barrel and the package `exports` map has no wildcard subpath, so no
+  consumer could reach it.
+
 ### Fixed
 
 - **A lease built without `name`, `owner`, `ttlMs` — or `namespace` for the
@@ -691,6 +704,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `cached(...)(...)`, which takes a handler, and its English prose still
   called the three middlewares `Route -> Route` transformers where the
   German mirror had already been corrected to "handler wrapper".
+
+- **The documentation no longer claims that cross-node messages travel
+  through the pluggable serializer stack** (#450).  Four pages per language —
+  `cluster/refs-across-nodes`, `cluster/transports`, `fundamentals/messages`
+  and `fundamentals/pattern-matching` — described a
+  `SerializationExtension`-mediated cluster wire with selectable CBOR, told
+  readers the serializer reads `kind` to reconstitute a value, and suggested
+  `TcpTransport` over loopback to exercise the CBOR codec.  In fact the
+  cluster frames each envelope with a bare `JSON.stringify`, no cluster
+  transport can reach the CBOR codec, and the wire carries no type identity
+  of its own.  The pages now state that messages must be JSON-safe, that a
+  `bigint` throws where a symbol is silently dropped and that registering a
+  serializer changes neither, and that `kind` is what the receiving actor's
+  `match(...)` dispatches on.  German mirrors updated 1:1.  The
+  serializer-on-the-wire work itself remains open.
 
 ### Security
 
@@ -1415,6 +1443,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   unnoticed.  Nothing shipped was exploitable: the only in-repo caller is the
   CSRF middleware, which passes a constant attribute bag, so this is
   hardening rather than the closing of a live hole.
+
+- **A node whose configuration sets `actor-ts.remote.tls.enabled = true` now
+  says at startup that its cluster wire is still plaintext** (#591).  The key
+  shipped in `reference.conf` and was documented on four pages, but nothing
+  under `src/` read it and the `Cluster` constructor hard-codes `null` for
+  the TLS argument of the transport it builds — so an operator who
+  configured encryption got none, with no error, no log line and no way to
+  tell from the running node.  The constructor now reads the key and logs one
+  `WARN` naming it, stating that the wire is unencrypted and pointing at
+  #941, where TLS itself is implemented.  The warning is raised only for the
+  transport the cluster builds for itself — an injected
+  `ClusterOptions.withTransport(…)` may carry its own TLS material — and
+  only for an explicit `true`, so a configuration file that spells the
+  shipped `false` out stays silent.  Reading the key also empties the
+  dead-key guard's exemption list: no key in `reference.conf` is excused
+  today.  TLS for the built-in transport is still not implemented.
 
 ## [0.15.0] — 2026-08-12
 
