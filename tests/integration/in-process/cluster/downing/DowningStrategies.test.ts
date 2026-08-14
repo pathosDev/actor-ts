@@ -588,4 +588,76 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(strat.decide(newSplit).size).toBe(0);
     expect(lease.acquireCalls).toBe(callsBefore + 1);
   });
+
+  /**
+   * `reset()` is the second way an acquire loses its watcher, and it is
+   * the likelier one: the acquire budget is 5 s by default, while a
+   * partition healing or a membership change inside that window needs no
+   * stall at all.  Dropping the result is not enough — the attempt can
+   * still land on the wire, and then the record is claimed and renewed
+   * forever by a node whose own strategy walked away from it.  That is
+   * the exact end state #600 exists to prevent, so the heal path has to
+   * track the abandoned attempt just like the timeout path does.
+   *
+   * `acquireTimeoutMs` is deliberately far out of reach here, so nothing
+   * but the heal can abandon the attempt.
+   */
+  test('a heal mid-acquire abandons the attempt: a late win is released, not left claimed', async () => {
+    const lease = new FencedFakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30_000);
+    const strat = new LeaseMajority(leaseOptions);
+    const split = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+
+    expect(strat.decide(split).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // The partition heals while acquire #1 is still on the wire.
+    const healed = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], []);
+    expect(strat.decide(healed).size).toBe(0);
+
+    // #1 lands as a win.  Nobody is reading its result any more, so
+    // unless it is undone the backend holds and renews the lease for good.
+    lease.resolveAt(0, true);
+    await flushMicrotasks();
+    expect(lease.released).toBe(true);
+    expect(lease.checkAlive()).toBe(false);
+
+    // With the undo done, the strategy is ready for the next split.
+    const newSplit = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(newSplit).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+  });
+
+  /**
+   * The same reset, reached through a changed partition view instead of a
+   * heal.  Here `decide()` does not return early, so an untracked
+   * abandonment is worse than a leak: it starts acquire #2 while #1 is
+   * still outstanding, breaking the "no overlapping attempts" rule that
+   * makes the abandon-release safe in the first place.
+   */
+  test('a partition-view change mid-acquire waits for the abandoned attempt instead of overlapping a second', async () => {
+    const lease = new FencedFakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30_000);
+    const strat = new LeaseMajority(leaseOptions);
+    const splitA = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+
+    expect(strat.decide(splitA).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // Different unreachable set, still an even split — acquire #1 is
+    // invalidated but remains on the wire.
+    const splitB = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 4], 1);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // Only once #1 has reported back — and its win has been undone — may
+    // a fresh attempt for the new view start.
+    lease.resolveAt(0, true);
+    await flushMicrotasks();
+    expect(lease.released).toBe(true);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+  });
 });

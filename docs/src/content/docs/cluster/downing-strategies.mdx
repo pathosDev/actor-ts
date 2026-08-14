@@ -220,14 +220,19 @@ Lease resource) before considering itself authoritative.
 Right for paranoid production scenarios where you'd rather
 **double the cost** of split-brain protection.
 
-### When the acquire hangs
+### When an acquire is abandoned
 
 The interesting case is not "the lease said no" but "the lease
-said nothing".  If `acquire()` has not resolved within
-`acquireTimeoutMs` (5 s by default), the strategy stops waiting
-for it — and then has to assume the attempt may still succeed on
-the wire, leaving the lease claimed by a node that no longer
-believes it won.  Three rules cover that:
+said nothing".  Two things leave an `acquire()` unwanted while it
+is still on the wire: it has not resolved within
+`acquireTimeoutMs` (5 s by default), or the partition view moved
+on under it — the partition healed, or the unreachable set
+changed.  The second is the likelier of the two, since a
+membership change inside a 5 s window needs no stall at all.
+Either way the strategy stops waiting for the attempt, and then
+has to assume it may still succeed on the wire, leaving the lease
+claimed by a node that no longer believes it won.  The same three
+rules cover both:
 
 - **The late result is dropped.**  Every attempt carries an
   epoch; a result arriving after its epoch was retired cannot
