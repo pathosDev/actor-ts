@@ -171,9 +171,10 @@ per-actor variant.
 
 ## Serialization
 
-Messages crossing the wire need to be **serializable**.  The
-framework's [SerializationExtension](/serialization/overview/)
-handles this — JSON by default, CBOR when configured.
+Messages crossing the cluster wire need to be **JSON-safe**.  The
+cluster frames the envelope with a bare `JSON.stringify` — the
+pluggable [`Serializer`](/serialization/overview/) is not consulted
+on the wire, so CBOR cannot be selected for it.
 
 ```ts
 {
@@ -191,7 +192,12 @@ trivially.  Things that don't survive:
   fields survive.
 - **`Map` / `Set`** — JSON serializes them as `{}` (no entries).
   Use plain objects or arrays.
-- **Symbols, BigInts** (without serializer registration).
+- **Symbols** — silently dropped by `JSON.stringify`.
+- **BigInts** — these don't degrade, they *throw*: `JSON.stringify`
+  raises a `TypeError` when the envelope is framed.
+
+Registering a custom serializer fixes none of the above — the
+cluster wire never consults the registry.
 
 See [Messages](/fundamentals/messages/) for the immutability
 + wire-format conventions.

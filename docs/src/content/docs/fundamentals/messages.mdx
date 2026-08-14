@@ -35,9 +35,11 @@ This shape buys three things:
 2. **Type narrowing inside handlers.**  Inside the `.with({ kind: 'set' }, ...)`
    arm, `m.to` is typed as `number` automatically — no casts, no
    `as never`.
-3. **Wire-format stability.**  When a message crosses a process or
-   cluster boundary, the serializer reads `kind` to decide how to
-   reconstitute the value.  See [Serialization](/serialization/overview/).
+3. **Wire-format stability.**  The wire carries no type identity of its
+   own — once a message that crossed a process or cluster boundary has
+   been parsed, `kind` is what the *receiving actor's* `match(...)`
+   dispatches on.  That is precisely why the discriminant has to travel
+   inside the payload.  See [Serialization](/serialization/overview/).
 
 The convention is `kind: string`, lowercase, kebab-case for multi-word.
 Capital-K `Kind` works too but isn't what the framework uses.
@@ -110,10 +112,12 @@ Practical rules of thumb:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't put functions / classes with methods in messages">
-  When a message crosses a process boundary (cluster, worker thread,
-  HTTP-over-WebSocket bridge), the wire format is JSON or CBOR —
-  neither carries function pointers.  Putting a callback in a message
-  works in-process and silently breaks once the actor moves to a
+  No process boundary carries function pointers.  The cluster wire and
+  the HTTP-over-WebSocket bridge both frame with `JSON.stringify`,
+  which drops a function; a worker thread uses `postMessage`, whose
+  structured-clone algorithm *throws* `DataCloneError` on one.  Putting
+  a callback in a message works in-process and breaks — silently under
+  JSON, loudly under structured clone — once the actor moves to a
   different node.  Use `replyTo: ActorRef<...>` for callback-like
   behavior; refs serialize correctly across nodes.
 </Aside>

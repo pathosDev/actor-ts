@@ -182,9 +182,11 @@ Per-Actor-Variante.
 
 ## Serialisierung
 
-Nachrichten, die die Leitung überqueren, müssen **serialisierbar**
-sein. Die [SerializationExtension](/de/serialization/overview/) des
-Frameworks regelt das — JSON per Default, CBOR wenn konfiguriert.
+Nachrichten, die die Leitung überqueren, müssen **JSON-sicher**
+sein. Der Cluster rahmt das Envelope mit einem nackten
+`JSON.stringify` — der einklinkbare
+[`Serializer`](/de/serialization/overview/) wird auf der Leitung
+nicht konsultiert, CBOR ist dafür also nicht wählbar.
 
 ```ts
 {
@@ -202,7 +204,12 @@ serialisieren trivial. Dinge, die nicht überleben:
   Datenfelder überleben.
 - **`Map` / `Set`** — JSON serialisiert sie als `{}` (keine
   Einträge). Nutze Plain Objects oder Arrays.
-- **Symbols, BigInts** (ohne Serializer-Registrierung).
+- **Symbols** — werden von `JSON.stringify` still verworfen.
+- **BigInts** — die degradieren nicht, sie *werfen*: `JSON.stringify`
+  löst einen `TypeError` aus, wenn das Envelope gerahmt wird.
+
+Einen eigenen Serializer zu registrieren behebt nichts davon — der
+Cluster-Wire konsultiert die Registry nie.
 
 Siehe [Nachrichten](/de/fundamentals/messages/) für die Unveränderlichkeits-
 und Wire-Format-Konventionen.
