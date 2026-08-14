@@ -37,16 +37,6 @@ export type WebsocketCloseInfo = {
 };
 
 /**
- * Default cap on a single inbound WebSocket frame — 1 MiB.
- *
- * **Why this exists (security):** a malicious or compromised peer can
- * send arbitrarily-large frames.  Without a cap, a stalled downstream
- * consumer plus one 100-MiB frame exhausts the process.  The cap is
- * enforced on the raw frame *before* the codec decodes it.
- */
-export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
-
-/**
  * UTF-8 byte length of a string without allocating a `Uint8Array`.
  * `TextEncoder.encode` would allocate a buffer we'd immediately discard;
  * for the size check alone we hand-roll the byte count, which is the

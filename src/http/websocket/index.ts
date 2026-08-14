@@ -34,5 +34,5 @@ export type {
 
 export {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
-} from './types.js';
+} from '../Constants.js';
 export type { WebsocketFrame, WebsocketUpgradeInfo, WebsocketCloseInfo } from './types.js';

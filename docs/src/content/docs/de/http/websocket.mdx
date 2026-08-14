@@ -107,6 +107,39 @@ durchgesetzt.  `onInvalidMessage: 'hook'` leitet Dekodier-Fehler
 an den `onInvalidMessage`-Hook des Actors weiter, statt zu
 schließen.
 
+#### Wo das Limit greift
+
+`maxFrameBytes` wird zweimal geprüft, zu zwei verschiedenen Zeitpunkten:
+
+- **Im Transport**, bei **1 MiB** — dem eingebauten Default, den das
+  Framework beim Binden an den Socket der Laufzeit weiterreicht.  Ein
+  größerer Frame wird abgewiesen, *während er eintrifft*; ein feindlicher
+  Peer kann den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB
+  (`ws`) zu puffern, nur damit das Ergebnis anschließend verworfen wird.
+  Weil die Laufzeit dabei auflegt, statt einen Policy-Close zu senden,
+  sieht der Client hier einen abnormalen Close (**1006**) und keine 1009.
+- **Im Connection-Actor**, bei deinem `maxFrameBytes` — am vollständig
+  empfangenen Frame, vor dem Dekodieren, mit Close **1009**.
+
+Wichtig dabei: Das Transport-Limit ist der Framework-Default, nicht die
+Zahl deiner Route.  `maxFrameBytes` zu **senken** wirkt genau wie
+geschrieben; es **über 1 MiB anzuheben, hebt das Transport-Limit nicht
+mit** — Frames zwischen 1 MiB und deinem Limit werden weiterhin
+abgeschnitten.  Backends sehen die Policy einer Route beim Binden nicht;
+sie wird erst bei der ersten Verbindung aufgelöst.  Genau das muss ein
+konfigurierbares Transport-Limit noch lösen.
+
+<Aside type="caution" title="Deno hat kein Transport-Limit">
+Auf Deno existiert die erste Ebene nicht.  `Deno.upgradeWebSocket` nimmt
+ein Subprotokoll und ein Idle-Timeout entgegen und kein Payload-Limit — es
+gibt also nichts, das das Framework setzen könnte: Ein zu großer Frame wird
+von der Laufzeit vollständig gepuffert und erst danach vom
+Connection-Actor abgewiesen.  Die Zusage gilt weiterhin — der Frame
+erreicht deinen Actor nie —, aber der Speicher ist ausgegeben, bevor
+abgelehnt wird.  Für einen aus dem Internet erreichbaren WebSocket-Endpunkt
+unter Deno gehört ein Proxy mit eigenem Frame-Limit davor.
+</Aside>
+
 ### Origin-Allowlist (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade

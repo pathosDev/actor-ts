@@ -49,15 +49,31 @@ export type UpgradeWebsocketFunction = (createEvents: (c: unknown) => WSEventsLi
  * factory; `serveOptions` are extra options folded into `serve()` (Bun
  * needs `{ websocket }`); `attach` runs post-listen wiring (Node needs
  * `injectWebSocket(server)`).
+ *
+ * `transportFrameCapBytes` reports what the runner managed to install as the
+ * runtime-level frame limit — `undefined` means the runtime exposes no such
+ * knob, so oversize frames are still fully buffered before anything can
+ * reject them (#586).  It is the bridge's answer to "did the cap take?", not
+ * a request: callers pass the wanted cap into `webSocket`.
  */
 export type HonoWebsocketBridge = {
   readonly upgradeWebSocket: UpgradeWebsocketFunction;
   readonly serveOptions: object;
   readonly attach?: (handle: HonoServerHandle) => void;
+  readonly transportFrameCapBytes?: number;
 };
 
 export interface HonoServerRunner {
   serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
-  /** Optional capability — all three built-in runners implement it. */
-  webSocket?(app: unknown): Promise<HonoWebsocketBridge>;
+  /**
+   * Optional capability — all three built-in runners implement it.
+   *
+   * `maxFrameBytes` is passed in rather than imported because `src/runtime/`
+   * sits *below* `src/http/`: a runner reaching into the HTTP subsystem for
+   * the constant would invert that dependency.  The runner installs it as
+   * the runtime's own payload limit where one exists, so a hostile peer
+   * cannot make the process buffer a frame the application would reject
+   * anyway.
+   */
+  webSocket?(app: unknown, maxFrameBytes: number): Promise<HonoWebsocketBridge>;
 }

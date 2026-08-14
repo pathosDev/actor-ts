@@ -35,8 +35,8 @@ export class BunHonoRunner implements HonoServerRunner {
     };
   }
 
-  async webSocket(_app: unknown): Promise<HonoWebsocketBridge> {
-    let mod: { createBunWebSocket: () => { upgradeWebSocket: unknown; websocket: unknown } };
+  async webSocket(_app: unknown, maxFrameBytes: number): Promise<HonoWebsocketBridge> {
+    let mod: { createBunWebSocket: () => { upgradeWebSocket: unknown; websocket: object } };
     try {
       const name = 'hono/bun';
       mod = (await import(name)) as typeof mod;
@@ -50,7 +50,14 @@ export class BunHonoRunner implements HonoServerRunner {
     const { upgradeWebSocket, websocket } = mod.createBunWebSocket();
     return {
       upgradeWebSocket: upgradeWebSocket as HonoWebsocketBridge['upgradeWebSocket'],
-      serveOptions: { websocket },
+      // Bun's `websocket` bag carries the handlers *and* the socket options,
+      // so the transport cap rides along with the handlers Hono built.  Left
+      // unset, Bun buffers up to its own 16 MiB default before the
+      // application-level `maxFrameBytes` check ever sees the frame (#586).
+      // Past the cap Bun drops the connection rather than sending a policy
+      // close, so the peer observes 1006 and not the app layer's clean 1009.
+      serveOptions: { websocket: { ...websocket, maxPayloadLength: maxFrameBytes } },
+      transportFrameCapBytes: maxFrameBytes,
     };
   }
 }
