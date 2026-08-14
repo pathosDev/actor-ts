@@ -71,7 +71,7 @@ testen.  Der Adapter fügt den Default ein, wenn das Feld fehlt —
 das war's.
 
 ```ts
-import { defaultsAdapter, PersistentActor } from 'actor-ts';
+import { defaultsAdapter, PersistentActor } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 interface DepositedV2 extends DepositedV1 { currency: string }
@@ -112,7 +112,7 @@ eine Chain.  Jeder Schritt ist einzeln typsicher; die Chain
 type-checkt, dass Start- und End-Formen passen.
 
 ```ts
-import { MigrationChain, migratingAdapter } from 'actor-ts';
+import { MigrationChain, migratingAdapter } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
@@ -166,7 +166,7 @@ Single Source of Truth für "wie sieht v2 aus?" über die ganze
 Flotte.
 
 ```ts
-import { InMemorySchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry } from 'actor-ts/persistence';
 import { z } from 'zod';
 
 const registry = new InMemorySchemaRegistry();
@@ -222,7 +222,7 @@ import {
   defaultsAdapter,
   validatedEventAdapter,
   zodCodec,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 import { z } from 'zod';
 
 const codec = zodCodec(
@@ -263,7 +263,7 @@ Journal das Manifest, das das Migrations-Tooling erwartet.
 import {
   wrapEventAsEnvelope,
   migrateInMemoryJournal,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // One-Shot: jedes Event im Journal als Envelope umschreiben.
 await migrateInMemoryJournal(journal, (event) =>

@@ -305,7 +305,7 @@ bevor er überhaupt versucht, sich zu verbinden.
 ## Einen eigenen Protokoll-Actor schreiben
 
 ```ts
-import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts';
+import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;

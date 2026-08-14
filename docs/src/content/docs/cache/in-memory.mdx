@@ -10,7 +10,7 @@ sweep** that reclaims expired-but-untouched entries.  In-process, zero
 dependencies, lost on restart.
 
 ```ts
-import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts';
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts/cache';
 
 // Defaults: maxEntries 10 000, cleanupMs 60 000.
 const cache = new InMemoryCache();
@@ -147,7 +147,7 @@ over.  With the default 10 000-entry bound and a permissive limit of
 The fix is one cache per consumer:
 
 ```ts
-import { CacheExtensionId } from 'actor-ts';
+import { CacheExtensionId } from 'actor-ts/cache';
 
 const extension = system.extension(CacheExtensionId);
 
@@ -170,7 +170,7 @@ LRU.
 ## Sharing across the system
 
 ```ts
-import { CacheExtensionId, InMemoryCache } from 'actor-ts';
+import { CacheExtensionId, InMemoryCache } from 'actor-ts/cache';
 
 // The extension's `default` cache is an InMemoryCache out of the box:
 const cache = system.extension(CacheExtensionId).cache();

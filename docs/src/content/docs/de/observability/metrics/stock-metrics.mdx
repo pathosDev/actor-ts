@@ -9,7 +9,8 @@ Actor-Lebenszyklus, die Nachrichtenverarbeitung, beschränkte
 Mailboxen und den Cluster abdecken.
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const metrics = system.extension(MetricsExtensionId).enable();
 // Stock-Metriken zeichnen jetzt in die Live-Registry auf — kein weiteres Setup

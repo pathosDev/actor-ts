@@ -22,11 +22,13 @@
  */
 import { match } from 'ts-pattern';
 import {
+  type ActorRef,
+} from '../../../../src/index.js';
+import {
   PersistentActor,
   everyNEvents,
-  type ActorRef,
   type SnapshotPolicy,
-} from '../../../../src/index.js';
+} from '../../../../src/persistence/index.js';
 import { DistributedPubSubId } from '../../../../src/cluster/pubsub/index.js';
 import { Publish } from '../../../../src/cluster/pubsub/Messages.js';
 import type { ChatMessage } from '../../shared/protocol.js';

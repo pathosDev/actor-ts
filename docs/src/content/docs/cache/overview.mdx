@@ -139,7 +139,7 @@ floor.
 framework ships one:
 
 ```ts
-import { acquireLock } from 'actor-ts';
+import { acquireLock } from 'actor-ts/cache';
 
 const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
 if (lock.isNone()) return;              // someone else is on it

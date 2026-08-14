@@ -9,7 +9,7 @@ restructures, computed-from-other-fields — by running a
 sequence of typed **upcasters**.  You build the chain, then wrap it:
 
 ```ts
-import { migratingAdapter, MigrationChain, type EventAdapter } from 'actor-ts';
+import { migratingAdapter, MigrationChain, type EventAdapter } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; cents: number; currency: string };
@@ -183,7 +183,7 @@ record, use `migratingSnapshotAdapter` — same chain, returns a
 `SnapshotAdapter`:
 
 ```ts
-import { migratingSnapshotAdapter } from 'actor-ts';
+import { migratingSnapshotAdapter } from 'actor-ts/persistence';
 
 const adapter = migratingSnapshotAdapter(chain);
 ```

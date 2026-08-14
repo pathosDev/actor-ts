@@ -92,7 +92,8 @@ DNS resolves `actor-ts-1` etc. to container IPs.
 The app:
 
 ```ts
-import { ConfigSeedProvider, ConfigSeedProviderOptions, ClusterOptions } from 'actor-ts';
+import { ClusterOptions } from 'actor-ts/cluster';
+import { ConfigSeedProvider, ConfigSeedProviderOptions } from 'actor-ts/discovery';
 
 const configSeedProviderOptions = ConfigSeedProviderOptions.create()
   .withSeeds((process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean))

@@ -96,7 +96,7 @@ Einstiegspunkt einen Span — ein HTTP-Handler, ein Broker-Consumer, ein
 geplanter Job —, und jedes `tell` darin trägt den Context weiter:
 
 ```ts
-import { tracerOf } from 'actor-ts';
+import { tracerOf } from 'actor-ts/tracing';
 
 const tracer = tracerOf(system);
 const span = tracer.startSpan('handle-request', { kind: 'server' });

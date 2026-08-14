@@ -8,7 +8,8 @@ Stelle.  `MultiSinkLogger` fächert jeden Record an **mehrere Ziele
 gleichzeitig** auf, jedes mit eigenem Mindest-Level:
 
 ```ts
-import { ActorSystem, ActorSystemOptions, ConsoleSink, LogLevel } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, LogLevel } from 'actor-ts';
+import { ConsoleSink } from 'actor-ts/logging';
 
 const consoleSink = new ConsoleSink();
 const systemOptions = ActorSystemOptions.create().withLogSinks([consoleSink]);
@@ -40,7 +41,8 @@ Jeder Sink deklariert ein `minLevel`, und die Pipeline reicht ihm nur
 Records ab diesem Level:
 
 ```ts
-import { ConsoleSink, LogLevel } from 'actor-ts';
+import { LogLevel } from 'actor-ts';
+import { ConsoleSink } from 'actor-ts/logging';
 
 const humanConsole = new ConsoleSink({ minLevel: LogLevel.Info });
 const auditConsole = new ConsoleSink({ minLevel: LogLevel.Error, format: 'json' });
@@ -92,7 +94,7 @@ Auffächern läuft.  Er schreibt einen Record um oder verwirft ihn mit
 `null`:
 
 ```ts
-import { MultiSinkLogger, MultiSinkLoggerOptions } from 'actor-ts';
+import { MultiSinkLogger, MultiSinkLoggerOptions } from 'actor-ts/logging';
 
 const loggerOptions = MultiSinkLoggerOptions.create()
   .withSinks([consoleSink])
@@ -213,7 +215,7 @@ Flush-Intervall Latenz zahlen würde.
 signalisiert das, indem er `SinkDeliveryError` wirft:
 
 ```ts
-import { SinkDeliveryError } from 'actor-ts';
+import { SinkDeliveryError } from 'actor-ts/logging';
 
 if (response.status === 429 || response.status >= 500) {
   const retryAfter = response.headers.get('retry-after');
@@ -243,8 +245,9 @@ Ein Sink ist ein kleines Objekt.  `name`, `minLevel` und `write` sind
 alles, was nötig ist:
 
 ```ts
-import type { LogRecord, LogSink } from 'actor-ts';
-import { formatJsonLine, LogLevel } from 'actor-ts';
+import type { LogRecord, LogSink } from 'actor-ts/logging';
+import { LogLevel } from 'actor-ts';
+import { formatJsonLine } from 'actor-ts/logging';
 
 class WebhookSink implements LogSink {
   readonly name = 'webhook';

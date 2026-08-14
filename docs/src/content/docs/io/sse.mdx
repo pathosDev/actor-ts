@@ -12,8 +12,8 @@ to client.
 
 ```ts
 import { ActorSystem, Actor } from 'actor-ts';
-import { SseActor, type SseEvent } from 'actor-ts';
-import { SseOptions } from 'actor-ts';
+import { SseActor, type SseEvent } from 'actor-ts/io';
+import { SseOptions } from 'actor-ts/io';
 
 // A collector receives each parsed event.
 class Collector extends Actor<SseEvent> {

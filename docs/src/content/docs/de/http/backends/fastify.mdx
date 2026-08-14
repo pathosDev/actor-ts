@@ -8,7 +8,8 @@ Umschließt Fastify — schnell, gut gewartet, mit einem riesigen
 Ökosystem an Plugins (JWT-Auth, Validierung, Swagger usw.).
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 

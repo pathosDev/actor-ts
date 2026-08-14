@@ -10,16 +10,18 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
+  LogLevel,
+  NoopLogger,
+  type ActorRef,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   ClusterSharding,
   InMemoryTransport,
-  LogLevel,
-  NoopLogger,
   NodeAddress,
   StartShardingOptions,
-  type ActorRef,
-} from '../../src/index.js';
+} from '../../src/cluster/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type PingCommand = { id: string; kind: 'ping' };

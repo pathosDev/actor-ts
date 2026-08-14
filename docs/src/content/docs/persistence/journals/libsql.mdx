@@ -50,13 +50,15 @@ on the composite and all three components inherit it:
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   LibSqlDurableStateStoreOptions,
   LibSqlJournalOptions,
   LibSqlSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterLibSqlPluginsOptions,
   registerLibSqlPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Select the libSQL plugins as the active journal + snapshot store.

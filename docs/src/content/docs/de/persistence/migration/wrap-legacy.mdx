@@ -40,7 +40,7 @@ gesamten Lauf-und-Umschreib-Vorgang.  Du lieferst ein
 ableitet:
 
 ```ts
-import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts';
+import { migrateInMemoryJournal, formatMigrationResult } from 'actor-ts/persistence';
 
 const result = await migrateInMemoryJournal(
   journal,
@@ -65,7 +65,7 @@ brauchen je einen backend-spezifischen Umschreib-Pfad (SQL
 Primitiv `wrapEventAsEnvelope` als Baustein:
 
 ```ts
-import { wrapEventAsEnvelope } from 'actor-ts';
+import { wrapEventAsEnvelope } from 'actor-ts/persistence';
 
 // Inside your own per-row rewrite loop:
 for (const row of rows) {
@@ -91,7 +91,7 @@ Persistence-ID (aus dem Journal bezogen) und nutzt intern
 `wrapStateAsEnvelope`:
 
 ```ts
-import { migrateSnapshotStore } from 'actor-ts';
+import { migrateSnapshotStore } from 'actor-ts/persistence';
 
 const persistenceIds   = await journal.persistenceIds();
 const result = await migrateSnapshotStore(store, persistenceIds, (s) => 'BankAccount.State');

@@ -14,11 +14,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   concat,
   getFromBrowseableDirectory,
   getFromFile,
   path,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 const assets = join(fileURLToPath(new URL('.', import.meta.url)), 'static-site-assets');

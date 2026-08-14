@@ -16,12 +16,9 @@
 export const name = 'express upgrade middleware';
 export const description = 'app.use(...) gates the WebSocket handshake on the Express backend';
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
-    HttpExtensionId, WebsocketServerActor, websocket,
-    ExpressBackend, ExpressBackendOptions,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { HttpExtensionId, WebsocketServerActor, websocket, ExpressBackend, ExpressBackendOptions } = await loadEntry('http');
 
   let express;
   try {

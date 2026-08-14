@@ -26,11 +26,13 @@
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   MqttActor,
   MqttOptions,
   MqttOptionsBuilder,
   type MqttMessage,
-} from '../../src/index.js';
+} from '../../src/io/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type Reading = { sensor: string; celsius: number };

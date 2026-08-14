@@ -8,7 +8,7 @@ kompakten binären Serialisierungsformat.  Kompakter als JSON,
 schneller für binärlastige Daten, ähnliche API-Oberfläche.
 
 ```ts
-import { CborSerializer } from 'actor-ts';
+import { CborSerializer } from 'actor-ts/serialization';
 
 const serializer = new CborSerializer();
 const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
@@ -91,7 +91,7 @@ Zwei Unterschiede bleiben, beide bewusst:
 ## CBOR zum Extension-Default machen
 
 ```ts
-import { SerializationExtensionId, CborSerializer } from 'actor-ts';
+import { SerializationExtensionId, CborSerializer } from 'actor-ts/serialization';
 
 const ext = system.extension(SerializationExtensionId);
 ext.setDefault(new CborSerializer());
@@ -120,7 +120,7 @@ ext.bind(MyEvent, eventSerializer.id);
 ## Serialisierung pro Aufruf
 
 ```ts
-import { CborSerializer } from 'actor-ts';
+import { CborSerializer } from 'actor-ts/serialization';
 
 const ser = new CborSerializer();
 const bytes = ser.toBinary({ data: someUint8Array });

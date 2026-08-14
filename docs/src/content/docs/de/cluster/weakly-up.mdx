@@ -135,7 +135,7 @@ wenn es gestoppt wird, ohne jemals `up` erreicht zu haben.
 ## Den Übergang beobachten
 
 ```ts
-import { MemberWeaklyUp, MemberUp } from 'actor-ts';
+import { MemberWeaklyUp, MemberUp } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof MemberWeaklyUp) {

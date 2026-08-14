@@ -5,10 +5,9 @@
 export const name = 'cluster formation';
 export const description = '2 nodes converge to Up via InMemoryTransport';
 
-export async function run({ actorTs }) {
-  const {
-    ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, InMemoryTransport, LogLevel, NoopLogger, NodeAddress,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { Cluster, ClusterOptions, InMemoryTransport, NodeAddress } = await loadEntry('cluster');
 
   async function buildNode(sysName, port, seeds) {
     const sysOptions = ActorSystemOptions.create()

@@ -47,8 +47,9 @@ Audit-Trail.
 ## Ein minimales Beispiel
 
 ```ts
-import { DurableStateActor, DurableStateOptions, ActorSystem } from 'actor-ts';
-import { InMemoryDurableStateStore } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions } from 'actor-ts/persistence';
+import { InMemoryDurableStateStore } from 'actor-ts/persistence';
 import { match } from 'ts-pattern';
 
 type AddCommand = { kind: 'add'; sku: string };
@@ -217,7 +218,7 @@ Wie bei `PersistentActor` unterstützt Durable State Schema-Evolution
 durch einen Adapter:
 
 ```ts
-import { StateAdapter } from 'actor-ts';
+import { StateAdapter } from 'actor-ts/persistence';
 
 const v1ToV2Adapter: StateAdapter<StateV2> = {
   manifest: () => 'Cart',

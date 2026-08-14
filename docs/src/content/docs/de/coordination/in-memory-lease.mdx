@@ -126,7 +126,7 @@ direkt (`inMemoryLeaseStore._clear()`).
 import { describe, it, expect } from 'bun:test';
 import { TestKit } from 'actor-ts/testkit';
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
-import { StartSingletonOptions } from 'actor-ts';
+import { StartSingletonOptions } from 'actor-ts/cluster';
 
 describe('SingletonManager mit Lease', () => {
   it('nur ein Halter spawnt den Singleton', async () => {

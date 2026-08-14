@@ -201,7 +201,8 @@ Use for:
 ## Custom routes
 
 ```ts
-import { managementRoutes, path, get, concat, completeJson } from 'actor-ts';
+import { path, get, concat, completeJson } from 'actor-ts/http';
+import { managementRoutes } from 'actor-ts/management';
 
 const baseRoutes = managementRoutes(system, cluster).routes;
 
@@ -279,8 +280,10 @@ broader network, attach the built-in middlewares via
 import {
   BearerTokenAuth,
   IpAllowlist,
+} from 'actor-ts/http';
+import {
   managementRoutes,
-} from 'actor-ts';
+} from 'actor-ts/management';
 
 const { routes } = managementRoutes(system, cluster, {
   enableLeaveEndpoint: true,

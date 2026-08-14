@@ -51,13 +51,15 @@ einmal am Composite, dann erben sie alle drei Komponenten:
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   LibSqlDurableStateStoreOptions,
   LibSqlJournalOptions,
   LibSqlSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterLibSqlPluginsOptions,
   registerLibSqlPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Die libSQL-Plugins als aktives Journal + Snapshot-Store auswählen.

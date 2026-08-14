@@ -9,7 +9,7 @@ import {
   SqliteJournal,
   SqliteJournalOptions,
   type Journal,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { runGroup } from '../lib/harness.js';
 
 async function main(): Promise<void> {

@@ -34,7 +34,7 @@ Ein plain Object.  Replicas, die nicht vorhanden sind, werden als
 Die `VectorClock`-Klasse des Frameworks wickelt das ein:
 
 ```ts
-import { VectorClock } from 'actor-ts';
+import { VectorClock } from 'actor-ts/persistence';
 
 let vc = VectorClock.empty();
 vc = vc.tick('replica-a');        // → { 'replica-a': 1 }

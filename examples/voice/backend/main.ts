@@ -26,6 +26,8 @@ import * as path from 'node:path';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   MemberDown,
@@ -33,7 +35,7 @@ import {
   MemberUnreachable,
   MemberUp,
   StartSingletonOptions,
-} from '../../../src/index.js';
+} from '../../../src/cluster/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import { ReceptionistId } from '../../../src/discovery/Receptionist.js';

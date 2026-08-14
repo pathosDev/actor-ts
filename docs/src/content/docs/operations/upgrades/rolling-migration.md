@@ -58,7 +58,7 @@ import {
   MigrationChain,
   migratingAdapter,
   PersistentActor,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // 1. Define both versions in the chain.
 const chain = MigrationChain
@@ -163,7 +163,7 @@ be read on the hot path, you can:
    skip the upcast.  Use the one-shot helpers:
 
     ```ts
-    import { migrateInMemoryJournal, migrateSnapshotStore } from 'actor-ts';
+    import { migrateInMemoryJournal, migrateSnapshotStore } from 'actor-ts/persistence';
 
     // Rewrite every event for every persistenceId into v2 shape.
     await migrateInMemoryJournal(journal, (event) => chain.manifestFor(event, 2));
@@ -218,7 +218,7 @@ historical bodies.
 Ship the new key as `active`, keep the old as `retired`.
 
 ```ts
-import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
+import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts/persistence';
 
 const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...), etc.
@@ -248,7 +248,7 @@ re-encrypt every historical body under the new key with the
 `reEncryptObjectStorage` helper (v0.8.0):
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 const result = await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',
@@ -296,7 +296,7 @@ import {
   reEncryptObjectStorage,
   InMemoryReEncryptProgressStore,
   type ReEncryptProgressStore,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // File-backed progress store — survives a process crash.
 // (The shipped `InMemoryReEncryptProgressStore` is the

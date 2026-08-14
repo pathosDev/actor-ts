@@ -4,22 +4,24 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
+  LogLevel,
+  NoopLogger,
+  PoisonPill,
+} from '../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   ClusterSharding,
   HashAllocationStrategy,
   InMemoryTransport,
   LeastShardAllocationStrategy,
-  LogLevel,
-  NoopLogger,
   NodeAddress,
   Passivate,
-  PoisonPill,
   SelfUp,
   SelfRemoved,
   StartShardingOptions,
   LeaderChanged,
-} from '../src/index.js';
+} from '../src/cluster/index.js';
 import type { ActorRef } from '../src/index.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);

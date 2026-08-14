@@ -40,7 +40,8 @@ Unterscheidung zwischen lokalen Pools und Cluster-Groups.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Actor } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
+import { Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions } from 'actor-ts/cluster';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(message: { payload: string }): void {
@@ -228,7 +229,7 @@ einem Node, der Routees, aber keinen Router hostet, startest du ihn
 selbst:
 
 ```ts
-import { ClusterMailboxDepthAgent } from 'actor-ts';
+import { ClusterMailboxDepthAgent } from 'actor-ts/cluster';
 
 const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster);
 ```

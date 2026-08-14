@@ -44,7 +44,7 @@ import {
   ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion('eu-west-1')
@@ -126,7 +126,7 @@ your provider's CAS support before relying on it.
 ### Filesystem
 
 ```ts
-import { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions } from 'actor-ts';
+import { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions } from 'actor-ts/persistence';
 
 const filesystemObjectStorageOptions = FilesystemObjectStorageOptions.create().withDir('/var/lib/actor-ts');
 const backend = new FilesystemObjectStorageBackend(
@@ -145,7 +145,7 @@ S3 cost.  Right for:
 ### S3
 
 ```ts
-import { S3ObjectStorageBackend, S3ObjectStorageOptions } from 'actor-ts';
+import { S3ObjectStorageBackend, S3ObjectStorageOptions } from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion('eu-west-1')

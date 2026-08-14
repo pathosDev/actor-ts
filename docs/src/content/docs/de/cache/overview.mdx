@@ -142,7 +142,7 @@ Memcached rundet auf volle Sekunden auf, mit 1 s als Untergrenze.
 bringt das Framework eine mit:
 
 ```ts
-import { acquireLock } from 'actor-ts';
+import { acquireLock } from 'actor-ts/cache';
 
 const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
 if (lock.isNone()) return;              // jemand anderes ist dran

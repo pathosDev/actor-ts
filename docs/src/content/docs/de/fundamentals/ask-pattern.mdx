@@ -106,7 +106,7 @@ behandeln.
 ## Timeouts + der AskTimeoutError
 
 ```ts
-import {  AskTimeoutError } from 'actor-ts';
+import { AskTimeoutError } from 'actor-ts';
 
 try {
   const result = await counter.ask({ kind: 'get' }, 1_000);

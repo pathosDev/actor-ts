@@ -10,13 +10,15 @@ durable, zero-dependency on Bun, peer-dep on Node.  Pair with
 
 ```ts
 import {
+  ActorSystem,
+  ActorSystemOptions,
+} from 'actor-ts';
+import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  ActorSystem,
-  ActorSystemOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')

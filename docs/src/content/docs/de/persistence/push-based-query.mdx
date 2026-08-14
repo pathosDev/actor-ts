@@ -43,7 +43,7 @@ Push gilt für die **Live**-Streams (`eventsByTag` /
 `eventsByPersistenceId`), die ein `AsyncIterable` zurückgeben:
 
 ```ts
-import { offsetStart } from 'actor-ts';
+import { offsetStart } from 'actor-ts/persistence';
 // `query` ist eine PersistenceQuery (SqliteQuery / InMemoryQuery / …) — siehe Persistence Query.
 
 for await (const tagged of query.eventsByTag<AccountEvent>('account', offsetStart())) {

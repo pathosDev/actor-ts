@@ -29,13 +29,8 @@ export const description = 'a zstd body over maxDecompressedBytes is refused bef
 const STATE_TEXT = 'the quick brown fox jumps over the lazy dog '.repeat(2000);
 const TINY_CAP_BYTES = 1024;
 
-export async function run({ actorTs }) {
-  const {
-    FilesystemObjectStorageBackend,
-    FilesystemObjectStorageOptions,
-    ObjectStorageDurableStateStore,
-    ObjectStorageDurableStateStoreOptions,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { FilesystemObjectStorageBackend, FilesystemObjectStorageOptions, ObjectStorageDurableStateStore, ObjectStorageDurableStateStoreOptions } = await loadEntry('persistence');
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');

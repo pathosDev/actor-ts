@@ -24,14 +24,20 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   CacheExtensionId,
-  Cluster,
-  ClusterOptions,
-  HttpError,
   InMemoryCache,
   RedisCache,
   RedisCacheOptions,
+} from '../../src/cache/index.js';
+import {
+  Cluster,
+  ClusterOptions,
   StartShardingOptions,
+} from '../../src/cluster/index.js';
+import {
+  HttpError,
   Status,
   cached,
   complete,
@@ -45,8 +51,8 @@ import {
   post,
   put,
   rateLimit,
-} from '../../src/index.js';
-import type { Cache } from '../../src/index.js';
+} from '../../src/http/index.js';
+import type { Cache } from '../../src/cache/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; };

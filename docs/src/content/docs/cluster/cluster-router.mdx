@@ -39,7 +39,8 @@ distinction between local pools and cluster groups.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Actor } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
+import { Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions } from 'actor-ts/cluster';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(message: { payload: string }): void {
@@ -221,7 +222,7 @@ which covers a single node and the common homogeneous deployment
 hosts routees but no router, start it yourself:
 
 ```ts
-import { ClusterMailboxDepthAgent } from 'actor-ts';
+import { ClusterMailboxDepthAgent } from 'actor-ts/cluster';
 
 const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster);
 ```

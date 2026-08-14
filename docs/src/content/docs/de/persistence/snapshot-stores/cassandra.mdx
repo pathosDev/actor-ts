@@ -14,11 +14,13 @@ geteilt sein; genau dafür ist dieses Backend da.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   CassandraJournal,
   CassandraJournalOptions,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])

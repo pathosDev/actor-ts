@@ -132,7 +132,7 @@ Wenn du einen Adapter zu einem existierenden Journal hinzufügst,
 das bereits persistierte rohe Events hat:
 
 ```ts
-import { migrateInMemoryJournal } from 'actor-ts';
+import { migrateInMemoryJournal } from 'actor-ts/persistence';
 
 // One-shot: wrap every raw event as a v1 envelope before recovery.
 await migrateInMemoryJournal(journal, (e) => `${e.kind}`);

@@ -168,7 +168,7 @@ gives a typed registry of all known event shapes + their
 versions:
 
 ```ts
-import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts/persistence';
 
 const registry = new InMemorySchemaRegistry();
 
@@ -194,7 +194,7 @@ they don't have envelopes — they're raw payloads.  The
 **WrapLegacy** helper bridges:
 
 ```ts
-import { migrateInMemoryJournal } from 'actor-ts';
+import { migrateInMemoryJournal } from 'actor-ts/persistence';
 
 // One-shot bulk rewrite — wrap every raw event as a v1 envelope
 // BEFORE the actor with the new adapter recovers.

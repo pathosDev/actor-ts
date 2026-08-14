@@ -28,7 +28,7 @@ The interface is the same across all of them — just construct the
 matching query for your journal backend.
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts/persistence';
 
 // SqliteQuery reads the same journal your PersistentActors write to.
 const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
@@ -221,7 +221,7 @@ offset on restart.
 ## Tag filters
 
 ```ts
-import type { TagFilter } from 'actor-ts';
+import type { TagFilter } from 'actor-ts/persistence';
 
 // All events that have at least one of these tags:
 query.eventsByTag<E>({ any: ['account', 'audit'] }, offset);

@@ -5,7 +5,7 @@
  *
  *   bun run examples/coordination/lease-hello.ts
  */
-import { InMemoryLease, LeaseOptions } from '../../src/index.js';
+import { InMemoryLease, LeaseOptions } from '../../src/coordination/index.js';
 
 async function main(): Promise<void> {
   const primaryLeaseOptions = LeaseOptions.create()

@@ -47,7 +47,7 @@ does it, at the well-known path proxies address, and the start options
 below are what it configures:
 
 ```ts
-import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+import { SingletonKey, StartSingletonOptions } from 'actor-ts/cluster';
 
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
@@ -96,7 +96,7 @@ currently leader.
 If you misname, the proxy can't route — silent breakage.  Always:
 
 ```ts
-import { singletonManagerPath } from 'actor-ts';
+import { singletonManagerPath } from 'actor-ts/cluster';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
 // "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
@@ -232,7 +232,7 @@ Direct manager contact is useful only for:
 ## Diagnostics
 
 ```ts
-import { MemberUp, LeaderChanged } from 'actor-ts';
+import { MemberUp, LeaderChanged } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof LeaderChanged) {

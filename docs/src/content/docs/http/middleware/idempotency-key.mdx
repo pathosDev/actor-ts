@@ -25,7 +25,7 @@ requests with the same key return the cached response.
 
 ```ts
 import { idempotent, path, post } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const dedup = idempotent({
   cache:         new InMemoryCache(),
@@ -166,7 +166,7 @@ re-keys the cache before calling `idempotent`'s wrapper.
 ## Multi-pod with Redis
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 idempotent({

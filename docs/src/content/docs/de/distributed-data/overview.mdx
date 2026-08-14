@@ -64,8 +64,9 @@ Drei Muster:
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
-import { DistributedDataId, GCounter } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DistributedDataId, GCounter } from 'actor-ts/crdt';
 
 const system  = ActorSystem.create('my-app');
 const clusterOptions = ClusterOptions.create()
@@ -173,7 +174,8 @@ Cluster neu startet (Cold Start), beginnt jeder Key wieder leer.
 Für **Restart-überlebende** Semantik nutzt du die **durable**-Variante:
 
 ```ts
-import { DistributedDataOptions, InMemoryDurableStateStore } from 'actor-ts';
+import { DistributedDataOptions } from 'actor-ts/crdt';
+import { InMemoryDurableStateStore } from 'actor-ts/persistence';
 
 const store = new InMemoryDurableStateStore();
 const distributedDataOptions = DistributedDataOptions.create().withDurableStore(store);

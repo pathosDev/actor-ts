@@ -8,12 +8,14 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   Find,
   Listing,
   ReceptionistId,
   Register,
   ServiceKey,
-} from '../../src/index.js';
+} from '../../src/discovery/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {

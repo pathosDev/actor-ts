@@ -5,7 +5,8 @@
  *
  *   bun run examples/delivery/at-least-once-hello.ts
  */
-import { ActorSystem, ReliableDelivery, ProducerControllerOptions } from '../../src/index.js';
+import { ActorSystem } from '../../src/index.js';
+import { ReliableDelivery, ProducerControllerOptions } from '../../src/delivery/index.js';
 import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {

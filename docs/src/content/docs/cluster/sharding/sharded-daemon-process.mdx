@@ -20,8 +20,9 @@ respawned on failover.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, Actor } from 'actor-ts';
-import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from 'actor-ts/cluster';
 
 class Reconciler extends Actor<{ kind: 'check' }> {
   constructor(public readonly index: number) { super(); }

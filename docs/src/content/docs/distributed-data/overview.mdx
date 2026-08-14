@@ -62,8 +62,9 @@ Three patterns:
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
-import { DistributedDataId, GCounter } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DistributedDataId, GCounter } from 'actor-ts/crdt';
 
 const system  = ActorSystem.create('my-app');
 const clusterOptions = ClusterOptions.create()
@@ -168,7 +169,8 @@ cluster restarts (cold start), every key starts empty again.
 For **survive-restart** semantics, use the **durable** variant:
 
 ```ts
-import { DistributedDataOptions, InMemoryDurableStateStore } from 'actor-ts';
+import { DistributedDataOptions } from 'actor-ts/crdt';
+import { InMemoryDurableStateStore } from 'actor-ts/persistence';
 
 const store = new InMemoryDurableStateStore();
 const distributedDataOptions = DistributedDataOptions.create().withDurableStore(store);

@@ -8,7 +8,7 @@ Senders, vergibt **Sequence Numbers** und hält sie, bis sie vom
 Consumer **geACKt** sind.
 
 ```ts
-import { ProducerController, ProducerControllerOptions } from 'actor-ts';
+import { ProducerController, ProducerControllerOptions } from 'actor-ts/delivery';
 
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('orders')                     // stabile Identität

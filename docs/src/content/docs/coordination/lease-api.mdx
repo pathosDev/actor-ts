@@ -216,7 +216,7 @@ Same pattern for sharding coordinator:
 ## Writing a custom backend
 
 ```ts
-import type { Lease, LeaseOptionsType } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
   private alive = false;

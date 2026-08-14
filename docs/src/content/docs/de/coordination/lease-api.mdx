@@ -234,7 +234,7 @@ Gleiches Muster für den Sharding-Koordinator:
 ## Ein eigenes Backend schreiben
 
 ```ts
-import type { Lease, LeaseOptionsType } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
   private alive = false;

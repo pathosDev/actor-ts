@@ -8,7 +8,8 @@ description: The reference Journal implementation — backed by plain arrays, ze
 persistence — fast, zero setup, perfect for tests and dev.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts/persistence';
 
 // In-memory journal + snapshot store are the DEFAULT — a bare
 // ActorSystem.create('demo') already uses them.  To set them explicitly
@@ -77,7 +78,7 @@ For anything that needs to **persist across restarts**, switch to
 
 ```ts
 import { describe, it, beforeEach, afterEach } from 'bun:test';
-import { TestKit } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
 
 describe('OrderActor', () => {
   let tk: TestKit;
@@ -156,7 +157,7 @@ const devOptions = ActorSystemOptions.create().withPersistence({
 const system = ActorSystem.create('app', devOptions);
 
 // After (production):
-import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions } from 'actor-ts/persistence';
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
 const prodOptions = ActorSystemOptions.create().withPersistence({
   journal: new SqliteJournal(sqliteJournalOptions),

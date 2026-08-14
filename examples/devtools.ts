@@ -42,7 +42,8 @@
  *   --devtools-host=H   interface to bind (default 127.0.0.1)
  *   DEVTOOLS_HOST=H     same, via the environment
  */
-import { concat, type ActorSystem } from '../src/index.js';
+import { type ActorSystem } from '../src/index.js';
+import { concat } from '../src/http/index.js';
 import type { Cluster } from '../src/cluster/Cluster.js';
 import { DevTools, DevToolsOptions, isLoopbackHost, type DevToolsBinding } from '../src/devtools/index.js';
 

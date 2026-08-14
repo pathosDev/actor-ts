@@ -133,7 +133,8 @@ Zookeeper).  The interface is small — ~50 lines of glue.
 ## A minimal example
 
 ```ts
-import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
+import { StartSingletonOptions } from 'actor-ts/cluster';
+import { KubernetesLease, KubernetesLeaseOptions } from 'actor-ts/coordination';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('my-app-singleton-lease')

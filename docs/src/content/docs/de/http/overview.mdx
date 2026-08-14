@@ -67,7 +67,7 @@ await system.http(8080).bind(routes);
 await system.http(8080, { backend: new HonoBackend() }).bind(routes);
 
 // Volle Kontrolle — die Extension-Surface bleibt erhalten:
-import { HttpExtensionId } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)
   .useBackend(new HonoBackend())
@@ -199,7 +199,7 @@ Client in einen [Retry](/de/patterns/retry/)- +
 
 ```ts
 import { cached, get, path, rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 // One cache per middleware — never one shared instance (see below).
 const limiterCache = new InMemoryCache();
@@ -261,7 +261,7 @@ Der Routen-Handler gibt einen `Promise<HttpResponse>` zurück —
 darin kannst du frei Actor-Calls `await`en:
 
 ```ts
-import {} from 'actor-ts';
+
 
 const routes = path('orders',
   path(':id',

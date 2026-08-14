@@ -12,13 +12,15 @@ Neustarts, schnell genug für die meisten Workloads.
 
 ```ts
 import {
+  ActorSystem,
+} from 'actor-ts';
+import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
   PersistenceExtensionId,
-  ActorSystem,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
@@ -259,7 +261,7 @@ Neben Journal und Snapshot-Store gibt es für SQLite einen
 Event-Log und ohne Replay:
 
 ```ts
-import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts/persistence';
 
 const stateOptions = SqliteDurableStateStoreOptions.create()
   .withPath('./state.db');
@@ -271,7 +273,7 @@ Durable-State-Store zu teilen, öffne es selbst und übergib es — der
 Store überlässt das Schließen dann dir:
 
 ```ts
-import { getSqliteDriver } from 'actor-ts';
+import { getSqliteDriver } from 'actor-ts/persistence';
 
 const driver = await getSqliteDriver();
 const database = driver.open('./app.db');

@@ -28,7 +28,7 @@ Das Interface ist über alle hinweg gleich — konstruiere einfach
 die passende Query für dein Journal-Backend.
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts/persistence';
 
 // SqliteQuery liest dasselbe Journal, in das deine PersistentActors schreiben.
 const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
@@ -232,7 +232,7 @@ beim Neustart vom persistierten Offset fort.
 ## Tag-Filter
 
 ```ts
-import type { TagFilter } from 'actor-ts';
+import type { TagFilter } from 'actor-ts/persistence';
 
 // Alle Events, die mindestens einen dieser Tags haben:
 query.eventsByTag<E>({ any: ['account', 'audit'] }, offset);

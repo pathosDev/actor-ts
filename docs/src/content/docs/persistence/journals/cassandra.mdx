@@ -9,7 +9,8 @@ nodes** — any node can append, read, or query events for any
 persistenceId.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, CassandraJournal, CassandraJournalOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { CassandraJournal, CassandraJournalOptions } from 'actor-ts/persistence';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])

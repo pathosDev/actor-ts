@@ -1,8 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  Actor, ActorSystem, ActorSystemOptions, AllForOneStrategy, Directive, LogLevel,
-  NoopLogger, Router,
-  type ActorRef, type SupervisorStrategy,
+  Actor,
+  ActorSystem,
+  ActorSystemOptions,
+  AllForOneStrategy,
+  Directive,
+  LogLevel,
+  NoopLogger,
+  Router,
+  type ActorRef,
+  type SupervisorStrategy,
 } from '../../src/index.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 

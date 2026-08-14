@@ -14,12 +14,16 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   Cluster,
   ClusterOptions,
   InMemoryTransport,
   NodeAddress,
+} from '../../src/cluster/index.js';
+import {
   managementRoutes,
-} from '../../src/index.js';
+} from '../../src/management/index.js';
 import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {

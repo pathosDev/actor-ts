@@ -7,7 +7,8 @@ description: Apache Kafka broker actor — publishes records to a topic, consume
 internally; you don't import it directly.
 
 ```ts
-import { ActorSystem, KafkaActor, KafkaOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { KafkaActor, KafkaOptions } from 'actor-ts/io';
 
 const system = ActorSystem.create('my-app');
 

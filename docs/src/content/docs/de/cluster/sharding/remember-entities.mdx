@@ -111,7 +111,7 @@ dauerhaft ist.
 ## Eigener Store
 
 ```ts
-import type { RememberEntitiesStore, RememberEvent } from 'actor-ts';
+import type { RememberEntitiesStore, RememberEvent } from 'actor-ts/cluster';
 
 class RedisRememberEntitiesStore implements RememberEntitiesStore {
   async append(typeName: string, event: RememberEvent): Promise<void> { /* RPUSH das Event als JSON */ }

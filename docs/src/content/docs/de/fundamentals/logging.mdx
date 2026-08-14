@@ -124,7 +124,8 @@ Mindest-Level — greif zum
 [Multi-Sink-Logging](/de/observability/logging/multi-sink/).
 
 ```ts
-import { ActorSystem, ActorSystemOptions, ConsoleSink } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { ConsoleSink } from 'actor-ts/logging';
 
 const consoleSink = new ConsoleSink();
 const actorSystemOptions = ActorSystemOptions.create().withLogSinks([consoleSink]);
@@ -200,7 +201,8 @@ brückst du über die OTel-Logs-API statt stdout-JSON:
 
 ```ts
 import * as logsApi from '@opentelemetry/api-logs';
-import { ActorSystem, ActorSystemOptions, otelLogger } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { otelLogger } from 'actor-ts/tracing';
 
 // (SDK-Setup: LoggerProvider + OTLP-Exporter registrieren — außerhalb des Scope.)
 

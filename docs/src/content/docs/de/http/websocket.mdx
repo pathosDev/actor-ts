@@ -11,9 +11,14 @@ siehe [WebsocketClientActor](/de/io/websocket/).
 
 ```ts
 import {
-  ActorSystem, HttpExtensionId,
-  WebsocketServerActor, websocket, type WebsocketConnection,
+  ActorSystem,
 } from 'actor-ts';
+import {
+  HttpExtensionId,
+  WebsocketServerActor,
+  websocket,
+  type WebsocketConnection,
+} from 'actor-ts/http';
 import { match } from 'ts-pattern';
 
 type SetNameMessage = { kind: 'setName'; name: string };
@@ -64,7 +69,7 @@ restlichen [Route-DSL](/de/http/route-dsl/) — `path()`, `concat()`
 und `withMiddleware()`.  Zwei Formen:
 
 ```ts
-import { websocket, path, concat } from 'actor-ts';
+import { websocket, path, concat } from 'actor-ts/http';
 
 // 1. Bare directive — mount it under a path yourself:
 path('ws', websocket(chat));
@@ -187,7 +192,7 @@ das Upgrade kommt nie zustande, sodass Auth-Middleware wie
 `BearerTokenAuth` oder `IpAllowlist` den Handshake absichert:
 
 ```ts
-import { websocket, withMiddleware } from 'actor-ts';
+import { websocket, withMiddleware } from 'actor-ts/http';
 
 withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 // A bad token → HTTP 401, no upgrade.  A good token → the socket opens.
@@ -330,7 +335,8 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 `TOut`-Antworten.  Der Default ist `jsonCodec()`:
 
 ```ts
-import { jsonCodec, WebsocketRouteOptions } from 'actor-ts';
+import { WebsocketRouteOptions } from 'actor-ts/http';
+import { jsonCodec } from 'actor-ts/persistence';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
@@ -343,7 +349,12 @@ Für Binärprotokolle liefert `rawCodec()` rohe Frames
 
 ```ts
 import { match } from 'ts-pattern';
-import { rawCodec, WebsocketRouteOptions, WebsocketServerActor, type WebsocketFrame } from 'actor-ts';
+import {
+  rawCodec,
+  WebsocketRouteOptions,
+  WebsocketServerActor,
+  type WebsocketFrame,
+} from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
 class BinaryHub extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {

@@ -23,6 +23,8 @@ import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   ByTagProjectionOptions,
   everyNEvents,
   InMemoryJournal,
@@ -30,7 +32,7 @@ import {
   InMemoryQuery,
   PersistentActor,
   ProjectionActor,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 /* --------------------------- write side ------------------------------- */

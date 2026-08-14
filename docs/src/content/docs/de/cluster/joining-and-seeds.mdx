@@ -26,7 +26,8 @@ Seed-Discovery-Ebene darüber.
 ## Der einfachste Fall — explizite Seeds
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const system = ActorSystem.create('my-app');
 
@@ -181,7 +182,7 @@ Framework nutzt sie, um den Join zu bootstrappen. Siehe
 ## Den Join-Fortschritt beobachten
 
 ```ts
-import { SelfUp, MemberUp } from 'actor-ts';
+import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof SelfUp) {

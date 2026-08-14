@@ -15,7 +15,7 @@ For formats beyond JSON / CBOR there are two routes:
   interface, bound to specific message classes.
 
 ```ts
-import { Serializer, SerializationExtensionId } from 'actor-ts';
+import { Serializer, SerializationExtensionId } from 'actor-ts/serialization';
 
 class ProtoOrderSerializer implements Serializer<Order> {
   readonly id = 100;
@@ -116,7 +116,7 @@ code (`pbjs`, `ts-proto`) fits too.
 
 ```ts
 import avsc from 'avsc';
-import { AvroSerializer, AvroSerializerOptions } from 'actor-ts';
+import { AvroSerializer, AvroSerializerOptions } from 'actor-ts/serialization';
 
 const avroType = avsc.Type.forSchema({
   name: 'Deposited',
@@ -135,7 +135,7 @@ const avroSerializer = new AvroSerializer(avroOptions);
 
 ```ts
 import protobuf from 'protobufjs';
-import { ProtobufSerializer, ProtobufSerializerOptions } from 'actor-ts';
+import { ProtobufSerializer, ProtobufSerializerOptions } from 'actor-ts/serialization';
 
 const root = protobuf.parse(`
   syntax = "proto3";
@@ -215,7 +215,7 @@ has to be computed **per value** — a version tag read off the
 message, say — implement the interface directly:
 
 ```ts
-import { Serializer } from 'actor-ts';
+import { Serializer } from 'actor-ts/serialization';
 import { Order } from './generated/order_pb.js';
 
 class OrderProtoSerializer implements Serializer<Order> {
@@ -310,7 +310,7 @@ per version with the
 [SchemaRegistry](/persistence/migration/schema-registry/):
 
 ```ts
-import { serializerCodec } from 'actor-ts';
+import { serializerCodec } from 'actor-ts/persistence';
 
 registry.register('BankAccount.Deposited', 1, {
   codec: serializerCodec(avroSerializer),

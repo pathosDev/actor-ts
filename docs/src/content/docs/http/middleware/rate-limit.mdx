@@ -10,7 +10,7 @@ Excess requests get **429** with a `Retry-After` header.
 
 ```ts
 import { rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
   cache:    new InMemoryCache(),
@@ -111,7 +111,7 @@ Clients use these to back off without retrying randomly.
 ## Cluster-aware rate limiting
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 rateLimit({

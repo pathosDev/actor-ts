@@ -38,8 +38,8 @@ Write-Durchsatz (durable, append-only) von Read-Durchsatz
 
 ```ts
 import { match } from 'ts-pattern';
-import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts/persistence';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
@@ -118,7 +118,7 @@ viel komplexer, nicht out-of-the-box bereitgestellt.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts/persistence';
 
 // Default (verloren beim Neustart):
 new InMemoryOffsetStore();

@@ -29,7 +29,8 @@ persisted as an event and replayed on recovery.
 ## A minimal example
 
 ```ts
-import { FSM, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { FSM } from 'actor-ts/fsm';
 
 type State = 'closed' | 'open';
 type Data  = { openedAt?: number };

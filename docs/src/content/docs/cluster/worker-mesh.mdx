@@ -56,7 +56,7 @@ code runs everywhere.
 
 ```ts
 // main.ts — main thread
-import { WorkerCluster, WorkerClusterOptions } from 'actor-ts';
+import { WorkerCluster, WorkerClusterOptions } from 'actor-ts/worker';
 
 const workerClusterOptions = WorkerClusterOptions.create()
   .withWorkers(4)
@@ -78,7 +78,9 @@ transport, and `initData`, then joins the cluster like any other node:
 
 ```ts
 // worker-node.ts — runs inside each worker
-import { ActorSystem, Cluster, ClusterOptions, WorkerNode } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { WorkerNode } from 'actor-ts/worker';
 
 async function main(): Promise<void> {
   const context = await WorkerNode.join<{ seedAddress?: string }>();
@@ -136,7 +138,8 @@ bespoke handshake, or extra per-node setup.
 ```ts
 // main.ts — main thread
 import { Worker } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
 
 const channel = new MessageChannel();
 
@@ -161,7 +164,8 @@ await Cluster.join(
 
 // worker.js — runs in the worker thread
 import { parentPort, workerData } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
 
 const workerAddress = new NodeAddress('w1', 'w1', 0);
 const transport = new MessageChannelTransport(workerAddress, workerData.mainPort);
@@ -190,7 +194,8 @@ by the envelope's `to` address.  Every node's
 of one channel to the broker, never an array:
 
 ```ts
-import { MessageChannelTransport, NodeAddress, WorkerBroker } from 'actor-ts';
+import { MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
+import { WorkerBroker } from 'actor-ts/worker';
 
 // Main thread: one broker is the hub for every node.
 const broker = new WorkerBroker();

@@ -10,7 +10,7 @@ import {
   CborSerializer,
   JsonSerializer,
   SerializationExtension,
-} from '../../src/index.js';
+} from '../../src/serialization/index.js';
 
 class Greeting {
   constructor(public readonly who: string, public readonly at: Date) {}

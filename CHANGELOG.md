@@ -9,7 +9,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the root `'actor-ts'` export is core-only; subsystems moved
+  to subpath exports** (#414).  The root barrel re-exported every subsystem,
+  which dragged the whole framework through one entry point — the testkit
+  shipped in the production entry (#685), and `import { ActorSystem }` paid
+  for whatever any subsystem pulled in eagerly (#1005).  Core — actors,
+  supervision, scheduler/dispatcher, EventStream, system messages, config,
+  mailboxes, patterns/Router, typed behaviors, the util value types and the
+  base loggers — stays at `'actor-ts'`; everything else lives at its own
+  entry: `actor-ts/cache`, `/cluster`, `/coordination`, `/crdt`, `/delivery`,
+  `/devtools`, `/discovery`, `/fsm`, `/http`, `/io`, `/logging`,
+  `/management`, `/metrics`, `/persistence`, `/serialization`, `/testkit`,
+  `/tracing`, `/worker`.
+
+  *Migration:* import moved symbols from their subsystem entry — e.g.
+  `import { PersistentActor } from 'actor-ts/persistence'`,
+  `import { Cluster } from 'actor-ts/cluster'`,
+  `import { FileSink } from 'actor-ts/logging'`.  Aliased root names keep
+  working as spelled aliases: `import { Subscribe as ReceptionistSubscribe }
+  from 'actor-ts/discovery'`, `import { Transition as FsmTransition } from
+  'actor-ts/fsm'`.
+
+- **The default Fastify backend loads lazily** (#1005).  `import
+  { ActorSystem } from 'actor-ts'` no longer parses Fastify and its ~20
+  transitive packages; the default backend resolves on the first bind,
+  exactly like the express and hono arms always did.  fastify remains a
+  hard dependency.
+
 ### Added
+
+- **Per-subsystem subpath exports** (#414, #1001).  The exports map grew one
+  entry per subsystem barrel (sixteen new entries next to `./testkit` and
+  `./devtools`), so the subpaths the documentation already used —
+  `actor-ts/http`, `/coordination`, `/serialization`, `/discovery` — resolve
+  now, and the smoke suite loads every declared entry on Bun, Node and Deno
+  (#1003).
+
+- **`getSqliteDriver` and the `SqliteDriver` type are published** via
+  `actor-ts/persistence`, next to `buildSqliteDatabase` and for the same
+  #124 reason — the last documented symbols no entry point served (#1002).
 
 - **Logging grew a sink architecture** (#1150).  The logger wrote to exactly
   one place; it now fans one record out to as many destinations as you

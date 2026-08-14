@@ -110,7 +110,7 @@ Willst du DevTools neben deine
 statt auf einen eigenen Port, hol dir die Routen und binde sie selbst:
 
 ```ts
-import { BearerTokenAuth, concat, path } from 'actor-ts';
+import { BearerTokenAuth, concat, path } from 'actor-ts/http';
 import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
 
 const devtoolsOptions = DevToolsOptions.create()
@@ -241,7 +241,7 @@ Wenn du sie doch exponierst, hänge sie hinter dieselbe Auth wie deine
 Management-Endpunkte und behandle die Credentials als Produktivgeheimnis:
 
 ```ts
-import { BearerTokenAuth } from 'actor-ts';
+import { BearerTokenAuth } from 'actor-ts/http';
 
 const devtoolsOptions = DevToolsOptions.create()
   .withHost('0.0.0.0')

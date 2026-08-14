@@ -9,12 +9,14 @@
 import {
   ActorSystem,
   ActorSystemOptions,
+  LogLevel,
+  NoopLogger,
+} from '../../src/index.js';
+import {
   ExpressBackend,
   FastifyBackend,
   HonoBackend,
   HttpExtensionId,
-  LogLevel,
-  NoopLogger,
   Status,
   complete,
   completeJson,
@@ -25,7 +27,7 @@ import {
   post,
   type HttpServerBackend,
   type ServerBinding,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { runGroup } from '../lib/harness.js';
 
 const ITERATIONS = 2_000;

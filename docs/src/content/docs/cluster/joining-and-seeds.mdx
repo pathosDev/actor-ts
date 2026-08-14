@@ -25,7 +25,8 @@ seed-discovery layer on top.
 ## The simplest case — explicit seeds
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const system = ActorSystem.create('my-app');
 
@@ -180,7 +181,7 @@ provider model.
 ## Watching the join progress
 
 ```ts
-import { SelfUp, MemberUp } from 'actor-ts';
+import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof SelfUp) {

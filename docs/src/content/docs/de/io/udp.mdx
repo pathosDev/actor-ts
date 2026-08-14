@@ -15,8 +15,9 @@ explizitem Ziel (UDP ist verbindungslos, jedes Paket trägt also seine
 eigene Adresse).
 
 ```ts
-import { ActorSystem, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
-import type { UdpDatagram } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { UdpSocketActor, UdpSocketOptions } from 'actor-ts/io';
+import type { UdpDatagram } from 'actor-ts/io';
 
 const system = ActorSystem.create('udp-demo');
 

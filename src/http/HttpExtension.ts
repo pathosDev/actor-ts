@@ -7,7 +7,6 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
-import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions } from './HttpClientOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
@@ -330,16 +329,22 @@ function logRouteFailure(
  * when the builder was not given one — `useBackend(...)` is the explicit
  * layer and always wins.
  *
- * Express and Hono are imported dynamically rather than at module scope:
- * both are optional peer dependencies, and a static import would put every
- * shipped backend into the bundle of an application that uses one.  Fastify
- * is the built-in default and already imported.
+ * All three backends are imported dynamically rather than at module scope.
+ * For Express and Hono that keeps optional peer dependencies out of the
+ * bundle of an application that uses another backend.  Fastify is the
+ * built-in default and a hard dependency, but ActorSystem reaches this
+ * module statically (the newServerAt sugar needs the extension id and its
+ * factory synchronously), so a static Fastify import here would make every
+ * `import { ActorSystem } from 'actor-ts'` pay Fastify's parse cost (#1005)
+ * — the lazy import moves it to the first bind, on an already-async path.
  */
 async function backendFromConfig(config: Config): Promise<HttpServerBackend> {
-  if (!config.hasPath(ConfigKeys.http.backend)) return new FastifyBackend();
+  if (!config.hasPath(ConfigKeys.http.backend)) {
+    return new (await import('./backend/FastifyBackend.js')).FastifyBackend();
+  }
   const name = config.getString(ConfigKeys.http.backend);
   return await match(name)
-    .with('fastify', async () => new FastifyBackend())
+    .with('fastify', async () => new (await import('./backend/FastifyBackend.js')).FastifyBackend())
     .with('express', async () => new (await import('./backend/ExpressBackend.js')).ExpressBackend())
     .with('hono', async () => new (await import('./backend/HonoBackend.js')).HonoBackend())
     .otherwise(() => {

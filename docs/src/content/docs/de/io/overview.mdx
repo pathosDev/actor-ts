@@ -99,7 +99,7 @@ Ein Fehler während `connected` löst einen Übergang nach `disconnected`
 Subscribiere die Lifecycle-Events über den Event-Stream:
 
 ```ts
-import { BrokerConnected, BrokerDisconnected, BrokerReconnectAttempt } from 'actor-ts';
+import { BrokerConnected, BrokerDisconnected, BrokerReconnectAttempt } from 'actor-ts/io';
 
 class Monitor extends Actor<BrokerConnected | BrokerDisconnected | BrokerReconnectAttempt> {
   override preStart(): void {
@@ -248,7 +248,7 @@ Implementiere die drei abstrakten Methoden und verdrahte die
 Settings:
 
 ```ts
-import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts';
+import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }

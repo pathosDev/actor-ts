@@ -95,7 +95,7 @@ entry point — an HTTP handler, a broker consumer, a scheduled job — and
 every `tell` inside it carries the context onwards:
 
 ```ts
-import { tracerOf } from 'actor-ts';
+import { tracerOf } from 'actor-ts/tracing';
 
 const tracer = tracerOf(system);
 const span = tracer.startSpan('handle-request', { kind: 'server' });

@@ -14,7 +14,7 @@ It:
   resolves; if the handler throws, no ack — the producer retransmits.
 
 ```ts
-import { ConsumerController } from 'actor-ts';
+import { ConsumerController } from 'actor-ts/delivery';
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>({

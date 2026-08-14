@@ -20,7 +20,8 @@ lifecycle, the reconnect policy and the `BrokerConnected` /
 ## Dialing out — `TcpSocketActor`
 
 ```ts
-import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
@@ -70,7 +71,7 @@ published on `system.eventStream` as `BrokerConnected` /
 `BrokerDisconnected` events, shared by every broker actor:
 
 ```ts
-import { BrokerConnected, BrokerDisconnected } from 'actor-ts';
+import { BrokerConnected, BrokerDisconnected } from 'actor-ts/io';
 
 system.eventStream.subscribe(monitorRef, BrokerConnected);
 system.eventStream.subscribe(monitorRef, BrokerDisconnected);
@@ -79,7 +80,7 @@ system.eventStream.subscribe(monitorRef, BrokerDisconnected);
 ## Framing
 
 ```ts
-import { TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost(host)
@@ -139,7 +140,8 @@ cluster transport uses, so Bun, Node and Deno — and TLS — come
 from one place.
 
 ```ts
-import { ActorSystem, TcpServerActor, TcpServerOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpServerActor, TcpServerOptions } from 'actor-ts/io';
 
 const tcpServerOptions = TcpServerOptions.create()
   .withBindHost('0.0.0.0')
@@ -190,7 +192,7 @@ take the variant it is about rather than narrowing the union at
 every arm:
 
 ```ts
-import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts';
+import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts/io';
 ```
 
 An echo server is then the obvious three lines:

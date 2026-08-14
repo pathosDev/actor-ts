@@ -18,7 +18,7 @@ gewolltes Item löschen.
 ## GSet
 
 ```ts
-import { GSet } from 'actor-ts';
+import { GSet } from 'actor-ts/crdt';
 
 let s = GSet.empty<string>();
 s = s.add('apple');
@@ -57,7 +57,7 @@ stabilen IDs, aber veränderlichen anderen Feldern sind.
 ## ORSet (Observed-Remove Set)
 
 ```ts
-import { ORSet } from 'actor-ts';
+import { ORSet } from 'actor-ts/crdt';
 
 let s = ORSet.empty<string>();
 s = s.add('node-a', 'apple');

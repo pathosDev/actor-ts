@@ -22,15 +22,95 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./testkit": {
-      "types": "./dist/testkit/index.d.ts",
-      "import": "./dist/testkit/index.js",
-      "default": "./dist/testkit/index.js"
+    "./cache": {
+      "types": "./dist/cache/index.d.ts",
+      "import": "./dist/cache/index.js",
+      "default": "./dist/cache/index.js"
+    },
+    "./cluster": {
+      "types": "./dist/cluster/index.d.ts",
+      "import": "./dist/cluster/index.js",
+      "default": "./dist/cluster/index.js"
+    },
+    "./coordination": {
+      "types": "./dist/coordination/index.d.ts",
+      "import": "./dist/coordination/index.js",
+      "default": "./dist/coordination/index.js"
+    },
+    "./crdt": {
+      "types": "./dist/crdt/index.d.ts",
+      "import": "./dist/crdt/index.js",
+      "default": "./dist/crdt/index.js"
+    },
+    "./delivery": {
+      "types": "./dist/delivery/index.d.ts",
+      "import": "./dist/delivery/index.js",
+      "default": "./dist/delivery/index.js"
     },
     "./devtools": {
       "types": "./dist/devtools/index.d.ts",
       "import": "./dist/devtools/index.js",
       "default": "./dist/devtools/index.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery/index.d.ts",
+      "import": "./dist/discovery/index.js",
+      "default": "./dist/discovery/index.js"
+    },
+    "./fsm": {
+      "types": "./dist/fsm/index.d.ts",
+      "import": "./dist/fsm/index.js",
+      "default": "./dist/fsm/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "import": "./dist/http/index.js",
+      "default": "./dist/http/index.js"
+    },
+    "./io": {
+      "types": "./dist/io/index.d.ts",
+      "import": "./dist/io/index.js",
+      "default": "./dist/io/index.js"
+    },
+    "./logging": {
+      "types": "./dist/logging/index.d.ts",
+      "import": "./dist/logging/index.js",
+      "default": "./dist/logging/index.js"
+    },
+    "./management": {
+      "types": "./dist/management/index.d.ts",
+      "import": "./dist/management/index.js",
+      "default": "./dist/management/index.js"
+    },
+    "./metrics": {
+      "types": "./dist/metrics/index.d.ts",
+      "import": "./dist/metrics/index.js",
+      "default": "./dist/metrics/index.js"
+    },
+    "./persistence": {
+      "types": "./dist/persistence/index.d.ts",
+      "import": "./dist/persistence/index.js",
+      "default": "./dist/persistence/index.js"
+    },
+    "./serialization": {
+      "types": "./dist/serialization/index.d.ts",
+      "import": "./dist/serialization/index.js",
+      "default": "./dist/serialization/index.js"
+    },
+    "./testkit": {
+      "types": "./dist/testkit/index.d.ts",
+      "import": "./dist/testkit/index.js",
+      "default": "./dist/testkit/index.js"
+    },
+    "./tracing": {
+      "types": "./dist/tracing/index.d.ts",
+      "import": "./dist/tracing/index.js",
+      "default": "./dist/tracing/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js",
+      "default": "./dist/worker/index.js"
     },
     "./package.json": "./package.json"
   },

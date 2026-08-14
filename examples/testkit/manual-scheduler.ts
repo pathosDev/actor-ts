@@ -3,7 +3,8 @@
  *
  *   bun run examples/testkit/manual-scheduler.ts
  */
-import { Actor, TestKit } from '../../src/index.js';
+import { Actor } from '../../src/index.js';
+import { TestKit } from '../../src/testkit/index.js';
 
 class Heartbeat extends Actor<'tick'> {
   constructor(private readonly probe: import('../../src/index.js').TestProbe) { super(); }

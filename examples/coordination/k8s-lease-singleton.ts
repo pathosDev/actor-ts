@@ -35,9 +35,16 @@
  * because it's standalone.
  */
 import {
-  Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport,
-  NodeAddress, StartSingletonOptions,
+  Actor,
+  ActorSystem,
 } from '../../src/index.js';
+import {
+  Cluster,
+  ClusterOptions,
+  InMemoryTransport,
+  NodeAddress,
+  StartSingletonOptions,
+} from '../../src/cluster/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { attachDevTools } from '../devtools.js';

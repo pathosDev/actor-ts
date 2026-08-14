@@ -17,12 +17,14 @@ import { match } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   InMemoryJournal,
   InMemorySnapshotStore,
   PersistentActor,
   defaultsAdapter,
   type EventAdapter,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };

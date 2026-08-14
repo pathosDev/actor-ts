@@ -11,7 +11,7 @@ Cert-Material jede Komponente braucht.
 ## Cluster-Transport
 
 ```ts
-import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(self, log, {
   cert: fs.readFileSync('./tls/cluster.crt'),
@@ -53,7 +53,7 @@ in Depth.
 ## HTTP-Server
 
 ```ts
-import { HttpExtensionId } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 
@@ -75,7 +75,8 @@ Infrastruktur.
 ## Management-Endpunkt
 
 ```ts
-import { managementRoutes, FastifyBackend } from 'actor-ts';
+import { FastifyBackend } from 'actor-ts/http';
+import { managementRoutes } from 'actor-ts/management';
 
 const { routes } = managementRoutes(system, cluster);
 

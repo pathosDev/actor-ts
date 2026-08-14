@@ -15,7 +15,8 @@ mit `this.publish(...)`.  Von außen bleibt er per `ref.tell(...)`
 steuerbar.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, MqttActor, MqttOptions, type MqttMessage } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { MqttActor, MqttOptions, type MqttMessage } from 'actor-ts/io';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -165,7 +166,7 @@ Der Codec wandelt Entities in Bytes und zurück.  Default ist
 via `withCodec(...)` — z. B. einen JSON-Codec mit Laufzeit-Validierung:
 
 ```ts
-import { mqttJsonCodec, MqttOptions } from 'actor-ts';
+import { mqttJsonCodec, MqttOptions } from 'actor-ts/io';
 
 const codec = mqttJsonCodec<Reading>({
   validate: (v) => ReadingSchema.parse(v),   // zod usw.; wirft → MqttDecodeError

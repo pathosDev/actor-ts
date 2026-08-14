@@ -8,7 +8,7 @@ assigning **sequence numbers** + holding them until **acked** by
 the consumer.
 
 ```ts
-import { ProducerController, ProducerControllerOptions } from 'actor-ts';
+import { ProducerController, ProducerControllerOptions } from 'actor-ts/delivery';
 
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('orders')                     // stable identity

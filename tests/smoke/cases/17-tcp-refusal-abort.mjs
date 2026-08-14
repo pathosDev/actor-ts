@@ -30,8 +30,9 @@ export const description = 'TcpSocketLike.destroy() is implemented per runtime a
 
 const TIMEOUT_MS = 5_000;
 
-export async function run({ actorTs }) {
-  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, TcpServerActor, TcpServerOptions } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
+  const { TcpServerActor, TcpServerOptions } = await loadEntry('io');
   const net = await import('node:net');
 
   class CollectingTarget extends Actor {

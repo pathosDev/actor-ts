@@ -9,7 +9,8 @@ Seeds zurück.  Funktioniert ohne DNS, ohne SRV, ohne manuelle
 Seed-Listen-Pflege — der Service ist dein Vertrag.
 
 ```ts
-import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(process.env.K8S_NAMESPACE!)

@@ -8,7 +8,8 @@ Wraps Fastify — fast, well-maintained, with a huge ecosystem of
 plugins (JWT auth, validation, swagger, etc.).
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 

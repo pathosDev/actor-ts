@@ -27,8 +27,9 @@ import { join } from 'node:path';
 export const name = 'file log sink';
 export const description = 'append handle + rotation naming + flush on terminate, on every runtime';
 
-export async function run({ actorTs }) {
-  const { ActorSystem, ActorSystemOptions, FileSink, FileSinkOptions, LogLevel } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel } = actorTs;
+  const { FileSink, FileSinkOptions } = await loadEntry('logging');
 
   const directory = await mkdtemp(join(tmpdir(), 'actor-ts-smoke-log-'));
   try {

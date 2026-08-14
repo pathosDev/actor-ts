@@ -16,7 +16,7 @@ Beide konvergieren bei nebenläufigen Writes, indem sie
 ## GCounter
 
 ```ts
-import { GCounter } from 'actor-ts';
+import { GCounter } from 'actor-ts/crdt';
 
 let c = GCounter.empty();
 c = c.increment('node-a', 3);
@@ -52,7 +52,7 @@ insgesamt.  Falsche Form für Dinge, die *runter* gehen
 ## PNCounter
 
 ```ts
-import { PNCounter } from 'actor-ts';
+import { PNCounter } from 'actor-ts/crdt';
 
 let c = PNCounter.empty();
 c = c.increment('node-a', 5);
@@ -86,7 +86,7 @@ Warenkorb, verfügbarer Bestand, Saldo nach Ausgleichen.
 ## Mit DistributedData verwenden
 
 ```ts
-import { GCounter } from 'actor-ts';
+import { GCounter } from 'actor-ts/crdt';
 
 const dd = system.extension(DistributedDataId).start(cluster);
 

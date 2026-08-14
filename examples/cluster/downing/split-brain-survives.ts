@@ -12,7 +12,7 @@ import {
   Member,
   NodeAddress,
   type ClusterPartitionView,
-} from '../../../src/index.js';
+} from '../../../src/cluster/index.js';
 
 function addr(port: number): NodeAddress { return new NodeAddress('sys', 'h', port); }
 

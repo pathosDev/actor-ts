@@ -8,7 +8,8 @@ records** a baseline of metrics covering the actor lifecycle,
 message handling, bounded mailboxes, and the cluster.
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const metrics = system.extension(MetricsExtensionId).enable();
 // Stock metrics now record into the live registry — no further setup

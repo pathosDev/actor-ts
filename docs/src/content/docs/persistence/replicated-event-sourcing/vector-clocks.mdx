@@ -33,7 +33,7 @@ zero).
 The framework's `VectorClock` class wraps this:
 
 ```ts
-import { VectorClock } from 'actor-ts';
+import { VectorClock } from 'actor-ts/persistence';
 
 let vc = VectorClock.empty();
 vc = vc.tick('replica-a');        // → { 'replica-a': 1 }

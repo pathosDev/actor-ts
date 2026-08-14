@@ -13,7 +13,7 @@ import {
   rememberEntitiesDdl,
   JournalRememberEntitiesStore,
   type RememberEvent,
-} from '../../../../../src/index.js';
+} from '../../../../../src/cluster/index.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { FakeCassandraClient } from '../../persistence/FakeCassandraClient.js';
 

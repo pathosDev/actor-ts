@@ -14,7 +14,8 @@ SRV is the more flexible choice (service-discovery-style); A
 records work for simpler setups.
 
 ```ts
-import { Cluster, ClusterOptions, DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts/discovery';
 
 const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
   .withHostname('_actor-ts._tcp.example.com')

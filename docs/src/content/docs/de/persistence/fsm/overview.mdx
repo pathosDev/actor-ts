@@ -33,7 +33,8 @@ als Event persistiert und bei der Recovery erneut abgespielt.
 ## Ein minimales Beispiel
 
 ```ts
-import { FSM, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { FSM } from 'actor-ts/fsm';
 
 type State = 'closed' | 'open';
 type Data  = { openedAt?: number };

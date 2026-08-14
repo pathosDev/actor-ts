@@ -31,13 +31,15 @@ Lazy-imported on first use, like every other adapter.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   PersistenceExtensionId,
   MariaDbJournalOptions,
   MariaDbSnapshotStoreOptions,
   MariaDbDurableStateStoreOptions,
   RegisterMariaDbPluginsOptions,
   registerMariaDbPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
     'actor-ts': {

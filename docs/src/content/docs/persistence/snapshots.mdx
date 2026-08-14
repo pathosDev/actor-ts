@@ -27,7 +27,7 @@ buy bounded recovery time.
 The actor declares **when** to snapshot via `snapshotPolicy()`:
 
 ```ts
-import { PersistentActor, everyNEvents } from 'actor-ts';
+import { PersistentActor, everyNEvents } from 'actor-ts/persistence';
 
 class Account extends PersistentActor<Command, Event, State> {
   // ...
@@ -94,7 +94,8 @@ Snapshots are stored in a **separate** snapshot store, wired at
 system creation via `withPersistence`:
 
 ```ts
-import { ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystemOptions } from 'actor-ts';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts/persistence';
 
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),

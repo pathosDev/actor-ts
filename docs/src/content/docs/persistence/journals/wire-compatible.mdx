@@ -16,7 +16,7 @@ There is no `CockroachJournal` and no `YugabyteJournal` — you use
 `PostgresJournal` and point it at the other server:
 
 ```ts
-import { PostgresJournal, PostgresJournalOptions } from 'actor-ts';
+import { PostgresJournal, PostgresJournalOptions } from 'actor-ts/persistence';
 
 // CockroachDB
 const cockroachJournalOptions = PostgresJournalOptions.create()

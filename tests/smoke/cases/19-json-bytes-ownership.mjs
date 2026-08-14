@@ -22,8 +22,8 @@
 export const name = 'JSON byte ownership';
 export const description = 'decoded __bytes__ / __typedarray__ payloads own an exact, offset-0 buffer';
 
-export async function run({ actorTs, runtime }) {
-  const { JsonSerializer } = actorTs;
+export async function run({ actorTs, runtime, loadEntry }) {
+  const { JsonSerializer } = await loadEntry('serialization');
   const json = new JsonSerializer();
   const fail = (message) => { throw new Error(message); };
 

@@ -33,11 +33,13 @@ call as a message.  Handlers are keyed by method name in the
 ```ts
 import {
   Actor,
+} from 'actor-ts';
+import {
   GrpcServerActor,
   GrpcServerOptions,
   type GrpcUnaryCall,
   type GrpcServerStreamCall,
-} from 'actor-ts';
+} from 'actor-ts/io';
 
 // A unary handler: reply once via `respond`.
 class GetSensorHandler extends Actor<GrpcUnaryCall> {
@@ -117,6 +119,8 @@ An `onData` subscriber receives `GrpcRequestStreamInbound` — either
 import { match, P } from 'ts-pattern';
 import {
   Actor,
+} from 'actor-ts';
+import {
   GrpcClientActor,
   GrpcClientOptions,
   type GrpcInbound,
@@ -125,7 +129,7 @@ import {
   type StreamDataMessage,
   type StreamErrorMessage,
   type StreamStartedMessage,
-} from 'actor-ts';
+} from 'actor-ts/io';
 
 const grpcClientOptions = GrpcClientOptions.create()
   .withProtoPath(protoPath)
@@ -367,7 +371,7 @@ that feeds the management server's `/ready` endpoint.  Pass the
 registry to `withHealth` — that *is* the opt-in:
 
 ```ts
-import { HealthCheckRegistry } from 'actor-ts';
+import { HealthCheckRegistry } from 'actor-ts/management';
 
 const health = new HealthCheckRegistry();
 health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));

@@ -4,7 +4,8 @@
  *
  *   bun run examples/fsm/traffic-light.ts
  */
-import { ActorSystem, FSM } from '../../src/index.js';
+import { ActorSystem } from '../../src/index.js';
+import { FSM } from '../../src/fsm/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type Color = 'red' | 'green' | 'yellow';

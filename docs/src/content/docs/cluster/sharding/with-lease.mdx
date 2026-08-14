@@ -16,7 +16,8 @@ both sides.
 The **single-writer lease** prevents this:
 
 ```ts
-import { ClusterSharding, KubernetesLease, KubernetesLeaseOptions, StartShardingOptions } from 'actor-ts';
+import { ClusterSharding, StartShardingOptions } from 'actor-ts/cluster';
+import { KubernetesLease, KubernetesLeaseOptions } from 'actor-ts/coordination';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('order-sharding-coordinator')

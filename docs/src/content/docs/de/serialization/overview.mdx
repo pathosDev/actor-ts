@@ -114,7 +114,7 @@ Siehe [JsonSerializer](/de/serialization/json/) +
 kompilierte Schema, das Framework den Serializer:
 
 ```ts
-import { ProtobufSerializer, ProtobufSerializerOptions, SerializationExtensionId } from 'actor-ts';
+import { ProtobufSerializer, ProtobufSerializerOptions, SerializationExtensionId } from 'actor-ts/serialization';
 
 const protobufOptions = ProtobufSerializerOptions.create<MyEvent>()
   .withMessageType(root.lookupType('shop.MyEvent'))

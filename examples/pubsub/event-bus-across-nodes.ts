@@ -12,7 +12,8 @@
  *   - both nodes see BROADCAST events
  *   - after B leaves, A's publishes no longer try to reach B
  */
-import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/index.js';
+import { Actor, ActorSystem } from '../../src/index.js';
+import { Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/cluster/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 
