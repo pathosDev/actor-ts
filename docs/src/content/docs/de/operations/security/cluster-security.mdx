@@ -264,6 +264,7 @@ erreichen.
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Frame in tausende Chunks zerlegt, um die Decode-Kosten zu vervielfachen | Linearer Decode-Puffer — jedes Byte wird einmal kopiert, beim Eintreffen |
 | Socket öffnet, schickt einen halben Frame und verstummt | Stall-Deadline auf einem unvollständigen Frame, dazu eine Obergrenze für eingehende Verbindungen |
+| Massenhaft geöffnete Sockets, die gar nichts senden, um die Obergrenze zu füllen | Handshake-Deadline auf jedem angenommenen Socket, damit kein Slot unbefristet gehalten wird |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt akzeptierten überbieten |
@@ -376,7 +377,7 @@ jetzt an einen Puffer an, den er durch Verdoppeln wachsen lässt:
 jedes Byte wird beim Eintreffen einmal kopiert, die Verstärkung
 ist 1×.
 
-Zwei Grenzen decken ab, was ein unauthentifizierter Socket
+Drei Grenzen decken ab, was ein unauthentifizierter Socket
 während der Verbindung noch halten darf:
 
 - Ein **unvollständiger Frame** darf 30 Sekunden liegen, ohne
@@ -385,8 +386,18 @@ während der Verbindung noch halten darf:
   Frame: die Deadline wird bei jedem Chunk neu gestellt, ein
   Peer mit einem großen Frame auf einer überlasteten Leitung
   wird also nie für Langsamkeit bestraft — nur fürs Verstummen.
-  Bisher hatten nur *ausgehende* Dials eine Deadline, und die
-  ist bedeutungslos, sobald der Handshake steht.
+- **Der Handshake selbst** hat 5 Sekunden, gerechnet ab dem
+  Annehmen des Sockets; ein angenommener Socket, der bis dahin
+  kein `hello` geschickt hat, wird geschlossen. Genau das deckt
+  ein unvollständiger Frame nicht ab: ein Socket, der *gar
+  keine Bytes* sendet, steckt in keinem Frame fest, also wird
+  an ihm auch nichts verfolgt. Es sind dieselben 5 Sekunden,
+  die sich die wählende Seite selbst gibt, und deren Uhr läuft
+  früher los — vor dem TCP-Connect und dem TLS-Handshake — ein
+  Peer, der es noch versucht, hat also immer schon vorher
+  aufgegeben. Sobald das `hello` da ist, ist die Deadline weg:
+  ein etablierter Peer zwischen zwei Gossip-Runden ist von
+  Natur aus untätig und wird dafür nie geschlossen.
 - **Eingehende Verbindungen** sind auf 1024 begrenzt. Ein voll
   vermaschter Cluster braucht eine pro Peer, die Grenze liegt
   also weit über jeder realistischen Topologie; was sie nimmt,
@@ -396,12 +407,23 @@ während der Verbindung noch halten darf:
   verdrängen — Verdrängung ließe einen Angreifer echte Peers
   vom Knoten stoßen.
 
-Zusammen begrenzen sie den eingehenden Decode-Speicher
-überhaupt erst: als Produkt der beiden, wobei der Term pro
-Verbindung schon durch `actor-ts.remote.max-frame-bytes`
-gedeckelt ist. Diesen Key zu senken ist auch der Hebel für ein
-Deployment, das nie große Envelopes schickt — die residenten
-Kosten pro Verbindung folgen ihm direkt.
+Die zweite und die dritte gehören zusammen. Eine Obergrenze ist
+nur so viel wert wie der Durchsatz ihrer Slots, und ohne
+Handshake-Deadline wird die Obergrenze selbst zum Angriff: 1024
+Verbindungen, die nichts senden, halten jeden Slot für die
+Lebensdauer des Prozesses, und jeder Peer und jeder
+`ClusterClient` danach wird abgewiesen. Auf Bun ist das sogar
+unter mTLS erreichbar, denn der `open`-Callback eines Sockets
+feuert *bevor* der TLS-Handshake fertig ist — der Slot wäre
+belegt, während es noch gar kein Zertifikat zu prüfen gibt.
+
+Die erste und die dritte begrenzen den eingehenden
+Decode-Speicher überhaupt erst: als Produkt der beiden, wobei
+der Term pro Verbindung schon durch
+`actor-ts.remote.max-frame-bytes` gedeckelt ist. Diesen Key zu
+senken ist auch der Hebel für ein Deployment, das nie große
+Envelopes schickt — die residenten Kosten pro Verbindung folgen
+ihm direkt.
 
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 

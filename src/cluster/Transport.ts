@@ -61,7 +61,17 @@ type Connection = {
    * unreachable *and* un-redialable (#697).
    */
   targetKey: string | null;
-  /** Armed on dial, cleared by `hello-ack`.  See {@link HANDSHAKE_TIMEOUT_MS}. */
+  /**
+   * Deadline for the handshake, armed the moment the connection exists and
+   * cleared by the `hello` / `hello-ack` that completes it.  See
+   * {@link HANDSHAKE_TIMEOUT_MS}.
+   *
+   * **Both directions get one.**  A dial that never receives its `hello-ack`
+   * strands a `byPeer` slot (#697); an accepted socket that never sends a
+   * `hello` strands one of the {@link MAX_INBOUND_CONNECTIONS} — the same bug
+   * on the two sides of the same handshake, and only the first of the two was
+   * ever bounded (#588).
+   */
   handshakeTimer: ReturnType<typeof setTimeout> | null;
   /**
    * Armed whenever the decoder is left holding part of a frame, re-armed on
@@ -195,6 +205,16 @@ export class TcpTransport implements Transport {
    * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
    * here: attaching twice would replace a decoder mid-frame *and* count the
    * same socket against the cap twice.
+   *
+   * The slot is handed out against a handshake deadline, never open-ended.  A
+   * socket that sends *no bytes at all* reaches neither the frame decoder nor
+   * `trackIncompleteFrame`, so before that deadline existed the cheapest attack
+   * on the cap was also the only one it did not cover: open
+   * {@link MAX_INBOUND_CONNECTIONS} connections, say nothing, and every
+   * subsequent peer and `ClusterClient` is refused for the process's lifetime.
+   * On Bun that is reachable even under mTLS, because the socket's `open`
+   * callback fires *before* the TLS handshake completes — the slot is taken
+   * while there is still no certificate to check.
    */
   private acceptInbound(sock: TcpSocketLike): Connection | null {
     const existing = this.bySocket.get(sock);
@@ -223,6 +243,7 @@ export class TcpTransport implements Transport {
       pendingOverflowed: false,
     };
     this.bySocket.set(sock, connection);
+    this.armHandshakeTimer(connection);
     return connection;
   }
 
@@ -245,13 +266,7 @@ export class TcpTransport implements Transport {
       pendingOverflowed: false,
     };
     this.byPeer.set(targetKey, connection);
-    connection.handshakeTimer = setTimeout(
-      () => this.onHandshakeTimeout(connection),
-      HANDSHAKE_TIMEOUT_MS,
-    );
-    // Don't let a pending handshake hold the process open — the cluster's own
-    // lifecycle decides when the runtime may exit, not a dial in flight.
-    (connection.handshakeTimer as { unref?: () => void }).unref?.();
+    this.armHandshakeTimer(connection);
 
     // Kick off the connect — when it resolves, install the socket into the
     // pre-registered Connection so subsequent `send(...)` calls can use it.  If
@@ -374,6 +389,7 @@ export class TcpTransport implements Transport {
         this.dropConnection(existing);
       }
       connection.peer = peer;
+      this.clearHandshakeTimer(connection);
       this.byPeer.set(peerKey, connection);
       const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
       connection.socket?.write(encodeFrame(ack));
@@ -510,6 +526,33 @@ export class TcpTransport implements Transport {
     this.inboundCapReported = false;
   }
 
+  /**
+   * Put a connection on the handshake clock (#588, #697).
+   *
+   * One helper for both directions, because arming it in only one of the two
+   * places that build a `Connection` is exactly the hole this closes — and a
+   * parallel mechanism for the inbound side would have to be kept in step with
+   * this one by hand.
+   *
+   * Deliberately *not* re-armed on progress, unlike the incomplete-frame
+   * deadline: the handshake is a single small frame, so re-arming would let a
+   * socket dripping one byte every few seconds hold its slot for as long as it
+   * cares to. Nothing legitimate is punished by the hard bound either — the
+   * peer on the other end runs the same {@link HANDSHAKE_TIMEOUT_MS} from an
+   * *earlier* moment (its clock starts before the TCP connect and the TLS
+   * handshake, this one starts after the accept), so a peer that is still
+   * trying has always given up first.
+   */
+  private armHandshakeTimer(connection: Connection): void {
+    connection.handshakeTimer = setTimeout(
+      () => this.onHandshakeTimeout(connection),
+      HANDSHAKE_TIMEOUT_MS,
+    );
+    // Don't let a pending handshake hold the process open — the cluster's own
+    // lifecycle decides when the runtime may exit, not a handshake in flight.
+    (connection.handshakeTimer as { unref?: () => void }).unref?.();
+  }
+
   private clearHandshakeTimer(connection: Connection): void {
     if (connection.handshakeTimer === null) return;
     clearTimeout(connection.handshakeTimer);
@@ -570,19 +613,33 @@ export class TcpTransport implements Transport {
   }
 
   /**
-   * The dial produced a socket (or not) but never a `hello-ack`.  Give the
-   * slot back so the next `send` re-dials, rather than queueing into a
-   * connection that will never carry anything.
+   * The handshake never landed.  What that strands differs by direction — a
+   * dial owns a `byPeer` entry, an accepted socket owns one of the
+   * {@link MAX_INBOUND_CONNECTIONS} — but `dropConnection` gives back whatever
+   * this connection was holding, so only the diagnosis and the "is this still
+   * the connection that matters?" test are per-direction.
    */
   private onHandshakeTimeout(connection: Connection): void {
     connection.handshakeTimer = null;
     if (connection.peer !== null) return;   // handshake landed after all
-    if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
-    this.log.warn(
-      `handshake with ${connection.targetKey} did not complete within ` +
-      `${HANDSHAKE_TIMEOUT_MS} ms; dropping the connection and ` +
-      `${connection.pending.length} buffered frame(s)`,
-    );
+    if (connection.outbound) {
+      // A `byPeer` slot already taken over by a replacement dial is not ours.
+      if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
+      this.log.warn(
+        `handshake with ${connection.targetKey} did not complete within ` +
+        `${HANDSHAKE_TIMEOUT_MS} ms; dropping the connection and ` +
+        `${connection.pending.length} buffered frame(s)`,
+      );
+    } else if (!this.stopped) {
+      // Guarded because `shutdown` cannot reach an un-handshaken inbound
+      // connection — it walks `byPeer`, which one has not entered yet — so this
+      // deadline is also what finally closes those sockets.  Doing that is
+      // right; calling it a timeout in the log is not.
+      this.log.warn(
+        `inbound socket from ${connection.socket?.remoteAddress ?? '<unknown address>'} sent no ` +
+        `hello within ${HANDSHAKE_TIMEOUT_MS} ms; closing it and releasing its inbound slot`,
+      );
+    }
     this.dropConnection(connection);
   }
 }
