@@ -239,14 +239,20 @@ export const ConfigKeys = {
   /**
    * Cluster bind address and wire limits — `actor-ts.remote.*`.
    *
-   * `remote.tls.enabled` is deliberately absent: it is still dead, tracked
-   * as its own security issue (#591), and named in the dead-key guard's
-   * exception list rather than quietly wired to nothing.
+   * `remote.tls.enabled` is read but **not honoured**: the transport
+   * `Cluster` builds for itself is always plaintext, so the flag decides
+   * nothing except whether the node warns about that at startup (#591).
+   * Encrypting the wire is its own issue (#941); until it lands, a key that
+   * says `true` and a socket that is not encrypted is exactly the gap the
+   * warning exists to close.
    */
   remote: {
     tcp: {
       host: 'actor-ts.remote.tcp.host',
       port: 'actor-ts.remote.tcp.port',
+    },
+    tls: {
+      enabled: 'actor-ts.remote.tls.enabled',
     },
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
   },

@@ -171,8 +171,11 @@ process**.
   delay / reorder logic.
 - **Latency.**  Delivery is synchronous within an event-loop turn.
 - **Serialization.**  Messages are passed by reference, not bytes.
-  If your test actually needs to exercise serialization (e.g.,
-  testing CBOR codec), use `TcpTransport` over loopback instead.
+  To exercise the real framing round-trip (`encodeFrame` /
+  `FrameDecoder`), use `TcpTransport` over loopback instead — that
+  gives you the JSON framing every cluster transport uses.  The CBOR
+  codec is not reachable from *any* cluster transport; test it
+  directly, or through [HTTP marshalling](/http/marshalling/).
 
 ## Custom transport
 

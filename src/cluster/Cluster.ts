@@ -11,6 +11,7 @@ import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import {
   ClusterOptionsValidator,
   DEFAULT_MAX_MEMBERS,
@@ -19,6 +20,7 @@ import {
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  isRemoteTlsRequested,
   withClusterConfigDefaults,
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
@@ -235,6 +237,21 @@ export class Cluster {
     // someone else's transport would be a surprise.
     this.transport = options.transport
       ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes);
+    // That `null` is the transport's TLS argument, and it is hard-coded: the
+    // transport this constructor builds is always plaintext until #941 wires
+    // the option up.  An operator who set the HOCON flag asked for the
+    // opposite and would otherwise get plaintext with no error, no log line
+    // and no way to tell (#591) — so say it, once, at startup.  Only when we
+    // built the transport: an injected one was constructed by the caller and
+    // may well carry its own TLS material, and warning about that would be a
+    // false alarm.
+    if (options.transport === undefined && isRemoteTlsRequested(system.config)) {
+      this.log.warn(
+        `${ConfigKeys.remote.tls.enabled} is true, but the cluster transport this node `
+        + 'built is plaintext — TLS for it is not implemented yet (#941). The wire is '
+        + 'unencrypted; keep the cluster on a trusted network until it lands.',
+      );
+    }
     const fdOptions: FailureDetectorOptionsType = {
       ...defaultFailureDetectorOptions,
       ...(options.failureDetector ?? {}),

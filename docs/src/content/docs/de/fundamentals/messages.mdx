@@ -38,9 +38,11 @@ Diese Form bringt drei Dinge:
 2. **Typ-Narrowing innerhalb von Handlern.**  Innerhalb des
    `.with({ kind: 'set' }, ...)`-Arms ist `m.to` automatisch als
    `number` typisiert — keine Casts, kein `as never`.
-3. **Stabilität des Wire-Formats.**  Wenn eine Nachricht eine
-   Prozess- oder Cluster-Grenze überquert, liest der Serializer `kind`,
-   um zu entscheiden, wie er den Wert wieder zusammensetzt.  Siehe
+3. **Stabilität des Wire-Formats.**  Die Leitung trägt keine eigene
+   Typidentität — sobald eine Nachricht, die eine Prozess- oder
+   Cluster-Grenze überquert hat, geparst ist, ist `kind` das, worauf
+   das `match(...)` des *empfangenden Actors* dispatcht.  Genau deshalb
+   muss der Diskriminator innerhalb der Payload mitreisen.  Siehe
    [Serialisierung](/de/serialization/overview/).
 
 Die Konvention ist `kind: string`, klein geschrieben, kebab-case für
@@ -117,13 +119,15 @@ Praktische Faustregeln:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Keine Funktionen / Klassen mit Methoden in Nachrichten">
-  Wenn eine Nachricht eine Prozessgrenze überquert (Cluster, Worker
-  Thread, HTTP-über-WebSocket-Bridge), ist das Wire-Format JSON oder
-  CBOR — keines trägt Funktionszeiger.  Einen Callback in eine
-  Nachricht zu packen funktioniert im Prozess und bricht still, sobald
-  der Actor auf einen anderen Node wandert.  Verwende
-  `replyTo: ActorRef<...>` für Callback-artiges Verhalten; Refs
-  serialisieren korrekt über Nodes hinweg.
+  Keine Prozessgrenze trägt Funktionszeiger.  Der Cluster-Wire und die
+  HTTP-über-WebSocket-Bridge rahmen beide mit `JSON.stringify`, was
+  eine Funktion verwirft; ein Worker Thread nutzt `postMessage`, dessen
+  Structured-Clone-Algorithmus bei einer Funktion einen
+  `DataCloneError` *wirft*.  Einen Callback in eine Nachricht zu packen
+  funktioniert im Prozess und bricht — still unter JSON, laut unter
+  Structured Clone —, sobald der Actor auf einen anderen Node wandert.
+  Verwende `replyTo: ActorRef<...>` für Callback-artiges Verhalten;
+  Refs serialisieren korrekt über Nodes hinweg.
 </Aside>
 
 ## Request/Response: die Reply-to-Ref
