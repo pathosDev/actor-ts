@@ -121,7 +121,7 @@ export {
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from './Dispatcher.js';
-export type { Dispatcher } from './Dispatcher.js';
+export type { Dispatcher, DispatcherErrorSink } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
 export { EventKey } from './EventKey.js';
 export type { EventChannel, EventClass, KindOf } from './EventKey.js';
@@ -371,6 +371,7 @@ export {
   ActorStarted,
   ActorStopped,
   ActorRestarted,
+  DispatcherError,
   ActorKilledError,
   AskTimeoutError,
 } from './SystemMessages.js';

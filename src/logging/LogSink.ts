@@ -39,9 +39,10 @@ export type LogSinkContext = {
  *  3. **A sink never logs through the framework logger.**  It *is* the
  *     framework logger — reporting a delivery failure that way would feed
  *     the failure straight back into itself.  Sinks report on raw
- *     `console.error`, rate-limited, which is the same convention
- *     `Dispatcher` and `Scheduler` already use for errors raised on paths
- *     that logging itself depends on.
+ *     `console.error`, rate-limited — the convention for errors raised on
+ *     paths that logging itself depends on, which `Scheduler` still
+ *     follows outright and `Dispatcher` keeps only as its last resort
+ *     (#410).
  *
  * `attach`, `flush` and `close` are optional so a minimal sink is a
  * one-method object: `{ name, minLevel, write }` is a complete
