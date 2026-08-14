@@ -19,20 +19,20 @@ export type { MigrationStep, DowncastStep } from './MigrationChain.js';
 export {
   defaultsAdapter,
   defaultsSnapshotAdapter,
-} from './defaultsAdapter.js';
-export type { DefaultsAdapterSpec } from './defaultsAdapter.js';
+} from './DefaultsAdapter.js';
+export type { DefaultsAdapterSpec } from './DefaultsAdapter.js';
 export {
   migratingAdapter,
   migratingSnapshotAdapter,
-} from './migratingAdapter.js';
+} from './MigratingAdapter.js';
 export {
   wrapEventAsEnvelope,
   wrapStateAsEnvelope,
   migrateInMemoryJournal,
   migrateSnapshotStore,
   formatMigrationResult,
-} from './wrapLegacy.js';
-export type { MigrationResult } from './wrapLegacy.js';
+} from './WrapLegacy.js';
+export type { MigrationResult } from './WrapLegacy.js';
 
 // #6 — pluggable codec + in-process schema registry.
 // #73 — `serializerCodec` adapts a byte-native Serializer (Avro, Protobuf)
@@ -42,8 +42,8 @@ export type { Codec, ParserLike } from './Codec.js';
 export {
   validatedEventAdapter,
   validatedSnapshotAdapter,
-} from './validatedAdapter.js';
-export type { ValidatedAdapterOptions } from './validatedAdapter.js';
+} from './ValidatedAdapter.js';
+export type { ValidatedAdapterOptions } from './ValidatedAdapter.js';
 export { InMemorySchemaRegistry } from './SchemaRegistry.js';
 export type {
   SchemaRegistry,
@@ -56,7 +56,7 @@ export {
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
   InMemoryMigrationProgressStore,
-} from './journalMigration.js';
+} from './JournalMigration.js';
 export type {
   MigrateJournalsOptions,
   MigrateJournalsResult,
@@ -64,4 +64,4 @@ export type {
   MigrateSnapshotStoresResult,
   MigrationProgress,
   MigrationProgressStore,
-} from './journalMigration.js';
+} from './JournalMigration.js';

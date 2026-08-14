@@ -16,7 +16,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { defaultsAdapter } from '../../../../../src/persistence/migration/defaultsAdapter.js';
+import { defaultsAdapter } from '../../../../../src/persistence/migration/DefaultsAdapter.js';
 import { isEnvelope } from '../../../../../src/persistence/migration/Envelope.js';
 import {
   formatMigrationResult,
@@ -24,7 +24,7 @@ import {
   migrateSnapshotStore,
   wrapEventAsEnvelope,
   wrapStateAsEnvelope,
-} from '../../../../../src/persistence/migration/wrapLegacy.js';
+} from '../../../../../src/persistence/migration/WrapLegacy.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';

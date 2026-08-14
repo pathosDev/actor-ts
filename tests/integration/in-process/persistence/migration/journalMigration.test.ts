@@ -18,7 +18,7 @@ import {
   InMemoryMigrationProgressStore,
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
-} from '../../../../../src/persistence/migration/journalMigration.js';
+} from '../../../../../src/persistence/migration/JournalMigration.js';
 
 let source: InMemoryJournal;
 let target: InMemoryJournal;

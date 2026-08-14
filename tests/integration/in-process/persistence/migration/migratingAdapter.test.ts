@@ -8,7 +8,7 @@ import { MigrationChain } from '../../../../../src/persistence/migration/Migrati
 import {
   migratingAdapter,
   migratingSnapshotAdapter,
-} from '../../../../../src/persistence/migration/migratingAdapter.js';
+} from '../../../../../src/persistence/migration/MigratingAdapter.js';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };

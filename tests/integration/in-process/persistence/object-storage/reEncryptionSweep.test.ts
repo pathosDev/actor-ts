@@ -25,7 +25,7 @@ import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/o
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
-import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/reEncryptionSweep.js';
+import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
 import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
 import type { ObjectStorageBackend, ObjectFetched } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { some, type Option } from '../../../../../src/util/Option.js';
@@ -352,7 +352,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     for (let i = 0; i < 6; i++) await v0Store.save(`pid-${i}`, 1, { x: i });
 
     const { InMemoryReEncryptProgressStore } = await import(
-      '../../../../../src/persistence/object-storage/reEncryptionSweep.js'
+      '../../../../../src/persistence/object-storage/ReEncryptionSweep.js'
     );
     const progress = new InMemoryReEncryptProgressStore();
     const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<
@@ -383,7 +383,7 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
     for (let i = 0; i < 5; i++) await v0Store.save(`pid-${i}`, 1, { x: i });
 
     const { InMemoryReEncryptProgressStore } = await import(
-      '../../../../../src/persistence/object-storage/reEncryptionSweep.js'
+      '../../../../../src/persistence/object-storage/ReEncryptionSweep.js'
     );
     const progress = new InMemoryReEncryptProgressStore();
     const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<

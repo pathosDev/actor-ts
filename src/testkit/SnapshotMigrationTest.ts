@@ -1,6 +1,6 @@
 import type { MigrationChain } from '../persistence/migration/MigrationChain.js';
 import type { SnapshotAdapter, StoredFrame } from '../persistence/migration/Adapter.js';
-import { migratingSnapshotAdapter } from '../persistence/migration/migratingAdapter.js';
+import { migratingSnapshotAdapter } from '../persistence/migration/MigratingAdapter.js';
 
 /**
  * Test harness for schema-evolution scenarios (#286).  Given:

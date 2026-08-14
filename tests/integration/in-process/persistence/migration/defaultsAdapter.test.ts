@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   defaultsAdapter,
   defaultsSnapshotAdapter,
-} from '../../../../../src/persistence/migration/defaultsAdapter.js';
+} from '../../../../../src/persistence/migration/DefaultsAdapter.js';
 import { MigrationError } from '../../../../../src/persistence/migration/Envelope.js';
 
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
