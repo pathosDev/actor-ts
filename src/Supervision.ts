@@ -91,7 +91,24 @@ export class ActorInitializationError extends Error {
   }
 }
 
-/** Death-pact error for an actor that watches another which terminates without handling Terminated.  Note: not currently raised automatically by the runtime — an unhandled Terminated is swallowed. */
+/**
+ * Death-pact failure: a watcher decides it cannot carry on without the actor
+ * whose `Terminated` it just received.
+ *
+ * **The runtime never raises this.**  It is exported for an application to
+ * `throw` deliberately from its own `Terminated` handler, from where it
+ * travels through supervision like any other failure — so pair it with a
+ * decider that stops or escalates, or the default strategy will simply
+ * restart the watcher.
+ *
+ * Ignoring a `Terminated` is not a failure here, and that is deliberate
+ * rather than an oversight: `Actor.onReceive` returns `void`, so the cell
+ * that dispatched the signal has no return channel telling it whether the
+ * handler acted on it.  There is nothing to hang an automatic pact on until
+ * a dedicated termination hook exists (see #662), and adding one would turn
+ * today's no-op into a supervision fault for every actor that watches and
+ * ignores.
+ */
 export class DeathPactError extends Error {
   constructor(public readonly actorPath: string) {
     super(`Death pact with terminated actor ${actorPath}`);

@@ -350,6 +350,101 @@ import { Aside } from '@astrojs/starlight/components';
   stops; death watch is for observing *other* actors.
 </Aside>
 
+## Ignoring a `Terminated`
+
+A handler that takes the notification and does nothing with it is a
+legitimate end state: the actor keeps running, nothing is logged,
+nothing fails.  The framework could not react even if it wanted to —
+`onReceive` returns `void`, so the cell that dispatched the death has
+no way to tell an ignored `Terminated` from a handled one.
+
+"Ignored" means *the handler ran and did nothing*, though.  A death the
+handler never reaches is a different story, and the APIs answer it
+differently:
+
+| Watcher | A `Terminated` the handler does not act on |
+| --- | --- |
+| `Actor.onReceive` with no branch for it | Nothing happens; the actor keeps running. |
+| `match(message)` … `.exhaustive()` with no arm for it | ts-pattern throws.  That is an ordinary failure, so it goes through supervision — under the default strategy the watcher **restarts**. |
+| `Behaviors.receiveWithSignal` whose signal handler answers `Behaviors.unhandled` | Nothing happens. |
+| A typed behavior with no signal handler, whose receive answers `Behaviors.unhandled` | The `Terminated` goes to dead letters. |
+
+The second row is the one that catches people out: `.exhaustive()` is
+the idiom this page uses everywhere, and it turns "this death does not
+concern me" into a restart loop unless an arm covers it.  Add the arm,
+or don't `watch` in the first place.
+
+### `DeathPactError` is yours to throw
+
+Some watchers genuinely cannot carry on — a session whose connection
+died, a saga step whose worker vanished.  `DeathPactError` is exported
+for exactly that, and **the runtime never raises it**: there is no
+automatic death pact in actor-ts.  You throw it yourself, from your own
+handler, and it travels through supervision like any other failure:
+
+```ts
+import { match, P } from 'ts-pattern';
+import {
+  Actor,
+  ActorOptions,
+  DeathPactError,
+  decideBy,
+  Directive,
+  OneForOneStrategy,
+  Terminated,
+  type ActorRef,
+} from 'actor-ts';
+
+type QueryCommand = { kind: 'query'; sql: string };
+type SessionMessage = QueryCommand | Terminated;
+
+class Session extends Actor<SessionMessage> {
+  constructor(private readonly connection: ActorRef) {
+    super();
+  }
+
+  override preStart(): void {
+    this.context.watch(this.connection);
+  }
+
+  override onReceive(message: SessionMessage): void {
+    match(message)
+      .with(P.instanceOf(Terminated), (t) => this.onTerminated(t))
+      .with({ kind: 'query' }, (c) => this.onQuery(c))
+      .exhaustive();
+  }
+
+  /** No connection, no session — break the pact and let the parent decide. */
+  private onTerminated(signal: Terminated): void {
+    throw new DeathPactError(signal.actor.path.toString());
+  }
+
+  private onQuery(command: QueryCommand): void {
+    // ... run it against the connection
+  }
+}
+
+// A restart is the wrong answer for a broken pact: the dependency is gone,
+// so a fresh instance fails the same way.  Say so, or the default strategy
+// will restart it ten times a minute.
+const pactStrategy = new OneForOneStrategy(
+  decideBy([{ match: DeathPactError, then: Directive.Stop }]),
+);
+const sessionOptions = ActorOptions.create().withSupervisorStrategy(pactStrategy);
+
+const session = system.spawn(() => new Session(connection), 'session-42', sessionOptions);
+```
+
+`actorPath` carries the path of the actor whose death broke the pact,
+so a watcher that depends on several actors can tell from the error
+alone which dependency it lost.
+
+Leaving the throw to you is the point rather than a gap.  A death pact
+is a policy about *this* watcher — two actors watching the same worker
+may well want different answers — and the framework cannot pick one for
+them: `onReceive` gives it no signal to distinguish a handler that
+ignored the death from one that dealt with it quietly.
+
 ## Watch + supervision — when to use which
 
 The two mechanisms cover different cases:
