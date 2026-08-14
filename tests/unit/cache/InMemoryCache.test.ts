@@ -228,6 +228,39 @@ describe('InMemoryCache — bounded size / LRU eviction (HTTP-2)', () => {
     await cache.close();
   });
 
+  /**
+   * security audit HTTP-8 — which operations count as a "use" decides
+   * which entries survive a flood, and the docs claimed `setIfAbsent`
+   * was one of them.  It is not: it returns early on a present key
+   * without touching the order, so an entry that is written once and
+   * never read back — an idempotency record still waiting for a retry —
+   * keeps ageing towards eviction no matter how often it is probed.
+   * Pinned here so the documented rule and the code cannot drift apart
+   * again.
+   */
+  test('only reads bump: get rescues an entry, setIfAbsent and set do not', async () => {
+    const probed = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    await probed.set('claimed', 'record');
+    await probed.set('b', 2);
+    await probed.set('c', 3);
+    expect(await probed.setIfAbsent('claimed', 'other')).toBe(false);  // probe...
+    await probed.set('claimed', 'record2');                            // ...and rewrite
+    await probed.set('d', 4);       // over cap → evicts the LRU
+    expect((await probed.get('claimed')).isNone()).toBe(true);         // neither rescued it
+
+    const read = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    await read.set('claimed', 'record');
+    await read.set('b', 2);
+    await read.set('c', 3);
+    expect((await read.get('claimed')).toNullable()).toBe('record');   // a read DOES bump
+    await read.set('d', 4);
+    expect((await read.get('claimed')).toNullable()).toBe('record');
+    expect((await read.get('b')).isNone()).toBe(true);                 // 'b' went instead
+
+    await probed.close();
+    await read.close();
+  });
+
   test('periodic sweep reclaims expired entries (cleanupMs)', async () => {
     const cache = new InMemoryCache({ maxEntries: 100, cleanupMs: 20 });
     await cache.set('temp', 1, 10);   // expires in ~10 ms

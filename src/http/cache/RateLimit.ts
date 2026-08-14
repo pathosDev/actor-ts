@@ -28,12 +28,26 @@ import {
  * Usage:
  *
  *   const limited = rateLimit({
- *     cache: ext.cache(),
+ *     cache: ext.cache('rate-limit'),
  *     windowMs: 60_000,
  *     max: 100,
  *     key: (request) => request.remoteAddress ?? '<anon>',
  *   });
  *   route(post('/api/expensive', limited(handler)));
+ *
+ * **Security — give this middleware its own cache (security audit
+ * HTTP-8):** the counter that enforces the limit is an ordinary cache
+ * entry, and `InMemoryCache` evicts the least-recently-used entry once
+ * `maxEntries` is reached without knowing which entries carry security
+ * state.  Share one `Cache` with `cached` or `idempotent` and a caller
+ * who can mint distinct keys through either of those — a response-cache
+ * key derived from the request, an attacker-chosen `Idempotency-Key` —
+ * evicts OTHER clients' counters, handing them a fresh budget.  The
+ * flooder's own counter is safe from this: `incr` bumps it to
+ * most-recently-used on every request, so it is never the victim.  Pass
+ * a dedicated instance (`ext.cache('rate-limit')`) and size its
+ * `maxEntries` above the number of distinct keys you expect to see
+ * within one `windowMs`.
  *
  * **Security — choosing `key` (security audit HTTP-3):** derive it from a
  * value the client can't freely forge.  `request.remoteAddress` (the socket peer)

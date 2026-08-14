@@ -25,6 +25,24 @@ type Entry = {
  * out (unbounded — OOMs eventually; only do this when you control the key
  * space).
  *
+ * **The bound has a flip side: eviction is blind to what an entry protects**
+ * (security audit HTTP-8).  Recency is the only criterion — a rate-limit
+ * counter or an idempotency record is evicted exactly as readily as a cached
+ * response body, and dropping one silently voids the guarantee it carried
+ * (the limit resets, the retry re-executes the handler).  So do NOT hand one
+ * instance to both a security-relevant consumer and one whose key space a
+ * caller can enumerate: a flood through the second pushes the first's state
+ * out well inside its TTL.  Give each its own named cache
+ * (`ext.cache('rate-limit')`, `ext.cache('idempotency')`) and size
+ * `maxEntries` for that consumer's key space alone.
+ *
+ * Which operations count as a "use" matters for the same reason, and is
+ * narrower than it looks: only `get`, `incr` and `mget` move a key to the
+ * most-recently-used end.  `set`, `mset` and `setIfAbsent` do not, so an
+ * entry that is written once and never read back — an idempotency record
+ * still waiting for the client's retry — ages towards eviction from the
+ * moment it is stored.
+ *
  * Expiry has two paths: **lazy** (checked on every `get`/`incr`/`setIfAbsent`/
  * `mget`) and an optional **periodic sweep** every `cleanupMs` (default
  * 60 000) that reclaims expired-but-never-re-read entries.  Set `cleanupMs` to
