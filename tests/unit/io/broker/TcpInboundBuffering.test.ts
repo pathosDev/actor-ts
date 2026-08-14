@@ -80,7 +80,12 @@ function countCopiedBytes(body: () => void): number {
     copied += Math.max(0, Math.min(end ?? this.length, this.length) - Math.max(start, 0));
     return originalCopyWithin.call(this, target, start, end);
   };
-  prototype.slice = function (this: Uint8Array, start?: number, end?: number): Uint8Array {
+  // Annotated `Uint8Array<ArrayBuffer>`, the narrower buffer type `slice`
+  // declares: it always allocates, so the result can never be backed by a
+  // `SharedArrayBuffer`, and the wider `Uint8Array` would not be assignable.
+  prototype.slice = function (
+    this: Uint8Array, start?: number, end?: number,
+  ): Uint8Array<ArrayBuffer> {
     const result = originalSlice.call(this, start, end);
     copied += result.length;
     return result;
