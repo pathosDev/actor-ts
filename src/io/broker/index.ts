@@ -153,6 +153,7 @@ export type {
   GrpcHealthImplementation,
   GrpcServerUnaryRequest,
   GrpcServerReadableCall,
+  GrpcCallMetadata,
   GrpcUnaryCallback,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';

@@ -29,6 +29,7 @@ import { scenario as serverStreamScenario } from './scenarios/02-server-stream.j
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';
 import { scenario as clientStreamScenario } from './scenarios/04-client-stream.js';
 import { scenario as deadlineScenario } from './scenarios/05-deadline.js';
+import { scenario as metadataScenario } from './scenarios/06-metadata.js';
 
 export interface GrpcContext extends BrokerScenarioContext {
   readonly endpoint: string;
@@ -53,10 +54,27 @@ function requireEnv(name: string): string {
  */
 export const HANG_REQUEST_TEXT = '__hang__';
 
+/**
+ * Request text that makes the unary handler answer with the header names
+ * it was handed, rather than with an echo.
+ *
+ * The unit suite drives `extractMetadata` through a fake whose `getMap`
+ * this repository writes, so it can prove the extraction logic and
+ * nothing about grpc-js.  Were the real `Metadata` to lack that method,
+ * every record would quietly go back to `{}` — #611's defect restored,
+ * with a green unit suite.  Only a live call can see that.
+ */
+export const METADATA_REQUEST_TEXT = '__metadata__';
+
 class UnaryEchoHandler extends Actor<GrpcUnaryCall> {
   override onReceive(call: GrpcUnaryCall): void {
     const request = call.request as { text?: string };
     if (request.text === HANG_REQUEST_TEXT) return;  // never responds — see 05-deadline
+    if (request.text === METADATA_REQUEST_TEXT) {    // see 06-metadata
+      const names = Object.keys(call.metadata).sort();
+      call.respond({ text: names.join(','), sequence: names.length });
+      return;
+    }
     call.respond({ text: request.text ?? '', sequence: 0 });
   }
 }
@@ -180,6 +198,7 @@ async function main(): Promise<void> {
       bidiScenario,
       clientStreamScenario,
       deadlineScenario,
+      metadataScenario,
     ];
     await runScenarios(scenarios, context);
   } finally {
