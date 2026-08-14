@@ -14,7 +14,7 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import type {
   ScenarioContext,
   ScenarioModule,
-} from '../../../src/testkit/internal/parallel-multi-node-bootstrap.js';
+} from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 

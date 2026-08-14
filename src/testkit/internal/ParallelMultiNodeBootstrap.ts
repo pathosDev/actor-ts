@@ -136,14 +136,14 @@ async function main(): Promise<void> {
       // surface the import error early rather than at first
       // invocation.
       // eslint-disable-next-line no-console
-      console.error('parallel-multi-node-bootstrap: scenario import failed', err);
+      console.error('ParallelMultiNodeBootstrap: scenario import failed', err);
     }
   }
   if (scenario.setup) {
     try { await scenario.setup(scenarioContext); }
     catch (err) {
       // eslint-disable-next-line no-console
-      console.error('parallel-multi-node-bootstrap: scenario.setup() threw', err);
+      console.error('ParallelMultiNodeBootstrap: scenario.setup() threw', err);
     }
   }
 
@@ -212,7 +212,7 @@ async function main(): Promise<void> {
 
   const onUnknownControl = (request: { kind?: string }): void => {
     // eslint-disable-next-line no-console
-    console.error(`parallel-multi-node-bootstrap: unknown control request '${request.kind}'`);
+    console.error(`ParallelMultiNodeBootstrap: unknown control request '${request.kind}'`);
   };
 
   const onControl = async (data: unknown): Promise<void> => {
@@ -240,5 +240,5 @@ async function main(): Promise<void> {
 
 void main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error('parallel-multi-node-bootstrap: fatal', err);
+  console.error('ParallelMultiNodeBootstrap: fatal', err);
 });

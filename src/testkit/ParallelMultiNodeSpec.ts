@@ -16,7 +16,7 @@ import type {
   WorkerTransportMessage,
 } from '../worker/WorkerCluster.js';
 import { MultiNodeBroker } from './internal/MultiNodeBroker.js';
-import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js';
+import type { MemberSnapshot } from './internal/ParallelMultiNodeBootstrap.js';
 
 /**
  * Worker-thread variant of `MultiNodeSpec` (#46).  Each role runs in
@@ -56,7 +56,7 @@ import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js
  *
  * The scenario module owns the actor-shaped setup (entity classes,
  * sharding regions, …) inside the worker — see
- * `src/testkit/internal/parallel-multi-node-bootstrap.ts` for the
+ * `src/testkit/internal/ParallelMultiNodeBootstrap.ts` for the
  * `ScenarioModule` interface.
  */
 
@@ -351,7 +351,7 @@ export class ParallelMultiNodeSpec {
   ): Promise<NodeRecord> {
     const backend = this.options.backend ?? await getWorkerBackend();
     const bootstrap = this.options.bootstrapModule
-      ?? new URL('./internal/parallel-multi-node-bootstrap.js', import.meta.url);
+      ?? new URL('./internal/ParallelMultiNodeBootstrap.js', import.meta.url);
     const worker = backend.spawn(bootstrap, { name: `parallel-mns-${role}` });
 
     const initData = {

@@ -13,5 +13,5 @@
 coveragePathIgnorePatterns = [
   "src/testkit/ParallelMultiNodeSpec.ts",
   "src/testkit/internal/MultiNodeBroker.ts",
-  "src/testkit/internal/parallel-multi-node-bootstrap.ts",
+  "src/testkit/internal/ParallelMultiNodeBootstrap.ts",
 ]
