@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { BearerTokenAuth } from '../../../../src/http/middleware/BearerToken.js';
-import { HttpError, Status, type HttpRequest } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const baseRequest = (headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET',

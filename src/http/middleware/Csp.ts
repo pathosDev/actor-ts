@@ -7,7 +7,7 @@
  * handler already set.
  */
 import type { Middleware } from '../Route.js';
-import { headerDecorator } from './headers.js';
+import { headerDecorator } from './Headers.js';
 import type { CspDirectives, CspOptions, CspOptionsType } from './CspOptions.js';
 
 /** helmet-parity baseline, merged under user directives when `useDefaults`. */

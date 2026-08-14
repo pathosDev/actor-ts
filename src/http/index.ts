@@ -118,8 +118,8 @@ export type { StaticFilesOptionsType } from './static/index.js';
 export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 
 // Cookie parse/serialise helpers — used by CSRF, handy for handlers too.
-export { parseCookies, serializeCookie } from './cookies.js';
-export type { CookieAttributes } from './cookies.js';
+export { parseCookies, serializeCookie } from './Cookies.js';
+export type { CookieAttributes } from './Cookies.js';
 
 export { HttpClient, HttpRedirectError, HttpResponseTooLargeError } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
@@ -157,8 +157,8 @@ export * from './websocket/index.js';
 export {
   HttpError,
   Status,
-} from './types.js';
-export type { HttpMethod, HttpRequest, HttpResponse } from './types.js';
+} from './Types.js';
+export type { HttpMethod, HttpRequest, HttpResponse } from './Types.js';
 
 // HTTP caching middleware (response-cache, rate-limit, idempotency-key).
 export {

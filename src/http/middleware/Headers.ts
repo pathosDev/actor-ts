@@ -5,7 +5,7 @@
  * response object to set headers on.  Not part of the public API.
  */
 import type { Middleware } from '../Route.js';
-import { HttpError, type HttpResponse } from '../types.js';
+import { HttpError, type HttpResponse } from '../Types.js';
 
 /**
  * Read a header case-insensitively.  An `HttpResponse.headers` record is

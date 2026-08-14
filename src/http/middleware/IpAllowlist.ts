@@ -29,8 +29,8 @@
  */
 
 import { parseCidr, cidrMatches } from '../../util/CidrMatch.js';
-import { HttpError, Status } from '../types.js';
-import type { HttpRequest } from '../types.js';
+import { HttpError, Status } from '../Types.js';
+import type { HttpRequest } from '../Types.js';
 import type { Middleware } from '../Route.js';
 
 export type IpAllowlistOptions = {

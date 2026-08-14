@@ -8,7 +8,7 @@
  * a harmless no-op.
  */
 import type { Middleware } from '../Route.js';
-import { headerDecorator } from './headers.js';
+import { headerDecorator } from './Headers.js';
 import { HstsOptionsValidator, type HstsOptions, type HstsOptionsType } from './HstsOptions.js';
 
 export type ResolvedHsts = {

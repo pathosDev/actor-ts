@@ -37,7 +37,7 @@ import type {
   WebsocketServerMessage,
   WebsocketServerSignal,
 } from './WebsocketMessages.js';
-import type { WebsocketCloseInfo } from './types.js';
+import type { WebsocketCloseInfo } from './Types.js';
 
 export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   extends Actor<WebsocketServerMessage<TOut, TIn, TSelf>> {

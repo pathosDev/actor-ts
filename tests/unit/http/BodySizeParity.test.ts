@@ -14,7 +14,7 @@ import {
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { completeJson, path, post, type Route } from '../../../src/http/Route.js';
-import { Status } from '../../../src/http/types.js';
+import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 /**

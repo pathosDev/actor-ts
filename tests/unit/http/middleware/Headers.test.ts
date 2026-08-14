@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { applyHeaders, applyHeadersToError, appendVary, headerDecorator, readHeader } from '../../../../src/http/middleware/headers.js';
+import { applyHeaders, applyHeadersToError, appendVary, headerDecorator, readHeader } from '../../../../src/http/middleware/Headers.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const response = (headers?: Record<string, string>): HttpResponse => ({ status: Status.OK, body: 'x', headers });
 

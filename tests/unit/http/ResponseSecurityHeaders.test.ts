@@ -12,7 +12,7 @@ import { requestId } from '../../../src/http/middleware/RequestId.js';
 import { securityHeaders } from '../../../src/http/middleware/SecurityHeaders.js';
 import { SecurityHeadersOptions } from '../../../src/http/middleware/SecurityHeadersOptions.js';
 import { complete, concat, fallback, get, path, withMiddleware, type Middleware, type Route } from '../../../src/http/Route.js';
-import { HttpError, Status } from '../../../src/http/types.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 const backends: Array<[string, () => HttpServerBackend]> = [

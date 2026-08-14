@@ -5,7 +5,7 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DevToolsServer } from '../../../src/devtools/DevToolsServer.js';
 import type { DevToolsOptionsType } from '../../../src/devtools/DevToolsOptions.js';
 import { compile, type CompiledWebsocketRoute } from '../../../src/http/Route.js';
-import { Status, type HttpRequest } from '../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../src/http/Types.js';
 
 const systems: ActorSystem[] = [];
 afterEach(async () => {

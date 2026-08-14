@@ -5,8 +5,8 @@ import {
   pickRequestSerializer,
   pickResponseSerializer,
 } from '../../../src/http/Marshalling.js';
-import type { HttpRequest } from '../../../src/http/types.js';
-import { HttpError } from '../../../src/http/types.js';
+import type { HttpRequest } from '../../../src/http/Types.js';
+import { HttpError } from '../../../src/http/Types.js';
 
 function request(overrides: Partial<HttpRequest> = {}): HttpRequest {
   return {

@@ -1,7 +1,7 @@
 /** Options for the {@link requestTimeout} middleware.  Options-only. */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { HttpRequest, HttpResponse } from '../types.js';
+import type { HttpRequest, HttpResponse } from '../Types.js';
 
 /** Plain settings shape for the request-timeout middleware. */
 export type TimeoutOptionsType = {

@@ -3,7 +3,7 @@ import {
   JsonSerializer,
   type Serializer,
 } from '../serialization/index.js';
-import { HttpError, type HttpRequest, Status } from './types.js';
+import { HttpError, type HttpRequest, Status } from './Types.js';
 
 /**
  * Map from a Content-Type / Accept token to a concrete Serializer.  Minimal

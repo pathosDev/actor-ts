@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { idempotent } from '../../../../src/http/cache/IdempotencyKey.js';
 import { complete } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest } from '../../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const request = (account: string, key = 'k1'): HttpRequest => ({
   method: 'POST', path: '/me/export',

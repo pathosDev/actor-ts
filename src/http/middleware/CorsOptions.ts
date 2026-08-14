@@ -7,7 +7,7 @@
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { HttpMethod } from '../types.js';
+import type { HttpMethod } from '../Types.js';
 
 /** Allowed origins: `'*'`, an exact-match allowlist, or a predicate. */
 export type CorsOrigin = '*' | ReadonlyArray<string> | ((origin: string) => boolean);

@@ -8,7 +8,7 @@ import {
 } from '../../../../src/http/Route.js';
 import { websocket } from '../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketRouteOptions } from '../../../../src/http/websocket/WebsocketRouteOptions.js';
-import { Status, type HttpRequest } from '../../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
 
 // The target ref is only captured into the (never-invoked) connect closure

@@ -23,7 +23,7 @@ import {
   websocketClientConstructor,
   type WebsocketClientConstructor,
   type WebsocketLike,
-} from '../../../../src/http/websocket/websocketConstructor.js';
+} from '../../../../src/http/websocket/WebsocketConstructor.js';
 
 type Emitted = { readonly level: string; readonly message: string };
 

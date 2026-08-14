@@ -19,7 +19,7 @@ import {
   type Middleware,
   type Route,
 } from '../../../../../src/http/Route.js';
-import { Status } from '../../../../../src/http/types.js';
+import { Status } from '../../../../../src/http/Types.js';
 import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
 import { runWebsocketBackendSuite } from './websocketBackendSuite.js';

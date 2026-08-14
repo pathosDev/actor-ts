@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseCookies, serializeCookie } from '../../../src/http/cookies.js';
+import { parseCookies, serializeCookie } from '../../../src/http/Cookies.js';
 
 describe('parseCookies', () => {
   test('returns an empty map for undefined / empty input', () => {

@@ -9,7 +9,7 @@ import { compile, complete, concat, get, options, path, post, type Route } from 
 import { cors } from '../../../../src/http/middleware/Cors.js';
 import { CorsOptions } from '../../../../src/http/middleware/CorsOptions.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
-import { Status, type HttpRequest } from '../../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 describe('cors — validation + compile', () => {

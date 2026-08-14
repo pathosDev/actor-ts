@@ -5,7 +5,7 @@ import {
   normalizeInbound,
   utf8ByteLength,
   type WebsocketFrame,
-} from '../../../../src/http/websocket/types.js';
+} from '../../../../src/http/websocket/Types.js';
 
 describe('utf8ByteLength', () => {
   test('ASCII is one byte per char', () => {

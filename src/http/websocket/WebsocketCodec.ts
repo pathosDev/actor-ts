@@ -17,7 +17,7 @@
  * {@link WebsocketEncodeError}; since sends are fire-and-forget the message is
  * logged and dropped rather than surfaced to the caller.
  */
-import type { WebsocketFrame } from './types.js';
+import type { WebsocketFrame } from './Types.js';
 
 /** Thrown by `decode` when an inbound frame can't be parsed or validated. */
 export class WebsocketDecodeError extends Error {

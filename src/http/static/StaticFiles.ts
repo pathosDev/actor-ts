@@ -6,10 +6,10 @@
  */
 import { basename, join, sep } from 'node:path';
 import { concat, get, path, redirect, type Route } from '../Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
 import { contentTypeFor } from '../MimeTypes.js';
-import { readDirectory, readFileBytes, realPath, statPath, type FileStat } from './fsAccess.js';
-import { resolveStaticPath } from './staticPath.js';
+import { readDirectory, readFileBytes, realPath, statPath, type FileStat } from './FsAccess.js';
+import { resolveStaticPath } from './StaticPath.js';
 import { renderDirectoryListing, type ListingEntry } from './DirectoryListing.js';
 import {
   resolveStaticOptions,

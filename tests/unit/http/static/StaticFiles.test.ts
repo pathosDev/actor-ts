@@ -12,7 +12,7 @@ import { compile, concat, type CompiledRoute, type Route } from '../../../../src
 import { getFromBrowseableDirectory, getFromDirectory, getFromFile } from '../../../../src/http/static/StaticFiles.js';
 import type { StaticFilesOptions } from '../../../../src/http/static/StaticFilesOptions.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
-import type { HttpRequest, HttpResponse } from '../../../../src/http/types.js';
+import type { HttpRequest, HttpResponse } from '../../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 let root: string;

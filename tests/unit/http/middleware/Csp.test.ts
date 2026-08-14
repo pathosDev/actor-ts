@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { contentSecurityPolicy } from '../../../../src/http/middleware/Csp.js';
 import { CspOptions } from '../../../../src/http/middleware/CspOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>

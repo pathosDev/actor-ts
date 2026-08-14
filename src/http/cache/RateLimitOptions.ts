@@ -7,7 +7,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cache } from '../../cache/Cache.js';
-import type { HttpRequest, HttpResponse } from '../types.js';
+import type { HttpRequest, HttpResponse } from '../Types.js';
 
 /** Context handed to a custom {@link RateLimitOptionsType.onLimit} builder. */
 export type RateLimitContext = {
