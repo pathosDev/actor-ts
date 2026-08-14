@@ -352,6 +352,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   interface is renamed `GrpcReadableCall` — it was module-local and collided
   with the server actor's exported type of the same name.
 
+- **`DispatcherError` is a new event on the `EventStream`, and `Dispatcher`
+  has an optional `onError` sink** (#410).  The event carries the failing
+  dispatcher's `id`, the `cause`, and the `ActorRef` whose turn it was
+  (`null` for work handed straight to `dispatcher.execute`).  It is not an
+  `ActorLifecycleEvent` — it is no transition in an actor's life and its
+  `actor` may be `null`, so subscribing to the lifecycle base must not start
+  delivering failures.  The sink is optional, so a custom dispatcher stays a
+  two-member implementation; `ActorSystem` fills it in only when the slot is
+  free, leaving a sink you wired yourself untouched.
+
+- **`IdempotencyOptions` gained a `maxKeyLength` field, with
+  `withMaxKeyLength()` on the builder** (#607).  It bounds the accepted
+  `Idempotency-Key` and defaults to the newly exported
+  `DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH` (255).  `IdempotencyOptionsValidator`
+  rejects a non-positive or non-integer value at consume time, like every
+  other bound in the family.
+
 ### Changed
 
 - **BREAKING — `Lease.release()` reports a failure instead of swallowing it**
@@ -401,6 +418,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cap now answers 413 above 1 MiB.  Restore the old cap explicitly:
   `ExpressBackendOptions.create().withMaxBodyBytes(10 * 1024 * 1024)`,
   likewise `HonoBackendOptions`.
+
+- **BREAKING — Raising a Hono route's `maxFrameBytes` above 1 MiB no longer
+  lets frames over 1 MiB through** (#586).  Backends cannot see a route's
+  policy when they bind — it is resolved lazily on the first connection — so
+  every backend installs the shared 1 MiB default as its transport limit.  On
+  Express and Fastify this has been true since the WS-3 fix; the Hono
+  transport cap now extends it to the third backend.  A route configured for
+  larger frames still has them cut off by the runtime, and because Bun drops
+  the connection rather than sending a policy close, the peer observes an
+  abnormal close (1006) instead of the application layer's clean 1009.
+  Lowering `maxFrameBytes` is unaffected.
+
+  *Migration:* if a Hono WebSocket route relies on frames larger than 1 MiB,
+  put a proxy with a matching frame limit in front of it or keep the route
+  on Express/Fastify until #373 makes the transport cap configurable — the
+  route-level `withMaxFrameBytes(...)` no longer raises it on its own.
+
+- **A decompression-cap violation now reports one wording whichever
+  mechanism caught it** (#580).  zlib's own `Cannot create a Buffer larger
+  than N bytes` names neither the algorithm nor the fact that a configured
+  bound stopped the read, and it is the text an operator sees — the snapshot
+  store re-throws a decode failure as-is and the durable-state store wraps
+  it in a `JournalError` whose own message only says "integrity / decode
+  failure".  All three algorithms now throw `<algorithm> decompression
+  exceeded maxOutputBytes=<n>`, with a tail that distinguishes the two
+  mechanisms: `(aborted before the output was allocated)` versus `(got
+  <n>)`.  Anything matching on the raw zlib string for an over-cap gzip read
+  needs updating.
+
+- **BREAKING — The gRPC server's four call shims now share one exported
+  `GrpcCallMetadata` type** (#611).  Each previously declared `metadata?: {
+  get?: (key: string) => string[] }` inline, describing a method nothing
+  ever called — reading a full header set needs `getMap()`, which the shim
+  did not expose.  `GrpcServerUnaryRequest` and `GrpcServerReadableCall` are
+  exported so a caller can build a fake call or host the health service
+  standalone, so the shape change is visible from outside.
+
+  *Migration:* a hand-built fake call object declares `metadata?:
+  GrpcCallMetadata` and supplies `getMap()` in place of the former `get()`;
+  the type is re-exported from the broker barrel.
 
 ### Removed
 
@@ -536,6 +593,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   contract in `HttpServerBackend.ts`.  A chunked body that declares no length
   is still measured as it arrives — that is the one path a size cap cannot
   short-circuit without help from the runtime adapters.
+
+- **A work unit that throws on a dispatcher now reaches the system logger
+  and the event stream** (#410).  It went to `console.error` and nowhere
+  else, which made it invisible to every configured log sink, to
+  `JsonLogger`, to MDC and to tests — the three unit tests that covered it
+  did so by silencing the console and asserting only that nothing
+  propagated.  That was already a blind spot before the multi-sink logging
+  work and a much bigger one after it.  The catch sits at the actor cell, so
+  it attributes the failure to an `ActorRef` and covers per-actor and
+  third-party dispatchers the system never sees; `console.error` remains
+  only as the last resort for a dispatcher used outside an actor system.
+
+- **zstd on Deno now fails with a sentence instead of dying inside a missing
+  native binding** (#580, #321).  Deno's `node:zlib` exports
+  `zstdCompressSync` and `zstdDecompressSync` as present functions with no
+  binding behind them, and both resolvers accepted a candidate because the
+  symbol existed.  A read therefore threw `binding.ZstdDecompress is not a
+  constructor` with the documented `fzstd` fallback sitting unreachable
+  underneath it, and a write threw `binding.ZstdCompress is not a
+  constructor` downstream of the `probeCompressionAvailability` call that
+  exists to catch exactly that at plugin-init — the class of bug #321
+  closed.  Both resolvers now select by calling a candidate against a 17-byte
+  canary frame, once per process and memoised alongside the implementation
+  it picked.
+
+- **The gRPC documentation no longer implies `deadlineMs` bounds a streaming
+  call** (#611, #577).  The client-side deadline reaches unary calls only, by
+  design — a gRPC deadline covers a whole RPC, so one value cannot both fail
+  a request/response call promptly and let a long-lived stream run.  The
+  pages still described an unqualified per-call deadline, which read as
+  though the three streaming modes were covered too.  Both language versions
+  now name the call class it applies to and say why the others are left
+  unbounded.
+
+- **The in-memory-cache page claimed `setIfAbsent` moves a key to the
+  most-recently-used end; it does not** (#607).  It returns early on a
+  present key without touching the iteration order, so a claimed idempotency
+  record is not kept hot by repeated probes and ages towards eviction from
+  the moment it is stored -- only `get`, `incr` and `mget` bump.  The HTTP
+  overview's middleware sample also passed a `Route` into
+  `cached(...)(...)`, which takes a handler, and its English prose still
+  called the three middlewares `Route -> Route` transformers where the
+  German mirror had already been corrected to "handler wrapper".
 
 ### Security
 
@@ -1088,6 +1188,93 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `new DevToolsOptionsValidator()` now takes the exposure it validates for
   (`'attach'` or `'mount'`), required rather than defaulted so a forgotten
   argument cannot silently pick the laxer rule.
+
+- **The Hono backend now caps inbound WebSocket frames in the transport, not
+  only after the runtime has buffered them** (#586).  `maxFrameBytes` was
+  previously checked by the connection actor on a frame that had already
+  been materialised in full, while the runner handed the socket to the
+  runtime with no payload limit at all — so a hostile peer could force 16
+  MiB (Bun's `ServerWebSocket` default) or 100 MiB (`ws`'s `maxPayload`
+  default) of buffering per frame and have it discarded afterwards.  Express
+  and Fastify had passed the cap down to `ws` since the WS-3 fix; Hono was
+  the last backend without that first line of defence.  The runner now
+  receives the cap as a parameter — `src/runtime/` sits below `src/http/`,
+  so a runner importing the constant would invert that dependency — and
+  installs it as `maxPayloadLength` on Bun and as `wss.options.maxPayload`
+  on Node.  Because the Node write depends on a `ws` internal, it is verified
+  rather than assumed: a `ws` version that stops exposing a numeric
+  `options.maxPayload` fails the upgrade wiring with an explicit error
+  instead of quietly serving uncapped.  Hono on **Deno** is the one runtime
+  still without a transport cap: `Deno.upgradeWebSocket` offers a
+  subprotocol and an idle timeout and no payload limit, so there is nothing
+  to set — the frame is buffered first and rejected second, which is now
+  stated in the WebSocket and security docs rather than glossed over.
+
+- **A zstd body over the object-storage decompression cap is now refused
+  before its output is allocated** (#580).  The cap was previously checked
+  only against the finished buffer, so a stored object of a few KB could
+  claim hundreds of MB first and be complained about afterwards — the
+  decompression bomb working as designed.  Measured on Bun 1.3.1, a
+  9,619-byte frame declaring 300 MB of output grew the resident set by 317
+  MB before the cap looked at it; it now costs 0 MB.  The algorithm is read
+  from the ATS1 manifest, which is attacker-controlled cleartext, so a
+  deployment that writes every body as gzip was never off this path.  The fix
+  is which zstd implementation the decompress resolver prefers: `node:zlib`
+  (the only one that takes `maxOutputLength`) ahead of
+  `Bun.zstdDecompressSync` (which takes no options at all).  No configuration
+  changes and no wire-format change — `maxDecompressedBytes` keeps its 512
+  MiB default and its meaning.
+
+- **gRPC handlers now receive the client's real request metadata** (#611).
+  `GrpcServerActor` built every call's `metadata` from a stub that returned
+  an empty record, on all four call classes, while four exported interfaces
+  declared the field and the docs promised it.  That is worse than offering
+  no metadata at all: a per-call authorisation check written against it
+  compiles, runs, and passes for every caller, including one that sent no
+  credentials.  The record is now read from grpc-js `Metadata.getMap()` and
+  built on a null-prototype object.  Both halves of that matter — a client
+  may legally send a header named `__proto__` or `constructor`, and with no
+  prototype the assignment has no inherited setter to reach, while a lookup
+  of a header nobody sent answers `undefined` instead of resolving to an
+  `Object.prototype` member.  Repeated headers collapse to their first value
+  and binary (`-bin`) headers are omitted, both consequences of the record
+  holding strings and both now stated in the docs.
+
+- **BREAKING — The `Idempotency-Key` header is now validated before it
+  becomes a cache key** (#607).  A value longer than `maxKeyLength` (default
+  255, Stripe's published cap), or carrying an ASCII control character or a
+  space, is refused with `400 Bad Request` instead of being stored.  The
+  header is client-chosen and was copied verbatim into a cache key that the
+  rate limiter and the response cache typically share, so without a bound
+  one request decided how much of that cache it occupied.  The charset rule
+  mirrors the memcached key rules: those characters are command delimiters
+  in Memcached's text protocol and CR/LF are the classic header-injection
+  pair, so accepting them would make the middleware's safety depend on which
+  `Cache` happened to sit behind it.  The rejection names the limit and the
+  offending index, never the key -- reflecting attacker bytes into a
+  response body is how an error message becomes a payload.
+
+  *Migration:* clients sending an `Idempotency-Key` longer than 255
+  characters, or containing a space or a control character, now receive 400
+  where they previously got service.  Raise the bound with `maxKeyLength` (or
+  `withMaxKeyLength()`) if you control a client fleet that genuinely mints
+  longer keys; the charset rule is not configurable.
+
+- **Handing one `Cache` to `rateLimit`, `cached` and `idempotent` voids both
+  the rate limit and the exactly-once guarantee** (#607).  `InMemoryCache` is
+  LRU-bounded and evicts on recency alone, with no idea which entries carry
+  a guarantee, so a caller who mints distinct keys through any of the three
+  pushes the others' state out: another client's counter disappears and
+  their limit silently resets, an idempotency record disappears and their
+  honest retry re-executes the handler.  Under the composition the HTTP
+  overview documented -- one shared cache, 100 requests per second --
+  turning over the 10 000-entry map takes about 100 seconds, entirely inside
+  the limit.  The three JSDoc headers, the HTTP overview sample, the three
+  middleware pages, both cache pages and
+  `examples/cache/redis-rest-service.ts` now use one named cache per
+  consumer, and say plainly that this narrows the blast radius rather than
+  removing it: an attacker-controlled key space still floods its own cache,
+  which is where Redis belongs.
 
 ## [0.15.0] — 2026-08-12
 
