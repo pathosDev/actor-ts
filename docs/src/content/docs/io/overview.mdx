@@ -128,11 +128,16 @@ schedules a reconnect with exponential backoff.  Configurable via
     initialDelayMs: 200,
     maxDelayMs:     30_000,
     factor:         2,
+    randomFactor:   0.2,
     // maxAttempts omitted → Infinity (retry forever); set a finite
     // positive number to cap attempts.  reconnect: false disables it.
   }
 }
 ```
+
+Every delay is jittered by `1 ± randomFactor` (default ±20 %), so a
+fleet of broker actors that lost the same broker together does not
+retry in lockstep; `randomFactor: 0` opts out.
 
 Each attempt fires a `BrokerReconnectAttempt` event.  When
 `maxAttempts` is exceeded (if finite), the actor surfaces

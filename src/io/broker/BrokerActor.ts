@@ -543,7 +543,11 @@ export abstract class BrokerActor<
     const breaker = this.options.circuitBreaker;
     if (breaker && Date.now() < this._breakerOpenUntil) {
       const remaining = this._breakerOpenUntil - Date.now();
-      this._scheduleReconnect(remaining);
+      // Jittered like every other reconnect wake-up: this path returns
+      // before `_handleReconnect` is ever reached, so without its own
+      // spread a fleet whose breakers opened in one failure burst would
+      // still wake in the same millisecond (#652).
+      this._scheduleReconnect(this._spreadBreakerWait(remaining));
       return;
     }
 
@@ -620,11 +624,72 @@ export abstract class BrokerActor<
       ));
       return;
     }
-    const delay = Math.min(initial * Math.pow(factor, this._reconnectAttempt - 1), maxDelay);
+    const backoff = Math.min(initial * Math.pow(factor, this._reconnectAttempt - 1), maxDelay);
+    const delay = this._jitteredBackoff(backoff);
     this.system.eventStream.publish(new BrokerReconnectAttempt(
       this.self.path.toString(), this.endpointLabel(), this._reconnectAttempt, delay,
     ));
     this._scheduleReconnect(delay);
+  }
+
+  /**
+   * Reconnect jitter (#652).  The un-jittered delay is a pure function of
+   * the attempt counter and the options, so every broker actor that lost
+   * the same broker in the same instant retries in the same millisecond,
+   * wave after wave, and the herd can hold the recovering broker down.
+   *
+   * The arithmetic stays here rather than delegating to `exponentialBackoff`
+   * from `pattern/BackoffPolicy` for two reasons: that primitive hardcodes
+   * base 2 and so cannot express the public `reconnect.factor`, and it
+   * *throws* when `maxMs < minMs` — a shape the broker has always accepted
+   * and merely clamped, so routing through it would turn a working config
+   * into an actor that fails on its first disconnect.  The jitter contract
+   * is deliberately identical to the primitive's.
+   *
+   * `Math.random` is the right source: a backoff delay is neither a wire
+   * identifier nor attacker-observable, so crypto-grade randomness would
+   * buy nothing.
+   */
+  private _jitteredBackoff(delayMs: number): number {
+    const { randomFactor, random } = this._reconnectRandomness();
+    if (randomFactor === 0) return delayMs;
+    // random() is [0, 1); map it to [-randomFactor, +randomFactor].
+    // Floored at 0 — a sub-zero delay would be nonsensical.
+    return Math.max(0, delayMs * (1 + (random() * 2 - 1) * randomFactor));
+  }
+
+  /**
+   * Jitter for the circuit-breaker wake-up, spread *forwards only*:
+   * `[remaining, remaining × (1 + randomFactor)]`.
+   *
+   * `remainingMs` is the time left on a deadline the actor must not connect
+   * before, which is what rules the symmetric form out.  An actor that woke
+   * early would land straight back in the same branch with a smaller
+   * remaining, and repeating that converges every actor onto the deadline
+   * again — the exact synchronisation the jitter exists to break, plus a
+   * tail of pointless timer hops.  The cost of the one-sided form is a
+   * breaker that stays shut for up to `randomFactor` longer than `resetMs`.
+   */
+  private _spreadBreakerWait(remainingMs: number): number {
+    const { randomFactor, random } = this._reconnectRandomness();
+    if (randomFactor === 0) return remainingMs;
+    return remainingMs * (1 + random() * randomFactor);
+  }
+
+  /**
+   * Jitter fraction and randomness source shared by both wake-up paths.
+   * Read per call, like the rest of the reconnect policy, so a subclass
+   * that resolves its options late still gets the value it configured.
+   * `reconnect: false` disables retrying, not the breaker path — that one
+   * still schedules, so it falls back to the built-in spread.
+   */
+  private _reconnectRandomness(): { readonly randomFactor: number; readonly random: () => number } {
+    const policy = this.options.reconnect;
+    const configured = policy === false ? undefined : policy;
+    return {
+      randomFactor: configured?.randomFactor ?? DEFAULT_RECONNECT.randomFactor,
+      random: configured?.random ?? Math.random,
+    };
   }
 
   private _scheduleReconnect(delayMs: number): void {

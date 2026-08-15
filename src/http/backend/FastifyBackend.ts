@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './HttpServerBackend.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -144,11 +144,15 @@ export class FastifyBackend implements HttpServerBackend {
       // before we add the ws routes below.  (Awaiting does NOT lock the
       // route tree — routes can still be added after.)
       // `options` is forwarded to the underlying `ws` server; `maxPayload`
-      // caps the transport frame size (aligned with the default WS policy) so
-      // an oversized frame is rejected at the protocol level rather than
-      // buffered up to the `ws` 100 MiB default first (security audit WS-3).
+      // caps the transport frame size so an oversized frame is rejected at the
+      // protocol level rather than buffered up to the `ws` 100 MiB default
+      // first (security audit WS-3).  It is the widest frame any registered
+      // route admits rather than the framework default, so the cap an
+      // application configured — per route or in HOCON — is the one the
+      // transport enforces (#373); the plugin is registered once for the whole
+      // instance, so every route shares that single limit.
       await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> })
-        .register(plugin, { options: { maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } });
+        .register(plugin, { options: { maxPayload: transportFrameCapOf(this.wsRegistered) } });
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });

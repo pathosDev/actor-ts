@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
+import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
 import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
 
 /**
@@ -29,6 +30,20 @@ export type WebsocketConnectHandler = (
 ) => void;
 
 /**
+ * Resolve a WebSocket route's policy against a system's configuration —
+ * route options > HOCON > built-in defaults.
+ *
+ * Carried on the route rather than hidden inside `connect` because the
+ * *transport* needs the answer at bind time, one process-wide moment before
+ * any connection exists, while `connect` only ever runs per connection.
+ * `HttpExtension.bind` is where both the routes and the `ActorSystem` are in
+ * scope, so that is the one place able to call this (#373).  Resolution is
+ * memoised per route, so calling it at bind time and again on the first
+ * connection yields the same object.
+ */
+export type WebsocketPolicyResolver = (system: ActorSystem) => ResolvedWebsocketPolicy;
+
+/**
  * A compiled WebSocket route.  Occupies the `GET` verb at its pattern
  * (that's how the HTTP upgrade arrives).  `authorize` folds any
  * enclosing `withMiddleware(...)` — it runs once, against the upgrade
@@ -40,6 +55,7 @@ export type CompiledWebsocketRoute = {
   readonly method: 'GET';
   readonly pattern: string;
   readonly connect: WebsocketConnectHandler;
+  readonly resolvePolicy: WebsocketPolicyResolver;
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
 };
 
@@ -92,7 +108,7 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly resolvePolicy: WebsocketPolicyResolver; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
   | { readonly kind: 'fallback'; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
@@ -380,6 +396,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         method: 'GET',
         pattern: buildPattern(prefix),
         connect: r.connect,
+        resolvePolicy: r.resolvePolicy,
         authorize: gate
           ? async (request): Promise<HttpResponse | null> => gate(request)
           : async (): Promise<HttpResponse | null> => null,

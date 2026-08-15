@@ -49,6 +49,41 @@ export type ObjectStorageDurableStateStoreOptionsType = StoreSerializerOptionsBa
    */
   readonly allowUntaggedBodies?: boolean;
   /**
+   * Refuse a body that is not bound to the storage key it was read from
+   * (#612).  Default `false`.
+   *
+   * Writes are bound unconditionally — the store knows the key it is
+   * writing to, and binding it costs nothing — so this option is not
+   * about producing bound bodies but about refusing unbound ones.  It
+   * has to be opt-in because a bucket written before the binding existed
+   * is full of them, and it has to exist at all because the manifest bit
+   * that marks a body bound is written by whoever wrote the body: until
+   * it is set, one authentic pre-binding body is a replay token for
+   * every key in the bucket.  Turn it on once the corpus has been
+   * rewritten.
+   *
+   * Inert without an `encryption` or `integrity` config, since with
+   * neither there is no authenticator to carry a binding.
+   */
+  readonly requireContextBinding?: boolean;
+  /**
+   * Refuse to load a revision lower than the highest this process has
+   * already seen for the same persistenceId (#612).  Default `true`.
+   *
+   * Neither AES-GCM nor the HMAC can catch this on its own: the revision
+   * travels *inside* the authenticated bytes, so an authentic older body
+   * re-uploaded over a newer one is a valid body in every respect except
+   * that it is stale.  The floor is the only thing that notices.
+   *
+   * It is in-process, which is what makes it safe to default on and also
+   * what bounds it — it says nothing about a revision this process never
+   * saw.  Set `false` if another writer legitimately deletes and
+   * recreates records in the same bucket while this store is running;
+   * the recreated record restarts at revision 1 and would otherwise trip
+   * the floor.
+   */
+  readonly rejectRevisionRollback?: boolean;
+  /**
    * Cap on the decompressed size of a stored body in bytes — the
    * decompression-bomb guard on read (security audit #3).  Default 512 MiB
    * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.  Raise it to
@@ -104,6 +139,16 @@ export class ObjectStorageDurableStateStoreOptionsBuilder extends StoreSerialize
   /** Accept untagged bodies while integrity is configured — the legacy-corpus migration window (#579).  Default: false. */
   withAllowUntaggedBodies(allowUntaggedBodies = true): this {
     return this.set('allowUntaggedBodies', allowUntaggedBodies);
+  }
+
+  /** Refuse bodies not bound to the storage key they were read from (#612) — turn on once the corpus is rewritten.  Default: false. */
+  withRequireContextBinding(requireContextBinding = true): this {
+    return this.set('requireContextBinding', requireContextBinding);
+  }
+
+  /** Refuse a revision below the highest this process has seen for the same pid — the in-process rollback floor (#612).  Default: true. */
+  withRejectRevisionRollback(rejectRevisionRollback = true): this {
+    return this.set('rejectRevisionRollback', rejectRevisionRollback);
   }
 
   /**

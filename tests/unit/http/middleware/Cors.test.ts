@@ -10,6 +10,7 @@ import { cors } from '../../../../src/http/middleware/Cors.js';
 import { CorsOptions } from '../../../../src/http/middleware/CorsOptions.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
+import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 describe('cors — validation + compile', () => {
@@ -63,7 +64,11 @@ describe('cors — validation + compile', () => {
   });
 
   test('folds an origin check into a websocket upgrade in the subtree', async () => {
-    const wsLiteral: Route = { kind: 'websocket', connect: () => {} };
+    const wsLiteral: Route = {
+      kind: 'websocket',
+      connect: () => {},
+      resolvePolicy: () => DEFAULT_WEBSOCKET_POLICY,
+    };
     const compiled = compile(cors(CorsOptions.create().withOrigins('https://ok.example'), path('ws', wsLiteral)));
     const ws = compiled.find((c) => c.kind === 'websocket');
     if (!ws || ws.kind !== 'websocket') throw new Error('expected a websocket route');

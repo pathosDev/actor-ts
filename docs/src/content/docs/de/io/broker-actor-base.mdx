@@ -251,17 +251,39 @@ reconnect: {
   maxDelayMs:     30_000,
   factor:         2,
   maxAttempts:    Infinity,   // der Default — endlos wiederholen
+  randomFactor:   0.2,        // der Default — ±20 % Jitter
 }
 ```
 
 Pro Actor konfigurierbar (oder `reconnect: false`, um
 Auto-Reconnect ganz zu deaktivieren).  Jeder Versuch wartet
-`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)` — reines
-exponentielles Backoff, ohne Jitter.
+`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multipliziert
+mit einem zufälligen `1 ± randomFactor`.
+
+Der Jitter ist das, was eine **Flotte** davon abhält, im Gleichschritt zu
+wiederholen.  Ohne ihn ist die Verzögerung eine reine Funktion des
+Versuchszählers und dieser Optionen — jeder Broker-Actor, der denselben
+Broker im selben Moment verloren hat, wacht also in derselben Millisekunde
+auf, Welle für Welle, und die Herde kann den sich erholenden Broker unten
+halten.  `randomFactor: 0` stellt den vollständig deterministischen
+Zeitplan wieder her.
+
+Dieselbe Streuung gilt für den **Circuit Breaker**: Ist der Breaker offen,
+prüft der Actor irgendwo in
+`[resetMs, resetMs × (1 + randomFactor)]` erneut statt exakt zum Stichtag.
+Dieser Jitter ist einseitig — ein Breaker wird nie zu früh erneut versucht.
 
 Jeder Versuch löst `BrokerReconnectAttempt` auf dem Event-Stream
-aus; nachdem `maxAttempts` erschöpft sind (sofern endlich), löst
+aus (dessen `delayMs` ist der tatsächlich eingeplante, gejitterte Wert);
+nachdem `maxAttempts` erschöpft sind (sofern endlich), löst
 `BrokerReconnectFailed` aus und der Actor bleibt getrennt.
+
+Für einen deterministischen Test lässt sich die Zufallsquelle injizieren —
+`random: () => 0.5` fixiert jede Verzögerung auf ihren ungejitterten Wert:
+
+```ts
+reconnect: { initialDelayMs: 100, random: () => 0.5 }
+```
 
 ### Lifecycle-Events
 

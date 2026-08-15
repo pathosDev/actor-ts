@@ -55,14 +55,15 @@ is faster + simpler.
 
 ```ts
 type ObjectStorageSnapshotStoreOptionsType = {
-  backend:               ObjectStorageBackend;
-  prefix?:               string;   // default ''
-  keepN?:                number;   // default 3
-  compression?:          CompressionConfig | CompressionResolver;
-  encryption?:           EncryptionConfig | EncryptionResolver;
-  integrity?:            IntegrityConfig | IntegrityResolver;
-  allowUntaggedBodies?:  boolean;  // default false
-  maxDecompressedBytes?: number;   // default 512 MiB
+  backend:                ObjectStorageBackend;
+  prefix?:                string;   // default ''
+  keepN?:                 number;   // default 3
+  compression?:           CompressionConfig | CompressionResolver;
+  encryption?:            EncryptionConfig | EncryptionResolver;
+  integrity?:             IntegrityConfig | IntegrityResolver;
+  allowUntaggedBodies?:   boolean;  // default false
+  requireContextBinding?: boolean;  // default false
+  maxDecompressedBytes?:  number;   // default 512 MiB
 };
 ```
 
@@ -75,6 +76,7 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `encryption` | At-rest encryption — see [Encryption](/persistence/object-storage/encryption/). |
 | `integrity` | HMAC-SHA256 tag over each snapshot body — signs writes and requires a tag on reads.  See [Body integrity](/persistence/object-storage/encryption/#body-integrity-hmac). |
 | `allowUntaggedBodies` | Accept untagged snapshots while `integrity` is set — the migration window for a bucket written before integrity.  Default false. |
+| `requireContextBinding` | Refuse snapshots not bound to the key they were read from — closes replay onto another persistenceId or sequence number.  Turn on once the bucket is rewritten.  See [Binding a body to its key](/persistence/object-storage/encryption/#binding-a-body-to-its-key).  Default false. |
 | `maxDecompressedBytes` | Decompression-bomb guard — cap on a decoded snapshot's size.  Default 512 MiB. |
 
 ## Key layout

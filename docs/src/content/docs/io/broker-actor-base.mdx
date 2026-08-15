@@ -242,17 +242,38 @@ reconnect: {
   maxDelayMs:     30_000,
   factor:         2,
   maxAttempts:    Infinity,   // the default — retry forever
+  randomFactor:   0.2,        // the default — ±20 % jitter
 }
 ```
 
 Configurable per actor (or `reconnect: false` to disable
 auto-reconnect entirely).  Each attempt waits
-`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)` — plain
-exponential backoff, with no jitter.
+`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multiplied
+by a random `1 ± randomFactor`.
 
-Each attempt fires `BrokerReconnectAttempt` on the event stream;
-after `maxAttempts` exhausted (if finite), `BrokerReconnectFailed`
-fires and the actor stays disconnected.
+The jitter is what keeps a **fleet** from retrying in lockstep.  Without
+it the delay is a pure function of the attempt counter and these options,
+so every broker actor that lost the same broker in the same instant wakes
+in the same millisecond, wave after wave — and the herd can hold the
+recovering broker down.  Set `randomFactor: 0` for a fully deterministic
+schedule.
+
+The same spread applies to the **circuit breaker**: when the breaker is
+open the actor re-checks somewhere in
+`[resetMs, resetMs × (1 + randomFactor)]` rather than exactly on the
+deadline.  That jitter is one-sided — a breaker is never re-tried early.
+
+Each attempt fires `BrokerReconnectAttempt` on the event stream (its
+`delayMs` is the jittered value actually scheduled); after `maxAttempts`
+exhausted (if finite), `BrokerReconnectFailed` fires and the actor stays
+disconnected.
+
+For a deterministic test, inject the randomness source — `random: () =>
+0.5` pins every delay to its un-jittered value:
+
+```ts
+reconnect: { initialDelayMs: 100, random: () => 0.5 }
+```
 
 ### Lifecycle events
 

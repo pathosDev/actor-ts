@@ -22,6 +22,12 @@
  * records it — so the version fast-path cannot be trusted while it is
  * in play; see `ReEncryptOptions.newInfo`.
  *
+ * Since #612 the sweep is also the corpus-wide migration to
+ * storage-key-bound bodies.  It rewrites a body that lacks the binding
+ * even when its key version is already active, and re-binds every body
+ * it touches to the key it read it from — which is what lets an
+ * operator eventually set `requireContextBinding` on the stores.
+ *
  * The helper operates one level below `ObjectStorageSnapshotStore` /
  * `ObjectStorageDurableStateStore` because per-pid HKDF salting means
  * the pid must be known at decrypt + re-encrypt time.  The default
@@ -34,6 +40,7 @@ import {
   ATS1_MAGIC,
   decodeBody,
   encodeBody,
+  FLAG_CONTEXT_BOUND,
   FLAG_ENCRYPTED,
   FLAG_KEY_VERSIONED,
   type DecodedBody,
@@ -365,7 +372,13 @@ export async function reEncryptObjectStorage(
     const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
     const bodyVersion = versioned ? framed[5]! : 0;
     const atActiveVersion = bodyVersion === activeVersion && versioned;
-    if (atActiveVersion && !rotatingInfo) {
+    // A body written before context binding (#612) is rewritten even
+    // when its key version is already current: the sweep is the only
+    // tool that rewrites a whole corpus, so it is what an operator runs
+    // before turning `requireContextBinding` on.  Skipping such bodies
+    // would leave the migration with no way to finish.
+    const contextBound = (flags & FLAG_CONTEXT_BOUND) !== 0;
+    if (atActiveVersion && !rotatingInfo && contextBound) {
       // Already at the active version with the new framing — nothing
       // to do.  Bodies in the legacy unversioned format are NOT
       // considered "at version 0" for skip purposes — we still rewrite
@@ -395,7 +408,10 @@ export async function reEncryptObjectStorage(
     let decoded: DecodedBody;
     let alreadyAtNewInfo = false;
     try {
-      decoded = await decodeBody(framed, { encryption: { subKeyFor: subKeyResolverFor(decryptInfo) } });
+      decoded = await decodeBody(framed, {
+        encryption: { subKeyFor: subKeyResolverFor(decryptInfo) },
+        context: item.key,
+      });
     } catch (decryptError) {
       // An `info` rotation is the one situation where a well-formed body
       // legitimately fails to decrypt under the configured context: it
@@ -406,13 +422,16 @@ export async function reEncryptObjectStorage(
       // unchanged.
       if (!rotatingInfo) throw decryptError;
       try {
-        decoded = await decodeBody(framed, { encryption: { subKeyFor: subKeyResolverFor(encryptInfo) } });
+        decoded = await decodeBody(framed, {
+          encryption: { subKeyFor: subKeyResolverFor(encryptInfo) },
+          context: item.key,
+        });
       } catch {
         throw decryptError;
       }
       alreadyAtNewInfo = true;
     }
-    if (alreadyAtNewInfo && atActiveVersion) {
+    if (alreadyAtNewInfo && atActiveVersion && contextBound) {
       // Converged on both axes — the previous run already did this one.
       result.skippedCurrent += 1;
       options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
@@ -424,6 +443,9 @@ export async function reEncryptObjectStorage(
     const rewritten = await encodeBody(decoded.payload, {
       compression: decoded.compression,
       encryption: { subKey: activeSubkey, keyVersion: activeVersion },
+      // Rewritten in place, so the binding is to the same key it came
+      // from — which also upgrades a pre-#612 body on the way past.
+      context: item.key,
     });
 
     // Use If-Match to detect a concurrent writer — if someone else

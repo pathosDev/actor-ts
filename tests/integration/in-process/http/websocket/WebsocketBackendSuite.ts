@@ -175,7 +175,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       wsB.close();
     });
 
-    test('oversize inbound frame closes the connection (1009)', async () => {
+    test('oversize inbound frame closes the connection', async () => {
       const { base } = await bindServer([], (s) => {
         const routeOptions = WebsocketRouteOptions.create()
           .withMaxFrameBytes(64 * 1024);
@@ -184,7 +184,38 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const ws = await wsOpen(`${base}/ws`);
       const closed = nextClose(ws);
       ws.send(JSON.stringify({ kind: 'broadcast', text: 'x'.repeat(80 * 1024) }));
-      expect(await closed).toBe(1009);
+      // Which layer refuses it — and therefore which close code the client
+      // sees — is a property of the runtime, not of the guarantee.  Since
+      // #373 the transport is capped at the route's own 64 KiB rather than at
+      // the 1 MiB framework default, so this frame no longer reaches the
+      // connection actor at all: `ws` (Express, Fastify) answers the protocol
+      // violation with a clean 1009, while Bun drops the connection and the
+      // client synthesises 1006.  Both mean "refused before it was decoded".
+      expect([1006, 1009]).toContain(await closed);
+    });
+
+    test('a route that raises maxFrameBytes past the framework default receives that frame (#373)', async () => {
+      // The transport cap used to be the 1 MiB framework default on every
+      // backend whatever the route asked for, so a frame in this band was cut
+      // off by the runtime before the connection actor — which admits it —
+      // ever saw it.  2 MiB is over that default and well under the route's
+      // own cap, so only a transport sized from the route can deliver it.
+      const { base } = await bindServer([], (s) => {
+        const routeOptions = WebsocketRouteOptions.create()
+          .withMaxFrameBytes(8 * 1024 * 1024);
+        return websocket('/ws', s, routeOptions);
+      });
+      const ws = await wsOpen(`${base}/ws`);
+      const text = 'x'.repeat(2 * 1024 * 1024);
+      const echoed = nextMessage<{ kind: string; text: string }>(ws, 10_000);
+      ws.send(JSON.stringify({ kind: 'broadcast', text }));
+
+      const reply = await echoed;
+      expect(reply.kind).toBe('bcast');
+      // Compared by length: a mismatch on two megabytes of 'x' is unreadable
+      // as a diff, and the length is what the cap is about anyway.
+      expect(reply.text.length).toBe(text.length);
+      ws.close();
     });
 
     test('invalid JSON closes the connection (1003) under the default policy', async () => {

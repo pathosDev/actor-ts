@@ -122,13 +122,17 @@ export type AesGcmSealed = {
  * the type system tells a fresh IV from a recycled one, so the durable
  * defence is to leave the caller no IV to recycle: it is generated
  * here, per call, and handed back for the caller to store.
+ *
+ * `additionalData` is AES-GCM's AAD: authenticated but not encrypted.
+ * See {@link aesGcmEncrypt} for what belongs in it.
  */
 export async function aesGcmEncryptSafe(
   subkey: Uint8Array,
   plaintext: Uint8Array,
+  additionalData?: Uint8Array,
 ): Promise<AesGcmSealed> {
   const iv = randomIv();
-  return { iv, ciphertext: await aesGcmEncrypt(subkey, iv, plaintext) };
+  return { iv, ciphertext: await aesGcmEncrypt(subkey, iv, plaintext, additionalData) };
 }
 
 /**
@@ -141,11 +145,22 @@ export async function aesGcmEncryptSafe(
  * is built on it and because the decrypt-side tests need to pin a known
  * IV.  Nothing re-exports it from an `index.ts`, so it is an in-tree
  * contract rather than public API.
+ *
+ * `additionalData` is GCM's AAD — covered by the auth tag but not
+ * encrypted, and it has to be reproduced byte-for-byte at decrypt time
+ * or the tag fails.  `BodyCodec` puts the **storage key** there (#612):
+ * without it the tag proves only that the holder of the subkey produced
+ * these bytes, not which object they produced them for, so an authentic
+ * body could be moved to another key and still authenticate.  The
+ * per-pid HKDF salt does not cover this on its own — it separates pids
+ * but not the objects belonging to one pid, and it is absent entirely
+ * from the HMAC-only configuration.
  */
 export async function aesGcmEncrypt(
   subkey: Uint8Array,
   iv: Uint8Array,
   plaintext: Uint8Array,
+  additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
   if (subkey.byteLength !== KEY_LENGTH) {
     throw new Error(`subkey must be ${KEY_LENGTH} bytes`);
@@ -158,18 +173,25 @@ export async function aesGcmEncrypt(
   const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['encrypt']);
   const ciphertext = await subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+    aesGcmAlgorithm(iv, additionalData),
     key,
     plaintext as unknown as BufferSource,
   );
   return new Uint8Array(ciphertext);
 }
 
-/** AES-256-GCM decrypt — throws if the auth tag doesn't validate. */
+/**
+ * AES-256-GCM decrypt — throws if the auth tag doesn't validate.
+ *
+ * `additionalData` must match what {@link aesGcmEncrypt} sealed under,
+ * byte for byte; a mismatch is indistinguishable from a tampered
+ * ciphertext and fails the same way.
+ */
 export async function aesGcmDecrypt(
   subkey: Uint8Array,
   iv: Uint8Array,
   ciphertext: Uint8Array,
+  additionalData?: Uint8Array,
 ): Promise<Uint8Array> {
   if (subkey.byteLength !== KEY_LENGTH) {
     throw new Error(`subkey must be ${KEY_LENGTH} bytes`);
@@ -180,11 +202,30 @@ export async function aesGcmDecrypt(
   const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['decrypt']);
   const plaintext = await subtle.decrypt(
-    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+    aesGcmAlgorithm(iv, additionalData),
     key,
     ciphertext as unknown as BufferSource,
   );
   return new Uint8Array(plaintext);
+}
+
+/**
+ * Build the algorithm parameter object, omitting `additionalData`
+ * entirely when there is none.
+ *
+ * Omission is not cosmetic: passing an explicit `undefined` is accepted
+ * by some WebCrypto implementations and rejected by others, and a
+ * zero-length AAD is not universally the same tag as no AAD at all.
+ * Leaving the property out is the one form every runtime treats as the
+ * unbound case, which is what keeps pre-#612 bodies decrypting.  For the
+ * same reason `BodyCodec` never hands a zero-length context down here.
+ */
+function aesGcmAlgorithm(iv: Uint8Array, additionalData?: Uint8Array): AesGcmParams {
+  return {
+    name: 'AES-GCM',
+    iv: iv as unknown as BufferSource,
+    ...(additionalData !== undefined ? { additionalData: additionalData as unknown as BufferSource } : {}),
+  };
 }
 
 /**

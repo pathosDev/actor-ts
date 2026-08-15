@@ -7,11 +7,12 @@ import {
   type WSEventsLike,
 } from '../../runtime/http/index.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
@@ -37,6 +38,48 @@ function contentLengthHeader(c: { req: { header(name?: string): unknown } }): st
   const cl = c.req.header('content-length');
   return typeof cl === 'string' ? cl : undefined;
 }
+
+/**
+ * The Web-Fetch body stream of the runtime request behind a Hono context, or
+ * `null` when there is nothing this code can read incrementally.
+ *
+ * Probed structurally instead of typed.  `c.req.raw` is a `Request` on Bun and
+ * Deno and a `Request` shim under `@hono/node-server`, but Hono is an optional
+ * peer dependency whose adapter zoo has moved before, and a wrong assumption
+ * here would throw on the request path rather than degrade.  `bodyUsed` and
+ * `locked` are part of the probe on purpose: a user's own Hono middleware may
+ * have read the body first, and then Hono's own cache — not this stream — is
+ * the only place the bytes still exist, so the caller has to fall back to
+ * `c.req.arrayBuffer()`.
+ */
+function requestBodyStream(raw: unknown): ReadableStream<Uint8Array> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  if ((raw as { bodyUsed?: unknown }).bodyUsed === true) return null;
+  const body = (raw as { body?: unknown }).body;
+  if (!body || typeof body !== 'object') return null;
+  if (typeof (body as { getReader?: unknown }).getReader !== 'function') return null;
+  if ((body as { locked?: unknown }).locked === true) return null;
+  return body as ReadableStream<Uint8Array>;
+}
+
+/** Join the chunks a capped stream read collected into one contiguous body. */
+function concatenateChunks(chunks: ReadonlyArray<Uint8Array>, totalBytes: number): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
+/** A body that arrived — or was absent — without ever crossing the cap. */
+type WithinCapRead = { readonly kind: 'within-cap'; readonly body: Uint8Array | null };
+/** A body abandoned mid-flight because it crossed the cap. */
+type OverCapRead = { readonly kind: 'over-cap' };
+/** Outcome of one capped request-body read. */
+type CappedBodyRead = WithinCapRead | OverCapRead;
 
 /**
  * Read the outbound send-buffer depth (bytes) from a Hono `WSContext`'s
@@ -124,6 +167,15 @@ export class HonoBackend implements HttpServerBackend {
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
+  /**
+   * Bodies already read off a context, so a request that reaches the error
+   * path is adapted twice without being read twice.  Reading the raw stream
+   * bypasses Hono's own `bodyCache`, which is what used to make the second
+   * `arrayBuffer()` in `onError` cheap; this restores that property without
+   * giving up the streaming check.  Weak, so a context is collectable the
+   * moment its response is written.
+   */
+  private readonly readBodies = new WeakMap<object, Uint8Array | null>();
 
   // Runtime-neutral server handle; the per-runtime adapter supplies a
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
@@ -179,7 +231,9 @@ export class HonoBackend implements HttpServerBackend {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
         if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-        const request = await this.adaptRequest(context);
+        const read = await this.readBodyWithinCap(context);
+        if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+        const request = this.buildRequest(context, read.body);
         const response = await handler(request);
         return this.writeResponse(response);
       });
@@ -214,17 +268,16 @@ export class HonoBackend implements HttpServerBackend {
     //
     // The runner also gets the frame cap so the *runtime* refuses an oversize
     // frame while it arrives, matching what Express and Fastify hand `ws`.
-    // Until #373 threads the resolved per-route policy down here, backends
-    // cannot see a route's own `maxFrameBytes` at listen() time — the policy
-    // is resolved on first connect — so every backend installs the shared
-    // default and a route that raises `maxFrameBytes` past it is still cut
-    // off at 1 MiB by the transport.
+    // It is the widest frame any registered route admits — the policy is
+    // resolved at bind time now, so a route or a HOCON setting that moves
+    // `maxFrameBytes` moves the transport window with it (#373).  One bridge
+    // serves every route, so the routes have to agree on one number.
     let bridge: HonoWebsocketBridge | null = null;
     if (this.wsRegistered.length > 0) {
       if (!runner.webSocket) {
         throw new Error('HonoBackend: this runtime\'s Hono runner does not support websocket() routes.');
       }
-      bridge = await runner.webSocket(app, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
+      bridge = await runner.webSocket(app, transportFrameCapOf(this.wsRegistered));
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
@@ -274,15 +327,16 @@ export class HonoBackend implements HttpServerBackend {
     const wildcard = route.pattern.endsWith('/*');
     const prefix = wildcard ? route.pattern.slice(0, -2) : '';
     const handler: HonoHandler = async (c) => {
-      // Reject an oversized Content-Length BEFORE buffering the body.  The
-      // post-buffer check below is a backstop for chunked bodies that omit
-      // Content-Length (security audit HTTP-1) — previously the whole
-      // body was materialised via arrayBuffer() before any size check,
-      // making the 10 MiB cap cosmetic against the runtime's much larger
-      // native default.
+      // Reject an oversized Content-Length BEFORE reading the body; a chunked
+      // body declares none, so `readBodyWithinCap` counts that one as it
+      // arrives and abandons the read at the cap (security audit HTTP-1,
+      // #357).  Both halves matter: the fast path costs no read at all, and
+      // the counter is what stops a body that never announced its size from
+      // being materialised in full first.
       if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
-      const request = await this.adaptRequest(c);
-      if (request.body && request.body.byteLength > this.maxBodyBytes) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const read = await this.readBodyWithinCap(c);
+      if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      const request = this.buildRequest(c, read.body);
       // Wildcard contract: expose the matched remainder as params['*'].
       const finalRequest = wildcard
         ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
@@ -389,7 +443,78 @@ export class HonoBackend implements HttpServerBackend {
     };
   }
 
+  /**
+   * Read the request body, giving up the moment it crosses `maxBodyBytes`.
+   *
+   * Chunk by chunk rather than through `c.req.arrayBuffer()`, which is a
+   * single await that only returns once the *whole* body is resident — so a
+   * chunked request declaring no `Content-Length` was bounded by whatever the
+   * runtime happened to allow (16 MiB on Bun, unbounded elsewhere) and not by
+   * the cap the application configured (#357).  Express has counted per chunk
+   * since the same fix and Fastify counts inside its own parser; this is what
+   * makes the third backend agree.
+   *
+   * Runtime-neutral by construction: it reads the standard Web-Fetch body
+   * stream that every Hono adapter exposes, so it needs nothing from
+   * `Bun.serve`, `Deno.serve` or `@hono/node-server` — none of which offers a
+   * request-body-size option to pass down anyway.  Where no readable stream is
+   * reachable it falls back to the buffered read plus a size check, which is
+   * exactly the guarantee this backend gave before.
+   */
+  private async readBodyWithinCap(context: HonoContextLike): Promise<CappedBodyRead> {
+    if (this.readBodies.has(context)) return { kind: 'within-cap', body: this.readBodies.get(context) ?? null };
+
+    const method = context.req.method.toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { kind: 'within-cap', body: null };
+
+    const stream = requestBodyStream(context.req.raw);
+    if (!stream) {
+      const buffer = await context.req.arrayBuffer();
+      if (buffer.byteLength > this.maxBodyBytes) return { kind: 'over-cap' };
+      return this.rememberBody(context, buffer.byteLength > 0 ? new Uint8Array(buffer) : null);
+    }
+
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value === undefined) continue;
+        totalBytes += value.byteLength;
+        if (totalBytes > this.maxBodyBytes) {
+          // Hang up on the rest of the upload — the whole point is that the
+          // bytes past the cap are never received, let alone allocated.
+          await reader.cancel().catch(() => undefined);
+          return { kind: 'over-cap' };
+        }
+        chunks.push(value);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released by cancel() */ }
+    }
+    return this.rememberBody(context, totalBytes > 0 ? concatenateChunks(chunks, totalBytes) : null);
+  }
+
+  /** Record a body against its context and hand it back as a within-cap read. */
+  private rememberBody(context: HonoContextLike, body: Uint8Array | null): CappedBodyRead {
+    this.readBodies.set(context, body);
+    return { kind: 'within-cap', body };
+  }
+
+  /**
+   * Adapt a context whose body has not been read yet — the error path, which
+   * runs after a handler already read (and cached) it, or instead of one that
+   * never got that far.  An over-cap read is reported as no body at all: the
+   * request that produced it was already answered with a 413.
+   */
   private async adaptRequest(context: HonoContextLike): Promise<HttpRequest> {
+    const read = await this.readBodyWithinCap(context);
+    return this.buildRequest(context, read.kind === 'within-cap' ? read.body : null);
+  }
+
+  private buildRequest(context: HonoContextLike, body: Uint8Array | null): HttpRequest {
     const method = context.req.method.toUpperCase() as HttpRequest['method'];
     const headers = (context.req.header() as Record<string, string>) ?? {};
 
@@ -407,12 +532,6 @@ export class HonoBackend implements HttpServerBackend {
     for (const [key, value] of Object.entries(rawQueries)) {
       if (!value) continue;
       query[key] = value.length === 1 ? value[0] : value;
-    }
-
-    let body: Uint8Array | null = null;
-    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-      const buffer = await context.req.arrayBuffer();
-      if (buffer.byteLength > 0) body = new Uint8Array(buffer);
     }
 
     const remoteAddress = extractHonoRemoteAddress(context);

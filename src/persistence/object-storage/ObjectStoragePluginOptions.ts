@@ -40,6 +40,24 @@ export type ObjectStoragePluginOptionsType = {
    * (#579), applied to both registered stores.  Default: false.
    */
   readonly allowUntaggedBodies?: boolean;
+  /**
+   * Refuse bodies that are not bound to the storage key they were read
+   * from (#612), in both registered stores.  Default: false.
+   *
+   * Both stores bind their writes unconditionally; this is the switch
+   * that stops accepting *unbound* bodies, and it belongs on the plugin
+   * for the same reason `integrity` does — the one-call wiring is where
+   * most deployments configure both stores at once.
+   */
+  readonly requireContextBinding?: boolean;
+  /**
+   * Refuse a durable-state revision below the highest this process has
+   * already seen for the same persistenceId (#612).  Default: true.
+   *
+   * Durable-state only — snapshots have no revision, and their sequence
+   * number is already bound by the storage key.
+   */
+  readonly rejectRevisionRollback?: boolean;
   /** Payload serializer applied to both stores this plugin registers. */
   readonly serializer?: Serializer;
   /**
@@ -104,6 +122,16 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Accept untagged bodies in both registered stores while integrity is configured — the migration window (#579).  Default: false. */
   withAllowUntaggedBodies(allowUntaggedBodies = true): this {
     return this.set('allowUntaggedBodies', allowUntaggedBodies);
+  }
+
+  /** Refuse bodies not bound to their storage key in both registered stores (#612) — turn on once the corpus is rewritten.  Default: false. */
+  withRequireContextBinding(requireContextBinding = true): this {
+    return this.set('requireContextBinding', requireContextBinding);
+  }
+
+  /** Refuse a durable-state revision below the highest this process has seen — the in-process rollback floor (#612).  Default: true. */
+  withRejectRevisionRollback(rejectRevisionRollback = true): this {
+    return this.set('rejectRevisionRollback', rejectRevisionRollback);
   }
 
   /** Payload serializer applied to both stores this plugin registers. */

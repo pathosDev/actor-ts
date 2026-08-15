@@ -36,6 +36,23 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
     expect(() => check({ ...ok, reconnect: { maxAttempts: Infinity } })).not.toThrow();
   });
 
+  // #652 — the jitter fraction is bounded here so a nonsensical value is
+  // rejected at construction rather than producing an absurd delay during
+  // the outage that triggers the reconnect.
+  test('rejects reconnect.randomFactor outside [0, 1]', () => {
+    for (const randomFactor of [-0.1, 1.5, Number.NaN]) {
+      expect(
+        () => check({ ...ok, reconnect: { randomFactor } }),
+        `randomFactor=${randomFactor} was accepted`,
+      ).toThrow(/reconnect\.randomFactor/);
+    }
+  });
+
+  test('accepts reconnect.randomFactor at both ends of the band', () => {
+    expect(() => check({ ...ok, reconnect: { randomFactor: 0 } })).not.toThrow();
+    expect(() => check({ ...ok, reconnect: { randomFactor: 1 } })).not.toThrow();
+  });
+
   test('rejects circuitBreaker.failureThreshold < 1', () => {
     expect(() => check({ ...ok, circuitBreaker: { failureThreshold: 0, resetMs: 100 } }))
       .toThrow(/circuitBreaker\.failureThreshold/);
