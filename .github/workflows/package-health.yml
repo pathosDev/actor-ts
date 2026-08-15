@@ -12,6 +12,10 @@ name: package-health
 #                tarball), or an import with no manifest entry behind it, which
 #                works locally and breaks on a fresh install.
 #
+# Plus one gate on what the shipped closure *contains* rather than on its shape:
+#
+#   - bun audit — an advisory-database query over `bun.lock` (#539).
+#
 # Same path filter discipline as build.yml: this can only change when the
 # manifest, the source, the tsconfig or this workflow changes.
 
@@ -34,6 +38,15 @@ on:
       - 'tsconfig.json'
       - 'knip.jsonc'
       - '.github/workflows/package-health.yml'
+  # The audit step is the reason this workflow also runs on a clock (#539).
+  # Every other check here is a pure function of the files in the path filter,
+  # so a push trigger covers them completely.  An advisory is not: it is
+  # published upstream, against a lockfile that did not change, and a
+  # push-only gate would not notice until the next unrelated commit to
+  # `src/**`.  Mondays 05:00 UTC, offset from the 06:00 Europe/Berlin
+  # Dependabot window so the two do not report the same morning.
+  schedule:
+    - cron: '0 5 * * 1'
   workflow_dispatch:
 
 # Least privilege, stated rather than inherited: the repository default is
@@ -85,3 +98,27 @@ jobs:
       # module graph, and Bun is the project's primary toolchain anyway.
       - name: knip — dead modules and undeclared imports
         run: bun run lint:knip
+
+      # #539 — the advisory gate.  Deliberately `bun audit` rather than
+      # `actions/dependency-review-action`: that action diffs GitHub's
+      # dependency graph, and the graph does not resolve this repository's root
+      # Bun lockfile.  It records `fastify ^5.10.0` — the unresolved range out
+      # of package.json — and carries no `find-my-way` entry at all, while
+      # bun.lock pins fastify@5.10.0 and find-my-way@9.6.0.  Which is why the
+      # only Dependabot alerts this repository has ever produced come from the
+      # npm lockfiles under `examples/`, and the HIGH advisories in the shipped
+      # closure produced none.  `bun audit` reads bun.lock directly, so it sees
+      # the versions that actually ship.
+      #
+      # The flags live in `package.json` (`lint:audit`), like every other check
+      # in this job, so `bun run lint:audit` locally means the same thing.
+      # `--audit-level=high` with a baseline of `--ignore`d advisory IDs: the
+      # closure carries 11 HIGH advisories today whose fix is the dependency
+      # refresh tracked in #779, so an unbaselined gate would land red on its
+      # first run and teach everyone to ignore it.  Baselined, it still fails on
+      # every *new* high or critical advisory from day one — which is the part
+      # that was missing.  Each ignored ID is listed in `SECURITY.md`, and
+      # `tests/unit/ci/SecurityPolicy.test.ts` fails if the two drift apart, so
+      # the list cannot quietly become permanent.
+      - name: bun audit — advisory database over bun.lock
+        run: bun run lint:audit
