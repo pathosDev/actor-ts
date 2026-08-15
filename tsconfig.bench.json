@@ -7,8 +7,12 @@
   // a missing barrel export is a compile error nobody compiled for.
   //
   // Deliberately narrower than `tsconfig.dev.json` (which also pulls in
-  // `tests/` + `examples/`): a tight `src` + `benchmarks` scope is fast
-  // and, unlike the dev config, green — so it can actually gate.
+  // `tests/` + `examples/`): a tight `src` + `benchmarks` scope is fast,
+  // and it is the one the `benchmarks` workflow runs next to
+  // `bench:smoke`.  The dev config is green and gated too since #540, so
+  // this is no longer the only one that can gate — the two overlap on
+  // `benchmarks/` and that is fine: this one fails in seconds, in the
+  // workflow that also runs the suite.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     // Type-only run — nothing here is ever emitted.
