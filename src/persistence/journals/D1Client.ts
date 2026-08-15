@@ -1,4 +1,5 @@
 import { HttpClient } from '../../http/HttpClient.js';
+import { DEFAULT_D1_MAX_RESPONSE_BYTES } from '../Constants.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
@@ -60,6 +61,17 @@ export type D1Connection = {
   /** Per-request timeout in milliseconds.  Default 30 000. */
   readonly timeoutMs?: number;
   /**
+   * Ceiling on one D1 response body, in bytes.  Default 64 MiB — see
+   * `DEFAULT_D1_MAX_RESPONSE_BYTES` for why D1 does not inherit the
+   * `HttpClient`'s generic 8 MiB.
+   *
+   * The number that matters is the largest **replay**, not the largest row:
+   * a journal recovery reads an actor's whole history in one statement, and
+   * this transport is one statement per HTTP response.  Raise it if recovery
+   * starts failing with `HttpResponseTooLargeError`.
+   */
+  readonly maxResponseBytes?: number;
+  /**
    * Pre-built transport — bypasses the HTTP client entirely.  Use to share ONE
    * transport across the journal, snapshot and durable-state stores (see
    * `registerD1Plugins`), or to inject a fake in tests.
@@ -82,7 +94,14 @@ export function buildD1Client(connection: D1Connection): D1ClientLike {
   }
   const baseUrl = (connection.baseUrl ?? DEFAULT_D1_BASE_URL).replace(/\/+$/, '');
   const endpoint = `${baseUrl}/accounts/${accountId}/d1/database/${databaseId}/query`;
-  const httpClient = new HttpClient();
+  // The ceiling is a property of the transport, not of one call, so it is set
+  // on the client rather than repeated per request.  Naming it explicitly is
+  // the point: an unconfigured `new HttpClient()` silently caps a replay at
+  // the generic 8 MiB, which is how #602's fix broke recovery for an actor
+  // whose history had outgrown that.
+  const httpClient = new HttpClient({
+    maxResponseBytes: connection.maxResponseBytes ?? DEFAULT_D1_MAX_RESPONSE_BYTES,
+  });
   const timeoutMs = connection.timeoutMs ?? 30_000;
 
   return {
