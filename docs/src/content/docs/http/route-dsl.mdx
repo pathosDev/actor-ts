@@ -285,7 +285,8 @@ import { entity } from 'actor-ts/http';
 
 post(async (req) => {
   const order = entity<NewOrder>(req);
-  // ↑ decodes JSON / CBOR by Content-Type, throws 400 on malformed.
+  // ↑ decodes JSON / CBOR / form by Content-Type, throws 400 on
+  //   malformed and 415 on a type nothing decodes.
 });
 ```
 
