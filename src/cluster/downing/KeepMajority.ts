@@ -9,9 +9,16 @@ import type { KeepMajorityOptions, KeepMajorityOptionsType } from './KeepMajorit
 /**
  * "Keep majority" — if the reachable side has strictly more than half of
  * the known members, the minority (unreachable) side is downed.  The minority
- * side, seeing itself in the minority, downs itself.  Ties (exactly 50/50)
- * stay pending — the operator must intervene or another strategy must take
- * over.
+ * side, seeing itself in the minority, downs itself.  On an exact 50/50 split
+ * **both sides down themselves**, so the cluster stops rather than forking.
+ *
+ * That last case trades availability for integrity, deliberately.  Returning
+ * "pending" instead would leave both halves running for as long as the
+ * partition lasts — the view on each side is stable once it settles, so
+ * pending is not a transient state here but the permanent outcome — and
+ * dual-active is the exact thing a downing strategy exists to prevent (#1170).
+ * Prefer an odd member count so the tie never arises; the tie path is the
+ * fail-safe, not the plan.
  *
  * With a `role` restriction only role-tagged members are counted; useful
  * when you run stateful and stateless nodes in the same cluster.
@@ -45,7 +52,11 @@ export class KeepMajority implements DowningProvider {
       // this side of the split.
       return new Set(reachable.map(addrKey));
     }
-    // Exact tie or insufficient info — remain pending.
-    return new Set();
+    // An exact 50/50 split, and only that: with an odd candidate count one
+    // side always reaches `needed`, so reaching here means the two sides are
+    // equal.  Down our own side.  Each half runs the same computation over
+    // its own view, so both halves reach this line and both down themselves —
+    // the cluster stops whole instead of forking into two live halves.
+    return new Set(reachable.map(addrKey));
   }
 }

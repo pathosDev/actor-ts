@@ -9,6 +9,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `KeepMajority` downs both sides of an exact 50/50 split**
+  (#1170).  `decide` returned the empty set on a tie — "remain pending" — so
+  neither half downed anything and both kept running: the split-brain
+  outcome the strategy exists to prevent.  It was not a transient state
+  either, since each side's view is stable once the partition settles, so
+  pending was the permanent answer for as long as the partition lasted.
+  The tie branch now returns the reachable set, and because each half runs
+  the same computation over its own view, both halves down themselves and
+  the cluster stops whole instead of forking.  The documentation described
+  this behaviour all along, in three places and in both languages; the code
+  was the side that disagreed.
+
+  *Migration:* an even-sized cluster that suffers an exact 50/50 partition
+  now stops entirely rather than continuing as two live halves.  Size the
+  cluster odd — the tie path is the fail-safe, not the plan — or pick
+  `KeepOldest` / `KeepReferee`, which break ties by design.
+
 ## [0.16.0] — 2026-08-15
 
 ### Changed
