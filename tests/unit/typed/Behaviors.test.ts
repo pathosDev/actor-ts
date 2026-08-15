@@ -1,5 +1,6 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -12,7 +13,7 @@ import {
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
-import { Terminated } from '../../../src/SystemMessages.js';
+import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
@@ -225,6 +226,144 @@ describe('Behaviors.withStash', () => {
     });
     expect(errors.length).toBe(1);
     expect((errors[0] as Error).name).toBe('StashOverflowError');
+    await sys.terminate();
+  });
+
+  test('unstashAll replays ahead of messages already queued', async () => {
+    const sys = newSys('typed-stash-order');
+    const seen: string[] = [];
+
+    const behavior = Behaviors.withStash<string>(16, (stash) => {
+      const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+        seen.push(message);
+        return Behaviors.same;
+      });
+      return Behaviors.receiveMessage<string>((message) => {
+        if (message === 'ready') { stash.unstashAll(); return ready; }
+        stash.stash(message);
+        return Behaviors.same;
+      });
+    });
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    // All four land in the mailbox before the first turn runs (the default
+    // dispatcher defers it), so `fresh-1` is already queued behind `ready`
+    // when the unstash happens — which is the whole point of the test: a
+    // replay that re-`tell`s appends, and would hand `fresh-1` over first.
+    ref.tell('stashed-1');
+    ref.tell('stashed-2');
+    ref.tell('ready');
+    ref.tell('fresh-1');
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'both stashed messages and the fresh one were handled',
+    });
+    expect(seen).toEqual(['stashed-1', 'stashed-2', 'fresh-1']);
+    await sys.terminate();
+  });
+});
+
+/**
+ * The typed buffer lives on the `TypedActor` instance rather than in the
+ * cell's `_stashBuffer`, so the cell's own drain never saw it and a stop or a
+ * restart collected it in silence (#639) — the same loss #518 fixed for the
+ * OO stash, in the half of the framework that copy did not reach.
+ */
+describe('Behaviors.withStash — messages that never get unstashed', () => {
+  class DeadLetterListener extends Actor<DeadLetter> {
+    constructor(private readonly seen: DeadLetter[], private readonly ready: { value: boolean }) { super(); }
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, DeadLetter);
+      this.ready.value = true;
+    }
+    override onReceive(letter: DeadLetter): void { this.seen.push(letter); }
+  }
+
+  /** Subscribing happens in preStart, so wait for it before provoking anything. */
+  async function listenForDeadLetters(sys: ActorSystem): Promise<DeadLetter[]> {
+    const letters: DeadLetter[] = [];
+    const ready = { value: false };
+    sys.spawn(() => new DeadLetterListener(letters, ready), 'dead-letters');
+    await awaitCondition(() => ready.value, { label: 'the dead-letter listener subscribed' });
+    return letters;
+  }
+
+  /** Parks everything; `boom` throws, so whichever supervisor is in play restarts. */
+  const parking = (stashed: string[]): Behavior<string> =>
+    Behaviors.withStash<string>(16, (stash) =>
+      Behaviors.receiveMessage((message) => {
+        if (message === 'boom') throw new Error('boom');
+        stashed.push(message);
+        stash.stash(message);
+        return Behaviors.same;
+      }),
+    );
+
+  test('a stopped typed actor sends its stash to dead letters', async () => {
+    const sys = newSys('typed-stash-stop');
+    const letters = await listenForDeadLetters(sys);
+    const stashed: string[] = [];
+
+    const ref = sys.spawnTypedAnonymous(parking(stashed));
+    ref.tell('a'); ref.tell('b'); ref.tell('c');
+    await awaitCondition(() => stashed.length === 3, { label: 'all three messages were stashed' });
+
+    ref.stop();
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 3, {
+      timeoutMs: 4_000,
+      label: 'the typed stash reached dead letters on stop',
+    });
+    expect(mine().map((l) => l.message)).toEqual(['a', 'b', 'c']);
+    await sys.terminate();
+  });
+
+  test('a restarted typed actor sends its stash to dead letters', async () => {
+    const sys = newSys('typed-stash-restart');
+    const letters = await listenForDeadLetters(sys);
+    const stashed: string[] = [];
+
+    // No typed `supervise` wrapper, so the throw escapes to the cell and its
+    // default strategy restarts the instance — the `preRestart` path.
+    const ref = sys.spawnTypedAnonymous(parking(stashed));
+    ref.tell('a'); ref.tell('b');
+    await awaitCondition(() => stashed.length === 2, { label: 'both messages were stashed' });
+
+    ref.tell('boom');
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 2, {
+      timeoutMs: 4_000,
+      label: 'the typed stash reached dead letters on restart',
+    });
+    expect(mine().map((l) => l.message)).toEqual(['a', 'b']);
+    await sys.terminate();
+  });
+
+  test('a Behaviors.supervise restart sends the stash to dead letters', async () => {
+    const sys = newSys('typed-stash-supervise-restart');
+    const letters = await listenForDeadLetters(sys);
+    const stashed: string[] = [];
+
+    // The typed supervisor restarts by re-resolving the behavior in place —
+    // the cell never learns of it, so `preRestart` does not run and the drain
+    // has to happen in the directive itself.
+    const behavior = Behaviors.supervise(parking(stashed)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 5, withinTimeRangeMs: 1_000 }),
+    );
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell('a'); ref.tell('b');
+    await awaitCondition(() => stashed.length === 2, { label: 'both messages were stashed' });
+
+    ref.tell('boom');
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 2, {
+      timeoutMs: 4_000,
+      label: 'the typed stash reached dead letters on the supervise restart',
+    });
+    expect(mine().map((l) => l.message)).toEqual(['a', 'b']);
     await sys.terminate();
   });
 });

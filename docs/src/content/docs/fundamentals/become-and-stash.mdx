@@ -303,6 +303,10 @@ dropped during the initialization window.
   **dead letters**, so the loss is at least visible; if the messages
   matter across failure, persist them (`PersistentActor`) or have a
   parent re-send them once the restart settles.
+
+  The same holds for the typed DSL's
+  [`Behaviors.withStash`](/typed/behaviors/) buffer, including the
+  restart a `Behaviors.supervise` strategy performs on its own.
 </Aside>
 
 ## When to reach for which

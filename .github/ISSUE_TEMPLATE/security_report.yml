@@ -8,12 +8,14 @@ body:
       value: |
         Thanks for taking the time to file a security finding.
 
-        > ⚠️ **For pre-disclosure handling**, please first check
-        > the project's security policy in `SECURITY.md` (or, if
-        > absent, contact the maintainer privately).  Use this
-        > public template for findings you're OK discussing in the
-        > open — e.g., audit follow-ups, defense-in-depth items
-        > that don't fit the responsible-disclosure window.
+        > ⚠️ **For pre-disclosure handling**, follow the project's
+        > security policy in
+        > [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
+        > — report privately through the repository's **Security**
+        > tab, not here.  Use this public template for findings
+        > you're OK discussing in the open — e.g., audit
+        > follow-ups, defense-in-depth items that don't fit the
+        > responsible-disclosure window.
 
         The defaults set this issue to `severity: medium` +
         `priority: high`.  A maintainer will adjust the severity

@@ -862,6 +862,7 @@ export default defineConfig({
                 { label: 'Cluster security',    slug: 'operations/security/cluster-security',    translations: { de: 'Cluster-Sicherheit', es: 'Seguridad del Cluster', fr: 'Sécurité du Cluster', ja: 'クラスタセキュリティ', ko: '클러스터 보안', 'pt-BR': 'Segurança do Cluster', ru: 'Безопасность кластера', 'zh-CN': '集群安全' } },
                 { label: 'Master key rotation', slug: 'operations/security/master-key-rotation', translations: { de: 'Master-Key-Rotation', es: 'Rotación de clave maestra', fr: 'Rotation de la clé maître', ja: 'マスターキーローテーション', ko: '마스터 키 로테이션', 'pt-BR': 'Rotação de chave mestra', ru: 'Ротация мастер-ключа', 'zh-CN': '主密钥轮换' } },
                 { label: 'TLS everywhere',      slug: 'operations/security/tls-everywhere',      translations: { de: 'TLS überall', es: 'TLS en todas partes', fr: 'TLS partout', ja: 'TLS everywhere', ko: '전 구간 TLS', 'pt-BR': 'TLS em todos os lugares', ru: 'TLS везде', 'zh-CN': '全链路 TLS' } },
+                { label: 'Supply chain',       slug: 'operations/security/supply-chain',       translations: { de: 'Supply Chain', es: 'Cadena de suministro', fr: 'Chaîne d\'approvisionnement', ja: 'サプライチェーン', ko: '공급망', 'pt-BR': 'Cadeia de suprimentos', ru: 'Цепочка поставок', 'zh-CN': '供应链' } },
               ],
             },
             {

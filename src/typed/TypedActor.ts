@@ -2,7 +2,8 @@ import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Directive } from '../Supervision.js';
-import { Terminated } from '../SystemMessages.js';
+import { DeadLetter, Terminated } from '../SystemMessages.js';
+import { LocalActorRef } from '../internal/LocalActorRef.js';
 import {
   StashOverflowError,
   type TimerScheduler,
@@ -131,22 +132,56 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   override postStop(): void {
-    if (this.signalHandler) {
-      try {
-        const next = this.signalHandler(this.typedContext, { kind: 'post-stop' });
-        void next; // we are stopping anyway — nothing to transition into.
-      } catch { /* swallow */ }
-    }
+    this.notifySignalHandler({ kind: 'post-stop' });
+    // After the handler, so a `post-stop` that still calls `unstashAll()`
+    // wins over the drain — and so the ordering matches `ActorCell.postStop`,
+    // which dead-letters its own stash once `Actor.postStop` has returned.
+    this.deadLetterStashBuffers();
   }
 
   override preRestart(reason: Error, _message?: T): void {
-    if (this.signalHandler) {
-      try { this.signalHandler(this.typedContext, { kind: 'pre-restart', reason }); }
-      catch { /* swallow */ }
-    }
+    this.notifySignalHandler({ kind: 'pre-restart', reason });
+    this.deadLetterStashBuffers();
   }
 
   /* ---------------- internal ---------------- */
+
+  /**
+   * Hand a terminal signal to the user's handler, if one is registered.
+   *
+   * Whatever it returns is discarded: both callers sit on a path where this
+   * instance is going away, so there is nothing to transition into.  A throw
+   * is swallowed for the same reason — failing while stopping would only mask
+   * why the actor was stopping.
+   */
+  private notifySignalHandler(signal: Signal): void {
+    if (!this.signalHandler) return;
+    try { this.signalHandler(this.typedContext, signal); }
+    catch { /* swallow — see above */ }
+  }
+
+  /**
+   * Send whatever the typed stash buffers still hold to dead letters.
+   *
+   * The typed counterpart of `ActorCell.deadLetterStash`, and it has to be a
+   * counterpart rather than a delegation: these buffers live on this
+   * instance, not in the cell's `_stashBuffer`, so the cell's own drain never
+   * sees them.  Until this existed they were simply garbage-collected on both
+   * the stop and the restart path (#639) — the worst shape a lost message can
+   * take, because a stashed message arrived *before* everything still queued
+   * and is the one a sender is most likely waiting on.
+   *
+   * The dead letter cannot name the original sender the way the cell's can:
+   * `StashBuffer.stash(message)` takes any value, not necessarily the one
+   * being handled, so there is no one sender to attribute it to.
+   */
+  private deadLetterStashBuffers(): void {
+    for (const buffer of this.stashBuffers) {
+      for (const message of buffer.drain()) {
+        this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+      }
+    }
+  }
 
   /**
    * Run one message against an already-resolved behavior and answer what its
@@ -255,6 +290,12 @@ export class TypedActor<T> extends Actor<T> {
         // Read the depth before resolving: a nested `supervise` inside the
         // child would overwrite the field on the way through.
         const outerLayers = this.superviseInterceptorDepth;
+        // A typed restart re-resolves `supervise.child` in place — the cell
+        // never sees it, so `onRecreate`'s drain does not run.  The stash
+        // still cannot carry over (the re-resolved behavior has none of the
+        // state that made those messages un-handleable), so it goes to dead
+        // letters here for exactly the reason it does there.
+        this.deadLetterStashBuffers();
         const resolved = this.resolve(supervise.child, outerLayers);
         const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
         // Interceptors installed *outside* the supervise wrapper are not part
@@ -393,20 +434,58 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
 
 /* ---------------- StashBuffer ---------------- */
 
+/**
+ * The typed DSL's own stash.
+ *
+ * It keeps an array rather than delegating to `context.stash()` because the
+ * OO API cannot serve either half of this contract: `stash(message)` takes an
+ * arbitrary value where the cell can only park the envelope it is currently
+ * handling, and the capacity is declared per `withStash` behavior where the
+ * cell has one compiled-in default for the whole actor.
+ *
+ * The *replay*, though, is the cell's.  `self.tell` appends to the tail of the
+ * user queue, so every message that arrived while the stash was filling got
+ * handled before the replay did — the exact inversion stashing exists to
+ * prevent (#639).  `prependUserMessages` puts them back at the head instead,
+ * matching `ActorContext.unstashAll`.
+ */
 class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];
   constructor(
     private readonly capacity: number,
     private readonly self: ActorRef<T>,
   ) {}
+
   stash(message: T): void {
     if (this.buffer.length >= this.capacity) throw new StashOverflowError(this.capacity);
     this.buffer.push(message);
   }
+
   unstashAll(): void {
-    const drained = this.buffer.splice(0, this.buffer.length);
+    const drained = this.drain();
+    if (drained.length === 0) return;
+    // A `TypedActor`'s `self` is minted by its own cell, so this is the branch
+    // that actually runs.  The `tell` fallback covers an `ActorRef` the
+    // framework did not produce, where appending is at least better than
+    // dropping the replay on the floor.
+    if (this.self instanceof LocalActorRef) {
+      this.self.getCell().prependUserMessages(drained);
+      return;
+    }
     for (const message of drained) this.self.tell(message);
   }
+
+  /**
+   * Empty the buffer and answer what it held.
+   *
+   * Not part of {@link StashBuffer} — it exists for `TypedActor`'s stop and
+   * restart paths, which have to take the contents *away* from the buffer to
+   * dead-letter them, and for `unstashAll` itself.
+   */
+  drain(): T[] {
+    return this.buffer.splice(0, this.buffer.length);
+  }
+
   get isEmpty(): boolean { return this.buffer.length === 0; }
   get isFull(): boolean { return this.buffer.length >= this.capacity; }
   get size(): number { return this.buffer.length; }

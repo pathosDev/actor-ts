@@ -387,7 +387,10 @@ See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The
 bumps are potentially breaking; check the changelog before upgrading.
 
 Issues and feature requests live on
-[GitHub](https://github.com/pathosDev/actor-ts/issues).
+[GitHub](https://github.com/pathosDev/actor-ts/issues).  A vulnerability
+goes through [`SECURITY.md`](./SECURITY.md) instead, which names the
+private reporting channel, the supported versions, and what is in and out
+of scope.
 
 ---
 

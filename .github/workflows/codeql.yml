@@ -1,0 +1,91 @@
+name: codeql
+
+# Static analysis of the whole repository with CodeQL (#539).
+#
+# Until this landed, `code-scanning/alerts` answered 404 "no analysis
+# found" — the repository had never been analysed once.  Everything here
+# parses somebody else's bytes: cluster wire frames, HOCON, HTTP requests
+# and WebSocket payloads, persisted snapshots.  That is exactly the input
+# surface CodeQL's default queries are written for, and none of the other
+# gates (`bun run typecheck`, `bun test`, publint/attw/knip) look for a
+# taint path.
+#
+# Runs on pull requests so a finding is attached to the change that
+# introduced it, on pushes to the long-lived branches so the alert
+# baseline stays current, and weekly because CodeQL ships new queries —
+# a file that was clean in March can be flagged in June without anybody
+# touching it.
+#
+# Analysis configuration (which paths are excluded, and why the default
+# query suite rather than `security-extended`) lives in
+# `.github/codeql/codeql-config.yml`.
+#
+# `uses:` pins are 40-character commit SHAs with the release tag in a
+# trailing comment, asserted by `tests/unit/ci/WorkflowHygiene.test.ts`
+# and kept current by Dependabot; see `.github/dependabot.yml`.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  # Tuesdays 03:27 UTC.  Deliberately not on the hour: GitHub queues
+  # scheduled workflows repo-wide and the round times are the congested
+  # ones.
+  schedule:
+    - cron: '27 3 * * 2'
+  workflow_dispatch:
+
+# Deliberately no `paths:` filter, unlike build.yml and package-health.yml.
+# Code scanning treats the newest analysis of a branch as the truth about
+# that branch, so skipping a push leaves the alert set describing a commit
+# that is no longer there.
+
+# Read-only floor for the whole file; the one write scope this needs is on
+# the job below.  #621
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    # 6 h is the default and far more than this needs; a runaway analysis
+    # holding a runner for six hours is not a useful failure mode.
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      # Uploading the SARIF result is what makes an alert appear.  Declared
+      # here rather than at file level so it belongs to this job alone —
+      # the rule `tests/unit/ci/WorkflowHygiene.test.ts` enforces, and the
+      # reason docs.yml's build job used to hold scopes it never used.
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `javascript-typescript` is one language to CodeQL, not two, and it
+      # covers `.ts`, `.mts`, `.mjs`, `.js` and the framework files in
+      # `examples/`.  No dependency install: `build-mode: none` extracts
+      # from source, and installing would only pull `node_modules/` into
+      # the extraction for no additional finding.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          # The category keys the SARIF upload.  One analysis per branch
+          # here, but an unkeyed upload silently replaces any other one if
+          # a second language is ever added.
+          category: '/language:javascript-typescript'
