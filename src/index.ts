@@ -224,6 +224,11 @@ export {
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
+// ProcessSignal — the POSIX signal names `installProcessHooks` and the
+// cluster bootstrap's `shutdownOnSignals` accept.  A verbatim mirror of
+// `NodeJS.Signals`, so the published types need no `@types/node`.
+export type { ProcessSignal } from './util/ProcessSignal.js';
+
 
 
 

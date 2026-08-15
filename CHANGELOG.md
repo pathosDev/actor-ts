@@ -64,6 +64,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   between the compiler and `attw --profile esm-only` about which resolver is
   authoritative.
 
+- **BREAKING — `MemcachedClientLike` is typed in `Uint8Array`, not `Buffer`**
+  (#1006).  The shipped declarations used Node-only types in public
+  signatures while `@types/node` was declared only as a devDependency, so a
+  consumer type-checking with `skipLibCheck: false` got errors out of
+  `node_modules/actor-ts/` that were not theirs to fix.  Two of the three
+  offending surfaces are gone:
+
+  - `NodeJS.Signals` is replaced by the new `ProcessSignal`, exported from
+    the root entry.  It mirrors `NodeJS.Signals` member for member, so it is
+    assignable in both directions and every existing call keeps compiling —
+    `installProcessHooks(['SIGTERM', 'SIGINT'])`, `ProcessTerminateReason
+    .signal` and the cluster bootstrap's `shutdownOnSignals` are unchanged at
+    the call site.
+  - `MemcachedClientLike` speaks `Uint8Array`.  A real memjs client still
+    satisfies it — `Buffer` *is* a `Uint8Array` — and so does any custom
+    stand-in that returns one.  Internally the value is decoded with
+    `TextDecoder` rather than `Buffer.toString('utf8')`, since the type
+    change alone would have left the Node dependency alive at the value
+    level.
+
+  *Migration:* only code that reads a value **through** the
+  `MemcachedClientLike` type is affected, and only where it used a
+  `Buffer`-specific method: `value.toString('utf8')` becomes `new
+  TextDecoder().decode(value)`.  Implementing the interface, and passing a
+  memjs client to `MemcachedCache`, both need no change.
+
+  `node:http` in `ExpressBackend` deliberately stays: `ServerResponse` is
+  constructed at run time there, and a structural stand-in for a Node class
+  the code actually instantiates would be regression risk for a cosmetic
+  gain.  Instead `@types/node` is now declared as an **optional peer
+  dependency**, which is what it always was in practice — npm can surface it,
+  and a Deno-or-browser consumer that never touches those entries is not
+  forced to install it.
+
+  Measured against the packed tarball, installed into a tree with no
+  `@types` package at all, under `skipLibCheck: false` / `types: []` /
+  `lib: ["ES2022", "DOM"]`: importing `'actor-ts'` reports **zero** errors,
+  and importing all nineteen entry points reports **two**, both of them the
+  `node:http` line above.  Installing the now-declared peer takes every count
+  to zero.  (A strict consumer needed it regardless — fastify's own
+  declarations and its `pino` / `light-my-request` / `sonic-boom`
+  dependencies account for 33 further errors without it, which no change on
+  this side could have removed.)
+
 ### Added
 
 - **Per-subsystem subpath exports** (#414, #1001).  The exports map grew one

@@ -4,6 +4,7 @@ import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
 import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
+import type { ProcessSignal } from '../util/ProcessSignal.js';
 
 /**
  * Built-in default for {@link ClusterBootstrapOptionsType.port} — the
@@ -44,7 +45,7 @@ export type ClusterBootstrapOptionsType = {
    * to a list of signals to customise, or to `false` to disable.
    * Default: `['SIGTERM', 'SIGINT']`.
    */
-  readonly shutdownOnSignals?: boolean | ReadonlyArray<NodeJS.Signals>;
+  readonly shutdownOnSignals?: boolean | ReadonlyArray<ProcessSignal>;
 
   /* ----------------------------- Cluster ------------------------------- */
 

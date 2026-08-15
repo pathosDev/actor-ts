@@ -2,6 +2,7 @@ import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
 import { DEFAULT_PHASE_TIMEOUT_MS } from './Constants.js';
+import type { ProcessSignal } from './util/ProcessSignal.js';
 
 /**
  * Structured reason passed to every shutdown task so that they can behave
@@ -31,7 +32,7 @@ export class ClusterDowningReason extends Reason {
 }
 /** Received SIGTERM / SIGINT from the process. */
 export class ProcessTerminateReason extends Reason {
-  constructor(public readonly signal: NodeJS.Signals) { super(); }
+  constructor(public readonly signal: ProcessSignal) { super(); }
   readonly name = 'ProcessTerminateReason';
   override toString(): string { return `ProcessTerminateReason(${this.signal})`; }
 }
@@ -94,7 +95,7 @@ export class CoordinatedShutdown implements Extension {
    * handling along with every other library's and any second
    * `ActorSystem`'s (#644).
    */
-  private _processHooks: { signal: NodeJS.Signals; handler: () => void }[] = [];
+  private _processHooks: { signal: ProcessSignal; handler: () => void }[] = [];
 
   /**
    * Default per-phase timeout in ms.  Can be changed globally or per-phase
@@ -230,7 +231,7 @@ export class CoordinatedShutdown implements Extension {
    * Install SIGTERM / SIGINT handlers that call `run(ProcessTerminateReason)`.
    * Calling twice is harmless.  Uninstall via `removeProcessHooks`.
    */
-  installProcessHooks(signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT']): void {
+  installProcessHooks(signals: ProcessSignal[] = ['SIGTERM', 'SIGINT']): void {
     if (this._processHooksInstalled) return;
     if (typeof process === 'undefined' || typeof process.on !== 'function') return;
     for (const sig of signals) {
