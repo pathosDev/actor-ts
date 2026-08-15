@@ -123,6 +123,16 @@ alloziert also nie zu Ende.  Jenseits der Deadline bricht er
 genauso ab wie bisher schon bei explizitem `timeoutMs`; neu ist
 nur, dass ein Aufruf ohne genannte Deadline jetzt eine hat.
 
+Jeder Override wird beim Aufruf geprüft, nicht nur beim Bau des
+Clients.  Jede Schranke wird über einen Vergleich durchgesetzt, und
+ein `NaN` verliert jeden Vergleich lautlos: Ein `timeoutMs` von
+`NaN` scharft keinen Timer, ein `maxResponseBytes` von `Infinity`
+löst nie aus, und beides meldet nichts — die Schranke hört einfach
+auf zu existieren.  Ein Wert außerhalb des Wertebereichs wirft
+deshalb `OptionsError`, bevor ein Socket geöffnet wird.
+`timeoutMs: 0` bleibt der eine legitime Weg zu keiner Deadline und
+`maxRedirects: 0` der Weg, den ersten Redirect abzulehnen.
+
 Hebe sie pro Aufruf an, wenn ein einzelner Endpunkt die Ausnahme
 ist:
 

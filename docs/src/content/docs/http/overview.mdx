@@ -118,6 +118,16 @@ oversized or endless response never finishes allocating.  Past the
 deadline it aborts exactly as an explicit `timeoutMs` always did —
 what changed is that a call naming no deadline now has one.
 
+Each override is checked when the call is made, not only when the
+client is built.  Every bound is enforced by a comparison, and a
+`NaN` loses a comparison silently: a `timeoutMs` of `NaN` arms no
+timer, a `maxResponseBytes` of `Infinity` never trips, and neither
+raises anything — the bound just stops existing.  So an
+out-of-domain value throws `OptionsError` before a socket is
+opened.  `timeoutMs: 0` remains the one legitimate way to have no
+deadline, and `maxRedirects: 0` the way to refuse the first
+redirect.
+
 Raise them per call when a single endpoint is the exception:
 
 ```ts
