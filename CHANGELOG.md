@@ -351,6 +351,68 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   than failing `postStop`. It fires on whole-system shutdown too, which is
   idempotent against the membership-driven path that follows.
 
+- **Broker reconnect backoff is jittered, so a fleet no longer retries in
+  lockstep after a broker restart (#652).**
+
+  The reconnect delay was `min(initialDelayMs * factor^(attempt - 1),
+  maxDelayMs)` — a pure function of the attempt counter and the options,
+  with no randomness anywhere. Every broker actor that lost the same
+  broker in the same instant therefore woke in the same millisecond, on
+  every wave, and the herd could keep the recovering broker down.
+
+  The circuit-breaker path was a second, independently synchronised
+  wake-up. When the breaker is open, the actor returns early and
+  reschedules for exactly the time left on `resetMs`, never reaching the
+  backoff calculation at all — so actors whose breakers opened in one
+  failure burst would have stayed synchronised even after jitter was added
+  to the backoff. Both paths are jittered now.
+
+  `reconnect.randomFactor` (default `0.2`, i.e. ±20 %) and an injectable
+  `reconnect.random` seam join the reconnect options. `randomFactor` also
+  reads from the HOCON `reconnect` block and is bounded to `[0, 1]` by the
+  shared broker validator, so a nonsensical fraction is rejected when the
+  actor is constructed rather than during the outage that triggers the
+  reconnect. `reconnect: { randomFactor: 0 }` restores the previous, fully
+  deterministic schedule.
+
+  The breaker spread is deliberately one-sided — `[resetMs, resetMs × (1 +
+  randomFactor)]` — because a symmetric jitter would wake an actor before
+  its own deadline, drop it straight back into the same branch and
+  converge the whole fleet onto that deadline again. `reconnect.factor` is
+  untouched: `exponentialBackoff` in `pattern/BackoffPolicy` hardcodes
+  base 2 and cannot express it, so the broker keeps its own arithmetic
+  rather than silently dropping a live public option.
+
+- **The Hono backend now measures a chunked request body while it arrives
+  instead of buffering it whole (#357).**
+
+  A declared `Content-Length` over the cap has been refused before any
+  read on all three backends for a while, but a chunked body declares no
+  length, and the Hono backend read it with a single `await
+  c.req.arrayBuffer()` and compared `byteLength` afterwards. What actually
+  bounded such a request was therefore whatever the runtime happened to
+  allow — 16 MiB on Bun, nothing in particular elsewhere — and not
+  `maxBodyBytes`: the cap decided what the handler saw, not what the
+  process allocated. Express has counted per chunk since the caps were
+  unified and Fastify counts inside its own parser; this makes the third
+  backend agree.
+
+  The read now goes through `c.req.raw.body` chunk by chunk and cancels
+  the stream the moment the running total crosses the cap, the same shape
+  `HttpClient` already uses on the response side. That is runtime-neutral
+  by construction, which matters here: neither `Bun.serve`, `Deno.serve`
+  nor `@hono/node-server` exposes a request-body-size option, so no
+  runner-level fix could have been portable across the three. Where no
+  readable body stream is reachable — a runtime whose `raw` is not a Web
+  `Request`, or a body a user's own Hono middleware already consumed — the
+  buffered read stays as the fallback, so nothing that worked before stops
+  working.
+
+  An application that was relying on Hono accepting a chunked upload
+  larger than its configured cap will now get the same `413 Payload Too
+  Large` the other two backends already sent. Raise `maxBodyBytes` on the
+  backend options where an endpoint genuinely takes more.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
@@ -396,6 +458,123 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   This is authorization, not authentication: on a cluster without peer
   certificates any party that can reach the port can become a member and
   then the leader. Run mTLS if the network is not fully trusted.
+
+- **Object-storage bodies are now bound to the storage key they live at,
+  and a durable-state revision cannot silently go backwards (#612).**
+
+  Neither authenticator said anything about *where* a body lived.
+  AES-GCM's tag proves the holder of the subkey produced this ciphertext;
+  the HMAC proves the holder of the integrity key produced these framed
+  bytes. Both cover the bytes and stop there, so an attacker with bucket
+  write access could take an authentic body and replay it somewhere else.
+  The unencrypted-plus-HMAC configuration was the sharp end, and it is the
+  documented one: `integrityKey` is a single flat deployment-wide secret
+  with no per-`persistenceId` derivation, and `load` returns the
+  *requested* pid with the *body's* state — so one account's object copied
+  onto another account's key came back as that other account's state, with
+  every check in the frame satisfied. Client-side encryption narrowed this
+  without closing it, because HKDF salts the subkey with the pid: that
+  separates two pids but not two objects of one pid, leaving a snapshot
+  replayable onto a different sequence number of the same actor.
+
+  The storage key now goes into `subtle.encrypt`/`decrypt` as
+  `additionalData` and, length-prefixed, ahead of the framed bytes in the
+  HMAC input. A new manifest flag at bit5, `FLAG_CONTEXT_BOUND`, records
+  that it was done, and bodies written before this keep decoding — the
+  same backwards-compatible flag migration `FLAG_KEY_VERSIONED` (#8) and
+  `FLAG_INTEGRITY_HMAC` (#116) already made. That tolerance is also the
+  remaining gap, since bit5 is a manifest byte like any other: until
+  unbound bodies stop being accepted, one authentic pre-binding body is a
+  replay token for every key in the bucket. `requireContextBinding` on
+  both object-storage stores (and on the plugin) closes it, mirroring how
+  #579 made the integrity tag mandatory. It is off by default because an
+  existing bucket is full of unbound bodies; `reEncryptObjectStorage` now
+  rewrites those even when their key version is already active, so a sweep
+  is what earns the right to turn it on.
+
+  Binding the key cannot catch the same-pid rollback, and binding the
+  revision would not either — the revision already sits inside the sealed
+  payload, and `load` has no expected revision to check it against. An
+  authentic *older* body replayed over a newer one is a valid body in
+  every respect except that it is stale, and an ordinary actor restart was
+  enough to make the store adopt it. `ObjectStorageDurableStateStore`
+  therefore keeps an in-process floor of the highest revision it has seen
+  per `persistenceId` and refuses to go below it
+  (`rejectRevisionRollback`, on by default). The floor lives in its own
+  map rather than in the ETag cache: that cache is deliberately dropped on
+  a CAS rejection (#117), which an attacker can provoke, and a floor that
+  evaporated with it would protect nothing.
+
+  The encryption threat table stopped claiming client-side encryption
+  covers "account compromise" unqualified. Someone who can write to the
+  bucket is a different attacker from one who can only read it, and the
+  row is now split accordingly.
+
+  *Migration:* Two things change behaviour without any code edit. First,
+  bodies written by this version carry a binding when encryption or
+  integrity is configured, and a reader from an earlier release cannot
+  decode them — finish a rolling upgrade of readers before writers, or
+  accept a window in which old nodes cannot read new bodies. Second,
+  `rejectRevisionRollback` defaults to `true`, so a durable-state `load`
+  that returns a lower revision than this process has already seen now
+  throws instead of succeeding; this only fires when another writer
+  legitimately deletes and recreates a record in the same bucket (a delete
+  through this store drops its own floor), and
+  `withRejectRevisionRollback(false)` opts out. To harden further, rewrite
+  the corpus so every body carries a binding — a `load` + `upsert` per
+  `persistenceId` for durable state, `keepN` pruning for snapshots, or
+  `reEncryptObjectStorage` for a bucket that is mid-rotation — and only
+  then set `withRequireContextBinding()`; turning it on over unbound
+  bodies makes reads fail. Note that the binding covers the whole storage
+  key including `prefix`, so changing a store's `prefix` after the fact
+  breaks verification exactly the way changing the HKDF `info` does.
+
+- **A WebSocket route's transport frame cap is now the cap you configured,
+  in both directions (#373).**
+
+  Every backend has installed a transport-level payload limit since the
+  WS-3 fix — `maxPayload` on the `ws` server for Express and Fastify,
+  `maxPayloadLength` or `@hono/node-ws` for Hono — and every one of them
+  installed the framework's 1 MiB default, because the route policy was
+  resolved inside the `websocket()` closure on the first connection and a
+  backend binds before that. The configured cap therefore governed what
+  the connection actor accepted and not what the process buffered first.
+
+  Both directions were wrong, and the one the issue did not mention is the
+  one that mattered for memory: an operator who lowered
+  `actor-ts.http.websocket.maxFrameBytes` to 64 KiB still got a 1 MiB
+  buffering window, which is exactly the allocation amplification the cap
+  exists to prevent. The other direction was the visible one — raising
+  `maxFrameBytes` above 1 MiB left frames between the two silently cut off
+  by the runtime.
+
+  The route now carries a memoised `resolvePolicy(system)` through
+  compilation to `HttpExtension.bind`, the one place holding both the
+  routes and the `ActorSystem`, and the resolved `maxFrameBytes` reaches
+  the backend on the registration. Because a server has a single transport
+  shared by all of its WebSocket routes — one `WebSocketServer` on
+  Express, one plugin registration on Fastify, one `Bun.serve` — the
+  backends install the widest cap any registered route resolved to. A
+  stricter route is unaffected in what it accepts, since the connection
+  actor still refuses its oversize frames; it simply does not get a
+  narrower socket than a permissive sibling. On Deno the first layer still
+  does not exist at all: `Deno.upgradeWebSocket` has no payload option, so
+  there an oversize frame is buffered first and rejected second,
+  unchanged.
+
+  *Migration:* Three things can be observed. A route or HOCON setting that
+  *lowers* `maxFrameBytes` now narrows the transport window too, so an
+  oversize frame is refused by the runtime rather than by the connection
+  actor — on `ws` (Express, Fastify, Hono on Node) the peer still sees a
+  clean `1009`, but Bun drops the connection and the client synthesises
+  `1006`, so a client that switches on `1009` alone should accept both.
+  `WebsocketRouteRegistration` gains a required `maxFrameBytes` and the
+  `websocket` node of `Route` gains a required `resolvePolicy`, so a
+  third-party backend or a test double that *constructs* either shape by
+  hand needs the new field; backends that only read a registration are
+  unaffected. And an `OptionsError` from a malformed WebSocket policy (a
+  bad HOCON enum, a non-positive byte cap) now throws from `bind()`
+  instead of from the first upgrade.
 
 ## [0.16.0] — 2026-08-15
 
@@ -919,10 +1098,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   abnormal close (1006) instead of the application layer's clean 1009.
   Lowering `maxFrameBytes` is unaffected.
 
-  *Migration:* if a Hono WebSocket route relies on frames larger than 1 MiB,
-  put a proxy with a matching frame limit in front of it or keep the route
-  on Express/Fastify until #373 makes the transport cap configurable — the
-  route-level `withMaxFrameBytes(...)` no longer raises it on its own.
+  *Migration:* superseded by #373, which sizes the transport cap from the
+  route's own policy on every backend — `withMaxFrameBytes(...)` raises the
+  transport window again and no proxy is needed.  The advice originally given
+  here, to keep the route on Express or Fastify until then, never worked:
+  as the paragraph above says, those two have installed the identical 1 MiB
+  transport cap since the WS-3 fix, so moving a route to them changed
+  nothing.
 
 - **A decompression-cap violation now reports one wording whichever
   mechanism caught it** (#580).  zlib's own `Cannot create a Buffer larger
@@ -6853,10 +7035,11 @@ new names.
   full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
   allocation-amplification DoS.  Both now pass `maxPayload:
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
-  protocol level.  *Caveat:* on these backends a route that raises
-  `maxFrameBytes` above the default is currently still capped at the default by
-  the transport; a per-route / configurable transport cap and the Hono
-  runner-level cap are tracked follow-ups.
+  protocol level.  *Caveat, since lifted:* on these backends a route that
+  raised `maxFrameBytes` above the default was still capped at the default by
+  the transport.  #373 closed that — the transport cap is now sized from the
+  route's own resolved policy on every backend — as did #586 for the Hono
+  runner-level cap.
 - **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
  .  New opt-in `maxConnections` on `websocket()`
   routes (`.withMaxConnections(n)`, or `actor-ts.http.websocket.maxConnections`
