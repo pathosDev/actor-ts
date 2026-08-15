@@ -7,7 +7,9 @@
  *
  * Implementing TLS is #941.  What is pinned here is the smaller promise this
  * issue makes: the node **says** the flag is not honoured, exactly once, at
- * startup, and stays quiet in every case where saying it would be wrong.
+ * startup, stays quiet in every case where saying it would be wrong, and
+ * refuses to start on a value it cannot read as a boolean rather than picking
+ * one of two defensible guesses about a security setting.
  *
  * The warning is emitted from the `Cluster` constructor, which these tests
  * reach directly instead of through `Cluster.join`.  `join` also `_start`s the
@@ -24,7 +26,7 @@ import { Cluster } from '../../../src/cluster/Cluster.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../src/Logger.js';
@@ -153,5 +155,66 @@ describe('a node whose config asks for TLS says the wire is still plaintext', ()
     construct(system, { maxFrameBytes: 1_024, roles: ['worker'] });
 
     expect(warningsIn(log)).toHaveLength(1);
+  });
+
+  test('an `on` spelling warns too, and the text does not quote back a spelling', () => {
+    // HOCON's booleans are `true` / `on` / `yes`, and the config shape proposed
+    // on #591 itself writes `off` — so the `on` spelling will occur in the
+    // wild.  A message that said "is true" would send that operator hunting
+    // their config for a line they never wrote.
+    const { system, log } = newSystem('actor-ts.remote.tls.enabled = on');
+
+    construct(system);
+
+    const warnings = warningsIn(log);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.message).not.toContain('is true');
+  });
+
+  test('an explicitly null transport is warned about, like the absent one', () => {
+    // The line the guard protects picks the transport with `??`, which falls
+    // through on `null` as well — so a `null` builds the same plaintext
+    // transport that `undefined` does and must not buy silence.  Unreachable
+    // from typed code (`readonly transport?: Transport`), hence the cast; it is
+    // pinned because the guard and the expression it guards drifting apart is
+    // how the warning would go quiet without any test noticing.
+    const { system, log } = newSystem('actor-ts.remote.tls.enabled = true');
+
+    construct(system, { transport: null } as unknown as Partial<ClusterOptionsType>);
+
+    expect(warningsIn(log)).toHaveLength(1);
+  });
+});
+
+describe('a malformed value for the flag stops the node instead of guessing', () => {
+  // The read goes through `Config.getBoolean`, so a value that is not a boolean
+  // in any of HOCON's spellings throws `ConfigError` out of the constructor and
+  // the node never comes up.  That is the deliberate half of #591's residual:
+  // the tolerant alternative — treat anything unparseable as "not requested" —
+  // would put the operator back in the state this issue is about, running
+  // plaintext while their config says otherwise.  Startup is also the only
+  // moment the mistake is cheap to see.
+  test.each([
+    ['a word that is not a boolean', 'maybe'],
+    ['a numeric truthy', '1'],
+  ])('%s throws out of the constructor', (_case, value) => {
+    const { system } = newSystem(`actor-ts.remote.tls.enabled = ${value}`);
+
+    expect(() => construct(system)).toThrow(ConfigError);
+    // Actionable without reading the source: which key, and what it wanted.
+    expect(() => construct(system)).toThrow(/actor-ts\.remote\.tls\.enabled/);
+    expect(() => construct(system)).toThrow(/boolean/);
+  });
+
+  test('an injected transport is not held up by it', () => {
+    // The value is only ever read to decide whether to warn, and an injected
+    // transport is never warned about — so the node that cannot be wrong about
+    // its own encryption is also the node that does not have to fix its config
+    // first.  Keeps the strictness proportional to what it buys.
+    const { system, log } = newSystem('actor-ts.remote.tls.enabled = maybe');
+
+    expect(() => construct(system, { transport: new InMemoryTransport(SELF) })).not.toThrow();
+
+    expect(warningsIn(log)).toEqual([]);
   });
 });
