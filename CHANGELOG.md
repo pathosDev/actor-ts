@@ -47,9 +47,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `sourcesContent` as a fallback.  A dangling map is worse than an absent
   one: a missing map degrades cleanly to the `.d.ts`, a dangling map sends
   the editor and the debugger looking for a file that will never arrive.
-  Dropping them takes the installed package from 6.43 MB to about 4.19 MB —
-  35 % of it was maps that could not work.  Go-to-definition still lands on
-  the `.d.ts`, which is exactly where it landed before.
+  Published, the package goes from **8.07 MB over 2360 files** at v0.15.0 to
+  **6.07 MB over 1268 files** — and that is with the whole logging-sink
+  subsystem added in the same window, so the like-for-like saving is larger
+  than the 2 MB the totals show.  Go-to-definition still lands on the
+  `.d.ts`, which is exactly where it landed before.
 
 - **The build resolves modules as `NodeNext`** (#1008).  The build tsconfig
   said `moduleResolution: "Bundler"`, but no bundler runs — `tsc` emits ESM
