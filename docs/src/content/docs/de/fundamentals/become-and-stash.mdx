@@ -312,6 +312,10 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   die Nachrichten über den Fehler hinweg wichtig sind, persistiere sie
   (`PersistentActor`) oder lass einen Parent sie erneut senden, sobald
   der Restart durch ist.
+
+  Dasselbe gilt für den Puffer von
+  [`Behaviors.withStash`](/de/typed/behaviors/) im typed-DSL — auch für
+  den Restart, den eine `Behaviors.supervise`-Strategie selbst ausführt.
 </Aside>
 
 ## Wann zu welchem greifen

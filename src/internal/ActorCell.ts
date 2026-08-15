@@ -622,6 +622,38 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   get stashSize(): number { return this._stashBuffer.length; }
 
   /**
+   * @internal The replay half of {@link unstashAll}, without the buffer half.
+   *
+   * The typed DSL's `Behaviors.withStash` cannot use `_stashBuffer`: its
+   * capacity is declared per behavior where the cell's is one compiled-in
+   * default for the whole actor, and `StashBuffer.stash(message)` parks an
+   * arbitrary value where {@link stash} can only park the envelope currently
+   * being handled.  So it keeps its own buffer — but the *replay* has to be
+   * this one, or a stashed message loses its place to every message that
+   * arrived after it was parked (#639).
+   *
+   * A terminated cell dead-letters instead of queueing, exactly as
+   * {@link postUserMessage} does: prepending into a mailbox nobody will drain
+   * again is a silent drop.
+   *
+   * The envelopes carry no sender — the typed buffer holds bare messages, so
+   * there is none to carry — and no `enqueuedAtMs`, which matches
+   * {@link unstashAll}: a replayed message is not re-stamped, so an explain
+   * plan reports its mailbox wait as unknown rather than as a fresh arrival.
+   */
+  prependUserMessages(messages: ReadonlyArray<TMessage>): void {
+    if (messages.length === 0) return;
+    if (this.state === 'terminated') {
+      for (const message of messages) {
+        this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+      }
+      return;
+    }
+    this.mailbox.prependUser(messages.map((message) => ({ message, sender: null })));
+    this.schedule();
+  }
+
+  /**
    * Send whatever the stash still holds to dead letters.
    *
    * The mailbox is drained on termination, but the stash is a separate

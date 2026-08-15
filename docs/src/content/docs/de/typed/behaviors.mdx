@@ -181,7 +181,17 @@ const ready = Behaviors.receive<Message>((context, message) => {
 Kapazitäts-gebundener Stash, mit `stash` / `unstashAll` / `isEmpty`
 / `isFull` / `size`.  Gleiche Semantik wie
 [das untyped `context.stash`](/de/fundamentals/become-and-stash/),
-exponiert als Wert statt über Context.
+exponiert als Wert statt über Context — einschließlich der beiden
+wichtigsten Zusagen: `unstashAll()` legt die gepufferten Nachrichten
+**vorne** in die Mailbox zurück, sodass sie vor allem behandelt werden,
+was währenddessen ankam, und was beim Stoppen oder Neustarten noch
+geparkt ist, geht zu **Dead Letters**, statt zu verschwinden.
+
+Zwei Unterschiede zur Context-Form, beide beabsichtigt.  Die Kapazität
+ist die, die du `withStash` übergibst — pro Behavior, statt einer für den
+ganzen Actor.  Und `stash(message)` nimmt die Nachricht explizit, sie muss
+also nicht die gerade behandelte sein — weshalb ein aus diesem Puffer
+erzeugter Dead Letter auch keinen ursprünglichen Sender trägt.
 
 ### `supervise(behavior).onFailure(strategy)`
 
