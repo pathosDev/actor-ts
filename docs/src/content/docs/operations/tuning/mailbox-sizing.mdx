@@ -47,6 +47,14 @@ exhaustion, long GC pauses, a producer that never learns there is a
 problem — announces itself well before it arrives.  Watch for the
 warning; bound the actors that produce it.
 
+**Depth is not a throughput problem.**  Both queues inside a mailbox are
+ring buffers, so taking the next message advances an index rather than
+reindexing the backlog behind it: a queue of a million costs the same per
+message as a queue of ten.  What a deep queue does cost is memory and
+latency — every message in it is retained, and the one at the back waits
+for everything ahead of it.  Those are the reasons to bound, and neither is
+fixed by a faster queue.
+
 ## When to introduce a bound
 
 Three patterns where an unbounded queue is the wrong answer.  In each,
@@ -205,6 +213,34 @@ Use for:
 
 - **HTTP responses** (urgent) vs **batch jobs** (deferrable).
 - **Health pings** vs **bulk metrics**.
+
+### Priority *and* a bound
+
+Ordering and a ceiling are not an either/or.  `withMailbox` and
+`withMailboxCapacity` cannot be combined, so the capacity goes on the
+mailbox's own options:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((m) => m.kind === 'urgent' ? 0 : 5)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+The policy set is `'drop-lowest-priority'` / `'drop-new'` / `'reject'`,
+defaulting to `reject`.  `drop-head` is absent on purpose: a priority
+queue's head is the message you called most important.
+`drop-lowest-priority` sheds from the other end instead, which is the
+version of "shed load" that a priority mailbox exists to express — the
+urgent tier survives and the bulk tier pays.
+
+Drops land in `actor_mailbox_dropped_total` like any other, so the same
+alerting applies.
 
 See [Mailboxes](/fundamentals/mailboxes/) for the full
 PriorityMailbox surface.

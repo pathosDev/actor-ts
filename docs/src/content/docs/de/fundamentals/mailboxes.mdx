@@ -43,6 +43,15 @@ Nachrichten erreicht, loggt eine Warnung — und erneut bei jeder
 Verdopplung.  Mit aktivierten Metriken meldet `actor_mailbox_size` die
 Tiefe pro Actor.
 
+Eine Queue ohne Decke muss billig bleiben, wenn sie tief wird — deshalb
+liegt beiden Queues einer Mailbox ein
+[`RingBuffer`](/de/reference/utility-helpers/) zugrunde und kein einfaches
+Array: die nächste Nachricht zu entnehmen rückt einen Index vor, statt
+alles dahinter neu zu indizieren.  Die Kosten, eine Nachricht
+auszuliefern, wachsen also nicht mit dem Backlog, der dahinter wartet.
+Von außen ist das unsichtbar — auch für eine eigene `Mailbox`-Subklasse,
+die nur die Methoden sieht.
+
 ### Wann eine Mailbox begrenzen
 
 Greif zu einem Bound, wenn **Last abwerfen besser ist als Last
@@ -300,6 +309,61 @@ nachhaltigen 10.000-Nachrichten-Backlog hast, bei dem
 Priority-Insertion in Profilen auftaucht, ist die Mailbox offen für
 einen Heap-backed-Swap (siehe den Source).
 
+### Eine Priority-Mailbox begrenzen
+
+Eine Priority-Mailbox ist unbounded, solange du ihr keine `capacity`
+gibst — genau wie jede andere Mailbox.  Der Bound liegt auf den Options
+der Mailbox selbst und nicht auf `ActorOptions`, weil `withMailbox` und
+`withMailboxCapacity` sich nicht kombinieren lassen: eine übergebene
+Mailbox bringt ihren eigenen Bound mit:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+Die Policies sind `'drop-lowest-priority'`, `'drop-new'` und `'reject'`,
+und `reject` bekommst du, wenn du eine Capacity ohne Policy nennst — eine
+Capacity zu nennen sagt, wie viel du hältst, nicht was du bereit bist zu
+verlieren.
+
+| Policy | Was bei Overflow passiert |
+| --- | --- |
+| `'drop-lowest-priority'` | Verwirft die Nachricht, die am weitesten von der Auslieferung entfernt ist — die mit der niedrigsten Priorität, unter Gleichen die zuletzt angekommene.  Die eingehende Nachricht tritt zu denselben Bedingungen an: eine, die unter dem gesamten Backlog rangiert, ist selbst die, die geht. |
+| `'drop-new'` | Verwirft die *eingehende* Nachricht, egal welche Priorität sie bekommen hat. |
+| `'reject'` | Wirft `MailboxFullError` an der `tell`-Stelle. |
+
+`drop-head` gibt es hier bewusst **nicht**.  Auf einer FIFO-Queue heißt
+es "verwirf die abgestandenste", und das trägt, weil Ankunftsreihenfolge
+dort die einzige Ordnung ist.  Auf einer Priority-Queue ist der Kopf die
+Nachricht, die dein `priorityFor` als wichtigste bezeichnet hat — sie zu
+verwerfen würde den Grund zunichtemachen, aus dem du diese Mailbox
+gewählt hast.  Drops werden weiterhin als `drop-head` an
+`actor_mailbox_dropped_total` gemeldet (dieses Label hat ein
+geschlossenes Zwei-Werte-Vokabular), außer wenn die verworfene Nachricht
+die eingehende war — dann lautet der Grund `drop-new`.
+
+<Aside type="caution" title="Eine begrenzte Priority-Mailbox kann beim Unstash droppen">
+  `PriorityMailbox.prependUser` führt die Priority-Funktion erneut aus,
+  statt vorne einzufügen — `unstashAll()` läuft also durch denselben
+  `enqueue`-Pfad und damit durch denselben Bound.  Auf einer vollen
+  Mailbox kann das Wiedereinspielen des Stash Nachrichten verwerfen.
+  `BoundedMailbox` verhält sich hier anders: ihr Unstash-Pfad umgeht den
+  Bound.
+</Aside>
+
+Die Options werden bei der Konstruktion validiert: ein fehlendes oder
+nicht aufrufbares `priorityFor`, eine nicht-positive `capacity`, eine
+unbekannte Policy oder eine Policy ohne Capacity werfen alle
+`OptionsError`.
+
 ## Per-Actor-Mailbox via ActorOptions
 
 Drei Knöpfe auf `ActorOptions`:
@@ -364,7 +428,10 @@ sie re-inserted.  Besonders bei `PriorityMailbox`: unstashed
 Nachrichten werden *re-priorisiert*: eine gestashte
 `bulk`-Nachricht reiht sich wieder in die `bulk`-Schicht ein, selbst
 wenn du sie gestasht hast, während dringende Nachrichten ankamen.
-Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
+Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.  Dieses
+Re-Insert läuft durch `enqueue`, auf einer *begrenzten* Priority-Mailbox
+gilt die Capacity also auch für das Wiedereinspielen — siehe die Warnung
+oben.
 
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.
