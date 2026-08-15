@@ -1,8 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "Bundler",
+    // `NodeNext`, not `Bundler`: no bundler runs over this output.  `tsc`
+    // emits ESM straight into `dist/` and the consumer is Node >= 24 or
+    // Deno going through the real ESM resolver, which enforces exactly the
+    // rules `Bundler` relaxes — extensionless relative specifiers,
+    // directory-index resolution, `exports`-unaware `.d.ts` lookup.  Under
+    // `Bundler` the compiler validated the emitted specifiers against a
+    // ruleset nothing downstream applies (#1008).
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": [],
     "outDir": "dist",

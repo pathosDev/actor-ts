@@ -49,6 +49,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   35 % of it was maps that could not work.  Go-to-definition still lands on
   the `.d.ts`, which is exactly where it landed before.
 
+- **The build resolves modules as `NodeNext`** (#1008).  The build tsconfig
+  said `moduleResolution: "Bundler"`, but no bundler runs — `tsc` emits ESM
+  into `dist/` and the consumer is Node ≥ 24 or Deno going through the real
+  ESM resolver.  `Bundler` relaxes exactly the rules that resolver enforces,
+  so the compiler was validating the emitted specifiers against a ruleset
+  nothing downstream applies.  The project's mandatory `.js` suffix happened
+  to satisfy `NodeNext` already, which is why the switch compiles clean and
+  leaves the emitted JavaScript byte-identical; what it buys is that the
+  *next* forgotten suffix is a compile error here instead of an
+  `ERR_MODULE_NOT_FOUND` in a consumer's process.  It also makes `.d.ts`
+  resolution `exports`-map-aware, which starts to matter now that #414 gives
+  the package eighteen subpaths, and it settles the standing disagreement
+  between the compiler and `attw --profile esm-only` about which resolver is
+  authoritative.
+
 ### Added
 
 - **Per-subsystem subpath exports** (#414, #1001).  The exports map grew one
