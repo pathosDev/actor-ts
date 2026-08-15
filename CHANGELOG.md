@@ -353,6 +353,52 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   resolves once it is fully terminated" above a `void` signature, now says
   what it actually does and points here.
 
+- **The bundled examples now run in CI, so a framework change that breaks
+  one is a red check (#545).**
+
+  Nothing in CI had ever executed an example.
+  `.github/workflows/examples.yml` installed and built the frontends and
+  ran nothing else, and its path filter carried only `examples/**` - so
+  the failure this most needed to catch, a `src/` change that breaks a
+  snippet, produced zero checks. The only signal was a user running the
+  example.
+
+  `bun run test:examples` spawns each standalone example as its own
+  process, waits, asserts on its output and stops it (~90 s for the whole
+  set). This is a new harness rather than a widening of
+  `tests/smoke/run-cases.mjs`: that runner is in-process, importing the
+  framework once and then `import()`ing each case, which works because a
+  smoke case is a runtime-neutral module exporting `run(context)`. An
+  example is the opposite by design - a standalone script with a top-level
+  `void main()`, its own argv parsing and often a bound port - so
+  importing one would run it in the harness's own process, with the
+  harness's argv, and leave no way to time it out or reclaim the port.
+
+  The output assertion is what makes it a gate rather than the appearance
+  of one. `examples/io/grpc-sensor.ts` exits 0 after ten failed actor
+  starts and a restart-threshold warning, so a case checked on its exit
+  code alone would be checked on nothing; the runner refuses a runnable
+  entry that declares no expected output.
+
+  What gets stopped is the process tree, not the child. While classifying,
+  two of `examples/chat/failover-test.ts`'s three cluster nodes outlived a
+  clean exit and went on holding ports 2552 and 2553, which made every
+  later port-binding example fail with EADDRINUSE and made the chat smoke
+  test pass against a backend that was supposed to be gone. A gate whose
+  cases can poison each other that way reports the run order rather than
+  the code, so teardown signals a process group on POSIX and walks the
+  tree with `taskkill /T` on Windows.
+
+  `tests/examples/examples.manifest.json` classifies all 78 standalone
+  scripts - 68 runnable with an assertion, 10 skipped with the reason,
+  which is a Docker broker, Kubernetes credentials, an optional peer
+  nothing declares, or a file that is not an entry point. The runner fails
+  when the manifest and the tree disagree in either direction, so a new
+  example cannot silently opt out. `examples/chat/smoke-test.ts` gained a
+  `--spawn-backend` flag that brings up its own node on isolated ports
+  against a scratch journal, which is how it and the voice smoke test both
+  run unattended; the default two-terminal invocation is unchanged.
+
 ### Fixed
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
@@ -827,6 +873,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   peer — and its header names the CI job that covers each instead. The two
   React example frontends joined the `examples` matrix in the same change,
   so excluding them leaves them with build coverage rather than none.
+
+- **`npm ci` no longer fails in the two React example frontends (#545).**
+
+  `examples/chat/frontend-react` and `examples/voice/frontend-react` each
+  declared `ts-pattern@^5.9.0` in `package.json` while neither
+  `package-lock.json` recorded it, so `npm ci` failed with EUSAGE in both
+  and the two React legs of the `examples` workflow were red. The imports
+  are real - `src/useChat.ts` and `src/useVoice.ts` - so a build would
+  have failed too.
+
+  This is the same manifest/lockfile desync that #903 was filed to
+  eliminate, surviving in the two directories that were outside the matrix
+  at the time. The legs were added later; their lockfiles were never
+  regenerated, so the job started failing rather than started passing.
+  Regenerated with `npm install --package-lock-only`, which touched
+  nothing but the one missing entry in each file.
 
 ### Security
 
