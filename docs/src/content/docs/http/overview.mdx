@@ -150,6 +150,22 @@ const exportClientOptions = HttpClientOptions.create()
 const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
 ```
 
+Or move the numbers the whole deployment inherits, without touching
+code, under `actor-ts.http.client`:
+
+```hocon
+actor-ts.http.client {
+  maxResponseBytes = 32M
+  defaultTimeoutMs = 60s
+}
+```
+
+Precedence is the usual one — a request beats the client it was made
+on, which beats HOCON, which beats the built-in defaults.  The shared
+`HttpExtensionId` client reads this block too, so raising the floor
+does not mean abandoning it.  A `new HttpClient()` built directly, with
+no system to read config from, keeps the built-in numbers.
+
 ### Where a redirect may take you
 
 The client follows redirects itself rather than handing them to

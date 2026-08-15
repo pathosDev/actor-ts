@@ -271,6 +271,7 @@ read at all, so a malformed value does not stop that node either.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
 `http.backend` only decides what `newServerAt(...).bind()` uses when the
@@ -290,6 +291,30 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The system's shared `HttpClient` — and any `newClient(...)` that leaves a
+field unset — reads its bounds from `actor-ts.http.client`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.client.maxResponseBytes` | `8M` | Largest response body buffered before the request is aborted. |
+| `http.client.defaultTimeoutMs` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
+| `http.client.redirect` | `"follow"` | What to do with a 3xx carrying a `Location` — `follow` / `error` / `manual`. |
+| `http.client.maxRedirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
+
+These are a floor, not a policy: an integration passes its own bounds to
+`newClient(...)`, and a single call overrides them with `maxResponseBytes` /
+`timeoutMs` / `redirect` / `maxRedirects`.  What the block buys is the ability
+to move the fleet-wide numbers without a code change — an endpoint that turns
+out to need 60 s, or a deployment on a link where 8 MiB is the wrong ceiling,
+used to force every caller off the shared client.
+
+Values are validated on read, on the merged settings, so a bad one throws
+`OptionsError` naming the field rather than failing later inside a request.
+`maxResponseBytes` and `defaultTimeoutMs` must both be positive here — unlike
+a *request's* `timeoutMs`, where `0` is the documented way to opt one call out
+of any deadline.  A `0` in this block would disarm every call that named no
+deadline of its own, which is the state the defaults exist to prevent.
 
 Server-side WebSocket routes (`websocket(path, actorRef)`) read their
 defaults from `actor-ts.http.websocket`:

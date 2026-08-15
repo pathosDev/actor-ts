@@ -22,8 +22,13 @@
  *
  * Every field here is a **fallback**, not a fixed policy: the matching field
  * on an individual `HttpClientRequest` wins, so one large download does not
- * force the whole client's ceiling up.  There is no HOCON layer — see
- * `HttpExtension.newClient`.
+ * force the whole client's ceiling up.
+ *
+ * Three layers, in the project's usual precedence — request > these options >
+ * HOCON (`actor-ts.http.client`) > the built-in defaults below.  The HOCON
+ * layer is applied by `HttpExtension`, which is the only thing that holds a
+ * system to read config from; a `new HttpClient()` constructed directly (the
+ * D1 transport, a test) gets the built-in defaults and names its own bounds.
  */
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';

@@ -7,8 +7,9 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { HttpClient } from './HttpClient.js';
-import type { HttpClientOptions } from './HttpClientOptions.js';
+import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
@@ -59,28 +60,50 @@ export interface ServerBuilder {
  */
 export class HttpExtension implements Extension {
   /**
-   * Shared HTTP client — uses the global fetch, on the built-in limits (30 s
-   * deadline, 8 MiB response ceiling).  For different limits use
-   * {@link newClient} rather than mutating this one: it is shared by every
-   * actor in the system, so raising a bound for one integration would raise it
-   * for all of them.
+   * Shared HTTP client — uses the global fetch, on the limits from
+   * `actor-ts.http.client` (30 s deadline, 8 MiB response ceiling by
+   * default).  For different limits use {@link newClient} rather than
+   * mutating this one: it is shared by every actor in the system, so raising a
+   * bound for one integration would raise it for all of them.
    */
-  readonly client: HttpClient = new HttpClient();
-
-  constructor(private readonly system: ActorSystem) {}
+  readonly client: HttpClient;
 
   /**
-   * A client of your own, configured independently of {@link client}.
+   * Fire-and-forget request via the shared client.
+   *
+   * Assigned here rather than as a field initializer because it reads
+   * {@link client}, which now reads config and so cannot be built before the
+   * constructor has its system.  Class fields initialize *before* a parameter
+   * property is assigned, so a `client` field initializer that reached for
+   * `this.system` would find `undefined`.
+   */
+  readonly singleRequest: HttpClient['singleRequest'];
+
+  constructor(private readonly system: ActorSystem) {
+    this.client = this.newClient();
+    this.singleRequest = this.client.singleRequest.bind(this.client);
+  }
+
+  /**
+   * A client of your own, layered over the `actor-ts.http.client` defaults.
    *
    * The seam exists because the limits are per-client and deliberately strict:
    * an integration that legitimately downloads a large export, or that talks
    * to an endpoint slower than the default deadline, needs its own bounds
    * without loosening the ones every other caller inherits.  Per-request
    * overrides (`maxResponseBytes`, `timeoutMs`) cover the one-off case; this
-   * covers a whole integration.
+   * covers a whole integration; HOCON covers the fleet.
+   *
+   * Precedence is the project's usual explicit > HOCON > built-in, so an
+   * operator can raise the floor for a deployment without a code change, and
+   * an integration that names a bound still wins over them.
    */
   newClient(options?: HttpClientOptions): HttpClient {
-    return new HttpClient(options);
+    return new HttpClient(mergeOptions<HttpClientOptionsType>(
+      {},
+      httpClientOptionsFromConfig(this.system.config),
+      (options ?? {}) as Partial<HttpClientOptionsType>,
+    ));
   }
 
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
@@ -291,9 +314,6 @@ export class HttpExtension implements Extension {
       },
     };
   }
-
-  /** Fire-and-forget request via the shared client. */
-  singleRequest = this.client.singleRequest.bind(this.client);
 }
 
 /**
@@ -372,6 +392,35 @@ async function backendFromConfig(config: Config): Promise<HttpServerBackend> {
 function shutdownGracePeriodFromConfig(config: Config): number | undefined {
   const key = ConfigKeys.http.shutdownGracePeriod;
   return config.hasPath(key) ? config.getDuration(key) : undefined;
+}
+
+/**
+ * The `actor-ts.http.client` layer — outbound bounds an operator set without
+ * touching code, sitting under any explicit `HttpClientOptions`.
+ *
+ * The bounds exist to be operable, and until this block existed they were not:
+ * the shared `HttpExtension.client` took the built-in numbers and offered no
+ * way to change them, so a deployment that needed a larger ceiling had to stop
+ * using the shared client altogether.  A ceiling nobody can raise gets raised
+ * by deleting it.
+ *
+ * Leaves are read as-is and left to `HttpClientOptionsValidator`, which the
+ * `HttpClient` constructor runs on the merged settings: a misspelled
+ * `redirect` arrives as a plain string and comes back out as an `OptionsError`
+ * naming the field, rather than as a bare throw from somewhere in the request
+ * path.  An absent leaf stays `undefined` so `mergeOptions` lets the built-in
+ * default through rather than shadowing it with a hole.
+ */
+function httpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsType> {
+  const key = ConfigKeys.http.client;
+  if (!config.hasPath(key)) return {};
+  const client = config.getConfig(key);
+  return {
+    maxResponseBytes: client.hasPath('maxResponseBytes') ? client.getBytes('maxResponseBytes') : undefined,
+    defaultTimeoutMs: client.hasPath('defaultTimeoutMs') ? client.getDuration('defaultTimeoutMs') : undefined,
+    redirect: client.hasPath('redirect') ? (client.getString('redirect') as HttpRedirectMode) : undefined,
+    maxRedirects: client.hasPath('maxRedirects') ? client.getInt('maxRedirects') : undefined,
+  };
 }
 
 export const HttpExtensionId: ExtensionId<HttpExtension> = extensionId(
