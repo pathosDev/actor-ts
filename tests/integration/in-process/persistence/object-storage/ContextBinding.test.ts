@@ -32,7 +32,7 @@ import { join } from 'node:path';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
-import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+import { ObjectStorageDurableStateStoreOptions, type ObjectStorageDurableStateStoreOptionsBuilder } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
@@ -206,8 +206,14 @@ describe('#612 — cross-key replay under client-side encryption', () => {
 /* ========================= the rollback floor ============================ */
 
 describe('#612 — an authentic older body replayed over a newer one', () => {
-  /** The exploit's own configuration: client-side AES-GCM *and* an HMAC. */
-  function fullyProtected(): ObjectStorageDurableStateStoreOptions {
+  /**
+   * The exploit's own configuration: client-side AES-GCM *and* an HMAC.
+   *
+   * Returns the **builder**, not the `XOptions` union: the union carries no
+   * methods, so a caller chaining a further `.withX()` onto the result does not
+   * type-check even though it runs.
+   */
+  function fullyProtected(): ObjectStorageDurableStateStoreOptionsBuilder {
     return ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
