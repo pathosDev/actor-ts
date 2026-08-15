@@ -176,9 +176,11 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   zu fragen, denn ein Size-Cap ist eine Transport-Entscheidung und kein
   Anwendungsfehler. Heb ihn dort an, wo ein Endpunkt wirklich mehr annimmt:
   `withMaxBodyBytes(bytes)` in den Express- und Hono-Backend-Options,
-  `bodyLimit` in der Options-Bag von `FastifyBackend`. Der einzige Fall, der
-  weiterhin beim Eintreffen gemessen statt vorab abgewiesen wird, ist ein
-  gechunkter Body ohne `Content-Length`.
+  `bodyLimit` in der Options-Bag von `FastifyBackend`. Ein Body mit einer
+  `Content-Length` über dem Limit wird abgewiesen, bevor ein Byte davon gelesen
+  wird; ein gechunkter Body deklariert keine Länge, also zählen ihn alle drei
+  Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
+  dahinter werden nie entgegengenommen.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default),
   und dieser Default geht zusätzlich an den Socket der Laufzeit selbst: Ein zu
   großer Frame wird abgewiesen, *während er eintrifft*, statt erst nachdem der

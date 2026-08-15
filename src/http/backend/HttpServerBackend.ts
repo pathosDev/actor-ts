@@ -82,7 +82,9 @@ export const PAYLOAD_TOO_LARGE_RESPONSE: HttpResponse = Object.freeze({
  * refuse an over-long request before a byte of it is read — Fastify applies
  * the same rule inside its own body parser.  A missing or non-numeric header
  * returns `false`: a chunked body declares no length, so it can only be
- * measured while it arrives.
+ * measured while it arrives.  This is the fast path, never the whole cap —
+ * each backend also counts the bytes it receives and abandons the read at the
+ * cap, which is what bounds a request that announced nothing (#357).
  */
 export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
   if (header === undefined) return false;

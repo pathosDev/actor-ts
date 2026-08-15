@@ -170,8 +170,10 @@ the [Route DSL](/http/route-dsl/).
   because a size cap is a transport decision rather than an application error.
   Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
   the Express and Hono backend options, `bodyLimit` in the options bag of
-  `FastifyBackend`. A chunked body that declares no `Content-Length` is the one
-  case still measured while it arrives rather than refused up front.
+  `FastifyBackend`. A body that declares an over-cap `Content-Length` is refused
+  before a byte of it is read; a chunked body declares no length, so all three
+  backends count it as it arrives and abandon the read at the cap — the bytes
+  past it are never received.
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default), and the
   default is also handed to the runtime's own socket so an oversize frame is
   refused *while it arrives* rather than after the process has buffered it —
