@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { Config } from '../../../src/config/Config.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -12,7 +13,7 @@ import {
 } from '../../../src/worker/WorkerClusterOptions.js';
 import type { WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 
-function systemWith(config: Record<string, unknown>, name?: string): ActorSystem {
+function systemWith(config: ConfigObject, name?: string): ActorSystem {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)

@@ -116,7 +116,7 @@ class SingleHolderLease implements Lease {
     this.held = false;
   }
 
-  async check(): Promise<boolean> { return this.held; }
+  checkAlive(): boolean { return this.held; }
 
   onLost(handler: (reason: string) => void): () => void {
     this.lostHandlers.push(handler);

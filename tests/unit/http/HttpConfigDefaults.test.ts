@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { ConfigError } from '../../../src/config/Config.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
@@ -17,7 +18,7 @@ import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.
 
 let running: { system: ActorSystem; binding: ServerBinding } | null = null;
 
-function systemWith(config: Record<string, unknown>): ActorSystem {
+function systemWith(config: ConfigObject): ActorSystem {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)

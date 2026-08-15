@@ -61,7 +61,7 @@ class TopicRegistry extends PersistentActor<Command, Event, State> {
     return { subscriptions: new BidirectionalMultiMap<string, string>() };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 

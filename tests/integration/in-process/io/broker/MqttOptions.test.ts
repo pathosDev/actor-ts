@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import {
   MqttOptions,
@@ -157,7 +158,7 @@ describe('MqttOptionsValidator (direct)', () => {
 
 describe('MqttOptions validation fires at actor start (all input paths)', () => {
   // preStart throws are caught by supervision; wrap preStart to observe them.
-  async function captureStart(settings: MqttOptions, hocon?: object): Promise<Error | null> {
+  async function captureStart(settings: MqttOptions, hocon?: ConfigObject): Promise<Error | null> {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)

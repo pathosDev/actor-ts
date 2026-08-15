@@ -83,7 +83,7 @@ class Telemetry extends PersistentActor<Command, Event, State> {
     };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 
