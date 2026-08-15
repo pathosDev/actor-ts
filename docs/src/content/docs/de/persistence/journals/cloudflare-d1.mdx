@@ -102,12 +102,13 @@ interaktive Transaktionen und eine Live-Suite dahinter.
 
 ```ts
 type D1Connection = {
-  accountId?:  string;        // Cloudflare-Account-ID
-  databaseId?: string;        // die UUID der Datenbank, nicht ihr Name
-  apiToken?:   string;        // Token mit D1:Edit
-  baseUrl?:    string;        // Override für einen Proxy; Default api.cloudflare.com
-  timeoutMs?:  number;        // Timeout pro Request, Default 30_000
-  client?:     D1ClientLike;  // vorgebauter / geteilter Transport
+  accountId?:        string;        // Cloudflare-Account-ID
+  databaseId?:       string;        // die UUID der Datenbank, nicht ihr Name
+  apiToken?:         string;        // Token mit D1:Edit
+  baseUrl?:          string;        // Override für einen Proxy; Default api.cloudflare.com
+  timeoutMs?:        number;        // Timeout pro Request, Default 30_000
+  maxResponseBytes?: number;        // Obergrenze für den Response-Body, Default 64 MiB
+  client?:           D1ClientLike;  // vorgebauter / geteilter Transport
 };
 
 interface D1JournalOptions extends D1Connection {
@@ -197,6 +198,18 @@ Also präzise:
   Events sind N API-Aufrufe plus Overhead, jeder mit Authentifizierung und TLS.
   Snapshotte aggressiv und erwarte keinen Journal-Durchsatz, der mit einer lokalen
   Datenbank oder auch nur mit Turso vergleichbar wäre.
+</Aside>
+
+<Aside type="caution" title="Ein Replay kommt als eine einzige Response">
+  `readFrom` selektiert die gesamte Historie eines Actors in einem einzigen
+  Statement, und dieser Transport ist ein Statement pro HTTP-Response —
+  `maxResponseBytes` begrenzt damit ein ganzes Replay und nicht eine Seite davon.
+  Der Default liegt bei 64 MiB, deutlich über den generischen 8 MiB des
+  `HttpClient`, denn der Peer ist hier deine eigene Datenbank und keine
+  untrusted API. Eine Recovery, die darüber hinauswächst, scheitert mit
+  `HttpResponseTooLargeError`: Heb den Wert an, um wieder handlungsfähig zu sein,
+  und snapshotte oder kompaktiere danach — der Body wird vor dem Parsen im
+  Speicher gepuffert.
 </Aside>
 
 <Aside type="caution" title="D1 hat Service-Limits">

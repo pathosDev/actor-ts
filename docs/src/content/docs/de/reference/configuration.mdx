@@ -281,6 +281,7 @@ diesen Node nicht auf.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
 `http.backend` entscheidet nur darüber, was `newServerAt(...).bind()`
@@ -301,6 +302,32 @@ Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
 wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
 ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
 Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
+
+Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
+Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.client.maxResponseBytes` | `8M` | Größter Response-Body, der gepuffert wird, bevor der Request abgebrochen wird. |
+| `http.client.defaultTimeoutMs` | `30s` | Deadline für einen Aufruf, der kein eigenes `timeoutMs` nennt. |
+| `http.client.redirect` | `"follow"` | Was mit einem 3xx samt `Location` passiert — `follow` / `error` / `manual`. |
+| `http.client.maxRedirects` | `5` | Hops, die eine verfolgte Kette gehen darf, bevor der Aufruf abgelehnt wird.  `0` lehnt den ersten ab. |
+
+Das ist ein Boden und keine Policy: Eine Integration übergibt ihre eigenen
+Schranken an `newClient(...)`, und ein einzelner Aufruf überschreibt sie mit
+`maxResponseBytes` / `timeoutMs` / `redirect` / `maxRedirects`.  Was der Block
+bringt, ist die Möglichkeit, die flottenweiten Zahlen ohne Codeänderung zu
+bewegen — ein Endpunkt, der doch 60 s braucht, oder ein Deployment auf einer
+Strecke, auf der 8 MiB die falsche Obergrenze sind, zwang bisher jeden Aufrufer
+weg vom gemeinsamen Client.
+
+Die Werte werden beim Lesen auf den gemergten Settings validiert; ein falscher
+Wert wirft also `OptionsError` mit dem Feldnamen, statt später mitten im
+Request zu scheitern.  `maxResponseBytes` und `defaultTimeoutMs` müssen hier
+beide positiv sein — anders als das `timeoutMs` eines *Requests*, wo `0` der
+dokumentierte Weg ist, einen einzelnen Aufruf von jeder Deadline auszunehmen.
+Eine `0` in diesem Block würde jeden Aufruf ohne eigene Deadline entschärfen —
+genau der Zustand, den die Defaults verhindern sollen.
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:

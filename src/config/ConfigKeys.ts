@@ -108,6 +108,8 @@ export const ConfigKeys = {
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /** Server-side WebSocket defaults for `websocket()` routes. */
     websocket: 'actor-ts.http.websocket',
+    /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
+    client: 'actor-ts.http.client',
   },
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */

@@ -118,6 +118,16 @@ oversized or endless response never finishes allocating.  Past the
 deadline it aborts exactly as an explicit `timeoutMs` always did —
 what changed is that a call naming no deadline now has one.
 
+Each override is checked when the call is made, not only when the
+client is built.  Every bound is enforced by a comparison, and a
+`NaN` loses a comparison silently: a `timeoutMs` of `NaN` arms no
+timer, a `maxResponseBytes` of `Infinity` never trips, and neither
+raises anything — the bound just stops existing.  So an
+out-of-domain value throws `OptionsError` before a socket is
+opened.  `timeoutMs: 0` remains the one legitimate way to have no
+deadline, and `maxRedirects: 0` the way to refuse the first
+redirect.
+
 Raise them per call when a single endpoint is the exception:
 
 ```ts
@@ -139,6 +149,22 @@ const exportClientOptions = HttpClientOptions.create()
 
 const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
 ```
+
+Or move the numbers the whole deployment inherits, without touching
+code, under `actor-ts.http.client`:
+
+```hocon
+actor-ts.http.client {
+  maxResponseBytes = 32M
+  defaultTimeoutMs = 60s
+}
+```
+
+Precedence is the usual one — a request beats the client it was made
+on, which beats HOCON, which beats the built-in defaults.  The shared
+`HttpExtensionId` client reads this block too, so raising the floor
+does not mean abandoning it.  A `new HttpClient()` built directly, with
+no system to read config from, keeps the built-in numbers.
 
 ### Where a redirect may take you
 

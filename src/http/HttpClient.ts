@@ -5,8 +5,14 @@ import {
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
   HttpClientOptionsValidator,
+  HttpClientRequestLimitsValidator,
 } from './HttpClientOptions.js';
-import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
+import type {
+  HttpClientOptions,
+  HttpClientOptionsType,
+  HttpClientRequestLimits,
+  HttpRedirectMode,
+} from './HttpClientOptions.js';
 import type { HttpMethod } from './Types.js';
 
 /**
@@ -42,34 +48,16 @@ const BODY_DESCRIBING_HEADERS: readonly string[] = [
 /** The only schemes a redirect may land on — per the Fetch spec, as the platform enforces. */
 const FOLLOWABLE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
 
-export type HttpClientRequest = {
+/**
+ * One request.  The four bounds it may override come from
+ * {@link HttpClientRequestLimits}, so the set this type accepts and the set
+ * {@link HttpClientRequestLimitsValidator} checks cannot drift apart.
+ */
+export type HttpClientRequest = HttpClientRequestLimits & {
   readonly method: HttpMethod;
   readonly url: string | URL;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string | Uint8Array | object | null;
-  /**
-   * Abort the request after this many milliseconds.  Falls back to the
-   * client's `defaultTimeoutMs` (30 s); `0` opts this one call out of any
-   * deadline.  The deadline spans the whole redirect chain, not each hop.
-   */
-  readonly timeoutMs?: number;
-  /**
-   * Abort the request once the response body passes this many bytes.  Falls
-   * back to the client's `maxResponseBytes` (8 MiB) — raise it here for the
-   * one call that legitimately downloads more, rather than on the shared
-   * client.
-   */
-  readonly maxResponseBytes?: number;
-  /**
-   * What to do with a 3xx carrying a `Location`.  Falls back to the client's
-   * `redirect` (`'follow'`).
-   */
-  readonly redirect?: HttpRedirectMode;
-  /**
-   * Hops a followed chain may take before the call is refused.  Falls back to
-   * the client's `maxRedirects` (5); `0` refuses the first redirect.
-   */
-  readonly maxRedirects?: number;
 };
 
 export interface HttpClientResponse {
@@ -187,6 +175,13 @@ export class HttpClient {
    * 3xx body is cancelled rather than read.
    */
   async singleRequest(request: HttpClientRequest): Promise<HttpClientResponse> {
+    // Before a socket is opened, because an out-of-domain override here does
+    // not fail loudly further down — it disables the bound it names and the
+    // call proceeds unbounded, which is the defect this client exists to
+    // close.  The client-wide settings were checked at construction; these
+    // arrive per call and are checked per call, under their own rules (0 is a
+    // valid `timeoutMs` here and not on the client).
+    new HttpClientRequestLimitsValidator().validate(request);
     const controller = new AbortController();
     // `?? default` rather than `||`, so an explicit 0 still means "no
     // deadline" and does not silently reinstate the fallback.

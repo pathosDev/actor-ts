@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { HttpResponseTooLargeError } from '../../../../src/http/HttpClient.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   D1DurableStateStore,
@@ -117,6 +118,58 @@ describe('buildD1Client — the REST envelope', () => {
   test('incomplete credentials fail at build time with all three named', async () => {
     expect(() => buildD1Client({ accountId: 'acct' }))
       .toThrow(/accountId.*databaseId.*apiToken/s);
+  });
+});
+
+describe('buildD1Client — the response ceiling', () => {
+  /**
+   * The generic `HttpClient` ceiling, which D1 must NOT inherit.  Hard-coded
+   * rather than imported: the point of these tests is that the two numbers are
+   * independent, and importing the client's constant would make the assertion
+   * follow it if it ever moved.
+   */
+  const GENERIC_HTTP_CLIENT_CEILING_BYTES = 8 * 1024 * 1024;
+
+  /**
+   * A D1 envelope whose serialized form comfortably exceeds the generic
+   * ceiling — one wide row, which is what a replay of a long-lived actor
+   * looks like on the wire.
+   */
+  function oversizedReply(): { readonly body: unknown } {
+    const payload = 'e'.repeat(GENERIC_HTTP_CLIENT_CEILING_BYTES + 64 * 1024);
+    return { body: { success: true, result: [{ success: true, results: [{ payload }], meta: { changes: 0 } }] } };
+  }
+
+  test('a reply past the generic 8 MiB HttpClient ceiling still arrives', async () => {
+    // The regression #602's own fix introduced: `buildD1Client` used to build a
+    // bare `new HttpClient()`, so the day the 8 MiB default landed, an actor
+    // whose history had grown past it stopped recovering — `readFrom` has no
+    // LIMIT, so a whole replay is one response.
+    stubFetch(oversizedReply());
+    const client = buildD1Client(credentials);
+    const result = await client.query('SELECT payload FROM events WHERE persistence_id = ?', ['account-1']);
+    expect(result.rows).toHaveLength(1);
+    expect(String((result.rows[0] as { payload: string }).payload).length)
+      .toBeGreaterThan(GENERIC_HTTP_CLIENT_CEILING_BYTES);
+  });
+
+  test('maxResponseBytes still bounds the transport when it is set', async () => {
+    // The default is generous, not absent: the body is materialised in memory
+    // before it is parsed, so the knob has to actually reach the client.
+    stubFetch(oversizedReply());
+    const client = buildD1Client({ ...credentials, maxResponseBytes: 1024 });
+    await expect(client.query('SELECT 1', [])).rejects.toBeInstanceOf(HttpResponseTooLargeError);
+  });
+
+  test('maxResponseBytes is validated like every other connection field', () => {
+    const zero = D1JournalOptions.create()
+      .withClient(new FakeD1Client())
+      .withMaxResponseBytes(0);
+    expect(() => new D1Journal(zero)).toThrow(/maxResponseBytes/);
+    const fractional = D1JournalOptions.create()
+      .withClient(new FakeD1Client())
+      .withMaxResponseBytes(1.5);
+    expect(() => new D1Journal(fractional)).toThrow(/maxResponseBytes/);
   });
 });
 
