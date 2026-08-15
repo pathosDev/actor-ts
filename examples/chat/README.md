@@ -216,6 +216,9 @@ you want to check.
 bun examples/chat/backend/main.ts --port 2551
 # In another terminal:
 bun examples/chat/smoke-test.ts
+
+# Or let it bring its own node up, on ports of its own:
+bun examples/chat/smoke-test.ts --spawn-backend
 ```
 
 Logs Alice in, sends three messages, waits for the broadcast
@@ -223,6 +226,13 @@ echoes, then logs Bob in on a fresh connection and verifies Bob
 sees Alice's history.  Single-node by design — the smoke test
 isolates the protocol round-trip from the cluster's lazy shard-
 allocation timing, so it stays deterministic.
+
+`--spawn-backend` starts the node itself on :8090 (cluster :2590)
+against a scratch journal in the system temp directory, and stops
+it afterwards.  Those ports sit outside the backend's auto-discovery
+window, so a self-spawned run neither joins nor collides with a
+cluster you already have up.  It is how CI runs this file — see
+[Verified in CI](#verified-in-ci).
 
 ### `failover-test.ts` — HTTP-singleton fail-over
 
@@ -236,6 +246,21 @@ via the OS-level port table, kills it, then verifies that a
 different PID picks up `:8080` within a few seconds and that the
 new owner serves HTTP.  This is the test that exercises the
 ClusterSingleton + HttpIngressActor fail-over end to end.
+
+Run this one by hand.  It is **not** in the CI example gate: two of
+its three backends were observed outliving a clean exit and holding
+their cluster ports afterwards, which poisons whatever runs next.
+
+### Verified in CI
+
+`bun run test:examples` runs `smoke-test.ts --spawn-backend` along
+with every other runnable example in the repository, on every push
+that touches `src/` or `examples/`.  So a framework change that
+breaks the chat protocol round-trip is a red check, not something
+you find the next time you open the sample.
+
+`tests/examples/examples.manifest.json` says which examples that
+covers and, for each one it does not, why not.
 
 ### Manual cross-node demo
 

@@ -97,6 +97,36 @@ external database. Kill the node holding the singleton and a
 survivor re-binds `:8080` within a few seconds; the persisted
 history survives.
 
+### Verifying the round-trip
+
+`smoke-test.ts` logs Alice in, sends three messages, waits for the
+broadcast echoes, then logs Bob in on a fresh connection and checks
+that he sees Alice's history — plus direct messages, typing
+indicators, read receipts and the auth hardening.
+
+```bash
+# Against the cluster you already have up:
+bun examples/chat/smoke-test.ts
+
+# Or let it bring its own node up, on ports of its own:
+bun examples/chat/smoke-test.ts --spawn-backend
+```
+
+`--spawn-backend` starts a single node on `:8090` (cluster `:2590`)
+against a scratch journal, and stops it afterwards. Those ports sit
+outside the backend's auto-discovery window, so a self-spawned run
+neither joins nor collides with a cluster you already have running.
+
+That flag is what lets CI run this file unattended: it is part of
+the [example gate](/examples/overview/#verified-in-ci), so a
+framework change that breaks the chat protocol round-trip shows up
+as a red check.
+
+`failover-test.ts`, the sibling that kills the singleton holder and
+waits for a survivor to re-bind `:8080`, stays a manual step — two
+of its three backends were seen outliving a clean exit and holding
+their cluster ports against whatever ran next.
+
 ## Key patterns demonstrated
 
 ### Sharded chat rooms

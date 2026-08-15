@@ -115,6 +115,23 @@ betritt einen Raum und schalte "Talk" um (N:N-Raum). Beende den Node,
 der aktuell das `http-ingress`-Singleton hält, und ein Überlebender
 bindet `:8081` innerhalb von ~5-10 s neu.
 
+### Das Relay verifizieren
+
+`smoke-test.ts` braucht weder Browser noch Setup — es startet
+seinen eigenen Ein-Node-Cluster auf isolierten Ports, öffnet zwei
+WebSocket-Clients und läuft alle drei Modi mit einem gefälschten
+32-Byte-Audio-Payload durch; geprüft werden der Envelope-Round-Trip
+und der Selbst-Filter im Raum-Modus:
+
+```bash
+bun examples/voice/smoke-test.ts
+```
+
+Weil es sein eigenes Backend mitbringt, läuft es unbeaufsichtigt im
+[Beispiel-Gate](/de/examples/overview/#in-ci-abgesichert) bei jedem
+Push, der `src/` oder `examples/` berührt. Audio-Wiedergabe deckt es
+nicht ab — das ist Sache des Browsers.
+
 ## Demonstrierte Schlüssel-Patterns
 
 ### 1:1-Push-to-Talk über den Receptionist

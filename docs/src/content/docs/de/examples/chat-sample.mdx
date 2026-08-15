@@ -99,6 +99,39 @@ Beende den Node, der den Singleton hält, und ein überlebender
 Node bindet `:8080` innerhalb weniger Sekunden neu; die
 persistierte History bleibt erhalten.
 
+### Den Round-Trip verifizieren
+
+`smoke-test.ts` meldet Alice an, sendet drei Nachrichten, wartet
+auf die Broadcast-Echos, meldet dann Bob über eine frische
+Verbindung an und prüft, dass er Alices History sieht — dazu
+Direktnachrichten, Tipp-Indikatoren, Lesebestätigungen und das
+Auth-Hardening.
+
+```bash
+# Against the cluster you already have up:
+bun examples/chat/smoke-test.ts
+
+# Or let it bring its own node up, on ports of its own:
+bun examples/chat/smoke-test.ts --spawn-backend
+```
+
+`--spawn-backend` startet einen einzelnen Node auf `:8090`
+(Cluster `:2590`) gegen ein Wegwerf-Journal und stoppt ihn danach
+wieder. Diese Ports liegen außerhalb des Auto-Discovery-Fensters
+des Backends, sodass ein selbst gestarteter Lauf weder einem
+bereits laufenden Cluster beitritt noch mit ihm kollidiert.
+
+Genau dieses Flag lässt CI die Datei unbeaufsichtigt ausführen:
+sie ist Teil des [Beispiel-Gates](/de/examples/overview/#in-ci-abgesichert),
+eine Framework-Änderung, die den Chat-Protokoll-Round-Trip bricht,
+wird damit zum roten Check.
+
+`failover-test.ts` — das Geschwister-Skript, das den
+Singleton-Halter killt und auf einen überlebenden Node wartet, der
+`:8080` neu bindet — bleibt ein manueller Schritt: zwei seiner drei
+Backends wurden dabei beobachtet, wie sie einen sauberen Exit
+überlebten und ihre Cluster-Ports gegen alles Nachfolgende hielten.
+
 ## Demonstrierte Schlüssel-Patterns
 
 ### Sharded Chatrooms

@@ -36,6 +36,36 @@ bun examples/chat/backend/main.ts
 
 Each example has its own README with setup steps.
 
+## Verified in CI
+
+The examples are a gate, not decoration.  `bun run test:examples`
+spawns every runnable snippet as its own process and asserts on
+its output, and the `examples` workflow runs it on every push that
+touches `src/` or `examples/` — so a framework change that breaks
+an example is a red check rather than something a reader discovers.
+
+```bash
+bun run test:examples              # all of them, ~90 s
+bun run test:examples persistence  # just the ones matching a substring
+```
+
+The classification lives in
+[`tests/examples/examples.manifest.json`](https://github.com/pathosDev/actor-ts/blob/main/tests/examples/examples.manifest.json).
+Every standalone example is in it exactly once, as either:
+
+- **runnable** — with a substring of its output that has to appear.
+  Exit code 0 is not enough on its own: a snippet whose external
+  dependency is missing can fail its actual work and still exit 0.
+- **skipped** — with the reason it cannot run unattended.  Those are
+  the ones needing a Docker broker (Kafka, NATS, MQTT), cloud or
+  Kubernetes credentials, or an optional peer dependency the
+  repository does not declare.
+
+The runner fails when that list and the tree disagree in either
+direction, so adding an example means deciding which of the two it
+is.  The two application samples take part: the chat and voice
+smoke tests both run in the gate, each bringing up its own backend.
+
 ## Picking an example
 
 If you want to see...
