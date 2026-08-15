@@ -28,6 +28,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cluster odd — the tie path is the fail-safe, not the plan — or pick
   `KeepOldest` / `KeepReferee`, which break ties by design.
 
+### Fixed
+
+- **A configured `numShards` now reaches the coordinator, not just the
+  region** (#1026).  `ClusterSharding.start` called `ensureCoordinator`
+  before it populated `numShardsByType`, and `ensureCoordinator` resolved the
+  count out of exactly that map — so on the first (and only) start of a type
+  the lookup missed and every `ShardCoordinator` was built with the built-in
+  64 whatever the caller configured.  The region then hashed with the real
+  value while the coordinator bounded with 64: every `GetShardHome` for a
+  shard id at or above 64 was refused, the shard never received a home, and
+  its messages accumulated in the region's unbounded buffer until the process
+  ran out of memory.  With the `numShards: 1000` the sharding page recommends
+  for large clusters, that is roughly 94 % of entities.
+
+  The config is now resolved once at the top of `start` and the count travels
+  into `ensureCoordinator` as an argument, so neither depends on which
+  statement ran first.  `numShardsByType` goes back to being what it was
+  meant to be — a lookup for later callers — rather than load-bearing for the
+  first one.
+
 ## [0.16.0] — 2026-08-15
 
 ### Changed
