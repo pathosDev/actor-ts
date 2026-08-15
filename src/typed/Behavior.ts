@@ -107,13 +107,25 @@ export type IgnoreBehavior = { readonly kind: 'ignore'; };
 
 /**
  * Lightweight stash interface handed to `Behaviors.withStash` factories.
- * Thin wrapper over the OO `context.stash()` API so the typed DSL keeps
- * the same guarantees (FIFO, capacity, overflow error).
+ *
+ * Not a wrapper over `context.stash()` — it holds its own buffer, because
+ * `stash(message)` takes any value where the OO call can only park the
+ * message being handled, and because the capacity is declared per behavior
+ * where the cell's is one default for the whole actor.  It nonetheless gives
+ * the same guarantees the OO stash does: FIFO order, a capacity bound with a
+ * `StashOverflowError` past it, replay *ahead* of anything already queued,
+ * and dead letters for whatever is still parked when the actor stops or
+ * restarts (#639).  The one thing it cannot reproduce is the original sender
+ * on those dead letters, since the buffer holds bare messages.
  */
 export interface StashBuffer<T> {
   /** Stash the current message; must be called during a user message. */
   stash(message: T): void;
-  /** Replay the buffered messages back onto the mailbox. */
+  /**
+   * Replay the buffered messages, prepended to the user mailbox in the order
+   * they were stashed — so they are handled before anything that was already
+   * queued when this was called.  The buffer is empty afterwards.
+   */
   unstashAll(): void;
   /** True if the buffer holds any message. */
   readonly isEmpty: boolean;
