@@ -241,6 +241,35 @@ afterEach(async () => {
 
 See [TestKit](/testing/testkit/).
 
+### Symptom: shutdown dropped my messages
+
+**Work that was queued when `terminate()` was called never ran, and
+turns up in the dead-letter stream instead.**
+
+`terminate()` drains the actors under `/user` first, so a plain
+backlog is handled.  Four things it will not wait for:
+
+- **The drain budget ran out.**  It is
+  `actor-ts.system.shutdown-drain-timeout`, 2 s by default.  An actor
+  that keeps producing new work while draining — a self-tell loop, a
+  rally between two actors — never goes quiet, so only the budget ends
+  it.  Raise the budget, and raise
+  `actor-ts.coordinated-shutdown.default-phase-timeout` with it if you
+  shut down through the pipeline.
+- **The mailbox was parked.**  `context.throttle(...)` and a
+  supervisor-suspended mailbox both count as quiet, because neither
+  drains at a rate a shutdown can wait for.  Cancel the throttle before
+  shutting down if the backlog matters.
+- **The work was not in a mailbox yet.**  A `context.timers` tick that
+  had not fired, or a `tell` from a promise a handler started without
+  `await`ing it, arrives after the tree looks quiet.  Await it, or fire
+  it as a message instead.
+- **It was addressed to `/system`.**  Framework actors are never
+  quiet by design, so they are not part of the drain.
+
+To confirm which, subscribe to `DeadLetter` on the event stream before
+shutting down — the dead letter names the message and the recipient.
+
 ### Symptom: flaky timing-sensitive tests
 
 **Tests pass locally, fail in CI.**

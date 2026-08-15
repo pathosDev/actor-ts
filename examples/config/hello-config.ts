@@ -33,7 +33,6 @@ async function main(): Promise<void> {
 
   const diag = system.spawn(DiagActor, 'diag');
   diag.tell('report');
-  await new Promise(resolve => setTimeout(resolve, 50));
   await system.terminate();
 }
 

@@ -40,10 +40,11 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('death-watch');
   const watcher = system.spawn(Watcher, 'watcher');
+  // A mailbox preserves the order two tells arrive in, and terminate() drains
+  // the whole chain that follows — spawn, watch, stop, Terminated — so neither
+  // step needs a sleep to be observed.
   watcher.tell('start');
-  await new Promise(resolve => setTimeout(resolve, 40));
   watcher.tell('kill');
-  await new Promise(resolve => setTimeout(resolve, 80));
   await system.terminate();
 }
 

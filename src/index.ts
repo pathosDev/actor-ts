@@ -156,6 +156,7 @@ export {
 
 // Patterns — Success / Failure live in util/Try.js (already exported above).
 export {
+  gracefulStop,
   pipeTo,
   after,
   retry,

@@ -6,6 +6,7 @@ export {
 export type { CircuitState } from './CircuitBreaker.js';
 export { CircuitBreakerOptions, CircuitBreakerOptionsBuilder, CircuitBreakerOptionsValidator } from './CircuitBreakerOptions.js';
 export type { CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
+export { gracefulStop } from './GracefulStop.js';
 export { pipeTo } from './PipeTo.js';
 export type { PipeToOptions } from './PipeTo.js';
 export { after } from './After.js';

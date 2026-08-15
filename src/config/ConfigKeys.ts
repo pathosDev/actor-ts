@@ -25,9 +25,10 @@
  */
 
 export const ConfigKeys = {
-  /** ActorSystem identity — `actor-ts.system.*`. */
+  /** ActorSystem identity and lifecycle — `actor-ts.system.*`. */
   system: {
     name: 'actor-ts.system.name',
+    shutdownDrainTimeout: 'actor-ts.system.shutdown-drain-timeout',
   },
 
   /** Logger root — `actor-ts.logger.*`. */

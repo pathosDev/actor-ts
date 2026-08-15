@@ -182,6 +182,23 @@ coordinatedShutdown.addPhase({
 });
 ```
 
+### The drain budget sits inside the last phase
+
+`actor-system-terminate` is a task that awaits `system.terminate()`,
+and `terminate()` begins by draining the actors under `/user` — see
+[Terminating](/fundamentals/actor-system/#terminating).  So two budgets
+are nested, and the inner one has to be the smaller:
+
+| Budget | Key | Default |
+| --- | --- | --- |
+| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.default-phase-timeout` | 5 s |
+| The drain inside it | `actor-ts.system.shutdown-drain-timeout` | 2 s |
+
+Raise the drain budget above the phase timeout and the phase is
+abandoned while the drain is still running — before a single actor has
+been told to stop. Raise both together, or raise the phase timeout
+first.
+
 ## SIGTERM / SIGINT hooks
 
 ```ts

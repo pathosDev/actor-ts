@@ -248,6 +248,37 @@ afterEach(async () => {
 
 Siehe [TestKit](/de/testing/testkit/).
 
+### Symptom: Shutdown hat meine Nachrichten verworfen
+
+**Arbeit, die beim Aufruf von `terminate()` in der Queue stand, lief
+nie und taucht stattdessen im Dead-Letter-Stream auf.**
+
+`terminate()` leert zuerst die Actors unter `/user`, ein einfacher
+Rückstau wird also verarbeitet.  Auf vier Dinge wartet es nicht:
+
+- **Das Drain-Budget ist abgelaufen.**  Es ist
+  `actor-ts.system.shutdown-drain-timeout`, Default 2 s.  Ein Actor,
+  der beim Leeren immer neue Arbeit erzeugt — eine Self-Tell-Schleife,
+  ein Ballwechsel zwischen zwei Actors — wird nie ruhig, nur das Budget
+  beendet ihn.  Erhöhe das Budget, und mit ihm
+  `actor-ts.coordinated-shutdown.default-phase-timeout`, wenn du über
+  die Pipeline herunterfährst.
+- **Die Mailbox war geparkt.**  `context.throttle(...)` und eine vom
+  Supervisor suspendierte Mailbox gelten beide als ruhig, weil keine
+  von beiden sich in einem Tempo leert, auf das ein Shutdown warten
+  kann.  Brich den Throttle vor dem Herunterfahren ab, wenn der
+  Rückstau zählt.
+- **Die Arbeit lag noch in keiner Mailbox.**  Ein noch nicht gefeuerter
+  `context.timers`-Tick oder ein `tell` aus einem Promise, das ein
+  Handler ohne `await` gestartet hat, kommt an, nachdem der Baum ruhig
+  aussieht.  Awaite es oder schicke es stattdessen als Nachricht.
+- **Sie war an `/system` adressiert.**  Framework-Actors sind
+  konstruktionsbedingt nie ruhig und daher nicht Teil des Drains.
+
+Um herauszufinden, welcher Fall vorliegt, abonniere vor dem
+Herunterfahren `DeadLetter` auf dem Event-Stream — der Dead Letter
+nennt Nachricht und Empfänger.
+
 ### Symptom: Flaky timing-sensitive Tests
 
 **Tests sind lokal grün, fallen aber in CI um.**

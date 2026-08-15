@@ -393,6 +393,30 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   get mailboxSize(): number { return this.mailbox.size; }
 
   /**
+   * @internal Has this cell run out of work it could still make progress on?
+   *
+   * The per-cell half of `ActorSystem.awaitQuiescence`, which is how a
+   * draining `terminate()` decides that the application is finished (#663).
+   *
+   * Two terms, and the second one is the interesting one.  `processing` covers
+   * the turn that is already in flight — it is set synchronously by
+   * {@link schedule}, at `tell` time, so there is no window in which a message
+   * has been handed over but neither sender nor receiver looks busy; that is
+   * what makes the drain transitive across a ping-pong without any extra
+   * bookkeeping.  {@link hasDispatchableWork} then answers for the queue, and
+   * reusing it rather than asking `mailbox.hasUserMessages()` is deliberate:
+   * it already encodes the two ways a queue can be *parked* rather than
+   * pending.  A throttle-paused actor (#83) reports only its system queue, and
+   * a suspended mailbox hides its user queue.  Neither will drain on its own
+   * within any budget worth waiting for — a `qps: 10` bucket means shutdown
+   * would run at ten messages a second — so the drain treats both as done and
+   * lets the ordinary teardown dead-letter what is left.
+   */
+  _isQuiescent(): boolean {
+    return !this.processing && !this.hasDispatchableWork();
+  }
+
+  /**
    * @internal Describe this cell for introspection tooling.
    *
    * A snapshot of what a debugger wants to show, taken from fields that
