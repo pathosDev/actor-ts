@@ -1,6 +1,7 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { LogContextData } from '../LogContext.js';
 import type { SpanContext } from '../tracing/Tracer.js';
+import { RingBuffer } from '../util/RingBuffer.js';
 
 export type Envelope<T = unknown> = {
   readonly message: T;
@@ -88,10 +89,24 @@ export function reportsDrops<T>(
 /**
  * Per-actor message queue.  System messages (create, terminate, failure, …)
  * are kept on a separate priority queue and drained before any user message.
+ *
+ * Both queues are {@link RingBuffer}s rather than plain arrays, which is
+ * invisible from the outside and load-bearing underneath: every removal used
+ * to be an `Array.prototype.shift()`, and that reindexes the whole backlog.
+ * Since #1148 made the unbounded mailbox the default again there is no
+ * capacity capping how deep a backlog gets, so an actor that falls behind its
+ * producers was paying a memmove of its entire queue for every message it
+ * delivered (#408).
+ *
+ * The fields stay `private`, so a subclass sees only the methods — which is
+ * why swapping the backing store is not a breaking change even though
+ * `Mailbox` is public and explicitly subclassable since #661 / #1002.  The
+ * one seam a subclass touches is `protected` {@link removeOldest}, and its
+ * signature is unchanged.
  */
 export class Mailbox<T = unknown> {
-  private userQueue: Envelope<T>[] = [];
-  private systemQueue: Envelope<unknown>[] = [];
+  private readonly userQueue = new RingBuffer<Envelope<T>>();
+  private readonly systemQueue = new RingBuffer<Envelope<unknown>>();
   private _suspended = false;
 
   get suspended(): boolean { return this._suspended; }
@@ -100,9 +115,16 @@ export class Mailbox<T = unknown> {
     this.userQueue.push(env);
   }
 
-  /** Put envelopes at the FRONT of the user queue, preserving their order. */
+  /**
+   * Put envelopes at the FRONT of the user queue, preserving their order.
+   *
+   * One bulk move, not a spread: `unstashAll` replays up to
+   * `DEFAULT_STASH_CAPACITY` envelopes in a single call, and
+   * `unshift(...envs)` would both reindex the backlog once per envelope and
+   * push the whole batch onto the call stack as arguments.
+   */
   prependUser(envs: Array<Envelope<T>>): void {
-    this.userQueue.unshift(...envs);
+    this.userQueue.unshiftAll(envs);
   }
 
   enqueueSystem(env: Envelope<unknown>): void {
@@ -147,16 +169,20 @@ export class Mailbox<T = unknown> {
   suspend(): void { this._suspended = true; }
   resume(): void { this._suspended = false; }
 
-  /** Drain all user messages; returns them so the caller can forward to dead letters. */
+  /**
+   * Drain all user messages; returns them so the caller can forward to dead
+   * letters.
+   *
+   * Materialises a fresh array rather than handing out the backing store —
+   * a ring is not a dense array, so there is nothing to hand out.  The
+   * allocation is real but it is on the termination path, where the caller
+   * (`ActorCell`) only iterates the result once.
+   */
   drainUser(): Envelope<T>[] {
-    const drained = this.userQueue;
-    this.userQueue = [];
-    return drained;
+    return this.userQueue.drain();
   }
 
   drainSystem(): Envelope<unknown>[] {
-    const drained = this.systemQueue;
-    this.systemQueue = [];
-    return drained;
+    return this.systemQueue.drain();
   }
 }
