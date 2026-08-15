@@ -21,6 +21,7 @@ import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.j
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import type { Journal } from '../../../src/persistence/Journal.js';
+import type { JournalEntry } from '../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
@@ -665,6 +666,31 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     }
   });
 
+  test('a multi-event transition tags each event by its own kind (#631)', async () => {
+    // The concrete reproduction path: an FSM's array transition is the one
+    // place in the repo that routinely persists differently-shaped events in
+    // one batch.  `persistAll` used to hand the journal a single tag list
+    // taken from events[0], so `audit-logged` was filed under 'payment' and
+    // an audit projection saw nothing.
+    class TaggingAuditingFsm extends AuditingFsm {
+      override tagsFor(event: AuditEvent): readonly string[] | undefined {
+        return event.kind === 'audit-logged' ? ['audit'] : ['payment'];
+      }
+    }
+    const { sys, journal } = buildSystem('fsm-multi-tags');
+    try {
+      const ref = sys.spawn(() => new TaggingAuditingFsm('audit-tags', 'fnArray'), 'audit');
+      ref.tell({ kind: 'pay', amount: 250 });
+      await awaitJournalLength(journal, 'audit-tags', 2);
+
+      const events = await journal.read('audit-tags', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind)).toEqual(['paid', 'audit-logged']);
+      expect(events.map((e) => e.tags)).toEqual([['payment'], ['audit']]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('recovery: array events replay deterministically', async () => {
     // Persist the 2-event transition in one ActorSystem, restart,
     // and verify both events come back in order with the correct
@@ -709,7 +735,7 @@ describe('PersistentFSM — recovery failure', () => {
       // A snapshot claiming a sequence number ahead of the journal is
       // refused by assertTrustworthySnapshot, so replay throws before
       // the base class assigns its state.
-      await journal.append<OrderEvent>('order-broken', [{ kind: 'paid', amount: 100 }], 0);
+      await journal.append<OrderEvent>('order-broken', [{ event: { kind: 'paid', amount: 100 } }], 0);
       await snaps.save('order-broken', Number.MAX_SAFE_INTEGER, {
         state: 'shipped', data: { amountPaid: 0, carrier: null, cancelReason: null },
       });
@@ -767,8 +793,8 @@ describe('PersistentFSM — a state-timeout fire during recovery', () => {
     reading = false;
     constructor(private readonly inner: InMemoryJournal) {}
     open(): void { this.release(); }
-    append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
-      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+    append<E>(persistenceId: string, entries: ReadonlyArray<JournalEntry<E>>, expectedSeq: number) {
+      return this.inner.append<E>(persistenceId, entries, expectedSeq);
     }
     async read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
       this.reading = true;
@@ -927,13 +953,13 @@ describe('PersistentFSM — a state-timeout fire superseded by a re-arm (#143)',
       this.gate = null;
     }
 
-    async append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
+    async append<E>(persistenceId: string, entries: ReadonlyArray<JournalEntry<E>>, expectedSeq: number) {
       const gate = this.gate;
       if (gate) {
         this.parked = true;
         await gate;
       }
-      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+      return this.inner.append<E>(persistenceId, entries, expectedSeq);
     }
     read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
       return this.inner.read<E>(persistenceId, fromSeq, toSeq);

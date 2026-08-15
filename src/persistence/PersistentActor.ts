@@ -2,7 +2,7 @@ import { Actor } from '../Actor.js';
 import type { Lease } from '../coordination/Lease.js';
 import type { Journal } from './Journal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
-import type { PersistentEvent, Snapshot } from './JournalTypes.js';
+import type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 import { PersistenceExtensionId } from './PersistenceExtension.js';
 import type {
   CompressionConfig,
@@ -408,21 +408,27 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     }
     this._persisting = true;
     try {
-      // Collect tags from the first event — tags are per-event but a single
-      // persistAll keeps them grouped so they share the same tag set.
-      const tags = this.tagsFor(events[0]!);
+      // `tagsFor` is asked once per event, not once per batch: a mixed
+      // `persistAll` — an FSM transition that emits a state-change plus a
+      // domain event, say — carries a different tag set per event, and
+      // stamping all of them with the first event's tags both dropped tags
+      // (a by-tag query missed the later events) and invented them (it
+      // returned events that were never tagged that way) (#631).
+      //
       // If an event adapter is active, wrap each event into a `{_v,_t,_e}`
       // envelope before handing it to the journal.  Domain events stay in-
       // memory unchanged so `onEvent` and `snapshotPolicy` see the original
-      // (current-version) shape.
+      // (current-version) shape — and `tagsFor` is asked about that original
+      // shape too, so an adapter never changes how an event is tagged.
       const evAdapter = this.eventAdapter();
-      const wireEvents: ReadonlyArray<unknown> = evAdapter
-        ? events.map((e) => encodeEvent(e, evAdapter))
-        : events;
+      const entries: ReadonlyArray<JournalEntry<unknown>> = events.map((e) => ({
+        event: evAdapter ? encodeEvent(e, evAdapter) : e,
+        tags: this.tagsFor(e),
+      }));
       let written: ReadonlyArray<PersistentEvent<unknown>>;
       try {
         written = await this._journal.append<unknown>(
-          this.persistenceId, wireEvents, this._seq, tags,
+          this.persistenceId, entries, this._seq,
         );
       } catch (e) {
         if (e instanceof JournalConcurrencyError) this.onSecondWriterDetected(e);

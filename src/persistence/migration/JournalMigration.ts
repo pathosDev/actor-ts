@@ -105,10 +105,12 @@ export type MigrateJournalsResult = {
  * for the same `target` simultaneously — the `expectedSeq` race would
  * surface as `JournalConcurrencyError`.
  *
- * **Tags.**  Each event's `tags` field is preserved via per-event
- * `append` calls (one event per call to keep the source's tag layout
- * exact).  Trade-off: more round-trips than a batched copy, but tag
- * fidelity is what most migrations care about.
+ * **Tags.**  Each event's `tags` field is carried across verbatim: the
+ * copy hands the target one journal entry per source event, so a
+ * stream whose events are tagged differently from one another arrives
+ * tagged the same way.  Events are still appended one call at a time —
+ * more round-trips than a batched copy, but it keeps every write a
+ * separate resume point.
  *
  *   await migrateBetweenJournals(sqliteSource, cassandraTarget, {
  *     eventTransform: (e) => ({
@@ -160,7 +162,9 @@ export async function migrateBetweenJournals<E = unknown>(
       let expected = targetHigh;
       for (const se of sourceEvents) {
         const transformed = transform(se);
-        await target.append(persistenceId, [transformed.event], expected, transformed.tags);
+        await target.append(
+          persistenceId, [{ event: transformed.event, tags: transformed.tags }], expected,
+        );
         expected += 1;
         result.eventsWritten += 1;
       }

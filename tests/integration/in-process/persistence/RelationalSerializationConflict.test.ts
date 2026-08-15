@@ -80,9 +80,9 @@ describe('RelationalJournal — a contention abort that lost a race', () => {
     // Our head read sees 0; the rival then commits seq 1 and the engine
     // aborts us for contention rather than on the primary key.
     pool.abortNextInsertInto = 'events';
-    pool.beforeAbort = async () => { await rival.append('pid', ['winner'], 0); };
+    pool.beforeAbort = async () => { await rival.append('pid', [{ event: 'winner' }], 0); };
 
-    const failure = await journal.append('pid', ['loser'], 0).catch((e: Error) => e);
+    const failure = await journal.append('pid', [{ event: 'loser' }], 0).catch((e: Error) => e);
     expect(failure.name).toBe('JournalConcurrencyError');
     expect((failure as unknown as { expectedSeq: number }).expectedSeq).toBe(0);
     expect((failure as unknown as { actualSeq: number }).actualSeq).toBe(1);
@@ -100,9 +100,9 @@ describe('RelationalJournal — a contention abort that lost a race', () => {
       pool.errno = errno;
       pool.code = code;
       pool.abortNextInsertInto = 'events';
-      pool.beforeAbort = async () => { await rival.append('pid', ['winner'], 0); };
+      pool.beforeAbort = async () => { await rival.append('pid', [{ event: 'winner' }], 0); };
 
-      const failure = await journal.append('pid', ['loser'], 0).catch((e: Error) => e);
+      const failure = await journal.append('pid', [{ event: 'loser' }], 0).catch((e: Error) => e);
       expect(failure.name).toBe(`JournalConcurrencyError`);
       expect(failure.message).toContain('journal has 1');
     }
@@ -116,7 +116,7 @@ describe('RelationalJournal — a contention abort that did NOT lose a race', ()
     // Nobody moved the head — this is a lock problem, not a lost race.
     pool.abortNextInsertInto = 'events';
 
-    const failure = await journal.append('pid', ['only'], 0).catch((e: Error) => e);
+    const failure = await journal.append('pid', [{ event: 'only' }], 0).catch((e: Error) => e);
     expect(failure.name).toBe('JournalError');
     expect(failure.message).toContain('1020');
     // Reporting a concurrency conflict here would send the caller into a

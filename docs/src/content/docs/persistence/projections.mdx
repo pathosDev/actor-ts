@@ -85,6 +85,10 @@ Tag-based is the common case — the `PersistentActor` calls
 the tag.  Per-pid is useful for narrow views (one user's
 activity).
 
+`tagsFor` is asked **per event**, so a projection filtering on a tag
+sees exactly the events that carry it — including when the events
+were written together by one `persistAll`.
+
 ## At-least-once delivery
 
 ```ts

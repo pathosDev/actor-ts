@@ -20,7 +20,13 @@ export async function run({ actorTs, loadEntry }) {
   const journalOptions = SqliteJournalOptions.create().withPath(':memory:');
   const journal = new SqliteJournal(journalOptions);
   try {
-    const written = await journal.append('account-1', ['created', 'deposited:10'], 0, ['ledger']);
+    // Deliberately mixed tags in one batch: tags are per event, and the
+    // CSV tag column plus the tags join table both have to keep them apart
+    // on every runtime (#631).
+    const written = await journal.append('account-1', [
+      { event: 'created', tags: ['ledger'] },
+      { event: 'deposited:10', tags: ['ledger', 'deposit'] },
+    ], 0);
     const sequenceNumbers = written.map((e) => e.sequenceNr).join(',');
     if (sequenceNumbers !== '1,2') throw new Error(`expected seq 1,2 — got ${sequenceNumbers}`);
 
@@ -28,6 +34,9 @@ export async function run({ actorTs, loadEntry }) {
     if (read.length !== 2) throw new Error(`expected 2 events — got ${read.length}`);
     if (read[0].event !== 'created') throw new Error(`payload round-trip failed: ${read[0].event}`);
     if (read[0].tags?.join(',') !== 'ledger') throw new Error(`tags round-trip failed: ${read[0].tags}`);
+    if (read[1].tags?.join(',') !== 'ledger,deposit') {
+      throw new Error(`per-event tags round-trip failed: ${read[1].tags}`);
+    }
 
     const head = await journal.highestSeq('account-1');
     if (head !== 2) throw new Error(`expected highestSeq 2 — got ${head}`);
@@ -36,7 +45,7 @@ export async function run({ actorTs, loadEntry }) {
     // the rollback arm of the driver's transaction support.
     let rejected = false;
     try {
-      await journal.append('account-1', ['stale'], 0);
+      await journal.append('account-1', [{ event: 'stale' }], 0);
     } catch (e) {
       if (!(e instanceof JournalConcurrencyError)) throw e;
       rejected = true;
@@ -44,16 +53,18 @@ export async function run({ actorTs, loadEntry }) {
     if (!rejected) throw new Error('stale append was not rejected');
 
     // The journal is still usable after the rollback.
-    const resumed = await journal.append('account-1', ['deposited:20'], 2);
+    const resumed = await journal.append('account-1', [{ event: 'deposited:20' }], 2);
     if (resumed[0].sequenceNr !== 3) throw new Error(`expected seq 3 — got ${resumed[0].sequenceNr}`);
 
     // Rich payload types round-trip through the tagged payload codec (#888).
     // Also exercises the base64 fallback path per runtime (Buffer vs btoa).
     await journal.append('account-1', [{
-      kind: 'rolesGranted',
-      roles: new Set(['ledger-admin', 'auditor']),
-      grantedAt: new Date('2024-06-01T12:00:00.000Z'),
-      raw: new Uint8Array([1, 2, 250]),
+      event: {
+        kind: 'rolesGranted',
+        roles: new Set(['ledger-admin', 'auditor']),
+        grantedAt: new Date('2024-06-01T12:00:00.000Z'),
+        raw: new Uint8Array([1, 2, 250]),
+      },
     }], 3);
     const [rich] = await journal.read('account-1', 4);
     if (!(rich.event.roles instanceof Set) || !rich.event.roles.has('auditor')) {

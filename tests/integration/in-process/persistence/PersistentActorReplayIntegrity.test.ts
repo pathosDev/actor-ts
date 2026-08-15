@@ -16,7 +16,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { Journal } from '../../../../src/persistence/Journal.js';
-import type { PersistentEvent } from '../../../../src/persistence/JournalTypes.js';
+import type { JournalEntry, PersistentEvent } from '../../../../src/persistence/JournalTypes.js';
 import {
   InMemoryJournal,
   InMemorySnapshotStore,
@@ -46,11 +46,10 @@ class RewritingJournal implements Journal {
 
   append<E = unknown>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    return this.underlying.append<E>(persistenceId, events, expectedSeq, tags);
+    return this.underlying.append<E>(persistenceId, entries, expectedSeq);
   }
 
   async read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
@@ -123,7 +122,7 @@ function makeSystem(
 async function seed(journal: InMemoryJournal, persistenceId: string, values: number[]): Promise<void> {
   let expected = 0;
   for (const value of values) {
-    await journal.append<AppendedEvent>(persistenceId, [{ kind: 'appended', value }], expected);
+    await journal.append<AppendedEvent>(persistenceId, [{ event: { kind: 'appended', value } }], expected);
     expected += 1;
   }
 }

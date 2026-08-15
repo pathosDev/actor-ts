@@ -42,12 +42,12 @@ async function main(): Promise<void> {
   const snapshots = new InMemorySnapshotStore();
 
   await journal.append<LegacyEvent>('account-alice', [
-    { kind: 'deposited', amount: 100 },
-    { kind: 'deposited', amount: 50 },
-    { kind: 'withdrawn', amount: 30 },
+    { event: { kind: 'deposited', amount: 100 } },
+    { event: { kind: 'deposited', amount: 50 } },
+    { event: { kind: 'withdrawn', amount: 30 } },
   ], 0);
   await journal.append<LegacyEvent>('account-bob', [
-    { kind: 'deposited', amount: 200 },
+    { event: { kind: 'deposited', amount: 200 } },
   ], 0);
   await snapshots.save<LegacyState>('account-alice', 3, { balance: 120 });
   await snapshots.save<LegacyState>('account-bob', 1, { balance: 200 });

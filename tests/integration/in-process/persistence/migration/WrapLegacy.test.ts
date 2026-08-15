@@ -76,10 +76,10 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
   test('wraps raw events while preserving sequence numbers, timestamps, and tags', async () => {
     const journal = new InMemoryJournal();
     await journal.append('user-1', [
-      { kind: 'deposited', amount: 50 },
-      { kind: 'deposited', amount: 25 },
-    ], 0, ['account', 'user-1']);
-    await journal.append('user-2', [{ kind: 'withdrawn', amount: 10 }], 0);
+      { event: { kind: 'deposited', amount: 50 }, tags: ['account', 'user-1'] },
+      { event: { kind: 'deposited', amount: 25 }, tags: ['account', 'user-1'] },
+    ], 0);
+    await journal.append('user-2', [{ event: { kind: 'withdrawn', amount: 10 } }], 0);
 
     const before1 = await journal.read('user-1', 0);
     const result = await migrateInMemoryJournal(journal,
@@ -99,7 +99,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
 
   test('idempotent — re-running on an already-migrated journal wraps nothing', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ kind: 'x' }], 0);
+    await journal.append('a', [{ event: { kind: 'x' } }], 0);
     await migrateInMemoryJournal(journal, (e: { kind: string }) => `T.${e.kind}`);
     const second = await migrateInMemoryJournal(journal, (e: { kind: string }) => `T.${e.kind}`);
     expect(second).toEqual({ inspected: 1, wrapped: 0, skipped: 1 });
@@ -111,8 +111,8 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
 
     const journal = new InMemoryJournal();
     await journal.append('account-1', [
-      { kind: 'deposited', amount: 100 },
-      { kind: 'deposited', amount: 30 },
+      { event: { kind: 'deposited', amount: 100 } },
+      { event: { kind: 'deposited', amount: 30 } },
     ], 0);
 
     // The codebase has been upgraded to ship an EventAdapter; legacy

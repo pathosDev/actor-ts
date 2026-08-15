@@ -427,6 +427,25 @@ a read-side view that subscribes to `'account'` events.
 Returning `undefined` (the default) means "no tags" — fine if you
 don't have projections yet.
 
+`tagsFor` is asked **once per event**, including inside a
+`persistAll`.  So a batch that mixes event kinds is tagged per kind,
+and a projection filtering on one of them sees exactly its own
+events:
+
+```ts
+override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+  return event.kind === 'paymentCaptured' ? ['payment'] : ['order'];
+}
+
+await this.persistAll([
+  { kind: 'orderPlaced' },       // → ['order']
+  { kind: 'paymentCaptured' },   // → ['payment']
+]);
+```
+
+The batch is still written atomically — per-event tags do not split
+it into several appends.
+
 ## Schema evolution — event adapters
 
 When event shapes change over time (a field is renamed, a value

@@ -29,7 +29,7 @@ describe('LibSqlJournal — schema compatibility with the local SQLite backend',
   test('emits SQLite dialect statements, not Postgres ones', async () => {
     const client = new FakeLibSqlClient();
     const journal = new LibSqlJournal(LibSqlJournalOptions.create().withClient(client));
-    await journal.append('account-1', ['created'], 0, ['ledger']);
+    await journal.append('account-1', [{ event: 'created', tags: ['ledger'] }], 0);
     await journal.delete('account-1', 1);   // issues the high-water-mark upsert
     const issued = client.log.join('\n');
     // Matching `SqliteJournal`'s statements is what makes a database portable
@@ -47,11 +47,11 @@ describe('LibSqlJournal — schema compatibility with the local SQLite backend',
   test('the concurrency backstop recognises a SQLite constraint violation', async () => {
     const client = new FakeLibSqlClient();
     const journal = new LibSqlJournal(LibSqlJournalOptions.create().withClient(client));
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     // Two writers agreeing on the head: the second trips the primary key, and
     // the dialect has to classify a `SQLITE_CONSTRAINT_*` code as a duplicate
     // key so it surfaces as a concurrency error rather than a raw driver error.
-    expect(journal.append('account-1', ['b'], 0)).rejects.toMatchObject({
+    expect(journal.append('account-1', [{ event: 'b' }], 0)).rejects.toMatchObject({
       name: 'JournalConcurrencyError',
       expectedSeq: 0,
       actualSeq: 1,
@@ -136,7 +136,7 @@ describe('LibSql* client ownership', () => {
     const journal = new LibSqlJournal(LibSqlJournalOptions.create().withClient(client));
     const snapshots = new LibSqlSnapshotStore(LibSqlSnapshotStoreOptions.create().withClient(client));
     const state = new LibSqlDurableStateStore(LibSqlDurableStateStoreOptions.create().withClient(client));
-    await journal.append('account-1', ['a'], 0);   // force the stores open
+    await journal.append('account-1', [{ event: 'a' }], 0);   // force the stores open
     await snapshots.save('account-1', 1, { v: 1 });
     await state.upsert('account-1', 0, { v: 1 });
 
@@ -200,7 +200,7 @@ describe('registerLibSqlPlugins', () => {
       // All three writing through the one fake proves the merge reached each
       // leaf — none of them fell back to building its own client (which would
       // have thrown for want of a url).
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       await persistence.snapshotStore.save('account-1', 1, { v: 1 });
       await handles.durableStateStore.upsert('account-1', 0, { v: 1 });
       expect(client.log.some((sql) => sql.startsWith('INSERT INTO events('))).toBe(true);
@@ -223,7 +223,7 @@ describe('registerLibSqlPlugins', () => {
         .withJournal(journalOptions);
       registerLibSqlPlugins(persistence, pluginOptions);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
     } finally {
       await system.terminate();

@@ -34,8 +34,10 @@ Concurrency-Check auf erwarteter Sequenz.
 Der Journal-Vertrag:
 
 ```ts
+type JournalEntry<E> = { event: E; tags?: string[] };
+
 interface Journal {
-  append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
+  append<E>(persistenceId: string, entries: JournalEntry<E>[], expectedSeq: number): Promise<PersistentEvent<E>[]>;
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
   highestSeq(persistenceId: string): Promise<number>;
   delete(persistenceId: string, toSeq: number): Promise<void>;
@@ -48,9 +50,10 @@ interface Journal {
 `InMemoryJournal` implementiert all das intern mit einer
 `Map<string, PersistentEvent[]>`.  Operationen sind:
 
-- **`append`** — Events auf das Array des Streams pushen.
-  Concurrency-Check auf `expectedSeq` (wirft
-  `JournalConcurrencyError`, wenn der aktuelle Head nicht passt).
+- **`append`** — die Events der Entries auf das Array des Streams
+  pushen, jedes behält seine eigenen `tags`.  Concurrency-Check auf
+  `expectedSeq` (wirft `JournalConcurrencyError`, wenn der aktuelle
+  Head nicht passt).
 - **`read`** — das Array nach Sequenznummern-Bereich slicen.
 - **`highestSeq`** — die seqNr des letzten Eintrags lesen (oder 0).
 - **`delete`** — das Präfix abschneiden.

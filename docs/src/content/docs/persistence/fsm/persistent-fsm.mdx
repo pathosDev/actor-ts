@@ -149,6 +149,8 @@ command (#66) — an **array** or a function returning one.  Array events
 persist atomically in a single `persistAll`, `applyEvent` runs once per
 event, and only the **final** post-replay state is checked against
 `next`.  An empty array is a no-op (nothing persisted, no transition).
+`tagsFor` is asked once per event too, so a transition that emits
+differently-shaped events tags each of them on its own.
 
 ```ts
 pay: {
@@ -255,7 +257,8 @@ class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
 - `persistenceId` — the event-stream key.
 - `snapshotPolicy` — periodic snapshots to bound replay.
 - `eventAdapter` / `snapshotAdapter` — schema migration.
-- `tagsFor` — tagging events for projection consumption.
+- `tagsFor` — tagging events for projection consumption; called once
+  per event, including for every event of a multi-event transition.
 
 ## Reading current state
 

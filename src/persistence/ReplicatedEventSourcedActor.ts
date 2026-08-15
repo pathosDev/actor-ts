@@ -432,7 +432,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private async _appendOne(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
     const head = await this._journal.highestSeq(this.persistenceId);
     const written = await this._journal.append(
-      this.persistenceId, [envelope], head, [REPLICATED_TAG],
+      this.persistenceId, [{ event: envelope, tags: [REPLICATED_TAG] }], head,
     );
     const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
     if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;

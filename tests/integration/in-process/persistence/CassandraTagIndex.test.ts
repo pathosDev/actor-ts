@@ -36,17 +36,17 @@ type CorpusEvent = { id: number };
  *   6  | event-1 | type:Event,  tenant:t1
  */
 async function seedCorpus(j: CassandraJournal): Promise<void> {
-  await j.append('order-1', [{ id: 1 }], 0, ['type:Order', 'tenant:t1']);
+  await j.append('order-1', [{ event: { id: 1 }, tags: ['type:Order', 'tenant:t1'] }], 0);
   await sleep(2);
-  await j.append('order-2', [{ id: 2 }], 0, ['type:Order', 'tenant:t2']);
+  await j.append('order-2', [{ event: { id: 2 }, tags: ['type:Order', 'tenant:t2'] }], 0);
   await sleep(2);
-  await j.append('order-3', [{ id: 3 }], 0, ['type:Order', 'tenant:t1', 'archived']);
+  await j.append('order-3', [{ event: { id: 3 }, tags: ['type:Order', 'tenant:t1', 'archived'] }], 0);
   await sleep(2);
-  await j.append('inv-1',   [{ id: 4 }], 0, ['type:Invoice', 'tenant:t1']);
+  await j.append('inv-1', [{ event: { id: 4 }, tags: ['type:Invoice', 'tenant:t1'] }], 0);
   await sleep(2);
-  await j.append('inv-2',   [{ id: 5 }], 0, ['type:Invoice', 'tenant:t2', 'archived']);
+  await j.append('inv-2', [{ event: { id: 5 }, tags: ['type:Invoice', 'tenant:t2', 'archived'] }], 0);
   await sleep(2);
-  await j.append('event-1', [{ id: 6 }], 0, ['type:Event',  'tenant:t1']);
+  await j.append('event-1', [{ event: { id: 6 }, tags: ['type:Event',  'tenant:t1'] }], 0);
 }
 
 const ids = (events: ReadonlyArray<{ event: { event: CorpusEvent } }>): number[] =>
@@ -85,9 +85,32 @@ describe('CassandraJournal — useTagIndex dual-write', () => {
 
   test('events without tags don\'t produce side-table rows', async () => {
     const { journal, client } = makeJournal(true);
-    await journal.append('untagged', [{ id: 1 }, { id: 2 }], 0);
+    await journal.append('untagged', [{ event: { id: 1 } }, { event: { id: 2 } }], 0);
     expect(client.countRows('ks.events_by_tag')).toBe(0);
     expect(client.countRows('ks.events')).toBe(2);
+    await journal.close();
+  });
+
+  test('a mixed batch indexes each event under its OWN tags (#631)', async () => {
+    const { journal, client } = makeJournal(true);
+    // One atomic append, three different tag sets.  The dual-write used to
+    // fan the batch's single tag list over every event, so the side table
+    // held rows claiming `paymentCaptured` was tagged 'order'.
+    await journal.append('checkout-1', [
+      { event: { id: 1 }, tags: ['order', 'audit'] },
+      { event: { id: 2 }, tags: ['payment'] },
+      { event: { id: 3 } },
+    ], 0);
+    // 2 + 1 + 0 pairs.  Collapsing to the first event's tags would write 6.
+    expect(client.countRows('ks.events_by_tag')).toBe(3);
+    expect(client.countRows('ks.events')).toBe(3);
+
+    // And the index answers by tag with exactly the right event.
+    const query = new CassandraQuery(journal);
+    const byPayment = await query.currentEventsByTag<CorpusEvent>({ all: ['payment'] }, offsetStart);
+    expect(byPayment.map((e) => e.event.event.id)).toEqual([2]);
+    const byOrder = await query.currentEventsByTag<CorpusEvent>({ all: ['order'] }, offsetStart);
+    expect(byOrder.map((e) => e.event.event.id)).toEqual([1]);
     await journal.close();
   });
 
