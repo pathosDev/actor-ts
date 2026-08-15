@@ -47,7 +47,7 @@ describe('testKitFixture', () => {
   });
 
   test('can create test probes against the shared kit', () => {
-    const probe = kit().createTestProbe<string>();
+    const probe = kit().createTestProbe();
     // TestProbe IS the ActorRef — verify the path is present (proves
     // the probe was wired up against the shared system).
     expect(probe.path).toBeDefined();
