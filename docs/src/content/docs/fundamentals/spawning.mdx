@@ -254,6 +254,11 @@ outlives every restart.  On restart only the `Actor` instance is
 rebuilt — the same mailbox is resumed in place, so messages queued
 before the crash are still there.
 
+This cannot be combined with `withMailboxCapacity` — a supplied mailbox
+brings its own bound, so a bound on a `PriorityMailbox` goes on
+`PriorityMailboxOptions` (`.withCapacity(...)` plus `.withOverflow(...)`)
+rather than on `ActorOptions`.
+
 See [Mailboxes](/fundamentals/mailboxes/) for the overflow policies and
 priority semantics.
 

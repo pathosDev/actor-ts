@@ -263,6 +263,12 @@ Actors; die Mailbox überlebt danach jeden Neustart.  Bei einem Neustart
 wird nur die `Actor`-Instanz neu gebaut — dieselbe Mailbox läuft weiter,
 vor dem Absturz eingereihte Nachrichten sind also noch da.
 
+Mit `withMailboxCapacity` lässt sich das nicht kombinieren — eine
+übergebene Mailbox bringt ihren eigenen Bound mit.  Ein Bound auf einer
+`PriorityMailbox` liegt daher auf `PriorityMailboxOptions`
+(`.withCapacity(...)` plus `.withOverflow(...)`) und nicht auf
+`ActorOptions`.
+
 Die Überlaufstrategien und die Prioritätssemantik stehen unter
 [Mailboxes](/de/fundamentals/mailboxes/).
 

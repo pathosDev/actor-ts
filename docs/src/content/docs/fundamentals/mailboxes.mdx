@@ -41,6 +41,14 @@ something you are told about: an actor whose queue reaches 10 000
 messages logs a warning, and again at each doubling.  With metrics
 enabled, `actor_mailbox_size` reports the depth per actor.
 
+A queue with no ceiling has to stay cheap when it is deep, so both of a
+mailbox's queues are backed by a [`RingBuffer`](/reference/utility-helpers/)
+rather than a plain array: taking the next message advances an index instead
+of reindexing everything behind it, so the cost of delivering one message
+does not grow with the backlog waiting behind it.  This is invisible from
+the outside — including to a `Mailbox` subclass of your own, which sees only
+the methods.
+
 ### When to bound a mailbox
 
 Reach for a bound when **shedding load is better than absorbing it**,
@@ -277,6 +285,57 @@ in the low thousands; if you have a sustained 10 000-message backlog
 where priority insertion shows up in profiles, the mailbox is open
 to a heap-backed swap (see the source).
 
+### Bounding a priority mailbox
+
+A priority mailbox is unbounded unless you give it a `capacity`, exactly
+like every other mailbox.  The bound lives on the mailbox's own options
+rather than on `ActorOptions`, because `withMailbox` and
+`withMailboxCapacity` cannot be combined — a supplied mailbox brings its
+own bound:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+The policies are `'drop-lowest-priority'`, `'drop-new'` and `'reject'`, and
+`reject` is what you get when you name a capacity without one — naming a
+capacity says how much you will hold, not what you are willing to lose.
+
+| Policy | What happens on overflow |
+| --- | --- |
+| `'drop-lowest-priority'` | Discard the message furthest from delivery — the lowest-priority one, and among equals the one that arrived last.  The arriving message competes on the same terms, so a message ranked below the whole backlog is the one that goes. |
+| `'drop-new'` | Discard the *incoming* message, whatever priority it was given. |
+| `'reject'` | Throw `MailboxFullError` at the `tell` site. |
+
+`drop-head` is deliberately **not** offered here.  On a FIFO queue it means
+"discard the stalest", which works because arrival order is the only order
+there is.  On a priority queue the head is the message your `priorityFor`
+called most important — dropping it would defeat the reason you chose this
+mailbox.  Drops are still reported as `drop-head` on
+`actor_mailbox_dropped_total` (that label has a closed two-value
+vocabulary), except when the discarded message was the arriving one, which
+reports `drop-new`.
+
+<Aside type="caution" title="A bounded priority mailbox can drop on unstash">
+  `PriorityMailbox.prependUser` re-runs the priority function rather than
+  pushing to the front, so `unstashAll()` goes through the same `enqueue`
+  path — and therefore through the same bound.  On a full mailbox, replaying
+  the stash can discard messages.  `BoundedMailbox` behaves differently
+  here: its unstash path bypasses the bound.
+</Aside>
+
+The options are validated at construction: a missing or non-callable
+`priorityFor`, a non-positive `capacity`, an unknown policy, or a policy
+without a capacity all throw `OptionsError`.
+
 ## Per-actor mailbox via ActorOptions
 
 Three knobs on `ActorOptions`:
@@ -337,7 +396,9 @@ calls `mailbox.prependUser(envs)`, and the mailbox decides how to
 reinsert.  Notably for `PriorityMailbox`, unstashed messages are
 *re-prioritized*: a stashed `bulk` message rejoins the `bulk` tier,
 even if you stashed it while urgent messages were arriving.  Stash
-order is preserved within a priority tier.
+order is preserved within a priority tier.  That reinsertion goes
+through `enqueue`, so on a *bounded* priority mailbox the capacity
+applies to the replay too — see the caution above.
 
 See [Become and stash](/fundamentals/become-and-stash/) for
 the full behavior-switching story.

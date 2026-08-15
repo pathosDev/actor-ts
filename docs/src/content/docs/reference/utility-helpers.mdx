@@ -1,14 +1,15 @@
 ---
 title: Utilities
-description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
 ---
 
 The framework solves a handful of problems for itself that turn up again in the
 code you write on top of it: representing "there might be no value" without
 `null`, carrying a failure without throwing, computing something once on first
-use, looking a pair up from either end, naming something unguessably, printing a
-value on a path where throwing would replace the error you were reporting, and
-depending on a package you do not want to make mandatory.
+use, draining a queue that keeps growing, looking a pair up from either end,
+naming something unguessably, printing a value on a path where throwing would
+replace the error you were reporting, and depending on a package you do not
+want to make mandatory.
 
 These are the answers it already uses, exported from the root entry point. None
 of them are required to use `actor-ts` — reach for one when you have the problem
@@ -19,6 +20,7 @@ import {
   BidirectionalMap,
   BidirectionalMultiMap,
   Lazy,
+  RingBuffer,
   none,
   safeStringify,
   some,
@@ -128,6 +130,43 @@ computed, `getSync()` unwraps a resolved async cell, and `map` / `flatMap` /
 `forEach` compose without forcing. `reset()` and `setOverride(value)` exist for
 tests — they are the reason a lazily-imported backend can be swapped for a fake
 without touching the production path.
+
+## RingBuffer — a queue that stays fast when it gets deep
+
+`RingBuffer<T>` is a first-in-first-out queue whose removal from the front is
+O(1). It exists because `Array.prototype.shift()` is not: it reindexes every
+element still queued, so the cost of taking one item grows with the number of
+items behind it. That is invisible on a queue of ten and expensive on a queue
+of a hundred thousand — which is what an actor's mailbox becomes when it falls
+behind its producers, since the default mailbox has no ceiling.
+
+```ts
+import { RingBuffer } from 'actor-ts';
+
+const pending = new RingBuffer<string>();
+pending.push('a');
+pending.push('b');
+pending.shift();                    // 'a'
+pending.unshiftAll(['x', 'y']);     // both go in front of 'b', in this order
+pending.length;                     // 3
+pending.drain();                    // ['x', 'y', 'b'] — and the ring is empty
+```
+
+Four operations and nothing else. `push` appends (amortised O(1) — the
+backing array doubles, and is not allocated at all until the first push, so an
+unused ring costs what an empty `[]` costs). `shift` takes the front. `drain`
+empties it into a fresh array and releases the backing store, so a queue that
+grew to a million gives the memory back. `unshiftAll(items)` puts a whole batch
+in front in one move, without a spread — the framework uses it to replay a
+stash of up to a thousand messages, where `unshift(...items)` would both
+reindex the queue once per message and push the batch onto the call stack as
+arguments.
+
+It is not a general-purpose deque, deliberately: every extra operation is
+another index-wrapping edge case in a type that sits on the message path of
+every actor in the system. Both queues inside a
+[`Mailbox`](/fundamentals/mailboxes/) are one, and so is the
+`ThroughputDispatcher` work queue.
 
 ## BidirectionalMap — a map with a maintained inverse
 
