@@ -30,6 +30,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`throttle('pause')` waits instead of spinning** (#1167).  A paused message
+  is still in the mailbox, and `run()`'s `finally` re-scheduled whenever the
+  mailbox was non-empty — so the cell re-dispatched at full dispatcher
+  frequency for the entire wait window: dequeue, fail `tryConsume`, put the
+  message back, come round again.  Measured with a counting dispatcher, three
+  ticks at `qps: 10 / burst: 2` cost **34 156 turns**; they now cost fewer
+  than 30.  A throttled actor also no longer holds up `system.terminate()`
+  for the length of its own pause (1804 ms before, under 1000 ms after).
+
+  The armed resume timer is the parked indicator, so no second flag can drift
+  out of step with it.  The guard is two-sided on purpose: while the pause is
+  armed a turn is dispatched only for **system** messages, since parking the
+  lifecycle along with the user queue would trade the spin for an actor that
+  cannot be stopped or supervised until its window elapses.  `ref.stop()` is
+  not such a message — it sends a `PoisonPill`, an ordinary user message, so
+  a graceful stop stays ordered behind what is already queued and remains
+  subject to the bucket by design.
+
+  *Correction to the issue:* it predicted a hard livelock on
+  `MicrotaskDispatcher`, on the grounds that microtasks starve the timer
+  phase so the resume timer never fires.  That does not reproduce on Bun
+  1.3.1 — `run()` is async and its awaits yield often enough for the timer to
+  land.  It was a busy-spin on both dispatchers, not a spin on one and a
+  livelock on the other.
+
 - **A configured `numShards` now reaches the coordinator, not just the
   region** (#1026).  `ClusterSharding.start` called `ensureCoordinator`
   before it populated `numShardsByType`, and `ensureCoordinator` resolved the

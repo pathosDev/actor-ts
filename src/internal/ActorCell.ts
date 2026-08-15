@@ -690,10 +690,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       return true;
     }
     // 'pause' mode — put the message back at the head of the mailbox
-    // and schedule a resume tick when tokens are due.  No new run()
-    // is dispatched until the timer fires (or someone else schedules
-    // us, which is fine: tryConsume will fail again, message goes
-    // back, timer re-arms idempotently).
+    // and schedule a resume tick when tokens are due.  While the timer
+    // is armed `hasDispatchableWork` reports the user queue as parked,
+    // so no turn is dispatched for it until the timer clears the handle
+    // (#1167).  System commands still get their turn; one of those will
+    // re-dequeue and re-park this message, which is why the prepend
+    // above and the already-armed check below both have to be idempotent.
     this.mailbox.prependUser([env]);
     if (this._throttleResumeTimer) return true; // already armed
     const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
@@ -792,10 +794,38 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private schedule(): void {
     if (this.processing || this.state === 'terminated') return;
-    if (!this.mailbox.hasMessages()) return;
+    if (!this.hasDispatchableWork()) return;
     this.processing = true;
     const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
     dispatcher.execute(() => this.runReported(dispatcher.id));
+  }
+
+  /**
+   * Is there work a turn could actually make progress on?
+   *
+   * Plain `mailbox.hasMessages()` everywhere is what made `throttle('pause')`
+   * spin (#1167).  A parked message is still *in* the mailbox, so every exit
+   * path saw work, dispatched a turn, failed `tryConsume`, put the message
+   * back and came straight round again — at full dispatcher frequency for the
+   * whole wait window.  On the default `setImmediate` dispatcher that burns a
+   * core but still resolves, because macrotask timers interleave; on
+   * `MicrotaskDispatcher` it is a hard livelock, since the microtask queue
+   * never drains and the timer phase is therefore never reached, so the
+   * resume timer never fires at all.
+   *
+   * The armed resume timer *is* the paused flag — a separate boolean could
+   * only drift out of step with it.  While it is armed the user queue is
+   * deliberately parked and nothing there can make progress until the timer
+   * clears it.
+   *
+   * System commands are never throttled, so they still earn a turn: without
+   * this second half a throttled actor could not be stopped, suspended or
+   * supervised until its pause elapsed, which would trade the spin for an
+   * unresponsive lifecycle.
+   */
+  private hasDispatchableWork(): boolean {
+    if (this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
+    return this.mailbox.hasMessages();
   }
 
   /**
@@ -855,7 +885,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       }
     } finally {
       this.processing = false;
-      if (this.state !== 'terminated' && this.mailbox.hasMessages()) {
+      if (this.state !== 'terminated' && this.hasDispatchableWork()) {
         this.schedule();
       }
     }

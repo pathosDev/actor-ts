@@ -13,6 +13,9 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
+import { ImmediateDispatcher, MicrotaskDispatcher } from '../../../src/Dispatcher.js';
+import type { Dispatcher } from '../../../src/Dispatcher.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -191,4 +194,110 @@ describe('ActorContext.throttle (#83)', () => {
     expect(stopped.value).toBe(true);
   }, 5_000);
 
+});
+
+/**
+ * The pause window is a wait, not a spin (#1167).
+ *
+ * `run()`'s `finally` re-scheduled whenever the mailbox was non-empty — and a
+ * paused message is still in the mailbox, so the cell re-dispatched at full
+ * dispatcher frequency for the entire window: dequeue, fail `tryConsume`,
+ * prepend, come back.  The existing tests above assert counts and throughput
+ * only, which is why the spin was invisible: the messages did all arrive, they
+ * just cost thousands of turns to wait for.
+ */
+describe('ActorContext.throttle — the pause window is a wait, not a spin (#1167)', () => {
+  /** Wraps a dispatcher to count how many turns were actually dispatched. */
+  class CountingDispatcher implements Dispatcher {
+    readonly id = 'counting-dispatcher';
+    turns = 0;
+    constructor(private readonly inner: Dispatcher) {}
+    execute(task: () => void | Promise<void>): void {
+      this.turns++;
+      this.inner.execute(task);
+    }
+  }
+
+  test('the default dispatcher is not re-entered while the bucket is empty', async () => {
+    const dispatcher = new CountingDispatcher(new ImmediateDispatcher());
+    const counter = new Counter();
+    const actorOptions = ActorOptions.create<CountMessage>().withDispatcher(dispatcher);
+    const ref = sys.spawn(() => counter, 'pause-no-spin', actorOptions);
+
+    ref.tell({ kind: 'configure-throttle' });
+    await awaitCondition(() => dispatcher.turns > 0, { label: 'the configure turn ran' });
+
+    // qps=10 / burst=2: two ticks pass at once, the third waits ~100 ms.
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'tick' });
+
+    await awaitCondition(() => counter.count === 3, {
+      timeoutMs: 4_000,
+      label: 'all three ticks processed',
+    });
+
+    // The bound is deliberately loose — this is not a performance assertion,
+    // it is the difference between "a handful of turns" and "one turn per
+    // dispatcher tick for 100 ms", which was three orders of magnitude more.
+    expect(dispatcher.turns).toBeLessThan(30);
+  }, 6_000);
+
+  test('a paused actor on MicrotaskDispatcher still makes progress', async () => {
+    // #1167 predicted a hard livelock here — microtasks starving the timer
+    // phase so the resume timer never fires.  Measured on Bun 1.3.1 it does
+    // not: with the fix reverted this test still passes, because `run()` is
+    // async and its awaits yield often enough for timers to land.  The spin
+    // is real (the test above counts 34 156 turns where 3 suffice); the
+    // livelock is not, on this runtime.
+    //
+    // Kept as a guard rather than a reproduction: "a throttled actor on a
+    // microtask dispatcher drains its mailbox" is the property worth holding,
+    // and a runtime or dispatcher change could yet make it the failing case.
+    const counter = new Counter();
+    const actorOptions = ActorOptions.create<CountMessage>()
+      .withDispatcher(new MicrotaskDispatcher());
+    const ref = sys.spawn(() => counter, 'pause-microtask', actorOptions);
+
+    ref.tell({ kind: 'configure-throttle' });
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'tick' });
+
+    await awaitCondition(() => counter.count === 3, {
+      timeoutMs: 4_000,
+      label: 'the throttled microtask actor drained its mailbox',
+    });
+    expect(counter.count).toBe(3);
+  }, 6_000);
+
+  test('a paused actor does not hold up system-driven termination', async () => {
+    // The other half of the fix: parking the user queue must not park the
+    // lifecycle.  If `hasDispatchableWork` returned false outright while the
+    // timer was armed, nothing would dispatch a turn to pick up the terminate
+    // command and shutdown would wait out the pause — trading a spin for an
+    // unresponsive actor.
+    //
+    // Note this goes through `system.terminate()`, not `ref.stop()`.  `stop()`
+    // sends a `PoisonPill`, which is an ordinary *user* message and therefore
+    // is subject to the bucket by design — a graceful stop is ordered behind
+    // the messages already queued.  The system teardown path is the one that
+    // enqueues a real system command.
+    const counter = new Counter();
+    const actorOptions = ActorOptions.create<CountMessage>()
+      .withDispatcher(new MicrotaskDispatcher());
+    const ref = sys.spawn(() => counter, 'pause-system-commands', actorOptions);
+
+    ref.tell({ kind: 'configure-throttle' });
+    for (let i = 0; i < 20; i++) ref.tell({ kind: 'tick' });
+
+    // At qps=10 / burst=2 the queued ticks need ~1.8 s to drain.  Termination
+    // must not wait for them.
+    const startedAt = Date.now();
+    await sys.terminate();
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(counter.count).toBeLessThan(20);
+  }, 4_000);
 });
