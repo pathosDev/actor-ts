@@ -162,9 +162,13 @@ describe('buildD1Client — the response ceiling', () => {
   });
 
   test('maxResponseBytes is validated like every other connection field', () => {
-    const zero = D1JournalOptions.create().withClient(new FakeD1Client()).withMaxResponseBytes(0);
+    const zero = D1JournalOptions.create()
+      .withClient(new FakeD1Client())
+      .withMaxResponseBytes(0);
     expect(() => new D1Journal(zero)).toThrow(/maxResponseBytes/);
-    const fractional = D1JournalOptions.create().withClient(new FakeD1Client()).withMaxResponseBytes(1.5);
+    const fractional = D1JournalOptions.create()
+      .withClient(new FakeD1Client())
+      .withMaxResponseBytes(1.5);
     expect(() => new D1Journal(fractional)).toThrow(/maxResponseBytes/);
   });
 });
