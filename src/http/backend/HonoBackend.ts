@@ -75,11 +75,11 @@ function concatenateChunks(chunks: ReadonlyArray<Uint8Array>, totalBytes: number
 }
 
 /** A body that arrived — or was absent — without ever crossing the cap. */
-type BodyWithinCap = { readonly kind: 'within-cap'; readonly body: Uint8Array | null };
+type WithinCapRead = { readonly kind: 'within-cap'; readonly body: Uint8Array | null };
 /** A body abandoned mid-flight because it crossed the cap. */
-type BodyOverCap = { readonly kind: 'over-cap' };
+type OverCapRead = { readonly kind: 'over-cap' };
 /** Outcome of one capped request-body read. */
-type CappedBodyRead = BodyWithinCap | BodyOverCap;
+type CappedBodyRead = WithinCapRead | OverCapRead;
 
 /**
  * Read the outbound send-buffer depth (bytes) from a Hono `WSContext`'s
@@ -462,8 +462,7 @@ export class HonoBackend implements HttpServerBackend {
    * exactly the guarantee this backend gave before.
    */
   private async readBodyWithinCap(context: HonoContextLike): Promise<CappedBodyRead> {
-    const cached = this.readBodies.get(context);
-    if (cached !== undefined || this.readBodies.has(context)) return { kind: 'within-cap', body: cached ?? null };
+    if (this.readBodies.has(context)) return { kind: 'within-cap', body: this.readBodies.get(context) ?? null };
 
     const method = context.req.method.toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return { kind: 'within-cap', body: null };
