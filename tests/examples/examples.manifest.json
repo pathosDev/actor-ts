@@ -1,0 +1,180 @@
+{
+  "$comment": [
+    "Classification of every standalone example under examples/ (#545).",
+    "",
+    "tests/examples/run-examples.mjs fails when this list and the tree",
+    "disagree in either direction, so a new snippet cannot join without a",
+    "deliberate decision about whether CI can run it.",
+    "",
+    "Fields:",
+    "  file       repository-relative path, POSIX separators.",
+    "  expect     substring that must appear on stdout/stderr. Required for a",
+    "             runnable case: 'exited 0' on its own is also what a script",
+    "             prints when its work silently did not happen — examples/io/",
+    "             grpc-sensor.ts exits 0 after ten failed actor starts.",
+    "  mode       'exit' (default) — must exit 0 within the budget.",
+    "             'serve'          — does not exit on its own; reaching",
+    "                                `expect` is the pass and the harness then",
+    "                                stops it. Usually a server; occasionally a",
+    "                                snippet that finishes its work and then",
+    "                                keeps the loop alive (see the note on",
+    "                                persistence/replicated-counter.ts).",
+    "  timeoutMs  per-case budget, defaults.timeoutMs otherwise.",
+    "  arguments  extra argv for the example.",
+    "  note       anything a reader would otherwise have to re-derive.",
+    "  skip       why this one cannot run in CI. Mutually exclusive with the",
+    "             fields above."
+  ],
+  "defaults": {
+    "timeoutMs": 60000
+  },
+  "cases": [
+    { "file": "examples/bank-account.ts", "expect": "rejected as expected" },
+    { "file": "examples/become.ts", "expect": "lamp: bright -> off" },
+
+    { "file": "examples/cache/redis-rest-service.ts", "mode": "serve", "expect": "REST+cache service listening on" },
+
+    {
+      "file": "examples/chat/failover-test.ts",
+      "skip": "Spawns three cluster nodes and does not reliably reap them — two backends outlived a clean exit while classifying and held 2552/2553 against every later case. Fail-over timing on a shared runner is its own flake source; the messaging round-trip is covered by chat/smoke-test.ts."
+    },
+    {
+      "file": "examples/chat/smoke-test.ts",
+      "arguments": ["--spawn-backend"],
+      "expect": "chat smoke test passed",
+      "timeoutMs": 180000
+    },
+
+    { "file": "examples/cluster/counter-node.ts", "mode": "serve", "expect": "node listening on" },
+    { "file": "examples/cluster/sharded-daemon-fixed-workers.ts", "expect": "polling queue" },
+    { "file": "examples/cluster/sharded-daemon-hello.ts", "expect": "processes: job-C" },
+    { "file": "examples/cluster/singleton-cron.ts", "expect": "cron spawned" },
+    { "file": "examples/cluster/singleton-hello.ts", "expect": "singleton 'echo'" },
+
+    { "file": "examples/config/from-file.ts", "expect": "MAX FRAME BYTES" },
+    { "file": "examples/config/hello-config.ts", "expect": "http backend" },
+
+    {
+      "file": "examples/coordination/k8s-lease-singleton.ts",
+      "skip": "Needs a Kubernetes API server: KubernetesLease wants apiServerUrl + authToken + caCert, or a mounted ServiceAccount at /var/run/secrets/kubernetes.io/serviceaccount. Without them it runs but never acquires, so any assertion would be about the failure path."
+    },
+    { "file": "examples/coordination/lease-guarded-work.ts", "expect": "work done — releasing" },
+    { "file": "examples/coordination/lease-hello.ts", "expect": "acquired after release? true" },
+
+    { "file": "examples/crdt/shopping-cart-orset.ts", "expect": "merge order independent? true" },
+
+    { "file": "examples/death-watch.ts", "expect": "received Terminated(" },
+
+    { "file": "examples/delivery/at-least-once-hello.ts", "expect": "acked \"reliable-delivery\"" },
+    { "file": "examples/delivery/lossy-network-sim.ts", "expect": "unique handled: 10 / 10" },
+
+    {
+      "file": "examples/devtools.ts",
+      "skip": "Not an entry point — the shared attachDevTools() helper the long-running examples import. Running it does nothing and asserts nothing; it is exercised by every case below that imports it."
+    },
+
+    { "file": "examples/discovery/receptionist-hello.ts", "expect": "received hi from client" },
+    { "file": "examples/discovery/service-locator-cluster.ts", "expect": "[client] Listing workers:" },
+
+    { "file": "examples/fsm/connection-state.ts", "expect": "connected → disconnected" },
+    { "file": "examples/fsm/order-workflow.ts", "expect": "recovered: state=shipped" },
+    { "file": "examples/fsm/traffic-light.ts", "expect": "(yellow → red)" },
+
+    { "file": "examples/hello-world.ts", "expect": "Hello, actor-ts!" },
+
+    { "file": "examples/http/express-backend.ts", "mode": "serve", "expect": "Express server listening on" },
+    { "file": "examples/http/hono-backend.ts", "mode": "serve", "expect": "Hono server listening on" },
+    { "file": "examples/http/rest-service.ts", "mode": "serve", "expect": "REST service listening on" },
+    { "file": "examples/http/secure-service.ts", "mode": "serve", "expect": "secure-service on http" },
+    { "file": "examples/http/static-site.ts", "mode": "serve", "expect": "static site on http" },
+
+    {
+      "file": "examples/io/grpc-sensor.ts",
+      "skip": "Needs @grpc/grpc-js + @grpc/proto-loader. Both are optional peers with no devDependency, so they are absent from a frozen-lockfile install. Worth knowing: this one still exits 0 without them, after ten failed actor starts and a restart-threshold warning."
+    },
+    {
+      "file": "examples/io/jetstream-orders.ts",
+      "skip": "Needs the `nats` optional peer and a running NATS JetStream server (tests/integration/brokers/nats brings one up under Docker)."
+    },
+    {
+      "file": "examples/io/kafka-exactly-once.ts",
+      "skip": "Needs the `kafkajs` optional peer and a running Kafka broker (tests/integration/brokers/kafka brings one up under Docker)."
+    },
+    {
+      "file": "examples/io/mqtt-temperature.ts",
+      "skip": "Needs the `mqtt` optional peer and an MQTT broker (tests/integration/brokers/mqtt brings one up under Docker). Without them it exits 0 having printed nothing at all."
+    },
+    { "file": "examples/io/websocket-feed.ts", "expect": "[client] ← ack 4" },
+    { "file": "examples/io/websocket-server.ts", "mode": "serve", "expect": "websocket demo:" },
+
+    { "file": "examples/lifecycle/coordinated-shutdown.ts", "expect": "system terminated = true" },
+
+    { "file": "examples/mailbox/bounded-overflow.ts", "expect": "processed 9" },
+    { "file": "examples/mailbox/priority-dispatch.ts", "expect": "log: bulk-9" },
+
+    { "file": "examples/management/health-endpoint.ts", "expect": "management endpoint on" },
+    { "file": "examples/management/k8s-probes.ts", "mode": "serve", "expect": "Kubernetes probes on" },
+    { "file": "examples/management/opentelemetry-tracing.ts", "expect": "actor.receive" },
+    {
+      "file": "examples/management/otel-jaeger.ts",
+      "skip": "Needs @opentelemetry/api + sdk-trace-node + exporter-trace-otlp-http, none of which the manifest declares at all, plus an OTLP collector to export to."
+    },
+    {
+      "file": "examples/management/prom-client-shared.ts",
+      "skip": "Needs `prom-client`, which the manifest does not declare at all."
+    },
+    { "file": "examples/management/prometheus-endpoint.ts", "mode": "serve", "expect": "prometheus endpoint:" },
+
+    { "file": "examples/patterns/backoff-supervisor.ts", "expect": "client ← got:" },
+    { "file": "examples/patterns/circuit-breaker-ask.ts", "expect": "probe succeeded" },
+    { "file": "examples/patterns/circuit-breaker-hello.ts", "expect": "call#5" },
+    { "file": "examples/patterns/stash-init.ts", "expect": "replaying stashed queries" },
+    { "file": "examples/patterns/timers-heartbeat.ts", "expect": "heartbeat #5" },
+
+    { "file": "examples/persistence/bank-account.ts", "expect": "balance: 255" },
+    { "file": "examples/persistence/cassandra-plugin-hello.ts", "expect": "counter after replay: 42" },
+    { "file": "examples/persistence/durable-state-kv.ts", "expect": "--- actor restarted ---" },
+    { "file": "examples/persistence/event-migration-chain.ts", "expect": "after recovery (cents)" },
+    { "file": "examples/persistence/event-migration.ts", "expect": "\"_v\":2" },
+    { "file": "examples/persistence/migrate-legacy-events.ts", "expect": "0 wrapped, 4 already enveloped" },
+    { "file": "examples/persistence/projection-bank-statement.ts", "expect": "balance 250" },
+    {
+      "file": "examples/persistence/replicated-counter.ts",
+      "mode": "serve",
+      "expect": "convergence reached",
+      "note": "'serve' for a reason that is not a server: the snippet reaches the last line of its own documented output ('convergence reached: every replica sees value=1110') and then does not exit — its three in-process nodes leave the loop alive. The assertion is the example's real result; the non-exit is a separate defect."
+    },
+    { "file": "examples/persistence/s3-snapshot-bank-account.ts", "expect": "balance: 255" },
+    { "file": "examples/persistence/schema-registry.ts", "expect": "currency: \"USD\"" },
+    { "file": "examples/persistence/scylla-ledger.ts", "expect": "SCYLLA_CONTACT_POINTS not set" },
+
+    { "file": "examples/ping-pong.ts", "expect": "[pinger] got pong#5" },
+
+    { "file": "examples/pubsub/chat-mediator.ts", "expect": "ready for standup?" },
+    { "file": "examples/pubsub/event-bus-across-nodes.ts", "expect": "\"all clear\"" },
+
+    { "file": "examples/router.ts", "expect": "shutdown-notice" },
+    { "file": "examples/scheduler.ts", "expect": "[tick] #5" },
+
+    { "file": "examples/selection/hello-selection.ts", "expect": "Hello, again!" },
+    { "file": "examples/selection/lookup-named-workers.ts", "expect": "action: \"signup\"" },
+
+    { "file": "examples/serialization/hello-serializer.ts", "expect": "CBOR size" },
+
+    { "file": "examples/supervision.ts", "expect": "worker started" },
+
+    { "file": "examples/testkit/manual-scheduler.ts", "expect": "after 200 ms advance" },
+    { "file": "examples/testkit/testprobe-basics.ts", "expect": "reply sender was" },
+
+    { "file": "examples/typed/behaviors-receive.ts", "expect": "counter @ 3" },
+    { "file": "examples/typed/behaviors-supervise.ts", "expect": "poller tick#6" },
+
+    { "file": "examples/voice/smoke-test.ts", "expect": "all three modes round-tripped", "timeoutMs": 120000 },
+
+    { "file": "examples/worker/main.ts", "expect": "worker cluster terminated" },
+    {
+      "file": "examples/worker/worker-node.ts",
+      "skip": "Not an entry point — WorkerNode.join() expects the bootstrap handshake that examples/worker/main.ts performs when it spawns one copy of this file per core. Run standalone it produces no output and never exits."
+    }
+  ]
+}
