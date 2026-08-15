@@ -516,6 +516,74 @@ Rows aus früheren actor-ts-Versionen nutzten rohes
 erscheinen nur in neu geschriebenen Rows, wo plain JSON den Wert
 korrumpieren würde.
 
+## Zwei Writer für eine Entity
+
+Sharding gibt dir genau eine Entity-Instanz pro Persistence-ID — bis
+es das nicht tut. Eine Netzwerkpartition plus ein Rebalance, oder ein
+Orchestrierungsfehler, der dieselbe Entity zweimal spawnt: schon
+recovern zwei Instanzen und nehmen beide Commands an.
+
+Das Journal übersteht das: Appends sind an die Sequenznummer
+gebunden, also verliert ein Writer mit `JournalConcurrencyError`. Der
+Schaden liegt **außerhalb** des Journals. Bis der Verlierer es merkt,
+hat er `onCommand` für das auslösende Command bereits ausgeführt — und
+wenn dieser Handler eine Karte belastet, eine Mail verschickt oder
+einen Downstream aufgerufen hat, macht das nichts rückgängig. Bis zu
+seinem nächsten `persist` beantwortet er außerdem Lesezugriffe aus
+State, über den der andere Writer längst hinaus ist.
+
+### Die Rückfalllinie: ein verlorenes Rennen stoppt den Actor
+
+Ein `JournalConcurrencyError` wird als das behandelt, was er ist —
+Beweis, dass diese Instanz ein Ownership-Rennen verloren hat — und der
+Actor **stoppt**. Er startet nicht neu. Genau darauf kommt es an: Die
+Default-Antwort der Supervision auf einen Fehler ist ein Restart, und
+ein neu gestarteter Verlierer recovert den nun fremden Journal-Head
+und macht weiter, als gehöre ihm die Entity.
+
+Das kostet nichts und braucht keine Konfiguration. Was es nicht kann:
+den bereits gelaufenen Seiteneffekt rückgängig machen.
+
+### Der Zaun: eine Lease
+
+Für Entities, deren Commands externe Effekte haben, binde Schreibzugriffe
+an genau einen Halter — über `lease()`:
+
+```ts
+class PaymentEntity extends PersistentActor<Command, Event, State> {
+  readonly persistenceId: string;
+
+  constructor(entityId: string, private readonly entityLease: Lease) {
+    super();
+    this.persistenceId = `payment-${entityId}`;
+  }
+
+  override lease(): Lease | null { return this.entityLease; }
+
+  // ...
+}
+```
+
+Die Lease wird in `preStart` erworben, **vor der Recovery** — eine
+Instanz, der die Entity nicht gehört, liest deren Historie gar nicht
+erst und kann in der Zwischenzeit also auch keine veralteten Antworten
+geben. Der `persist` eines Nicht-Halters wirft sofort, statt den
+Konflikt erst am Journal zu entdecken; genau das verhindert, dass der
+doppelte Seiteneffekt überhaupt feuert.
+
+Nutze `this.isLeaseHolder`, wenn du lieber verzweigst als fängst. Der
+Verlust einer gehaltenen Lease macht den Actor zum Nicht-Halter und
+ruft `onLeaseLost(reason)` — Default ist Stoppen, denn ein
+`PersistentActor`, der nicht schreiben darf, ist selten sinnvoll am
+Leben. Überschreibe es, um weiter Lesezugriffe zu bedienen.
+
+<Aside type="note" title="Welche Schicht brauche ich?">
+  Die Rückfalllinie ist immer aktiv. Nimm eine Lease dazu, wenn ein
+  doppeltes `onCommand` etwas täte, das du nicht zurücknehmen kannst —
+  Geld, Nachrichten, externe Aufrufe. Für reinen State, der nur ins
+  Journal geht, reicht die Rückfalllinie.
+</Aside>
+
 ## Häufige Stolperfallen
 
 import { Aside } from '@astrojs/starlight/components';

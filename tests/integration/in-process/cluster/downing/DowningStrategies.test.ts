@@ -47,9 +47,39 @@ describe('KeepMajority', () => {
     expect(decision.has(addr(5).toString())).toBe(true);
   });
 
-  test('tie stays pending (no decision)', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(new KeepMajority().decide(clusterView).size).toBe(0);
+  test('exact 50/50 tie — each side downs itself, so the cluster stops whole', () => {
+    // The 2-2 split, seen from both halves.  Neither reaches `needed`, and
+    // the answer has to be symmetric: if one side stayed up while the other
+    // downed itself the outcome would depend on which view we asked.
+    const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+
+    const fromOneTwo = new KeepMajority().decide(view(members, [3, 4], 1));
+    expect(fromOneTwo).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+
+    const fromThreeFour = new KeepMajority().decide(view(members, [1, 2], 3));
+    expect(fromThreeFour).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+    // Together the two halves down every member — a stopped cluster, not a
+    // forked one.  This is the property #1170 was about; "pending" left both
+    // halves live for the duration of the partition.
+    const downed = new Set([...fromOneTwo, ...fromThreeFour]);
+    expect(downed.size).toBe(members.length);
+  });
+
+  test('odd member count always reaches a verdict on a partition', () => {
+    // With an odd count one side always holds `floor(n/2) + 1`, so the tie
+    // path is unreachable and a real split is always decided one way or the
+    // other.  This is what makes an odd cluster the recommended shape rather
+    // than merely the tidy one.
+    const members = [{ port: 1 }, { port: 2 }, { port: 3 }];
+    for (const unreachablePorts of [[3], [2, 3], [1], [1, 2]]) {
+      const decision = new KeepMajority().decide(view(members, unreachablePorts, 1));
+      expect(decision.size).toBeGreaterThan(0);
+    }
+
+    // A view with nothing unreachable is not a partition: there is simply
+    // nothing to down, and an empty decision is the right answer.
+    expect(new KeepMajority().decide(view(members, [])).size).toBe(0);
   });
 
   test('role filter only counts tagged members', () => {

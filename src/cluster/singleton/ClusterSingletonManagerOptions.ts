@@ -19,6 +19,22 @@ export type ClusterSingletonManagerOptionsType<T> = {
   readonly lease?: Lease;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
+  /**
+   * Whether the manager re-spawns the singleton after its child dies
+   * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
+   * — as opposed to the planned teardown of a handover.  Default: `true`.
+   *
+   * `true` is the availability-preserving answer, and the reason it is the
+   * default: without it the singleton is gone cluster-wide until the next
+   * leader change, which in a stable cluster may be never (#1175).
+   *
+   * Set it to `false` when the actor uses `stopSelf()` as a terminal state
+   * and "done" genuinely means done.  The manager then releases its lease
+   * instead, so another node *could* host — rather than holding a lease over
+   * a dead child, which is the one shape that makes the outage unrecoverable
+   * without a restart.
+   */
+  readonly restartOnTermination?: boolean;
 };
 
 /**
@@ -66,6 +82,11 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
   /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
+  }
+
+  /** Re-spawn the singleton after an unexpected child death?  Default `true`. */
+  withRestartOnTermination(restartOnTermination: boolean): this {
+    return this.set('restartOnTermination', restartOnTermination);
   }
 }
 

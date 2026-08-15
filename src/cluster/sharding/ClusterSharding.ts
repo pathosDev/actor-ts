@@ -135,15 +135,27 @@ export class ClusterSharding {
     const options = this.withConfigDefaults(this.resolveStartOptions<TMessage>(arg1, arg2, arg3));
     new StartShardingOptionsValidator<TMessage>().validate(options);
 
-    this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
-    const existing = this.findRegionByType(options.typeName);
-    if (existing) return existing as ActorRef<TMessage>;
-
+    // Resolve the config BEFORE anything reads a shard count.  This used to
+    // sit below `ensureCoordinator`, which read `numShardsByType` — a map
+    // `start` does not populate until the line after this one, so on the
+    // first (and only) start of a type the lookup always missed and every
+    // coordinator was built with `DEFAULT_NUM_SHARDS` whatever the caller
+    // configured (#1026).  The region hashed with the real value while the
+    // coordinator bounded with 64, so every `GetShardHome` for a shard id at
+    // or above 64 was refused and its messages piled up in the region's
+    // unbounded buffer.  `settingsToConfig` is pure, so hoisting it is safe;
+    // the count now travels as an argument and no longer depends on which
+    // statement ran first.
     const config = ShardRegion.settingsToConfig(
       options,
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
+
+    this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
+    const existing = this.findRegionByType(options.typeName);
+    if (existing) return existing as ActorRef<TMessage>;
+
     this.numShardsByType.set(options.typeName, config.numShards);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
@@ -414,13 +426,20 @@ export class ClusterSharding {
 
   /* ------------------------------- Internal -------------------------------- */
 
-  private ensureCoordinator(options: StartShardingOptionsType<unknown>): void {
+  /**
+   * @param numShards Resolved by the caller from the same options the region
+   *   is built with.  Passed rather than looked up: reading it back out of
+   *   `numShardsByType` made the result depend on whether `start` had reached
+   *   the line that populates that map, and on the first start of a type it
+   *   had not (#1026).
+   */
+  private ensureCoordinator(options: StartShardingOptionsType<unknown>, numShards: number): void {
     if (this.coordinators.has(options.typeName)) return;
     const coordinatorOptions = ShardCoordinatorOptions.create()
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
       .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
-      .withNumShards(this.numShardsByType.get(options.typeName) ?? DEFAULT_NUM_SHARDS)
+      .withNumShards(numShards)
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')

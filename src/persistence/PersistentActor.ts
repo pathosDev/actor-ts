@@ -1,5 +1,7 @@
 import { Actor } from '../Actor.js';
+import type { Lease } from '../coordination/Lease.js';
 import type { Journal } from './Journal.js';
+import { JournalConcurrencyError } from './JournalTypes.js';
 import type { PersistentEvent, Snapshot } from './JournalTypes.js';
 import { PersistenceExtensionId } from './PersistenceExtension.js';
 import type {
@@ -161,6 +163,58 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** True while the actor is still replaying history. */
   protected get recovering(): boolean { return this._recovering; }
 
+  /* ------------------------------- Fencing --------------------------------- */
+
+  private _lease: Lease | null = null;
+  /** No lease configured means every instance is its own writer, as before. */
+  private _isLeaseHolder = true;
+  private _leaseUnsubscribeLost: (() => void) | null = null;
+
+  /**
+   * Whether this instance may write.  Always `true` when {@link lease} returns
+   * `null`; otherwise it tracks the lease.  Gate side-effecting work on it to
+   * avoid the throw from `persist`.
+   */
+  protected get isLeaseHolder(): boolean { return this._isLeaseHolder; }
+
+  /**
+   * Optional fencing (#1166) — return a `Lease` and this entity becomes
+   * single-writer: only the holder recovers and persists, and a non-holder
+   * refuses to write rather than discovering the conflict at its next append.
+   * Default `null`, which is the behaviour every existing actor already has.
+   *
+   * Why it matters, and why the journal being safe is not enough.  After a
+   * partition plus a sharding rebalance — or any orchestration mistake that
+   * spawns one entity twice — two instances of a persistence-id both recover
+   * and both accept commands.  The conditional write means one of them loses
+   * with `JournalConcurrencyError`, so the *journal* stays sound.  The damage
+   * is outside it: by the time the loser finds out it has already run
+   * `onCommand`, and any non-replayable side effect it performed — charging a
+   * card, sending a mail, calling a downstream — is not rolled back.  Until
+   * its next `persist` it also serves reads from state it no longer owns.
+   *
+   * A lease closes that window from the other end: the loser never becomes a
+   * writer in the first place, so the side effect never fires twice.
+   *
+   * Mechanics mirror {@link ReplicatedEventSourcedActor.lease}: `preStart`
+   * calls `acquire()` **before recovery**, so an instance that does not own
+   * the entity never reads its history either.  Losing the lease flips the
+   * actor to non-holder and calls {@link onLeaseLost}; regaining it is
+   * restart-driven.
+   */
+  protected lease(): Lease | null { return null; }
+
+  /**
+   * Called when a held lease is lost — a TTL expiry, a fence from another
+   * holder, a backend hiccup.  The actor is already a non-holder by the time
+   * this runs and every later `persist` will throw.  Default: stop, because a
+   * `PersistentActor` that cannot write is not usefully alive; override to
+   * keep serving reads instead.
+   */
+  protected onLeaseLost(_reason: string): void | Promise<void> {
+    this.context.stopSelf();
+  }
+
   /* ----------------------------- Lifecycle API ----------------------------- */
 
   override async preStart(): Promise<void> {
@@ -175,6 +229,11 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     const ext = this.system.extension(PersistenceExtensionId);
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
+    // Fencing, before recovery on purpose (#1166): an instance that does not
+    // own this entity must not read its history either, or it spends the
+    // window until its first write serving answers from state another writer
+    // is already moving on.
+    await this.acquireLeaseIfConfigured();
     try {
       await this.recover();
     } catch (e) {
@@ -274,6 +333,43 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     );
   }
 
+  override async postStop(): Promise<void> {
+    this._leaseUnsubscribeLost?.();
+    this._leaseUnsubscribeLost = null;
+    // Release rather than wait out the TTL, so the next owner can start now.
+    if (this._lease && this._isLeaseHolder) {
+      await this._lease.release().catch(() => { /* best-effort */ });
+    }
+    this._lease = null;
+  }
+
+  /** Acquire the optional fencing lease and wire up its loss handler. */
+  private async acquireLeaseIfConfigured(): Promise<void> {
+    this._lease = this.lease();
+    if (!this._lease) return;
+    this._isLeaseHolder = await this._lease.acquire();
+    if (!this._isLeaseHolder) {
+      this.log.warn(
+        `[persistence] '${this.persistenceId}': lease is held elsewhere — `
+        + `this instance will not write`,
+      );
+      return;
+    }
+    this._leaseUnsubscribeLost = this._lease.onLost((reason) => {
+      this._isLeaseHolder = false;
+      this.log.warn(
+        `[persistence] '${this.persistenceId}': lease lost — this instance may no longer write`,
+        { reason },
+      );
+      try {
+        const result = this.onLeaseLost(reason);
+        if (result instanceof Promise) result.catch((e) => this.log.warn('onLeaseLost threw', e));
+      } catch (e) {
+        this.log.warn('onLeaseLost threw', e);
+      }
+    });
+  }
+
   override async onReceive(message: Command): Promise<void> {
     if (this._recovering || this._persisting) {
       this.context.stash();
@@ -300,6 +396,16 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     afterPersist?: (state: State) => void | Promise<void>,
   ): Promise<void> {
     if (events.length === 0) { await afterPersist?.(this._state); return; }
+    // Refuse before writing rather than after: the whole point of the lease is
+    // that a non-owner never becomes a writer, so its side effects never fire
+    // a second time (#1166).
+    if (this._lease && !this._isLeaseHolder) {
+      throw new Error(
+        `PersistentActor '${this.persistenceId}': cannot persist — this instance does not `
+        + `hold the entity's lease (another instance owns it, or the lease was lost). `
+        + `Gate on \`this.isLeaseHolder\` to avoid this.`,
+      );
+    }
     this._persisting = true;
     try {
       // Collect tags from the first event — tags are per-event but a single
@@ -313,9 +419,15 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       const wireEvents: ReadonlyArray<unknown> = evAdapter
         ? events.map((e) => encodeEvent(e, evAdapter))
         : events;
-      const written = await this._journal.append<unknown>(
-        this.persistenceId, wireEvents, this._seq, tags,
-      );
+      let written: ReadonlyArray<PersistentEvent<unknown>>;
+      try {
+        written = await this._journal.append<unknown>(
+          this.persistenceId, wireEvents, this._seq, tags,
+        );
+      } catch (e) {
+        if (e instanceof JournalConcurrencyError) this.onSecondWriterDetected(e);
+        throw e;
+      }
       this.log.debug(
         `[persistence] '${this.persistenceId}' persisted ${written.length} event(s) → seq=${written[written.length - 1]?.sequenceNr ?? this._seq}`,
       );
@@ -340,6 +452,40 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       // Replay messages stashed during the persist.
       this.context.unstashAll();
     }
+  }
+
+  /**
+   * A conditional append lost, which means someone else moved this entity's
+   * journal head — a second live instance of the same persistence-id (#1166).
+   *
+   * The important part is what this prevents rather than what it does.  The
+   * error propagates out of `persistAll` → `onCommand` → `onReceive` as an
+   * ordinary actor failure, and the default supervision answer to that is a
+   * *restart* — after which the actor recovers the now-foreign journal head
+   * and carries on serving reads and side effects as if it owned the entity.
+   * A conflict is not a transient fault to retry through; it is evidence that
+   * this instance is the loser of an ownership race, and the only safe answer
+   * is to stop.
+   *
+   * The stop is enqueued as a system command from inside the failing turn, so
+   * it is queued ahead of anything the supervisor decides in response to the
+   * failure that follows.  `_isLeaseHolder` is cleared too, so any `persist`
+   * that still reaches this instance is refused up front rather than racing
+   * the teardown.
+   *
+   * This is the backstop, not the fence: it fires *after* the losing instance
+   * has already run `onCommand` for the current command, so a non-replayable
+   * side effect in that handler has already happened.  Configure {@link lease}
+   * for entities where that matters.
+   */
+  private onSecondWriterDetected(error: JournalConcurrencyError): void {
+    this._isLeaseHolder = false;
+    this.log.error(
+      `[persistence] '${this.persistenceId}': conditional append lost — another live instance `
+      + `owns this entity. Stopping rather than restarting into a stale second writer.`,
+      error,
+    );
+    this.context.stopSelf();
   }
 
   /** Force a snapshot of the current state. */

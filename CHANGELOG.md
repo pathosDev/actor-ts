@@ -9,6 +9,63 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `KeepMajority` downs both sides of an exact 50/50 split**
+  (#1170).  `decide` returned the empty set on a tie — "remain pending" — so
+  neither half downed anything and both kept running: the split-brain
+  outcome the strategy exists to prevent.  It was not a transient state
+  either, since each side's view is stable once the partition settles, so
+  pending was the permanent answer for as long as the partition lasted.
+  The tie branch now returns the reachable set, and because each half runs
+  the same computation over its own view, both halves down themselves and
+  the cluster stops whole instead of forking.  The documentation described
+  this behaviour all along, in three places and in both languages; the code
+  was the side that disagreed.
+
+  *Migration:* an even-sized cluster that suffers an exact 50/50 partition
+  now stops entirely rather than continuing as two live halves.  Size the
+  cluster odd — the tie path is the fail-safe, not the plan — or pick
+  `KeepOldest` / `KeepReferee`, which break ties by design.
+
+### Added
+
+- **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
+  two live instances of one persistence-id.  After a partition plus a
+  rebalance — or any orchestration mistake that spawns an entity twice — both
+  recovered, both accepted commands, and both ran `onCommand` side effects.
+  The journal stayed sound, because the conditional append makes one of them
+  lose with `JournalConcurrencyError`; the damage was outside the journal.  By
+  the time the loser found out it had already charged the card or sent the
+  mail, and until its next `persist` it went on answering reads from state the
+  other writer had moved past.
+
+  Two layers now close that, and the first needs no configuration:
+
+  - **A lost race stops the actor.**  `JournalConcurrencyError` is treated as
+    evidence of a second writer rather than a transient fault, so the instance
+    stops instead of propagating an ordinary failure — whose default
+    supervision answer is a *restart*, after which the loser recovers the
+    now-foreign head and carries on as though it owned the entity.
+  - **An optional `lease()` hook**, mirroring the one
+    `ReplicatedEventSourcedActor` has had since #89.  Return a `Lease` and the
+    entity becomes single-writer: the lease is acquired in `preStart`
+    **before recovery**, so a non-owner never even reads the history, and its
+    `persist` is refused up front rather than at the journal.  That is the
+    difference that keeps a duplicated side effect from firing at all — the
+    backstop above can only act after `onCommand` has already run.
+
+  `isLeaseHolder` gates side-effecting work without a try/catch, and
+  `onLeaseLost(reason)` runs when a held lease goes away — defaulting to a
+  stop, since an actor that may not write is rarely usefully alive.  Actors
+  that do not override `lease()` behave exactly as before.
+
+- **`restartOnTermination` on a cluster singleton** (#1175).  Default `true`,
+  and the switch for the fix below: set it to `false` for an actor that uses
+  `stopSelf()` as a terminal state, and the manager releases its lease instead
+  of re-spawning — so another node could host later, rather than the manager
+  holding a lease over a child that is gone.
+
 ### Fixed
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
@@ -30,6 +87,68 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stderr instead of the gate.  CI never caught this because the
   `multi-runtime` matrix is `ubuntu-latest` only, where the same run exits in
   ~21 s; #816 tracks the Windows leg that would have.
+
+- **A cluster singleton that dies unexpectedly comes back** (#1175).  The
+  manager reacted to its child's `Terminated` only when it was the *expected*
+  stop — the planned teardown of a handover.  Every other way the child could
+  die fell through without effect: `context.stopSelf()`, or a crash loop that
+  exhausted the supervision budget and had the supervisor stop it.  Afterwards
+  the manager kept forwarding every routed message to a dead ref, and
+  cluster-wide the singleton no longer existed anywhere, with nothing to
+  revive it until the next `LeaderChanged` — which in a stable cluster may be
+  never.  With a lease configured it was worse: the manager stayed alive
+  holding and renewing the lease, so no other node could host either, and the
+  one mechanism meant to guarantee "exactly one instance" guaranteed **zero,
+  indefinitely**.
+
+  An unrecognised `Terminated` for the live child now clears it, logs at
+  `warn`, and re-spawns after a one-second backoff.  The backoff is not
+  decoration: the death that reaches this path is often a supervision budget
+  already spent, and re-spawning restarts that budget too, so coming straight
+  back would turn a crash-looping singleton into a hot loop.
+
+- **`throttle('pause')` waits instead of spinning** (#1167).  A paused message
+  is still in the mailbox, and `run()`'s `finally` re-scheduled whenever the
+  mailbox was non-empty — so the cell re-dispatched at full dispatcher
+  frequency for the entire wait window: dequeue, fail `tryConsume`, put the
+  message back, come round again.  Measured with a counting dispatcher, three
+  ticks at `qps: 10 / burst: 2` cost **34 156 turns**; they now cost fewer
+  than 30.  A throttled actor also no longer holds up `system.terminate()`
+  for the length of its own pause (1804 ms before, under 1000 ms after).
+
+  The armed resume timer is the parked indicator, so no second flag can drift
+  out of step with it.  The guard is two-sided on purpose: while the pause is
+  armed a turn is dispatched only for **system** messages, since parking the
+  lifecycle along with the user queue would trade the spin for an actor that
+  cannot be stopped or supervised until its window elapses.  `ref.stop()` is
+  not such a message — it sends a `PoisonPill`, an ordinary user message, so
+  a graceful stop stays ordered behind what is already queued and remains
+  subject to the bucket by design.
+
+  *Correction to the issue:* it predicted a hard livelock on
+  `MicrotaskDispatcher`, on the grounds that microtasks starve the timer
+  phase so the resume timer never fires.  That does not reproduce on Bun
+  1.3.1 — `run()` is async and its awaits yield often enough for the timer to
+  land.  It was a busy-spin on both dispatchers, not a spin on one and a
+  livelock on the other.
+
+- **A configured `numShards` now reaches the coordinator, not just the
+  region** (#1026).  `ClusterSharding.start` called `ensureCoordinator`
+  before it populated `numShardsByType`, and `ensureCoordinator` resolved the
+  count out of exactly that map — so on the first (and only) start of a type
+  the lookup missed and every `ShardCoordinator` was built with the built-in
+  64 whatever the caller configured.  The region then hashed with the real
+  value while the coordinator bounded with 64: every `GetShardHome` for a
+  shard id at or above 64 was refused, the shard never received a home, and
+  its messages accumulated in the region's unbounded buffer until the process
+  ran out of memory.  With the `numShards: 1000` the sharding page recommends
+  for large clusters, that is roughly 94 % of entities.
+
+  The config is now resolved once at the top of `start` and the count travels
+  into `ensureCoordinator` as an argument, so neither depends on which
+  statement ran first.  `numShardsByType` goes back to being what it was
+  meant to be — a lookup for later callers — rather than load-bearing for the
+  first one.
 
 ## [0.16.0] — 2026-08-15
 
