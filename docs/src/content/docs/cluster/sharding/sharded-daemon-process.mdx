@@ -155,7 +155,7 @@ type ShardedDaemonProcessOptionsType<T> = {
 | Field | What |
 | --- | --- |
 | `name` | A unique daemon-set name.  Two `init` calls with the same name conflict. |
-| `numDaemons` | How many daemons to run.  Fixed at init; can't change without restart. |
+| `numDaemons` | How many daemons to run.  Fixed at init; can't change without restart, and **must be identical on every node** — it becomes the sharded type's `numShards`, and the coordinator refuses a node that disagrees (see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement)).  A rolling deploy that changes it leaves the not-yet-updated nodes registered and the updated ones refused, until the last one is over. |
 | `actorFor(i)` | Returns the actor class or factory for daemon `i`.  Use `i` to differentiate per-index logic. |
 | `role` | Only nodes carrying this role host daemons (passed through to sharding). |
 | `livenessIntervalMs` | Safety-net ping cadence; default 30s. |
