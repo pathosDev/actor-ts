@@ -174,7 +174,7 @@ describe('workflow hygiene', () => {
     // Guards the guard: a path or parser regression that yielded nothing
     // would make every assertion below vacuously pass.
     expect(workflows.map((workflow) => workflow.name)).toContain('publish.yml');
-    expect(workflows.length).toBeGreaterThanOrEqual(11);
+    expect(workflows.length).toBeGreaterThanOrEqual(12);
     expect(references.length).toBeGreaterThanOrEqual(30);
     expect(jobs.length).toBeGreaterThanOrEqual(workflows.length);
     expect(jobs.map((job) => `${job.workflow}#${job.name}`)).toContain('docs.yml#deploy');
