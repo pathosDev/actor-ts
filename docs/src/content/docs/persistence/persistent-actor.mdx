@@ -499,6 +499,72 @@ Rows written by earlier actor-ts versions used bare
 appear in newly written rows where plain JSON would corrupt the
 value.
 
+## Two writers for one entity
+
+Sharding gives you one entity instance per persistence ID — until it
+doesn't.  A network partition plus a rebalance, or an orchestration
+mistake that spawns the same entity twice, and two instances both
+recover and both accept commands.
+
+The journal survives that: appends are conditional on the sequence
+number, so one writer loses with `JournalConcurrencyError`.  The
+damage is **outside** the journal.  By the time the loser finds out it
+has already run `onCommand` for the command that triggered the write —
+and if that handler charged a card, sent a mail or called a downstream
+service, nothing rolls it back.  Until its next `persist` it also
+answers reads from state the other writer has moved past.
+
+### The backstop: a lost race stops the actor
+
+A `JournalConcurrencyError` is treated as what it is — evidence that
+this instance lost an ownership race — and the actor **stops**.  It
+does not restart.  That distinction is the point: the default
+supervision answer to an error is a restart, and a restarted loser
+recovers the now-foreign journal head and carries on serving as though
+it owned the entity.
+
+This costs nothing and needs no configuration.  What it cannot do is
+undo the side effect that already ran.
+
+### The fence: a lease
+
+For entities whose commands have external effects, bind writes to one
+holder by overriding `lease()`:
+
+```ts
+class PaymentEntity extends PersistentActor<Command, Event, State> {
+  readonly persistenceId: string;
+
+  constructor(entityId: string, private readonly entityLease: Lease) {
+    super();
+    this.persistenceId = `payment-${entityId}`;
+  }
+
+  override lease(): Lease | null { return this.entityLease; }
+
+  // ...
+}
+```
+
+The lease is acquired in `preStart`, **before recovery** — an instance
+that does not own the entity never even reads its history, so it
+cannot serve stale answers in the meantime.  A non-holder's `persist`
+throws immediately instead of discovering the conflict at the journal,
+which is what keeps the duplicate side effect from firing at all.
+
+Gate on `this.isLeaseHolder` if you would rather branch than catch.
+Losing a held lease flips the actor to non-holder and calls
+`onLeaseLost(reason)`, whose default is to stop — a `PersistentActor`
+that may not write is rarely usefully alive.  Override it to keep
+serving reads.
+
+<Aside type="note" title="Which layer do I need?">
+  The backstop is always on.  Add a lease when a duplicated
+  `onCommand` would do something you cannot take back — money,
+  messages, external calls.  For pure state that only ever reaches the
+  journal, the backstop alone is enough.
+</Aside>
+
 ## Common pitfalls
 
 import { Aside } from '@astrojs/starlight/components';

@@ -30,6 +30,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
+  two live instances of one persistence-id.  After a partition plus a
+  rebalance — or any orchestration mistake that spawns an entity twice — both
+  recovered, both accepted commands, and both ran `onCommand` side effects.
+  The journal stayed sound, because the conditional append makes one of them
+  lose with `JournalConcurrencyError`; the damage was outside the journal.  By
+  the time the loser found out it had already charged the card or sent the
+  mail, and until its next `persist` it went on answering reads from state the
+  other writer had moved past.
+
+  Two layers now close that, and the first needs no configuration:
+
+  - **A lost race stops the actor.**  `JournalConcurrencyError` is treated as
+    evidence of a second writer rather than a transient fault, so the instance
+    stops instead of propagating an ordinary failure — whose default
+    supervision answer is a *restart*, after which the loser recovers the
+    now-foreign head and carries on as though it owned the entity.
+  - **An optional `lease()` hook**, mirroring the one
+    `ReplicatedEventSourcedActor` has had since #89.  Return a `Lease` and the
+    entity becomes single-writer: the lease is acquired in `preStart`
+    **before recovery**, so a non-owner never even reads the history, and its
+    `persist` is refused up front rather than at the journal.  That is the
+    difference that keeps a duplicated side effect from firing at all — the
+    backstop above can only act after `onCommand` has already run.
+
+  `isLeaseHolder` gates side-effecting work without a try/catch, and
+  `onLeaseLost(reason)` runs when a held lease goes away — defaulting to a
+  stop, since an actor that may not write is rarely usefully alive.  Actors
+  that do not override `lease()` behave exactly as before.
+
 - **`restartOnTermination` on a cluster singleton** (#1175).  Default `true`,
   and the switch for the fix below: set it to `false` for an actor that uses
   `stopSelf()` as a terminal state, and the manager releases its lease instead
