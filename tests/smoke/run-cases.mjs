@@ -132,6 +132,13 @@ try {
   if (dispatcher && typeof dispatcher.close === 'function') await dispatcher.close();
 } catch { /* no undici global dispatcher on this runtime */ }
 
+/**
+ * How long to wait for the natural exit below before declaring a leaked
+ * handle.  Deliberately generous — it must never fire on a healthy run,
+ * where the loop drains within a second of the last case.
+ */
+const EXIT_WATCHDOG_MS = 15_000;
+
 console.log('');
 if (failed === 0) {
   console.log(`✓ all ${caseFiles.length} smoke case(s) passed on ${runtime}`);
@@ -140,9 +147,41 @@ if (failed === 0) {
   // libuv assertion on Windows.  All cases release their handles, so the
   // event loop drains promptly.
   process.exitCode = 0;
+  armExitWatchdog(0);
 } else {
   console.error(`✗ ${failed} of ${caseFiles.length} smoke case(s) failed on ${runtime}`);
   process.exit(1);
+}
+
+/**
+ * Guarantee the run reports a status even when a case leaks a handle.
+ *
+ * Exiting naturally is the right default (see above) but it is only as good
+ * as the promise above it: one abandoned socket and the process hangs after
+ * printing a full green run, so the exit code never arrives and `bun run
+ * smoke` stops being usable as a gate at all — a human has to read the log.
+ * That is #1196, where a smoke case parked a Deno WebSocket in CONNECTING.
+ *
+ * So: warn, name the runtime, and exit with the status the run actually
+ * earned.  Not a failure — all 24 cases passing is still a pass, and turning
+ * harness hygiene into a red gate would block a release over it — but not a
+ * hang either, and never silent.  The next leak costs one line of stderr.
+ */
+function armExitWatchdog(status) {
+  const timer = setTimeout(() => {
+    console.error(
+      `! ${runtime}: still alive ${EXIT_WATCHDOG_MS / 1000}s after the last case — something leaked a`,
+    );
+    console.error('  handle (an unclosed socket, server or timer).  Exiting anyway so the run reports');
+    console.error('  a status; on Deno, `deno test -A --trace-leaks` over the suspect case names the op.');
+    process.exit(status);
+  }, EXIT_WATCHDOG_MS);
+  // Unref, or the watchdog would itself hold the loop open for its full
+  // duration and delay every healthy run by that much.  Bun and Node hand
+  // back a handle carrying .unref(); Deno's global setTimeout returns a
+  // numeric id and unrefs through Deno.unrefTimer.
+  if (typeof timer === 'object' && timer !== null && typeof timer.unref === 'function') timer.unref();
+  else globalThis.Deno?.unrefTimer?.(timer);
 }
 
 function detectRuntime() {

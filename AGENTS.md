@@ -152,6 +152,12 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `bun run test:coverage:gate`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
+  A case must release every handle it opens **on every path**, not just the
+  happy one: a socket abandoned on a timeout or an error keeps Deno's event
+  loop alive, and the run then hangs after its last green line instead of
+  exiting — no exit code, so the gate stops being a gate (#1196). The
+  runner's watchdog demotes that to a warning after 15 s; it does not excuse
+  it. `deno test -A --trace-leaks` over the suspect case names the op.
 - **Benchmarks:** a change to a `src/` API that `benchmarks/` calls also
   needs `bun run typecheck:bench` (benchmarks-only compile) and, for
   anything that could break at runtime, `bun run bench:smoke` (~30 s —
