@@ -18,7 +18,6 @@ import {
   OneForOneStrategy,
   type Behavior,
 } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type PollerCommand = { kind: 'tick' } | { kind: 'fail-next' };
 
@@ -59,7 +58,6 @@ const poller = (maxTicks: number): Behavior<PollerCommand> =>
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('typed-supervise');
-  const devtools = await attachDevTools(system);
 
   const supervised = Behaviors.supervise(poller(6)).onFailure(
     new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 5_000 }),
@@ -72,7 +70,6 @@ async function main(): Promise<void> {
 
   // Watch the restart + continued ticks, then let the actor reach its own limit.
   await Bun.sleep(700);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

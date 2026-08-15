@@ -8,7 +8,6 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
@@ -52,7 +51,6 @@ class AccountActor extends Actor<Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('bank');
-  const devtools = await attachDevTools(system);
   const account = system.spawn(AccountActor, 'alice');
 
   console.log('deposit 100 ->', await account.ask({ kind: 'deposit', amount: 100 }, 500));
@@ -65,7 +63,6 @@ async function main(): Promise<void> {
     console.log('withdraw 999 rejected as expected:', (e as Error).message);
   }
 
-  await devtools.holdOpen();
   await system.terminate();
 }
 

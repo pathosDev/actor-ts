@@ -250,11 +250,12 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## An den Examples ausprobieren
 
-Jedes Example im Repository ist für DevTools verdrahtet, und keines
-zahlt dafür, solange du nicht fragst:
+Die langlaufenden Examples — die HTTP- und Cache-Services, die
+Cluster-Demos, die Chat- und Voice-Backends — sind für DevTools
+verdrahtet, und keines zahlt dafür, solange du nicht fragst:
 
 ```bash
-bun run examples/hello-world.ts --devtools
+bun run examples/http/rest-service.ts --devtools
 ```
 
 `--devtools` funktioniert in jeder Shell. `DEVTOOLS=1 bun run …` tut
@@ -262,14 +263,15 @@ dasselbe in einer POSIX-Shell, aber `VAR=wert befehl` ist in PowerShell
 ein Parser-Fehler — dort setzt du die Variable separat:
 
 ```powershell
-$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
+$env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Die meisten Examples sind Skripte, die nach ein paar hundert
-Millisekunden fertig sind — zu schnell, um einen Browser zu öffnen. Mit
-aktivierten DevTools halten sie kurz vor dem Herunterfahren an, geben die
-URL aus und warten auf `Ctrl+C`, damit es überhaupt etwas zu sehen gibt.
-Ohne bleiben Timing und Ausgabe exakt wie vorher.
+Die Examples, die von selbst fertig werden — hello-world, die
+`patterns/`- und `persistence/`-Durchläufe und der Rest der kurzen
+Skripte —, enthalten überhaupt keine DevTools-Verdrahtung: Du kannst
+eines unverändert in ein Projekt kopieren und laufen lassen. Zu sehen
+gab es darin ohnehin nichts — ein Skript, das nach ein paar hundert
+Millisekunden vorbei ist, lässt sich nicht im Browser öffnen.
 
 Examples mit mehreren Systemen geben jedem System einen eigenen Port,
 aufsteigend ab `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
@@ -293,7 +295,7 @@ läuft, auf der das Example läuft: ein Container, eine VM, eine WSL- oder
 Remote-Dev-Box.
 
 ```bash
-bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+bun run examples/http/rest-service.ts --devtools --devtools-host 0.0.0.0
 ```
 
 Einen Nicht-Loopback-Host dort hinzuschreiben ist genau die bewusste
@@ -302,14 +304,10 @@ ergänzt deshalb `allowRemote`, und DevTools bindet — mit der Warnung,
 dass es ohne Auth erreichbar ist — statt sich zu verweigern und dich
 rätseln zu lassen, warum. Dieser Handel taugt für ein Example und sonst
 nichts: Alles mit echtem State gehört hinter `auth` oder eine
-`ipAllowlist`. Ein Wildcard-Bind meldet sich als Loopback-URL zurück,
-denn `http://0.0.0.0:9333` ist keine Adresse, die ein Browser öffnen
-kann.
+`ipAllowlist`.
 
-Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)
-halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
-liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
-in deine eigene App übernehmen willst.
+Die Verdrahtung liegt in `examples/devtools.ts`, falls du das Muster in
+deine eigene App übernehmen willst.
 
 ## Wenn nichts mehr antwortet
 

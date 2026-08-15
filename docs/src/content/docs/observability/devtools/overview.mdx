@@ -234,11 +234,12 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## Try it on the examples
 
-Every example in the repository is wired for DevTools, and none of them
-pay for it unless you ask:
+The long-running examples — the HTTP and cache services, the cluster
+demos, the chat and voice backends — are wired for DevTools, and none of
+them pay for it unless you ask:
 
 ```bash
-bun run examples/hello-world.ts --devtools
+bun run examples/http/rest-service.ts --devtools
 ```
 
 `--devtools` works in every shell.  `DEVTOOLS=1 bun run …` does the same
@@ -246,14 +247,14 @@ on a POSIX shell, but `VAR=value command` is a parser error in
 PowerShell — there, set it separately:
 
 ```powershell
-$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
+$env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Most examples are scripts that finish in a few hundred milliseconds —
-too fast to open a browser.  With DevTools enabled they park just before
-shutting down, print the URL, and wait for `Ctrl+C`, so there is
-something to look at.  Without it, their timing and output are exactly
-as before.
+The examples that finish on their own — hello-world, the `patterns/` and
+`persistence/` walkthroughs, and the rest of the short scripts — carry no
+DevTools wiring at all, so you can copy one into a project and run it
+unchanged.  There was nothing to watch in them anyway: a script that is
+over in a few hundred milliseconds cannot be opened in a browser.
 
 Multi-system examples give each system its own port, counting up from
 `--devtools-port` / `DEVTOOLS_PORT` (default `9333`) — so a three-node cluster demo is
@@ -276,7 +277,7 @@ changes it — the flag for when the browser is not on the machine running
 the example: a container, a VM, a WSL or remote dev box.
 
 ```bash
-bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+bun run examples/http/rest-service.ts --devtools --devtools-host 0.0.0.0
 ```
 
 Typing a non-loopback host there is the deliberate act
@@ -284,14 +285,10 @@ Typing a non-loopback host there is the deliberate act
 `allowRemote` and DevTools binds — and warns that it is reachable
 without auth — instead of refusing and leaving you to guess why.  That
 trade is fine for an example and for nothing else: anything with real
-state in it wants `auth` or an `ipAllowlist` in front of the port.  A
-wildcard bind reports itself back as a loopback URL, since
-`http://0.0.0.0:9333` is not an address a browser can open.
+state in it wants `auth` or an `ipAllowlist` in front of the port.
 
-Long-running examples (the chat and voice backends, the HTTP services)
-do not park — they already run until you stop them.  The wiring lives
-in `examples/devtools.ts`, which is about thirty lines if you want to
-copy the pattern into your own app.
+The wiring lives in `examples/devtools.ts` if you want to copy the
+pattern into your own app.
 
 ## When nothing answers
 

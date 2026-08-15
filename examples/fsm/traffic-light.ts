@@ -6,7 +6,6 @@
  */
 import { ActorSystem } from '../../src/index.js';
 import { FSM } from '../../src/fsm/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Color = 'red' | 'green' | 'yellow';
 type Data = { readonly enteredAt: number; };
@@ -29,7 +28,6 @@ class TrafficLight extends FSM<Color, Data, Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-hello');
-  const devtools = await attachDevTools(system);
   const ref = system.spawn(TrafficLight, 'light');
 
   for (let i = 0; i < 6; i++) {
@@ -37,7 +35,6 @@ async function main(): Promise<void> {
     await Bun.sleep(80);
   }
 
-  await devtools.holdOpen();
   await system.terminate();
 }
 
