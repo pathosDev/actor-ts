@@ -9,6 +9,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
+import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
@@ -65,6 +66,22 @@ class LeasedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   override lease(): Lease | null { return this.leaseInstance; }
   override onLeaseLost(reason: string): void { this.leaseLossEvents.push(reason); }
 
+  /*
+   * `isLeaseHolder`, `state` and `self` are protected on the base classes
+   * and stay that way — they are an actor's own business, and a `Reflect`
+   * or `as any` reach-around from the test body would be exactly the debt
+   * #488 exists to remove.  A subclass may read its own protected members,
+   * so this fixture publishes the three the assertions need, under names
+   * that say what the test is looking at.
+   */
+
+  /** Whether this replica currently holds the lease (observer when false). */
+  get leaseHeld(): boolean { return this.isLeaseHolder; }
+  /** The replicated state as this replica has folded it so far. */
+  get currentState(): State { return this.state; }
+  /** This replica's own ref, for driving commands straight at it. */
+  get ref(): ActorRef<Command> { return this.self; }
+
   async onCommand(s: State, c: Command): Promise<void> {
     if (c.kind === 'getValue') {
       this.sender.toNullable()?.tell(s.value);
@@ -111,16 +128,16 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         'a',
       );
       await awaitCondition(() => actor !== null, { ...WAIT, label: 'the actor was constructed' });
-      expect(actor!.isLeaseHolder).toBe(true);
+      expect(actor!.leaseHeld).toBe(true);
 
       // Drive a few persists straight through.
-      const ref = actor!.self;
+      const ref = actor!.ref;
       ref.tell({ kind: 'add', n: 5 } as Command);
       ref.tell({ kind: 'add', n: 7 } as Command);
-      await awaitCondition(() => actor!.state.value === 12, {
+      await awaitCondition(() => actor!.currentState.value === 12, {
         ...WAIT, label: 'both adds folded into the replicated state',
       });
-      expect(actor!.state.value).toBe(12);
+      expect(actor!.currentState.value).toBe(12);
       expect(actor!.lastPersistError).toBeNull();
     } finally {
       await cluster.leave();
@@ -168,27 +185,27 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       );
       // The true→false flip is the refusal itself — the only thing that
       // produces it is `acquire()` coming back false.
-      await awaitCondition(() => b !== null && !b.isLeaseHolder, {
+      await awaitCondition(() => b !== null && !b.leaseHeld, {
         ...WAIT, label: 'replica b was refused and dropped to observer mode',
       });
 
-      expect(a!.isLeaseHolder).toBe(true);
-      expect(b!.isLeaseHolder).toBe(false);
+      expect(a!.leaseHeld).toBe(true);
+      expect(b!.leaseHeld).toBe(false);
 
       // Holder writes → state advances.
-      a!.self.tell({ kind: 'add', n: 10 } as Command);
-      await awaitCondition(() => a!.state.value === 10, {
+      a!.ref.tell({ kind: 'add', n: 10 } as Command);
+      await awaitCondition(() => a!.currentState.value === 10, {
         ...WAIT, label: 'the holder persisted its add',
       });
-      expect(a!.state.value).toBe(10);
+      expect(a!.currentState.value).toBe(10);
       expect(a!.lastPersistError).toBeNull();
 
       // Observer writes → onCommand catches a throw, state stays put.
-      b!.self.tell({ kind: 'add', n: 99 } as Command);
+      b!.ref.tell({ kind: 'add', n: 99 } as Command);
       await awaitCondition(() => b!.lastPersistError !== null, {
         ...WAIT, label: 'the observer\'s persist threw',
       });
-      expect(b!.state.value).toBe(0);
+      expect(b!.currentState.value).toBe(0);
       expect(b!.lastPersistError).not.toBeNull();
       expect(b!.lastPersistError!.message).toMatch(/observer mode/);
     } finally {
@@ -219,7 +236,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       await awaitCondition(() => lease.checkAlive(), {
         ...WAIT, label: 'the actor acquired the losable lease',
       });
-      expect(a!.isLeaseHolder).toBe(true);
+      expect(a!.leaseHeld).toBe(true);
 
       // Wipe the store — InMemoryLease's renewal loop will hit
       // `renew(name, owner)` next tick, find no record, and fire
@@ -233,16 +250,16 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         ...WAIT, intervalMs: 20, label: 'the renewal loop reported the lost lease',
       });
 
-      expect(a!.isLeaseHolder).toBe(false);
+      expect(a!.leaseHeld).toBe(false);
       expect(a!.leaseLossEvents).toEqual(['lease lost during renewal']);
 
       // Persist now throws.
-      a!.self.tell({ kind: 'add', n: 1 } as Command);
+      a!.ref.tell({ kind: 'add', n: 1 } as Command);
       await awaitCondition(() => a!.lastPersistError !== null, {
         ...WAIT, label: 'the persist after the loss threw',
       });
       expect(a!.lastPersistError).not.toBeNull();
-      expect(a!.state.value).toBe(0);
+      expect(a!.currentState.value).toBe(0);
     } finally {
       await cluster.leave();
       await sys.terminate();
@@ -269,7 +286,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       await awaitCondition(() => first.checkAlive(), {
         ...WAIT, label: 'the first actor acquired the handover lease',
       });
-      expect(ref1!.isLeaseHolder).toBe(true);
+      expect(ref1!.leaseHeld).toBe(true);
 
       // Stop the holder cleanly — postStop releases the lease.  The released
       // record disappearing from the store is the handover itself; a fixed
@@ -297,7 +314,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       await awaitCondition(() => second.checkAlive(), {
         ...WAIT, label: 'the second actor acquired the released lease',
       });
-      expect(ref2!.isLeaseHolder).toBe(true);
+      expect(ref2!.leaseHeld).toBe(true);
     } finally {
       await cluster.leave();
       await sys.terminate();

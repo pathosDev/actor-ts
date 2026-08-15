@@ -46,52 +46,52 @@ const emptyRequest: HttpRequest = {
 
 describe('compile — basic flattening', () => {
   test('a single terminal route at root', () => {
-    const routes = compile(get(() => complete(Status.OK, 'hi')));
+    const routes = httpOnly(compile(get(() => complete(Status.OK, 'hi'))));
     expect(routes).toHaveLength(1);
     expect(routes[0]!.method).toBe('GET');
     expect(routes[0]!.pattern).toBe('/');
   });
 
   test('path() prefixes segments', () => {
-    const routes = compile(
+    const routes = httpOnly(compile(
       path('users', get(() => complete(Status.OK, 'list'))),
-    );
+    ));
     expect(routes[0]!.pattern).toBe('/users');
   });
 
   test('nested path segments combine', () => {
-    const routes = compile(
+    const routes = httpOnly(compile(
       path('api', path('v1', path('users', get(() => complete(Status.OK, '[]'))))),
-    );
+    ));
     expect(routes[0]!.pattern).toBe('/api/v1/users');
   });
 
   test('concat flattens sibling routes', () => {
-    const routes = compile(concat(
+    const routes = httpOnly(compile(concat(
       get(() => complete(Status.OK, 'g')),
       post(() => complete(Status.Created, 'p')),
       put(() => complete(Status.OK, 'u')),
       del(() => complete(Status.NoContent, '')),
-    ));
+    )));
     expect(routes.map(response => response.method).sort())
       .toEqual(['DELETE', 'GET', 'POST', 'PUT']);
     for (const response of routes) expect(response.pattern).toBe('/');
   });
 
   test('path with pattern placeholder retains segment verbatim', () => {
-    const routes = compile(path('users/:id', get(() => complete(Status.OK, 'x'))));
+    const routes = httpOnly(compile(path('users/:id', get(() => complete(Status.OK, 'x')))));
     expect(routes[0]!.pattern).toBe('/users/:id');
   });
 
   test('concat under a path applies to each sibling', () => {
-    const routes = compile(path('users', concat(
+    const routes = httpOnly(compile(path('users', concat(
       get(() => complete(Status.OK, 'list')),
       post(() => complete(Status.Created, 'new')),
       path(':id', concat(
         get(() => complete(Status.OK, 'one')),
         del(() => complete(Status.NoContent, '')),
       )),
-    )));
+    ))));
     expect(new Set(routes.map(response => `${response.method} ${response.pattern}`)))
       .toEqual(new Set([
         'GET /users',
@@ -157,12 +157,12 @@ describe('param extraction', () => {
 
 describe('compile — segment normalisation', () => {
   test('leading / trailing slashes are stripped from segments', () => {
-    const routes = compile(path('/users/', get(() => complete(Status.OK, ''))));
+    const routes = httpOnly(compile(path('/users/', get(() => complete(Status.OK, '')))));
     expect(routes[0]!.pattern).toBe('/users');
   });
 
   test('multiple segments with slashes flatten correctly', () => {
-    const routes = compile(path('a/b', path('c/d', get(() => complete(Status.OK, '')))));
+    const routes = httpOnly(compile(path('a/b', path('c/d', get(() => complete(Status.OK, ''))))));
     expect(routes[0]!.pattern).toBe('/a/b/c/d');
   });
 
@@ -170,32 +170,32 @@ describe('compile — segment normalisation', () => {
     // path('') is degenerate but legal — the normalisation strips it
     // and `buildPattern([''])` ends up with an empty cleaned list →
     // '/'.  Pin this so a future refactor doesn't emit '//' instead.
-    const routes = compile(path('', get(() => complete(Status.OK, ''))));
+    const routes = httpOnly(compile(path('', get(() => complete(Status.OK, '')))));
     expect(routes[0]!.pattern).toBe('/');
   });
 
   test('pathPrefix behaves identically to path (same impl)', () => {
     // pathPrefix is shipped as a synonym today — pin the equivalence
     // explicitly so a future divergence shows up here first.
-    const routeA = compile(path('api', get(() => complete(Status.OK, ''))));
-    const routeB = compile(pathPrefix('api', get(() => complete(Status.OK, ''))));
+    const routeA = httpOnly(compile(path('api', get(() => complete(Status.OK, '')))));
+    const routeB = httpOnly(compile(pathPrefix('api', get(() => complete(Status.OK, '')))));
     expect(routeB[0]!.pattern).toBe(routeA[0]!.pattern);
   });
 });
 
 describe('method combinators — patch / head / options', () => {
   test('patch creates a PATCH route', () => {
-    const response = compile(patch(() => complete(Status.OK, '')));
+    const response = httpOnly(compile(patch(() => complete(Status.OK, ''))));
     expect(response[0]!.method).toBe('PATCH');
   });
 
   test('head creates a HEAD route', () => {
-    const response = compile(head(() => complete(Status.OK, '')));
+    const response = httpOnly(compile(head(() => complete(Status.OK, ''))));
     expect(response[0]!.method).toBe('HEAD');
   });
 
   test('options creates an OPTIONS route', () => {
-    const response = compile(options(() => complete(Status.OK, '')));
+    const response = httpOnly(compile(options(() => complete(Status.OK, ''))));
     expect(response[0]!.method).toBe('OPTIONS');
   });
 });
