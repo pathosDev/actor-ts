@@ -28,6 +28,82 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cluster odd — the tie path is the fail-safe, not the plan — or pick
   `KeepOldest` / `KeepReferee`, which break ties by design.
 
+- **`restartOnTermination: false` now takes the node out of rotation for
+  good, instead of only until the next reconcile (#637).**
+
+  Widening the singleton manager's reconcile trigger set put this opt-out
+  in the blast radius. Both reconcile paths decide whether to spawn from
+  "I am the host and have no child", which cannot tell a terminal stop
+  apart from never having started — so any later reconcile resurrected an
+  actor that had explicitly opted out of restarting. That was survivable
+  while `LeaderChanged` was the only membership trigger, since a stable
+  cluster may never fire it again; it is not survivable now that every
+  up/down transition of any member reconciles.
+
+  The opt-out is therefore state on the manager rather than an absence of
+  events, and it is checked ahead of the membership question so it also
+  gates the lease — a re-acquire would rebuild precisely the "holding a
+  lease over a dead child" state that releasing the lease exists to avoid,
+  and would block every other node from hosting too. Other nodes are
+  unaffected. The latch lives on the manager instance, so restarting the
+  manager (`cluster.singleton.stop(...)` then `start(...)`, or a
+  supervisor restart, which builds a fresh instance) clears it.
+
+- **Two nodes that disagree about `numShards` are no longer allowed to
+  double-home entities silently (#633).**
+
+  A shard id is `hash(entityId) % numShards`, computed independently on
+  every node, and nothing in the sharding handshake ever carried the
+  count. Two nodes configured differently therefore put the same entity id
+  in different shards, each owned the shard its own arithmetic produced,
+  and both instantiated the entity — at `shard-6/entity-x` and
+  `shard-50/entity-x`, paths that never collide, which is exactly why
+  nothing warned. For a persistent entity that is two writers on one
+  `persistenceId`. The existing shard-id range check covers only one
+  direction of this, a region asking for an id above the coordinator's
+  range, and turns it into a silent hang that names the id and never the
+  cause; the opposite direction passes the bound cleanly.
+
+  `RegisterRegion` now carries `numShards` and the coordinator compares it
+  against its own before accepting. A mismatch is refused: the region is
+  not recorded, gets a new `sharding.RegisterRefused` back, logs it at
+  error naming both counts, and stops re-registering until the coordinator
+  moves to another node. The comparison is against the coordinator's own
+  configured count rather than the first registrant's, which is not a
+  durable authority — a leader change clears the region registry and the
+  persisted coordinator state carries no shard count, so "first
+  registrant" would be re-decided at every election and could flip
+  mid-rolling-deploy.
+
+  Refusing the registration is not sufficient on its own, and this is the
+  part that is easy to miss: answering `GetShardHome` never required one.
+  A refused region's first buffered message would still have had a shard
+  allocated for it, under its own modulus, which is precisely the split
+  the refusal exists to prevent. Refused region keys are therefore
+  remembered and their `GetShardHome` dropped, until they either
+  re-register with a matching count or the leader term ends. A
+  misconfigured node stalls with a diagnosis next to it instead of quietly
+  running a second copy of your entities.
+
+  The rejection arrives as a log line rather than an exception because
+  registration is asynchronous, retried, and re-run on every membership
+  event — `start()` has long returned, and the coordinator may not exist
+  yet when it does.
+
+  *Migration:* Set the same `numShards` on every node that starts **or
+  proxies** a sharded type — sharing one
+  `actor-ts.sharding.number-of-shards` across the deployment is the least
+  error-prone way. Two cases that previously appeared to work now fail
+  loudly. A proxy started from a bare `ShardKey` (`startProxy(MyEntity)`)
+  never received a `numShards` and fell through to HOCON and then 64, so
+  in a cluster running any non-default count it was already mis-routing;
+  it is now refused instead, and the error names the fix — pass the
+  cluster's count through the options form of `startProxy`, or set it in
+  HOCON. And calling `start()` for a type this node already started with
+  `startProxy()` (or the reverse) now throws instead of returning the
+  region the first call made; start each type once per node, as either a
+  hosting region or a proxy.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -149,6 +225,177 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   statement ran first.  `numShardsByType` goes back to being what it was
   meant to be — a lookup for later callers — rather than load-bearing for the
   first one.
+
+- **A role-restricted cluster singleton no longer ends up running on two
+  nodes at once when a lower-addressed role member joins (#637).**
+
+  The host of a singleton is the first address-ordered up-member — the
+  cluster leader, or under a role restriction the first member carrying
+  that role. Both the manager and the proxy watched `LeaderChanged` to
+  notice it move (the manager also `SelfUp` and `MemberRemoved`), and
+  `LeaderChanged` fires only when the leader's *identity* changes. A
+  role-carrying member joining *below* a role-less leader moves the host
+  and changes no leader, so neither side was told anything. The joining
+  node spawned anyway off its own `SelfUp`; the incumbent was never told
+  to stop. The steady state after convergence was two live singleton
+  children cluster-wide — the one thing a singleton exists to prevent —
+  and it persisted until some unrelated event happened to move the leader.
+
+  The same hole covered unreachability, which the report only mentioned in
+  passing: an up member going `unreachable` drops out of `upMembers()`
+  without being removed, so a role host falling silent under a stationary
+  role-less leader left the singleton hosted nowhere at all until it was
+  finally downed.
+
+  Both sides now reconcile on the full set of events that can move the
+  host — `LeaderChanged`, `SelfUp`, `MemberUp`, `MemberUnreachable`,
+  `MemberReachable`, `MemberDown`, `MemberLeft`, `MemberRemoved` — matched
+  through one shared predicate rather than two lists, because the manager
+  deciding whether *this* node hosts and the proxy deciding where to send
+  have to agree on when to look again, not only on what they see when they
+  do. `MemberJoined` and `MemberWeaklyUp` are deliberately excluded:
+  neither status appears in `upMembers()`, so neither can host.
+
+  The proxy also drains its no-host buffer on those events. It previously
+  had exactly two drain call sites, construction and `onLeaderChanged`, so
+  a first role-carrying member joining a cluster whose leader does not
+  change never drained the buffer at all — those messages sat there
+  indefinitely while every later send routed normally.
+
+- **A `persistAll` of differently-tagged events now tags each event on its
+  own, instead of stamping the whole batch with the first event's tags
+  (#631).**
+
+  `PersistentActor.persistAll` called `tagsFor` once, on `events[0]`, and
+  passed the result to `Journal.append` as a single batch-wide argument
+  that every backend faithfully fanned out over every event. The damage
+  was symmetric, and only one half of it is obvious: a by-tag query missed
+  the later events of a mixed batch — `eventsByTag('payment')` never
+  returned the `PaymentCaptured` written alongside an `OrderPlaced` — and
+  it also returned events that were never tagged that way, because
+  `eventsByTag('order')` matched the whole batch. A projection filtering
+  on a tag therefore processed foreign events rather than merely skipping
+  its own. `PersistentFSM`'s array transition shape is a real producer of
+  such batches, so any FSM whose `tagsFor` keys on `event.kind` was
+  affected.
+
+  The cause was in the SPI, not the actor: `Journal.append(persistenceId,
+  events, expectedSeq, tags?)` had room for exactly one tag list per call.
+  It now takes `ReadonlyArray<JournalEntry<E>>`, a new exported type
+  pairing one event with the tags belonging to it. Pairing them
+  structurally rather than adding a parallel `tags[]` array is deliberate
+  — a second positional array would have added the expressiveness and kept
+  the alignment hazard that caused the bug. `JournalEntry` is the
+  write-side mirror of `PersistentEvent`: the caller supplies payload and
+  tags, the journal assigns sequence number and timestamp.
+
+  All six `append` implementations index per entry, including
+  `CassandraJournal`'s `events_by_tag` dual write — which previously
+  emitted one row per (batch tag, event) pair — and `DynamoDbJournal`'s
+  string-set attribute. The five relational subclasses inherit
+  `RelationalJournal.append` unchanged. A batch is still one atomic
+  append; per-event tags do not split it. Tag validation moved to
+  `assertValidEntryTags`, which checks every entry before any write, so
+  `MAX_TAGS_PER_EVENT` now counts one event rather than one call, as its
+  name always claimed.
+
+  Events already written by an affected version keep the tags they were
+  stored with; nothing rewrites history, so a tag index built before this
+  fix stays as wrong as it was and needs rebuilding from the journal if
+  that matters.
+
+  *Migration:* Applications need no change:
+  `PersistentActor.tagsFor(event)` always took a single event and its
+  signature is unchanged, so overriding it is now simply correct for every
+  event of a batch. The break is confined to the plugin SPI — third-party
+  `Journal` implementations and any direct caller of `journal.append`.
+  Rewrite `journal.append(persistenceId, [eventA, eventB], seq, ['t'])` as
+  `journal.append(persistenceId, [{ event: eventA, tags: ['t'] }, { event:
+  eventB, tags: ['t'] }], seq)`, dropping the fourth argument; a custom
+  `Journal` changes its `append` signature from `(persistenceId, events:
+  ReadonlyArray<E>, expectedSeq, tags?)` to `(persistenceId, entries:
+  ReadonlyArray<JournalEntry<E>>, expectedSeq)` and reads `entry.tags`
+  inside its write loop instead of the batch argument. TypeScript flags
+  every affected call site.
+
+- **Stopping a `ShardRegion` no longer orphans its shards — it tells the
+  coordinator on the way down (#648).**
+
+  `postStop` unsubscribed from cluster events and cancelled four timers;
+  it never told the coordinator. `RegionTerminated` was declared,
+  dispatched and handled correctly, but its only construction site in the
+  whole tree was the synthesis of one per region on a node that had left
+  the cluster. So stopping a region on a node that stays in the cluster
+  left every shard it held allocated to an actor that no longer existed.
+
+  What that looked like is worth stating precisely, because it is easy to
+  assume otherwise: senders do not buffer. A region buffers only while it
+  has no cached home, and here it has one — the coordinator goes on
+  answering with the dead region, so even a fresh sender caches it. The
+  message is then forwarded to the dead path, the receiving node resolves
+  it successfully, and it is told into a stopped cell. The symptom is
+  dropped tells and timing-out asks, not a growing buffer. Nor did it
+  heal: the placement candidate set is derived from the registry with no
+  liveness check, so the rebalance tick saw a balanced cluster and moved
+  nothing, and the handoff-timeout reallocation only fires for a shard
+  already mid-rebalance. The state was permanent until the node left.
+
+  A stopping region now sends `RegionTerminated` with the same region path
+  and node address its registration sent — anything else misses the
+  coordinator's registry key and the handler no-ops. Ordering is already
+  safe: a cell runs `postStop` only after every child has terminated, so
+  the shards and their entities are provably gone before the coordinator
+  is free to place them elsewhere, and there is no window in which two
+  nodes run one entity. The send is skipped when no coordinator was ever
+  resolved, and a transport failure on the shutdown path is logged rather
+  than failing `postStop`. It fires on whole-system shutdown too, which is
+  idempotent against the membership-driven path that follows.
+
+### Security
+
+- **A `ShardRegion` now honours a coordinator directive only when the
+  authenticated peer that sent it is the node hosting the coordinator
+  (#584).**
+
+  The region treated any message whose `kind` started with `sharding.` as
+  a framework directive, with no notion of who sent it. Five of those
+  kinds are things only the coordinator may say: `HandOff` marks a shard
+  `handing-off`, forgets its entities and stops the shard actor —
+  terminating every entity under it; `ShardHome` moves ownership;
+  `RememberedEntities` pre-creates entities; `RegisterAcknowledgment`
+  settles the register loop; `ShardMapUpdate` publishes an allocation map
+  to every local subscriber, DevTools panel and application listener
+  included. One well-formed frame from anyone who had completed the
+  cluster `hello` did any of them, repeatably.
+
+  The region could not have checked. Sharding registered no per-path
+  envelope handler, so an inbound frame reached the actor through generic
+  path resolution, which delivers with no sender at all — the
+  authenticated peer the transport knows was discarded one frame short of
+  the actor that needed it. The region now claims its own path on the
+  envelope router, which hands the handler the connection's peer, and
+  re-enqueues the frame wrapped in a class instance. The wrapper is
+  deliberately a class and not a `{ kind }` tag: a wire body is always
+  plain JSON, so `instanceof` is proof the frame came through the router
+  rather than out of an attacker's payload, which a tagged object could
+  reproduce verbatim.
+
+  Both halves of the check are load-bearing. Without the wrapper test, a
+  non-canonically addressed frame — a trailing slash, a doubled separator
+  — misses the exact-string handler lookup, still resolves to the same
+  region through the actor tree, and arrives unwrapped. Without the origin
+  test, an authenticated peer is merely some cluster member.
+  `ShardCoordinator.replyTo` builds the same wrapper on its local leg,
+  which is what keeps a single-node rebalance working; a bare local
+  `ref.tell` is byte-identical to what an attacker's frame produces after
+  the tree walk, so exempting it would have undone the fix. Refused frames
+  are dropped and logged at `WARN` instead of the previous silent no-op,
+  and `onHandOff` picks up the out-of-range shard-id check `onShardHome`
+  has had since #569.
+
+  This is authorization, not authentication: on a cluster without peer
+  certificates any party that can reach the port can become a member and
+  then the leader. Run mTLS if the network is not fully trusted.
 
 ## [0.16.0] — 2026-08-15
 
