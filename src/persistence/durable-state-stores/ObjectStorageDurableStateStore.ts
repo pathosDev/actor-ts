@@ -66,8 +66,23 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly allowUntaggedBodies: boolean;
+  private readonly requireContextBinding: boolean;
+  private readonly rejectRevisionRollback: boolean;
   private readonly maxDecompressedBytes: number;
   private readonly etagCache = new Map<string, CachedEntry>();
+  /**
+   * Highest revision this process has ever seen per persistenceId — the
+   * in-process rollback floor (#612).
+   *
+   * Deliberately NOT folded into {@link etagCache}.  That cache is
+   * dropped whenever the backend rejects a CAS (#117), which is exactly
+   * how a stale writer recovers; a floor that vanished with it would
+   * evaporate on the first CAS conflict an attacker can provoke.  The
+   * two have opposite lifetimes — one is a hint that must be
+   * discardable, the other a monotonic assertion that must not be — so
+   * they get separate maps.
+   */
+  private readonly revisionFloor = new Map<string, number>();
 
   private readonly serializer?: Serializer;
 
@@ -82,12 +97,15 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
+    this.requireContextBinding = resolvedOptions.requireContextBinding ?? false;
+    this.rejectRevisionRollback = resolvedOptions.rejectRevisionRollback ?? true;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     this.serializer = resolvedOptions.serializer;
   }
 
   async load<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
-    const fetched = await this.backend.get(this.keyFor(persistenceId));
+    const storageKey = this.keyFor(persistenceId);
+    const fetched = await this.backend.get(storageKey);
     if (fetched.isNone()) return none;
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
@@ -109,6 +127,14 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
             },
           }
         : {}),
+      context: storageKey,
+      // Only demand the binding where something authenticates it.  A
+      // store with neither encryption nor integrity has no bound bodies
+      // of its own to read back, so the demand there would reject
+      // everything including its own writes (#612).
+      ...(this.requireContextBinding && authenticates(encryption, integrity)
+        ? { requireContextBinding: true }
+        : {}),
       maxOutputBytes: this.maxDecompressedBytes,
     };
     let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
@@ -125,10 +151,12 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     catch (e) {
       throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${persistenceId}`, e);
     }
+    this.assertNoRollback(persistenceId, parsed.revision);
     // Cache AFTER decode succeeds (integrity check inside decodeBody).
     // Before #116 we cached before parsing; an attacker could tamper
     // with the revision in the body and the cache would trust it.
     this.etagCache.set(persistenceId, { etag: fetched.value.etag, revision: parsed.revision });
+    this.raiseRevisionFloor(persistenceId, parsed.revision);
     return some({
       persistenceId: persistenceId,
       revision: parsed.revision,
@@ -157,6 +185,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
     const now = Date.now();
     const newRevision = expectedRevision + 1;
+    const storageKey = this.keyFor(persistenceId);
     const json = encodePayload({ revision: newRevision, state, timestamp: now }, this.serializer);
     const active = await activeEncryptKey(encryption, persistenceId);
     const stampVersion = active && isVersionedKeyShape(encryption);
@@ -172,6 +201,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       ...(integrity.mode === 'hmac-sha256'
         ? { integrity: { integrityKey: integrity.integrityKey } }
         : {}),
+      context: storageKey,
     });
 
     const cached = this.etagCache.get(persistenceId);
@@ -210,7 +240,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
     let etag: string;
     try {
-      const result = await this.backend.put(this.keyFor(persistenceId), body, {
+      const result = await this.backend.put(storageKey, body, {
         contentType: 'application/json',
         contentEncoding: compression.algorithm === 'none' ? undefined : compression.algorithm,
         ifMatch: effectiveIfMatch,
@@ -237,29 +267,88 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     }
 
     this.etagCache.set(persistenceId, { etag, revision: newRevision });
+    this.raiseRevisionFloor(persistenceId, newRevision);
     return { persistenceId: persistenceId, revision: newRevision, state, timestamp: now };
   }
 
   async delete(persistenceId: string): Promise<void> {
     await this.backend.delete(this.keyFor(persistenceId));
     this.etagCache.delete(persistenceId);
+    // The record is gone on purpose, so the next `upsert(0)` legitimately
+    // starts over at revision 1.  Keeping the floor would make this
+    // store refuse to read back a record it deleted itself.
+    this.revisionFloor.delete(persistenceId);
   }
 
   async close(): Promise<void> {
     this.etagCache.clear();
+    this.revisionFloor.clear();
     // Only close a backend we own.  When it's shared (e.g. registerObjectStoragePlugins
     // hands the same backend to the snapshot + durable-state stores) the owner closes it.
     if (this.ownsBackend) await this.backend.close?.();
   }
 
-  /** Test hook — drop the cached ETag for a persistenceId (simulates actor restart). */
+  /**
+   * Test hook — drop the cached ETag for a persistenceId (simulates
+   * actor restart).
+   *
+   * It deliberately leaves {@link revisionFloor} alone.  An actor
+   * restart does not restart the process, and the floor is process-local
+   * state that outlives any one actor — clearing it here would make the
+   * hook simulate something stronger than the restart it is named for,
+   * and would hand every rollback test a free pass (#612).
+   */
   forgetEtagForTest(persistenceId: string): void {
     this.etagCache.delete(persistenceId);
   }
 
   /* ----------------------------- internals ------------------------------ */
 
+  /**
+   * Refuse a body whose revision is below the highest this process has
+   * already observed for the same persistenceId (#612).
+   *
+   * Both authenticators cover the bytes of one body, and the revision
+   * lives inside those bytes — so an *authentic older* body replayed
+   * over a newer one passes every check the codec makes.  Nothing on the
+   * read path had a reason to disbelieve it: `load` adopted whatever
+   * revision arrived, and an ordinary actor restart was enough to make
+   * the store hand that rolled-back state to the actor.
+   *
+   * The floor is in-process only, so it does not survive a restart of
+   * the process itself; a durable floor needs trusted state outside the
+   * bucket, which the framework has no seam for yet.  This closes the
+   * cheap version of the attack, not every version of it.
+   */
+  private assertNoRollback(persistenceId: string, revision: number): void {
+    if (!this.rejectRevisionRollback) return;
+    const floor = this.revisionFloor.get(persistenceId);
+    if (floor === undefined || revision >= floor) return;
+    throw new JournalError(
+      `ObjectStorageDurableStateStore.load: revision rollback for ${persistenceId} — the `
+      + `stored body claims revision ${revision} but this process has already seen `
+      + `${floor}.  An authentic older body was replayed over a newer one, or the bucket `
+      + `was restored from a backup underneath a running process.  Restart the process `
+      + `after a deliberate restore, or set rejectRevisionRollback: false if this store `
+      + `shares a bucket with a writer that recreates records from scratch.`,
+    );
+  }
+
+  private raiseRevisionFloor(persistenceId: string, revision: number): void {
+    if (!this.rejectRevisionRollback) return;
+    const floor = this.revisionFloor.get(persistenceId);
+    if (floor === undefined || revision > floor) this.revisionFloor.set(persistenceId, revision);
+  }
+
   private keyFor(persistenceId: string): string {
     return `${this.prefix}${persistenceId}/state.json`;
   }
+}
+
+/**
+ * Whether the resolved configuration authenticates a body at all — the
+ * precondition for demanding a context binding on read (#612).
+ */
+function authenticates(encryption: EncryptionConfig, integrity: IntegrityConfig): boolean {
+  return encryption.mode === 'client-aes256-gcm' || integrity.mode === 'hmac-sha256';
 }

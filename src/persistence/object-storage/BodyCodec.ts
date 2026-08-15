@@ -11,7 +11,10 @@ import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
  *                                  bit2     = encrypted
  *                                  bit3     = key-versioned (#8 — master-key rotation)
  *                                  bit4     = integrity HMAC tag appended (#116)
- *                                  bit5..7  = unallocated
+ *                                  bit5     = context-bound (#612 — the storage
+ *                                             key is authenticated alongside
+ *                                             the body)
+ *                                  bit6..7  = unallocated
  *   Byte  5      : keyVersion     (0..255)  — only when bit3 set
  *   Bytes ...    : AES-GCM IV     (12 bytes — only when bit2 set, immediately
  *                                   after the keyVersion byte if present, else
@@ -42,6 +45,17 @@ import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
  * given an `integrityKey` therefore REQUIRES a tag.  A corpus that
  * still holds pre-integrity bodies re-admits them for the duration of
  * its read-then-write migration with `allowUntaggedBodies: true`.
+ *
+ * **Context binding (#612)** takes the middle road between those two.
+ * Neither authenticator said anything about *where* a body lives:
+ * AES-GCM's tag and the HMAC both cover the bytes and nothing else, so
+ * an authentic body moved to another storage key still verified.  Bit5
+ * marks a body whose storage key went into the AES-GCM AAD and into the
+ * HMAC input, and it decodes backwards-compatibly — an older body has
+ * the bit clear and is verified exactly as before.  That leaves a
+ * downgrade for as long as such bodies may exist, since bit5 is a
+ * manifest byte like any other: `requireContextBinding` is what closes
+ * it once the corpus has been rewritten.
  */
 
 export const ATS1_MAGIC = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
@@ -71,6 +85,19 @@ export const FLAG_ENCRYPTED = 0b100;
 export const FLAG_KEY_VERSIONED = 0b1000;
 /** When set, the last {@link HMAC_TAG_LENGTH} bytes are an HMAC-SHA256 over the rest. */
 export const FLAG_INTEGRITY_HMAC = 0b10000;
+/**
+ * When set, the body's storage key was authenticated along with its
+ * bytes (#612) — as AES-GCM additional-authenticated-data on an
+ * encrypted body, as a length-prefixed context on the HMAC input, or
+ * both when both are configured.
+ *
+ * The bit is only ever set where there is an authenticator to carry it.
+ * A body with neither encryption nor an integrity tag has nothing that
+ * could bind a key, so a plain body claiming this flag is a forgery and
+ * `decodeBody` rejects it rather than letting the claim stand
+ * unverified.
+ */
+export const FLAG_CONTEXT_BOUND = 0b100000;
 
 /**
  * Default cap on the decompressed size of a stored body (512 MiB).  Bounds a
@@ -112,6 +139,23 @@ export type EncodeOptions = {
    * a manifest-flip attack.
    */
   readonly integrity?: { readonly integrityKey: Uint8Array };
+  /**
+   * The storage key this body is being written to, bound into whichever
+   * authenticators are configured (#612) and marked with
+   * {@link FLAG_CONTEXT_BOUND}.
+   *
+   * Without it a tag says "these bytes are authentic" and stops there,
+   * so an attacker with bucket write access can move an authentic body
+   * to a different key and have it verify — most sharply in the
+   * unencrypted-plus-HMAC configuration, where the integrity key is one
+   * flat deployment-wide secret and one `persistenceId`'s body replayed
+   * onto another's key comes back as that other pid's state.
+   *
+   * Ignored when the body carries neither encryption nor integrity:
+   * there is nothing to bind it to, and setting the flag on a body no
+   * one authenticates would be a claim the decoder cannot check.
+   */
+  readonly context?: string;
 };
 
 /**
@@ -152,6 +196,34 @@ export type DecodeOptions = {
     readonly allowUntaggedBodies?: boolean;
   };
   /**
+   * The storage key this body was fetched from — the verify-side
+   * counterpart of {@link EncodeOptions.context} (#612).
+   *
+   * Used only when the body carries {@link FLAG_CONTEXT_BOUND}, so
+   * supplying it never breaks a body written before the binding
+   * existed.  Required when the body does carry the flag: the decoder
+   * refuses rather than silently verifying a bound body as if it were
+   * unbound, which would throw away exactly the property the flag
+   * announces.
+   */
+  readonly context?: string;
+  /**
+   * Refuse a body that is not context-bound (#612).
+   *
+   * The bit that says "this body is bound" is a manifest byte, and the
+   * manifest is written by whoever wrote the body.  So while unbound
+   * bodies are still accepted, an attacker holding one authentic
+   * pre-binding body can replay it wherever they like and the binding
+   * protects nothing — the same downgrade #579 closed for the integrity
+   * tag.  Flip this on once every object in the corpus has been
+   * rewritten with a binding.
+   *
+   * Requires {@link context}: demanding a guarantee there is no way to
+   * check is a configuration error, not a stricter setting, and is
+   * rejected as one.
+   */
+  readonly requireContextBinding?: boolean;
+  /**
    * Cap on the decompressed payload size in bytes.  Defaults to
    * {@link DEFAULT_MAX_DECOMPRESSED_BYTES}; pass `Infinity` to disable.
    * Guards against a decompression bomb in a tampered / hostile stored body
@@ -165,8 +237,12 @@ export type DecodedBody = {
   readonly encrypted: boolean;
   /** 0..255 when the body carried a key-version manifest, else `undefined`. */
   readonly keyVersion?: number;
+  /** Whether the body's storage key was authenticated with it (#612). */
+  readonly contextBound: boolean;
   readonly payload: Uint8Array;     // plaintext, decompressed
 };
+
+const utf8 = new TextEncoder();
 
 /**
  * Encode a JSON-stringified payload with the framing above.  Returns a
@@ -177,6 +253,12 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
   const subKey = options.encryption?.subKey;
   const keyVersion = options.encryption?.keyVersion;
   const integrityKey = options.integrity?.integrityKey;
+  // A context can only be bound to something that authenticates it.  On a
+  // body with neither encryption nor a tag it is dropped rather than
+  // flagged — the flag would announce a property nothing can verify.
+  const context = (subKey || integrityKey) && options.context !== undefined
+    ? utf8.encode(options.context)
+    : undefined;
 
   // Step 1: compress (if requested).  Encryption-after-compression
   // because compression-after-encryption would defeat compression
@@ -197,11 +279,12 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
     // The IV is generated inside `aesGcmEncryptSafe`, not here, so this
     // path has no IV of its own to accidentally hoist out of the call
     // and reuse across bodies (#110).
-    const { iv, ciphertext } = await aesGcmEncryptSafe(subKey, compressed);
+    const { iv, ciphertext } = await aesGcmEncryptSafe(subKey, compressed, context);
     const versioned = keyVersion !== undefined;
     let flags = encodeCompression(algo) | FLAG_ENCRYPTED;
     if (versioned) flags |= FLAG_KEY_VERSIONED;
     if (integrityKey) flags |= FLAG_INTEGRITY_HMAC;
+    if (context) flags |= FLAG_CONTEXT_BOUND;
     const headerLen = ATS1_MAGIC.length + 1 + (versioned ? 1 : 0) + IV_LENGTH;
     bodyBeforeIntegrity = new Uint8Array(headerLen + ciphertext.length);
     bodyBeforeIntegrity.set(ATS1_MAGIC, 0);
@@ -215,6 +298,7 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
     // Step 3 (no encryption): build the plain framed body.
     let flags = encodeCompression(algo);
     if (integrityKey) flags |= FLAG_INTEGRITY_HMAC;
+    if (context) flags |= FLAG_CONTEXT_BOUND;
     bodyBeforeIntegrity = new Uint8Array(ATS1_MAGIC.length + 1 + compressed.length);
     bodyBeforeIntegrity.set(ATS1_MAGIC, 0);
     bodyBeforeIntegrity[4] = flags;
@@ -223,9 +307,10 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
 
   // Step 4 (optional): append the HMAC-SHA256 integrity tag (#116).
   // Covers the manifest header + payload — any tampering of either
-  // invalidates the tag.
+  // invalidates the tag — plus the storage key when one was supplied,
+  // so the tag does not travel with the bytes to another key (#612).
   if (integrityKey) {
-    const tag = await hmacSha256(integrityKey, bodyBeforeIntegrity);
+    const tag = await hmacSha256(integrityKey, bodyBeforeIntegrity, context);
     const out = new Uint8Array(bodyBeforeIntegrity.length + tag.length);
     out.set(bodyBeforeIntegrity, 0);
     out.set(tag, bodyBeforeIntegrity.length);
@@ -244,6 +329,38 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
   const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
   const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
   const hasIntegrity = (flags & FLAG_INTEGRITY_HMAC) !== 0;
+  const contextBound = (flags & FLAG_CONTEXT_BOUND) !== 0;
+
+  // Context binding (#612), resolved before any crypto runs so a
+  // configuration mistake reads as one instead of as a tag failure.
+  if (contextBound && !encrypted && !hasIntegrity) {
+    throw new Error(
+      'BodyCodec: body claims FLAG_CONTEXT_BOUND but carries neither encryption nor an '
+      + 'integrity tag, so nothing binds its storage key.  The flag was set by whoever '
+      + 'wrote the body and cannot be verified.',
+    );
+  }
+  if (options.requireContextBinding === true && options.context === undefined) {
+    throw new Error(
+      'BodyCodec: requireContextBinding was set but no context was supplied — there is '
+      + 'nothing to verify the binding against.',
+    );
+  }
+  if (options.requireContextBinding === true && !contextBound) {
+    throw new Error(
+      'BodyCodec: body is not context-bound but requireContextBinding was set for '
+      + 'decoding.  It was either written before context binding was enabled — clear '
+      + 'requireContextBinding for the read-then-write migration window — or it is an '
+      + 'authentic body replayed onto a storage key it was never written to.',
+    );
+  }
+  if (contextBound && options.context === undefined) {
+    throw new Error(
+      'BodyCodec: body carries FLAG_CONTEXT_BOUND but no context was supplied for '
+      + 'decoding.',
+    );
+  }
+  const context = contextBound ? utf8.encode(options.context!) : undefined;
 
   // Integrity check FIRST — before we trust any other manifest byte
   // beyond `flags` (which we already used to know the tag is there).
@@ -263,7 +380,7 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
     const sigOffset = framed.length - HMAC_TAG_LENGTH;
     const expected = framed.subarray(sigOffset);
     const signed = framed.subarray(0, sigOffset);
-    const actual = await hmacSha256(options.integrity.integrityKey, signed);
+    const actual = await hmacSha256(options.integrity.integrityKey, signed, context);
     if (!constantTimeEqual(actual, expected)) {
       throw new Error('BodyCodec: integrity check failed — body tampered or wrong integrity key.');
     }
@@ -322,7 +439,7 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       subKey = enc.subKey;
     }
 
-    const compressedPlaintext = await aesGcmDecrypt(subKey, iv, ciphertext);
+    const compressedPlaintext = await aesGcmDecrypt(subKey, iv, ciphertext, context);
     payload = await compressorFor(compression).decompress(compressedPlaintext, maxOut);
   } else {
     const compressedSlice = bodyForRest.subarray(5);
@@ -333,6 +450,7 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
     compression,
     encrypted,
     ...(keyVersion !== undefined ? { keyVersion } : {}),
+    contextBound,
     payload,
   };
 }

@@ -139,9 +139,17 @@ export type EncryptionConfig =
  * Body integrity directive (#116).  Protects unencrypted bodies
  * against tamper-in-place at the object-storage layer.  An encrypted
  * body already carries AES-GCM's auth tag over its ciphertext, so a
- * forgery there needs the master key — but the tag authenticates the
- * bytes, not *which* object or revision they belong to (#612), so
- * integrity remains worthwhile defense-in-depth.
+ * forgery there needs the master key — but the tag authenticated the
+ * bytes and not *which* object they belong to, which #612 closed by
+ * binding the storage key into both authenticators; integrity remains
+ * worthwhile defense-in-depth on top of that.
+ *
+ * The binding is deployment-wide-key-shaped in one direction that
+ * matters here: `integrityKey` is flat, with no per-`persistenceId`
+ * derivation of its own, so before #612 a tag valid for one pid was
+ * valid for every pid in the deployment.  The key binding is what
+ * separates them — see the object-storage stores'
+ * `requireContextBinding`.
  *
  *   - `mode: 'none'` (default) — nothing is signed and nothing is checked.
  *   - `mode: 'hmac-sha256'`    — HMAC-SHA256 over the framed body with

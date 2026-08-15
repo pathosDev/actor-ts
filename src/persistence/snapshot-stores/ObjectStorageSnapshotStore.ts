@@ -47,6 +47,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly allowUntaggedBodies: boolean;
+  private readonly requireContextBinding: boolean;
   private readonly maxDecompressedBytes: number;
 
   private readonly serializer?: Serializer;
@@ -63,6 +64,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
+    this.requireContextBinding = resolvedOptions.requireContextBinding ?? false;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     this.serializer = resolvedOptions.serializer;
   }
@@ -88,6 +90,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 
     const now = Date.now();
+    const key = this.snapshotKey(persistenceId, seq);
     const json = encodePayload({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now }, this.serializer);
     let body: Uint8Array;
     try {
@@ -108,12 +111,15 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
         ...(integrity.mode === 'hmac-sha256'
           ? { integrity: { integrityKey: integrity.integrityKey } }
           : {}),
+        // The key carries both the persistenceId and the sequence
+        // number, so binding it stops an authentic snapshot from being
+        // replayed at another pid's key or at another sequence (#612).
+        context: key,
       });
     } catch (e) {
       throw new JournalError(`ObjectStorageSnapshotStore.save: encode failed for ${persistenceId}@${seq}: ${(e as Error).message}`, e);
     }
 
-    const key = this.snapshotKey(persistenceId, seq);
     try {
       await this.backend.put(key, body, {
         contentType: 'application/json',
@@ -208,6 +214,13 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
                 allowUntaggedBodies: this.allowUntaggedBodies,
               },
             }
+          : {}),
+        context: key,
+        // Only demand the binding where something authenticates it —
+        // see the same guard on the durable-state store (#612).
+        ...(this.requireContextBinding
+          && (encryption.mode === 'client-aes256-gcm' || integrity.mode === 'hmac-sha256')
+          ? { requireContextBinding: true }
           : {}),
         maxOutputBytes: this.maxDecompressedBytes,
       });
