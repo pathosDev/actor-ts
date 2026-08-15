@@ -330,7 +330,7 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. |
+| `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. Jeder Node, der einen Typ startet oder proxyt, muss denselben Wert haben — der Koordinator verweigert eine Region, die abweicht, siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung). |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |

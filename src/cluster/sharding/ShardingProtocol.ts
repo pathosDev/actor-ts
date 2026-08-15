@@ -13,11 +13,41 @@ export type RegisterRegion = {
   readonly node: NodeAddressData;
   readonly proxy: boolean;
   readonly hostedShards: number[]; // shards this region already hosts
+  /**
+   * The shard count this region hashes with.
+   *
+   * Routing is `hash(entityId) % numShards` computed independently on every
+   * node, so two nodes that disagree place the *same* entity id in different
+   * shards and each end up hosting a live instance of it — at different paths,
+   * which is exactly why nothing collided and nothing warned (#633).  The
+   * coordinator compares this against its own count and refuses the
+   * registration outright rather than letting the split routing establish
+   * itself.
+   */
+  readonly numShards: number;
 };
 
 export type RegisterAcknowledgment = {
   readonly kind: 'sharding.RegisterAcknowledgment';
   readonly coordinator: string;
+};
+
+/**
+ * Coordinator → region: your registration was rejected, here is why.
+ *
+ * A region registers asynchronously and retries, so a misconfiguration cannot
+ * surface as a throw out of `ClusterSharding.start()` — the coordinator may
+ * not even exist yet when that call returns.  This is the reply that carries
+ * the verdict back to the node that got it wrong, where the region logs it at
+ * error and stops re-registering until the coordinator moves.
+ */
+export type RegisterRefused = {
+  readonly kind: 'sharding.RegisterRefused';
+  readonly coordinator: string;
+  /** The count the coordinator governs this type with. */
+  readonly numShards: number;
+  /** The count the refused registration claimed. */
+  readonly regionNumShards: number;
 };
 
 export type GetShardHome = {
@@ -305,6 +335,7 @@ export type ShardReply = {
 export type ShardingMessage =
   | RegisterRegion
   | RegisterAcknowledgment
+  | RegisterRefused
   | GetShardHome
   | ShardHome
   | BeginHandOff

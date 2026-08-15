@@ -64,6 +64,8 @@ export class ClusterSharding {
   private readonly coordinators = new Map<string, ActorRef<unknown>>();
   /** Shard count per started type — the entity→shard hash needs it. */
   private readonly numShardsByType = new Map<string, number>();
+  /** Whether the region started for a type is a proxy — see {@link start}. */
+  private readonly proxyByType = new Map<string, boolean>();
 
   private constructor(
     public readonly system: ActorSystem,
@@ -154,9 +156,28 @@ export class ClusterSharding {
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
     const existing = this.findRegionByType(options.typeName);
-    if (existing) return existing as ActorRef<TMessage>;
+    if (existing) {
+      // A second call for a type this node already started is a no-op — except
+      // when the two disagree about hosting.  `startProxy` then `start` handed
+      // the caller the *proxy* back, and a proxy throws from its placeholder
+      // entity factory, so the first message for a local shard died in a spawn
+      // the caller never wrote.  The reverse order is just as wrong: the caller
+      // asked for a routing-only node and got one that hosts entities.
+      const existingProxy = this.proxyByType.get(options.typeName) ?? false;
+      const requestedProxy = options.proxy ?? false;
+      if (existingProxy !== requestedProxy) {
+        throw new Error(
+          `[sharding] type '${options.typeName}' is already started on this node as `
+          + `${existingProxy ? 'a proxy region' : 'a hosting region'} — `
+          + `${requestedProxy ? 'startProxy()' : 'start()'} cannot change that. `
+          + `Start each type once per node, as either a hosting region or a proxy.`,
+        );
+      }
+      return existing as ActorRef<TMessage>;
+    }
 
     this.numShardsByType.set(options.typeName, config.numShards);
+    this.proxyByType.set(options.typeName, config.proxy);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.

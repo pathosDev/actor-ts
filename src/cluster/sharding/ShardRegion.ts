@@ -28,6 +28,7 @@ import {
   AuthenticatedShardingMessage,
   isShardingMessage,
   type RegisterRegion,
+  type RegisterRefused,
   type ShardEnvelope,
   type ShardReply,
   type ShardingMessage,
@@ -149,6 +150,15 @@ export class ShardRegion<TMessage = unknown>
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
   private registered = false;
+  /**
+   * Set when the coordinator refused this region's `numShards` (#633).  A
+   * refused region must stop hammering the register loop — the count is fixed
+   * for the lifetime of the region, so retrying against the same coordinator
+   * can only produce the same answer.  Cleared on a leader change, where the
+   * coordinator moves to a node whose configuration we have not been told
+   * about yet.
+   */
+  private registerRefused = false;
 
   /**
    * Senders of messages currently awaiting a reply from a remote shard.
@@ -526,6 +536,7 @@ export class ShardRegion<TMessage = unknown>
         leader.address, coordinatorLocation, this.config.cluster,
       );
     }
+    if (this.registerRefused) return;
     this.register();
   }
 
@@ -541,6 +552,7 @@ export class ShardRegion<TMessage = unknown>
       node: this.config.cluster.selfAddress.toJSON(),
       proxy: this.config.proxy,
       hostedShards: Array.from(this.localShards),
+      numShards: this.config.numShards,
     };
     this.tellCoordinator(message);
     // Re-ask for every pending shard home.
@@ -573,6 +585,7 @@ export class ShardRegion<TMessage = unknown>
   private handleShardingMessage(message: ShardingMessage, peer: NodeAddress | null): void {
     match(message)
       .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m, peer))
+      .with({ kind: 'sharding.RegisterRefused' }, (m) => this.onRegisterRefused(m, peer))
       .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m, peer))
       .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
       .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m, peer))
@@ -672,8 +685,35 @@ export class ShardRegion<TMessage = unknown>
     if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
     this.registered = true;
+    this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
+  }
+
+  /**
+   * The coordinator rejected this region's configuration (#633).
+   *
+   * Logged at error rather than thrown: `start()` has long returned by the
+   * time a coordinator answers, and throwing here would only restart the
+   * region into the same rejection.  The region stays up and keeps buffering,
+   * which is the fail-stop the alternative lacks — an accepted mismatch routes
+   * the same entity id into two different shards and runs two live instances
+   * of it, one per node, at paths that never collide.
+   */
+  private onRegisterRefused(message: RegisterRefused, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
+    this.registered = false;
+    this.registerRefused = true;
+    this.registerTimer?.cancel();
+    this.registerTimer = null;
+    this.log.error(
+      `[sharding] the coordinator refused to register region '${this.config.typeName}': `
+      + `numShards must match across the cluster, but this node is configured with `
+      + `${message.regionNumShards} and the coordinator governs the type with ${message.numShards}. `
+      + `No shard will be allocated here and messages for this type will keep buffering until the `
+      + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
+      + `(explicitly, or via actor-ts.sharding.num-shards).`,
+    );
   }
 
   /**
@@ -1143,6 +1183,10 @@ export class ShardRegion<TMessage = unknown>
     // re-reads the leader — a directive arriving in that gap has no authority
     // to check against and is refused rather than trusted on the old belief.
     this.coordinatorNode = null;
+    // The coordinator moved, so the count it governs the type with may have
+    // moved with it; a refusal from the previous leader says nothing about
+    // this one.
+    this.registerRefused = false;
     this.ensureRegistered();
   }
 
