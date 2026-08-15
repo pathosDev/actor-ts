@@ -100,6 +100,11 @@ export type {
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
 
+// HTML form bodies — `application/x-www-form-urlencoded`, the one request
+// media type that is not also a cluster-wire codec, hence its home here.
+export { FormUrlEncodedSerializer } from './FormUrlEncodedSerializer.js';
+export type { FormFields } from './FormUrlEncodedSerializer.js';
+
 // MIME-type registry — extension → content-type for static-file responses.
 export { contentTypeFor, DEFAULT_MIME_TYPES } from './MimeTypes.js';
 

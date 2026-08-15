@@ -77,6 +77,37 @@ describe('ExpressBackend — plain routes', () => {
     expect(await response.json()).toEqual({ hi: 'world' });
   });
 
+  // #669 — express.urlencoded is deliberately not installed, so the form body
+  // has to survive as raw bytes all the way to entity(); and a type nothing
+  // decodes must be a 415 that names what it would have taken.
+  test('entity() decodes a urlencoded form POST (#669)', async () => {
+    const { url } = await startServer(path('form', post(async (request) => {
+      const body = entity<{ name: string }>(request);
+      return completeJson(Status.OK, { hi: body.name });
+    })));
+    const response = await fetch(`${url}/form`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'name=Ada&age=36',
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ hi: 'Ada' });
+  });
+
+  test('an unknown content-type answers 415 with the accepted types (#669)', async () => {
+    const { url } = await startServer(path('echo', post(async (request) =>
+      completeJson(Status.OK, entity(request) as object))));
+    const response = await fetch(`${url}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/xml' },
+      body: '<order/>',
+    });
+    expect(response.status).toBe(415);
+    expect(response.headers.get('accept')).toContain('application/x-www-form-urlencoded');
+    const payload = await response.json() as { accepted: string[] };
+    expect(payload.accepted).toContain('application/json');
+  });
+
   test('path parameters are exposed on request.params', async () => {
     const { url } = await startServer(path('users/:id', get(request => completeJson(Status.OK, { id: request.params.id }))));
     const response = await fetch(`${url}/users/42`);
