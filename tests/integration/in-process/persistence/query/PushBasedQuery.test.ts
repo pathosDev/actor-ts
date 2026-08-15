@@ -43,7 +43,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     const t0 = Date.now();
     void (async (): Promise<void> => {
       await sleep(10);
-      await journal.append('a', [{ n: 42 }], 0);
+      await journal.append('a', [{ event: { n: 42 } }], 0);
     })();
 
     const result = await it.next();
@@ -58,7 +58,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
   test('2. catch-up race — pre-iterator events + post-iterator events delivered exactly once', async () => {
     const journal = new InMemoryJournal();
     // Pre-iterator append.
-    await journal.append('a', [{ n: 1 }, { n: 2 }], 0);
+    await journal.append('a', [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
     const query = new InMemoryQuery(journal);
     const stream = query.eventsByPersistenceId<{ n: number }>('a', 1);
     const it = stream[Symbol.asyncIterator]();
@@ -66,7 +66,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     // Concurrently with subscribe + catch-up, append a third event.
     void (async (): Promise<void> => {
       await sleep(5);
-      await journal.append('a', [{ n: 3 }], 2);
+      await journal.append('a', [{ event: { n: 3 } }], 2);
     })();
 
     const first = await it.next();
@@ -95,7 +95,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     const t0 = Date.now();
     void (async (): Promise<void> => {
       await sleep(10);
-      await journal.append('a', [{ message: 'one' }], 0, ['orders']);
+      await journal.append('a', [{ event: { message: 'one' }, tags: ['orders'] }], 0);
     })();
 
     const result = await it.next();
@@ -145,7 +145,7 @@ describe('Push-based PersistenceQuery — SqliteJournal', () => {
     const t0 = Date.now();
     void (async (): Promise<void> => {
       await sleep(10);
-      await journal.append('z', [{ k: 'hi' }], 0);
+      await journal.append('z', [{ event: { k: 'hi' } }], 0);
     })();
 
     const result = await it.next();
@@ -165,17 +165,17 @@ describe('Push-based PersistenceQuery — fallback', () => {
     // cross-process backend like Cassandra.
     const events: PersistentEvent<unknown>[] = [];
     const noBusJournal: Journal = {
-      async append(persistenceId, evts, expectedSeq, tags) {
+      async append(persistenceId, entries, expectedSeq) {
         const startSeq = events.length;
         if (startSeq !== expectedSeq) {
           throw new Error(`concurrency: expected ${expectedSeq}, was ${startSeq}`);
         }
-        const written = (evts as ReadonlyArray<unknown>).map((e, i) => ({
+        const written = entries.map((entry, i) => ({
           persistenceId,
           sequenceNr: startSeq + i + 1,
-          event: e,
+          event: entry.event,
           timestamp: Date.now(),
-          tags: tags ? [...tags] : undefined,
+          tags: entry.tags ? [...entry.tags] : undefined,
         }));
         events.push(...written as PersistentEvent<unknown>[]);
         return written as never;
@@ -199,7 +199,7 @@ describe('Push-based PersistenceQuery — fallback', () => {
 
     void (async (): Promise<void> => {
       await sleep(20);
-      await noBusJournal.append('a', [{ n: 7 }], 0);
+      await noBusJournal.append('a', [{ event: { n: 7 } }], 0);
     })();
 
     const result = await it.next();

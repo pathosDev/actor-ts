@@ -34,12 +34,16 @@ afterEach(async () => {
 
 describe('migrateBetweenJournals', () => {
   test('copies every event from source to target preserving seq + tags', async () => {
-    await source.append('order-1',
-      [{ kind: 'created', total: 50 }, { kind: 'paid' }, { kind: 'shipped' }],
-      0, ['type:Order']);
-    await source.append('order-2',
-      [{ kind: 'created', total: 100 }],
-      0, ['type:Order', 'tenant:acme']);
+    await source.append('order-1',[
+      { event: { kind: 'created', total: 50 }, tags: ['type:Order'] },
+      { event: { kind: 'paid' }, tags: ['type:Order'] },
+      { event: { kind: 'shipped' }, tags: ['type:Order'] },
+    ],
+      0);
+    await source.append('order-2',[
+      { event: { kind: 'created', total: 100 }, tags: ['type:Order', 'tenant:acme'] },
+    ],
+      0);
 
     const result = await migrateBetweenJournals(source, target);
 
@@ -62,7 +66,7 @@ describe('migrateBetweenJournals', () => {
   test('eventTransform applies a per-event payload migration during the copy', async () => {
     type Old = { v: number };
     type New = { version: number; migrated: true };
-    await source.append<Old>('pid-1', [{ v: 1 }, { v: 2 }], 0);
+    await source.append<Old>('pid-1', [{ event: { v: 1 } }, { event: { v: 2 } }], 0);
 
     const result = await migrateBetweenJournals<Old>(source, target, {
       eventTransform: (e) => ({
@@ -78,7 +82,7 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('idempotent on a fully-completed target (re-running is a no-op)', async () => {
-    await source.append('pid-1', [{ x: 1 }, { x: 2 }], 0);
+    await source.append('pid-1', [{ event: { x: 1 } }, { event: { x: 2 } }], 0);
 
     const first = await migrateBetweenJournals(source, target);
     expect(first.eventsWritten).toBe(2);
@@ -92,9 +96,9 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('resumes from a partial copy: target ahead-of-zero, source has more', async () => {
-    await source.append('pid-1', [{ x: 1 }, { x: 2 }, { x: 3 }], 0);
+    await source.append('pid-1', [{ event: { x: 1 } }, { event: { x: 2 } }, { event: { x: 3 } }], 0);
     // Simulate a partial target: copy events 1+2 directly.
-    await target.append('pid-1', [{ x: 1 }, { x: 2 }], 0);
+    await target.append('pid-1', [{ event: { x: 1 } }, { event: { x: 2 } }], 0);
 
     const result = await migrateBetweenJournals(source, target);
     expect(result.eventsWritten).toBe(1);
@@ -104,9 +108,9 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('progressStore skips completed pids on a resumed run', async () => {
-    await source.append('pid-a', [{ x: 1 }], 0);
-    await source.append('pid-b', [{ y: 1 }], 0);
-    await source.append('pid-c', [{ z: 1 }], 0);
+    await source.append('pid-a', [{ event: { x: 1 } }], 0);
+    await source.append('pid-b', [{ event: { y: 1 } }], 0);
+    await source.append('pid-c', [{ event: { z: 1 } }], 0);
 
     const progress = new InMemoryMigrationProgressStore();
     // Pretend pid-a was already completed.
@@ -127,9 +131,9 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('skipExistingPersistenceIds leaves target pids with data alone', async () => {
-    await source.append('keep-target', [{ src: true }], 0);
-    await source.append('copy-me', [{ src: true }], 0);
-    await target.append('keep-target', [{ target: true }], 0);
+    await source.append('keep-target', [{ event: { src: true } }], 0);
+    await source.append('copy-me', [{ event: { src: true } }], 0);
+    await target.append('keep-target', [{ event: { target: true } }], 0);
 
     const result = await migrateBetweenJournals(source, target, {
       skipExistingPersistenceIds: true,
@@ -142,8 +146,8 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('onProgress fires after each pid with event count', async () => {
-    await source.append('a', [{ n: 1 }], 0);
-    await source.append('b', [{ n: 2 }, { n: 3 }], 0);
+    await source.append('a', [{ event: { n: 1 } }], 0);
+    await source.append('b', [{ event: { n: 2 } }, { event: { n: 3 } }], 0);
 
     const events: string[] = [];
     await migrateBetweenJournals(source, target, {
@@ -153,9 +157,9 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('pids subset narrows the copy to the requested ids', async () => {
-    await source.append('a', [{ n: 1 }], 0);
-    await source.append('b', [{ n: 2 }], 0);
-    await source.append('c', [{ n: 3 }], 0);
+    await source.append('a', [{ event: { n: 1 } }], 0);
+    await source.append('b', [{ event: { n: 2 } }], 0);
+    await source.append('c', [{ event: { n: 3 } }], 0);
 
     const result = await migrateBetweenJournals(source, target, {
       persistenceIds: ['a', 'c'],

@@ -34,7 +34,7 @@ class Counter extends PersistentActor<Command, Event, number> {
 }
 
 async function prefill(journal: InMemoryJournal, persistenceId: string, n: number): Promise<void> {
-  const events = Array.from({ length: n }, () => ({ delta: 1 }));
+  const events = Array.from({ length: n }, () => ({ event: { delta: 1 } }));
   await journal.append(persistenceId, events, 0);
 }
 

@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   // Pretend an older version of the app wrote one v1 event before we added `currency`.
   // We hand-craft a v1 envelope to simulate that history.
   await journal.append<unknown>('alice', [
-    { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 100 } as DepositedV1 },
+    { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 100 } as DepositedV1 } },
   ], 0);
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });

@@ -27,7 +27,7 @@ nothing races past a half-moved entity.
 
 ## What triggers rebalance
 
-Two paths:
+Three paths:
 
 1. **Membership-driven** — `MemberUp` (a new node), `MemberRemoved`
    (a leaving node), or any cluster transition that changes the
@@ -39,8 +39,27 @@ Two paths:
    for its rebalance recommendations.  `LeastShardAllocationStrategy`
    returns shards to drain off busy nodes; `HashAllocationStrategy`
    returns shards whose hash-target moved.
+3. **A region stopping** — a region tells the coordinator on its way
+   down, and its shards are reallocated immediately.  This covers a
+   region stopped on a node that stays in the cluster, where no
+   membership event fires at all.
 
-Both feed into the same handoff protocol.
+The first two feed into the handoff protocol below.  The third does
+not: the region is already gone, so there is nothing to hand off —
+the coordinator simply drops it from the registry and re-allocates.
+
+Without that third path a stopped region left its shards **orphaned**:
+the coordinator kept naming it as their home, senders cached that home
+and delivered into a stopped actor, and the messages became dead
+letters.  Nothing recovered it either — the candidate set is derived
+from the registry with no liveness check, so the rebalance tick saw a
+balanced cluster and moved nothing.  It stayed that way until the node
+left the cluster entirely.
+
+The notification is best-effort and idempotent: it is skipped if the
+region never found a coordinator, a transport failure on the way down
+is logged and swallowed, and the `MemberRemoved` path that follows a
+whole-node shutdown finds the region already gone and does nothing.
 
 ## The handoff sequence
 
@@ -65,6 +84,41 @@ node B:
 The whole thing usually takes **sub-second to a few seconds**,
 depending on how many entities are in the shard and how long their
 `postStop` work takes.
+
+## Who may order a handoff
+
+A `HandOff` stops every entity in a shard, so the region checks
+**where it came from** before acting on it — not just what it says.
+The rule covers every directive only the coordinator may issue:
+`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate` and
+`RegisterAcknowledgment`.
+
+Two conditions have to hold:
+
+1. The frame arrived through the region's own envelope route, which
+   stamps it with the peer the **connection** was authenticated as —
+   never a field out of the payload, which the sender writes.
+2. That peer is the node the region currently believes hosts the
+   coordinator, i.e. the current leader.
+
+Anything else is dropped and logged at `WARN`. Until this rule
+existed, any peer that could complete the cluster handshake could
+send one small frame and take a shard's entities down, repeatably;
+the region dispatched on the message's `kind` alone and had no
+notion of a sender at all.
+
+Refusing is safe by construction: a region re-registers and re-asks
+for every buffered shard on the next leader or membership event, so
+a directive dropped during a leadership handover is re-requested
+rather than lost.
+
+:::note[This is authorization, not authentication]
+The check says *"only the coordinator's node"*, and on a cluster
+without peer certificates any party that can reach the port can
+become a member and then be the leader. Run mTLS if the network is
+not fully trusted — see
+[cluster security](/operations/security/cluster-security/).
+:::
 
 ## Configuration
 

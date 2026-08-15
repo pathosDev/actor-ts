@@ -439,6 +439,25 @@ für eine Read-Side-View, die `'account'`-Events abonniert.
 `undefined` zurückzugeben (der Default) bedeutet "keine Tags" —
 in Ordnung, wenn du noch keine Projektionen hast.
 
+`tagsFor` wird **einmal pro Event** gefragt, auch innerhalb eines
+`persistAll`.  Ein Batch, der Event-Arten mischt, wird also pro Art
+getaggt, und eine Projektion, die auf eine davon filtert, sieht
+genau ihre eigenen Events:
+
+```ts
+override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+  return event.kind === 'paymentCaptured' ? ['payment'] : ['order'];
+}
+
+await this.persistAll([
+  { kind: 'orderPlaced' },       // → ['order']
+  { kind: 'paymentCaptured' },   // → ['payment']
+]);
+```
+
+Der Batch wird weiterhin atomar geschrieben — Tags pro Event teilen
+ihn nicht in mehrere Appends auf.
+
 ## Schema-Evolution — Event-Adapter
 
 Wenn sich Event-Formen über die Zeit ändern (ein Feld wird umbenannt,

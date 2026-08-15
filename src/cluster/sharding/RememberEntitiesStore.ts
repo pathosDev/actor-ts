@@ -59,7 +59,7 @@ export class JournalRememberEntitiesStore implements RememberEntitiesStore {
   async append(typeName: string, event: RememberEvent): Promise<void> {
     const persistenceId = this.persistenceIdFor(typeName);
     const head = await this.journal.highestSeq(persistenceId);
-    await this.journal.append(persistenceId, [event], head, ['sharding-remember']);
+    await this.journal.append(persistenceId, [{ event, tags: ['sharding-remember'] }], head);
   }
 
   async load(typeName: string): Promise<RememberEvent[]> {

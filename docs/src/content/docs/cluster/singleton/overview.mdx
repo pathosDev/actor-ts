@@ -157,6 +157,13 @@ cluster.singleton.start(JobScheduler, singletonOptions);
 the cap (default 1000) messages go to dead letters with a warning
 rather than growing the buffer forever.
 
+The buffer drains on the first cluster event that can have produced a
+host — a leader change, but equally a member coming up, going
+unreachable, or leaving.  That full set matters for a role-restricted
+singleton: the first member carrying the role can join without the
+leader changing at all, and before v0.17.0 that left the buffer
+undrained indefinitely while every later send routed normally.
+
 :::note[There is deliberately no `SingletonActor` interface]
 TypeScript's `implements` clause constrains only the **instance** side
 of a class — there is no `static implements`, and `abstract static` is

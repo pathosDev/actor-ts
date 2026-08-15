@@ -124,7 +124,7 @@ describe('D1Journal — SQLite schema compatibility', () => {
   test('emits the same statements as the local SQLite and libSQL backends', async () => {
     const client = new FakeD1Client();
     const journal = new D1Journal(D1JournalOptions.create().withClient(client));
-    await journal.append('account-1', ['created'], 0, ['ledger']);
+    await journal.append('account-1', [{ event: 'created', tags: ['ledger'] }], 0);
     await journal.delete('account-1', 1);
     const issued = client.log.join('\n');
     // Sharing `sqliteDialect` is what lets a database move between D1, libSQL and
@@ -144,10 +144,10 @@ describe('D1Journal — SQLite schema compatibility', () => {
     const client = new FakeD1Client();
     const first = new D1Journal(D1JournalOptions.create().withClient(client));
     const second = new D1Journal(D1JournalOptions.create().withClient(client));
-    await first.append('account-1', ['a'], 0);
+    await first.append('account-1', [{ event: 'a' }], 0);
     const racing = await Promise.allSettled([
-      first.append('account-1', ['b'], 1),
-      second.append('account-1', ['c'], 1),
+      first.append('account-1', [{ event: 'b' }], 1),
+      second.append('account-1', [{ event: 'c' }], 1),
     ]);
     expect(racing.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
     const loser = racing.find((outcome) => outcome.status === 'rejected') as PromiseRejectedResult;
@@ -209,7 +209,7 @@ describe('D1* transport ownership', () => {
     const journal = new D1Journal(D1JournalOptions.create().withClient(client));
     const snapshots = new D1SnapshotStore(D1SnapshotStoreOptions.create().withClient(client));
     const state = new D1DurableStateStore(D1DurableStateStoreOptions.create().withClient(client));
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     await snapshots.save('account-1', 1, { v: 1 });
     await state.upsert('account-1', 0, { v: 1 });
 
@@ -254,7 +254,7 @@ describe('registerD1Plugins', () => {
       expect(persistence.snapshotStore).toBeInstanceOf(D1SnapshotStore);
       expect(handles.durableStateStore).toBeInstanceOf(D1DurableStateStore);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       await persistence.snapshotStore.save('account-1', 1, { v: 1 });
       await handles.durableStateStore.upsert('account-1', 0, { v: 1 });
       expect(client.log.some((sql) => sql.startsWith('INSERT INTO events('))).toBe(true);
@@ -277,7 +277,7 @@ describe('registerD1Plugins', () => {
         .withJournal(journalOptions);
       registerD1Plugins(persistence, pluginOptions);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
     } finally {
       await system.terminate();

@@ -30,7 +30,7 @@ const foldCounter = (state: CounterState, event: CounterEvent): CounterState =>
 async function seed(journal: InMemoryJournal, persistenceId: string, amounts: number[]): Promise<void> {
   let expected = 0;
   for (const amount of amounts) {
-    await journal.append<CounterEvent>(persistenceId, [{ kind: 'added', amount }], expected);
+    await journal.append<CounterEvent>(persistenceId, [{ event: { kind: 'added', amount } }], expected);
     expected += 1;
   }
 }

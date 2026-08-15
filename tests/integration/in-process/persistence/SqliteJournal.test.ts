@@ -31,8 +31,8 @@ function newSnapshots(): SqliteSnapshotStore {
 describe('SqliteJournal', () => {
   test('append + read round-trips structured events', async () => {
     const journal = newJournal();
-    await journal.append('acct-1', [{ kind: 'deposited', amount: 100 }], 0);
-    await journal.append('acct-1', [{ kind: 'withdrew', amount: 30 }], 1);
+    await journal.append('acct-1', [{ event: { kind: 'deposited', amount: 100 } }], 0);
+    await journal.append('acct-1', [{ event: { kind: 'withdrew', amount: 30 } }], 1);
     const events = await journal.read<{ kind: string; amount: number }>('acct-1', 1);
     expect(events.length).toBe(2);
     expect(events[0]!.event.kind).toBe('deposited');
@@ -41,37 +41,37 @@ describe('SqliteJournal', () => {
 
   test('assigns monotonic sequence numbers per persistenceId', async () => {
     const journal = newJournal();
-    await journal.append('a', ['x', 'y'], 0);
-    await journal.append('b', ['z'], 0);
+    await journal.append('a', [{ event: 'x' }, { event: 'y' }], 0);
+    await journal.append('b', [{ event: 'z' }], 0);
     expect(await journal.highestSeq('a')).toBe(2);
     expect(await journal.highestSeq('b')).toBe(1);
   });
 
   test('concurrency mismatch throws and does not write partial rows', async () => {
     const journal = newJournal();
-    await journal.append('p', ['first'], 0);
-    await expect(journal.append('p', ['bad'], 0)).rejects.toBeInstanceOf(JournalConcurrencyError);
+    await journal.append('p', [{ event: 'first' }], 0);
+    await expect(journal.append('p', [{ event: 'bad' }], 0)).rejects.toBeInstanceOf(JournalConcurrencyError);
     const events = await journal.read('p', 1);
     expect(events.length).toBe(1);
   });
 
   test('tags round-trip through CSV encoding', async () => {
     const journal = newJournal();
-    await journal.append('p', ['e1', 'e2'], 0, ['orders', 'vip']);
+    await journal.append('p', [{ event: 'e1', tags: ['orders', 'vip'] }, { event: 'e2', tags: ['orders', 'vip'] }], 0);
     const events = await journal.read('p', 1);
     for (const e of events) expect([...(e.tags ?? [])]).toEqual(['orders', 'vip']);
   });
 
   test('read range is inclusive on both ends', async () => {
     const journal = newJournal();
-    await journal.append('p', ['a', 'b', 'c', 'd'], 0);
+    await journal.append('p', [{ event: 'a' }, { event: 'b' }, { event: 'c' }, { event: 'd' }], 0);
     const slice = await journal.read('p', 2, 3);
     expect(slice.map(e => e.event)).toEqual(['b', 'c']);
   });
 
   test('delete removes events up to and including toSeq', async () => {
     const journal = newJournal();
-    await journal.append('p', ['a', 'b', 'c'], 0);
+    await journal.append('p', [{ event: 'a' }, { event: 'b' }, { event: 'c' }], 0);
     await journal.delete('p', 2);
     const rest = await journal.read('p', 1);
     expect(rest.map(e => e.event)).toEqual(['c']);
@@ -79,8 +79,8 @@ describe('SqliteJournal', () => {
 
   test('persistenceIds lists distinct streams', async () => {
     const journal = newJournal();
-    await journal.append('a', ['x'], 0);
-    await journal.append('b', ['y'], 0);
+    await journal.append('a', [{ event: 'x' }], 0);
+    await journal.append('b', [{ event: 'y' }], 0);
     expect((await journal.persistenceIds()).sort()).toEqual(['a', 'b']);
   });
 
@@ -88,7 +88,7 @@ describe('SqliteJournal', () => {
     const sqliteJournalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(sqliteJournalOptions);
-    await journal.append('p', ['x'], 0);
+    await journal.append('p', [{ event: 'x' }], 0);
     await journal.close();
     await expect(journal.highestSeq('p')).rejects.toThrow(/closed/);
   });

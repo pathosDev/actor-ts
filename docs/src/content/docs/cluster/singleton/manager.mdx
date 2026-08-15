@@ -105,17 +105,45 @@ const path = singletonManagerPath(system.name, 'job-scheduler');
 
 You can use this helper if you want to assert the path matches.
 
+## What the manager reacts to
+
+The host of a singleton is the **first address-ordered up-member**:
+the cluster leader, or — with a role restriction — the first member
+carrying that role.  So the host moves on *every* transition into or
+out of `up`, not only on a change of leader:
+
+| Event | Why it can move the host |
+| --- | --- |
+| `LeaderChanged` | The unrestricted host **is** the leader. |
+| `SelfUp` | This node just became eligible to host. |
+| `MemberUp` | A member joined the up-set — possibly below the current host. |
+| `MemberUnreachable` | An up member dropped out of the up-set without being removed. |
+| `MemberReachable` | …and rejoined it. |
+| `MemberDown` / `MemberLeft` / `MemberRemoved` | The host is on its way out. |
+
+`MemberJoined` and `MemberWeaklyUp` are deliberately not in the set:
+neither `joining` nor `weakly-up` members appear in `upMembers()`, so
+neither can host.
+
+**Before v0.17.0 the trigger was `LeaderChanged` alone.**  A
+role-carrying member joining *below* a role-less leader moves the role
+host and changes no leader — so nothing fired.  The joining node spawned
+anyway (off its own `SelfUp`), the incumbent was never told to stop, and
+the cluster settled on **two live singletons**.  The same gap left a role
+host that went `unreachable` hosted nowhere at all until it was finally
+downed.  If you are on an older version, that is the shape to look for.
+
 ## The two operational paths
 
 ### No-lease (default)
 
 ```
-LeaderChanged → I'm leader now? → yes → spawn singleton
-                                → no → stop my singleton (if any)
+host-changing event → am I the host now? → yes → spawn singleton
+                                         → no  → stop my singleton (if any)
 ```
 
 Synchronous reconcile.  As soon as gossip says this node is the
-leader, the manager spawns its singleton child.  Simple, fast.
+host, the manager spawns its singleton child.  Simple, fast.
 
 **Drawback**: during a **partition**, both halves can have their
 own leader.  Both managers spawn their singleton.  Two
@@ -134,8 +162,8 @@ Adds an async gate on the lease.  The flow:
 
 ```mermaid
 flowchart TB
-  EVT[/"LeaderChanged"/]
-  ASK{"I'm leader<br/>now?"}
+  EVT[/"host-changing<br/>event"/]
+  ASK{"I'm the host<br/>now?"}
   ACQ["lease.acquire()"]
   GOT{"acquired?"}
   SPAWN["spawn singleton"]
@@ -178,9 +206,9 @@ lease lost (revoked, renew failed) → stop singleton immediately
 
 If the lease is **revoked** (someone else acquired it, or the
 provider's renew failed), the manager stops the singleton and
-waits.  When `LeaderChanged` fires again (e.g., the manager
-notices it's still seen as leader by gossip), it retries
-`lease.acquire()`.
+waits.  It re-checks immediately, and again on the next
+host-changing event — so if gossip still names this node the host,
+it retries `lease.acquire()`.
 
 ## Watching the child
 
@@ -221,15 +249,27 @@ With it off the manager does not re-spawn, but it does **release the
 lease**, so another node could host later.  What it will never do
 again is hold a lease over a child that is gone.
 
+The opt-out takes this **node** out of rotation for good — until its
+manager is restarted with `cluster.singleton.stop(...)` followed by a
+fresh `start(...)`.  It has to be a latch rather than the absence of a
+trigger: the manager decides to spawn from "I am the host and have no
+child", which on its own cannot tell a terminal stop apart from never
+having started, and *any* later membership change would reconcile
+straight back into a spawn.  Other nodes are unaffected — releasing
+the lease is what leaves them free to host.
+
 ## Restart semantics
 
 When the manager itself fails (which is rare), its supervisor
 (typically the user-guardian) restarts it.  On restart:
 
 - Cluster subscriptions are re-established.
-- The current leader is queried again.
-- If this node is still leader, lease-acquire (if applicable) is
+- The current host is computed again.
+- If this node is still the host, lease-acquire (if applicable) is
   retried, and the singleton is spawned afresh.
+- A `restartOnTermination: false` opt-out is cleared — the latch
+  lives on the manager instance, so a restarted manager may host
+  again.
 
 The old singleton's state is **lost** unless it persists itself.
 For stateful singletons, use
@@ -261,9 +301,12 @@ cluster.subscribe((evt) => {
 });
 ```
 
-The manager's behavior is driven entirely by these events.  If
-you suspect the manager is misbehaving, log `LeaderChanged` +
-`MemberUp` / `MemberRemoved` to see what the manager sees.
+The manager's behavior is driven entirely by these events.  If you
+suspect the manager is misbehaving, log the whole trigger set from
+[What the manager reacts to](#what-the-manager-reacts-to) — not just
+`LeaderChanged`.  A role-restricted singleton in particular changes
+host on `MemberUp` / `MemberUnreachable` while the leader sits still,
+so watching leadership alone shows you nothing happening.
 
 For the lease path, also log `lease.acquire()` returns — the
 manager logs these by default at debug level.

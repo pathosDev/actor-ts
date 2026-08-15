@@ -80,9 +80,9 @@ async function main(): Promise<void> {
   // Simulate three generations of events on disk: v1 (raw amount, USD), v2 (amount + currency),
   // v3 (cents + currency).  Recovery must converge them all to v3.
   await journal.append<unknown>('alice', [
-    { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 1.5 } },
-    { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 2, currency: 'EUR' } },
-    { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 99, currency: 'USD' } },
+    { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 1.5 } } },
+    { event: { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 2, currency: 'EUR' } } },
+    { event: { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 99, currency: 'USD' } } },
   ], 0);
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });

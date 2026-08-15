@@ -104,9 +104,9 @@ describe('PersistentActor — write + recover', () => {
     const { system, journal, snapshots } = makeSystem();
     // Pre-populate the journal by hand — simulating a prior incarnation.
     await journal.append<Event>('acct-7', [
-      { kind: 'deposited', amount: 10 },
-      { kind: 'deposited', amount: 5 },
-      { kind: 'withdrew',  amount: 3 },
+      { event: { kind: 'deposited', amount: 10 } },
+      { event: { kind: 'deposited', amount: 5 } },
+      { event: { kind: 'withdrew',  amount: 3 } },
     ], 0);
 
     const seen: unknown[] = [];
@@ -124,10 +124,10 @@ describe('PersistentActor — write + recover', () => {
     const { system, journal, snapshots } = makeSystem();
     await snapshots.save('acct-snap', 3, { balance: 500 }); // "seq up to 3 already in state"
     await journal.append<Event>('acct-snap', [
-      { kind: 'deposited', amount: 10 },   // seq 1 — before snapshot
-      { kind: 'deposited', amount: 10 },   // seq 2 — before snapshot
-      { kind: 'deposited', amount: 10 },   // seq 3 — at snapshot
-      { kind: 'deposited', amount: 50 },   // seq 4 — AFTER snapshot, MUST be applied
+      { event: { kind: 'deposited', amount: 10 } },   // seq 1 — before snapshot
+      { event: { kind: 'deposited', amount: 10 } },   // seq 2 — before snapshot
+      { event: { kind: 'deposited', amount: 10 } },   // seq 3 — at snapshot
+      { event: { kind: 'deposited', amount: 50 } },   // seq 4 — AFTER snapshot, MUST be applied
     ], 0);
     const seen: unknown[] = [];
     system.spawn(() => new Account('acct-snap', m => seen.push(m)), 'a');
@@ -256,6 +256,54 @@ describe('PersistentActor — tagsFor', () => {
     expect(evt?.tags).toEqual(['orders']);
     await system.terminate();
   });
+
+  test('a mixed persistAll asks tagsFor for EVERY event, not just the first (#631)', async () => {
+    const { system, journal } = makeSystem();
+
+    type OrderPlacedEvent = { kind: 'orderPlaced' };
+    type PaymentCapturedEvent = { kind: 'paymentCaptured' };
+    type NoteAddedEvent = { kind: 'noteAdded' };
+    type OrderEvent = OrderPlacedEvent | PaymentCapturedEvent | NoteAddedEvent;
+
+    const asked: string[] = [];
+
+    class Checkout extends PersistentActor<'checkout', OrderEvent, number> {
+      readonly persistenceId = 'checkout';
+      initialState(): number { return 0; }
+      onEvent(state: number): number { return state + 1; }
+      override tagsFor(event: OrderEvent): readonly string[] | undefined {
+        asked.push(event.kind);
+        // A tagsFor that keys on the event — the shape every projection uses,
+        // and the one the batch-wide tag argument silently defeated.
+        return match(event)
+          .with({ kind: 'orderPlaced' }, () => ['order'])
+          .with({ kind: 'paymentCaptured' }, () => ['payment'])
+          .with({ kind: 'noteAdded' }, () => undefined)
+          .exhaustive();
+      }
+      async onCommand(): Promise<void> {
+        await this.persistAll([
+          { kind: 'orderPlaced' },
+          { kind: 'paymentCaptured' },
+          { kind: 'noteAdded' },
+        ]);
+      }
+    }
+
+    const ref = system.spawn(Checkout, 'checkout');
+    ref.tell('checkout');
+    await awaitCondition(async () => (await journal.read('checkout', 1)).length === 3, {
+      timeoutMs: 4_000,
+      label: 'the mixed batch reached the journal',
+    });
+
+    expect(asked).toEqual(['orderPlaced', 'paymentCaptured', 'noteAdded']);
+    const written = await journal.read('checkout', 1);
+    expect(written.map((e) => e.tags)).toEqual([['order'], ['payment'], undefined]);
+    // The symmetric half: the later events did not inherit `order`.
+    expect(written.filter((e) => (e.tags ?? []).includes('order')).length).toBe(1);
+    await system.terminate();
+  });
 });
 
 /* ------------------------- security: snapshot integrity -------------------------- */
@@ -285,8 +333,10 @@ describe('PersistentActor — snapshot integrity hardening', () => {
   test('exploit: tampered snapshot with MAX_SAFE_INTEGER seq is refused', async () => {
     const { system, journal, snapshots } = makeSystem();
     // Genuine state: two events, seq=1+2.
-    await journal.append('tampered-1',
-      [{ kind: 'deposited', amount: 100 }, { kind: 'deposited', amount: 50 }], 0);
+    await journal.append('tampered-1',[
+      { event: { kind: 'deposited', amount: 100 } },
+      { event: { kind: 'deposited', amount: 50 } },
+    ], 0);
     // Attacker writes a malicious snapshot — seq way above what the
     // journal can corroborate.
     await snapshots.save('tampered-1', Number.MAX_SAFE_INTEGER, { balance: 99_999 });
@@ -308,7 +358,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
   test('exploit: tampered snapshot with negative seq is refused', async () => {
     const { system, journal, snapshots } = makeSystem();
-    await journal.append('tampered-2', [{ kind: 'deposited', amount: 1 }], 0);
+    await journal.append('tampered-2', [{ event: { kind: 'deposited', amount: 1 } }], 0);
     await snapshots.save('tampered-2', -1, { balance: 99_999 });
 
     const events: unknown[] = [];
@@ -320,7 +370,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
   test('exploit: tampered snapshot with NaN seq is refused', async () => {
     const { system, journal, snapshots } = makeSystem();
-    await journal.append('tampered-3', [{ kind: 'deposited', amount: 1 }], 0);
+    await journal.append('tampered-3', [{ event: { kind: 'deposited', amount: 1 } }], 0);
     await snapshots.save('tampered-3', Number.NaN, { balance: 99_999 });
 
     const events: unknown[] = [];
@@ -335,8 +385,11 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     // a tampered snapshot claims seq=4.  Refused even though seq=4
     // is "only" one above.
     const { system, journal, snapshots } = makeSystem();
-    await journal.append('tampered-4',
-      [{ kind: 'deposited', amount: 10 }, { kind: 'deposited', amount: 20 }, { kind: 'deposited', amount: 30 }], 0);
+    await journal.append('tampered-4',[
+      { event: { kind: 'deposited', amount: 10 } },
+      { event: { kind: 'deposited', amount: 20 } },
+      { event: { kind: 'deposited', amount: 30 } },
+    ], 0);
     await snapshots.save('tampered-4', 4, { balance: 99_999 });
 
     const events: unknown[] = [];
@@ -348,8 +401,10 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
   test('regression: legitimate snapshot at seq=journal-highest recovers normally', async () => {
     const { system, journal, snapshots } = makeSystem();
-    await journal.append('legit-1',
-      [{ kind: 'deposited', amount: 100 }, { kind: 'deposited', amount: 50 }], 0);
+    await journal.append('legit-1',[
+      { event: { kind: 'deposited', amount: 100 } },
+      { event: { kind: 'deposited', amount: 50 } },
+    ], 0);
     // Snapshot at seq=2 (the journal's highest) is the standard case.
     await snapshots.save('legit-1', 2, { balance: 150 });
 
@@ -366,10 +421,11 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
   test('regression: legitimate snapshot below journal-highest replays remaining events', async () => {
     const { system, journal, snapshots } = makeSystem();
-    await journal.append('legit-2',
-      [{ kind: 'deposited', amount: 100 },
-       { kind: 'deposited', amount: 50 },
-       { kind: 'deposited', amount: 25 }], 0);
+    await journal.append('legit-2',[
+      { event: { kind: 'deposited', amount: 100 } },
+      { event: { kind: 'deposited', amount: 50 } },
+      { event: { kind: 'deposited', amount: 25 } },
+    ], 0);
     // Snapshot at seq=1; events 2+3 still need replay.
     await snapshots.save('legit-2', 1, { balance: 100 });
 

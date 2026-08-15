@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const sqliteFile = new SqliteJournal(sqliteFileOptions);
 
   const appendOne = (j: Journal, persistenceId: string, seq: { n: number }) => async (): Promise<void> => {
-    await j.append(persistenceId, [{ body: 'x'.repeat(32) }], seq.n);
+    await j.append(persistenceId, [{ event: { body: 'x'.repeat(32) } }], seq.n);
     seq.n++;
   };
 
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
       unit: 'event',
       iterations: 1_000, opsPerIteration: 10,
       run: async () => {
-        const batch = Array.from({ length: 10 }, () => ({ body: 'x'.repeat(32) }));
+        const batch = Array.from({ length: 10 }, () => ({ event: { body: 'x'.repeat(32) } }));
         await inMem.append('im2', batch, inMemBatchSeq.n);
         inMemBatchSeq.n += 10;
       },
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
       unit: 'event',
       iterations: 1_000, opsPerIteration: 10,
       run: async () => {
-        const batch = Array.from({ length: 10 }, () => ({ body: 'x'.repeat(32) }));
+        const batch = Array.from({ length: 10 }, () => ({ event: { body: 'x'.repeat(32) } }));
         await sqliteMem.append('sm2', batch, sqliteMemBatchSeq.n);
         sqliteMemBatchSeq.n += 10;
       },

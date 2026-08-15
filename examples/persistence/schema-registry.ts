@@ -119,9 +119,9 @@ async function main(): Promise<void> {
   // Pre-seed the journal with a v1-shaped event (representing data
   // written before the schema evolved) — wrapped in the standard
   // envelope so the adapter sees it.
-  await journal.append('account-1', [{
-    _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 50 },
-  }], 0);
+  await journal.append('account-1', [
+    { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 50 } } },
+  ], 0);
 
   const ref = sys.spawn(Account, 'acct');
   // Recovery: replays the v1 event through the registry's upcasters

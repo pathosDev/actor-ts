@@ -28,7 +28,7 @@ Entity vorbei rast.
 
 ## Was Rebalance auslöst
 
-Zwei Pfade:
+Drei Pfade:
 
 1. **Mitgliedschaftsgetrieben** — `MemberUp` (ein neuer Node),
    `MemberRemoved` (ein gehender Node) oder jeder
@@ -42,8 +42,31 @@ Zwei Pfade:
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
    Shards zurück, deren Hash-Ziel gewandert ist.
+3. **Eine Region, die stoppt** — eine Region meldet sich beim
+   Koordinator ab, während sie herunterfährt, und ihre Shards werden
+   sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
+   gestoppt wird, der im Cluster bleibt — dort feuert überhaupt kein
+   Membership-Event.
 
-Beide speisen denselben Handoff-Mechanismus.
+Die ersten beiden speisen den Handoff-Mechanismus unten. Der dritte
+nicht: Die Region ist bereits weg, es gibt also nichts zu übergeben —
+der Koordinator streicht sie schlicht aus der Registry und alloziert
+neu.
+
+Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
+**verwaist** zurück: Der Koordinator nannte sie weiterhin als deren
+Zuhause, Sender cachten dieses Zuhause und stellten in einen
+gestoppten Actor zu, und die Nachrichten wurden zu Dead Letters.
+Es erholte sich auch nichts — die Kandidatenmenge wird aus der
+Registry abgeleitet, ohne Liveness-Prüfung, der Rebalance-Tick sah
+also einen ausgeglichenen Cluster und verschob nichts. Das blieb so,
+bis der Node den Cluster ganz verließ.
+
+Die Meldung ist Best-Effort und idempotent: Sie entfällt, wenn die
+Region nie einen Koordinator gefunden hat, ein Transportfehler auf dem
+Weg nach unten wird geloggt und geschluckt, und der `MemberRemoved`-
+Pfad, der einem kompletten Node-Shutdown folgt, findet die Region
+bereits weg und tut nichts.
 
 ## Die Handoff-Sequenz
 
@@ -71,6 +94,44 @@ Node B wandern soll:
 Das Ganze dauert üblicherweise **sub-Sekunde bis ein paar
 Sekunden**, abhängig davon, wie viele Entities im Shard sind und
 wie lang ihre `postStop`-Arbeit dauert.
+
+## Wer einen Handoff anordnen darf
+
+Ein `HandOff` stoppt jede Entity eines Shards, deshalb prüft die
+Region **woher er kam**, bevor sie ihn ausführt — nicht nur, was
+darin steht. Die Regel gilt für jede Direktive, die ausschließlich
+der Koordinator aussprechen darf: `HandOff`, `ShardHome`,
+`RememberedEntities`, `ShardMapUpdate` und
+`RegisterAcknowledgment`.
+
+Zwei Bedingungen müssen erfüllt sein:
+
+1. Der Frame kam über den eigenen Envelope-Pfad der Region herein,
+   der ihn mit dem Peer stempelt, als der die **Verbindung**
+   authentifiziert wurde — niemals mit einem Feld aus der Payload,
+   das der Absender selbst schreibt.
+2. Dieser Peer ist der Node, von dem die Region aktuell glaubt,
+   dass er den Koordinator hostet, also der aktuelle Leader.
+
+Alles andere wird verworfen und auf `WARN` geloggt. Bis es diese
+Regel gab, konnte jeder Peer, der den Cluster-Handshake abschließen
+konnte, mit einem kleinen Frame die Entities eines Shards
+abräumen — beliebig oft; die Region dispatchte allein auf das
+`kind` der Nachricht und kannte überhaupt keinen Absender.
+
+Ein Verwerfen ist konstruktionsbedingt unkritisch: Eine Region
+registriert sich beim nächsten Leader- oder Membership-Event neu
+und fragt jeden gepufferten Shard erneut an — eine während eines
+Leader-Wechsels verworfene Direktive wird also erneut angefordert
+statt verloren.
+
+:::note[Das ist Autorisierung, keine Authentifizierung]
+Die Prüfung sagt *„nur der Node des Koordinators"*, und in einem
+Cluster ohne Peer-Zertifikate kann jeder, der den Port erreicht,
+Mitglied und danach Leader werden. Betreibe mTLS, wenn das Netz
+nicht vollständig vertrauenswürdig ist — siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/).
+:::
 
 ## Konfiguration
 

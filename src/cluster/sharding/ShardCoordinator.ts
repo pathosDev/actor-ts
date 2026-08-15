@@ -16,6 +16,7 @@ import type {
   CoordinatorStateData,
   RegionInfoData,
 } from './CoordinatorState.js';
+import { AuthenticatedShardingMessage } from './ShardingProtocol.js';
 import type {
   BeginHandOffAcknowledgment,
   ClusterShardingStats,
@@ -27,6 +28,7 @@ import type {
   HandOffComplete,
   RegionTerminated,
   RegisterAcknowledgment,
+  RegisterRefused,
   RegisterRegion,
   ShardingMessage,
   ShardLocation,
@@ -104,6 +106,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
   private nextStatsQuery = 0;
+  /**
+   * Region keys refused for a `numShards` mismatch (#633).  Refusing the
+   * registration is not enough on its own: `onGetShardHome` never required one,
+   * so a refused region's first buffered message would still get a home
+   * allocated — under *its* hash of the entity id, which is the split the
+   * refusal exists to prevent.
+   */
+  private readonly refusedRegions = new Set<string>();
 
   private rebalanceTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
@@ -453,7 +463,51 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     /* other ShardingMessage variants are region-side */
   }
 
+  /**
+   * A region claiming a different shard count than this coordinator governs is
+   * refused outright (#633).
+   *
+   * `hash(entityId) % numShards` is computed independently on every node, so
+   * two counts split the routing: entity `x` hashes to 45 under 64 shards and
+   * to 13 under 32, both nodes own the shard their own hash produced, and both
+   * instantiate `x` — at `shard-13/x` and `shard-45/x`, paths that never
+   * collide, which is why nothing warned.  The bound added in #583 catches only
+   * one direction of this (a region asking for an id above the coordinator's
+   * range) and turns it into a silent hang; the other direction passes cleanly
+   * and double-homes.  Refusing the registration is what makes both directions
+   * fail the same, loud way: an unregistered region is never a placement
+   * candidate, so it can never be handed a shard to double-home.
+   *
+   * Compared against the coordinator's own configured count rather than the
+   * first registrant's, which is not a durable authority — `onLeaderChanged`
+   * clears `regions` wholesale and `loadCoordinatorState` restores no shard
+   * count, so "first" would be re-decided at every election.
+   */
+  private isAgreedNumShards(message: RegisterRegion): boolean {
+    const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
+    if (message.numShards === this.options.numShards) {
+      this.refusedRegions.delete(key);
+      return true;
+    }
+    this.refusedRegions.add(key);
+    this.log.error(
+      `refusing to register region ${message.region} on ${message.node.host}:${message.node.port} `
+      + `for type "${this.options.typeName}": it hashes with numShards=${message.numShards} but this `
+      + `coordinator governs the type with numShards=${this.options.numShards}. Routing would split `
+      + `and the same entity id would run on both nodes at once.`,
+    );
+    const refusal: RegisterRefused = {
+      kind: 'sharding.RegisterRefused',
+      coordinator: this.self.path.toString(),
+      numShards: this.options.numShards,
+      regionNumShards: message.numShards,
+    };
+    this.replyTo(message.region, message.node, refusal);
+    return false;
+  }
+
   private onRegister(message: RegisterRegion): void {
+    if (!this.isAgreedNumShards(message)) return;
     const node = NodeAddress.fromJSON(message.node);
     const key = regionKey(node, message.region);
     this.regions.set(key, {
@@ -507,6 +561,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private onGetShardHome(message: GetShardHome): void {
     if (!this.isKnownShardId(message.shardId)) return;
+    // A refused region's shard ids are drawn from a different modulus, so
+    // answering one places the *same* entity id in a second shard — the exact
+    // split refusing its registration was meant to stop.  It stays buffered
+    // instead, which is the fail-stop; the error the region logged on the
+    // refusal says why.
+    if (this.refusedRegions.has(regionKey(NodeAddress.fromJSON(message.requesterNode), message.requester))) {
+      return;
+    }
     const home = this.shardHome.get(message.shardId);
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;
@@ -756,6 +818,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.regions.clear();
       this.shardHome.clear();
       this.pending.clear();
+      // A refusal is a verdict of *this* leader term.  Every region
+      // re-registers on the leader change, so the next term re-derives it.
+      this.refusedRegions.clear();
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
@@ -1007,11 +1072,22 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.replyTo(info.path, info.node.toJSON(), message);
   }
 
+  /**
+   * Every reply here goes to a region, and a region only honours a
+   * coordinator directive that arrives inside an
+   * {@link AuthenticatedShardingMessage} naming the coordinator's node (#584).
+   * The remote leg gets that for free — the receiving node's per-path envelope
+   * handler stamps the connection's peer on the way in — but a bare local
+   * `ref.tell` is byte-identical to what an attacker's frame produces after the
+   * generic path walk, so the local leg has to build the wrapper itself.
+   * Without it a single-node cluster could not rebalance at all.
+   */
   private replyTo(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.options.cluster.selfAddress)) {
-      const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
-      if (ref) ref.tell(message);
+      const ref = this.options.localResolver(path) as
+        ActorRef<ShardingMessage | AuthenticatedShardingMessage> | null;
+      if (ref) ref.tell(new AuthenticatedShardingMessage(this.options.cluster.selfAddress, message));
       return;
     }
     const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);

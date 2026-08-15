@@ -35,7 +35,7 @@ describe('DynamoDbJournal — table provisioning', () => {
   test('creates the table on-demand with pid/seq keys', async () => {
     const operations = new FakeDynamoDb();
     const journal = journalWith(operations);
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     expect(operations.log).toContain('createTable actor_ts_events PAY_PER_REQUEST');
     await journal.close();
   });
@@ -45,9 +45,9 @@ describe('DynamoDbJournal — table provisioning', () => {
     // redeploy re-runs this.
     const operations = new FakeDynamoDb();
     const first = journalWith(operations);
-    await first.append('account-1', ['a'], 0);
+    await first.append('account-1', [{ event: 'a' }], 0);
     const second = journalWith(operations);
-    await expect(second.append('account-2', ['b'], 0)).resolves.toBeDefined();
+    await expect(second.append('account-2', [{ event: 'b' }], 0)).resolves.toBeDefined();
     await first.close();
     await second.close();
   });
@@ -71,7 +71,7 @@ describe('DynamoDbJournal — table provisioning', () => {
       .withBillingMode('PROVISIONED')
       .withProvisionedThroughput(7, 11);
     const journal = new DynamoDbJournal(journalOptions);
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     expect(operations.log).toContain('createTable actor_ts_events PROVISIONED');
     await journal.close();
   });
@@ -82,13 +82,13 @@ describe('DynamoDbJournal — atomicity and service limits', () => {
     const operations = new FakeDynamoDb();
     const first = journalWith(operations);
     const second = journalWith(operations);
-    await first.append('account-1', ['a'], 0);         // head is now 1
+    await first.append('account-1', [{ event: 'a' }], 0);         // head is now 1
 
     // `second` still believes the stream is empty, so its transaction tries
     // seq 1..3.  `TransactWriteItems` is all-or-nothing, so the fact that only
     // seq 1 collides must still leave seq 2 and 3 unwritten — this is what the
     // backend has instead of MongoDB's "may persist a prefix" caveat.
-    await expect(second.append('account-1', ['x', 'y', 'z'], 0)).rejects.toMatchObject({
+    await expect(second.append('account-1', [{ event: 'x' }, { event: 'y' }, { event: 'z' }], 0)).rejects.toMatchObject({
       name: 'JournalConcurrencyError',
       expectedSeq: 0,
       actualSeq: 1,
@@ -102,7 +102,7 @@ describe('DynamoDbJournal — atomicity and service limits', () => {
   test('an append beyond the 100-item transaction limit is refused clearly', async () => {
     const operations = new FakeDynamoDb();
     const journal = journalWith(operations);
-    const tooMany = Array.from({ length: 101 }, (_, index) => `event-${index}`);
+    const tooMany = Array.from({ length: 101 }, (_, index) => ({ event: `event-${index}` }));
     // Chunking would break the atomicity the concurrency model rests on, so the
     // store must refuse rather than silently degrade.
     await expect(journal.append('account-1', tooMany, 0)).rejects.toThrow(/caps an atomic transaction at 100/);
@@ -133,12 +133,12 @@ describe('DynamoDbJournal — the metadata item', () => {
   test('the mark at seq 0 never surfaces as an event, even when asked for', async () => {
     const operations = new FakeDynamoDb();
     const journal = journalWith(operations);
-    await journal.append('account-1', ['a', 'b'], 0);
+    await journal.append('account-1', [{ event: 'a' }, { event: 'b' }], 0);
     await journal.delete('account-1', 2);   // writes the mark at seq 0
     // A caller reading from 0 must not get the metadata item back as an event.
     expect(await journal.read('account-1', 0)).toEqual([]);
     expect(await journal.highestSeq('account-1')).toBe(2);
-    const written = await journal.append('account-1', ['c'], 2);
+    const written = await journal.append('account-1', [{ event: 'c' }], 2);
     expect(written.map((event) => event.sequenceNr)).toEqual([3]);
     expect((await journal.read('account-1', 0)).map((event) => event.sequenceNr)).toEqual([3]);
     await journal.close();
@@ -147,7 +147,7 @@ describe('DynamoDbJournal — the metadata item', () => {
   test('the mark only ever rises', async () => {
     const operations = new FakeDynamoDb();
     const journal = journalWith(operations);
-    await journal.append('account-1', ['a', 'b', 'c'], 0);
+    await journal.append('account-1', [{ event: 'a' }, { event: 'b' }, { event: 'c' }], 0);
     await journal.delete('account-1', 3);
     expect(await journal.highestSeq('account-1')).toBe(3);
     // The conditional update must reject this, and the rejection is expected
@@ -160,8 +160,8 @@ describe('DynamoDbJournal — the metadata item', () => {
   test('persistenceIds does not report an id that only has a mark', async () => {
     const operations = new FakeDynamoDb();
     const journal = journalWith(operations);
-    await journal.append('account-1', ['a'], 0);
-    await journal.append('account-2', ['b'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
+    await journal.append('account-2', [{ event: 'b' }], 0);
     await journal.delete('account-2', 1);   // account-2 keeps only its mark
     const ids = await journal.persistenceIds();
     expect(ids).toContain('account-1');
@@ -181,7 +181,7 @@ describe('DynamoDbJournal — pagination', () => {
     const operations = new FakeDynamoDb({ pageSize: 2 });
     const journal = journalWith(operations);
     const events = Array.from({ length: 9 }, (_, index) => `event-${index}`);
-    await journal.append('account-1', events, 0);
+    await journal.append('account-1', events.map((event) => ({ event })), 0);
     const read = await journal.read<string>('account-1', 1);
     expect(read.map((event) => event.event)).toEqual(events);
     expect(read.map((event) => event.sequenceNr)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -191,7 +191,7 @@ describe('DynamoDbJournal — pagination', () => {
   test('a delete spanning several pages removes every event', async () => {
     const operations = new FakeDynamoDb({ pageSize: 2 });
     const journal = journalWith(operations);
-    await journal.append('account-1', Array.from({ length: 9 }, (_, index) => `e${index}`), 0);
+    await journal.append('account-1', Array.from({ length: 9 }, (_, index) => ({ event: `e${index}` })), 0);
     await journal.delete('account-1', 9);
     expect(await journal.read('account-1', 1)).toEqual([]);
     expect(await journal.highestSeq('account-1')).toBe(9);
@@ -201,7 +201,7 @@ describe('DynamoDbJournal — pagination', () => {
   test('persistenceIds pages through the scan', async () => {
     const operations = new FakeDynamoDb({ pageSize: 1 });
     const journal = journalWith(operations);
-    for (const id of ['account-1', 'account-2', 'account-3']) await journal.append(id, ['a'], 0);
+    for (const id of ['account-1', 'account-2', 'account-3']) await journal.append(id, [{ event: 'a' }], 0);
     expect((await journal.persistenceIds()).sort()).toEqual(['account-1', 'account-2', 'account-3']);
     await journal.close();
   });
@@ -287,7 +287,7 @@ describe('DynamoDb* client ownership', () => {
     const state = new DynamoDbDurableStateStore(
       DynamoDbDurableStateStoreOptions.create().withOperations(operations),
     );
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     await snapshots.save('account-1', 1, { v: 1 });
     await state.upsert('account-1', 0, { v: 1 });
 
@@ -334,7 +334,7 @@ describe('registerDynamoDbPlugins', () => {
       expect(persistence.snapshotStore).toBeInstanceOf(DynamoDbSnapshotStore);
       expect(handles.durableStateStore).toBeInstanceOf(DynamoDbDurableStateStore);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       await persistence.snapshotStore.save('account-1', 1, { v: 1 });
       await handles.durableStateStore.upsert('account-1', 0, { v: 1 });
       // All three created their own table through the one shared façade.
@@ -359,7 +359,7 @@ describe('registerDynamoDbPlugins', () => {
         .withJournal(journalOptions);
       registerDynamoDbPlugins(persistence, pluginOptions);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(operations.log).toContain('createTable ledger_events PAY_PER_REQUEST');
     } finally {
       await system.terminate();

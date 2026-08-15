@@ -20,7 +20,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('append');
         try {
-          const written = await journal.append(persistenceId, ['e1', 'e2', 'e3'], 0);
+          const written = await journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
           assertEqual(written.map((e) => e.sequenceNr), [1, 2, 3], 'assigned sequence numbers');
           assertEqual(written.map((e) => e.event), ['e1', 'e2', 'e3'], 'returned payloads');
           assert(written.every((e) => e.persistenceId === persistenceId), 'events carry the persistence id');
@@ -36,7 +36,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('read');
         try {
-          await journal.append(persistenceId, [{ n: 1 }, { n: 2 }], 0);
+          await journal.append(persistenceId, [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
           const read = await journal.read<{ n: number }>(persistenceId, 1);
           assertEqual(read.map((e) => e.event.n), [1, 2], 'payloads survive the round-trip');
           // Relational drivers hand BIGINT columns back as strings — every
@@ -69,7 +69,8 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           histogram: Int32Array;
         };
         try {
-          await journal.append<RichEvent>(persistenceId, [{
+          await journal.append<RichEvent>(persistenceId, [
+            { event: {
             at: new Date('2024-06-01T12:00:00.000Z'),
             roles: new Set(['admin', 'auditor']),
             balances: new Map([['acc-1', 1500n], ['acc-2', -25n]]),
@@ -79,7 +80,8 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
             missing: NaN,
             pattern: /^ord-\d+$/i,
             histogram: new Int32Array([1, -2, 3]),
-          }], 0);
+          } },
+          ], 0);
           const read = await journal.read<RichEvent>(persistenceId, 1);
           const event = read[0]!.event;
           // instanceof + value checks on purpose: assertEqual JSON-stringifies,
@@ -111,7 +113,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('range');
         try {
-          await journal.append(persistenceId, ['a', 'b', 'c', 'd'], 0);
+          await journal.append(persistenceId, [{ event: 'a' }, { event: 'b' }, { event: 'c' }, { event: 'd' }], 0);
           assertEqual((await journal.read(persistenceId, 2, 3)).map((e) => e.sequenceNr), [2, 3], 'bounded read');
           assertEqual((await journal.read(persistenceId, 3)).map((e) => e.sequenceNr), [3, 4], 'open-ended read');
           assertEqual((await journal.read(persistenceId, 2, 2)).map((e) => e.sequenceNr), [2], 'single-element range');
@@ -126,9 +128,9 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('concurrency');
         try {
-          await journal.append(persistenceId, ['a', 'b'], 0);
+          await journal.append(persistenceId, [{ event: 'a' }, { event: 'b' }], 0);
           const error = await expectThrows(
-            () => journal.append(persistenceId, ['x'], 0),
+            () => journal.append(persistenceId, [{ event: 'x' }], 0),
             'JournalConcurrencyError',
             'append with a stale expectedSeq',
           ) as JournalConcurrencyError;
@@ -136,7 +138,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           assertEqual(error.actualSeq, 2, 'error reports the actual head');
           // The rejected append must not have written anything.
           assertEqual(await journal.highestSeq(persistenceId), 2, 'head unchanged after the rejection');
-          const resumed = await journal.append(persistenceId, ['c'], 2);
+          const resumed = await journal.append(persistenceId, [{ event: 'c' }], 2);
           assertEqual(resumed.map((e) => e.sequenceNr), [3], 'append resumes with the correct expectedSeq');
         } finally {
           await closeQuietly(journal);
@@ -161,7 +163,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           // exists for.  On a relational store this is also the only scenario
           // that reaches that backstop at all.
           const attempts = await Promise.allSettled(
-            Array.from({ length: 6 }, (_, index) => journal.append(persistenceId, [`writer-${index}`], head)),
+            Array.from({ length: 6 }, (_, index) => journal.append(persistenceId, [{ event: `writer-${index}` }], head)),
           );
           const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
           const losers = attempts.filter((attempt) => attempt.status === 'rejected');
@@ -208,7 +210,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           assertEqual(await journal.append(persistenceId, [], 0), [], 'empty append on a fresh id returns []');
           assertEqual(await journal.highestSeq(persistenceId), 0, 'empty append does not advance the head');
 
-          await journal.append(persistenceId, ['a', 'b'], 0);
+          await journal.append(persistenceId, [{ event: 'a' }, { event: 'b' }], 0);
           // Nothing is being written, so there is nothing to conflict over —
           // an empty append is a no-op even when expectedSeq is stale.
           assertEqual(await journal.append(persistenceId, [], 0), [], 'empty append with a stale expectedSeq returns []');
@@ -226,15 +228,53 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('tags');
         try {
-          const written = await journal.append(persistenceId, ['a', 'b'], 0, ['tagAlpha', 'tagBeta']);
+          const written = await journal.append(persistenceId, [
+            { event: 'a', tags: ['tagAlpha', 'tagBeta'] },
+            { event: 'b', tags: ['tagAlpha', 'tagBeta'] },
+          ], 0);
           assertEqual(written[0]!.tags, ['tagAlpha', 'tagBeta'], 'returned events carry the tags');
           const read = await journal.read(persistenceId, 1);
           assertEqual(read[0]!.tags, ['tagAlpha', 'tagBeta'], 'tags survive the round-trip');
-          assertEqual(read[1]!.tags, ['tagAlpha', 'tagBeta'], 'every event of the batch is tagged');
+          assertEqual(read[1]!.tags, ['tagAlpha', 'tagBeta'], 'each event keeps the tags it was given');
           // An untagged append leaves the field absent rather than empty.
-          await journal.append(persistenceId, ['c'], 2);
+          await journal.append(persistenceId, [{ event: 'c' }], 2);
           const untagged = (await journal.read(persistenceId, 3))[0]!;
           assert(untagged.tags === undefined, 'untagged events report no tags');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      name: 'per-event tags round-trip in a multi-event append',
+      skip: (harness) => (harness.capabilities?.tags === false ? 'store does not support tags' : null),
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('per-event-tags');
+        // The batch used to be stamped with ONE tag list — whichever the first
+        // event had — so a mixed `persistAll` was wrong in both directions at
+        // once (#631).  Both are asserted below, because a backend that fixed
+        // only the false negative (by unioning the batch's tags, say) would
+        // still hand a by-tag projection events it never tagged.
+        try {
+          await journal.append(persistenceId, [
+            { event: 'orderPlaced', tags: ['order'] },
+            { event: 'paymentCaptured', tags: ['payment'] },
+            { event: 'noteAdded' },
+          ], 0);
+          const read = await journal.read(persistenceId, 1);
+          assertEqual(read.map((e) => e.event), ['orderPlaced', 'paymentCaptured', 'noteAdded'], 'payload order');
+
+          // False negative: the second event's own tag must have been written.
+          assertEqual(read[1]!.tags, ['payment'], 'the second event carries its own tags');
+          // False positive: it must NOT have inherited the first event's.
+          assert(
+            !(read[1]!.tags ?? []).includes('order'),
+            `the second event must not carry the first event's tags, got ${JSON.stringify(read[1]!.tags)}`,
+          );
+          assertEqual(read[0]!.tags, ['order'], 'the first event is unaffected');
+          // An untagged event inside a tagged batch stays untagged.
+          assert(read[2]!.tags === undefined, 'an untagged event in a tagged batch reports no tags');
         } finally {
           await closeQuietly(journal);
         }
@@ -246,11 +286,11 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('partial-delete');
         try {
-          await journal.append(persistenceId, ['e1', 'e2', 'e3'], 0);
+          await journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
           await journal.delete(persistenceId, 2);
           assertEqual((await journal.read(persistenceId, 1)).map((e) => e.sequenceNr), [3], 'events up to toSeq are gone');
           assertEqual(await journal.highestSeq(persistenceId), 3, 'highestSeq is the surviving head');
-          const written = await journal.append(persistenceId, ['e4'], 3);
+          const written = await journal.append(persistenceId, [{ event: 'e4' }], 3);
           assertEqual(written.map((e) => e.sequenceNr), [4], 'append continues after the compaction');
         } finally {
           await closeQuietly(journal);
@@ -263,13 +303,13 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('full-delete');
         try {
-          await journal.append(persistenceId, ['e1', 'e2', 'e3'], 0);
+          await journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
           // Full compaction past a snapshot: every event for the id is dropped.
           await journal.delete(persistenceId, 3);
           assertEqual(await journal.read(persistenceId, 1), [], 'all events are gone');
           // … but sequence numbers are never reused, so the counter stands.
           assertEqual(await journal.highestSeq(persistenceId), 3, 'highestSeq survives the full delete');
-          const written = await journal.append(persistenceId, ['e4'], 3);
+          const written = await journal.append(persistenceId, [{ event: 'e4' }], 3);
           assertEqual(written.map((e) => e.sequenceNr), [4], 'the recovered actor can append at the old head');
           assertEqual(await journal.highestSeq(persistenceId), 4, 'head advances from the preserved mark');
         } finally {
@@ -284,7 +324,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const persistenceId = harness.pid('delete-idempotent');
         try {
           await journal.delete(harness.pid('never-written-delete'), 5);   // must not throw
-          await journal.append(persistenceId, ['a', 'b'], 0);
+          await journal.append(persistenceId, [{ event: 'a' }, { event: 'b' }], 0);
           await journal.delete(persistenceId, 2);
           await journal.delete(persistenceId, 2);
           assertEqual(await journal.read(persistenceId, 1), [], 'repeated delete leaves the stream empty');
@@ -301,9 +341,9 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const first = harness.pid('ids-first');
         const second = harness.pid('ids-second');
         try {
-          await journal.append(first, ['a'], 0);
-          await journal.append(second, ['a'], 0);
-          await journal.append(first, ['b'], 1);
+          await journal.append(first, [{ event: 'a' }], 0);
+          await journal.append(second, [{ event: 'a' }], 0);
+          await journal.append(first, [{ event: 'b' }], 1);
           const ids = await journal.persistenceIds();
           assert(ids.includes(first), `persistenceIds includes ${first}`);
           assert(ids.includes(second), `persistenceIds includes ${second}`);
@@ -318,7 +358,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       name: 'close is idempotent',
       async run(harness) {
         const journal = await harness.make();
-        await journal.append(harness.pid('close'), ['a'], 0);
+        await journal.append(harness.pid('close'), [{ event: 'a' }], 0);
         // `close` is documented as best-effort and idempotent — a second call
         // (e.g. CoordinatedShutdown after an explicit close) must not throw.
         await closeQuietly(journal);

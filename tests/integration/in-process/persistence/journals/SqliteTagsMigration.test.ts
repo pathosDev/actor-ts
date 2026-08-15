@@ -33,9 +33,9 @@ describe('SqliteJournal — event_tags migration', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
-    await journal.append('alice', [{ msg: 'a1' }], 0, ['orders', 'vip']);
-    await journal.append('alice', [{ msg: 'a2' }], 1, ['orders']);
-    await journal.append('bob', [{ msg: 'b1' }], 0, ['internal']);
+    await journal.append('alice', [{ event: { msg: 'a1' }, tags: ['orders', 'vip'] }], 0);
+    await journal.append('alice', [{ event: { msg: 'a2' }, tags: ['orders'] }], 1);
+    await journal.append('bob', [{ event: { msg: 'b1' }, tags: ['internal'] }], 0);
 
     // Peek directly into the tags table to verify the rows landed.
     const internal = journal as unknown as {
@@ -133,7 +133,7 @@ describe('SqliteJournal — event_tags migration', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal1 = new SqliteJournal(journalOptions);
-    await journal1.append('a', [{}], 0, ['t1', 't2']);
+    await journal1.append('a', [{ event: {}, tags: ['t1', 't2'] }], 0);
 
     const internal = journal1 as unknown as {
       db: { prepare(sql: string): { all(...args: unknown[]): { n: number }[] } };
@@ -148,7 +148,7 @@ describe('SqliteJournal — event_tags migration', () => {
     // empty.  We can't easily re-init the same instance, so we
     // verify the count stays stable by appending another event and
     // checking we don't see double-counts.
-    await journal1.append('a', [{}], 1, ['t1']);
+    await journal1.append('a', [{ event: {}, tags: ['t1'] }], 1);
     const after = (internal.db.prepare(
       `SELECT COUNT(*) AS n FROM events_tags`,
     ).all()[0] as { n: number }).n;
@@ -161,10 +161,10 @@ describe('SqliteJournal — event_tags migration', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
-    await journal.append('alice', [{ msg: 'keep-1' }], 0, ['orders']);
-    await journal.append('alice', [{ msg: 'drop-2' }], 1, ['orders']);
-    await journal.append('alice', [{ msg: 'drop-3' }], 2, ['vip']);
-    await journal.append('alice', [{ msg: 'keep-4' }], 3, ['orders', 'vip']);
+    await journal.append('alice', [{ event: { msg: 'keep-1' }, tags: ['orders'] }], 0);
+    await journal.append('alice', [{ event: { msg: 'drop-2' }, tags: ['orders'] }], 1);
+    await journal.append('alice', [{ event: { msg: 'drop-3' }, tags: ['vip'] }], 2);
+    await journal.append('alice', [{ event: { msg: 'keep-4' }, tags: ['orders', 'vip'] }], 3);
 
     const internal = journal as unknown as {
       db: { prepare(sql: string): { all(...args: unknown[]): unknown[] } };
