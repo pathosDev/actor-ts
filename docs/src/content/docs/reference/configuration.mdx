@@ -250,10 +250,19 @@ the transport is tracked separately as
 lands, treat the cluster network as something you have to secure by other
 means.
 
+The value is type-checked, like every other key on this page.  `true`, `on`
+and `yes` all ask for TLS and all produce the warning; `false`, `no` and `off`
+all decline and stay silent.  Anything else — `maybe`, or a bare `1` — throws
+a `ConfigError` out of `Cluster.join` and the node does not start.  A security
+toggle is the wrong place to guess at what a typo meant: the forgiving reading
+is "not enabled", which would leave the node on plaintext while your config
+says TLS — exactly the state this warning exists to rule out.
+
 The warning is about the transport the cluster builds for itself.  Pass your
 own via `ClusterOptions.withTransport(…)` and the node stays quiet about this
 key: what that transport does with TLS is yours to decide, and the framework
-cannot tell from the outside whether it is encrypted.
+cannot tell from the outside whether it is encrypted.  The key is then not
+read at all, so a malformed value does not stop that node either.
 :::
 
 ### `actor-ts.http`

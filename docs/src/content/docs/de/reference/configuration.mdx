@@ -258,10 +258,21 @@ Transport zu verschlüsseln ist separat verfolgt als
 landet, behandle das Cluster-Netz als etwas, das du anderweitig absichern
 musst.
 
+Der Wert wird typgeprüft, wie jeder andere Key auf dieser Seite.  `true`, `on`
+und `yes` fordern alle TLS an und erzeugen alle die Warnung; `false`, `no` und
+`off` lehnen alle ab und bleiben still.  Alles andere — `maybe` oder ein
+nacktes `1` — wirft einen `ConfigError` aus `Cluster.join` heraus, und der Node
+startet nicht.  Ein Security-Schalter ist der falsche Ort, um zu raten, was
+ein Tippfehler gemeint hat: die nachsichtige Lesart wäre „nicht aktiviert",
+und damit stünde der Node wieder auf Klartext, während die Config TLS sagt —
+genau der Zustand, den diese Warnung ausschließen soll.
+
 Die Warnung gilt für den Transport, den der Cluster sich selbst baut.
 Übergibst du per `ClusterOptions.withTransport(…)` einen eigenen, bleibt der
 Node zu diesem Key still: was dieser Transport mit TLS macht, entscheidest
 du, und das Framework kann von außen nicht erkennen, ob er verschlüsselt ist.
+Der Key wird dann gar nicht gelesen, ein fehlerhafter Wert hält also auch
+diesen Node nicht auf.
 :::
 
 ### `actor-ts.http`
