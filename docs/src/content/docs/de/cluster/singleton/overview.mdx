@@ -163,6 +163,15 @@ unbegrenzt.  Jenseits des Limits (Default 1000) gehen Nachrichten mit
 einer Warnung in die Dead Letters, statt den Puffer ewig wachsen zu
 lassen.
 
+Der Puffer wird beim ersten Cluster-Event geleert, das einen Host
+hervorgebracht haben kann — bei einem Leader-Wechsel, genauso aber,
+wenn ein Mitglied hochkommt, unerreichbar wird oder geht.  Diese
+vollständige Menge ist für ein rollenbeschränktes Singleton
+entscheidend: Das erste Mitglied, das die Rolle trägt, kann beitreten,
+ohne dass sich der Leader überhaupt ändert — und vor v0.17.0 blieb der
+Puffer dadurch unbegrenzt ungeleert, während jeder spätere Versand
+normal geroutet wurde.
+
 :::note[Es gibt bewusst kein `SingletonActor`-Interface]
 TypeScripts `implements`-Klausel prüft ausschließlich die
 **Instanzseite** einer Klasse — es gibt kein `static implements`, und

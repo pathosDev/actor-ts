@@ -110,17 +110,48 @@ const path = singletonManagerPath(system.name, 'job-scheduler');
 Du kannst diesen Helper verwenden, wenn du sicherstellen willst,
 dass der Pfad passt.
 
+## Worauf der Manager reagiert
+
+Der Host eines Singletons ist das **erste adressensortierte
+Up-Mitglied**: der Cluster-Leader — oder, bei einer Rollen-Einschränkung,
+das erste Mitglied, das diese Rolle trägt. Der Host wandert also bei
+*jedem* Übergang in den Zustand `up` hinein oder aus ihm heraus, nicht
+nur bei einem Leader-Wechsel:
+
+| Event | Warum es den Host verschieben kann |
+| --- | --- |
+| `LeaderChanged` | Der uneingeschränkte Host **ist** der Leader. |
+| `SelfUp` | Dieser Node ist gerade hosting-fähig geworden. |
+| `MemberUp` | Ein Mitglied ist der Up-Menge beigetreten — möglicherweise unterhalb des aktuellen Hosts. |
+| `MemberUnreachable` | Ein Up-Mitglied ist aus der Up-Menge gefallen, ohne entfernt zu werden. |
+| `MemberReachable` | … und ist ihr wieder beigetreten. |
+| `MemberDown` / `MemberLeft` / `MemberRemoved` | Der Host ist im Begriff zu gehen. |
+
+`MemberJoined` und `MemberWeaklyUp` fehlen bewusst: Weder `joining`- noch
+`weakly-up`-Mitglieder tauchen in `upMembers()` auf, also kann keines von
+beiden hosten.
+
+**Vor v0.17.0 war der Trigger allein `LeaderChanged`.** Ein
+rollentragendes Mitglied, das *unterhalb* eines rollenlosen Leaders
+beitritt, verschiebt den Rollen-Host und ändert keinen Leader — es feuerte
+also nichts. Der beitretende Node spawnte trotzdem (über sein eigenes
+`SelfUp`), dem Amtsinhaber wurde nie gesagt, er solle stoppen, und der
+Cluster pendelte sich auf **zwei lebende Singletons** ein. Dieselbe Lücke
+ließ einen Rollen-Host, der `unreachable` wurde, überhaupt nirgends
+gehostet, bis er schließlich gedownt wurde. Wenn du auf einer älteren
+Version bist, ist das die Form, nach der du suchen solltest.
+
 ## Die zwei operativen Pfade
 
 ### Ohne Lease (Default)
 
 ```
-LeaderChanged → bin ich jetzt Leader? → ja → spawne Singleton
-                                      → nein → stoppe meinen Singleton (falls vorhanden)
+Host-änderndes Event → bin ich jetzt der Host? → ja → spawne Singleton
+                                               → nein → stoppe meinen Singleton (falls vorhanden)
 ```
 
 Synchrone Reconcile. Sobald Gossip sagt, dieser Node sei der
-Leader, spawnt der Manager sein Singleton-Kind. Einfach, schnell.
+Host, spawnt der Manager sein Singleton-Kind. Einfach, schnell.
 
 **Nachteil**: während einer **Partition** kann jede Hälfte einen
 eigenen Leader haben. Beide Manager spawnen ihren Singleton. Zwei
@@ -139,8 +170,8 @@ Fügt ein asynchrones Gate über die Lease hinzu. Der Ablauf:
 
 ```mermaid
 flowchart TB
-  EVT[/"LeaderChanged"/]
-  ASK{"Bin ich jetzt<br/>Leader?"}
+  EVT[/"Host-änderndes<br/>Event"/]
+  ASK{"Bin ich jetzt<br/>der Host?"}
   ACQ["lease.acquire()"]
   GOT{"erworben?"}
   SPAWN["spawne Singleton"]
@@ -183,9 +214,9 @@ Lease verloren (widerrufen, Renew fehlgeschlagen) → Singleton sofort stoppen
 
 Wenn die Lease **widerrufen** wird (jemand anders hat sie
 erworben, oder das Renew des Providers ist fehlgeschlagen), stoppt
-der Manager den Singleton und wartet. Wenn `LeaderChanged` erneut
-feuert (z. B. der Manager bemerkt, dass er per Gossip immer noch
-als Leader gesehen wird), versucht er `lease.acquire()` erneut.
+der Manager den Singleton und wartet. Er prüft sofort erneut — und
+wieder beim nächsten host-ändernden Event: Wenn Gossip diesen Node
+weiterhin als Host nennt, versucht er `lease.acquire()` erneut.
 
 ## Das Kind beobachten
 
@@ -229,16 +260,29 @@ Abgeschaltet spawnt der Manager nicht neu, **gibt aber die Lease
 frei**, sodass ein anderer Node später hosten könnte. Was er nie
 wieder tut: eine Lease über ein Kind halten, das es nicht mehr gibt.
 
+Das Opt-out nimmt diesen **Node** dauerhaft aus der Rotation — bis sein
+Manager per `cluster.singleton.stop(...)` und anschließendem frischen
+`start(...)` neu gestartet wird. Es muss eine Verriegelung sein statt
+bloß fehlender Trigger: Der Manager entscheidet sich zum Spawnen anhand
+von „ich bin der Host und habe kein Kind", und das allein kann einen
+Endzustand nicht von „nie gestartet" unterscheiden — *jede* spätere
+Mitgliedschaftsänderung würde direkt wieder in ein Spawn hineinlaufen.
+Andere Nodes sind davon nicht betroffen; genau dafür wird die Lease
+freigegeben.
+
 ## Restart-Semantik
 
 Wenn der Manager selbst ausfällt (was selten ist), startet sein
 Supervisor (typisch der User-Guardian) ihn neu. Beim Neustart:
 
 - Cluster-Subscriptions werden neu aufgebaut.
-- Der aktuelle Leader wird erneut abgefragt.
-- Falls dieser Node immer noch Leader ist, wird Lease-Acquire
+- Der aktuelle Host wird erneut berechnet.
+- Falls dieser Node immer noch der Host ist, wird Lease-Acquire
   (sofern relevant) erneut versucht, und der Singleton wird frisch
   gespawnt.
+- Ein `restartOnTermination: false`-Opt-out wird aufgehoben — die
+  Verriegelung lebt auf der Manager-Instanz, ein neu gestarteter
+  Manager darf also wieder hosten.
 
 Der State des alten Singletons ist **verloren**, es sei denn, er
 persistiert sich selbst. Für stateful Singletons nutze
@@ -271,9 +315,12 @@ cluster.subscribe((evt) => {
 ```
 
 Das Verhalten des Managers wird vollständig von diesen Events
-gesteuert. Wenn du vermutest, dass der Manager sich falsch
-verhält, logge `LeaderChanged` + `MemberUp` / `MemberRemoved`, um
-zu sehen, was der Manager sieht.
+gesteuert. Wenn du vermutest, dass der Manager sich falsch verhält,
+logge die vollständige Trigger-Menge aus [Worauf der Manager
+reagiert](#worauf-der-manager-reagiert) — nicht nur `LeaderChanged`.
+Gerade ein rollenbeschränktes Singleton wechselt den Host bei
+`MemberUp` / `MemberUnreachable`, während der Leader stillsteht; wer
+nur auf das Leadership schaut, sieht dann schlicht nichts passieren.
 
 Für den Lease-Pfad logge auch `lease.acquire()`-Rückgaben — der
 Manager loggt diese standardmäßig auf Debug-Level.
