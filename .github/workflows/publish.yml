@@ -107,3 +107,123 @@ jobs:
         # npm ≥ 11.5.1 auto-detects the OIDC path — no NODE_AUTH_TOKEN.
         # `--provenance` signs via the same id-token.
         run: npm publish --provenance --access public
+
+  # ---------------------------------------------------------------------------
+  # CycloneDX SBOM, attached to the GitHub Release (#539).
+  #
+  # `--provenance` above answers "who built this tarball"; it says nothing
+  # about what is *inside* the dependency closure.  A consumer asking whether
+  # a release is affected by an advisory currently has to reconstruct the
+  # closure from `bun.lock` — and GitHub's own dependency graph cannot do it
+  # (it records the unresolved ranges out of package.json), which is why the
+  # repository's Dependabot alerts have only ever come from the npm lockfiles
+  # under `examples/`.  A CycloneDX document on the release answers it
+  # directly.
+  #
+  # Split across two jobs on purpose, not for style.  Generating the SBOM
+  # needs the installed tree, and uploading a release asset needs
+  # `contents: write`; a single job would hold a credential that can push to
+  # the repository *while* running the postinstall scripts of the entire
+  # dependency tree.  `tests/unit/ci/WorkflowHygiene.test.ts` fails on exactly
+  # that combination since #622, and the right answer to it is this split
+  # rather than an exemption.
+  #
+  # Neither job is a dependency of `publish`, so a broken SBOM can never
+  # block or delay shipping the package.
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: Generate CycloneDX SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      # The install is what makes the SBOM accurate.  Syft can read a
+      # lockfile, but Bun's is not a format it is guaranteed to resolve, and a
+      # bill of materials assembled from unresolved ranges is worse than none
+      # — it looks authoritative and names versions nobody shipped.
+      # Cataloguing `node_modules/` after a frozen install reports the exact
+      # versions `bun.lock` produced, whatever syft knows about the lockfile.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Syft catalogues every manifest under the scan path, and this repository
+      # carries ten that the package does not ship: `docs/package.json`,
+      # `tests/integration/brokers/package.json`, and a `package.json` plus a
+      # `package-lock.json` in each of the eight example front-ends.  Left in
+      # place they land in the release SBOM as though they shipped — and those
+      # npm lockfiles are exactly where every Dependabot alert this repository
+      # has ever raised comes from, so the document would be actively
+      # misleading about which advisories affect a release.  `files` in
+      # package.json is the authority on what ships (`dist/`, README,
+      # CHANGELOG, LICENSE); the rest goes.
+      #
+      # Deleting rather than configuring syft's excludes: the checkout is
+      # ephemeral, this needs no second config file to keep in sync, and the
+      # set being removed is auditable on one line.  Runs after the install,
+      # so nothing it removes was needed.
+      - name: Drop what the package does not ship
+        run: rm -rf examples docs tests
+
+      - name: Build the SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: actor-ts-sbom.cyclonedx.json
+          # Both uploads are done explicitly below.  The action's own
+          # release upload would have to run in this job, which installs —
+          # the split this whole section exists for.
+          upload-artifact: false
+          upload-release-assets: false
+          # Not a dependency-graph submission: the graph is repository-wide
+          # and would start reporting a release's closure as the state of the
+          # default branch.
+          dependency-snapshot: false
+
+      - name: Hand the SBOM to the upload job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: actor-ts-sbom.cyclonedx.json
+          if-no-files-found: error
+
+  attach-sbom:
+    name: Attach the SBOM to the release
+    needs: sbom
+    # A `workflow_dispatch` re-run has no release to attach to; the SBOM is
+    # still built above and kept as a workflow artifact.
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    # No checkout and no install here — that is the point of the split.  The
+    # only thing this job does with its write scope is upload one file.
+    steps:
+      - name: Fetch the SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: sbom
+
+      # `--clobber` for the same reason the publish step is version-guarded:
+      # the manual fallback exists to re-attempt a release, and a re-run must
+      # not die on "asset already exists".
+      - name: Upload as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" \
+            "sbom/actor-ts-sbom.cyclonedx.json#CycloneDX SBOM ($TAG)" \
+            --clobber

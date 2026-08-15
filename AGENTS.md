@@ -179,6 +179,20 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   bytes) removes the last check on them; the `git show` noise it saves is
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec
   exclude, `.git/info/attributes`).
+- **Security scanning is CI-side, with one local half.** `bun run
+  lint:audit` is `bun audit --audit-level=high` over `bun.lock` and gates
+  `package-health.yml`; run it after any dependency change, because that
+  is the one that can turn it red. It reads the lockfile deliberately —
+  GitHub's dependency graph resolves only the ranges in `package.json`,
+  so Dependabot and `dependency-review-action` are blind to the shipped
+  closure and are not used as gates here. Advisories that predate the
+  gate are suppressed by ID in the script *and* listed in `SECURITY.md`;
+  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, so
+  never silence one without the other. **CodeQL** (`codeql.yml`, pull
+  requests + weekly) and the workflow-hygiene invariants asserted by
+  `tests/unit/ci/WorkflowHygiene.test.ts` — SHA-pinned actions, explicit
+  read-only workflow permissions, frozen installs — are the rest of it.
+  A new workflow file has to satisfy that test on the first `bun test`.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
   on push to `develop`.
 
