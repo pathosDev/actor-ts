@@ -1,5 +1,5 @@
 import type { ActorRef } from '../../ActorRef.js';
-import type { NodeAddressData } from '../NodeAddress.js';
+import type { NodeAddress, NodeAddressData } from '../NodeAddress.js';
 
 /**
  * Message types exchanged between ShardRegions and the ShardCoordinator.
@@ -337,4 +337,34 @@ export function isShardingMessage(message: unknown): message is ShardingMessage 
     && message !== null
     && typeof (message as { kind?: unknown }).kind === 'string'
     && (message as { kind: string }).kind.startsWith('sharding.');
+}
+
+/**
+ * A sharding frame together with the peer whose connection it arrived on.
+ *
+ * Several of the region's inbound kinds are coordinator directives — `HandOff`
+ * tears a shard's entities down, `ShardHome` moves ownership,
+ * `RememberedEntities` pre-creates entities, `ShardMapUpdate` publishes an
+ * allocation map to every local subscriber, `RegisterAcknowledgment` settles
+ * the register loop — and the region used to honour all of them on the word of
+ * anything that could complete a `hello`.  The authenticated identity is known
+ * at the transport, but it has to survive the trip through the actor's mailbox
+ * to be worth anything, which is what this wrapper is for (#584).
+ *
+ * **Deliberately a class, not a `{ kind }` tag.**  A wire body is always plain
+ * JSON, so a class instance is a shape the wire cannot mint — `instanceof` is
+ * therefore proof the frame came through `Cluster._registerEnvelopeHandler`
+ * (or from the coordinator on this very node) and not out of an attacker's
+ * `body`.  A tagged object would not be: `singleton-deliver` is exactly that
+ * shape and a JSON payload reproduces it verbatim.  This also survives the
+ * non-canonical-`to` bypass, where a trailing slash misses the per-path handler
+ * and the frame still reaches the region through generic path resolution —
+ * unwrapped, and therefore refused.
+ */
+export class AuthenticatedShardingMessage {
+  constructor(
+    /** Connection-authenticated sender.  Never a value out of the payload. */
+    readonly peer: NodeAddress,
+    readonly message: ShardingMessage,
+  ) {}
 }

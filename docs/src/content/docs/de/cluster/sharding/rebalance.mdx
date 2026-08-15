@@ -72,6 +72,44 @@ Das Ganze dauert üblicherweise **sub-Sekunde bis ein paar
 Sekunden**, abhängig davon, wie viele Entities im Shard sind und
 wie lang ihre `postStop`-Arbeit dauert.
 
+## Wer einen Handoff anordnen darf
+
+Ein `HandOff` stoppt jede Entity eines Shards, deshalb prüft die
+Region **woher er kam**, bevor sie ihn ausführt — nicht nur, was
+darin steht. Die Regel gilt für jede Direktive, die ausschließlich
+der Koordinator aussprechen darf: `HandOff`, `ShardHome`,
+`RememberedEntities`, `ShardMapUpdate` und
+`RegisterAcknowledgment`.
+
+Zwei Bedingungen müssen erfüllt sein:
+
+1. Der Frame kam über den eigenen Envelope-Pfad der Region herein,
+   der ihn mit dem Peer stempelt, als der die **Verbindung**
+   authentifiziert wurde — niemals mit einem Feld aus der Payload,
+   das der Absender selbst schreibt.
+2. Dieser Peer ist der Node, von dem die Region aktuell glaubt,
+   dass er den Koordinator hostet, also der aktuelle Leader.
+
+Alles andere wird verworfen und auf `WARN` geloggt. Bis es diese
+Regel gab, konnte jeder Peer, der den Cluster-Handshake abschließen
+konnte, mit einem kleinen Frame die Entities eines Shards
+abräumen — beliebig oft; die Region dispatchte allein auf das
+`kind` der Nachricht und kannte überhaupt keinen Absender.
+
+Ein Verwerfen ist konstruktionsbedingt unkritisch: Eine Region
+registriert sich beim nächsten Leader- oder Membership-Event neu
+und fragt jeden gepufferten Shard erneut an — eine während eines
+Leader-Wechsels verworfene Direktive wird also erneut angefordert
+statt verloren.
+
+:::note[Das ist Autorisierung, keine Authentifizierung]
+Die Prüfung sagt *„nur der Node des Koordinators"*, und in einem
+Cluster ohne Peer-Zertifikate kann jeder, der den Port erreicht,
+Mitglied und danach Leader werden. Betreibe mTLS, wenn das Netz
+nicht vollständig vertrauenswürdig ist — siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/).
+:::
+
 ## Konfiguration
 
 ```ts

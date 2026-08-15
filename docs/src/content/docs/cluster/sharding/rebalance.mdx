@@ -66,6 +66,41 @@ The whole thing usually takes **sub-second to a few seconds**,
 depending on how many entities are in the shard and how long their
 `postStop` work takes.
 
+## Who may order a handoff
+
+A `HandOff` stops every entity in a shard, so the region checks
+**where it came from** before acting on it — not just what it says.
+The rule covers every directive only the coordinator may issue:
+`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate` and
+`RegisterAcknowledgment`.
+
+Two conditions have to hold:
+
+1. The frame arrived through the region's own envelope route, which
+   stamps it with the peer the **connection** was authenticated as —
+   never a field out of the payload, which the sender writes.
+2. That peer is the node the region currently believes hosts the
+   coordinator, i.e. the current leader.
+
+Anything else is dropped and logged at `WARN`. Until this rule
+existed, any peer that could complete the cluster handshake could
+send one small frame and take a shard's entities down, repeatably;
+the region dispatched on the message's `kind` alone and had no
+notion of a sender at all.
+
+Refusing is safe by construction: a region re-registers and re-asks
+for every buffered shard on the next leader or membership event, so
+a directive dropped during a leadership handover is re-requested
+rather than lost.
+
+:::note[This is authorization, not authentication]
+The check says *"only the coordinator's node"*, and on a cluster
+without peer certificates any party that can reach the port can
+become a member and then be the leader. Run mTLS if the network is
+not fully trusted — see
+[cluster security](/operations/security/cluster-security/).
+:::
+
 ## Configuration
 
 ```ts

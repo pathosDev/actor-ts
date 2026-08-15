@@ -559,6 +559,42 @@ trusted — under mTLS the claimed address must match the peer's
 certificate, which is what gives these rules a real subject.
 :::
 
+### A sharding directive needs the coordinator behind it
+
+The same reasoning reaches one layer up, into the extensions
+whose frames pass the wire edge and validate their own
+payloads. A `ShardRegion` used to treat any message whose
+`kind` began with `sharding.` as a framework directive —
+including the five only the coordinator may issue. `HandOff`
+stops every entity under a shard; `ShardHome` moves ownership;
+`RememberedEntities` pre-creates entities; `ShardMapUpdate`
+publishes an allocation map to every local subscriber, DevTools
+panel and application listener included. One small frame from
+anyone who had completed `hello` did any of that, repeatably.
+
+The region could not have checked: sharding registered no
+per-path envelope handler, so an inbound frame reached the
+actor through generic path resolution, which delivers with no
+sender at all. It now claims its own path on the envelope
+router, which hands the handler the **connection's** peer, and
+wraps the frame in a class instance before putting it in its
+own mailbox — a shape a JSON wire body cannot mint, so the
+directive arms can tell a routed frame from a forged one.
+A tagged `{ kind }` object would not have been enough: it is
+reproducible verbatim from a payload.
+
+Both halves are load-bearing. Without the wrapper check, a
+frame addressed non-canonically — a trailing slash, a doubled
+separator — misses the exact-string handler lookup, still
+resolves to the same region through the actor tree, and
+arrives unwrapped. And without the origin check, an
+authenticated peer is any cluster member, so every member
+could issue directives to every region.
+
+Refused frames are dropped and logged at `WARN`. The
+coordinator's own local leg builds the same wrapper, so a
+single-node cluster rebalances exactly as before.
+
 ### A version cannot claim an address in advance
 
 Version is a logical clock seeded from `Date.now()`, so

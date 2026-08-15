@@ -598,6 +598,46 @@ zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
 ein echtes Subjekt.
 :::
 
+### Eine Sharding-Direktive braucht den Koordinator dahinter
+
+Dieselbe Überlegung reicht eine Schicht höher, in die
+Extensions, deren Frames die Wire-Kante passieren und ihre
+Payload selbst validieren. Eine `ShardRegion` behandelte jede
+Nachricht, deren `kind` mit `sharding.` begann, als
+Framework-Direktive — inklusive der fünf, die ausschließlich
+der Koordinator aussprechen darf. `HandOff` stoppt jede Entity
+unter einem Shard; `ShardHome` verschiebt den Besitz;
+`RememberedEntities` legt Entities vorab an; `ShardMapUpdate`
+veröffentlicht eine Allokationskarte an jeden lokalen
+Subscriber, DevTools-Panel und Anwendungs-Listener inklusive.
+Ein kleiner Frame von jedem, der `hello` abgeschlossen hatte,
+löste das aus — beliebig oft.
+
+Die Region *konnte* gar nicht prüfen: Sharding registrierte
+keinen pfadgebundenen Envelope-Handler, ein eingehender Frame
+erreichte den Actor also über die generische Pfadauflösung, und
+die stellt ohne jeden Absender zu. Die Region beansprucht jetzt
+ihren eigenen Pfad im Envelope-Router, der dem Handler den Peer
+der **Verbindung** übergibt, und verpackt den Frame in eine
+Klasseninstanz, bevor sie ihn in die eigene Mailbox legt — eine
+Form, die ein JSON-Wire-Body nicht erzeugen kann, sodass die
+Direktiven-Arme einen geroutet zugestellten Frame von einem
+gefälschten unterscheiden können. Ein getaggtes
+`{ kind }`-Objekt hätte nicht gereicht: Das lässt sich aus einer
+Payload wortgleich nachbilden.
+
+Beide Hälften tragen. Ohne die Wrapper-Prüfung verfehlt ein
+nicht-kanonisch adressierter Frame — ein Slash am Ende, ein
+doppelter Trenner — den exakten String-Lookup des Handlers,
+löst sich über den Actor-Baum trotzdem auf dieselbe Region auf
+und kommt unverpackt an. Und ohne die Herkunftsprüfung ist ein
+authentifizierter Peer schlicht jedes Cluster-Mitglied, sodass
+jedes Mitglied jeder Region Direktiven erteilen könnte.
+
+Verworfene Frames werden gedroppt und auf `WARN` geloggt. Der
+lokale Zweig des Koordinators baut denselben Wrapper, ein
+Ein-Node-Cluster rebalanciert also genau wie zuvor.
+
 ### Eine Version kann keine Adresse im Voraus beanspruchen
 
 Die Version ist eine logische Uhr, gesät aus `Date.now()` — und

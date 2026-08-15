@@ -10,6 +10,7 @@ import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
+import type { EnvelopeMessage } from '../Protocol.js';
 import {
   LeaderChanged,
   MemberRemoved,
@@ -24,6 +25,7 @@ import { Shard, type ShardConfig, type ShardInbox, type ShardMessage } from './S
 import type { ShardInfo } from './ShardInfo.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import {
+  AuthenticatedShardingMessage,
   isShardingMessage,
   type RegisterRegion,
   type ShardEnvelope,
@@ -110,7 +112,8 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  * draining — a shard that timed itself out would have to tell the region
  * afterwards, and everything in that gap would be dropped.
  */
-export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMessage | Terminated | Passivate> {
+export class ShardRegion<TMessage = unknown>
+  extends Actor<TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate> {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
   private readonly localShards = new Set<number>();
@@ -134,7 +137,15 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   >();
 
   private coordinatorRef: ActorRef<ShardingMessage> | null = null;
+  /**
+   * The node this region currently believes hosts the coordinator — the sole
+   * authority for the coordinator-only directives (#584).  Kept beside
+   * `coordinatorRef` rather than derived from it because a `RemoteActorRef`
+   * does not expose its target node, and the local branch has no node at all.
+   */
+  private coordinatorNode: NodeAddress | null = null;
   private unsubscribe: (() => void) | null = null;
+  private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
   private registered = false;
@@ -194,6 +205,17 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
         .otherwise(() => this.onOtherClusterEvent()),
     );
 
+    // Claim the region's own path on the envelope router *before* registering
+    // with the coordinator, so nothing the registration provokes can arrive
+    // before the handler that stamps it with its sender.  Generic path
+    // resolution would deliver the same frames — that is what happened until
+    // #584 — but it calls `ref.tell(body)` with no sender at all, throwing away
+    // the one field of an inbound frame the sender cannot choose.
+    this.envelopeUnsubscribe = this.config.cluster._registerEnvelopeHandler(
+      this.self.path.toString(),
+      (envelope, from) => this.onRemoteEnvelope(envelope, from),
+    );
+
     this.ensureRegistered();
 
     // One timer drives both sweeps.  The interval is the shorter of the
@@ -215,16 +237,43 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     );
   }
 
+  /**
+   * An envelope addressed to this region arrived from `from`, whose identity
+   * the transport authenticated (#584).
+   *
+   * Re-enqueued through `self.tell` so the region still processes it on its own
+   * turn — the handler runs on the receive path, not in the actor.  Only a
+   * sharding frame gets the wrapper: a region is also a legitimate target for
+   * *user* messages, which `deliverRemote` forwards raw when there is no sender
+   * to correlate, and those route by `extractEntityId` exactly as a local tell
+   * does.  Nothing is lost by leaving them unwrapped — no user message can
+   * reach a coordinator-only arm, since those dispatch on a `sharding.` kind.
+   */
+  private onRemoteEnvelope(envelope: EnvelopeMessage, from: NodeAddress): void {
+    if (isShardingMessage(envelope.body)) {
+      this.self.tell(new AuthenticatedShardingMessage(from, envelope.body));
+      return;
+    }
+    this.self.tell(envelope.body as TMessage);
+  }
+
   override postStop(): void {
     this.unsubscribe?.();
+    this.envelopeUnsubscribe?.();
     this.passivationTimer?.cancel();
     this.registerTimer?.cancel();
     this.asksSweepTimer?.cancel();
   }
 
-  override onReceive(message: TMessage | ShardingMessage | Terminated | Passivate): void {
+  override onReceive(
+    message: TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate,
+  ): void {
+    if (message instanceof AuthenticatedShardingMessage) {
+      this.handleShardingMessage(message.message, message.peer);
+      return;
+    }
     if (isShardingMessage(message)) {
-      this.handleShardingMessage(message);
+      this.handleShardingMessage(message, null);
       return;
     }
     if (message instanceof Terminated) {
@@ -463,14 +512,18 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (leaderOption.isNone()) { this.scheduleRegisterRetry(); return; }
     const leader = leaderOption.value;
     // Always re-target the coordinator on each leader change.
-    const coordPath = coordinatorPath(this.config.cluster.system.name, this.config.typeName);
+    const coordinatorLocation = coordinatorPath(this.config.cluster.system.name, this.config.typeName);
+    // Recorded before the ref is resolved: it is what the origin gate compares
+    // against, and a directive can legitimately arrive while the local lookup
+    // below is still failing.
+    this.coordinatorNode = leader.address;
     if (leader.address.equals(this.config.cluster.selfAddress)) {
-      const local = this.config.localResolver(coordPath) as ActorRef<ShardingMessage> | null;
+      const local = this.config.localResolver(coordinatorLocation) as ActorRef<ShardingMessage> | null;
       if (!local) { this.scheduleRegisterRetry(); return; }
       this.coordinatorRef = local;
     } else {
       this.coordinatorRef = new RemoteActorRef<ShardingMessage>(
-        leader.address, coordPath, this.config.cluster,
+        leader.address, coordinatorLocation, this.config.cluster,
       );
     }
     this.register();
@@ -511,12 +564,18 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   /* ---------------------------- Sharding msgs -------------------------- */
 
-  private handleShardingMessage(message: ShardingMessage): void {
+  /**
+   * @param peer the node whose authenticated connection the frame arrived on,
+   *   or `null` for a frame that reached the mailbox unattributed — a plain
+   *   local `tell`, or an inbound envelope that dodged the per-path handler.
+   *   The coordinator-only arms refuse the second case outright.
+   */
+  private handleShardingMessage(message: ShardingMessage, peer: NodeAddress | null): void {
     match(message)
-      .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m))
-      .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m))
-      .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m))
-      .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
+      .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m, peer))
+      .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m, peer))
+      .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
+      .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m, peer))
       .with({ kind: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
       .with({ kind: 'sharding.Reply' }, (m) => this.onShardReply(m))
       // An EntityRef addressed one of our entities by id.
@@ -531,13 +590,41 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ kind: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
       .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
       .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
-      .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m))
+      .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m, peer))
       // Coordinator-only messages; regions ignore them.
       .otherwise(() => this.onUnhandled());
   }
 
   private onUnhandled(): void {
     /* no-op */
+  }
+
+  /**
+   * Whether a coordinator directive may be honoured.
+   *
+   * Everything the coordinator tells a region is destructive to some degree —
+   * `HandOff` stops every entity under a shard, `ShardHome` moves ownership,
+   * `ShardMapUpdate` publishes an allocation map to every local subscriber —
+   * and until #584 the region applied all of it on nothing but the `kind`
+   * string.  Two conditions have to hold: the frame arrived inside an
+   * {@link AuthenticatedShardingMessage}, which the wire cannot mint, *and* the
+   * peer that sent it is the node this region currently believes hosts the
+   * coordinator.  The second half is not redundant — an authenticated peer is
+   * any cluster member, and the wrapper alone would let any of them issue
+   * directives.
+   *
+   * Refusing is safe: the region re-registers and re-asks for every buffered
+   * shard on the next leader/membership event, so a directive dropped during a
+   * leadership handover is re-requested rather than lost.
+   */
+  private fromCoordinator(message: ShardingMessage, peer: NodeAddress | null): boolean {
+    if (peer !== null && this.coordinatorNode !== null && peer.equals(this.coordinatorNode)) return true;
+    this.log.warn(
+      `[sharding] refusing '${message.kind}' for '${this.config.typeName}' from `
+      + `${peer ?? 'an unauthenticated sender'} — only the coordinator's node `
+      + `(${this.coordinatorNode ?? 'not yet known'}) may issue it`,
+    );
+    return false;
   }
 
   private onShardEnvelope(message: ShardEnvelope): void {
@@ -581,7 +668,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     entry.sender.tell(message.message as never);
   }
 
-  private onRegisterAcknowledgment(_message: RegisterAcknowledgment): void {
+  private onRegisterAcknowledgment(message: RegisterAcknowledgment, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
     this.registered = true;
     this.registerTimer?.cancel();
@@ -605,7 +693,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     return false;
   }
 
-  private onShardHome(message: ShardHome): void {
+  private onShardHome(message: ShardHome, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
     if (!this.isKnownShardId(message.shardId)) return;
     const node = NodeAddress.fromJSON(message.node);
     const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
@@ -691,7 +780,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
    * subscribers.  Without this leg the event would fire on one node out of N,
    * which is no use to a per-node DevTools panel or an application listener.
    */
-  private onShardMapUpdate(message: ShardMapUpdate): void {
+  private onShardMapUpdate(message: ShardMapUpdate, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
     this.config.cluster._publishClusterEvent(new ShardMapChanged(
       message.typeName,
       new Map(message.shards),
@@ -813,7 +903,12 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
    * shard is running here any more", which the previous fire-and-forget
    * entity stop could not promise.
    */
-  private onHandOff(message: HandOff): void {
+  private onHandOff(message: HandOff, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
+    // `onShardHome` has had the #569 range check since it was added; this arm
+    // never got it, so an out-of-range id still walked into `completeHandOff`
+    // and deleted cache entries under a shard that cannot exist.
+    if (!this.isKnownShardId(message.shardId)) return;
     const shardId = message.shardId;
     const entityIds = Array.from(this.shardEntities.get(shardId) ?? []);
     this.log.debug(
@@ -897,7 +992,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.shardEmptySince.delete(shardId);
   }
 
-  private onRememberedEntities(message: RememberedEntities): void {
+  private onRememberedEntities(message: RememberedEntities, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
     // Pre-create entities we've been told about but haven't materialised yet.
     if (!this.localShards.has(message.shardId)) return;
     if (this.config.proxy) return;
@@ -1043,6 +1139,10 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   private onLeaderChanged(): void {
     this.registered = false;
     this.coordinatorRef = null;
+    // Nobody is believed to host the coordinator until `ensureRegistered`
+    // re-reads the leader — a directive arriving in that gap has no authority
+    // to check against and is refused rather than trusted on the old belief.
+    this.coordinatorNode = null;
     this.ensureRegistered();
   }
 

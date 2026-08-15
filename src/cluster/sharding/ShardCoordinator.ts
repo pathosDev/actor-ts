@@ -16,6 +16,7 @@ import type {
   CoordinatorStateData,
   RegionInfoData,
 } from './CoordinatorState.js';
+import { AuthenticatedShardingMessage } from './ShardingProtocol.js';
 import type {
   BeginHandOffAcknowledgment,
   ClusterShardingStats,
@@ -1007,11 +1008,22 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.replyTo(info.path, info.node.toJSON(), message);
   }
 
+  /**
+   * Every reply here goes to a region, and a region only honours a
+   * coordinator directive that arrives inside an
+   * {@link AuthenticatedShardingMessage} naming the coordinator's node (#584).
+   * The remote leg gets that for free — the receiving node's per-path envelope
+   * handler stamps the connection's peer on the way in — but a bare local
+   * `ref.tell` is byte-identical to what an attacker's frame produces after the
+   * generic path walk, so the local leg has to build the wrapper itself.
+   * Without it a single-node cluster could not rebalance at all.
+   */
   private replyTo(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.options.cluster.selfAddress)) {
-      const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
-      if (ref) ref.tell(message);
+      const ref = this.options.localResolver(path) as
+        ActorRef<ShardingMessage | AuthenticatedShardingMessage> | null;
+      if (ref) ref.tell(new AuthenticatedShardingMessage(this.options.cluster.selfAddress, message));
       return;
     }
     const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);
