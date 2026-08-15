@@ -490,6 +490,8 @@ export {
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
   InMemoryMigrationProgressStore,
+  // #630 — a compacted source the target journal cannot represent.
+  CompactedSourceError,
 } from './migration/index.js';
 
 // Persistence Query — read-side query layer for projections.
