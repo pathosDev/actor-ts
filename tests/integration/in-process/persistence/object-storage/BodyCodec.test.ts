@@ -282,9 +282,12 @@ describe('BodyCodec — integrity tag (#116, #579)', () => {
 
   test('the tag covers the manifest byte, not just the payload', async () => {
     const framed = await encodeBody(utf8('x'), { compression: 'none', integrity: { integrityKey } });
-    // Flip an unallocated manifest bit (bit5): decode ignores it, so only
-    // the HMAC's coverage of byte 4 can catch this.
-    framed[4] = framed[4]! | 0b100000;
+    // Flip an unallocated manifest bit (bit6): decode ignores it, so only
+    // the HMAC's coverage of byte 4 can catch this.  This used to flip
+    // bit5, which #612 allocated to FLAG_CONTEXT_BOUND — decode now has
+    // its own reason to reject that one, which would make the assertion
+    // pass without proving anything about the tag's coverage.
+    framed[4] = framed[4]! | 0b1000000;
     await expect(decodeBody(framed, { integrity: { integrityKey } })).rejects.toThrow(/integrity check failed/);
   });
 });

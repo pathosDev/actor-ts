@@ -56,14 +56,15 @@ schneller + einfacher.
 
 ```ts
 type ObjectStorageSnapshotStoreOptionsType = {
-  backend:               ObjectStorageBackend;
-  prefix?:               string;   // Default ''
-  keepN?:                number;   // Default 3
-  compression?:          CompressionConfig | CompressionResolver;
-  encryption?:           EncryptionConfig | EncryptionResolver;
-  integrity?:            IntegrityConfig | IntegrityResolver;
-  allowUntaggedBodies?:  boolean;  // Default false
-  maxDecompressedBytes?: number;   // Default 512 MiB
+  backend:                ObjectStorageBackend;
+  prefix?:                string;   // Default ''
+  keepN?:                 number;   // Default 3
+  compression?:           CompressionConfig | CompressionResolver;
+  encryption?:            EncryptionConfig | EncryptionResolver;
+  integrity?:             IntegrityConfig | IntegrityResolver;
+  allowUntaggedBodies?:   boolean;  // Default false
+  requireContextBinding?: boolean;  // Default false
+  maxDecompressedBytes?:  number;   // Default 512 MiB
 };
 ```
 
@@ -76,6 +77,7 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `encryption` | At-Rest-Verschlüsselung — siehe [Verschlüsselung](/de/persistence/object-storage/encryption/). |
 | `integrity` | HMAC-SHA256-Tag über jeden Snapshot-Body — signiert Writes und verlangt beim Lesen ein Tag.  Siehe [Body-Integrität](/de/persistence/object-storage/encryption/#body-integrität-hmac). |
 | `allowUntaggedBodies` | Snapshots ohne Tag akzeptieren, solange `integrity` gesetzt ist — das Migrationsfenster für einen Bucket von vor der Integrität.  Default false. |
+| `requireContextBinding` | Snapshots ablehnen, die nicht an den Key gebunden sind, von dem sie gelesen wurden — schließt das Einspielen auf eine andere persistenceId oder Sequenznummer.  Erst einschalten, wenn der Bucket neu geschrieben ist.  Siehe [Einen Body an seinen Key binden](/de/persistence/object-storage/encryption/#einen-body-an-seinen-key-binden).  Default false. |
 | `maxDecompressedBytes` | Schutz vor Dekompressions-Bomben — Obergrenze für die Größe eines dekodierten Snapshots.  Default 512 MiB. |
 
 ## Key-Layout
