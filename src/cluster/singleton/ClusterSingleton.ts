@@ -277,6 +277,9 @@ export class ClusterSingleton implements Extension {
       if (options.acquireRetryIntervalMs !== undefined) {
         managerOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
       }
+      if (options.restartOnTermination !== undefined) {
+        managerOptions.withRestartOnTermination(options.restartOnTermination);
+      }
       const manager = new ClusterSingletonManager<TCommand>(managerOptions);
       manager._envelopeUnsub = envelopeUnsubscribe;
       // Keep the registry derived from actor liveness: a manager that dies to

@@ -70,6 +70,7 @@ reagiert, nicht weil du sie konstruierst:
 | `role` | Nein | Das Hosten auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
 | `lease` | Nein | Falls gesetzt, muss der Host diese Lease erwerben, bevor er den Singleton spawnt. |
 | `acquireRetryIntervalMs` | Nein (Default 5s) | Retry-Takt nach einer fehlgeschlagenen Lease-Akquisition. |
+| `restartOnTermination` | Nein (Default `true`) | Den Singleton nach einem unerwarteten Tod der Instanz neu spawnen. Nur für Actors abschalten, die `stopSelf()` als Endzustand nutzen. |
 
 ### Welche Node hostet
 
@@ -195,18 +196,38 @@ Frameworks — standardmäßig wird das Kind neu gestartet. Der
 Manager greift nicht ein, wenn sich das Leadership nicht auch
 geändert hat.
 
-Wenn das Kind sich explizit selbst stoppt (`context.stopSelf()`),
-sieht der Manager das Terminated, tut damit aber nichts: er
-**spawnt nicht erneut** und **gibt die Lease nicht frei** — eine
-gehaltene Lease bleibt gehalten, und die `child`-Referenz des
-Managers zeigt weiter auf den nun toten Singleton. Der Singleton
-ist weg, bis der nächste Leader-Wechsel kommt.
+Wenn das Kind **unerwartet** stirbt — es ruft `context.stopSelf()`,
+oder es crasht so lange in Schleife, bis sein Supervisions-Budget
+erschöpft ist und sein Supervisor es stoppt — **spawnt der Manager
+es nach einer Sekunde Backoff neu**. Die Pause ist wichtig: bei der
+zweiten Todesart ist das Restart-Budget des Supervisors bereits
+aufgebraucht, und ein sofortiges Neuspawnen würde dieses Budget
+ebenfalls zurücksetzen — aus einem crash-loopenden Singleton würde
+eine heiße Schleife.
 
-Wenn du willst, dass ein sich selbst stoppender Singleton neu
-gespawnt wird, ist der Manager nicht der richtige Ort — schreibe
-einen Watchdog-Actor auf einer Ebene darüber, oder lass den
-Singleton seinen State selbst überwachen und sich nie selbst
-stoppen.
+Das ist der Default, weil die Alternative ein stiller, dauerhafter,
+clusterweiter Ausfall genau der Komponente ist, deren Zweck
+Verfügbarkeit-von-genau-einem ist. Vor v0.17.0 ignorierte der
+Manager ein solches `Terminated` vollständig: Er leitete geroutete
+Nachrichten weiter an eine tote Referenz, und nichts belebte den
+Singleton bis zum nächsten Leader-Wechsel — der in einem stabilen
+Cluster nie kommen kann. Mit Lease war es noch schlimmer, denn der
+Manager hielt und erneuerte weiterhin eine Lease über ein totes
+Kind, sodass auch kein anderer Node übernehmen konnte.
+
+Wenn dein Singleton `stopSelf()` als **Endzustand** nutzt — fertig
+heißt fertig — schalte den Restart ab:
+
+```ts
+const singletonOptions = StartSingletonOptions.create<Command>()
+  .withTypeName('nightly-report')
+  .withActor(NightlyReport)
+  .withRestartOnTermination(false);
+```
+
+Abgeschaltet spawnt der Manager nicht neu, **gibt aber die Lease
+frei**, sodass ein anderer Node später hosten könnte. Was er nie
+wieder tut: eine Lease über ein Kind halten, das es nicht mehr gibt.
 
 ## Restart-Semantik
 

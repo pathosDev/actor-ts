@@ -42,6 +42,17 @@ export type StartSingletonOptionsType<T> = {
    */
   readonly acquireRetryIntervalMs?: number;
   /**
+   * Whether the singleton is re-spawned after its instance dies
+   * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
+   * — as opposed to the planned teardown of a handover.  Default: `true`.
+   *
+   * Leave it on unless the actor uses `stopSelf()` as a terminal state.  With
+   * it off the manager releases its lease instead of re-spawning, so another
+   * node could host; what it will not do is hold a lease over a dead child
+   * (#1175).
+   */
+  readonly restartOnTermination?: boolean;
+  /**
    * How many messages the proxy holds while the cluster has no host for this
    * singleton, before it starts dropping them to dead letters.  Default:
    * `1_000`.
@@ -99,6 +110,11 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
   /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
+  }
+
+  /** Re-spawn the singleton after an unexpected instance death?  Default `true`. */
+  withRestartOnTermination(restartOnTermination: boolean): this {
+    return this.set('restartOnTermination', restartOnTermination);
   }
 
   /** Messages the proxy buffers while no node hosts the singleton.  Default 1000. */

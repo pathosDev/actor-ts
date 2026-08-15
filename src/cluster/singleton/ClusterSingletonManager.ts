@@ -10,6 +10,7 @@ import type { Member } from '../Member.js';
 import { ClusterSingletonManagerOptionsValidator } from './ClusterSingletonManagerOptions.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
+import { SINGLETON_RESTART_BACKOFF_MS } from '../Constants.js';
 
 /**
  * Path at which every node hosts its ClusterSingletonManager for a given
@@ -62,7 +63,8 @@ type ManagerEvent =
   | { kind: 'reconcile' }
   | { kind: 'lease-acquire-result'; got: boolean; error?: Error }
   | { kind: 'lease-lost'; reason: string }
-  | { kind: 'acquire-retry' };
+  | { kind: 'acquire-retry' }
+  | { kind: 'restart-child' };
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated;
 
@@ -103,6 +105,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private unsubscribeCluster: (() => void) | null = null;
   private unsubscribeLeaseLost: (() => void) | null = null;
   private retryTimer: Cancellable | null = null;
+  /** Backoff timer between an unexpected child death and its re-spawn (#1175). */
+  private restartTimer: Cancellable | null = null;
 
   /** Lease lifecycle — only used when `options.lease` is set. */
   private leaseState: 'none' | 'acquiring' | 'held' = 'none';
@@ -179,6 +183,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this._envelopeUnsub?.();
     this._onStopped?.();
     this.retryTimer?.cancel();
+    this.restartTimer?.cancel();
     if (this.child) { this.child.stop(); this.child = null; }
     // Drop any in-flight stop — the parent termination cascade will
     // tear it down regardless, and we no longer need to react to its
@@ -203,6 +208,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
       .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
+      .with({ kind: 'restart-child' }, () => this.onRestartChild())
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -247,7 +253,83 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       } else {
         this.reconcileSync();
       }
+      return;
     }
+    if (this.child && t.actor.equals(this.child)) {
+      this.onChildDiedUnexpectedly();
+    }
+  }
+
+  /**
+   * The child died without us asking — `context.stopSelf()`, or a supervision
+   * budget exhausted and the supervisor stopping it.
+   *
+   * This used to be no branch at all, and the consequence was severe out of
+   * proportion to the omission (#1175).  `this.child` kept pointing at the
+   * dead ref, so every routed message was forwarded into a dead letter; and
+   * cluster-wide the singleton simply no longer existed, with nothing to
+   * revive it until the next `LeaderChanged` — which in a stable cluster may
+   * be never.  With a lease it was worse still: the manager stayed alive
+   * holding and renewing a lease over a dead child, so no other node could
+   * take over either.  The one mechanism meant to guarantee "exactly one"
+   * guaranteed zero, indefinitely.
+   */
+  private onChildDiedUnexpectedly(): void {
+    this.child = null;
+    if (this.options.restartOnTermination ?? true) {
+      this.log.warn(
+        `singleton '${this.options.typeName}' terminated unexpectedly — `
+        + `re-spawning in ${SINGLETON_RESTART_BACKOFF_MS} ms`,
+      );
+      this.restartTimer?.cancel();
+      this.restartTimer = this.system.scheduler.scheduleOnceFunction(
+        SINGLETON_RESTART_BACKOFF_MS,
+        () => {
+          this.restartTimer = null;
+          // Through the mailbox rather than acting here: the timer fires
+          // outside a message turn, and every other state transition in this
+          // manager arrives as a message for exactly that reason.
+          this.self.tell({ kind: 'restart-child' } satisfies ManagerEvent);
+        },
+      );
+      return;
+    }
+    // Opt-out: the actor treats stopping as a terminal state.  Do not respawn
+    // — but do let go of the lease, or this node keeps renewing a claim on a
+    // singleton nobody is running and no other node can host it either.
+    this.log.warn(
+      `singleton '${this.options.typeName}' terminated unexpectedly and `
+      + `restartOnTermination is off — not re-spawning`,
+    );
+    void this.releaseLeaseAfterTerminalStop();
+  }
+
+  /** Best-effort lease release on the no-restart path.  Never throws. */
+  private async releaseLeaseAfterTerminalStop(): Promise<void> {
+    if (!this.options.lease || this.leaseState !== 'held') return;
+    try { await this.options.lease.release(); }
+    catch (e) { this.log.warn(`lease release failed`, e); }
+    this.leaseState = 'none';
+  }
+
+  /**
+   * Re-spawn after the backoff.  Re-checks the world rather than trusting the
+   * state it was scheduled in: leadership can move, and the lease can be lost,
+   * during the wait.
+   */
+  private onRestartChild(): void {
+    if (!this.wantHosted()) return;              // leadership moved meanwhile
+    if (this.child || this.pendingStop) return;  // something already took over
+    if (this.options.lease && this.leaseState !== 'held') {
+      // The lease went away while we waited — the acquire path owns the
+      // respawn from here, and `spawn()` must not run without the lease.
+      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+      return;
+    }
+    // Deliberately `spawn()` and not `handleReconcile()`: with a lease still
+    // held, reconcile reads `leaseState === 'held'` as "already running" and
+    // returns without spawning anything.
+    this.spawn();
   }
 
   /* -------------------------- handlers -------------------------- */

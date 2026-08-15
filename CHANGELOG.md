@@ -28,7 +28,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cluster odd — the tie path is the fail-safe, not the plan — or pick
   `KeepOldest` / `KeepReferee`, which break ties by design.
 
+### Added
+
+- **`restartOnTermination` on a cluster singleton** (#1175).  Default `true`,
+  and the switch for the fix below: set it to `false` for an actor that uses
+  `stopSelf()` as a terminal state, and the manager releases its lease instead
+  of re-spawning — so another node could host later, rather than the manager
+  holding a lease over a child that is gone.
+
 ### Fixed
+
+- **A cluster singleton that dies unexpectedly comes back** (#1175).  The
+  manager reacted to its child's `Terminated` only when it was the *expected*
+  stop — the planned teardown of a handover.  Every other way the child could
+  die fell through without effect: `context.stopSelf()`, or a crash loop that
+  exhausted the supervision budget and had the supervisor stop it.  Afterwards
+  the manager kept forwarding every routed message to a dead ref, and
+  cluster-wide the singleton no longer existed anywhere, with nothing to
+  revive it until the next `LeaderChanged` — which in a stable cluster may be
+  never.  With a lease configured it was worse: the manager stayed alive
+  holding and renewing the lease, so no other node could host either, and the
+  one mechanism meant to guarantee "exactly one instance" guaranteed **zero,
+  indefinitely**.
+
+  An unrecognised `Terminated` for the live child now clears it, logs at
+  `warn`, and re-spawns after a one-second backoff.  The backoff is not
+  decoration: the death that reaches this path is often a supervision budget
+  already spent, and re-spawning restarts that budget too, so coming straight
+  back would turn a crash-looping singleton into a hot loop.
 
 - **`throttle('pause')` waits instead of spinning** (#1167).  A paused message
   is still in the mailbox, and `run()`'s `finally` re-scheduled whenever the

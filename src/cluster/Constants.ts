@@ -168,3 +168,19 @@ export const MAX_CONTEXT_VALUE_LENGTH = 1_024;
  * broadcast, short enough that a panel still feels live.
  */
 export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
+
+/**
+ * How long the singleton manager waits before re-spawning a child that died
+ * unexpectedly (#1175).
+ *
+ * A pause rather than an immediate respawn, because the death that reaches
+ * this path is often a supervision budget already exhausted — re-spawning
+ * restarts that budget too, so coming straight back would turn a
+ * crash-looping singleton into a hot loop.  One second is long enough to stay
+ * out of that loop and short enough that a component whose job is
+ * availability is not meaningfully absent.
+ *
+ * Not an option: the manager exposes no other timing knob, and the value only
+ * matters in the failure case it damps.
+ */
+export const SINGLETON_RESTART_BACKOFF_MS = 1_000;
