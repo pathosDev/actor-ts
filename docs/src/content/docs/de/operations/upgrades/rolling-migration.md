@@ -195,6 +195,18 @@ dem Hot Path mehr gelesen werden dürften, kannst du:
     });
     ```
 
+    Sequenznummern überleben die Kopie, kompaktierte Quellen
+    eingeschlossen — das Target übernimmt die Kompaktierungsmarke
+    der Quelle, sodass eine Entity, deren Journal über einen
+    Snapshot hinaus kompaktiert wurde, genau die Nummerierung
+    behält, auf die ihr Snapshot und ihre Projektions-Cursor
+    verweisen.  Führe die Journal-Kopie **vor** der Snapshot-Kopie
+    aus, und übergib `sourcePersistenceOptions` /
+    `targetPersistenceOptions` an `migrateBetweenSnapshotStores`,
+    wann immer der Master-Key vom Actor statt aus der Konfiguration
+    des Stores kommt — siehe
+    [Migrations-Rezepte](/de/persistence/migration/recipes/).
+
 2. **Den v1-Schritt** aus der `MigrationChain` droppen, sobald
    der Backfill durch ist:
 
