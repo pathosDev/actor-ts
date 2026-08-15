@@ -20,7 +20,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
-import type { Snapshot } from '../../../../../src/persistence/JournalTypes.js';
+import type { PersistentEvent, Snapshot } from '../../../../../src/persistence/JournalTypes.js';
 import type { EncryptionConfig, PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
@@ -227,11 +227,14 @@ class MarklessJournal implements Journal {
 class HoledJournal implements Journal {
   constructor(private readonly sequenceNumbers: ReadonlyArray<number>) {}
   async append(): Promise<never> { throw new Error('HoledJournal is read-only'); }
-  async read(persistenceId: string): Promise<Array<{
-    persistenceId: string; sequenceNr: number; event: unknown; timestamp: number;
-  }>> {
+  // Carries `Journal.read`'s own generic signature.  `MarklessJournal` above
+  // can borrow the type with `Journal['read']` because it delegates and hands
+  // back the same `E` it was asked for; this fake *synthesises* payloads, so
+  // it has to name `E` itself and cast — a fake choosing the shape it returns
+  // is exactly what the cast says.
+  async read<E = unknown>(persistenceId: string): Promise<PersistentEvent<E>[]> {
     return this.sequenceNumbers.map((sequenceNr) => ({
-      persistenceId, sequenceNr, event: { n: sequenceNr }, timestamp: 0,
+      persistenceId, sequenceNr, event: { n: sequenceNr } as E, timestamp: 0,
     }));
   }
   async highestSeq(): Promise<number> { return this.sequenceNumbers[this.sequenceNumbers.length - 1] ?? 0; }
