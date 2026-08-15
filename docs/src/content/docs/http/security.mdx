@@ -185,6 +185,19 @@ the [Route DSL](/http/route-dsl/).
   second. See [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
+- **Responses you fetch** are untrusted input too, and the direction this list
+  is easiest to forget. `HttpClient` materialises a whole response body in
+  memory before a caller sees it, so without a bound the peer decides how much
+  of this process's heap it takes — a `Content-Length` is a claim rather than a
+  limit, and a chunked response declares no length at all. Every call carries a
+  **30 s deadline** and an **8 MiB response ceiling**; the body is counted as it
+  is read and abandoned *while it arrives*, with the connection torn down so the
+  rest never lands, and the call throws `HttpResponseTooLargeError`. Raise
+  either per call (`maxResponseBytes`, `timeoutMs`), per integration
+  (`newClient(...)`), or fleet-wide under `actor-ts.http.client`. Redirects are
+  bounded with them — 5 hops, and `authorization` / `cookie` dropped on any hop
+  that crosses origins, so one hostile `Location` cannot walk a bearer token to
+  a host of its choosing. See [the HTTP client](/http/overview/).
 
 ## Static files
 
@@ -212,6 +225,8 @@ so it gates the handshake.
 | Request correlation | `requestId()` |
 | Bounded latency | `requestTimeout(...)` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |
+| Outbound responses bounded | nothing — 30 s and 8 MiB on every `HttpClient` call; per call, per `newClient(...)`, or `actor-ts.http.client` |
+| Outbound redirects bounded | nothing — 5 hops, credentials dropped cross-origin; `redirect: 'error'` to refuse them |
 
 ## Where to next
 

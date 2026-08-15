@@ -194,6 +194,22 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.
+- **Antworten, die du selbst abrufst**, sind ebenfalls Untrusted Input — und
+  die Richtung, die in so einer Liste am leichtesten vergessen wird. Der
+  `HttpClient` materialisiert einen ganzen Response-Body im Speicher, bevor ein
+  Aufrufer ihn sieht; ohne Schranke entscheidet also die Gegenstelle, wie viel
+  Heap dieses Prozesses sie sich nimmt — eine `Content-Length` ist eine
+  Behauptung und keine Grenze, und eine gechunkte Antwort deklariert überhaupt
+  keine Länge. Jeder Aufruf bringt eine **30-s-Deadline** und eine
+  **8-MiB-Obergrenze** für den Body mit; der Body wird beim Lesen mitgezählt und
+  *während er eintrifft* abgebrochen, die Verbindung wird abgerissen, damit der
+  Rest nie ankommt, und der Aufruf wirft `HttpResponseTooLargeError`. Heb die
+  Werte pro Aufruf an (`maxResponseBytes`, `timeoutMs`), pro Integration
+  (`newClient(...)`) oder flottenweit unter `actor-ts.http.client`. Redirects
+  sind mitbegrenzt — 5 Hops, und `authorization` / `cookie` fallen bei jedem
+  Origin-Wechsel weg, damit eine feindliche `Location` kein Bearer-Token zu
+  einem Host ihrer Wahl tragen kann. Siehe
+  [den HTTP-Client](/de/http/overview/).
 
 ## Statische Dateien
 
@@ -221,6 +237,8 @@ Upgrade-Zeit und gated damit den Handshake.
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |
+| Ausgehende Antworten begrenzt | nichts — 30 s und 8 MiB bei jedem `HttpClient`-Aufruf; pro Aufruf, pro `newClient(...)` oder `actor-ts.http.client` |
+| Ausgehende Redirects begrenzt | nichts — 5 Hops, Credentials fallen bei Origin-Wechsel weg; `redirect: 'error'` weist sie ab |
 
 ## Wie weiter
 
