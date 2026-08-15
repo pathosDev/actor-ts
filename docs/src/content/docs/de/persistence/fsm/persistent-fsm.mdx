@@ -154,7 +154,9 @@ pro Command (#66) — ein **Array** oder eine Funktion, die eines
 zurückgibt.  Array-Events persistieren atomar in einem einzigen
 `persistAll`, `applyEvent` läuft einmal pro Event, und nur der **finale**
 Zustand nach dem Replay wird gegen `next` geprüft.  Ein leeres Array ist
-ein No-op (nichts persistiert, kein Übergang).
+ein No-op (nichts persistiert, kein Übergang).  `tagsFor` wird ebenfalls
+einmal pro Event gefragt — ein Übergang, der unterschiedlich geformte
+Events emittiert, taggt also jedes davon für sich.
 
 ```ts
 pay: {
@@ -268,7 +270,8 @@ class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
 - `persistenceId` — der Event-Stream-Key.
 - `snapshotPolicy` — periodische Snapshots zur Replay-Begrenzung.
 - `eventAdapter` / `snapshotAdapter` — Schema-Migration.
-- `tagsFor` — Events für Projektions-Konsum taggen.
+- `tagsFor` — Events für Projektions-Konsum taggen; wird einmal pro
+  Event aufgerufen, auch für jedes Event eines Multi-Event-Übergangs.
 
 ## Aktuellen Zustand lesen
 

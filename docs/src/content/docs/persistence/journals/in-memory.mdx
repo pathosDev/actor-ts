@@ -33,8 +33,10 @@ expected sequence.
 The journal contract:
 
 ```ts
+type JournalEntry<E> = { event: E; tags?: string[] };
+
 interface Journal {
-  append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
+  append<E>(persistenceId: string, entries: JournalEntry<E>[], expectedSeq: number): Promise<PersistentEvent<E>[]>;
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
   highestSeq(persistenceId: string): Promise<number>;
   delete(persistenceId: string, toSeq: number): Promise<void>;
@@ -47,9 +49,10 @@ interface Journal {
 `InMemoryJournal` implements all of this with a `Map<string, PersistentEvent[]>`
 internally.  Operations are:
 
-- **`append`** — push events onto the stream's array.  Concurrency
-  check on `expectedSeq` (throws `JournalConcurrencyError` if the
-  current head doesn't match).
+- **`append`** — push the entries' events onto the stream's array,
+  each keeping its own `tags`.  Concurrency check on `expectedSeq`
+  (throws `JournalConcurrencyError` if the current head doesn't
+  match).
 - **`read`** — slice the array by sequence number range.
 - **`highestSeq`** — read the last entry's seqNr (or 0).
 - **`delete`** — splice off the prefix.
