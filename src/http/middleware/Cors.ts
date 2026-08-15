@@ -12,8 +12,8 @@
  * them in auth would 401 every preflight.
  */
 import type { CompiledEndpoint, Route } from '../Route.js';
-import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
-import { applyHeaders, appendVary } from './headers.js';
+import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
+import { applyHeaders, appendVary, readHeader } from './Headers.js';
 import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
 
 /** Resolved CORS policy stored on the `cors` Route node. */
@@ -78,9 +78,12 @@ function decorateResponse(settings: CorsRouteOptions, response: HttpResponse, re
     add['access-control-expose-headers'] = settings.exposedHeaders.join(', ');
   }
   let out = applyHeaders(response, add);
-  // A cache must not serve the wrong origin's response back.
+  // A cache must not serve the wrong origin's response back.  Read the
+  // handler's own Vary case-insensitively: an exact-key `['vary']` misses a
+  // `Vary: Cookie` and replaces it with a bare `Vary: Origin`, which tells
+  // caches it is safe to serve one user's response to the next (#603).
   if (acao !== '*') {
-    out = applyHeaders(out, { vary: appendVary(out.headers?.['vary'], 'Origin') }, { overwrite: true });
+    out = applyHeaders(out, { vary: appendVary(readHeader(out.headers, 'vary'), 'Origin') }, { overwrite: true });
   }
   return out;
 }

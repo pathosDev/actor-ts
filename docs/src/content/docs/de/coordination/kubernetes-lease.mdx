@@ -42,25 +42,78 @@ type KubernetesLeaseOptionsType = {
 
   // K8s-spezifisch:
   namespace:             string;
-  apiServerUrl?:         string;     // den In-Cluster-Default überschreiben
-  authToken?:            string;     // den In-Cluster-Default überschreiben
-  caCert?:               string;     // den In-Cluster-Default überschreiben
+  apiServerUrl?:         string;     // alle drei zusammen, oder keines
+  authToken?:            string;     // alle drei zusammen, oder keines
+  caCert?:               string;     // alle drei zusammen, oder keines
 };
 ```
 
 | K8s-Feld | Default | Was |
 | --- | --- | --- |
 | `namespace` | Pflicht | K8s-Namespace, in dem die Lease-Ressource liegt. |
-| `apiServerUrl` | in-cluster | Die URL des K8s-API-Servers — Default `https://kubernetes.default.svc`. |
-| `authToken` | in-cluster | Das Service-Account-Token des Pods — Default `/var/run/secrets/kubernetes.io/serviceaccount/token`. |
-| `caCert` | in-cluster | PEM-kodiertes CA-Zertifikat für das TLS des API-Servers — Default `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. |
+| `apiServerUrl` | in-cluster | Die URL des K8s-API-Servers — ohne Angabe `https://kubernetes.default.svc`. Verlangt `authToken` + `caCert`. |
+| `authToken` | in-cluster | Bearer-Token für den API-Server — ohne Angabe `/var/run/secrets/kubernetes.io/serviceaccount/token`. Verlangt `apiServerUrl` + `caCert`. |
+| `caCert` | in-cluster | PEM-kodiertes CA-Zertifikat für das TLS des API-Servers — ohne Angabe `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. Verlangt `apiServerUrl` + `authToken`. |
 
 Für Pods, die in-cluster laufen, brauchst du nur `namespace` und
 `name` (+ die Standard-`LeaseOptionsType`-Felder).  Das Framework
-liest API-URL und Token von den Standard-Locations.
+liest API-URL, Token und CA-Zertifikat von den Standard-Locations.
 
 Für Tests / Dev gegen eine lokale K8s-API (kind, minikube)
 überschreibe `apiServerUrl` + `authToken` + `caCert`.
+
+### Die drei Verbindungsfelder sind ein Credential
+
+Sie gelten nur zusammen: entweder alle drei oder keines davon.  Ein
+Teilsatz wirft `OptionsError` bei der Konstruktion.
+
+```ts
+const partialOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withNamespace('my-app')
+  .withApiServerUrl('https://k8s.example.internal');
+new KubernetesLease(partialOptions);
+// OptionsError: KubernetesLeaseOptions: authToken + caCert must be supplied
+// together with apiServerUrl — explicit API-server credentials are
+// all-or-nothing
+```
+
+Früher fiel jedes Feld für sich auf den In-Cluster-Mount zurück —
+eine `apiServerUrl` und sonst nichts anzugeben schickte also das
+**eigene ServiceAccount-Token des Pods** an genau diesen Host.  Der
+TLS-Pin begrenzte den Schaden — das Ziel musste weiterhin eine Kette
+zur Cluster-CA vorweisen —, aber ein Cluster-Credential hat an einer
+Adresse, für die es nicht ausgestellt wurde, nichts verloren.
+
+`apiServerUrl` muss `https` verwenden.  Der Client baut ohnehin einen
+`node:https`-Request, egal was in der URL steht; eine `http://`-URL
+ergab also nie eine Klartext-Verbindung, sondern nur eine
+verwirrende.
+
+### Pflichtfelder werden bei der Konstruktion erzwungen
+
+`name`, `owner`, `ttlMs` und `namespace` haben keinen Default.  Der
+Konstruktor wirft `OptionsError`, sobald eines davon fehlt — bevor
+auch nur ein Request den API-Server erreicht:
+
+```ts
+const incompleteOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withNamespace('my-app');
+new KubernetesLease(incompleteOptions);
+// OptionsError: KubernetesLeaseOptions: owner is required
+```
+
+Die Prüfung ist nicht kosmetisch.  Ohne `owner` wird das
+`Lease`-Objekt ohne `spec.holderIdentity` geschrieben — der
+undefinierte Key fällt schlicht aus dem JSON-Body heraus — und ein
+Lease ohne Holder liest sich für jeden Pod als frei: jedes
+`acquire()` liefert `true`, und die Single-Holder-Garantie ist weg,
+ohne dass ein einziger Fehler geloggt würde.  Ein fehlendes `ttlMs`
+führt über einen anderen Weg zum selben Ergebnis, denn die daraus
+berechnete Ablaufzeit ist `NaN` — und `NaN` liegt nie nach jetzt.
 
 ## RBAC
 
@@ -118,7 +171,28 @@ Das Framework schreibt:
 - `spec.leaseDurationSeconds` — abgeleitet aus `ttlMs`.
 
 Andere Halter prüfen `renewTime + leaseDurationSeconds < now()`,
-um zu entscheiden, ob der aktuelle Halter stale ist.
+um zu entscheiden, ob der aktuelle Halter stale ist — aber nie
+ungeprüft, denn beide Felder hat genau der Halter geschrieben, über
+den sie urteilen sollen:
+
+- `leaseDurationSeconds` zählt höchstens für **4 × das eigene
+  `ttlMs`** des Herausforderers.  Der Faktor ist bewusst großzügig
+  statt eines harten Clamps auf `ttlMs`: bei einem Rolling Upgrade,
+  das die TTL anhebt, würde ein Node mit dem noch kleineren Wert
+  sonst einen lebenden Halter für abgelaufen erklären und ihm den
+  Lease wegnehmen.
+- Eine `renewTime`, die weiter als ein `ttlMs` in der Zukunft liegt,
+  ist von einem Halter mit funktionierender Uhr nicht glaubwürdig
+  und zählt als **abgelaufen**.  Ihr zu glauben ist genau das, was
+  einen einzelnen Write den Lease dauerhaft blockieren lässt.
+- Eine fehlende *oder* nicht parsebare `renewTime` zählt als
+  **lebend**.  Für einen Record mit Owner, aber ohne brauchbaren
+  Zeitstempel ist „irgendwer hält ihn“ die sichere Lesart.
+
+Ein korruptes oder feindliches `Lease`-Objekt kostet damit höchstens
+`4 × ttlMs` an Nichtverfügbarkeit, statt den Lease unbegrenzt zu
+blockieren.  Konfiguriere auf allen Pods, die um einen Lease
+konkurrieren, dasselbe `ttlMs`, dann greift die Toleranz nie.
 
 ## Acquire-Ablauf
 

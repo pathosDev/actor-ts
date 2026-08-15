@@ -10,7 +10,7 @@ Excess requests get **429** with a `Retry-After` header.
 
 ```ts
 import { rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
   cache:    new InMemoryCache(),
@@ -111,7 +111,7 @@ Clients use these to back off without retrying randomly.
 ## Cluster-aware rate limiting
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 rateLimit({
@@ -183,6 +183,26 @@ import { Aside } from '@astrojs/starlight/components';
   Use Redis-backed cache for production multi-pod
   deployments.  In-memory cache only suffices for single-pod
   or "rough" limiting.
+</Aside>
+
+<Aside type="caution" title="Don't share the cache with cached() or idempotent()">
+  ```ts
+  const limiterCache = new InMemoryCache();   // ✓ the limiter's own instance
+  ```
+  The counter that enforces the limit is an ordinary cache entry, and
+  `InMemoryCache` evicts the least-recently-used one once `maxEntries`
+  is reached — without knowing which entries carry security state.
+  Share one instance with `cached` or `idempotent` and a caller who
+  mints distinct keys through either of those (a response-cache key
+  derived from the request, an attacker-chosen `Idempotency-Key`)
+  evicts **other** clients' counters, handing each of them a fresh
+  budget.  The flooder's own counter is safe: `incr` marks it
+  most-recently-used on every request, so it is never the victim.
+
+  Pass a dedicated instance — or `ext.cache('rate-limit')` — and size
+  its `maxEntries` above the number of distinct keys you expect inside
+  one `windowMs`.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
 </Aside>
 
 <Aside type="caution" title="Fixed-window edge effects">

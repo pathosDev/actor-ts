@@ -10,13 +10,15 @@ für `loadLatest` hinzuzufügen, gestützt auf einen beliebigen
 
 ```ts
 import {
+  ActorSystem,
+  ActorSystemOptions,
+} from 'actor-ts';
+import {
   CachedSnapshotStore,
   CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
-  ActorSystem,
-  ActorSystemOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
 const underlying = new ObjectStorageSnapshotStore(

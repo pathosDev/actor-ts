@@ -14,7 +14,8 @@ choice when:
   actor-ts.
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 import { ExpressBackend, ExpressBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
@@ -28,7 +29,7 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Configuration
 
 ```ts
-const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
 new ExpressBackend(
   expressBackendOptions,
 );
@@ -36,7 +37,9 @@ new ExpressBackend(
 // (`app.set('trust proxy', true)`), passed via `.withApp(app)`.
 ```
 
-Express-style settings.
+Express-style settings. `maxBodyBytes` defaults to **1 MiB**, the shared
+cap every backend applies — raise it only for an endpoint that genuinely
+takes more, as above.
 
 ## Security headers
 
@@ -79,6 +82,35 @@ handler.
 
 This is **the main reason to pick Express** over Fastify: the
 middleware ecosystem.  If you don't need it, Fastify is faster.
+
+### WebSocket handshakes go through it too
+
+A `websocket()` route is registered as an ordinary Express `GET`,
+and the upgrade is dispatched through the app — so `app.use(...)`
+runs for the handshake exactly as it runs for a request:
+
+```ts
+const backend = new ExpressBackend();
+backend.getApp().use(customAuth);          // gates /ws as well
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(websocket('/ws', chat));
+```
+
+A middleware that **answers** the request (`res.status(401).end()`)
+cancels the handshake: the socket is closed instead of upgraded and
+`onClientConnected` never fires.  A middleware that calls `next()`
+lets it through to the framework's own upgrade guard
+(`withMiddleware()` / `allowedOrigins`), which still has the last
+word — see [WebSockets](/http/websocket/).
+
+Two caveats on this path.  A middleware that neither answers nor
+calls `next()` leaves the client waiting, the same way it would
+stall an ordinary request.  And a rejection's *body* only reaches
+the client on runtimes that let a hijacked upgrade socket be written
+to — Bun and Node do, Deno does not, where the client sees the
+connection close instead.  Either way the handshake is refused.
 
 ## TLS
 

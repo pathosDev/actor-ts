@@ -14,7 +14,8 @@ SRV ist die flexiblere Wahl (Service-Discovery-Style); A-Records
 funktionieren für einfachere Setups.
 
 ```ts
-import { Cluster, ClusterOptions, DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DnsSeedProvider, DnsSeedProviderOptions } from 'actor-ts/discovery';
 
 const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
   .withHostname('_actor-ts._tcp.example.com')

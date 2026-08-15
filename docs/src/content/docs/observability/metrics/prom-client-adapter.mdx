@@ -13,10 +13,12 @@ metrics together.
 import client from 'prom-client';
 import {
   ActorSystem,
+} from 'actor-ts';
+import {
   MetricsExtensionId,
   promClientRegistry,
   PromClientAdapterOptions,
-} from 'actor-ts';
+} from 'actor-ts/metrics';
 
 // Your app's existing prom-client registry.  `client.register` is
 // the default global one; here we use a fresh Registry for clarity.

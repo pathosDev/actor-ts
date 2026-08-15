@@ -14,7 +14,7 @@ validates that version and the upcaster that brings the previous
 version forward — and the registry builds the adapters for you:
 
 ```ts
-import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts/persistence';
 import { z } from 'zod';
 
 const DepositedV1 = z.object({ kind: z.literal('deposited'), amount: z.number() });
@@ -55,7 +55,7 @@ which version.
 ## A minimal example
 
 ```ts
-import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts/persistence';
 
 // Shared module — `schemas.ts`:
 export const registry = new InMemorySchemaRegistry();
@@ -173,7 +173,7 @@ shipped `AvroSerializer` and `ProtobufSerializer` — so each
 version can use a **different wire format**:
 
 ```ts
-import { serializerCodec } from 'actor-ts';
+import { serializerCodec } from 'actor-ts/persistence';
 
 registry.register('BankAccount.Deposited', 1, {
   codec: serializerCodec(avroSerializer),

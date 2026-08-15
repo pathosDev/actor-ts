@@ -26,8 +26,9 @@
 export const name = 'BidirectionalMultiMap round-trip';
 export const description = 'the BidirectionalMultiMap tag survives a built-package serializer round-trip';
 
-export async function run({ actorTs }) {
-  const { BidirectionalMultiMap, JsonSerializer, CborSerializer } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { BidirectionalMultiMap } = actorTs;
+  const { JsonSerializer, CborSerializer } = await loadEntry('serialization');
 
   const source = new BidirectionalMultiMap([['news', 'ada'], ['news', 'grace'], ['sport', 'ada']]);
 

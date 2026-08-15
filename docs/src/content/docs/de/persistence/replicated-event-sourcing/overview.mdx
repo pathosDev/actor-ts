@@ -75,9 +75,9 @@ Konvergenz by Design.
 ```ts
 import {
   ReplicatedEventSourcedActor,
-  vectorClock,
+  VectorClock,
   type ConflictResolver,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 type State = { value: number };
 type Event = { kind: 'set'; value: number };

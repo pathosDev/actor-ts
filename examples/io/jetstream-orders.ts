@@ -25,11 +25,13 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   JetStreamActor,
   JetStreamOptions,
   type JetStreamCommand,
   type JetStreamMessage,
-} from '../../src/index.js';
+} from '../../src/io/index.js';
 import type { ActorRef } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 

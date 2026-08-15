@@ -4,8 +4,8 @@
  * real K8s API response.
  */
 import { KubernetesApiSeedProvider } from '../../../../../src/discovery/KubernetesApiSeedProvider.js';
-import type { K8sContext } from '../runner.js';
-import type { BrokerScenario } from '../../lib/scenario.js';
+import type { K8sContext } from '../Runner.js';
+import type { BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<K8sContext> = {
   name: 'lookup() returns NodeAddresses for Endpoints subsets',

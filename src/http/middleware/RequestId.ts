@@ -5,9 +5,9 @@
  * client bytes back into a header.
  */
 import type { Middleware } from '../Route.js';
-import type { HttpRequest } from '../types.js';
+import type { HttpRequest } from '../Types.js';
 import { randomUuid } from '../../util/RandomString.js';
-import { applyHeaders } from './headers.js';
+import { applyHeaders, applyHeadersToError } from './Headers.js';
 import { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 import type { RequestIdOptions, RequestIdOptionsType } from './RequestIdOptions.js';
 
@@ -37,7 +37,15 @@ export function requestIdOf(
   return value !== undefined && VALID_ID.test(value) ? value : undefined;
 }
 
-/** Build a middleware that assigns/propagates a request id. */
+/**
+ * Build a middleware that assigns/propagates a request id.
+ *
+ * The id is echoed on the response the inner stack returns *and* on the one
+ * a thrown `HttpError` short-circuit produces — a rejection is exactly the
+ * response whose id the operator later needs to find the log line (#606).
+ * A non-`HttpError` throw maps to the generic 500, which carries nothing
+ * from the thrown value, so that one still arrives without an id.
+ */
 export function requestId(options: RequestIdOptions = {}): Middleware {
   const resolvedOptions = options as Partial<RequestIdOptionsType>;
   const headerName = (resolvedOptions.headerName ?? DEFAULT_REQUEST_ID_HEADER).toLowerCase();
@@ -47,7 +55,12 @@ export function requestId(options: RequestIdOptions = {}): Middleware {
   return async (request, next) => {
     const incoming = trustIncoming ? requestIdOf(request, headerName) : undefined;
     const id = incoming ?? generate();
-    const response = await next({ ...request, headers: { ...request.headers, [headerName]: id } });
-    return applyHeaders(response, { [headerName]: id });
+    const echoed = { [headerName]: id };
+    try {
+      const response = await next({ ...request, headers: { ...request.headers, [headerName]: id } });
+      return applyHeaders(response, echoed);
+    } catch (error) {
+      throw applyHeadersToError(error, echoed);
+    }
   };
 }

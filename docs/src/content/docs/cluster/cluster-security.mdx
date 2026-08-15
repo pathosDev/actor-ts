@@ -20,11 +20,12 @@ For the operational context, see
 | MITM (interception + modification) | TLS + cert verification |
 | Unauthorized join (anyone with port access can join) | mTLS (cert-based peer auth) |
 | Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
+| Replay of a captured gossip frame | TLS, plus the per-sender frame sequence every cluster enforces |
 
 ## Enabling TLS
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),

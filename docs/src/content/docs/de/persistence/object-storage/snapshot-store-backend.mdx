@@ -15,7 +15,7 @@ import {
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
   PersistenceExtensionId,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion(region)
@@ -61,6 +61,8 @@ type ObjectStorageSnapshotStoreOptionsType = {
   keepN?:                number;   // Default 3
   compression?:          CompressionConfig | CompressionResolver;
   encryption?:           EncryptionConfig | EncryptionResolver;
+  integrity?:            IntegrityConfig | IntegrityResolver;
+  allowUntaggedBodies?:  boolean;  // Default false
   maxDecompressedBytes?: number;   // Default 512 MiB
 };
 ```
@@ -72,6 +74,8 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `keepN` | Pro persistenceId behaltene Snapshots; ältere werden beim Save entfernt.  Default 3. |
 | `compression` | At-Rest-Kompression — siehe [Kompression](/de/persistence/object-storage/compression/). |
 | `encryption` | At-Rest-Verschlüsselung — siehe [Verschlüsselung](/de/persistence/object-storage/encryption/). |
+| `integrity` | HMAC-SHA256-Tag über jeden Snapshot-Body — signiert Writes und verlangt beim Lesen ein Tag.  Siehe [Body-Integrität](/de/persistence/object-storage/encryption/#body-integrität-hmac). |
+| `allowUntaggedBodies` | Snapshots ohne Tag akzeptieren, solange `integrity` gesetzt ist — das Migrationsfenster für einen Bucket von vor der Integrität.  Default false. |
 | `maxDecompressedBytes` | Schutz vor Dekompressions-Bomben — Obergrenze für die Größe eines dekodierten Snapshots.  Default 512 MiB. |
 
 ## Key-Layout

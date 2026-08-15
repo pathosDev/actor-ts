@@ -9,7 +9,8 @@ Anstatt Spans zu exportieren, **speichert er sie im Speicher** —
 Tests asserten auf die aufgezeichneten Spans.
 
 ```ts
-import { TestKit, RecordingTracer, TracingExtensionId } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
+import { RecordingTracer, TracingExtensionId } from 'actor-ts/tracing';
 
 const tracer = new RecordingTracer();
 const tk = TestKit.create();

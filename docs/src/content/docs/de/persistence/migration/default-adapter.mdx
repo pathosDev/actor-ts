@@ -9,7 +9,7 @@ Defaults haben.  Es ist eine Funktion, die einen `EventAdapter`
 zurückgibt — stecke sie in das `eventAdapter()` eines Actors:
 
 ```ts
-import { defaultsAdapter, type EventAdapter } from 'actor-ts';
+import { defaultsAdapter, type EventAdapter } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
@@ -109,7 +109,7 @@ Durable-State-Datensatz nimm `defaultsSnapshotAdapter` — identische
 Spec, gibt einen `SnapshotAdapter` zurück:
 
 ```ts
-import { defaultsSnapshotAdapter } from 'actor-ts';
+import { defaultsSnapshotAdapter } from 'actor-ts/persistence';
 
 const adapter = defaultsSnapshotAdapter<StateV2>({
   manifest:       'BankAccount.State',
@@ -127,7 +127,7 @@ Optionen:
 ### migratingAdapter für kontextbewusste Migration verwenden
 
 ```ts
-import { migratingAdapter, MigrationChain } from 'actor-ts';
+import { migratingAdapter, MigrationChain } from 'actor-ts/persistence';
 
 const chain = MigrationChain.for<DepositedV2>('BankAccount.Deposited', 2)
   .add({ fromVersion: 1, toVersion: 2,

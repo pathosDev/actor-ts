@@ -14,7 +14,7 @@ still work under whatever version they were encrypted with;
 a background sweep eventually re-encrypts older data.
 
 ```ts
-import type { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts/persistence';
 
 // Each key is 32 raw bytes (AES-256) — decode from a base64 env
 // var, a mounted secret, or a KMS unwrap (see "Storage of master
@@ -114,7 +114,7 @@ re-encrypted.
 ## Step 3 — re-encrypt sweep
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 // `backend` is the ObjectStorageBackend your store writes through
 // (a FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).

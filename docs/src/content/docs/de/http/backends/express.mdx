@@ -15,7 +15,8 @@ Framework.  Die richtige Wahl, wenn:
   migrierst.
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 import { ExpressBackend, ExpressBackendOptions } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
@@ -28,7 +29,7 @@ await http.newServerAt('0.0.0.0', 8080)
 ## Konfiguration
 
 ```ts
-const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
 new ExpressBackend(
   expressBackendOptions,
 );
@@ -37,7 +38,9 @@ new ExpressBackend(
 // übergeben.
 ```
 
-Settings im Express-Stil.
+Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
+dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
+wirklich mehr annimmt, so wie oben.
 
 ## Security-Header
 
@@ -81,6 +84,37 @@ fließt zuerst durch deine Middleware, dann zum actor-ts-Handler.
 Das ist **der Hauptgrund**, Express statt Fastify zu nehmen: das
 Middleware-Ökosystem.  Wenn du es nicht brauchst, ist Fastify
 schneller.
+
+### WebSocket-Handshakes laufen ebenfalls hindurch
+
+Eine `websocket()`-Route wird als ganz normales Express-`GET`
+registriert, und das Upgrade wird durch die App dispatcht — also
+läuft `app.use(...)` beim Handshake genau so wie bei einem Request:
+
+```ts
+const backend = new ExpressBackend();
+backend.getApp().use(customAuth);          // gates /ws as well
+
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(websocket('/ws', chat));
+```
+
+Eine Middleware, die den Request **beantwortet**
+(`res.status(401).end()`), bricht den Handshake ab: der Socket wird
+geschlossen statt hochgestuft, und `onClientConnected` feuert nie.
+Eine Middleware, die `next()` aufruft, lässt ihn zum
+Upgrade-Guard des Frameworks durch (`withMiddleware()` /
+`allowedOrigins`), der weiterhin das letzte Wort hat — siehe
+[WebSockets](/de/http/websocket/).
+
+Zwei Einschränkungen auf diesem Pfad.  Eine Middleware, die weder
+antwortet noch `next()` aufruft, lässt den Client warten — genauso,
+wie sie einen normalen Request hängen lassen würde.  Und der *Body*
+einer Ablehnung erreicht den Client nur auf Runtimes, die das
+Schreiben auf einen übernommenen Upgrade-Socket zulassen: Bun und
+Node tun das, Deno nicht — dort sieht der Client stattdessen den
+Verbindungsabbruch.  Abgelehnt wird der Handshake in beiden Fällen.
 
 ## TLS
 

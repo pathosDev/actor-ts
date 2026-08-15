@@ -9,7 +9,7 @@ stored response without invoking the underlying handler.
 
 ```ts
 import { cached, path, get } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const productCache = cached({
   cache: new InMemoryCache(),
@@ -63,7 +63,15 @@ key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
+
+// Query-sensitive — the query is NOT part of req.path:
+key: (req) => `${req.path}|page=${req.query.page ?? '1'}`,
 ```
+
+`req.path` is the **pathname only** — `/api/products`, never
+`/api/products?page=2`.  An endpoint whose response varies by a query
+parameter has to fold that parameter into the key itself; otherwise
+every page shares one entry and page 2 is served page 1.
 
 Build the key to be deterministic across equivalent requests
 but unique across responses you want cached separately.
@@ -109,7 +117,7 @@ directly when a write should invalidate it.
 ## Shared cache across pods
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 const productCache = cached({
@@ -173,6 +181,23 @@ import { Aside } from '@astrojs/starlight/components';
   response cache can't grow without limit — but a too-small cap evicts
   hot responses early.  Size `maxEntries` to the number of distinct
   cache keys you expect.  See [In-memory cache](/cache/in-memory/).
+</Aside>
+
+<Aside type="caution" title="This is the key-minting side — don't share the instance">
+  ```ts
+  const responseCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  `key(request)` almost always derives from something the client
+  controls — a path parameter, a tenant header — so a caller who varies
+  it mints a new entry per request.  Harmless here: the LRU bound is
+  exactly what stops the response cache growing without limit.  Not
+  harmless in an instance shared with `rateLimit` or `idempotent`,
+  because eviction picks the least-recently-used entry with no idea it
+  is holding a rate-limit counter or a record that stops a payment
+  being taken twice.  Hand this middleware a dedicated instance — or
+  `ext.cache('response-cache')` — rather than the one enforcing a
+  guarantee.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
 </Aside>
 
 ## Where to next

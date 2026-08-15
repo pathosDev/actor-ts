@@ -24,14 +24,20 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   CacheExtensionId,
-  Cluster,
-  ClusterOptions,
-  HttpError,
   InMemoryCache,
   RedisCache,
   RedisCacheOptions,
+} from '../../src/cache/index.js';
+import {
+  Cluster,
+  ClusterOptions,
   StartShardingOptions,
+} from '../../src/cluster/index.js';
+import {
+  HttpError,
   Status,
   cached,
   complete,
@@ -45,8 +51,8 @@ import {
   post,
   put,
   rateLimit,
-} from '../../src/index.js';
-import type { Cache } from '../../src/index.js';
+} from '../../src/http/index.js';
+import type { Cache } from '../../src/cache/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; };
@@ -87,11 +93,11 @@ class UserEntity extends Actor<UserCommand> {
   }
 }
 
-function pickCache(): Cache {
+function pickCache(name: string): Cache {
   if (process.env.ACTOR_TS_CACHE === 'redis') {
     const cacheOptions = RedisCacheOptions.create()
       .withUrl(process.env.REDIS_URL ?? 'redis://localhost:6379')
-      .withKeyPrefix('rest:');
+      .withKeyPrefix(`rest:${name}:`);
     return new RedisCache(cacheOptions);
   }
   return new InMemoryCache();
@@ -104,10 +110,21 @@ async function main(): Promise<void> {
     .withHost('127.0.0.1')
     .withPort(2552);
   const cluster = await Cluster.join(system, clusterOptions);
-  // Wire the cache into the CacheExtension so other parts of the app
-  // can grab the same instance via `system.extension(CacheExtensionId).cache()`.
-  const cache = pickCache();
-  system.extension(CacheExtensionId).setCache('default', cache);
+  // ONE CACHE PER MIDDLEWARE — never a single shared instance.  A bounded
+  // cache evicts on recency alone, with no idea which entries carry a
+  // guarantee, so in a shared instance a caller who varies the
+  // response-cache key or the `Idempotency-Key` header pushes OTHER
+  // clients' rate-limit counters and idempotency records out: their limits
+  // reset and their retries re-run the handler.  Registering each under a
+  // name also lets the rest of the app reach the same instance via
+  // `system.extension(CacheExtensionId).cache('response-cache')`.
+  const limiterCache = pickCache('rate-limit');
+  const responseStore = pickCache('response-cache');
+  const idempotencyStore = pickCache('idempotency');
+  const cacheExtension = system.extension(CacheExtensionId);
+  cacheExtension.setCache('rate-limit', limiterCache);
+  cacheExtension.setCache('response-cache', responseStore);
+  cacheExtension.setCache('idempotency', idempotencyStore);
 
   const shardingOptions = StartShardingOptions.create<UserCommand>()
     .withExtractEntityId((message) => ('id' in message ? message.id : message.user.id))
@@ -117,18 +134,18 @@ async function main(): Promise<void> {
 
   // Rate limit: 60 req/min per IP — applied to every endpoint below.
   const limit = rateLimit({
-    cache, windowMs: 60_000, max: 60,
+    cache: limiterCache, windowMs: 60_000, max: 60,
     key: (request) => request.headers['x-forwarded-for'] ?? '<anon>',
   });
 
   // Response cache: GET /users/:id is cacheable for 30s.
   const responseCache = cached({
-    cache, ttlMs: 30_000,
+    cache: responseStore, ttlMs: 30_000,
     key: (request) => `users:${request.params.id}`,
   });
 
   // Idempotency-key: required on POST /users; 24h replay window.
-  const dedup = idempotent({ cache, ttlMs: 24 * 60 * 60_000 });
+  const deduplication = idempotent({ cache: idempotencyStore, ttlMs: 24 * 60 * 60_000 });
 
   const routes = path('users', concat(
     path(':id', concat(
@@ -140,17 +157,17 @@ async function main(): Promise<void> {
       del(limit(async request => {
         await askUser({ kind: 'delete', id: request.params.id! });
         // Invalidate the response cache for this user.
-        await cache.delete(`rsp:users:${request.params.id}`);
+        await responseStore.delete(`rsp:users:${request.params.id}`);
         return complete(Status.NoContent);
       })),
       put(limit(async request => {
         const body = entity<Omit<User, 'id'>>(request);
         const saved = await askUser({ kind: 'set', user: { id: request.params.id!, ...body } });
-        await cache.delete(`rsp:users:${request.params.id}`);
+        await responseStore.delete(`rsp:users:${request.params.id}`);
         return completeJson(Status.OK, saved as User);
       })),
     )),
-    post(limit(dedup(async request => {
+    post(limit(deduplication(async request => {
       const user = entity<User>(request);
       const saved = await askUser({ kind: 'set', user });
       return completeJson(Status.Created, saved as User);
@@ -164,7 +181,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', async () => {
     await binding.unbind();
     await cluster.leave();
-    await cache.close?.();
+    await Promise.all([limiterCache, responseStore, idempotencyStore].map((c) => c.close?.()));
     await system.terminate();
     process.exit(0);
   });

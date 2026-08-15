@@ -5,6 +5,7 @@ import type { Route } from '../http/index.js';
 import {
   DEVTOOLS_DEFAULTS,
   DevToolsOptionsValidator,
+  type DevToolsExposure,
   type DevToolsOptions,
   type DevToolsOptionsType,
 } from './DevToolsOptions.js';
@@ -40,7 +41,7 @@ export class DevToolsExtension implements Extension {
       this.system.log.warn('DevTools is already attached; returning the existing binding');
       return this.binding;
     }
-    const server = this.createServer(options);
+    const server = this.createServer(options, 'attach');
     let bound: DevToolsBinding;
     try {
       bound = await server.bind();
@@ -65,14 +66,17 @@ export class DevToolsExtension implements Extension {
    * Build the DevTools routes for mounting into an existing server
    * (next to the management endpoints, say) instead of taking a port
    * of their own.  The caller binds the returned routes.
+   *
+   * Because the caller binds them, this path cannot repeat `attach`'s
+   * host check — it never learns the host.  It therefore requires the
+   * gate up front: `auth`, `ipAllowlist`, or `allowUngatedMount` (#594).
    */
   mount(options: DevToolsOptions = {}): Route {
     if (this.server !== null) {
       throw new Error('DevTools is already attached on this ActorSystem');
     }
-    const server = this.createServer(options);
-    server.start();
-    return server.routes();
+    const server = this.createServer(options, 'mount');
+    return server.mount();
   }
 
   /** Unbind and uninstall everything.  Safe to call when not attached. */
@@ -83,12 +87,18 @@ export class DevToolsExtension implements Extension {
     if (server) await server.stop();
   }
 
-  private createServer(options: DevToolsOptions): DevToolsServer {
+  /**
+   * Merge, validate, install.  `exposure` is what the security rule turns
+   * on — the two entry points can prove different things about who will
+   * be able to reach the tree — and validation runs before anything is
+   * installed, so a rejected call leaves the extension exactly as it was.
+   */
+  private createServer(options: DevToolsOptions, exposure: DevToolsExposure): DevToolsServer {
     const settings: DevToolsOptionsType = {
       ...DEVTOOLS_DEFAULTS,
       ...(options as Partial<DevToolsOptionsType>),
     };
-    new DevToolsOptionsValidator().validate(settings);
+    new DevToolsOptionsValidator(exposure).validate(settings);
     const server = new DevToolsServer(this.system, settings);
     this.server = server;
     this.installShutdownHooks();

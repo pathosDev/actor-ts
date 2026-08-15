@@ -222,7 +222,7 @@ never came near the cap themselves.
 | `remote.tcp.host` | `"0.0.0.0"` | Bind address.  Used when `ClusterOptions` leaves `host` unset. |
 | `remote.tcp.port` | `2552` | Bind port.  Used when `ClusterOptions` leaves `port` unset. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
-| `remote.tls.enabled` | `false` | **Not implemented** — see below. |
+| `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
 
 Because the bind address is readable from config, a deployment can move it
 out of code entirely:
@@ -239,14 +239,21 @@ itself.  If you construct a `TcpTransport` yourself and pass it via
 `withTransport(…)`, set its cap there — the framework will not re-cap a
 transport it did not create.
 
-:::caution[`remote.tls.enabled` does nothing]
-This key is still inert: setting it to `true` does **not** enable TLS, and
-you get no error.  TLS is currently only reachable by constructing
-`TcpTransport` with a TLS configuration and passing it to
-`ClusterOptions.withTransport(…)`.  Tracked as
-[issue #591](https://github.com/pathosDev/actor-ts/issues/591); it is
-listed as a known-dead key rather than removed, so the value keeps its
-meaning once the implementation lands.
+:::caution[`remote.tls.enabled` does not encrypt anything]
+The key is read, but not honoured.  Setting it to `true` does **not** enable
+TLS — it makes the node log a `WARN` at startup that names the key and says
+the cluster wire is plaintext, so a security setting the framework ignores
+shows up in your logs and not only on this page
+([issue #591](https://github.com/pathosDev/actor-ts/issues/591)).  Encrypting
+the transport is tracked separately as
+[issue #941](https://github.com/pathosDev/actor-ts/issues/941); until that
+lands, treat the cluster network as something you have to secure by other
+means.
+
+The warning is about the transport the cluster builds for itself.  Pass your
+own via `ClusterOptions.withTransport(…)` and the node stays quiet about this
+key: what that transport does with TLS is yours to decide, and the framework
+cannot tell from the outside whether it is encrypted.
 :::
 
 ### `actor-ts.http`
@@ -483,6 +490,25 @@ The parser rejects these with the usual line and column instead.
 The check is exact-match, so keys that merely resemble them are fine:
 `_proto_`, `constructorName` and `prototypes` all work normally.
 
+#### Reads see own keys only
+
+Refusing three names guards the write side.  The read side is guarded the
+other way round — positively — because `Object.prototype` has a dozen more
+members and a list could never keep up with them:
+
+```hocon
+name = ${toString}    # error: unresolved substitution — not a native function
+port = ${?valueOf}    # optional: falls through to the environment, then away
+```
+
+Every lookup — a substitution, `hasPath`, and each typed getter — reads
+**own** keys only, in the config tree and in the environment alike.  A name
+that happens to match an inherited member therefore misses instead of
+resolving to whatever lives on the prototype, and `hasPath('toString')` is
+`false` on any config that does not declare a `toString` key itself.
+Declaring one is still allowed and still works: an own key shadows the
+inherited member, so `toString = "mine"` reads back as `"mine"`.
+
 ## Reading config in code
 
 ```ts
@@ -595,6 +621,24 @@ MqttOptions: protocolVersion must be one of 4, 5 (got 6)
 type, missing path) and `BrokerOptionsError` (a required broker setting
 absent from every layer).  Unset optional fields never trigger it; they
 fall through to their defaults.
+
+<Aside type="note" title="A rejected URL is reported with its credentials masked">
+  ```text
+  MqttOptions: brokerUrl must use protocol mqtt, mqtts (got "amqp://***@rabbit:5672/vhost")
+  ```
+  Every rule that rejects a URL — the `url` check helper, and the
+  connection-URL rules of the Mongo, libSQL, D1 and DynamoDB stores —
+  replaces the userinfo with `***` in **both** the message and
+  `OptionsError.value`.  A rejected broker URL is logged at ERROR when it
+  fails an actor's `preStart`, and a password that has reached a log
+  aggregator has to be rotated, not deleted.
+
+  Nothing else about the value is touched — no normalisation, no trailing
+  slash, no lowercased host — so you still recognise what you typed, and a
+  value that is not a URL at all (`":memory:"`, `"file:local.db"`) comes
+  back verbatim.  The same masking is available to your own code as
+  [`redactUrlCredentials`](/reference/utility-helpers/).
+</Aside>
 
 ```ts
 import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';

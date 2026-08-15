@@ -8,7 +8,7 @@
  * configuration, or the cluster bootstrap.
  */
 
-import { upCountFrom, waitFor, type Scenario } from './types.js';
+import { upCountFrom, waitFor, type Scenario } from './Types.js';
 
 export const scenario: Scenario = {
   name: '01-membership-convergence',

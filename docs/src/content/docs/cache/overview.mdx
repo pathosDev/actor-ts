@@ -139,7 +139,7 @@ floor.
 framework ships one:
 
 ```ts
-import { acquireLock } from 'actor-ts';
+import { acquireLock } from 'actor-ts/cache';
 
 const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
 if (lock.isNone()) return;              // someone else is on it
@@ -225,6 +225,19 @@ await cache.mset(new Map([
   Caches are tuned for small values.  Large objects waste
   memory + bandwidth.  Cache small references; fetch full
   objects from the DB.
+</Aside>
+
+<Aside type="caution" title="Don't share one instance between a guarantee and a key flood">
+  ```ts
+  const cache = system.extension(CacheExtensionId).cache();   // ✗ one instance for everything
+  ```
+  A bounded cache evicts on recency alone, so an entry carrying a
+  guarantee — a rate-limit counter, an idempotency record, a lock —
+  goes as readily as a cached response body.  Give each consumer its
+  own named instance (`cache('rate-limit')`, `cache('idempotency')`),
+  so a caller who enumerates one consumer's key space cannot reach
+  another's state.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
 </Aside>
 
 ## Where to next

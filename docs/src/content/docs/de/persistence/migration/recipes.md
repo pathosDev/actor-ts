@@ -71,7 +71,7 @@ testen.  Der Adapter fügt den Default ein, wenn das Feld fehlt —
 das war's.
 
 ```ts
-import { defaultsAdapter, PersistentActor } from 'actor-ts';
+import { defaultsAdapter, PersistentActor } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 interface DepositedV2 extends DepositedV1 { currency: string }
@@ -96,7 +96,7 @@ wird, kommt als v2-förmiges Event mit bereits gesetztem
 Felder umbenennen, ein Feld in mehrere splitten, Feldtypen
 ändern.  All das geht zu `migratingAdapter`.
 
-Beispiel: [`examples/persistence/event-migration.ts`](../../examples/persistence/event-migration.ts).
+Beispiel: [`examples/persistence/event-migration.ts`](https://github.com/pathosDev/actor-ts/blob/main/examples/persistence/event-migration.ts).
 
 ---
 
@@ -112,7 +112,7 @@ eine Chain.  Jeder Schritt ist einzeln typsicher; die Chain
 type-checkt, dass Start- und End-Formen passen.
 
 ```ts
-import { MigrationChain, migratingAdapter } from 'actor-ts';
+import { MigrationChain, migratingAdapter } from 'actor-ts/persistence';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
@@ -136,7 +136,7 @@ class Account extends PersistentActor<Command, DepositedV3, State> {
 **Rolling Deploys:** pinne `writeVersion` auf `migratingAdapter`,
 um Writes auf der alten Form zu halten, während die Reader
 aufholen — siehe
-[`docs/operations/rolling-migration.md`](../operations/rolling-migration.md)
+[Rolling-Deployment-Migration](/de/operations/upgrades/rolling-migration/)
 für das vollständige Vier-Phasen-Rezept.
 
 **Verifizierbare Invariante:** Eine vN-Payload, die zurückgelesen
@@ -144,7 +144,7 @@ wird, kommt als `currentVersion`-förmiges Event an.  Jeder
 Upcaster läuft genau einmal pro fehlendem Versionsschritt;
 Zwischen-Formen erreichen `onEvent` nie.
 
-Beispiel: [`examples/persistence/event-migration-chain.ts`](../../examples/persistence/event-migration-chain.ts).
+Beispiel: [`examples/persistence/event-migration-chain.ts`](https://github.com/pathosDev/actor-ts/blob/main/examples/persistence/event-migration-chain.ts).
 
 ---
 
@@ -166,7 +166,7 @@ Single Source of Truth für "wie sieht v2 aus?" über die ganze
 Flotte.
 
 ```ts
-import { InMemorySchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry } from 'actor-ts/persistence';
 import { z } from 'zod';
 
 const registry = new InMemorySchemaRegistry();
@@ -200,7 +200,7 @@ Bug vor dem Deployment.
 `MigrationChain` direkt ist kürzer, schneller zu type-checken
 und braucht keine Registry-Instanz.
 
-Beispiel: [`examples/persistence/schema-registry.ts`](../../examples/persistence/schema-registry.ts).
+Beispiel: [`examples/persistence/schema-registry.ts`](https://github.com/pathosDev/actor-ts/blob/main/examples/persistence/schema-registry.ts).
 
 ---
 
@@ -222,7 +222,7 @@ import {
   defaultsAdapter,
   validatedEventAdapter,
   zodCodec,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 import { z } from 'zod';
 
 const codec = zodCodec(
@@ -263,7 +263,7 @@ Journal das Manifest, das das Migrations-Tooling erwartet.
 import {
   wrapEventAsEnvelope,
   migrateInMemoryJournal,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // One-Shot: jedes Event im Journal als Envelope umschreiben.
 await migrateInMemoryJournal(journal, (event) =>
@@ -285,7 +285,7 @@ haben (`wrapEventAsEnvelope` ist idempotent — der Aufruf auf
 einem bereits eingewickelten Envelope ist ein No-op — aber der
 Bulk-Pass ist verschwendete Arbeit).
 
-Beispiel: [`examples/persistence/migrate-legacy-events.ts`](../../examples/persistence/migrate-legacy-events.ts).
+Beispiel: [`examples/persistence/migrate-legacy-events.ts`](https://github.com/pathosDev/actor-ts/blob/main/examples/persistence/migrate-legacy-events.ts).
 
 ---
 
@@ -307,7 +307,7 @@ Downcastern.  Spezifiziere `writeVersion < currentVersion` in
 `migratingAdapter(chain, { writeVersion: oldV })`, und die Chain
 führt die Downcaster auf dem Weg zum Journal aus.  Verwendet
 während der **Code-First-Phase** eines Rolling Deploys
-([rolling-migration.md](../operations/rolling-migration.md)).
+([Rolling-Deployment-Migration](/de/operations/upgrades/rolling-migration/)).
 
 ### "Was ist mit Snapshots?"
 
@@ -335,12 +335,12 @@ frisches Target.
 
 | Werkzeug                    | Modul                            | Verwenden, wenn                          |
 | --------------------------- | --------------------------------- | ----------------------------------------- |
-| `defaultsAdapter`           | `src/persistence/migration/defaultsAdapter.ts` | Nur additiv                  |
+| `defaultsAdapter`           | `src/persistence/migration/DefaultsAdapter.ts` | Nur additiv                  |
 | `MigrationChain` + `migratingAdapter` | `src/persistence/migration/{MigrationChain,migratingAdapter}.ts` | Alles andere  |
 | `InMemorySchemaRegistry`    | `src/persistence/migration/SchemaRegistry.ts`  | Multi-Service / Multi-Version-Koexistenz |
-| `validatedEventAdapter`     | `src/persistence/migration/validatedAdapter.ts` | On-Write-Validierung    |
-| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/wrapLegacy.ts` | Pre-Envelope-Journal nachrüsten |
-| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/journalMigration.ts` | Kopieren + transformieren zwischen zwei Backends |
+| `validatedEventAdapter`     | `src/persistence/migration/ValidatedAdapter.ts` | On-Write-Validierung    |
+| `wrapEventAsEnvelope` + `migrateInMemoryJournal` / `migrateSnapshotStore` | `src/persistence/migration/WrapLegacy.ts` | Pre-Envelope-Journal nachrüsten |
+| `migrateBetweenJournals` / `migrateBetweenSnapshotStores` | `src/persistence/migration/JournalMigration.ts` | Kopieren + transformieren zwischen zwei Backends |
 
 Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.
 
@@ -348,9 +348,10 @@ Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.
 
 ## Verwandtes
 
-- [`docs/operations/rolling-migration.md`](../operations/rolling-migration.md)
+- [Rolling-Deployment-Migration](/de/operations/upgrades/rolling-migration/)
   — wie du jedes davon über einen laufenden Cluster deployst.
-- [`README.md` → Schema-Evolution](../../README.md#schema-evolution-event--state-migration)
+- [Migration im Überblick](/de/persistence/migration/overview/)
   — Schnelltour von `defaultsAdapter` und `MigrationChain`.
-- [`CHANGELOG.md`](../../CHANGELOG.md) `[0.6.0]` → "schema migration
-  & encryption polish" für das zugrunde liegende Feature-Set.
+- [`CHANGELOG.md`](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
+  `[0.6.0]` → "schema migration & encryption polish" für das zugrunde
+  liegende Feature-Set.

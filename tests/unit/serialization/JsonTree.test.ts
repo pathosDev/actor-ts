@@ -553,10 +553,91 @@ describe('JsonTree — BidirectionalMultiMap (#1037)', () => {
   });
 });
 
+/**
+ * Node and Deno decode base64 into a shared `Buffer` pool and hand back a
+ * *view* at a non-zero offset (one sample run: offset 1656 of a 65536-byte
+ * pool on Node 26.7.0, offset 96 of an 8192-byte pool on Deno 2.6.8).  Bun
+ * returns an exact allocation instead, so on this project's own runner the
+ * ownership assertions below are green even on the BROKEN code — the trap
+ * #619 was originally filed with.
+ *
+ * Patching `Buffer.from` reproduces the other two runtimes here so the fix is
+ * testable under `bun test` at all: `Buffer.from(arrayBuffer, offset, length)`
+ * wraps existing memory without copying, so the stub returns a genuine
+ * pool-backed `Buffer`, not a look-alike.  The cross-runtime proof against the
+ * real allocators is `tests/smoke/cases/19-json-bytes-ownership.mjs`.
+ */
+const POOLED_BUFFER_BYTES = 8192;
+
+type BufferFromFunction = (...callArguments: unknown[]) => Buffer;
+
+function withPooledBufferAllocator<T>(body: () => T): T {
+  const originalFrom = Buffer.from as unknown as BufferFromFunction;
+  const pool = new ArrayBuffer(POOLED_BUFFER_BYTES);
+  // Where Deno actually placed the first decode of a fresh pool.
+  let nextOffset = 96;
+  const pooledFrom: BufferFromFunction = (...callArguments) => {
+    const decoded = originalFrom(...callArguments);
+    if (nextOffset + decoded.byteLength > POOLED_BUFFER_BYTES) return decoded;
+    const pooled = originalFrom(pool, nextOffset, decoded.byteLength);
+    pooled.set(decoded);
+    nextOffset += decoded.byteLength;
+    return pooled;
+  };
+  Buffer.from = pooledFrom as unknown as typeof Buffer.from;
+  try {
+    return body();
+  } finally {
+    Buffer.from = originalFrom as unknown as typeof Buffer.from;
+  }
+}
+
 describe('JsonTree — base64 helpers', () => {
   test('round-trip bytes of every value 0..255', () => {
     const bytes = new Uint8Array(256);
     for (let i = 0; i < 256; i++) bytes[i] = i;
     expect(Array.from(fromBase64(toBase64(bytes)))).toEqual(Array.from(bytes));
+  });
+
+  test('a decode owns its whole backing buffer', () => {
+    const decoded = fromBase64(toBase64(new Uint8Array([1, 2, 3, 4])));
+    expect(decoded.byteOffset).toBe(0);
+    expect(decoded.buffer.byteLength).toBe(decoded.byteLength);
+    // A `Buffer` escaping here would turn `rebuildBinaryView`'s `slice()`
+    // into a `subarray` and put the pooled view straight back.
+    expect(decoded.constructor).toBe(Uint8Array);
+  });
+
+  test('a pooled decode is copied out, so one payload cannot read another (#619)', () => {
+    const secretBase64 = toBase64(new TextEncoder().encode('SECRET-SESSION-TOKEN-abcdefghij'));
+    const attackerBase64 = toBase64(new Uint8Array([1, 2, 3, 4]));
+    const [secret, attacker] = withPooledBufferAllocator(
+      () => [fromBase64(secretBase64), fromBase64(attackerBase64)] as const,
+    );
+
+    expect(attacker.byteOffset).toBe(0);
+    expect(attacker.buffer.byteLength).toBe(attacker.byteLength);
+    expect(attacker.buffer).not.toBe(secret.buffer);
+    expect(new TextDecoder().decode(new Uint8Array(attacker.buffer))).not.toContain('SECRET');
+    expect(Array.from(attacker)).toEqual([1, 2, 3, 4]);
+  });
+
+  test('the tagged decode paths hand out owned bytes under a pool (#619)', () => {
+    const bytesTag = { __bytes__: toBase64(new Uint8Array([9, 8, 7])) };
+    const typedArrayTag = {
+      __typedarray__: { kind: 'Uint16Array', data: toBase64(new Uint8Array([1, 0, 2, 0])) },
+    };
+    const [bytes, counts] = withPooledBufferAllocator(
+      () => [decodeJsonTree(bytesTag) as Uint8Array, decodeJsonTree(typedArrayTag) as Uint16Array] as const,
+    );
+
+    expect(bytes.byteOffset).toBe(0);
+    expect(bytes.buffer.byteLength).toBe(bytes.byteLength);
+    expect(Array.from(bytes)).toEqual([9, 8, 7]);
+    // The `__typedarray__` sibling normalises separately, and only stays
+    // correct while `fromBase64` returns a plain `Uint8Array`.
+    expect(counts.byteOffset).toBe(0);
+    expect(counts.buffer.byteLength).toBe(counts.byteLength);
+    expect(Array.from(counts)).toEqual([1, 2]);
   });
 });

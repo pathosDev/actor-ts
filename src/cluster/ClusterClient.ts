@@ -35,6 +35,11 @@
  * client address, then exchanges `cluster-client-envelope` and
  * `cluster-client-reply` frames.  Reusing the wire layer means we
  * inherit framing, ordering, and TLS for free.
+ *
+ * The handshake is the **only** place the client states who it is (#121).
+ * Envelopes used to repeat that address in a `from` field, which the
+ * receptionist stopped reading in #711 and no longer accepts on the type at
+ * all — the connection, not the payload, is what a reply is routed on.
  */
 
 import { HELLO_TIMEOUT_MS } from './Constants.js';
@@ -43,7 +48,7 @@ import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
-import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
+import { NodeAddress } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
 import { validateWireFrame } from './WireValidation.js';
 import type {
@@ -166,7 +171,6 @@ export class ClusterClient {
     await this.ensureConnected();
     const env: ClusterClientEnvelopeMessage = {
       kind: 'cluster-client-envelope',
-      from: this.identity.toJSON(),
       to: targetPath,
       body: message,
     };
@@ -193,7 +197,6 @@ export class ClusterClient {
     const askId = nextAskId(this.pending);
     const env: ClusterClientEnvelopeMessage = {
       kind: 'cluster-client-envelope',
-      from: this.identity.toJSON(),
       to: targetPath,
       askId,
       body: message,

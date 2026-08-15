@@ -9,7 +9,7 @@ walk that also round-trips `Date`, `Uint8Array`, `Map`, `Set`,
 and `bigint` via type tags.
 
 ```ts
-import { JsonSerializer } from 'actor-ts';
+import { JsonSerializer } from 'actor-ts/serialization';
 
 const serializer = new JsonSerializer();
 const bytes = serializer.toBinary({ kind: 'increment', n: 1 });

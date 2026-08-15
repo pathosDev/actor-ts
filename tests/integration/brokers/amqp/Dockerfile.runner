@@ -19,4 +19,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/amqp/runner.ts"]
+CMD ["bun", "tests/integration/brokers/amqp/Runner.ts"]

@@ -314,6 +314,12 @@ describe('LeaseMajority', () => {
  * Controllable lease that tracks every acquire individually so we can
  * resolve them out-of-order — required for the "stale acquire returns
  * `true` after the local timeout invalidated it" scenario.
+ *
+ * Models the `held` gate that both shipped backends have (#600): the
+ * lease is only owned once an acquire has RESOLVED as won, and
+ * `release()` is a no-op before then.  Without that, the double accepted
+ * a release at any moment and the #142 tests passed against semantics no
+ * real `Lease` implements.
  */
 class FencedFakeLease implements Lease {
   /** Pending acquires in order of issue, so tests can resolve a specific one. */
@@ -327,6 +333,8 @@ class FencedFakeLease implements Lease {
   tokenAcquireCalls = 0;
   released = false;
   releaseShouldReject = false;
+  /** True once an acquire resolved as won — mirrors the backends' `held`. */
+  private held = false;
   /** Tokens that will be returned for successive token-acquires. */
   tokenStream: string[] = ['t1', 't2', 't3', 't4'];
 
@@ -359,6 +367,9 @@ class FencedFakeLease implements Lease {
     const entry = this.pending[index];
     if (!entry) throw new Error(`FencedFakeLease.resolveAt(${index}): no such pending acquire`);
     this.pending[index] = null as never;
+    // Ownership starts here, not when acquire() was called — which is why
+    // a release fired at timeout time cannot undo anything.
+    if (got) this.held = true;
     if (entry.kind === 'token') {
       const value = got ? { token: this.tokenStream.shift() ?? 'tX' } : null;
       entry.resolve(value);
@@ -372,10 +383,12 @@ class FencedFakeLease implements Lease {
   }
 
   async release(): Promise<void> {
+    if (!this.held) return;                      // the contract's no-op
     if (this.releaseShouldReject) throw new Error('release failed');
+    this.held = false;
     this.released = true;
   }
-  checkAlive(): boolean { return false; }
+  checkAlive(): boolean { return this.held; }
   onLost(): () => void { return () => {}; }
 }
 
@@ -401,25 +414,28 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     // 2. Simulate the local timeout firing — advance past the deadline.
     await new Promise((r) => setTimeout(r, 60));
 
-    // 3. Another decide() detects the deadline passed → bumps epoch,
-    //    fires release, and kicks off acquire #2 in the same call
-    //    sequence (the next decide() does the kickoff because
-    //    acquiring=false now).
-    expect(strat.decide(clusterView).size).toBe(0);             // first decide post-timeout: notices deadline, no new kickoff yet
-    expect(strat.decide(clusterView).size).toBe(0);             // second decide: now acquiring=false, kicks off acquire #2
-    expect(lease.acquireCalls).toBe(2);
-    expect(lease.released).toBe(true);
+    // 3. Another decide() detects the deadline passed → bumps the epoch
+    //    and abandons attempt #1.  No fresh acquire starts while that
+    //    attempt is unresolved (#600) — one of them landing on the wire
+    //    while the other is being undone is the race the block prevents.
+    expect(strat.decide(clusterView).size).toBe(0);             // notices the deadline, abandons #1
+    expect(strat.decide(clusterView).size).toBe(0);             // still waiting on the abandoned attempt
+    expect(lease.acquireCalls).toBe(1);
+    expect(lease.released).toBe(false);                         // nothing taken yet, nothing to undo
 
     // 4. Now the SLOW acquire #1 finally resolves "won".
     //    Without the epoch guard, this would write decision=surviveSet
     //    even though we abandoned the attempt — the exact split-brain
-    //    vector.
+    //    vector.  The win is undone instead.
     lease.resolveAt(0, true);
     await flushMicrotasks();
     expect(strat.decide(clusterView).size).toBe(0);             // still pending — late result was discarded
+    expect(lease.released).toBe(true);
 
-    // 5. Acquire #2 resolves "lost" — the OTHER side won during the
-    //    cleanup window.  Strategy must converge to "down our own side".
+    // 5. With the undo done, the next decide() kicks off acquire #2,
+    //    which resolves "lost" — the OTHER side won during the cleanup
+    //    window.  Strategy must converge to "down our own side".
+    expect(lease.acquireCalls).toBe(2);
     lease.resolveAt(1, false);
     await flushMicrotasks();
     const after = strat.decide(clusterView);
@@ -428,7 +444,14 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(after.has(addr(2).toString())).toBe(true);
   });
 
-  test('timeout proactively releases the lease to undo a may-have-succeeded acquire on the wire', async () => {
+  /**
+   * The #600 regression.  #142 fired `release()` from the timeout branch,
+   * where the backend cannot yet hold the lease — `release()` is a no-op
+   * until an acquire has resolved, so the abandoned attempt went on to
+   * land, set `held`, start its renewal loop and keep the record claimed
+   * for good.  The undo has to wait for the attempt to report back.
+   */
+  test('an abandoned acquire that lands on the wire is released, not left claimed', async () => {
     const lease = new FencedFakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
     const strat = new LeaseMajority(leaseOptions);
@@ -437,14 +460,41 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.released).toBe(false);
 
-    // Cross the deadline.
+    // Cross the deadline and abandon the attempt.
     await new Promise((r) => setTimeout(r, 50));
-
-    // Next decide() triggers the abandon-release.
     strat.decide(clusterView);
-    // release is fire-and-forget; let it run.
+    await flushMicrotasks();
+    // Releasing here would be a no-op against every real backend, so the
+    // strategy does not even try.
+    expect(lease.released).toBe(false);
+    expect(lease.checkAlive()).toBe(false);
+
+    // The abandoned acquire succeeds on the wire — now there is ownership
+    // to undo, and it gets undone.
+    lease.resolveAt(0, true);
     await flushMicrotasks();
     expect(lease.released).toBe(true);
+    expect(lease.checkAlive()).toBe(false);
+  });
+
+  test('an abandoned acquire that lost is not released, and unblocks the next attempt', async () => {
+    const lease = new FencedFakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30);
+    const strat = new LeaseMajority(leaseOptions);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+
+    expect(strat.decide(clusterView).size).toBe(0);
+    await new Promise((r) => setTimeout(r, 50));
+    strat.decide(clusterView);
+
+    lease.resolveAt(0, false);
+    await flushMicrotasks();
+    expect(lease.released).toBe(false);      // never held it — nothing to release
+
+    // The block on fresh attempts lifts as soon as the abandoned one
+    // reports back, however it reports.
+    expect(strat.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
   });
 
   test('release rejection puts the strategy in fail-safe until the partition heals', async () => {
@@ -457,17 +507,22 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(strat.decide(clusterView).size).toBe(0);
     await new Promise((r) => setTimeout(r, 50));
 
-    // First post-timeout decide: notices deadline, triggers release
-    // (which rejects, setting fail-safe).
+    // First post-timeout decide: notices the deadline and abandons the
+    // attempt.  The attempt then lands, so the undo runs — and rejects,
+    // which is what sets fail-safe.
     strat.decide(clusterView);
+    lease.resolveAt(0, true);
     await flushMicrotasks();
     await flushMicrotasks();
 
     // Subsequent decide() calls on the SAME partition view must NOT
     // claim majority — even if a fresh acquire would now succeed.
-    // The lease state is ambiguous.
+    // The lease state is ambiguous, so the strategy refuses to even
+    // start another attempt (a same-owner re-acquire would "win"
+    // trivially and hand us a false majority).
     expect(strat.decide(clusterView).size).toBe(0);
     expect(strat.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
 
     // Healing the partition resets fail-safe — strategy is ready
     // for the next split.
@@ -532,5 +587,77 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const callsBefore = lease.acquireCalls;
     expect(strat.decide(newSplit).size).toBe(0);
     expect(lease.acquireCalls).toBe(callsBefore + 1);
+  });
+
+  /**
+   * `reset()` is the second way an acquire loses its watcher, and it is
+   * the likelier one: the acquire budget is 5 s by default, while a
+   * partition healing or a membership change inside that window needs no
+   * stall at all.  Dropping the result is not enough — the attempt can
+   * still land on the wire, and then the record is claimed and renewed
+   * forever by a node whose own strategy walked away from it.  That is
+   * the exact end state #600 exists to prevent, so the heal path has to
+   * track the abandoned attempt just like the timeout path does.
+   *
+   * `acquireTimeoutMs` is deliberately far out of reach here, so nothing
+   * but the heal can abandon the attempt.
+   */
+  test('a heal mid-acquire abandons the attempt: a late win is released, not left claimed', async () => {
+    const lease = new FencedFakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30_000);
+    const strat = new LeaseMajority(leaseOptions);
+    const split = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+
+    expect(strat.decide(split).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // The partition heals while acquire #1 is still on the wire.
+    const healed = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], []);
+    expect(strat.decide(healed).size).toBe(0);
+
+    // #1 lands as a win.  Nobody is reading its result any more, so
+    // unless it is undone the backend holds and renews the lease for good.
+    lease.resolveAt(0, true);
+    await flushMicrotasks();
+    expect(lease.released).toBe(true);
+    expect(lease.checkAlive()).toBe(false);
+
+    // With the undo done, the strategy is ready for the next split.
+    const newSplit = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strat.decide(newSplit).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+  });
+
+  /**
+   * The same reset, reached through a changed partition view instead of a
+   * heal.  Here `decide()` does not return early, so an untracked
+   * abandonment is worse than a leak: it starts acquire #2 while #1 is
+   * still outstanding, breaking the "no overlapping attempts" rule that
+   * makes the abandon-release safe in the first place.
+   */
+  test('a partition-view change mid-acquire waits for the abandoned attempt instead of overlapping a second', async () => {
+    const lease = new FencedFakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease).withAcquireTimeoutMs(30_000);
+    const strat = new LeaseMajority(leaseOptions);
+    const splitA = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+
+    expect(strat.decide(splitA).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // Different unreachable set, still an even split — acquire #1 is
+    // invalidated but remains on the wire.
+    const splitB = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [2, 4], 1);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(1);
+
+    // Only once #1 has reported back — and its win has been undone — may
+    // a fresh attempt for the new view start.
+    lease.resolveAt(0, true);
+    await flushMicrotasks();
+    expect(lease.released).toBe(true);
+    expect(strat.decide(splitB).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
   });
 });

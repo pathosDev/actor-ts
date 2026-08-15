@@ -90,6 +90,22 @@ Voluntarily drop ownership.  Calling without holding the lease
 is a no-op — no error.  Resolves once the backend has confirmed
 the release.
 
+**It rejects if the backend could not be told.**  A `release()`
+that fails leaves the record claimed on the server while this
+process has already dropped it locally — the holder no longer
+knows whether it owns the lease, and that is worth knowing.
+Backends must propagate the failure instead of swallowing it;
+callers using `release()` purely as cleanup wrap it:
+
+```ts
+await lease.release().catch(() => { /* best-effort cleanup */ });
+```
+
+Everything the framework does internally is already wrapped that
+way.  The one caller that acts on the rejection is
+[`LeaseMajority`](/cluster/downing-strategies/), which enters
+fail-safe and stops claiming majority until the partition heals.
+
 The framework calls `release()`:
 
 - When the singleton manager stops being leader (graceful
@@ -99,6 +115,11 @@ The framework calls `release()`:
 
 For the **non-graceful case** — process crash — the backend's
 TTL handles cleanup automatically; no `release` is sent.
+
+Note the flip side of the no-op: `release()` does nothing while
+an `acquire()` is still in flight, because ownership only begins
+when that acquire resolves.  Undoing an acquire you stopped
+waiting for means waiting for it to report back first.
 
 ## `checkAlive(): boolean`
 
@@ -195,7 +216,7 @@ Same pattern for sharding coordinator:
 ## Writing a custom backend
 
 ```ts
-import type { Lease, LeaseOptionsType } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
   private alive = false;

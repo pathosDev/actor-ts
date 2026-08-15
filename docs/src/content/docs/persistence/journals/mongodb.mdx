@@ -50,13 +50,15 @@ composite and all three components inherit it:
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   MongoDurableStateStoreOptions,
   MongoJournalOptions,
   MongoSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterMongoPluginsOptions,
   registerMongoPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Select the MongoDB plugins as the active journal + snapshot store.
@@ -203,7 +205,7 @@ array, MongoDB indexes it as a **multikey** index — one entry per tag per even
 instead of scanning:
 
 ```ts
-import { MongoQuery, offsetStart } from 'actor-ts';
+import { MongoQuery, offsetStart } from 'actor-ts/persistence';
 
 const query = new MongoQuery(journal);
 const tagged = await query.currentEventsByTag({ all: ['ledger'], not: ['audit'] }, offsetStart);

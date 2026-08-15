@@ -2,11 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { contentSecurityPolicy } from '../../../../src/http/middleware/Csp.js';
 import { CspOptions } from '../../../../src/http/middleware/CspOptions.js';
 import type { Middleware } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>
   Promise.resolve(mw(request, async () => ({ status: Status.OK, body: 'x', headers: handlerHeaders })));
+/** Drive the middleware over a `next` that throws — the idiomatic short-circuit. */
+const rethrownBy = (mw: Middleware, error: unknown): Promise<unknown> =>
+  Promise.resolve(mw(request, () => Promise.reject(error))).then(() => null, (rethrown: unknown) => rethrown);
 
 const DEFAULT_CSP =
   "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' https: 'unsafe-inline'; "
@@ -47,5 +50,21 @@ describe('contentSecurityPolicy', () => {
   test('does not clobber a handler-set CSP header', async () => {
     const response = await run(contentSecurityPolicy(), { 'content-security-policy': "default-src 'none'" });
     expect(response.headers?.['content-security-policy']).toBe("default-src 'none'");
+  });
+
+  test('the policy rides on a thrown HttpError short-circuit (#606)', async () => {
+    // This middleware is the only seam that emits CSP — the server-wide
+    // header bundle has no `csp` field — so a skipped throw meant an error
+    // response could carry no policy at all.
+    const rethrown = await rethrownBy(contentSecurityPolicy(), new HttpError(Status.Forbidden, 'nope'));
+    expect(rethrown).toBeInstanceOf(HttpError);
+    expect((rethrown as HttpError).headers?.['content-security-policy']).toBe(DEFAULT_CSP);
+  });
+
+  test('reportOnly rides along under its own header name', async () => {
+    const mw = contentSecurityPolicy(CspOptions.create().withReportOnly());
+    const headers = ((await rethrownBy(mw, new HttpError(Status.Forbidden, 'nope'))) as HttpError).headers ?? {};
+    expect(headers['content-security-policy-report-only']).toBe(DEFAULT_CSP);
+    expect(headers['content-security-policy']).toBeUndefined();
   });
 });

@@ -98,6 +98,24 @@ Eigentum freiwillig abgeben.  Aufruf ohne gehaltenen Lease ist
 ein No-op — kein Fehler.  Resolved, sobald das Backend das
 Release bestätigt hat.
 
+**Es rejected, wenn das Backend nicht erreicht werden konnte.**
+Ein fehlgeschlagenes `release()` lässt den Record auf dem Server
+beansprucht zurück, während dieser Prozess ihn lokal bereits
+abgegeben hat — der Halter weiß dann nicht mehr, ob ihm der Lease
+gehört, und das ist eine Information, die man braucht.  Backends
+müssen den Fehler durchreichen statt ihn zu schlucken; Aufrufer,
+die `release()` nur als Cleanup nutzen, kapseln ihn:
+
+```ts
+await lease.release().catch(() => { /* best-effort cleanup */ });
+```
+
+Alles, was das Framework intern tut, ist bereits so gekapselt.
+Der eine Aufrufer, der auf das Reject reagiert, ist
+[`LeaseMajority`](/de/cluster/downing-strategies/) — die Strategie
+geht in den Fail-safe und beansprucht keine Mehrheit mehr, bis die
+Partition heilt.
+
 Das Framework ruft `release()`:
 
 - Wenn der Singleton Manager aufhört, Leader zu sein (graceful
@@ -109,6 +127,12 @@ Das Framework ruft `release()`:
 Für den **nicht-grazilen Fall** — Prozess-Crash — übernimmt die
 TTL des Backends die automatische Bereinigung; es wird kein
 `release` gesendet.
+
+Die Kehrseite des No-ops: `release()` tut nichts, solange ein
+`acquire()` noch unterwegs ist, denn Eigentum beginnt erst, wenn
+dieses Acquire resolved.  Ein Acquire, auf das man nicht mehr
+wartet, lässt sich also erst rückgängig machen, wenn es sich
+zurückmeldet.
 
 ## `checkAlive(): boolean`
 
@@ -210,7 +234,7 @@ Gleiches Muster für den Sharding-Koordinator:
 ## Ein eigenes Backend schreiben
 
 ```ts
-import type { Lease, LeaseOptionsType } from 'actor-ts';
+import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
   private alive = false;

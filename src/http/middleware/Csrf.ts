@@ -2,12 +2,24 @@
  * Cross-Site Request Forgery protection.
  *
  * The framework has no session concept, so this is a stateless
- * double-submit scheme HARDENED with an HMAC: the token is
- * `payload.hmac(secret, payload)`.  A plain double-submit is defeated by
- * an attacker who can plant a cookie (from a sibling subdomain or a
- * MITM'd http origin) and send a matching header; the HMAC binds validity
- * to the server secret, so a planted pair fails verification.  On unsafe
- * methods it also checks Origin/Referer as a second gate.
+ * double-submit scheme: the token is `payload.hmac(secret, payload)`.
+ * Three separate things carry the defence, and it is worth being exact
+ * about which does what — the HMAC is NOT what stops cookie planting:
+ *
+ *  - The **HMAC** rejects tokens this server never minted (garbage, a
+ *    guess, a token from another deployment).  It binds a token to the
+ *    server secret and to nothing else, so a token minted for one client
+ *    verifies for every other: an attacker who can plant a cookie can
+ *    plant a *signed* one they were legitimately handed, and the pair
+ *    verifies.
+ *  - The **`__Host-` cookie name** (the default) is what defeats planting.
+ *    A browser refuses such a cookie unless it is `Secure`, `Path=/` and
+ *    carries no `Domain`, which locks it to exactly this host: a sibling
+ *    subdomain cannot write it, and a plaintext origin cannot write it at
+ *    all.
+ *  - The **Origin/Referer gate** on unsafe methods (on by default) rejects
+ *    the cross-site request that would carry such a pair in the first
+ *    place.
  *
  * The cookie is intentionally NOT HttpOnly: same-origin JS must read it to
  * echo it into the header.  The token authenticates nothing on its own
@@ -16,33 +28,51 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Middleware } from '../Route.js';
-import { HttpError, Status, type HttpRequest } from '../types.js';
-import { parseCookies, serializeCookie } from '../cookies.js';
-import { applyHeaders } from './headers.js';
+import { HttpError, Status, type HttpRequest } from '../Types.js';
+import { parseCookies, serializeCookie } from '../Cookies.js';
+import { applyHeaders } from './Headers.js';
 import {
   CsrfOptionsValidator,
+  DEFAULT_CSRF_COOKIE_NAME,
+  SameOriginOptionsValidator,
+  normalizeOrigin,
   type CsrfOptions,
   type CsrfOptionsType,
+  type OriginScheme,
   type SameOriginOptions,
   type SameOriginOptionsType,
 } from './CsrfOptions.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-function hostOf(urlLike: string): string | null {
-  try { return new URL(urlLike).host; } catch { return null; }
-}
-
-/** Same-origin check for unsafe methods: the Origin/Referer host must match the request host (or an allowlisted origin). */
-function isSameOrigin(request: HttpRequest, allowedOrigins: ReadonlyArray<string> | undefined, allowMissing: boolean): boolean {
+/**
+ * Same-origin check for unsafe methods: the Origin/Referer must be the
+ * request's own origin, or one of the allowlisted origins — compared
+ * WHOLE, scheme included.
+ *
+ * The request's own origin is `expectedScheme` + the `Host` header,
+ * because `Host` carries no scheme of its own and the app cannot see the
+ * one the client used (TLS may terminate at a proxy, and a forwarded
+ * scheme header is client-settable, so it is not trusted here).  Comparing
+ * bare hosts instead — what this did before — accepts `http://app.example`
+ * as same-origin for an HTTPS site, and likewise any exotic scheme that
+ * parses an authority.
+ */
+function isSameOrigin(
+  request: HttpRequest,
+  allowedOrigins: ReadonlyArray<string> | undefined,
+  allowMissing: boolean,
+  expectedScheme: OriginScheme,
+): boolean {
   const source = request.headers['origin'] ?? request.headers['referer'];
   if (!source) return allowMissing;
-  const sourceHost = hostOf(source);
-  if (!sourceHost) return false;
-  if (request.headers['host'] && sourceHost === request.headers['host']) return true;
+  const sourceOrigin = normalizeOrigin(source);
+  if (!sourceOrigin) return false;
+  const host = request.headers['host'];
+  if (host && sourceOrigin === normalizeOrigin(`${expectedScheme}://${host}`)) return true;
   if (allowedOrigins) {
     for (const allowed of allowedOrigins) {
-      if (allowed === source || hostOf(allowed) === sourceHost) return true;
+      if (sourceOrigin === normalizeOrigin(allowed)) return true;
     }
   }
   return false;
@@ -56,9 +86,11 @@ function isSameOrigin(request: HttpRequest, allowedOrigins: ReadonlyArray<string
  */
 export function requireSameOrigin(options: SameOriginOptions = {}): Middleware {
   const resolvedOptions = options as Partial<SameOriginOptionsType>;
+  new SameOriginOptionsValidator().validate(resolvedOptions);
+  const expectedScheme = resolvedOptions.expectedScheme ?? 'https';
   return async (request, next) => {
     if (SAFE_METHODS.has(request.method)) return next();
-    if (!isSameOrigin(request, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false)) {
+    if (!isSameOrigin(request, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false, expectedScheme)) {
       throw new HttpError(Status.Forbidden, 'cross-origin request rejected');
     }
     return next();
@@ -81,7 +113,13 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-/** A token is valid iff its HMAC recomputes — a planted/unsigned token fails here. */
+/**
+ * A token is valid iff its HMAC recomputes — an unsigned or garbage token
+ * fails here.  A token this server DID mint passes no matter whose browser
+ * presents it: the payload is a bare nonce, so there is nothing tying it to
+ * a client.  What keeps someone else's token out of the victim's cookie jar
+ * is the `__Host-` cookie name, not this function.
+ */
 function verifyToken(secret: string | Uint8Array, token: string): boolean {
   const dot = token.lastIndexOf('.');
   if (dot <= 0) return false;
@@ -109,7 +147,7 @@ function formFieldValue(request: HttpRequest, field: string): string | undefined
 export function readCsrfToken(request: HttpRequest, options: { cookieName?: string; headerName?: string } = {}): string | null {
   const fromHeader = request.headers[(options.headerName ?? 'x-csrf-token').toLowerCase()];
   if (fromHeader) return fromHeader;
-  return parseCookies(request.headers['cookie'])[options.cookieName ?? 'csrf-token'] ?? null;
+  return parseCookies(request.headers['cookie'])[options.cookieName ?? DEFAULT_CSRF_COOKIE_NAME] ?? null;
 }
 
 /** Build the stateless double-submit CSRF middleware. */
@@ -122,7 +160,7 @@ export function csrfProtection(options: CsrfOptions): Middleware {
     throw new Error('csrfProtection: a secret of at least 16 bytes is required (32 recommended)');
   }
   new CsrfOptionsValidator().validate(resolvedOptions);
-  const cookieName = resolvedOptions.cookieName ?? 'csrf-token';
+  const cookieName = resolvedOptions.cookieName ?? DEFAULT_CSRF_COOKIE_NAME;
   const headerName = (resolvedOptions.headerName ?? 'x-csrf-token').toLowerCase();
   const cookie = resolvedOptions.cookie ?? {};
   const cookieAttrs = {
@@ -134,6 +172,10 @@ export function csrfProtection(options: CsrfOptions): Middleware {
     maxAgeSeconds: cookie.maxAgeSeconds,
   };
   const verifyOrigin = resolvedOptions.verifyOrigin ?? true;
+  // A non-Secure CSRF cookie is an explicit declaration that the app runs
+  // over plain HTTP — take it as the expected scheme rather than rejecting
+  // every one of that app's own origins.
+  const expectedScheme = resolvedOptions.expectedScheme ?? (cookie.secure === false ? 'http' : 'https');
   const formFieldName = resolvedOptions.formFieldName;
 
   return async (request, next) => {
@@ -153,7 +195,7 @@ export function csrfProtection(options: CsrfOptions): Middleware {
 
     // Unsafe method: origin gate (token is the primary gate, so a missing
     // Origin/Referer is allowed through to the token check), then the pair.
-    if (verifyOrigin && !isSameOrigin(request, resolvedOptions.allowedOrigins, true)) {
+    if (verifyOrigin && !isSameOrigin(request, resolvedOptions.allowedOrigins, true, expectedScheme)) {
       throw new HttpError(Status.Forbidden, 'CSRF verification failed');
     }
     const submitted = request.headers[headerName] ?? (formFieldName ? formFieldValue(request, formFieldName) : undefined);

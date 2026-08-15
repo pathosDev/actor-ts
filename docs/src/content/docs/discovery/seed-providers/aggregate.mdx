@@ -18,6 +18,8 @@ when:
 import {
   Cluster,
   ClusterOptions,
+} from 'actor-ts/cluster';
+import {
   AggregateSeedProvider,
   KubernetesApiSeedProvider,
   KubernetesApiSeedProviderOptions,
@@ -25,11 +27,11 @@ import {
   DnsSeedProviderOptions,
   ConfigSeedProvider,
   ConfigSeedProviderOptions,
-} from 'actor-ts';
+} from 'actor-ts/discovery';
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(namespace)
-  .withServiceName(labelSelector)
+  .withServiceName(serviceName)
   .withSystemName('my-app')
   .withPort(2552);
 const dnsSeedProviderOptions = DnsSeedProviderOptions.create()

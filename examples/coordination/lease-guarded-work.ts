@@ -6,7 +6,7 @@
  *
  *   bun run examples/coordination/lease-guarded-work.ts
  */
-import { InMemoryLease, LeaseOptions } from '../../src/index.js';
+import { InMemoryLease, LeaseOptions } from '../../src/coordination/index.js';
 
 const LEASE = 'daily-batch';
 

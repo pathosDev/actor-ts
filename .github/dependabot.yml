@@ -39,7 +39,24 @@ updates:
         update-types:
           - "version-update:semver-major"
 
-  # GitHub Actions versions used in workflows themselves
+  # GitHub Actions versions used in workflows themselves.
+  #
+  # Every `uses:` in `.github/workflows/` is pinned to a full 40-character
+  # commit SHA with the release tag in a trailing `# vX.Y.Z` comment (#585).
+  # A tag is a mutable pointer: whoever can move `actions/checkout@v7` can
+  # run arbitrary code inside `publish.yml`'s job, which holds
+  # `id-token: write` and publishes to npm with provenance.  A SHA cannot be
+  # repointed.
+  #
+  # **The trailing comment is load-bearing, not decoration.**  Dependabot
+  # reads it to learn which version a SHA stands for; without it the pin is
+  # invisible to updates and the repository silently freezes on a stale —
+  # eventually vulnerable — action, which is a worse posture than the
+  # mutable tags this replaced.  Keep the format exactly `<sha> # <tag>`,
+  # and let Dependabot rewrite both halves together.
+  #
+  # `tests/unit/ci/WorkflowHygiene.test.ts` asserts the shape on every
+  # `bun test` run, because nothing else in the toolchain reads these files.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

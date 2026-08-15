@@ -6,7 +6,7 @@ import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { concat, path, type Route } from '../../../src/http/Route.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { uiAssetRoutes, type UiAsset } from '../../../src/devtools/UiAssetRoutes.js';
-import { UI_ASSETS } from '../../../src/devtools/generated/uiAssets.js';
+import { UI_ASSETS } from '../../../src/devtools/generated/UiAssets.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 
 /** Build a fake asset the way the build script would. */
@@ -107,6 +107,18 @@ describe('uiAssetRoutes', () => {
     // into the right directory once the document URL ends in a slash.
     const url = await start(path('devtools', uiAssetRoutes(FAKE_ASSETS)));
     const response = await fetch(`${url}/devtools`, { redirect: 'manual' });
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('/devtools/');
+  });
+
+  test('the mount-prefix redirect puts the slash on the path, not inside a query', async () => {
+    // The shell redirect appends to `HttpRequest.path`.  While the default
+    // backend reported the raw request target there, `GET /devtools?x=1`
+    // answered `Location: /devtools?x=1/` — a trailing slash on a query
+    // value, which resolves relative asset URLs against the wrong
+    // directory, exactly what the redirect exists to prevent.
+    const url = await start(path('devtools', uiAssetRoutes(FAKE_ASSETS)));
+    const response = await fetch(`${url}/devtools?panel=actors`, { redirect: 'manual' });
     expect(response.status).toBe(301);
     expect(response.headers.get('location')).toBe('/devtools/');
   });

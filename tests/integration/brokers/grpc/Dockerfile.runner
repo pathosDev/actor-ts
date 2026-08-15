@@ -25,4 +25,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/grpc/runner.ts"]
+CMD ["bun", "tests/integration/brokers/grpc/Runner.ts"]

@@ -12,8 +12,8 @@ Strategie, die du durch Überschreiben von `resolver()` am Actor
 bereitstellst.
 
 ```ts
-import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts';
-import type { ConflictResolver } from 'actor-ts';
+import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts/persistence';
+import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   // Der Default ist Last-Writer-Wins; zum Ändern überschreiben:
@@ -88,7 +88,7 @@ es, wenn du Domänenwissen hast, das LWW nicht erfasst (z. B.
 addieren sich zwei nebenläufige Einzahlungen einfach):
 
 ```ts
-import { CustomMergeResolver } from 'actor-ts';
+import { CustomMergeResolver } from 'actor-ts/persistence';
 
 protected override resolver(): ConflictResolver<Event> {
   return new CustomMergeResolver<Event>((a, b) => ({

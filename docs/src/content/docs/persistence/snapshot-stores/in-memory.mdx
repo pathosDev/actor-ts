@@ -10,7 +10,8 @@ it's the **default** when no snapshot store is configured —
 zero setup, ideal for tests, **never use in production**.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts/persistence';
 
 // In-memory stores are the default; shown here explicitly:
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({

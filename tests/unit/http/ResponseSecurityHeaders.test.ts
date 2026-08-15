@@ -7,9 +7,12 @@ import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import type { HttpServerBackend, RouteRegistration, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
 import { completeHtml, html } from '../../../src/http/Html.js';
+import { contentSecurityPolicy } from '../../../src/http/middleware/Csp.js';
+import { requestId } from '../../../src/http/middleware/RequestId.js';
+import { securityHeaders } from '../../../src/http/middleware/SecurityHeaders.js';
 import { SecurityHeadersOptions } from '../../../src/http/middleware/SecurityHeadersOptions.js';
-import { complete, concat, fallback, get, path, type Route } from '../../../src/http/Route.js';
-import { HttpError, Status } from '../../../src/http/types.js';
+import { complete, concat, fallback, get, path, withMiddleware, type Middleware, type Route } from '../../../src/http/Route.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 const backends: Array<[string, () => HttpServerBackend]> = [
@@ -40,6 +43,11 @@ async function start(
   return `http://${binding.host}:${binding.port}`;
 }
 
+/** What a CSRF or auth rejection does: short-circuit by throwing, never returning. */
+const rejecting: Middleware = async () => { throw new HttpError(Status.Forbidden, 'CSRF verification failed'); };
+
+const guardedSecurityHeaders = SecurityHeadersOptions.create().withHsts();
+
 /** Every route a case below needs, so one server covers the whole matrix. */
 const routes = (): Route => concat(
   path('plain', get(() => complete(Status.OK, 'hello'))),
@@ -47,6 +55,14 @@ const routes = (): Route => concat(
   path('already-nosniff', get(() => completeHtml(Status.OK, html`<p>hi</p>`))),
   path('http-error', get(() => { throw new HttpError(Status.Forbidden, 'nope'); })),
   path('boom', get(() => { throw new Error('kaboom'); })),
+  // The decorator stack of the documented security page, over a middleware
+  // that short-circuits by throwing (#606).
+  path('guarded',
+    withMiddleware(requestId(),
+    withMiddleware(securityHeaders(guardedSecurityHeaders),
+    withMiddleware(contentSecurityPolicy(),
+    withMiddleware(rejecting,
+      get(() => complete(Status.OK, 'unreachable'))))))),
   fallback(() => complete(Status.NotFound, 'nothing here')),
 );
 
@@ -130,6 +146,19 @@ describe.each(backends)('response security headers — %s backend', (_name, make
     const response = await fetch(`${url}/boom`);
     expect(response.status).toBe(500);
     expect(response.headers.get('x-frame-options')).toBe('DENY');
+  });
+
+  test('a throwing short-circuit still carries the decorators above it (#606)', async () => {
+    const url = await start(makeBackend, routes());
+    const response = await fetch(`${url}/guarded`);
+    expect(response.status).toBe(403);
+    expect(response.headers.get('x-frame-options')).toBe('DENY');
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    // The two with no server-wide equivalent — a skipped decorator was the
+    // only way they could go missing.
+    expect(response.headers.get('strict-transport-security')).toBe('max-age=15552000; includeSubDomains');
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'self'");
+    expect(response.headers.get('x-request-id')).toMatch(/^[A-Za-z0-9._-]{1,64}$/);
   });
 });
 

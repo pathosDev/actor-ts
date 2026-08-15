@@ -16,15 +16,36 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_MAX_FRAME_LENGTH,
   DEFAULT_MAX_LINE_LENGTH,
-  appendChunk,
   extractFrames,
   extractLengthPrefixedFrames,
   extractLineFrames,
-  findFramingCapViolation,
+  findFramingViolation,
 } from '../../../../src/io/broker/TcpFraming.js';
+import type { FrameExtraction } from '../../../../src/io/broker/TcpFraming.js';
+import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
+import { TcpSocketOptionsValidator } from '../../../../src/io/broker/TcpSocketOptions.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+/**
+ * What is left pending after a pass.
+ *
+ * A count, not an array, is what the extractors report (#610): the window
+ * belongs to whoever owns the buffer, and slicing a fresh array off it per
+ * chunk is the copy the incremental buffer exists to avoid.  A view over the
+ * tail is the reading the caller applies to its own cursor.
+ */
+const pendingAfter = (buffer: Uint8Array, pass: FrameExtraction): Uint8Array =>
+  buffer.subarray(pass.consumed);
+
+/** Accumulate chunks the way `TcpInboundBuffer` does, minus its slab. */
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const merged = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { merged.set(part, offset); offset += part.length; }
+  return merged;
+}
 
 /** `[uint32 big-endian length][payload]`, the wire shape the extractor reads. */
 function lengthPrefixed(...payloads: string[]): Uint8Array {
@@ -42,31 +63,22 @@ function lengthPrefixed(...payloads: string[]): Uint8Array {
   return out;
 }
 
-describe('appendChunk', () => {
-  test('hands the chunk straight back when there is nothing pending', () => {
-    const chunk = encode('abc');
-    expect(appendChunk(new Uint8Array(0), chunk)).toBe(chunk);
-  });
-
-  test('concatenates in order when a partial frame is pending', () => {
-    expect(decode(appendChunk(encode('ab'), encode('cd')))).toBe('abcd');
-  });
-});
-
 describe('extractLineFrames', () => {
   test('delivers terminated lines and keeps the remainder', () => {
-    const result = extractLineFrames(encode('a\nbb\nccc'), '\n', 8);
+    const buffer = encode('a\nbb\nccc');
+    const result = extractLineFrames(buffer, '\n', 8);
     expect(result.frames).toEqual(['a', 'bb']);
     expect(result.overflow).toBeUndefined();
-    expect(decode(result.remainder)).toBe('ccc');
+    expect(decode(pendingAfter(buffer, result))).toBe('ccc');
   });
 
-  test('returns the input buffer untouched when nothing was consumed', () => {
+  test('consumes nothing when the line is still partial', () => {
     const buffer = encode('partial');
     const result = extractLineFrames(buffer, '\n', 8);
     expect(result.frames).toEqual([]);
-    // Same reference: no decode/encode round-trip for a still-partial line.
-    expect(result.remainder).toBe(buffer);
+    // Nothing taken: no decode/encode round-trip, and no re-slice, for a line
+    // that is still arriving.
+    expect(result.consumed).toBe(0);
   });
 
   test('an over-long TERMINATED line reports overflow and stops there', () => {
@@ -84,26 +96,108 @@ describe('extractLineFrames', () => {
   });
 
   test('honours a multi-character delimiter', () => {
-    const result = extractLineFrames(encode('a\r\nb\r\nc'), '\r\n', 64);
+    const buffer = encode('a\r\nb\r\nc');
+    const result = extractLineFrames(buffer, '\r\n', 64);
     expect(result.frames).toEqual(['a', 'b']);
-    expect(decode(result.remainder)).toBe('c');
+    expect(decode(pendingAfter(buffer, result))).toBe('c');
+  });
+
+  test('the cap counts BYTES, not decoded characters (#752)', () => {
+    // U+20AC is three UTF-8 bytes but one UTF-16 code unit, so a cap measured
+    // on the decoded string let a peer buffer 3x what the validator promises
+    // ("a positive integer number of bytes").  Both checks must see bytes.
+    const unterminated = extractLineFrames(encode('€'.repeat(4)), '\n', 8);  // 12 bytes / 4 units
+    expect(unterminated.overflow).toMatch(/unterminated line/);
+    const terminated = extractLineFrames(encode('€€€\n'), '\n', 8);          // 9-byte line
+    expect(terminated.overflow).toMatch(/maxLineLen=8/);
+    expect(terminated.frames).toEqual([]);
+  });
+
+  test('a line of exactly maxLineLen bytes still passes', () => {
+    // The boundary the byte comparison must not move: `>`, not `>=`.
+    const result = extractLineFrames(encode('€€\n'), '\n', 6);
+    expect(result.overflow).toBeUndefined();
+    expect(result.frames).toEqual(['€€']);
+  });
+
+  test('a character split across chunks survives the boundary (#610)', () => {
+    // 'ä' is C3 A4.  Decoding the whole buffer turned a trailing lone C3 into
+    // U+FFFD and re-encoded THAT into the leftover, so the A4 arriving in the
+    // next chunk could never repair it.  Raw bytes go back untouched.
+    const firstChunk = new Uint8Array([...encode('a\n'), 0xc3]);
+    const first = extractLineFrames(firstChunk, '\n', 64);
+    expect(first.frames).toEqual(['a']);
+    expect([...pendingAfter(firstChunk, first)]).toEqual([0xc3]);
+
+    const merged = concat(pendingAfter(firstChunk, first), new Uint8Array([0xa4, 0x0a]));
+    const second = extractLineFrames(merged, '\n', 64, first.scanFrom);
+    expect(second.frames).toEqual(['ä']);
+  });
+
+  test('a delimiter-free stream re-searches nothing (#610)', () => {
+    // Half the quadratic claim, made observable: after every chunk the
+    // reported `scanFrom` already covers the whole pending buffer, so the next
+    // pass starts at its end instead of re-decoding all of it from offset 0.
+    // (The other half — that appending the chunk does not re-copy the buffer
+    // either — is `TcpInboundBuffering.test.ts`.)
+    let buffer: Uint8Array = new Uint8Array(0);
+    let scanFrom = 0;
+    let passes = 0;
+    for (let chunk = 0; chunk < 16; chunk++) {
+      buffer = concat(buffer, encode('x'.repeat(64)));
+      const pass = extractLineFrames(buffer, '\n', 4096, scanFrom);
+      expect(pass.frames).toEqual([]);
+      expect(pass.overflow).toBeUndefined();
+      expect(pass.consumed).toBe(0);          // no line completed, nothing taken
+      scanFrom = pass.scanFrom ?? 0;
+      expect(scanFrom).toBe(buffer.length);   // nothing left to look at twice
+      passes++;
+    }
+    expect(passes).toBe(16);
+    expect(buffer.length).toBe(16 * 64);
+  });
+
+  test('a multi-byte delimiter straddling the resume point is still found', () => {
+    // The trap in resuming: stopping at the buffer's end would step over a
+    // '\r' whose '\n' is in the next chunk, and that line never completes.
+    const firstChunk = encode('abc\r');
+    const first = extractLineFrames(firstChunk, '\r\n', 64);
+    expect(first.frames).toEqual([]);
+    expect(first.scanFrom).toBe(3);          // backed off, so the '\r' is re-read
+
+    const merged = concat(pendingAfter(firstChunk, first), encode('\ndef'));
+    const second = extractLineFrames(merged, '\r\n', 64, first.scanFrom);
+    expect(second.frames).toEqual(['abc']);
+    expect(decode(pendingAfter(merged, second))).toBe('def');
+  });
+
+  test('an out-of-range scanFrom cannot push the scan outside the buffer', () => {
+    // Defensive only — the contract is that the caller hands back the value
+    // the previous pass reported.  A negative one must not read behind the
+    // buffer, one past the end must not index outside it.
+    expect(extractLineFrames(encode('a\nb'), '\n', 64, -5).frames).toEqual(['a']);
+    const buffer = encode('ab');
+    const beyond = extractLineFrames(buffer, '\n', 64, 9_999);
+    expect(beyond.frames).toEqual([]);
+    expect(decode(pendingAfter(buffer, beyond))).toBe('ab');
   });
 });
 
 describe('extractLengthPrefixedFrames', () => {
   test('peels whole frames and keeps a partial tail', () => {
-    const buffer = appendChunk(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
+    const buffer = concat(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
     const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
     expect(result.frames.map((f) => decode(f as Uint8Array))).toEqual(['one', 'two']);
     expect(result.overflow).toBeUndefined();
-    expect(result.remainder.length).toBe(6);   // the 9-byte frame is still arriving
+    // The 9-byte frame is still arriving, so its 6 bytes stay pending.
+    expect(pendingAfter(buffer, result).length).toBe(6);
   });
 
   test('a header shorter than 4 bytes is kept, not misread', () => {
     const buffer = new Uint8Array([0, 0, 3]);
     const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
     expect(result.frames).toEqual([]);
-    expect(result.remainder).toBe(buffer);
+    expect(result.consumed).toBe(0);
   });
 
   test('a zero-length frame is a frame', () => {
@@ -135,7 +229,7 @@ describe('extractFrames — strategy dispatch and defaults', () => {
     const buffer = encode('anything');
     const result = extractFrames(buffer, { kind: 'bytes' });
     expect(result.frames).toEqual([buffer]);
-    expect(result.remainder.length).toBe(0);
+    expect(pendingAfter(buffer, result).length).toBe(0);
   });
 
   test('lines defaults to a newline delimiter', () => {
@@ -152,17 +246,53 @@ describe('extractFrames — strategy dispatch and defaults', () => {
   });
 });
 
-describe('findFramingCapViolation', () => {
+describe('findFramingViolation', () => {
   test('passes when the caps are unset — they fall through to the defaults', () => {
-    expect(findFramingCapViolation(undefined)).toBeUndefined();
-    expect(findFramingCapViolation({ kind: 'lines' })).toBeUndefined();
-    expect(findFramingCapViolation({ kind: 'bytes' })).toBeUndefined();
+    expect(findFramingViolation(undefined)).toBeUndefined();
+    expect(findFramingViolation({ kind: 'lines' })).toBeUndefined();
+    expect(findFramingViolation({ kind: 'bytes' })).toBeUndefined();
   });
 
   test('names the offending field for a NaN cap', () => {
-    expect(findFramingCapViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
+    expect(findFramingViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
       .toBe('framing.maxLineLen');
-    expect(findFramingCapViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
+    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
       .toBe('framing.maxFrameLen');
+  });
+
+  test('rejects an empty delimiter — it would wedge the extractor (#789)', () => {
+    // The primary proof, and deliberately at this level: an empty delimiter
+    // never reaches the extractor because the validators refuse the settings
+    // in preStart, before a socket exists.
+    const violation = findFramingViolation({ kind: 'lines', delimiter: '' });
+    expect(violation?.field).toBe('framing.delimiter');
+    expect(violation?.value).toBe('');
+    // One rule, both actors: the client and the listener delegate here, so
+    // neither validator can be the one that forgot.
+    const framing = { kind: 'lines', delimiter: '' } as const;
+    expect(() => new TcpSocketOptionsValidator().validate({ framing }))
+      .toThrow(/framing\.delimiter/);
+    expect(() => new TcpServerOptionsValidator().validate({ framing }))
+      .toThrow(/framing\.delimiter/);
+  });
+
+  test('a delimiter that is set and non-empty passes', () => {
+    expect(findFramingViolation({ kind: 'lines', delimiter: '\r\n' })).toBeUndefined();
+    expect(findFramingViolation({ kind: 'lines', delimiter: '\0' })).toBeUndefined();
+  });
+});
+
+describe('extractLineFrames — empty delimiter (#789)', () => {
+  test('is refused outright rather than scanned with', () => {
+    // NOTE for whoever breaks this: a regression here does not fail the test,
+    // it WEDGES the run.  An empty delimiter matches at every offset without
+    // consuming anything, and the scan loop is synchronous, so bun's per-test
+    // timeout cannot interrupt it — the suite hangs until the growing frame
+    // array exhausts memory.  The guard is the first statement in the
+    // function precisely so this assertion can never be the thing that hangs.
+    expect(() => extractLineFrames(encode('a\nb'), '', 64)).toThrow(/delimiter/);
+    expect(() => extractLineFrames(new Uint8Array(0), '', 64)).toThrow(/delimiter/);
+    expect(() => extractFrames(encode('a\nb'), { kind: 'lines', delimiter: '' }))
+      .toThrow(/delimiter/);
   });
 });

@@ -260,7 +260,7 @@ what you want to do:
   `SIGINT` shutdown in one call:
 
   ```ts
-  import { Cluster } from 'actor-ts';
+  import { Cluster } from 'actor-ts/cluster';
 
   const { system } = await Cluster.bootstrap({ name: 'hello' });
   const ref = system.spawn(Greeter, 'greeter');

@@ -27,7 +27,7 @@ external-facing cluster — it addresses both.
 ## Enabling TLS
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
 import fs from 'node:fs';
 
 const transport = new TcpTransport(
@@ -250,8 +250,12 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Unauthorized cluster join | mTLS (CA-signed peer certs) |
 | Insider with stolen cert | Cert rotation + revocation |
 | Malformed or hostile wire frame | Shape validation at the decode boundary |
+| Frame split into thousands of chunks to multiply decode cost | Linear decode buffer — every byte copied once, on arrival |
+| Socket that opens, sends half a frame and goes quiet | Stall deadline on an incomplete frame, plus a cap on inbound connections |
+| Sockets opened in bulk that send nothing at all, to fill the inbound cap | Handshake deadline on every accepted socket, so no slot is held open-ended |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
 | Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
+| Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
@@ -337,6 +341,65 @@ validate their own payloads.
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
 version mismatch and a hostile peer look different in the log.
+
+## What decoding a frame costs
+
+Validation runs on a whole frame, and a whole frame has to be
+reassembled from however many TCP chunks the sender chose to
+split it into. **The peer chooses that split**, which used to
+be the expensive half: the decoder rebuilt its accumulator on
+every chunk, so assembling one frame cost work quadratic in
+the chunk count. A frame just under the 16 MiB cap, delivered
+in TCP-sized ~1400-byte writes, is about 12 000 chunks and
+≈ 100 GB of memory copying — roughly 6000× amplification on
+bytes the attacker never had to send, and reachable before the
+`hello` gate, so no membership was needed. The decoder now
+appends into a buffer it grows by doubling, so each byte is
+copied once on arrival and the amplification is 1×.
+
+Three bounds cover what an unauthenticated socket may still
+hold while it is connected:
+
+- An **incomplete frame** may sit for 30 seconds without
+  another byte arriving before the connection is closed. It is
+  a stall bound, not a budget for the frame: the deadline is
+  re-armed on every chunk, so a peer shipping a large frame
+  over a congested link is never punished for being slow —
+  only for going silent.
+- **The handshake itself** has 5 seconds, from the moment the
+  socket is accepted, and an accepted socket that has not sent
+  its `hello` by then is closed. This is the one an incomplete
+  frame does not cover: a socket that sends *no bytes at all*
+  is not stalled mid-frame, so nothing about it is being
+  tracked. It is the same 5 seconds the dialling side already
+  gives itself, and that clock starts earlier — before the TCP
+  connect and the TLS handshake — so a peer that is still
+  trying has always given up first. Once the `hello` lands the
+  deadline is gone: an established peer between two gossip
+  rounds is idle by design and is never dropped for it.
+- **Inbound connections** are capped at 1024. A fully-meshed
+  cluster needs one per peer, so the cap is set far above any
+  realistic topology; what it removes is the ability to
+  multiply the per-connection cost by opening sockets in a
+  loop. The newest connection is refused rather than an
+  established one evicted — eviction would let an attacker
+  push real peers off the node.
+
+The second and third are a pair. A cap is only worth what its
+slots' turnover is worth, and without a handshake deadline the
+cap becomes the attack: 1024 connections that send nothing
+hold every slot for the life of the process, and every peer
+and `ClusterClient` after them is refused. On Bun that is
+reachable even under mTLS, because a socket's `open` callback
+fires *before* the TLS handshake completes — the slot would be
+taken while there is still no certificate to check.
+
+The first and third are what bound inbound decode memory at
+all: the product of the two, with the per-connection term
+already capped by `actor-ts.remote.max-frame-bytes`. Lowering
+that key is also the lever for a deployment that never sends
+large envelopes — the resident cost per connection follows it
+directly.
 
 ## What a well-formed frame still cannot grow
 
@@ -461,12 +524,23 @@ sit in front of the merge:
 
 Both rules key on the **connection's** peer, not on the
 payload's `from` field, since that field is the one thing an
-attacker fully controls. The same reasoning covers two
-neighbours: a `leave` is only accepted from the node that is
-leaving, and a heartbeat refreshes the failure detector for
-the peer that sent it rather than the address it names — the
-latter previously let a peer keep a dead node looking healthy
-and made the receiver dial an attacker-chosen host.
+attacker fully controls. The same reasoning covers three
+neighbours. A `leave` is only accepted from the node that is
+leaving. A heartbeat refreshes the failure detector for the
+peer that sent it rather than the address it names — that one
+previously let a peer keep a dead node looking healthy, and
+made the receiver dial an attacker-chosen host. And a
+`ClusterClient` ask is answered down the connection the
+envelope arrived on: routing on the payload let any connected
+party choose the address this node replied to, and opened a
+connection to.
+
+The client envelope no longer carries a sender field at all —
+after the rule above it had exactly one correct value, which
+is the one the receiver already holds. An envelope that still
+names an address other than its own connection is counted on
+`cluster_envelope_from_mismatch_total{frame}` and otherwise
+ignored; see [ClusterClient](/cluster/cluster-client/).
 
 Unreachability is deliberately **not** covered by these
 rules: "I cannot reach C" is inherently a third-party
@@ -535,15 +609,67 @@ node's second gossip frame.
 
 Refused records are reported once per frame rather than once per
 record — a WARN naming the peer and the count, and the counter
-`cluster_gossip_records_refused_total{reason}` with `reason` one
-of `version-skew` or `map-cap`. Logging per record would hand a
-peer log amplification in place of the growth it just lost.
+`cluster_gossip_records_refused_total{reason}`, whose `reason`
+label is closed at `version-skew`, `map-cap`, `timestamp-skew`
+and `replayed-frame`. Logging per record would hand a peer log
+amplification in place of the growth it just lost.
+
+### A recorded frame cannot be played back while its sender is a member
+
+A gossip frame is a snapshot of the member map, and a member's
+version only moves when its status does — so a frame captured
+off the wire stays *valid* indefinitely. Against a converged
+receiver that costs nothing: every record in it loses the
+"higher version wins" comparison to the record already on file.
+What makes it an exploit is an entry the receiver has
+**deleted**. The failure detector's down path deletes outright
+rather than leaving a tombstone, so that a partition followed by
+a heal can re-discover the peer — and an expired tombstone is
+pruned for the same reason. Either way there is nothing left to
+compare against, and the branch that files a first sighting has
+no lower version bound at all.
+
+So replaying a downed member's own pre-down record brought it
+back: same address, same version, `up`, carrying the roles it
+had. Shard placement and singleton hosting follow the roles, so
+the cluster starts routing work to a node it had evicted.
+
+Every gossip frame therefore carries a **sequence** its author
+stamps — seeded from that node's wall clock at startup and
+incremented once per frame — and a receiver remembers the
+highest one it has accepted from each connection peer. A frame
+that does not out-number that mark is dropped whole, before any
+record in it is looked at. There is no knob: the comparison is
+between a peer and *itself*, so it needs no clock-skew budget,
+and a sequence too far ahead of the receiver's clock to be
+plausible is merged but never adopted as the mark — otherwise
+one frame numbered `Number.MAX_SAFE_INTEGER` would silence the
+real node forever, which is the exploit the version cap above
+exists to prevent.
+
+Two things this does **not** close. First, a peer that has earned
+standing and composes a *fresh* frame naming a deleted address at
+its old version: that is a forgery rather than a replay, and
+telling it apart from a genuine re-discovery needs an incarnation
+identity on the address itself — a node's restart has to be a
+*different* member at the same `host:port`.
+
+Second — and it is the same missing incarnation identity — the
+mark lives only as long as the sender does. Deleting a member
+drops its mark, and a missing mark admits everything, so once the
+**sender** has itself been evicted (an ordinary partition takes
+out sender and subject together) the recorded conversation can be
+replayed in capture order: the sender's own self-record is always
+admitted, which revives it *and* re-seeds the mark from the old
+frame, and the next recorded frame then speaks for the subject.
+
+Both residuals are tracked separately.
 
 ## Per-deployment recipe
 
 ```ts
 // production.ts
-import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const tlsOptionsType = {
   cert: fs.readFileSync(process.env.TLS_CERT_PATH!),

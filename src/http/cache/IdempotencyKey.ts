@@ -1,6 +1,7 @@
 import { complete } from '../Route.js';
-import { type HttpRequest, type HttpResponse, Status } from '../types.js';
+import { type HttpRequest, type HttpResponse, Status } from '../Types.js';
 import {
+  DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
   IdempotencyOptionsValidator,
   type IdempotencyOptions,
   type IdempotencyOptionsType,
@@ -25,8 +26,31 @@ import {
  *
  * Usage:
  *
- *   const deduplication = idempotent({ cache: ext.cache(), ttlMs: 24 * 60 * 60_000 });
+ *   const deduplication = idempotent({ cache: ext.cache('idempotency'), ttlMs: 24 * 60 * 60_000 });
  *   route(post('/payments', deduplication(handler)));
+ *
+ * **Security — give this middleware its own cache (security audit
+ * HTTP-8).**  The `Idempotency-Key` header is attacker-chosen, so every
+ * request can mint a new cache key.  `InMemoryCache` is LRU-bounded
+ * (10 000 entries by default) and its eviction is blind to what an entry
+ * protects: whichever key is least-recently-used goes, whether it holds a
+ * response body or the record that stops a payment from being taken
+ * twice.  A record written by {@link idempotent} is only moved to the
+ * most-recently-used end when it is READ — a claimed-but-not-yet-answered
+ * key is never bumped at all, because `setIfAbsent` does not count as a
+ * use.
+ *
+ * So hand this middleware a cache nothing else writes to —
+ * `ext.cache('idempotency')` resolves a separate named instance — and
+ * size that cache's `maxEntries` for the number of in-flight keys you
+ * expect times the TTL.  Sharing one `Cache` with `rateLimit` or
+ * `cached` means a flood of keys minted through either of those pushes
+ * idempotency records out, and an honest client's retry then re-executes
+ * the handler instead of replaying its stored response.  Naming a
+ * separate cache narrows the blast radius; it does not remove it,
+ * because this middleware's OWN key space is attacker-controlled too —
+ * {@link IdempotencyOptionsType.maxKeyLength} bounds how big each minted
+ * key is, not how many of them there are.
  */
 
 type CachedResponse = {
@@ -36,14 +60,15 @@ type CachedResponse = {
   readonly body: unknown;
   readonly contentType?: string;
   /**
-   * SHA-256 hash (base64) of the ORIGINAL request body that produced
-   * this cached response.  Re-checked on every replay: if the new
-   * request's body hash doesn't match, the client tried to reuse the
-   * same idempotency key for a SEMANTICALLY DIFFERENT request — we
-   * reject with 422 rather than returning the wrong response.
-   * Stripe's spec calls this out explicitly; without it, a malicious
-   * (or buggy) client that reuses an idempotency key can poison the
-   * cache to receive someone else's response.
+   * SHA-256 hash (base64) of the ORIGINAL request — method, path,
+   * canonical query and body — that produced this cached response.
+   * Re-checked on every replay: if the new request's hash doesn't
+   * match, the client tried to reuse the same idempotency key for a
+   * SEMANTICALLY DIFFERENT request — we reject with 422 rather than
+   * returning the wrong response.  Stripe's spec calls this out
+   * explicitly; without it, a malicious (or buggy) client that reuses
+   * an idempotency key can poison the cache to receive someone else's
+   * response.
    */
   readonly requestFingerprint: string;
 };
@@ -58,6 +83,7 @@ export function idempotent(options: IdempotencyOptions) {
   const prefix = resolvedOptions.keyPrefix ?? 'idem:';
   const missing = resolvedOptions.missingHeader ?? 'reject';
   const identity = resolvedOptions.identity;
+  const maxKeyLength = resolvedOptions.maxKeyLength ?? DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH;
 
   return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
     return async function deduplicated(request: HttpRequest): Promise<HttpResponse> {
@@ -66,6 +92,12 @@ export function idempotent(options: IdempotencyOptions) {
         if (missing === 'pass-through') return handler(request);
         return complete(Status.BadRequest, {
           error: `missing required '${header}' header`,
+        });
+      }
+      const rejection = keyRejectionReason(userKey, maxKeyLength);
+      if (rejection !== undefined) {
+        return complete(Status.BadRequest, {
+          error: `invalid '${header}' header: ${rejection}`,
         });
       }
       // Fold the caller scope into the key so a cached response can't be
@@ -84,15 +116,15 @@ export function idempotent(options: IdempotencyOptions) {
             error: 'idempotency-key in-flight; retry shortly',
           });
         }
-        // Security: same idempotency key + DIFFERENT body = client
-        // tried to reuse a key for a semantically-different request.
-        // Stripe's spec says reject with 422.  Returning the cached
-        // (unrelated) response would let an attacker poison the
-        // cache with a key they guessed/observed and steal another
-        // client's response.
+        // Security: same idempotency key + DIFFERENT method, path,
+        // query or body = client tried to reuse a key for a
+        // semantically-different request.  Stripe's spec says reject
+        // with 422.  Returning the cached (unrelated) response would
+        // let an attacker poison the cache with a key they
+        // guessed/observed and steal another client's response.
         if (value.requestFingerprint !== fingerprint) {
           return complete(Status.UnprocessableEntity, {
-            error: 'idempotency-key already used with a different request body',
+            error: 'idempotency-key already used with a different request',
           });
         }
         return decodeResponse(value);
@@ -127,6 +159,41 @@ export function idempotent(options: IdempotencyOptions) {
 
 /* ------------------------------ internals -------------------------------- */
 
+/**
+ * Why the client-supplied `Idempotency-Key` is unacceptable, or
+ * `undefined` when it may become a cache key.
+ *
+ * Two independent rules, both about what an attacker gets to put into a
+ * cache that other requests depend on:
+ *
+ *   - **Length.** The header value is concatenated verbatim into the
+ *     cache key, so an unbounded header means an unbounded key.  The cap
+ *     turns "how much cache does one minted key cost" from a client
+ *     decision into a server one.
+ *   - **Charset.** ASCII control characters and the space are command
+ *     delimiters in Memcached's text protocol — the same reason
+ *     `makeKeyValidator`'s memcached rule set refuses them — and CR/LF
+ *     are the classic header-injection pair.  Rejecting them here means
+ *     the guarantee does not depend on which `Cache` implementation
+ *     happens to be wired in behind the middleware.
+ *
+ * The reason never echoes the key back, only where and what went wrong:
+ * this string is returned to the caller, and reflecting attacker bytes
+ * into a response body is how a rejection message becomes a payload.
+ */
+function keyRejectionReason(userKey: string, maxKeyLength: number): string | undefined {
+  if (userKey.length > maxKeyLength) {
+    return `exceeds the ${maxKeyLength}-character limit (got ${userKey.length})`;
+  }
+  for (let i = 0; i < userKey.length; i++) {
+    const charCode = userKey.charCodeAt(i);
+    if (charCode <= 0x20 || charCode === 0x7F) {
+      return `contains a control character or space at index ${i} (charCode=${charCode})`;
+    }
+  }
+  return undefined;
+}
+
 function isInFlight(value: unknown): value is typeof IN_FLIGHT_MARKER {
   return typeof value === 'object' && value !== null && (value as { inFlight?: boolean }).inFlight === true;
 }
@@ -146,17 +213,66 @@ function encodeResponse(response: HttpResponse, requestFingerprint: string): Cac
 }
 
 /**
- * Compute a stable fingerprint of the request body + method + path
- * for the idempotency-key duplicate-body check.  SHA-256 base64
- * — fast (sub-ms for typical payloads), collision-resistant, and
+ * Canonical serialisation of `request.query` for the fingerprint.
+ *
+ * Keys are **sorted**, so a retry that happens to reorder parameters
+ * (`?a=1&b=2` vs `?b=2&a=1`) fingerprints identically — parameter order
+ * carries no meaning in a URL, and 422-ing an honest retry breaks
+ * idempotency in exactly the direction it is supposed to protect.  The
+ * values of a *repeated* key keep their **original order**, because
+ * `?tag=a&tag=b` and `?tag=b&tag=a` are different inputs to any API
+ * that reads the list positionally — sorting them would silently widen
+ * the guard.  `URLSearchParams` normalises percent-encoding on the way
+ * out, so two spellings of the same value collapse to one form.
+ *
+ * This choice is deliberate and easy to "tidy" into a total sort by
+ * mistake; keep the note if the code moves.
+ */
+function canonicalQuery(query: HttpRequest['query']): string {
+  const params = new URLSearchParams();
+  for (const key of Object.keys(query).sort()) {
+    const value = query[key];
+    if (value === undefined) continue;
+    if (Array.isArray(value)) for (const single of value) params.append(key, single);
+    else params.append(key, value);
+  }
+  return params.toString();
+}
+
+/**
+ * `path` with any query fragment removed.
+ *
+ * `HttpRequest.path` is contractually the bare pathname, but a backend
+ * that hands over the raw request target instead would otherwise fold
+ * the query into the fingerprint twice — once verbatim inside `path`,
+ * once canonically — and so compute a different fingerprint from a peer
+ * pod running a different backend against the same shared cache.
+ * Normalising here keeps the fingerprint a property of the request, not
+ * of the server that received it.
+ */
+function pathWithoutQuery(path: string): string {
+  const queryStart = path.indexOf('?');
+  return queryStart === -1 ? path : path.slice(0, queryStart);
+}
+
+/**
+ * Compute a stable fingerprint of the request body + method + path +
+ * query for the idempotency-key duplicate-request check.  SHA-256
+ * base64 — fast (sub-ms for typical payloads), collision-resistant, and
  * the base64 form is JSON-safe for storage in the cache.
  *
  * We include `method + path` so even a body-less GET can be
- * fingerprinted, and a same-body POST/PUT mix doesn't collide.
+ * fingerprinted, and a same-body POST/PUT mix doesn't collide.  The
+ * query belongs in there for the same reason: `POST /refunds?amount=1`
+ * and `POST /refunds?amount=9999` are different requests even with an
+ * identical body, and without the query the second one replays the
+ * first one's response instead of being rejected with 422.
  */
 async function computeRequestFingerprint(request: HttpRequest): Promise<string> {
   const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  const prelude = new TextEncoder().encode(`${request.method} ${request.path}\n`);
+  const query = canonicalQuery(request.query);
+  const target = `${pathWithoutQuery(request.path)}${query ? `?${query}` : ''}`;
+  const prelude = new TextEncoder().encode(`${request.method} ${target}\n`);
   const body = request.body ?? new Uint8Array(0);
   const combined = new Uint8Array(prelude.byteLength + body.byteLength);
   combined.set(prelude, 0);

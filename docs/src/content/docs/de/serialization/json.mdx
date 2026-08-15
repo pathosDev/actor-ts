@@ -9,7 +9,7 @@ Baum-Walk, der zusätzlich `Date`, `Uint8Array`, `Map`, `Set` und
 `bigint` über Type-Tags round-trippt.
 
 ```ts
-import { JsonSerializer } from 'actor-ts';
+import { JsonSerializer } from 'actor-ts/serialization';
 
 const serializer = new JsonSerializer();
 const bytes = serializer.toBinary({ kind: 'increment', n: 1 });

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { parseHocon, isPlainObject } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 
@@ -34,15 +34,16 @@ const SOURCE_ROOT = join(import.meta.dir, '..', '..', '..', 'src');
  * Keys that ship in `reference.conf` and are knowingly not read yet.  Every
  * entry carries the issue that will remove it: this list exists so a
  * deliberate gap stays visible, not so the next one can be waved through.
+ *
+ * **Empty, and meant to stay that way.**  Its one entry was
+ * `actor-ts.remote.tls.enabled`, and #591 took it out by giving the key a
+ * reader: the node now warns at startup when it is `true`, which is a read,
+ * so both properties the guard checks hold again.  "Read" is the bar here,
+ * not "honoured" — encrypting the wire is still #941 — because a key nothing
+ * looks at is the failure mode #653 was filed for, and a key that is looked
+ * at and answered with a WARN is not that failure mode.
  */
-const KNOWN_DEAD_KEYS: ReadonlyMap<string, string> = new Map([
-  [
-    'actor-ts.remote.tls.enabled',
-    '#591 — TLS is only reachable by constructing TcpTransport yourself and '
-    + 'passing it to ClusterOptions.withTransport(...); the key keeps its '
-    + 'meaning for when that lands.',
-  ],
-]);
+const KNOWN_DEAD_KEYS: ReadonlyMap<string, string> = new Map<string, string>();
 
 /** Every dotted leaf path in a parsed HOCON tree, in declaration order. */
 function leafPaths(tree: ConfigObject, prefix = ''): string[] {
@@ -104,7 +105,7 @@ function coveringAccessor(leaf: string): string[] | null {
 /** Files that could plausibly be the reader — everything but the two config files. */
 const readerSources = sourceFiles(SOURCE_ROOT)
   .filter((file) => !file.endsWith(join('config', 'ConfigKeys.ts')))
-  .filter((file) => !file.endsWith(join('config', 'reference.ts')))
+  .filter((file) => !file.endsWith(join('config', 'Reference.ts')))
   .map((file) => ({ file, text: readFileSync(file, 'utf8') }));
 
 /**

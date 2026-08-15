@@ -82,11 +82,14 @@ The `Dispatcher` interface is tiny:
 interface Dispatcher {
   readonly id: string;
   execute(task: () => void | Promise<void>): void;
+  onError?: (error: unknown, dispatcherId: string) => void;
 }
 ```
 
-Implement these two and you have a custom dispatcher.  Common
-reasons to do that:
+Implement the first two and you have a custom dispatcher; `onError`
+is optional and the framework fills it in (see
+[When a work unit throws](#when-a-work-unit-throws)).  Common
+reasons to write one:
 
 - **Tracing**: wrap the work-unit to attach an OpenTelemetry span
   so every actor message gets its own trace context.
@@ -144,6 +147,54 @@ Most apps don't need per-actor dispatchers — the system-level one
 applies uniformly.  Reach for it when you have a mixed workload
 where some actors need throughput while others need fairness with
 I/O on the same node.
+
+## When a work unit throws
+
+A throw out of your `onReceive` never reaches the dispatcher — it
+goes to the parent's [supervision](/fundamentals/supervision/)
+strategy.  What the dispatcher sees is the rarer thing: a failure in
+the machinery *around* the handler, or in a task handed straight to
+`dispatcher.execute`.  Nothing supervises those, so the framework
+reports them twice over:
+
+- **The system logger** gets an `error` record — so the failure
+  reaches every configured
+  [log sink](/observability/logging/multi-sink/) along with
+  everything else, MDC included.
+- **The event stream** gets a `DispatcherError`, carrying the failing
+  dispatcher's `id`, the `cause`, and the `ActorRef` whose turn it
+  was (`null` for work that belongs to no actor).
+
+```ts
+import { Actor, DispatcherError } from 'actor-ts';
+
+class DispatcherAlarm extends Actor<DispatcherError> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DispatcherError);
+  }
+  override onReceive(event: DispatcherError): void {
+    this.log.error(`dispatcher ${event.dispatcherId} lost a turn`, event.cause);
+  }
+}
+```
+
+This works for **every** dispatcher an actor runs on, including a
+per-actor instance and a third-party implementation the system never
+sees — the framework catches the failure at the actor cell, before
+the dispatcher is involved.
+
+`console.error` remains only as the last resort, for a dispatcher
+used outside an actor system: `onError` is unset until an
+`ActorSystem` adopts the instance, and a failure that reaches nobody
+is worse than one that reaches a terminal.  A sink you set yourself
+is never taken over — the system wires its own only into a free slot.
+
+<Aside type="note" title="A DispatcherError is an alarm, not a metric">
+  These fire for faults supervision structurally cannot see, so the
+  channel is quiet by design.  Traffic on it means something is
+  wrong *underneath* your actors — treat one as a page, not a
+  counter.
+</Aside>
 
 ## Where to next
 

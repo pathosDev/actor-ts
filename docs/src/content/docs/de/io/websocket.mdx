@@ -13,7 +13,7 @@ gesendet).  Zum Annehmen **eingehender** WS-Verbindungen
 
 ```ts
 import { match } from 'ts-pattern';
-import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts';
+import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts/http';
 
 type ClientMessage = { kind: 'ping'; n: number };
 type ServerMessage = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
@@ -108,7 +108,7 @@ Andere Actors rufen `send` nicht direkt auf; sie pushen einen
 typisierten Send über die Ref mit dem `websocketSend`-Helper:
 
 ```ts
-import { websocketSend } from 'actor-ts';
+import { websocketSend } from 'actor-ts/http';
 
 feed.tell(websocketSend({ kind: 'ping', n: 42 }));
 ```
@@ -132,7 +132,7 @@ Wire-Frames zurück in `TIn`-Nachrichten.  Der Default ist
 `jsonCodec()`:
 
 ```ts
-import { jsonCodec } from 'actor-ts';
+import { jsonCodec } from 'actor-ts/persistence';
 
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
@@ -158,7 +158,7 @@ behandelst:
 
 ```ts
 import { match } from 'ts-pattern';
-import { rawCodec, type WebsocketFrame } from 'actor-ts';
+import { rawCodec, type WebsocketFrame } from 'actor-ts/http';
 
 class Binary extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
   constructor() {
@@ -183,6 +183,16 @@ Ein `WebsocketFrame` ist `{ kind: 'text'; data: string }` oder
 `{ kind: 'binary'; data: Uint8Array }`.  Dekodier-Fehler werfen
 einen `WebsocketDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
 wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
+
+Ein zu großer Frame wird mit einer Warnung verworfen, eine pro Frame — das
+Gegenüber bestimmt also, wie oft diese Zeile geschrieben wird.  Sie benennt
+die Verbindung deshalb mit einem redigierten Label
+(`wss://feed.example.com/ws/orders`) statt mit `url`: Userinfo und
+Query-String fallen weg, denn ein WebSocket-Endpunkt wird üblicherweise mit
+einem `?token=…` authentifiziert, und der Pfad bleibt erhalten, weil er zwei
+Verbindungen zum selben Host unterscheidet.  Dieselbe Maskierung steht
+deinem eigenen Code als
+[`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
 
 ## Reconnect und Buffering
 

@@ -1,0 +1,380 @@
+/**
+ * Bundled default configuration — the `reference.conf` values every
+ * feature module expects to see.  Shipped as a HOCON string constant so
+ * there is no asset-copying step during `bun run build`.
+ *
+ * Users override these values by:
+ *   - writing an `application.conf` file (HOCON or JSON), or
+ *   - passing `{ config: { ... } }` to `ActorSystem.create`.
+ */
+export const REFERENCE_CONF = `
+actor-ts {
+  system {
+    name = "default"
+  }
+
+  logger {
+    # System log level.  Gates BEFORE the per-sink min-levels below, so a
+    # sink asking for "debug" while this says "info" receives nothing —
+    # lower this first, then narrow per sink.
+    level = "info"   # debug | info | warn | error | off
+
+    # Grace period terminate() gives the active logger to flush and close
+    # its sinks before whenTerminated() resolves.  Bounds the whole logger,
+    # so it applies to a custom one too — any logger with a close().
+    close-timeout = 3s
+
+    # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
+    # replaces the default single ConsoleLogger with a MultiSinkLogger over
+    # the enabled set.  An explicit logger (or logSinks) passed to
+    # ActorSystem.create replaces this whole block rather than merging with
+    # it -- a sink belongs to one construction world or the other.
+    #
+    # The Sentry sink has no block here: it needs your own @sentry/node
+    # import, which a config file cannot hold, so it is wired in code.
+    # See docs -> Observe -> Logging -> Platform integrations.
+    sinks {
+      console {
+        enabled   = false
+        min-level = "info"     # debug | info | warn | error | off
+        format    = "text"     # text = human-readable, json = one NDJSON object per record
+        stream    = "auto"     # auto | stdout | stderr; auto = console.* for text, stdout for json
+      }
+
+      file {
+        enabled   = false
+        min-level = "info"
+        format    = "text"
+        directory = "logs"     # created if missing
+        prefix    = "log"      # file name is <prefix>-<yyyy-MM-dd>-<HH-mm-ss>.<extension>
+        extension = "txt"
+        # Rolling over always opens a NEW stamped file — the active file is
+        # never renamed, which Windows forbids while it is open anyway.
+        max-file-bytes  = 64M      # roll when the file would pass this; 0 = never
+        rotate-interval = "daily"  # off | hourly | daily — roll on the clock boundary
+        # Retention only ever deletes files matching this sink's own prefix,
+        # extension and timestamp shape — never anything else in the directory.
+        max-files        = 14      # keep this many rotated files; 0 = keep all
+        max-age          = 14d     # delete rotated files older than this; 0 = keep all
+        compress-rotated = false   # gzip each rotated file to <name>.gz
+
+        delivery {
+          max-batch-size = 500
+          flush-interval = 1s
+          queue-capacity = 10000
+          overflow       = "drop-new"   # drop-new | drop-head
+        }
+      }
+
+      # Graylog.  Native rather than via OTLP because Graylog's
+      # OpenTelemetry input speaks gRPC only, which the otlp sink does not.
+      gelf {
+        enabled   = false
+        min-level = "info"
+        protocol  = "udp"          # udp | tcp | http
+        host      = "127.0.0.1"    # udp/tcp
+        port      = 12201          # udp/tcp
+        url       = ""             # http only, e.g. "http://graylog:12201/gelf"
+        # The GELF "host" field.  Empty = the OS hostname, else the system name.
+        host-name = ""
+        compression     = "gzip"   # udp only: none | gzip (server auto-detects)
+        max-chunk-bytes = 1420     # udp only: datagram size before chunking
+        request-timeout = 10s      # http only
+        # TLS for tcp is code-only: those fields carry the key material
+        # itself, not a path to it.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # OpenTelemetry logs over HTTP with a JSON body.  One endpoint format
+      # reaches Loki 3+, Parseable, SigNoz, Datadog, Axiom, Honeycomb, New
+      # Relic and every OTel Collector — start here before a native sink.
+      otlp {
+        enabled   = false
+        min-level = "info"
+        url       = "http://localhost:4318/v1/logs"
+        # service.name on the OTLP resource; defaults to the system name.
+        service-name = ""
+        scope-name   = "actor-ts"
+        gzip         = false
+        request-timeout = 10s
+        # Request headers (API keys, tenant ids) are code-only: a config
+        # file is the wrong home for a credential.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Grafana Loki's native push API.  Loki 3+ also accepts OTLP at
+      # /otlp/v1/logs, so the otlp sink reaches it too; this one exists for
+      # direct push and explicit control over the label set.
+      loki {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://loki:3100"
+        tenant-id = ""             # X-Scope-OrgID, for multi-tenant Loki
+        format    = "text"         # text | json — how each log line is rendered
+        # Labels are Loki's INDEX.  Keep them static and few: every distinct
+        # combination is a separate stream, and a per-record value here
+        # (an actor path, a request id) multiplies streams without bound.
+        # Everything variable rides as structured metadata instead.
+        labels {
+          service = ""             # empty = the actor system's name
+        }
+        structured-metadata = true
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Parseable's REST ingestion.  Its OTLP endpoint works too — this
+      # sink sends a flatter record and skips OTLP semantics.
+      parseable {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "https://parseable.internal"
+        stream    = ""             # target dataset; created on first use
+        # Basic auth OR an API key, never both.  Prefer a substitution
+        # (\${?PARSEABLE_API_KEY}) over writing a secret in here.
+        username  = ""
+        password  = ""
+        api-key   = ""
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Seq, over CLEF — newline-delimited JSON with @-prefixed reserved
+      # keys.  Close enough to the framework's own NDJSON that there is
+      # almost nothing to translate.
+      seq {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://seq:5341"
+        api-key   = ""             # X-Seq-ApiKey; prefer \${?SEQ_API_KEY}
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Splunk's HTTP Event Collector.
+      splunk {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # HEC base URL, e.g. "https://splunk:8088"
+        token     = ""             # HEC token; prefer \${?SPLUNK_HEC_TOKEN}
+        index     = ""             # empty = the token's default index
+        source     = "actor-ts"
+        sourcetype = "_json"
+        host-name  = ""            # empty = the actor system's name
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # RFC 5424 syslog — the integration that needs no vendor: rsyslog,
+      # syslog-ng, journald's forwarder, Papertrail and a long tail of
+      # appliances all speak it.
+      syslog {
+        enabled   = false
+        min-level = "info"
+        transport = "udp"          # udp | tcp | tls
+        host      = "127.0.0.1"
+        port      = 514
+        facility  = 16             # 0-23; 16 = local0, the range for applications
+        app-name  = ""             # empty = the actor system's name
+        host-name = ""             # empty = the OS hostname
+        # tcp/tls framing.  octet-counting (RFC 6587) is the only one that
+        # survives a message containing a newline — a stack trace always does.
+        framing   = "octet-counting"   # octet-counting | lf
+        # TLS material is code-only: those fields carry the key itself.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+    }
+  }
+
+  dispatcher {
+    default = "immediate"   # immediate | microtask | throughput
+    throughput = 16
+  }
+
+  cluster {
+    gossip-interval = 1s
+    seed-retry-interval = 3s
+    weakly-up-after = 0s   # 0 disables auto weakly-up promotion
+
+    # Caps on the local member map.  max-frame-bytes bounds ONE gossip frame;
+    # these bound what a sequence of well-formed frames can accumulate, since
+    # gossip is what introduces addresses in the first place.  0 disables
+    # either.  max-tombstones is the load-bearing one: a tombstone carries no
+    # liveness, so nothing but the TTL below ever reclaims it.
+    max-members = 1000
+    max-tombstones = 10000
+
+    tombstone {
+      time-to-live   = 24h
+      prune-interval = 5m
+      min-retention  = 0s   # 0 = derive from failure-detector down-after
+    }
+
+    failure-detector {
+      heartbeat-interval = 500ms
+      unreachable-after = 2s
+      down-after = 5s     # measured from the last heartbeat, so > unreachable-after
+    }
+
+    # Stable-observation bootstrap: poll discovery until the contact-point set
+    # has been unchanged for stable-margin, then let the lowest-addressed node
+    # -- and only it -- form a cluster if no peer promoted it within
+    # self-election-grace.  Opt-in: bootstrapCluster reads this block only when
+    # its stableObservation option is set.  required-contact-points is the one
+    # knob worth changing: 1 keeps single-node development working, but only a
+    # value matching the expected replica count catches discovery that is
+    # stably wrong rather than merely slow.
+    bootstrap {
+      stable-margin           = 5s
+      poll-interval           = 1s
+      max-wait                = 60s
+      required-contact-points = 1
+      self-election-grace     = 10s
+    }
+
+    # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
+    # one mediator can be made to hold -- by local subscribers and by a peer's
+    # gossiped topic claims alike.  A Subscribe over a cap is answered with
+    # SubscribeRejected, never silently dropped.
+    pub-sub {
+      gossip-interval = 1s
+      max-subscribers-per-topic = 10000
+      max-topics = 10000
+      max-remote-nodes-per-topic = 1000
+      # A publish that reached no subscriber goes to system.deadLetters, so a
+      # mistyped topic is observable instead of silent.  off = discard it.
+      send-to-dead-letters-when-no-subscribers = on
+    }
+
+    # Cluster-wide service registry (Receptionist).  Subscribers are watched,
+    # so a stopped one is dropped; the caps bound the ones that are still alive.
+    receptionist {
+      gossip-interval = 1s
+      max-subscribers-per-key = 1000
+      max-subscribers-total = 10000
+    }
+  }
+
+  # Cluster-wide replicated CRDT store (DistributedData).  Top-level rather
+  # than under cluster.* because the module is -- the cluster is a positional
+  # argument to start(), not a tunable.  Both caps bound quorum requests
+  # (updateAsync + getAsync); 0 disables either.  What they buy is a bound on
+  # the unsettled set itself: every entry holds a promise, a timer and a
+  # target set until its deadline passes, so refusing past the cap turns what
+  # would be a timeout storm into immediate, attributable rejections.
+  distributed-data {
+    gossip-interval = 1s
+    max-pending-quorum-requests = 1000
+    max-quorum-timeout = 30s
+  }
+
+  remote {
+    # Bind address of this node.  Cluster.join reads these when its options
+    # leave host/port unset, so a deployment can move the address into config.
+    tcp {
+      host = "0.0.0.0"
+      port = 2552
+    }
+    tls {
+      # Read but NOT honoured: the transport the cluster builds for itself is
+      # always plaintext.  Setting this to true only buys a startup WARN that
+      # says so — encrypting the wire is issue #941.
+      enabled = false
+    }
+    max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
+  }
+
+  http {
+    backend = "fastify"   # fastify | express | hono
+    # In-flight drain window for unbind() before connections are forced.
+    # 0 keeps the historical behaviour (force immediately); raise it if you
+    # want in-flight requests to finish on shutdown.
+    shutdown-grace-period = 0ms
+
+    # Server-side defaults for websocket() routes (per-connection policy).
+    # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
+    # may override any of them, and the resolved values are validated
+    # (OptionsError on a bad value).
+    websocket {
+      maxFrameBytes    = 1M       # inbound frame size cap
+      onOversizeFrame  = "close"  # close | drop
+      onInvalidMessage = "close"  # close | drop | hook
+      maxBufferedBytes = 4M       # outbound buffer cap before backpressure
+      onBackpressure   = "drop"   # drop | close
+      # maxConnections is unlimited by default; set a positive integer to cap.
+    }
+  }
+
+  cache {
+    # Defaults for the built-in in-memory cache (the "default" cache, and any
+    # cache whose plugin resolves to actor-ts.cache.in-memory).  Leaf names
+    # match the InMemoryCacheOptions fields (camelCase) and are validated on
+    # read — a bad value throws OptionsError.
+    in-memory {
+      maxEntries = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
+      cleanupMs  = 60000   # background expired-entry sweep interval, ms (0 disables the sweep)
+    }
+  }
+
+  persistence {
+    journal {
+      plugin = "actor-ts.persistence.journal.in-memory"
+    }
+    snapshot-store {
+      plugin = "actor-ts.persistence.snapshot-store.in-memory"
+    }
+  }
+
+  sharding {
+    number-of-shards = 64
+    rebalance-interval = 2s
+    hand-off-timeout = 10s
+    remember-entities = false
+    passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
+    # shard-passivation-idle -- how long a shard may stand empty before it
+    #   stops as well.  Deliberately left unset rather than given a value:
+    #   unset, it follows passivation-idle, which is what "the shard goes
+    #   when its entities do" needs.  Set it (0ms disables) to decouple them.
+    max-entities = 0         # 0 = no per-node cap
+  }
+
+  worker-cluster {
+    workers = "auto"   # "auto" uses navigator.hardwareConcurrency
+    restart-policy = "on-failure"   # always | on-failure | never
+  }
+
+  coordinated-shutdown {
+    default-phase-timeout = 5s
+    terminate-actor-system = true
+    exit-process = false   # call process.exit(0) once the pipeline completes
+  }
+}
+`.trim();

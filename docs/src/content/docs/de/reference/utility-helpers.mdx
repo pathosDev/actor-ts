@@ -410,6 +410,50 @@ anzuwachsen, die beim Bauen die Event-Loop blockiert.
   nimm einen [Serializer](/de/serialization/overview/).
 </Aside>
 
+## Eine URL loggen, ohne das Passwort zu loggen
+
+Eine Verbindungs-URL ist die eine Zeichenkette in einer Konfiguration, die
+regelmäßig ein Geheimnis inline mitführt — `amqp://user:pass@host/vhost`,
+`mongodb+srv://user:pass@cluster` — und die Stellen, die eine solche ausgeben,
+werden am seltensten auf Preisgabe geprüft: eine Ablehnungsmeldung, eine
+Reconnect-Warnung, ein Frame, den ein entferntes Gegenüber geschickt hat. Zwei
+Darstellungen für zwei verschiedene Aufgaben.
+
+```ts
+import { redactUrlCredentials, redactedUrlLabel } from 'actor-ts';
+
+redactUrlCredentials('amqp://user:pass@rabbit:5672/vhost');
+// → 'amqp://***@rabbit:5672/vhost'
+
+redactedUrlLabel('wss://user:pass@example.com/ws/orders?token=abc');
+// → 'wss://example.com/ws/orders'
+```
+
+`redactUrlCredentials(value)` maskiert die Userinfo und ändert **sonst nichts**
+— keine Normalisierung, kein angehängter Schrägstrich, kein kleingeschriebener
+Host —, damit ein Betreiber den getippten Wert weiterhin wiedererkennt. Auf
+allem ohne `scheme://…@`-Authority ist die Funktion ein striktes No-op, und
+genau das macht sie sicher anwendbar auf einen Wert, der nur *vielleicht* eine
+URL ist (`':memory:'`, `'file:local.db'`, `'not a url'` kommen unverändert
+zurück). Das ist es, was die framework-eigene
+[Options-Validierung](/de/reference/configuration/) in jeden `OptionsError`
+schreibt, der eine URL ablehnt.
+
+`redactedUrlLabel(value)` geht weiter und reduziert eine URL auf eine stabile
+Identität: Schema, Host, Port und Pfad, ohne Userinfo *und* ohne Query-String —
+ein WebSocket-Endpunkt wird üblicherweise mit einem `?token=…` authentifiziert.
+Der Pfad bleibt bewusst erhalten, denn er unterscheidet zwei Verbindungen zum
+selben Host. Nimm die Funktion für eine Zeile, die du wiederholt ausgibst, etwa
+eine Warnung pro Frame; genau dafür setzt der `WebsocketClientActor` sie ein.
+
+<Aside type="tip" title="Eine Stelle für das, was durchgerutscht ist">
+  Beiden Funktionen hilft nichts gegen ein Geheimnis, das in den Feldern eines
+  Log-Records gelandet ist statt in seiner Meldung. Dafür nimmt der
+  `MultiSinkLogger` ein `transform` — ein Hook, einmal angewandt vor dem
+  Fan-out —, und diese beiden Funktionen sind das, was du darin aufrufst. Siehe
+  [Logging](/de/fundamentals/logging/).
+</Aside>
+
 ## Optionale Peer-Dependencies
 
 `lazyImportModule(name, options?)` importiert ein Modul dynamisch und wirft,
@@ -485,7 +529,9 @@ Options-Typ auf Tippfehler geprüft, und ein Helfer auf einem Feld des falschen
 Typs ist ein Compile-Fehler. Jeder ist ein No-op, solange das Feld `undefined`
 ist: ein ungesetztes Optional besteht also immer, und wo Pflichtfelder erzwungen
 werden, bleibt dir überlassen. Ein abgelehnter Wert wirft `OptionsError`, das
-daneben exportiert wird, damit du es gezielt fangen kannst.
+daneben exportiert wird, damit du es gezielt fangen kannst — und wenn der
+abgelehnte Wert eine URL ist, meldet `url` sie mit maskierten Zugangsdaten
+(*Eine URL loggen, ohne das Passwort zu loggen*, oben).
 
 Die Validierung läuft einmal, zum Zeitpunkt des Verbrauchs, auf den
 zusammengeführten Settings — damit sind Builder, Plain-Objekt und HOCON

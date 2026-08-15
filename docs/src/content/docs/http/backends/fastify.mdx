@@ -8,7 +8,8 @@ Wraps Fastify — fast, well-maintained, with a huge ecosystem of
 plugins (JWT auth, validation, swagger, etc.).
 
 ```ts
-import { ActorSystem, HttpExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 
 const http = system.extension(HttpExtensionId);
 
@@ -42,6 +43,10 @@ new FastifyBackend({
 Most settings pass through to Fastify's `FastifyServerOptions`.
 The framework configures route registration; you tune Fastify's
 own knobs.
+
+`bodyLimit` is the one it fills in for you. Left unset it is **1 MiB** —
+the same cap the Express and Hono backends apply, so which requests are
+accepted does not change with the backend. Passing your own still wins.
 
 ## Security headers
 

@@ -50,7 +50,7 @@ import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
 import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
-import { UI_ASSETS } from './generated/uiAssets.js';
+import { UI_ASSETS } from './generated/UiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
 import { freeActorName } from './internal/ActorNames.js';
 import { NodeSampler } from './internal/NodeSampler.js';
@@ -75,7 +75,7 @@ import { ClusterMembership } from './internal/ClusterMembership.js';
  *
  * @internal
  */
-export const DEVTOOLS_SERVER_VERSION = '0.15.0';
+export const DEVTOOLS_SERVER_VERSION = '0.16.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{
@@ -319,6 +319,21 @@ export class DevToolsServer implements DevToolsHubContext {
     return tree;
   }
 
+  /**
+   * Start the hub and hand the route tree to someone else's server.
+   *
+   * The counterpart to {@link bind}: same taps, same tree, a port this
+   * process does not own — which is why the warning it ends with cannot
+   * be conditional on a host the way `bind`'s is.  There is none to look
+   * at (#594).
+   */
+  mount(): Route {
+    this.start();
+    const tree = this.routes();
+    this.warnIfMountUngated();
+    return tree;
+  }
+
   /** Start the hub and bind a dedicated HTTP server on the configured port. */
   async bind(): Promise<DevToolsBinding> {
     this.start();
@@ -432,6 +447,26 @@ export class DevToolsServer implements DevToolsHubContext {
     this.system.log.warn(
       `DevTools is bound to ${host} WITHOUT auth or an IP allowlist. It exposes actor `
       + 'state and, where enabled, persisted events to anyone who can reach the port.',
+    );
+  }
+
+  /**
+   * Say out loud what `allowUngatedMount` accepted.
+   *
+   * The mount equivalent of {@link warnIfExposed}, and deliberately not an
+   * unconditional line: a mount that carries `auth` or `ipAllowlist` is
+   * gated wherever it lands and warning about it would train operators to
+   * skip the one message that matters.  What is left is the case where
+   * the gate was waived — the acknowledgement is then the only record
+   * that anybody chose this, and a log line is where an incident is
+   * reconstructed from.
+   */
+  private warnIfMountUngated(): void {
+    if (this.settings.auth || this.settings.ipAllowlist) return;
+    this.system.log.warn(
+      'DevTools was mounted with `allowUngatedMount` and WITHOUT auth or an IP '
+      + 'allowlist of its own. It exposes actor state and, where enabled, persisted '
+      + 'events to anyone who can reach the server these routes are bound to.',
     );
   }
 }

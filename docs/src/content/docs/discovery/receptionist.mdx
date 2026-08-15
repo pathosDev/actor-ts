@@ -12,13 +12,15 @@ through gossip.
 ```ts
 import {
   Actor,
+} from 'actor-ts';
+import {
   ReceptionistId,
   ServiceKey,
   Register,
   Find,
-  ReceptionistSubscribe,
+  Subscribe as ReceptionistSubscribe,
   Listing,
-} from 'actor-ts';
+} from 'actor-ts/discovery';
 
 const receptionist = system.extension(ReceptionistId).start(cluster);
 
@@ -175,7 +177,7 @@ A `Subscribe` over either cap is **refused, not dropped**: the
 first `Listing`, and no further listings follow.
 
 ```ts
-import { ReceptionistSubscribeRejected } from 'actor-ts';
+import { SubscribeRejected as ReceptionistSubscribeRejected } from 'actor-ts/discovery';
 
 class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
   override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {

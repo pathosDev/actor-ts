@@ -13,7 +13,7 @@ import {
   rememberEntitiesDdl,
   JournalRememberEntitiesStore,
   type RememberEvent,
-} from '../../../../../src/index.js';
+} from '../../../../../src/cluster/index.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { FakeCassandraClient } from '../../persistence/FakeCassandraClient.js';
 
@@ -105,6 +105,58 @@ describe('CassandraRememberEntitiesStore — append / load round-trip', () => {
     const ddl = rememberEntitiesDdl({ keyspace: 'app' });
     expect(ddl).toMatch(/^CREATE TABLE IF NOT EXISTS app\.remember_entities/);
     expect(ddl).toMatch(/PRIMARY KEY \(\(type_name\), shard_id, entity_id\)/);
+  });
+});
+
+// security audit #615 — one `qualified()` string feeds four differently-shaped
+// statements (INSERT / point-DELETE / SELECT / partition-DELETE), and the
+// store's auto-create runs the exported `rememberEntitiesDdl` rather than
+// `qualified()`, so both doors needed the guard the sibling Cassandra stores
+// have always had.
+describe('CassandraRememberEntitiesStore validates its identifiers (#615)', () => {
+  const storeWith = (
+    keyspace: string, table?: string, autoCreateTables = true,
+  ): CassandraRememberEntitiesStore => {
+    const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace(keyspace)
+      .withAutoCreateTables(autoCreateTables)
+      .withClient(new FakeCassandraClient());
+    if (table !== undefined) storeOptions.withTable(table);
+    return new CassandraRememberEntitiesStore(storeOptions);
+  };
+
+  test('the auto-create path rejects a hostile table name', async () => {
+    const store = storeWith('sharding', 'remember_entities) WITH x --');
+    await expect(store.append('orders', { kind: 'started', shardId: 0, entityId: 'a' }))
+      .rejects.toThrow(/identifier/);
+    await store.close();
+  });
+
+  test('every statement rejects a hostile table name with auto-create off', async () => {
+    // `autoCreateTables: false` skips rememberEntitiesDdl entirely, so this
+    // reaches `qualified()` — the one string all four statements share.
+    const store = storeWith('sharding', 'remember_entities (a) VALUES (?) USING TTL 1 --', false);
+    await expect(store.append('orders', { kind: 'started', shardId: 0, entityId: 'a' }))
+      .rejects.toThrow(/identifier/);
+    await expect(store.append('orders', { kind: 'stopped', shardId: 0, entityId: 'a' }))
+      .rejects.toThrow(/identifier/);
+    await expect(store.load('orders')).rejects.toThrow(/identifier/);
+    await expect(store.clear('orders')).rejects.toThrow(/identifier/);
+    await store.close();
+  });
+
+  test('a hostile keyspace is rejected on the statement path too', async () => {
+    const store = storeWith('sharding WHERE x = 1 --', undefined, false);
+    await expect(store.load('orders')).rejects.toThrow(/identifier/);
+    await store.close();
+  });
+
+  test('rememberEntitiesDdl rejects an injected keyspace or table', () => {
+    expect(() => rememberEntitiesDdl({ keyspace: 'app;DROP KEYSPACE x' })).toThrow(/identifier/);
+    expect(() => rememberEntitiesDdl({ keyspace: 'app', table: 't) WITH x --' })).toThrow(/identifier/);
+    expect(rememberEntitiesDdl({ keyspace: 'app', table: 'remembered' }))
+      .toMatch(/^CREATE TABLE IF NOT EXISTS app\.remembered/);
   });
 });
 

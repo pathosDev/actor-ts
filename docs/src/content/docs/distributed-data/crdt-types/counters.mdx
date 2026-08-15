@@ -16,7 +16,7 @@ contributions** and summing on read.
 ## GCounter
 
 ```ts
-import { GCounter } from 'actor-ts';
+import { GCounter } from 'actor-ts/crdt';
 
 let c = GCounter.empty();
 c = c.increment('node-a', 3);
@@ -51,7 +51,7 @@ shape for things that go *down* (cancellations, retracts).
 ## PNCounter
 
 ```ts
-import { PNCounter } from 'actor-ts';
+import { PNCounter } from 'actor-ts/crdt';
 
 let c = PNCounter.empty();
 c = c.increment('node-a', 5);
@@ -84,7 +84,7 @@ available stock, balance after settlements.
 ## Using them with DistributedData
 
 ```ts
-import { GCounter } from 'actor-ts';
+import { GCounter } from 'actor-ts/crdt';
 
 const dd = system.extension(DistributedDataId).start(cluster);
 

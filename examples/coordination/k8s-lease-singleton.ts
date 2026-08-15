@@ -35,9 +35,16 @@
  * because it's standalone.
  */
 import {
-  Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport,
-  NodeAddress, StartSingletonOptions,
+  Actor,
+  ActorSystem,
 } from '../../src/index.js';
+import {
+  Cluster,
+  ClusterOptions,
+  InMemoryTransport,
+  NodeAddress,
+  StartSingletonOptions,
+} from '../../src/cluster/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { attachDevTools } from '../devtools.js';
@@ -84,9 +91,20 @@ async function main(): Promise<void> {
     .withOwner(POD_NAME)
     .withTtlMs(30_000)
     .withRenewalIntervalMs(10_000);
-  if (process.env.K8S_API_URL) leaseOptions.withApiServerUrl(process.env.K8S_API_URL);
-  if (process.env.K8S_TOKEN) leaseOptions.withAuthToken(process.env.K8S_TOKEN);
-  if (process.env.K8S_CA_CERT) leaseOptions.withCaCert(process.env.K8S_CA_CERT);
+  // All three or none: an explicit API-server URL paired with the Pod's
+  // mounted ServiceAccount token would send the cluster's own credential
+  // to whatever host K8S_API_URL names, so the lease rejects a partial
+  // set at construction.
+  const { K8S_API_URL, K8S_TOKEN, K8S_CA_CERT } = process.env;
+  if (K8S_API_URL || K8S_TOKEN || K8S_CA_CERT) {
+    if (!K8S_API_URL || !K8S_TOKEN || !K8S_CA_CERT) {
+      throw new Error('out-of-cluster mode needs K8S_API_URL + K8S_TOKEN + K8S_CA_CERT together');
+    }
+    leaseOptions
+      .withApiServerUrl(K8S_API_URL)
+      .withAuthToken(K8S_TOKEN)
+      .withCaCert(K8S_CA_CERT);
+  }
   const lease = new KubernetesLease(leaseOptions);
 
   // That's it.  The singleton manager handles every lifecycle

@@ -19,11 +19,15 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
-  InMemoryJournal,
+} from '../../src/index.js';
+import {
   PersistentFSM,
   type FsmStateData,
   type FsmTransitionMap,
-} from '../../src/index.js';
+} from '../../src/fsm/index.js';
+import {
+  InMemoryJournal,
+} from '../../src/persistence/index.js';
 import type { ActorRef } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 

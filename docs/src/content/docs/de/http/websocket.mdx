@@ -11,9 +11,14 @@ siehe [WebsocketClientActor](/de/io/websocket/).
 
 ```ts
 import {
-  ActorSystem, HttpExtensionId,
-  WebsocketServerActor, websocket, type WebsocketConnection,
+  ActorSystem,
 } from 'actor-ts';
+import {
+  HttpExtensionId,
+  WebsocketServerActor,
+  websocket,
+  type WebsocketConnection,
+} from 'actor-ts/http';
 import { match } from 'ts-pattern';
 
 type SetNameMessage = { kind: 'setName'; name: string };
@@ -64,7 +69,7 @@ restlichen [Route-DSL](/de/http/route-dsl/) — `path()`, `concat()`
 und `withMiddleware()`.  Zwei Formen:
 
 ```ts
-import { websocket, path, concat } from 'actor-ts';
+import { websocket, path, concat } from 'actor-ts/http';
 
 // 1. Bare directive — mount it under a path yourself:
 path('ws', websocket(chat));
@@ -107,6 +112,49 @@ durchgesetzt.  `onInvalidMessage: 'hook'` leitet Dekodier-Fehler
 an den `onInvalidMessage`-Hook des Actors weiter, statt zu
 schließen.
 
+#### Wo das Limit greift
+
+`maxFrameBytes` wird zweimal geprüft, zu zwei verschiedenen Zeitpunkten:
+
+- **Im Transport**, bei **1 MiB** — dem eingebauten Default, den das
+  Framework beim Binden an den Socket der Laufzeit weiterreicht.  Ein
+  größerer Frame wird abgewiesen, *während er eintrifft*; ein feindlicher
+  Peer kann den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB
+  (`ws`) zu puffern, nur damit das Ergebnis anschließend verworfen wird.
+  Weil die Laufzeit dabei auflegt, statt einen Policy-Close zu senden,
+  sieht der Client hier einen abnormalen Close (**1006**) und keine 1009.
+- **Im Connection-Actor**, bei deinem `maxFrameBytes` — am vollständig
+  empfangenen Frame, vor dem Dekodieren, mit Close **1009**.
+
+Wichtig dabei: Das Transport-Limit ist der Framework-Default, nicht die
+Zahl deiner Route.  `maxFrameBytes` zu **senken** wirkt genau wie
+geschrieben; es **über 1 MiB anzuheben, hebt das Transport-Limit nicht
+mit** — Frames zwischen 1 MiB und deinem Limit werden weiterhin
+abgeschnitten.  Backends sehen die Policy einer Route beim Binden nicht;
+sie wird erst bei der ersten Verbindung aufgelöst.  Genau das muss ein
+konfigurierbares Transport-Limit noch lösen.
+
+<Aside type="caution" title="Deno hat kein Transport-Limit">
+Auf Deno existiert die erste Ebene nicht.  `Deno.upgradeWebSocket` nimmt
+ein Subprotokoll und ein Idle-Timeout entgegen und kein Payload-Limit — es
+gibt also nichts, das das Framework setzen könnte: Ein zu großer Frame wird
+von der Laufzeit vollständig gepuffert und erst danach vom
+Connection-Actor abgewiesen.  Die Zusage gilt weiterhin — der Frame
+erreicht deinen Actor nie —, aber der Speicher ist ausgegeben, bevor
+abgelehnt wird.  Für einen aus dem Internet erreichbaren WebSocket-Endpunkt
+unter Deno gehört ein Proxy mit eigenem Frame-Limit davor.
+</Aside>
+
+<Aside type="note" title="Hono auf Node braucht @hono/node-ws 1.2.0 oder neuer">
+Auf Node wird das Limit auf den `ws`-Server geschrieben, den
+`@hono/node-ws` als `wss` herausgibt — und dieses Member existiert erst ab
+**1.2.0**; 1.0.x und 1.1.x behalten den Server für sich, es gibt also
+nichts zu begrenzen.  Statt einen unbegrenzten Socket zu binden, verweigert
+das Backend den Aufbau der WebSocket-Bridge und nennt die Version im
+Fehler.  Deshalb beginnt der Peer-Range bei 1.2.0; ein einfaches
+`npm install @hono/node-ws` wählt von sich aus eine ausreichend neue Version.
+</Aside>
+
 ### Origin-Allowlist (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade
@@ -144,7 +192,7 @@ das Upgrade kommt nie zustande, sodass Auth-Middleware wie
 `BearerTokenAuth` oder `IpAllowlist` den Handshake absichert:
 
 ```ts
-import { websocket, withMiddleware } from 'actor-ts';
+import { websocket, withMiddleware } from 'actor-ts/http';
 
 withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 // A bad token → HTTP 401, no upgrade.  A good token → the socket opens.
@@ -152,6 +200,30 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 
 Die Middleware-Sammlung steht in der
 [HTTP-Übersicht](/de/http/overview/).
+
+### Backend-eigene Middleware läuft ebenfalls
+
+`withMiddleware()` ist der portable Weg — auf jedem Backend
+identisch —, aber ein Handshake ist auch für das darunterliegende
+Framework ein ganz normaler Request, und **dessen** eigene
+Middleware läuft ebenfalls:
+
+| Backend | Was beim Handshake zusätzlich läuft |
+| --- | --- |
+| **Fastify** | Route-Hooks, inklusive `preValidation` |
+| **Express** | alles, was mit `app.use(...)` registriert wurde |
+| **Hono** | alles, was mit `app.use(...)` registriert wurde |
+
+Eine App, die `/ws` mit `app.use(requireLogin)` absichert, ist also
+wirklich abgesichert, und eine native Middleware, die den Request
+beantwortet, lehnt das Upgrade ab.  Der Guard des Frameworks läuft
+nach allen anderen — `withMiddleware()` und `allowedOrigins` haben
+damit immer das letzte Wort.
+
+Nimm `withMiddleware()`, wenn sich eine Route über alle Backends
+hinweg gleich verhalten soll; greif zu nativer Middleware, wenn du
+ein bestehendes Ökosystem weiterverwendest (Sessions, Rate
+Limiting, Observability).
 
 ## `WebsocketServerActor`
 
@@ -263,7 +335,8 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 `TOut`-Antworten.  Der Default ist `jsonCodec()`:
 
 ```ts
-import { jsonCodec, WebsocketRouteOptions } from 'actor-ts';
+import { WebsocketRouteOptions } from 'actor-ts/http';
+import { jsonCodec } from 'actor-ts/persistence';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
@@ -276,7 +349,12 @@ Für Binärprotokolle liefert `rawCodec()` rohe Frames
 
 ```ts
 import { match } from 'ts-pattern';
-import { rawCodec, WebsocketRouteOptions, WebsocketServerActor, type WebsocketFrame } from 'actor-ts';
+import {
+  rawCodec,
+  WebsocketRouteOptions,
+  WebsocketServerActor,
+  type WebsocketFrame,
+} from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
 class BinaryHub extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
@@ -310,7 +388,7 @@ Dekodier-Fehler werfen `WebsocketDecodeError` und folgen der
 ```bash
 npm install @fastify/websocket   # Fastify (default)
 npm install ws                   # Express
-npm install @hono/node-ws        # Hono on Node only
+npm install @hono/node-ws        # Hono on Node only, 1.2.0 or newer
 ```
 
 ## HOCON-Config

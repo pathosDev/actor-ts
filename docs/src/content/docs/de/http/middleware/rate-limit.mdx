@@ -11,7 +11,7 @@ willst.  Überschüssige Requests bekommen **429** mit einem
 
 ```ts
 import { rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const limited = rateLimit({
   cache:    new InMemoryCache(),
@@ -113,7 +113,7 @@ Clients nutzen die, um zu backoffen, statt zufällig zu retrien.
 ## Cluster-fähiges Rate-Limiting
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 rateLimit({
@@ -186,6 +186,27 @@ import { Aside } from '@astrojs/starlight/components';
   Nimm einen Redis-gestützten Cache für produktive Multi-Pod-
   Deployments.  Der In-Memory-Cache reicht nur für Single-Pod
   oder "grobes" Limiting.
+</Aside>
+
+<Aside type="caution" title="Teile den Cache nicht mit cached() oder idempotent()">
+  ```ts
+  const limiterCache = new InMemoryCache();   // ✓ the limiter's own instance
+  ```
+  Der Zähler, der das Limit durchsetzt, ist ein gewöhnlicher
+  Cache-Eintrag, und `InMemoryCache` evictet ab `maxEntries` den am
+  längsten nicht genutzten — ohne zu wissen, welche Einträge
+  Sicherheits-State tragen.  Teilst du eine Instanz mit `cached` oder
+  `idempotent`, evictet ein Aufrufer, der über eine der beiden
+  eindeutige Keys erzeugt (ein Response-Cache-Key aus dem Request, ein
+  angreiferseitig gewählter `Idempotency-Key`), die Zähler **anderer**
+  Clients und schenkt jedem davon ein frisches Budget.  Der eigene
+  Zähler des Fluters bleibt verschont: `incr` markiert ihn bei jedem
+  Request als zuletzt genutzt, er ist also nie das Opfer.
+
+  Übergib eine eigene Instanz — oder `ext.cache('rate-limit')` — und
+  dimensioniere deren `maxEntries` oberhalb der Zahl eindeutiger Keys,
+  die du innerhalb eines `windowMs` erwartest.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
 </Aside>
 
 <Aside type="caution" title="Randeffekte bei Fixed-Window">

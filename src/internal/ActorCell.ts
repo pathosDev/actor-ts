@@ -22,7 +22,7 @@ import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
 import type { Behavior } from '../typed/Behavior.js';
-import { typedActor } from '../typed/spawn.js';
+import { typedActor } from '../typed/Spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,
@@ -795,7 +795,32 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (!this.mailbox.hasMessages()) return;
     this.processing = true;
     const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
-    dispatcher.execute(() => this.run());
+    dispatcher.execute(() => this.runReported(dispatcher.id));
+  }
+
+  /**
+   * `run()` with its failures attributed.
+   *
+   * The catch belongs here rather than in the dispatcher for two reasons.
+   * It is the only layer that knows *whose* turn failed, so the report can
+   * name an `ActorRef` like every other event on that bus does.  And it
+   * covers dispatchers the system never sees: a per-actor
+   * `ActorOptions.withDispatcher(…)` instance, or a third-party
+   * implementation that reports failures its own way — both would
+   * otherwise keep their turn's failure to themselves (#410).
+   *
+   * Nothing is rethrown: the dispatcher's own guard is the fallback for a
+   * report that could not be made, not a second reporter.
+   *
+   * `.catch` rather than an `async` wrapper with a `try`, because this runs
+   * once per message: `run()` is already `async` and so cannot throw
+   * synchronously, and attaching a handler costs one derived promise where
+   * a second async frame would cost that plus its state machine.
+   */
+  private runReported(dispatcherId: string): Promise<void> {
+    return this.run().catch(
+      (error: unknown) => this.system._reportDispatcherError(error, dispatcherId, this.self),
+    );
   }
 
   private async run(): Promise<void> {

@@ -5,8 +5,8 @@
  * must work together — broker accepts the wildcard subscribe and
  * actor matches concrete inbound topics against the pattern.
  */
-import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'wildcard subscriptions — + and # patterns',

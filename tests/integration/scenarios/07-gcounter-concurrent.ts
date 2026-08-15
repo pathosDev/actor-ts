@@ -21,7 +21,7 @@
  * total below the expected.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './Types.js';
 
 const KEY = 'integration-gcounter';
 const INCREMENTS_PER_NODE = 50;

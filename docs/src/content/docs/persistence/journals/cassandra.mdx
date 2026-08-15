@@ -9,7 +9,8 @@ nodes** — any node can append, read, or query events for any
 persistenceId.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, CassandraJournal, CassandraJournalOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { CassandraJournal, CassandraJournalOptions } from 'actor-ts/persistence';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
@@ -120,6 +121,17 @@ recovery reads one partition per bucket.  The `metadata` table
 tracks the highest sequence number per pid; `all_persistence_ids`
 backs `persistenceIds()`.  The optional `events_by_tag` table is
 keyed by `tag` — projection queries hit one partition per tag.
+
+`keyspace` and every table name are interpolated into CQL as identifiers
+— identifiers cannot be bound — so each is validated against
+`/^[A-Za-z_][A-Za-z0-9_]*$/` before it reaches a statement: on the write
+path, on the tag-index read path, and inside the `CREATE KEYSPACE` that
+`autoCreateKeyspace` issues.  Data-center names in
+`replication.dataCenters` are CQL *string* values rather than
+identifiers, so they keep the hyphens an `Ec2Snitch`-derived name
+carries (`us-east-1`) and are quote-escaped instead; replication factors
+must be integers.  Everything else — persistenceIds, tags, payloads —
+travels as bind parameters, never string-concatenated.
 
 ## Setup
 

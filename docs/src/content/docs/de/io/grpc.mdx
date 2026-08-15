@@ -36,11 +36,13 @@ nicht in der Map steht, wird als `UNIMPLEMENTED` gemeldet.
 ```ts
 import {
   Actor,
+} from 'actor-ts';
+import {
   GrpcServerActor,
   GrpcServerOptions,
   type GrpcUnaryCall,
   type GrpcServerStreamCall,
-} from 'actor-ts';
+} from 'actor-ts/io';
 
 // A unary handler: reply once via `respond`.
 class GetSensorHandler extends Actor<GrpcUnaryCall> {
@@ -104,6 +106,15 @@ den Client-Stream- und Bidi-Calls, die ihre Requests streamen) und
 ein `metadata`-Record.  `respondError` / `fail` nehmen einen
 optionalen numerischen Status-Code, der auf `13` (INTERNAL) fällt.
 
+`metadata` enthält die Request-Header des Clients, ein Handler kann
+also pro Call entscheiden — einen `authorization`-Header prüfen, eine
+Tenant-Id lesen.  Zwei Einschränkungen folgen daraus, dass der Record
+Strings hält: ein mehrfach gesendeter Header fällt auf seinen
+**ersten** Wert zusammen, und binäre (`-bin`) Header entfallen
+vollständig.  Ein nicht gesendeter Header liefert `undefined`, auch bei
+Namen wie `constructor` — der Record hat keinen Prototyp, ein Lookup
+gelingt also nie versehentlich.
+
 Ein `onData`-Subscriber erhält `GrpcRequestStreamInbound` — entweder
 `{ kind: 'chunk', chunk }` oder `{ kind: 'end' }`.
 
@@ -113,6 +124,8 @@ Ein `onData`-Subscriber erhält `GrpcRequestStreamInbound` — entweder
 import { match, P } from 'ts-pattern';
 import {
   Actor,
+} from 'actor-ts';
+import {
   GrpcClientActor,
   GrpcClientOptions,
   type GrpcInbound,
@@ -121,7 +134,7 @@ import {
   type StreamDataMessage,
   type StreamErrorMessage,
   type StreamStartedMessage,
-} from 'actor-ts';
+} from 'actor-ts/io';
 
 const grpcClientOptions = GrpcClientOptions.create()
   .withProtoPath(protoPath)
@@ -178,9 +191,12 @@ client.tell({ kind: 'unary', method: 'GetSensor', request: { id: 'rt-7' }, targe
 
 Der Endpoint ist ein einzelner `host:port`-String über
 `withEndpoint`.  Jeder Call benennt einen **`target`**-Actor; der
-Actor routet die Antwort und alle Stream-Frames dorthin.  Ein
-Deadline pro Call ist mit `.withDeadlineMs(30000)` konfigurierbar
-(der Standardwert).
+Actor routet die Antwort und alle Stream-Frames dorthin.
+`.withDeadlineMs(30000)` (der Standardwert) begrenzt ausschließlich
+**Unary**-Calls.  Ein gRPC-Deadline umfasst den gesamten RPC, und ein
+einzelner Wert kann nicht zugleich einen Request/Response-Call zügig
+scheitern lassen und einen langlebigen Stream laufen lassen — die drei
+Streaming-Modi bleiben deshalb unbegrenzt.
 
 ### Eingehende Frames
 
@@ -369,7 +385,7 @@ die auch den `/ready`-Endpunkt des Management-Servers speist.  Reiche
 die Registry an `withHealth` — genau das *ist* das Opt-in:
 
 ```ts
-import { HealthCheckRegistry } from 'actor-ts';
+import { HealthCheckRegistry } from 'actor-ts/management';
 
 const health = new HealthCheckRegistry();
 health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));

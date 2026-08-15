@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { idempotent } from '../../../../src/http/cache/IdempotencyKey.js';
 import { complete } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 function makeReq(headers: Record<string, string> = {}, body: Uint8Array | null = null): HttpRequest {
   return { method: 'POST', path: '/payments', headers, query: {}, params: {}, body };
@@ -131,6 +131,114 @@ describe('idempotent — TTL / config guards', () => {
     expect(() => idempotent({ cache, ttlMs: 0 })).toThrow();
     expect(() => idempotent({ cache, ttlMs: -1 })).toThrow();
   });
+
+  test('rejects invalid maxKeyLength', () => {
+    const cache = new InMemoryCache();
+    expect(() => idempotent({ cache, maxKeyLength: 0 })).toThrow();
+    expect(() => idempotent({ cache, maxKeyLength: 1.5 })).toThrow();
+  });
+});
+
+/* ------------------------- security: bounding the minted key ----------------------- */
+
+describe('idempotent — Idempotency-Key validation', () => {
+  /**
+   * The header value is attacker-chosen and is concatenated verbatim
+   * into a cache key that the whole application shares.  Without a
+   * cap, one request decides how much of that cache it occupies —
+   * a header-sized string per minted key.  255 is Stripe's published
+   * limit; every real client sends a UUID or a short token.
+   */
+  test('a key longer than the default 255 characters is refused with 400', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { ok: true });
+    });
+
+    const response = await handler(makeReq({ 'idempotency-key': 'k'.repeat(256) }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(invocations).toBe(0);          // handler never ran
+    expect(cache.sizeForTest()).toBe(0);  // and nothing was stored
+  });
+
+  test('a key of exactly 255 characters still works', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const response = await handler(makeReq({ 'idempotency-key': 'k'.repeat(255) }));
+    expect(response.status).toBe(Status.OK);
+  });
+
+  test('maxKeyLength is configurable in both directions', async () => {
+    const strictCache = new InMemoryCache();
+    const strict = idempotent({ cache: strictCache, maxKeyLength: 8 })(() => complete(Status.OK, {}));
+    expect((await strict(makeReq({ 'idempotency-key': '123456789' }))).status).toBe(Status.BadRequest);
+    expect((await strict(makeReq({ 'idempotency-key': '12345678' }))).status).toBe(Status.OK);
+
+    const roomyCache = new InMemoryCache();
+    const roomy = idempotent({ cache: roomyCache, maxKeyLength: 1024 })(() => complete(Status.OK, {}));
+    expect((await roomy(makeReq({ 'idempotency-key': 'k'.repeat(256) }))).status).toBe(Status.OK);
+  });
+
+  /**
+   * Control characters and the space are command delimiters in
+   * Memcached's text protocol and CR/LF are the classic
+   * header-injection pair — a key carrying one would be safe only for
+   * as long as a particular `Cache` implementation sits behind the
+   * middleware.  Rejecting at the edge makes that independent of the
+   * backend that happens to be wired in.
+   */
+  test.each([
+    ['CR', 'abc\rdef'],
+    ['LF', 'abc\ndef'],
+    ['NUL', 'abc\0def'],
+    ['TAB', 'abc\tdef'],
+    ['space', 'abc def'],
+    ['DEL', 'abc\x7Fdef'],
+  ])('a key containing %s is refused with 400', async (_name, userKey) => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { ok: true });
+    });
+
+    const response = await handler(makeReq({ 'idempotency-key': userKey }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(invocations).toBe(0);
+    expect(cache.sizeForTest()).toBe(0);
+  });
+
+  test('the rejection never echoes the key back into the response body', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, {}));
+
+    const marker = 'CANARY-'.repeat(64);   // 448 chars — over the cap
+    const response = await handler(makeReq({ 'idempotency-key': marker }));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(JSON.stringify(response.body)).not.toContain('CANARY');
+  });
+
+  test('regression: ordinary UUID and token keys are unaffected', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { n: invocations });
+    });
+
+    for (const userKey of [
+      '018f3b6c-2a4d-7c3e-9a11-6b7c8d9e0f12',
+      'tx-1684923847-abc',
+      'a',
+      'A1_-.~%2Fslash',
+    ]) {
+      expect((await handler(makeReq({ 'idempotency-key': userKey }))).status).toBe(Status.OK);
+    }
+    expect(invocations).toBe(4);
+  });
 });
 
 /* ------------------------- security: request-body binding -------------------------- */
@@ -257,5 +365,132 @@ describe('idempotent — request-body fingerprint binding', () => {
     await handler(reqWithBody({ 'idempotency-key': 'k2' }, '{"a":2}'));
     await handler(reqWithBody({ 'idempotency-key': 'k3' }, '{"a":3}'));
     expect(invocations).toBe(3);
+  });
+});
+
+/* ------------------------- security: query-string binding -------------------------- */
+
+function requestWithQuery(
+  headers: Record<string, string>,
+  query: HttpRequest['query'],
+  path = '/payments',
+): HttpRequest {
+  return {
+    method: 'POST',
+    path,
+    headers,
+    query,
+    params: {},
+    body: new TextEncoder().encode('{"amount":42}'),
+  };
+}
+
+describe('idempotent — query-string fingerprint binding', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  `HttpRequest` keeps `path` and
+   * `query` in separate fields, and the fingerprint hashed only
+   * `method + path + body`.  The query was therefore invisible to the
+   * replay guard:
+   *
+   *   POST /refunds?amount=1     Idempotency-Key: abc   (body identical)
+   *   POST /refunds?amount=9999  Idempotency-Key: abc   (body identical)
+   *
+   * The second request differs only in the query, so it fingerprinted
+   * identically to the first and replayed its stored 200 — the larger
+   * refund was silently dropped and the client was told it succeeded,
+   * exactly the outcome the 422 exists to prevent.  Reachable on every
+   * backend that reports `path` as the bare pathname.
+   */
+  test('exploit: same key + different query → 422 (not the cached response)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { txId: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-refund' }, { amount: '1' }, '/refunds'));
+    expect(first.status).toBe(200);
+
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-refund' }, { amount: '9999' }, '/refunds'));
+    expect(second.status).toBe(422);
+    expect(invocations).toBe(1);                              // handler NOT invoked
+    expect(JSON.stringify(second.body)).not.toContain('txId'); // no leak of the first response
+  });
+
+  test('canonical: the same parameters in a different key order replay (no false 422)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-order' }, { a: '1', b: '2' }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-order' }, { b: '2', a: '1' }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);  // SAME response replayed
+    expect(invocations).toBe(1);
+  });
+
+  test('canonical: the values of a repeated parameter keep their order → reordering is a different request', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    await handler(requestWithQuery({ 'idempotency-key': 'q-repeat' }, { tag: ['a', 'b'] }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-repeat' }, { tag: ['b', 'a'] }));
+    expect(second.status).toBe(422);
+  });
+
+  /**
+   * A backend that reports the raw request target in `path` (query
+   * included) must fingerprint a request identically to one that
+   * reports the bare pathname plus a parsed `query` — otherwise two
+   * pods running different backends against one shared Redis
+   * idempotency cache 422 each other's perfectly valid retries.
+   */
+  test('portability: a query-bearing path fingerprints like a bare path plus query', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const rawTarget = await handler(
+      requestWithQuery({ 'idempotency-key': 'q-portable' }, { a: '1', b: '2' }, '/payments?a=1&b=2'),
+    );
+    const parsedTarget = await handler(
+      requestWithQuery({ 'idempotency-key': 'q-portable' }, { a: '1', b: '2' }, '/payments'),
+    );
+    expect(rawTarget.status).toBe(200);
+    expect(parsedTarget.status).toBe(200);  // replayed, NOT 422
+    expect(invocations).toBe(1);
+  });
+
+  test('regression: an undefined query value is skipped, not hashed as a difference', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-undef' }, { a: '1' }));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-undef' }, { a: '1', b: undefined }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+  });
+
+  test('regression: query-free requests are unaffected (empty query hashes as no query)', async () => {
+    const cache = new InMemoryCache();
+    let invocations = 0;
+    const handler = idempotent({ cache })(() => {
+      invocations++;
+      return complete(Status.OK, { id: invocations });
+    });
+
+    const first = await handler(requestWithQuery({ 'idempotency-key': 'q-none' }, {}));
+    const second = await handler(requestWithQuery({ 'idempotency-key': 'q-none' }, {}));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(invocations).toBe(1);
   });
 });

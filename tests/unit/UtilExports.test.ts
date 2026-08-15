@@ -7,6 +7,8 @@ import {
   randomId,
   randomString,
   randomUuid,
+  redactUrlCredentials,
+  redactedUrlLabel,
   safeStringify,
 } from '../../src/index.js';
 import type {
@@ -92,6 +94,19 @@ describe('util helpers are reachable from the barrel (#1034)', () => {
 
     test('the length cap applies', () => {
       expect(safeStringify('x'.repeat(500), 64)).toContain('[truncated');
+    });
+  });
+
+  describe('RedactUrlCredentials (#590, #592)', () => {
+    test('redactUrlCredentials masks the userinfo and touches nothing else', () => {
+      expect(redactUrlCredentials('amqp://user:pass@rabbit:5672/vhost'))
+        .toBe('amqp://***@rabbit:5672/vhost');
+      expect(redactUrlCredentials('not a url')).toBe('not a url');
+    });
+
+    test('redactedUrlLabel drops the query as well as the userinfo', () => {
+      expect(redactedUrlLabel('wss://user:pass@example.com/ws/orders?token=abc'))
+        .toBe('wss://example.com/ws/orders');
     });
   });
 

@@ -119,7 +119,7 @@ bun add hono @hono/node-server    # @hono/node-server is Node-only
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
 | `ws` | Server-side WebSocket upgrades on the Express backend.  (`WebsocketClientActor` uses the runtime's native `WebSocket` — no peer dep.) |
 | `@fastify/websocket` | `websocket()` routes on the Fastify backend. |
-| `@hono/node-ws` | `websocket()` routes on the Hono backend (Node only — Bun/Deno ship the helpers inside `hono`). |
+| `@hono/node-ws` **≥ 1.2.0** | `websocket()` routes on the Hono backend (Node only — Bun/Deno ship the helpers inside `hono`).  The floor is real: the transport frame cap is written onto the `ws` server only 1.2.0 and newer expose, and older versions are refused rather than served uncapped. |
 
 ### Discovery + Coordination
 

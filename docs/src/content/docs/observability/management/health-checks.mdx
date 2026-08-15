@@ -16,7 +16,7 @@ The management routes expose two health endpoints:
 app-specific health:
 
 ```ts
-import { managementRoutes } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 const { routes, health } = managementRoutes(system, cluster);
 
@@ -137,7 +137,7 @@ The aggregate is `UP` iff `clusterReady` **and every** check's
 ## Testing checks
 
 ```ts
-import { HealthCheckRegistry } from 'actor-ts';
+import { HealthCheckRegistry } from 'actor-ts/management';
 
 it('readiness fails when the DB is down', async () => {
   const health = new HealthCheckRegistry();

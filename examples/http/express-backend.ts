@@ -15,6 +15,8 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   ExpressBackend,
   ExpressBackendOptions,
   Status,
@@ -25,7 +27,7 @@ import {
   get,
   path,
   post,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; };
@@ -53,7 +55,7 @@ async function main(): Promise<void> {
     )),
   );
 
-  const backendOptions = ExpressBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+  const backendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
   const backend = new ExpressBackend(backendOptions);
   // Optional: reach through to the raw Express app to attach native middleware.
   //   const app = backend.getApp();

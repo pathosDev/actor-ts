@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-5158%20of%205158-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~92%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-6251%20of%206251-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~93%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~5158 tests, ~92 % line) but the
+> production**.  Test coverage is good (~6251 tests, ~93 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -100,6 +100,14 @@ A short tour of what's in the box:
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
+- **Multi-sink logging** — one record to several destinations at once, each
+  with its own minimum level, with bounded queues, batched delivery and a
+  flush on shutdown.  Console (text or NDJSON), rotating log files, and
+  ten platforms: OTLP (which alone reaches Loki, Datadog, SigNoz, Axiom,
+  Honeycomb, New Relic and any OTel collector), Graylog/GELF, Sentry,
+  Parseable, Loki, Seq, Splunk HEC and RFC 5424 syslog.  No dependencies —
+  Sentry is a passthrough to your own SDK.  A `transform` hook redacts
+  once, before fan-out.
 - **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a
@@ -210,7 +218,8 @@ mutation, no "did this write commit?" question. Same `Counter` API
 the rest of the app sees, every mutation durable.
 
 ```ts
-import { PersistentActor, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { PersistentActor } from 'actor-ts/persistence';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -256,7 +265,7 @@ and go. The `ShardRegion` ref you get back behaves like any other
 `ActorRef` to callers.
 
 ```ts
-import { Cluster } from 'actor-ts';
+import { Cluster } from 'actor-ts/cluster';
 
 // One-call bootstrap — system + cluster + receptionist + SIGTERM
 // wiring in one line.  Discovery defaults to an env-driven chain

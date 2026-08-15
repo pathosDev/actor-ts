@@ -179,7 +179,7 @@ Für die Push-Seite abonnierst du `ShardMapChanged`:
 
 ```ts
 import { match, P } from 'ts-pattern';
-import { ShardMapChanged } from 'actor-ts';
+import { ShardMapChanged } from 'actor-ts/cluster';
 
 cluster.subscribe((event) =>
   match(event)

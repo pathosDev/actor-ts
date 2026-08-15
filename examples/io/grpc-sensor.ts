@@ -25,6 +25,8 @@ import {
   Actor,
   ActorSystem,
   type ActorRef,
+} from '../../src/index.js';
+import {
   GrpcClientActor,
   GrpcClientOptions,
   GrpcServerActor,
@@ -41,7 +43,7 @@ import {
   type StreamDataMessage,
   type StreamErrorMessage,
   type StreamStartedMessage,
-} from '../../src/index.js';
+} from '../../src/io/index.js';
 import { attachDevTools } from '../devtools.js';
 
 // --- proto definition (inlined for self-contained example) -----------------

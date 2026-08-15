@@ -20,8 +20,9 @@
 export const name = 'CBOR rich types';
 export const description = 'CBOR round-trips Map, Set, typed arrays, Error and friends on the built package';
 
-export async function run({ actorTs }) {
-  const { CborSerializer, JsonSerializer, BidirectionalMap, BidirectionalMultiMap } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { BidirectionalMap, BidirectionalMultiMap } = actorTs;
+  const { CborSerializer, JsonSerializer } = await loadEntry('serialization');
   const cbor = new CborSerializer();
   const json = new JsonSerializer();
 

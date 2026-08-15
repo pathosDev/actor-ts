@@ -17,7 +17,7 @@ unterscheiden sich in der Konfliktauflösungs-Policy.
 ## LWWRegister
 
 ```ts
-import { LWWRegister } from 'actor-ts';
+import { LWWRegister } from 'actor-ts/crdt';
 
 let r = LWWRegister.empty<string>();
 r = r.assign('node-a', 'hello', 1000);   // Wert, Timestamp
@@ -57,7 +57,7 @@ dd.update<LWWRegister<boolean>>(
 ## MVRegister
 
 ```ts
-import { MVRegister } from 'actor-ts';
+import { MVRegister } from 'actor-ts/crdt';
 
 let r = MVRegister.empty<string>();
 r = r.assign('node-a', 'hello');

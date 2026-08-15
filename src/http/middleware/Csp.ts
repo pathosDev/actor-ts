@@ -7,7 +7,7 @@
  * handler already set.
  */
 import type { Middleware } from '../Route.js';
-import { applyHeaders } from './headers.js';
+import { headerDecorator } from './Headers.js';
 import type { CspDirectives, CspOptions, CspOptionsType } from './CspOptions.js';
 
 /** helmet-parity baseline, merged under user directives when `useDefaults`. */
@@ -68,12 +68,18 @@ function serialize(directives: CspDirectives): string {
   return parts.join('; ');
 }
 
-/** Build a middleware that adds a Content-Security-Policy header. */
+/**
+ * Build a middleware that adds a Content-Security-Policy header — to the
+ * responses handlers return and to those a thrown `HttpError`
+ * short-circuit produces (#606).  This is the only seam that emits CSP: it
+ * is far too app-specific to sit in the server-wide header bundle, so a
+ * response that never enters this middleware's subtree carries no policy.
+ */
 export function contentSecurityPolicy(options: CspOptions = {}): Middleware {
   const resolvedOptions = options as Partial<CspOptionsType>;
   const useDefaults = resolvedOptions.useDefaults ?? true;
   const merged: CspDirectives = useDefaults ? { ...BASELINE, ...(resolvedOptions.directives ?? {}) } : (resolvedOptions.directives ?? {});
   const value = serialize(merged);
   const header = (resolvedOptions.reportOnly ?? false) ? 'content-security-policy-report-only' : 'content-security-policy';
-  return async (_req, next) => applyHeaders(await next(), { [header]: value });
+  return headerDecorator({ [header]: value });
 }

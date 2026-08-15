@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { requestId } from '../../../../src/http/middleware/RequestId.js';
 import { RequestIdOptions } from '../../../../src/http/middleware/RequestIdOptions.js';
-import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 
 const request = (headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET', path: '/', headers, query: {}, params: {}, body: null,
@@ -39,5 +39,26 @@ describe('requestId', () => {
   test('does not overwrite a handler-set id header', async () => {
     const response: HttpResponse = await requestId()(request(), async () => ({ status: Status.OK, body: 'x', headers: { 'x-request-id': 'handler' } }));
     expect(response.headers?.['x-request-id']).toBe('handler');
+  });
+
+  test('echoes the id on a thrown HttpError short-circuit (#606)', async () => {
+    // A rejection is precisely the response whose id an operator later
+    // needs to find the log line for.
+    const mw = requestId(RequestIdOptions.create().withGenerate(() => 'fixed'));
+    let seen: string | undefined;
+    const rethrown: unknown = await Promise.resolve(mw(request(), async (enriched) => {
+      seen = enriched?.headers['x-request-id'];
+      throw new HttpError(Status.Forbidden, 'CSRF verification failed');
+    })).then(() => null, (error: unknown) => error);
+    expect(seen).toBe('fixed');
+    expect(rethrown).toBeInstanceOf(HttpError);
+    expect((rethrown as HttpError).headers?.['x-request-id']).toBe('fixed');
+  });
+
+  test('a non-HttpError throw is rethrown untouched — the generic 500 carries no id', async () => {
+    const boom = new Error('kaboom');
+    const rethrown: unknown = await Promise.resolve(requestId()(request(), () => Promise.reject(boom)))
+      .then(() => null, (error: unknown) => error);
+    expect(rethrown).toBe(boom);
   });
 });

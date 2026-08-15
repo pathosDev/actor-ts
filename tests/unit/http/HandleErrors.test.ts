@@ -9,7 +9,7 @@ import {
   type Middleware,
   type Route,
 } from '../../../src/http/Route.js';
-import { HttpError, Status, type HttpRequest } from '../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest } from '../../../src/http/Types.js';
 
 const request: HttpRequest = {
   method: 'GET',

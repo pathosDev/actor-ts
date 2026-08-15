@@ -15,8 +15,10 @@ DistributedData ein durables Backend mit
 import {
   DistributedDataId,
   DistributedDataOptions,
+} from 'actor-ts/crdt';
+import {
   InMemoryDurableStateStore,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 // Any DurableStateStore works — InMemory here; a SQL / object-storage
 // backend in production (see "Store choices" below).
@@ -121,8 +123,8 @@ Konstruktor über einem `DurableStateStore` plus einer Replika-ID,
 mit `load()` / `save()` / `clear()`:
 
 ```ts
-import { DurableDistributedDataStore, GCounter } from 'actor-ts';
-import { InMemoryDurableStateStore } from 'actor-ts';
+import { DurableDistributedDataStore, GCounter } from 'actor-ts/crdt';
+import { InMemoryDurableStateStore } from 'actor-ts/persistence';
 
 const store = new InMemoryDurableStateStore();
 const durable = new DurableDistributedDataStore(store, 'replica-a');

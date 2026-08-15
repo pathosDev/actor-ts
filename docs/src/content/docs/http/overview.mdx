@@ -64,7 +64,7 @@ await system.http(8080).bind(routes);
 await system.http(8080, { backend: new HonoBackend() }).bind(routes);
 
 // For full control, the underlying extension surface is still there:
-import { HttpExtensionId } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)
   .useBackend(new HonoBackend())
@@ -101,6 +101,84 @@ The shared client wraps the runtime's native `fetch`.  Works
 identically on Bun, Node, and Deno (every supported runtime
 has fetch built in).
 
+### Bounds every call carries
+
+A response is buffered in memory before you see it, so the three
+things the remote peer controls are bounded by default:
+
+| Bound | Default | Per-request override |
+| --- | --- | --- |
+| Deadline | 30 s | `timeoutMs` — `0` opts one call out entirely |
+| Response body | 8 MiB | `maxResponseBytes` |
+| Redirect hops | 5, followed | `redirect`, `maxRedirects` |
+
+Past the ceiling the request is **aborted while the body is still
+arriving** and the call throws `HttpResponseTooLargeError`, so an
+oversized or endless response never finishes allocating.  Past the
+deadline it aborts exactly as an explicit `timeoutMs` always did —
+what changed is that a call naming no deadline now has one.
+
+Raise them per call when a single endpoint is the exception:
+
+```ts
+const report = await system.extension(HttpExtensionId).client.get(
+  'https://api.example.com/exports/daily',
+  { maxResponseBytes: 64 * 1024 * 1024, timeoutMs: 120_000 },
+);
+```
+
+Or give a whole integration its own client, instead of loosening
+the one every actor in the system shares:
+
+```ts
+import { HttpClientOptions } from 'actor-ts/http';
+
+const exportClientOptions = HttpClientOptions.create()
+  .withMaxResponseBytes(64 * 1024 * 1024)
+  .withDefaultTimeoutMs(120_000);
+
+const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
+```
+
+### Where a redirect may take you
+
+The client follows redirects itself rather than handing them to
+the platform, so the decisions happen **between** hops:
+
+| `redirect` | What happens on a 3xx with a `Location` |
+| --- | --- |
+| `'follow'` *(default)* | Chase it, up to `maxRedirects` hops |
+| `'error'` | Throw `HttpRedirectError`; the target is never contacted |
+| `'manual'` | Return the 3xx as-is, `Location` readable in `headers` |
+
+Following is bounded at **5 hops** (the platform allows 20), and a
+followed hop is not a blind replay of the original request:
+
+- A hop that **crosses origins** loses `authorization`, `cookie`
+  and `proxy-authorization`, so a redirect cannot walk a bearer
+  token to a host you never chose.
+- A **`303`** — and a `301`/`302` after a `POST` — continues as a
+  `GET` with the body and its `content-type` dropped, matching the
+  Fetch spec, so a write is never replayed against a second host.
+- A target that is **not `http:` or `https:`** is refused outright.
+- The deadline and the byte ceiling are **cumulative over the whole
+  chain**, not per hop; intermediate 3xx bodies are discarded.
+
+Refusals happen before the hop is issued — that is the point. A
+check on where a chain *ended up* has already made every request
+in it, and making the request is the side effect worth preventing.
+
+```ts
+const webhookClientOptions = HttpClientOptions.create()
+  .withRedirect('error')
+  .withMaxResponseBytes(256 * 1024);
+
+const webhookClient = system.extension(HttpExtensionId).newClient(webhookClientOptions);
+```
+
+`response.url` names the hop that actually answered, which is what
+to assert on when it matters *which host* served the bytes.
+
 For more elaborate client patterns (retries, caching), wrap the
 client in a [retry](/patterns/retry/) +
 [circuit-breaker](/patterns/circuit-breaker/) call.
@@ -108,27 +186,27 @@ client in a [retry](/patterns/retry/) +
 ## Middleware
 
 ```ts
-import { cached, rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { cached, get, path, rateLimit } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts/cache';
 
-const cache = new InMemoryCache();
+// One cache per middleware — never one shared instance (see below).
+const limiterCache = new InMemoryCache();
+const responseCache = new InMemoryCache();
 
-const routes = concat(
-  rateLimit({
-    cache,
-    windowMs: 1_000,
-    max: 100,
-    key: (request) => request.remoteAddress ?? 'unknown',
-  })(
-    cached({
-      cache,
-      ttlMs: 30_000,
-      key: (request) => request.path,
-    })(
-      path('api', /* ... */),
-    ),
-  ),
-);
+const limited = rateLimit({
+  cache: limiterCache,
+  windowMs: 1_000,
+  max: 100,
+  key: (request) => request.remoteAddress ?? 'unknown',
+});
+
+const readThrough = cached({
+  cache: responseCache,
+  ttlMs: 30_000,
+  key: (request) => request.path,
+});
+
+const routes = path('api', get(limited(readThrough(apiHandler))));
 ```
 
 The framework ships three:
@@ -139,9 +217,29 @@ The framework ships three:
 | **Rate limit** | Per-IP / per-key fixed-window rate limiter. |
 | **Idempotency key** | De-duplicates writes based on an `Idempotency-Key` header. |
 
-Each is a `Route -> Route` transformer — wraps a sub-tree of routes
-with its behavior.  Compose by nesting.  See
+Each is a handler wrapper — you call it with the options and hand the
+returned function the handler you want to protect.  Compose by nesting
+at the handler level.  See
 [middleware pages](/http/middleware/response-cache/).
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Give each middleware its own cache">
+  ```ts
+  const cache = new InMemoryCache();
+  rateLimit({ cache, /* ... */ });   // ✗ same instance
+  cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
+  ```
+  `InMemoryCache` is LRU-bounded (10 000 entries by default) and its
+  eviction is blind to what an entry protects.  Share one instance and a
+  caller who varies the response-cache key — or the `Idempotency-Key`
+  header — evicts other clients' rate-limit counters and idempotency
+  records, resetting their limits and re-running handlers on their
+  retries.  Separate instances (or `ext.cache('rate-limit')` /
+  `ext.cache('idempotency')`) keep one middleware's key flood out of the
+  other's state.  See
+  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+</Aside>
 
 ## Connecting HTTP to actors
 
@@ -149,7 +247,7 @@ The route handler returns a `Promise<HttpResponse>` — you can
 freely `await` actor calls inside:
 
 ```ts
-import {} from 'actor-ts';
+
 
 const routes = path('orders',
   path(':id',
@@ -166,8 +264,6 @@ const routes = path('orders',
 This is **the** common pattern — HTTP handlers act as a thin
 adapter: parse the request, ask an actor, marshal the reply.  Keep
 business logic in actors; HTTP handlers stay short.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't share state in route handlers">
   ```ts

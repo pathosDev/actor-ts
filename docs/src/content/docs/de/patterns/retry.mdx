@@ -143,7 +143,8 @@ nie — überschreibe es in Tests, um die Retry-Schleife von der
 Wall-Clock zu lösen:
 
 ```ts
-import { ManualScheduler, retry } from 'actor-ts';
+import { retry } from 'actor-ts';
+import { ManualScheduler } from 'actor-ts/testkit';
 
 const scheduler = new ManualScheduler();
 const attemptTimes: number[] = [];

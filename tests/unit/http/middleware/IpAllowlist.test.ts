@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { IpAllowlist } from '../../../../src/http/middleware/IpAllowlist.js';
-import { HttpError, Status, type HttpRequest } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const request = (remoteAddress?: string, headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET',

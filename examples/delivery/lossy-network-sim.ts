@@ -9,10 +9,12 @@
 import {
   Actor,
   ActorSystem,
+} from '../../src/index.js';
+import {
   ReliableDelivery,
   ProducerControllerOptions,
   type Delivery,
-} from '../../src/index.js';
+} from '../../src/delivery/index.js';
 import { attachDevTools } from '../devtools.js';
 
 /** A relay that forwards only a random half of incoming deliveries. */

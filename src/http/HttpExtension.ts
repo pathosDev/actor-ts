@@ -7,13 +7,13 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
-import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
+import type { HttpClientOptions } from './HttpClientOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { compile, defaultErrorResponse, type Route } from './Route.js';
-import { HttpError, type HttpRequest, type HttpResponse } from './types.js';
+import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
@@ -58,10 +58,30 @@ export interface ServerBuilder {
  * server via `builder.useBackend(new HonoBackend())`.
  */
 export class HttpExtension implements Extension {
-  /** Shared HTTP client — uses the global fetch. */
+  /**
+   * Shared HTTP client — uses the global fetch, on the built-in limits (30 s
+   * deadline, 8 MiB response ceiling).  For different limits use
+   * {@link newClient} rather than mutating this one: it is shared by every
+   * actor in the system, so raising a bound for one integration would raise it
+   * for all of them.
+   */
   readonly client: HttpClient = new HttpClient();
 
   constructor(private readonly system: ActorSystem) {}
+
+  /**
+   * A client of your own, configured independently of {@link client}.
+   *
+   * The seam exists because the limits are per-client and deliberately strict:
+   * an integration that legitimately downloads a large export, or that talks
+   * to an endpoint slower than the default deadline, needs its own bounds
+   * without loosening the ones every other caller inherits.  Per-request
+   * overrides (`maxResponseBytes`, `timeoutMs`) cover the one-off case; this
+   * covers a whole integration.
+   */
+  newClient(options?: HttpClientOptions): HttpClient {
+    return new HttpClient(options);
+  }
 
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
@@ -309,16 +329,22 @@ function logRouteFailure(
  * when the builder was not given one — `useBackend(...)` is the explicit
  * layer and always wins.
  *
- * Express and Hono are imported dynamically rather than at module scope:
- * both are optional peer dependencies, and a static import would put every
- * shipped backend into the bundle of an application that uses one.  Fastify
- * is the built-in default and already imported.
+ * All three backends are imported dynamically rather than at module scope.
+ * For Express and Hono that keeps optional peer dependencies out of the
+ * bundle of an application that uses another backend.  Fastify is the
+ * built-in default and a hard dependency, but ActorSystem reaches this
+ * module statically (the newServerAt sugar needs the extension id and its
+ * factory synchronously), so a static Fastify import here would make every
+ * `import { ActorSystem } from 'actor-ts'` pay Fastify's parse cost (#1005)
+ * — the lazy import moves it to the first bind, on an already-async path.
  */
 async function backendFromConfig(config: Config): Promise<HttpServerBackend> {
-  if (!config.hasPath(ConfigKeys.http.backend)) return new FastifyBackend();
+  if (!config.hasPath(ConfigKeys.http.backend)) {
+    return new (await import('./backend/FastifyBackend.js')).FastifyBackend();
+  }
   const name = config.getString(ConfigKeys.http.backend);
   return await match(name)
-    .with('fastify', async () => new FastifyBackend())
+    .with('fastify', async () => new (await import('./backend/FastifyBackend.js')).FastifyBackend())
     .with('express', async () => new (await import('./backend/ExpressBackend.js')).ExpressBackend())
     .with('hono', async () => new (await import('./backend/HonoBackend.js')).HonoBackend())
     .otherwise(() => {

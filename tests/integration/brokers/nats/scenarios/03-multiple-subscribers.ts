@@ -11,8 +11,8 @@
  * NatsActor instances, each with its own NATS connection.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
-import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnNats, type NatsContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<NatsContext> = {
   name: 'multiple subscribers on the same subject — fan-out',

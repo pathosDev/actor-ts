@@ -32,7 +32,7 @@ const entrypoint = join(uiRoot, 'src', 'main.ts');
 const indexHtml = join(uiRoot, 'index.html');
 const buildDirectory = join(uiRoot, '.build');
 const developmentDirectory = join(uiRoot, '.dev');
-const generatedModule = join(repositoryRoot, 'src', 'devtools', 'generated', 'uiAssets.ts');
+const generatedModule = join(repositoryRoot, 'src', 'devtools', 'generated', 'UiAssets.ts');
 
 /**
  * gzip size ceilings, in kibibytes.

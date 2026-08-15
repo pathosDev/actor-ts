@@ -33,7 +33,204 @@ actor-ts {
   }
 
   logger {
+    # System log level.  Gates BEFORE the per-sink min-levels below, so a
+    # sink asking for "debug" while this says "info" receives nothing —
+    # lower this first, then narrow per sink.
     level = "info"   # debug | info | warn | error | off
+
+    # Grace period terminate() gives the active logger to flush and close
+    # its sinks before whenTerminated() resolves.  Bounds the whole logger,
+    # so it applies to a custom one too — any logger with a close().
+    close-timeout = 3s
+
+    # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
+    # replaces the default single ConsoleLogger with a MultiSinkLogger over
+    # the enabled set.  An explicit logger (or logSinks) passed to
+    # ActorSystem.create replaces this whole block rather than merging with
+    # it -- a sink belongs to one construction world or the other.
+    #
+    # The Sentry sink has no block here: it needs your own @sentry/node
+    # import, which a config file cannot hold, so it is wired in code.
+    # See docs -> Observe -> Logging -> Platform integrations.
+    sinks {
+      console {
+        enabled   = false
+        min-level = "info"     # debug | info | warn | error | off
+        format    = "text"     # text = human-readable, json = one NDJSON object per record
+        stream    = "auto"     # auto | stdout | stderr; auto = console.* for text, stdout for json
+      }
+
+      file {
+        enabled   = false
+        min-level = "info"
+        format    = "text"
+        directory = "logs"     # created if missing
+        prefix    = "log"      # file name is <prefix>-<yyyy-MM-dd>-<HH-mm-ss>.<extension>
+        extension = "txt"
+        # Rolling over always opens a NEW stamped file — the active file is
+        # never renamed, which Windows forbids while it is open anyway.
+        max-file-bytes  = 64M      # roll when the file would pass this; 0 = never
+        rotate-interval = "daily"  # off | hourly | daily — roll on the clock boundary
+        # Retention only ever deletes files matching this sink's own prefix,
+        # extension and timestamp shape — never anything else in the directory.
+        max-files        = 14      # keep this many rotated files; 0 = keep all
+        max-age          = 14d     # delete rotated files older than this; 0 = keep all
+        compress-rotated = false   # gzip each rotated file to <name>.gz
+
+        delivery {
+          max-batch-size = 500
+          flush-interval = 1s
+          queue-capacity = 10000
+          overflow       = "drop-new"   # drop-new | drop-head
+        }
+      }
+
+      # Graylog.  Native rather than via OTLP because Graylog's
+      # OpenTelemetry input speaks gRPC only, which the otlp sink does not.
+      gelf {
+        enabled   = false
+        min-level = "info"
+        protocol  = "udp"          # udp | tcp | http
+        host      = "127.0.0.1"    # udp/tcp
+        port      = 12201          # udp/tcp
+        url       = ""             # http only, e.g. "http://graylog:12201/gelf"
+        # The GELF "host" field.  Empty = the OS hostname, else the system name.
+        host-name = ""
+        compression     = "gzip"   # udp only: none | gzip (server auto-detects)
+        max-chunk-bytes = 1420     # udp only: datagram size before chunking
+        request-timeout = 10s      # http only
+        # TLS for tcp is code-only: those fields carry the key material
+        # itself, not a path to it.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # OpenTelemetry logs over HTTP with a JSON body.  One endpoint format
+      # reaches Loki 3+, Parseable, SigNoz, Datadog, Axiom, Honeycomb, New
+      # Relic and every OTel Collector — start here before a native sink.
+      otlp {
+        enabled   = false
+        min-level = "info"
+        url       = "http://localhost:4318/v1/logs"
+        # service.name on the OTLP resource; defaults to the system name.
+        service-name = ""
+        scope-name   = "actor-ts"
+        gzip         = false
+        request-timeout = 10s
+        # Request headers (API keys, tenant ids) are code-only: a config
+        # file is the wrong home for a credential.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Grafana Loki's native push API.  Loki 3+ also accepts OTLP at
+      # /otlp/v1/logs, so the otlp sink reaches it too; this one exists for
+      # direct push and explicit control over the label set.
+      loki {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://loki:3100"
+        tenant-id = ""             # X-Scope-OrgID, for multi-tenant Loki
+        format    = "text"         # text | json — how each log line is rendered
+        # Labels are Loki's INDEX.  Keep them static and few: every distinct
+        # combination is a separate stream, and a per-record value here
+        # (an actor path, a request id) multiplies streams without bound.
+        # Everything variable rides as structured metadata instead.
+        labels {
+          service = ""             # empty = the actor system's name
+        }
+        structured-metadata = true
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Parseable's REST ingestion.  Its OTLP endpoint works too — this
+      # sink sends a flatter record and skips OTLP semantics.
+      parseable {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "https://parseable.internal"
+        stream    = ""             # target dataset; created on first use
+        # Basic auth OR an API key, never both.  Prefer a substitution
+        # (${?PARSEABLE_API_KEY}) over writing a secret in here.
+        username  = ""
+        password  = ""
+        api-key   = ""
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Seq, over CLEF — newline-delimited JSON with @-prefixed reserved
+      # keys.  Close enough to the framework's own NDJSON that there is
+      # almost nothing to translate.
+      seq {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # base URL, e.g. "http://seq:5341"
+        api-key   = ""             # X-Seq-ApiKey; prefer ${?SEQ_API_KEY}
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # Splunk's HTTP Event Collector.
+      splunk {
+        enabled   = false
+        min-level = "info"
+        url       = ""             # HEC base URL, e.g. "https://splunk:8088"
+        token     = ""             # HEC token; prefer ${?SPLUNK_HEC_TOKEN}
+        index     = ""             # empty = the token's default index
+        source     = "actor-ts"
+        sourcetype = "_json"
+        host-name  = ""            # empty = the actor system's name
+        request-timeout = 10s
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+
+      # RFC 5424 syslog — the integration that needs no vendor: rsyslog,
+      # syslog-ng, journald's forwarder, Papertrail and a long tail of
+      # appliances all speak it.
+      syslog {
+        enabled   = false
+        min-level = "info"
+        transport = "udp"          # udp | tcp | tls
+        host      = "127.0.0.1"
+        port      = 514
+        facility  = 16             # 0-23; 16 = local0, the range for applications
+        app-name  = ""             # empty = the actor system's name
+        host-name = ""             # empty = the OS hostname
+        # tcp/tls framing.  octet-counting (RFC 6587) is the only one that
+        # survives a message containing a newline — a stack trace always does.
+        framing   = "octet-counting"   # octet-counting | lf
+        # TLS material is code-only: those fields carry the key itself.
+        delivery {
+          max-batch-size = 100
+          flush-interval = 2s
+          queue-capacity = 10000
+        }
+      }
+    }
   }
 
   dispatcher {
@@ -126,7 +323,10 @@ actor-ts {
       port = 2552
     }
     tls {
-      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
+      # Read but NOT honoured: the transport the cluster builds for itself is
+      # always plaintext.  Setting this to true only buys a startup WARN that
+      # says so — encrypting the wire is issue #941.
+      enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
@@ -237,7 +437,14 @@ receive no warning — the value was not rejected, it was never looked at
 
 That is now a build failure.  A test walks every leaf above and asserts it
 is both reachable from `ConfigKeys` — the typed list of paths the framework
-recognises — and referenced from the source.  One key is knowingly exempt
-and says so in place: `remote.tls.enabled` is inert until
-[#591](https://github.com/pathosDev/actor-ts/issues/591) lands, and the
-exemption is registered with that issue number rather than left implicit.
+recognises — and referenced from the source.
+
+**No key is exempt today.**  The list of deliberate exceptions still exists,
+and every entry on it has to name the issue that will remove it — it is
+simply empty.  `remote.tls.enabled` was the last one, and
+[#591](https://github.com/pathosDev/actor-ts/issues/591) emptied it by giving
+the key a reader: it now decides whether the node warns at startup that the
+cluster wire is plaintext.  Note where that puts the bar — *read*, not
+*honoured*.  Encrypting the wire is still
+[#941](https://github.com/pathosDev/actor-ts/issues/941); what this test rules
+out is a key nothing so much as looks at.

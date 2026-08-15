@@ -17,7 +17,7 @@ Fall ist so häufig, dass er einen eigenen Typ bekommt.
 ## LWWMap
 
 ```ts
-import { LWWMap } from 'actor-ts';
+import { LWWMap } from 'actor-ts/crdt';
 
 let m = LWWMap.empty<string, string>();
 m = m.put('node-a', 'theme', 'dark', 1000);
@@ -46,7 +46,7 @@ Feature-Flag-Overrides pro Tenant, Version pro Ressource.
 ## ORMap
 
 ```ts
-import { ORMap, GCounter } from 'actor-ts';
+import { ORMap, GCounter } from 'actor-ts/crdt';
 
 let m = ORMap.empty<string, GCounter>();
 m = m.update('node-a', 'clicks',
@@ -94,7 +94,7 @@ können.  Gleiche "Add wins"-Semantik wie bei ORSet.
 ## GCounterMap
 
 ```ts
-import { GCounterMap } from 'actor-ts';
+import { GCounterMap } from 'actor-ts/crdt';
 
 let m = GCounterMap.empty<string>();
 m = m.increment('node-a', 'page-home',  1);

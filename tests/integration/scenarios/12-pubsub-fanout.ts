@@ -2,7 +2,7 @@
  * Scenario 12 — DistributedPubSub topic fan-out across the cluster.
  *
  * Each node-runner pre-subscribed a local `PubSubReceiver` to the
- * `events` topic at startup (see `control-routes.ts`).  Scenario:
+ * `events` topic at startup (see `ControlRoutes.ts`).  Scenario:
  *
  *   1. Snapshot the baseline received-count on every node (some
  *      number from before this scenario — e.g. earlier scenarios
@@ -19,7 +19,7 @@
  * after both publish bursts settle.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './Types.js';
 
 type PubSubSnapshot = {
   readonly received: number;

@@ -10,7 +10,7 @@ import { join } from 'node:path';
  * what actually survives.
  *
  * The canary is the DevTools UI, which is embedded as a ~44 KB base64 string in
- * `src/devtools/generated/uiAssets.ts`.  It is the largest single artefact in
+ * `src/devtools/generated/UiAssets.ts`.  It is the largest single artefact in
  * the tree and reachable from the barrel, so if tree-shaking were broken an
  * `Actor`-only import would carry the whole web UI into every consumer bundle.
  */
@@ -50,16 +50,16 @@ describe('tree-shaking (#415)', () => {
     );
     // The generated module assigns its base64 payload to this identifier, so the
     // name surviving means the whole UI did.
-    expect(text).not.toContain('uiAssets');
+    expect(text).not.toContain('UiAssets');
   });
 
   test('the canary is a real one — the DevTools entry does carry the UI', async () => {
     // Without this, the assertion above could pass simply because nothing ever
-    // references `uiAssets`, and it would keep passing if tree-shaking broke.
+    // references `UiAssets`, and it would keep passing if tree-shaking broke.
     const { text } = await bundleSize(
       `import { DevTools } from '${devtoolsEntry}';\nexport const used = DevTools;\n`,
     );
-    expect(text).toContain('uiAssets');
+    expect(text).toContain('UiAssets');
   });
 
   test('a narrow import is a rounding error next to the whole barrel', async () => {

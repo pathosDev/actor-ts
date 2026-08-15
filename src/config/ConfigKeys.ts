@@ -33,6 +33,24 @@ export const ConfigKeys = {
   /** Logger root — `actor-ts.logger.*`. */
   logger: {
     level: 'actor-ts.logger.level',
+    closeTimeout: 'actor-ts.logger.close-timeout',
+    /**
+     * One block root per sink.  Each is read as a *block* by the matching
+     * `readXSinkOptionsFromConfig`, so the leaves under it (`enabled`,
+     * `min-level`, …) need no entry of their own — the same shape the
+     * cache and persistence plugin roots use.
+     */
+    sinks: {
+      console: 'actor-ts.logger.sinks.console',
+      file: 'actor-ts.logger.sinks.file',
+      gelf: 'actor-ts.logger.sinks.gelf',
+      loki: 'actor-ts.logger.sinks.loki',
+      otlp: 'actor-ts.logger.sinks.otlp',
+      parseable: 'actor-ts.logger.sinks.parseable',
+      seq: 'actor-ts.logger.sinks.seq',
+      splunk: 'actor-ts.logger.sinks.splunk',
+      syslog: 'actor-ts.logger.sinks.syslog',
+    },
   },
 
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
@@ -221,14 +239,20 @@ export const ConfigKeys = {
   /**
    * Cluster bind address and wire limits — `actor-ts.remote.*`.
    *
-   * `remote.tls.enabled` is deliberately absent: it is still dead, tracked
-   * as its own security issue (#591), and named in the dead-key guard's
-   * exception list rather than quietly wired to nothing.
+   * `remote.tls.enabled` is read but **not honoured**: the transport
+   * `Cluster` builds for itself is always plaintext, so the flag decides
+   * nothing except whether the node warns about that at startup (#591).
+   * Encrypting the wire is its own issue (#941); until it lands, a key that
+   * says `true` and a socket that is not encrypted is exactly the gap the
+   * warning exists to close.
    */
   remote: {
     tcp: {
       host: 'actor-ts.remote.tcp.host',
       port: 'actor-ts.remote.tcp.port',
+    },
+    tls: {
+      enabled: 'actor-ts.remote.tls.enabled',
     },
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
   },

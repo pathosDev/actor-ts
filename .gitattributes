@@ -1,11 +1,28 @@
 # The DevTools UI bundle, embedded as base64 by `bun run build:ui`.
-# Marked generated so reviews collapse it and diffs stay readable; the
-# file is committed on purpose (see scripts/build-devtools-ui.mjs) so
-# typecheck, tests and smoke runs work straight from a fresh clone.
+# `linguist-generated` keeps it out of the language statistics and
+# collapses it by default in GitHub's review view; the file is committed
+# on purpose (see scripts/build-devtools-ui.mjs) so typecheck, tests and
+# smoke runs work straight from a fresh clone.
+#
+# It is deliberately NOT `-diff`.  That token made git and GitHub report
+# the module as binary ("Bin 48579 -> 48898 bytes") — which hid the only
+# thing anyone can actually check about the payload.  `bun run check:ui`
+# proves the committed `source-hash` matches the sources it claims; it
+# says nothing about whether the base64 beside it is what those sources
+# compiled to (the bytes are not reproducible across OS and Bun release,
+# which is why it hashes sources instead).  So a payload edited without
+# touching `devtools-ui/**` is caught in review or not at all, and with
+# a textual diff it is easy to catch: `gzipBase64` / `size` / `etag` move
+# while `source-hash` and the UI sources stay put.  A regenerate is 7
+# changed lines, only 2 of them multi-KB, because unchanged chunks keep
+# their content-hashed names — the cost is `git show` noise locally, not
+# review load, and `git diff --stat`, a pathspec exclude or a per-clone
+# `.git/info/attributes` handles that without hiding it from everybody.
+#
 # `eol=lf` matters as much as the rest: the build writes LF, so without
 # it a CRLF checkout reports the file as modified after every build —
 # permanent noise in `git status` for every Windows contributor.
-src/devtools/generated/uiAssets.ts linguist-generated -diff text eol=lf
+src/devtools/generated/UiAssets.ts linguist-generated diff text eol=lf
 
 # The DevTools UI sources are bundled into the generated module above
 # and fingerprinted by its `source-hash`, so their bytes must not depend

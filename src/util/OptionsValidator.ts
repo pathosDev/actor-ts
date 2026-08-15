@@ -27,6 +27,7 @@
  * settings reference held during {@link validate} is harmless (JS is
  * single-threaded and `rules` never re-enters `validate`).
  */
+import { redactUrlCredentials } from './RedactUrlCredentials.js';
 
 /**
  * An option value that is well-typed but outside its domain — regardless
@@ -183,16 +184,23 @@ export abstract class OptionsValidator<T extends object> {
   protected url(field: KeysMatching<T, string>, protocols?: readonly string[]): void {
     const value = this.read(field);
     if (value === undefined) return;
+    // Never report the value as given: a connection URL carries its password
+    // inline (`amqp://user:pass@host`), and this message is logged at ERROR
+    // by ActorCell when it fails a broker's preStart (#590).  Redaction
+    // happens here, at the rule, rather than in `fail` keyed on the field
+    // name — `credentials` on CorsOptions is a boolean flag, and suppressing
+    // *its* value would only cost a diagnostic.
+    const redacted = typeof value === 'string' ? redactUrlCredentials(value) : value;
     let parsed: URL;
     try {
       parsed = new URL(value as string);
     } catch {
-      this.fail(field, 'must be a valid URL', value);
+      this.fail(field, 'must be a valid URL', redacted);
     }
     if (protocols !== undefined) {
-      const proto = parsed.protocol.replace(/:$/, '');
-      if (!protocols.includes(proto)) {
-        this.fail(field, `must use protocol ${protocols.join(', ')}`, value);
+      const protocol = parsed.protocol.replace(/:$/, '');
+      if (!protocols.includes(protocol)) {
+        this.fail(field, `must use protocol ${protocols.join(', ')}`, redacted);
       }
     }
   }

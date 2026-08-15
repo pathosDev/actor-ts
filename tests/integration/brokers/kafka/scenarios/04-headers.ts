@@ -3,8 +3,8 @@
  * adapter passes them through both directions; this scenario
  * round-trips a structured header set through Redpanda.
  */
-import { spawnInbox, spawnKafka, type KafkaContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnKafka, type KafkaContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 const decode = (v: Uint8Array | string | null | undefined): string => {
   if (v === null || v === undefined) return '<null>';

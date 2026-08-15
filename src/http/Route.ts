@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
-import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './types.js';
+import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
 

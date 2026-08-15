@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DistributedDataOptionsValidator,
   readDistributedDataOptionsFromConfig,

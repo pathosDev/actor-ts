@@ -96,9 +96,10 @@ Why `kind` and not `type` or `tag`:
   TS-land, `kind` is the most common community idiom.
 
 Sticking to the convention pays off in three places: ts-pattern's
-exhaustiveness check works, the serializer can dispatch by `kind`
-across the wire, and editors can auto-complete on the literal
-union.
+exhaustiveness check works, a message that arrived over the wire —
+which carries no type identity of its own — can still be dispatched
+on `kind` by the receiving actor, and editors can auto-complete on
+the literal union.
 
 ## Common ts-pattern features
 

@@ -26,7 +26,7 @@ services:
       dockerfile: tests/integration/brokers/dynamodb/Dockerfile.runner
     # No `service_healthy` gate: the image is a bare JRE with no shell utilities
     # to probe with.  The runner waits on the port itself via `waitForPort` and
-    # the SDK retries its first call — see runner.ts.
+    # the SDK retries its first call — see Runner.ts.
     depends_on:
       dynamodb:
         condition: service_started

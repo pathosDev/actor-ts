@@ -768,6 +768,16 @@ export default defineConfig({
               ],
             },
             {
+              label: 'Logging',
+              translations: { de: 'Logging', es: 'Registro', fr: 'Journalisation', ja: 'ロギング', ko: '로깅', 'pt-BR': 'Logging', ru: 'Логирование', 'zh-CN': '日志' },
+              collapsed: true,
+              items: [
+                { label: 'Multi-sink logging', slug: 'observability/logging/multi-sink', translations: { de: 'Multi-Sink-Logging', es: 'Registro multi-sink', fr: 'Journalisation multi-sink', ja: 'マルチシンクロギング', ko: '멀티 싱크 로깅', 'pt-BR': 'Logging multi-sink', ru: 'Многоканальное логирование', 'zh-CN': '多 Sink 日志' } },
+                { label: 'File sink', slug: 'observability/logging/file-sink', translations: { de: 'Datei-Sink', es: 'Sink de archivo', fr: 'Sink fichier', ja: 'ファイルシンク', ko: '파일 싱크', 'pt-BR': 'Sink de arquivo', ru: 'Файловый sink', 'zh-CN': '文件 Sink' } },
+                { label: 'Platform integrations', slug: 'observability/logging/integrations', translations: { de: 'Plattform-Integrationen', es: 'Integraciones de plataforma', fr: 'Intégrations de plateformes', ja: 'プラットフォーム連携', ko: '플랫폼 통합', 'pt-BR': 'Integrações de plataforma', ru: 'Интеграции платформ', 'zh-CN': '平台集成' } },
+              ],
+            },
+            {
               label: 'Tracing',
               translations: { de: 'Tracing', es: 'Trazado', fr: 'Tracing', ja: 'トレーシング', ko: '트레이싱', 'pt-BR': 'Tracing', ru: 'Трассировка', 'zh-CN': '链路追踪' },
               collapsed: true,

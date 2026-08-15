@@ -6,6 +6,7 @@ import {
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  isRemoteTlsRequested,
   readClusterOptionsFromConfig,
   withClusterConfigDefaults,
 } from '../../../src/cluster/ClusterOptions.js';
@@ -158,5 +159,57 @@ describe('withClusterConfigDefaults', () => {
     const options = { host: 'h', port: 1 } as ClusterOptionsType;
 
     expect(withClusterConfigDefaults(Config.empty(), options)).toEqual(options);
+  });
+});
+
+/**
+ * #591 — the predicate behind the startup warning.  It is the whole reason
+ * `actor-ts.remote.tls.enabled` stopped being a dead key: nothing honours the
+ * flag yet (#941), so reading it is all there is, and what the read is worth
+ * lies entirely in when it answers `true`.
+ */
+describe('isRemoteTlsRequested', () => {
+  test('an explicit true asks for TLS', () => {
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = true'))).toBe(true);
+  });
+
+  test('an explicit false does not — it is what the shipped default says', () => {
+    // The noise rule: a config file that spells the default out must behave
+    // exactly like one that omits it, or every deployment that copied
+    // reference.conf wholesale would warn.
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = false'))).toBe(false);
+  });
+
+  test('the bundled reference defaults do not', () => {
+    // The path is always present once the reference layer is loaded, so
+    // presence cannot be the test — the value has to be.
+    expect(Config.loadReference().hasPath('actor-ts.remote.tls.enabled')).toBe(true);
+    expect(isRemoteTlsRequested(Config.loadReference())).toBe(false);
+  });
+
+  test('an absent key does not, and does not throw', () => {
+    // `getBoolean` throws on a missing path, so the presence check in front of
+    // it is load-bearing rather than decorative.
+    expect(isRemoteTlsRequested(Config.empty())).toBe(false);
+  });
+
+  test('HOCON booleans spelled as words are honoured', () => {
+    // `on` / `off` are HOCON's own boolean spellings; an operator who writes
+    // `on` asked for TLS just as clearly as one who wrote `true`.
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = on'))).toBe(true);
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = off'))).toBe(false);
+  });
+
+  test('it stays out of the merged cluster options', () => {
+    // There is no `ClusterOptionsType` field for it to land in, and there must
+    // not be one until something honours it: an option that reads back the
+    // value it was given while changing nothing is worse than none at all.
+    const configured = Config.parseString('actor-ts.remote.tls.enabled = true');
+
+    expect(readClusterOptionsFromConfig(configured)).toEqual({});
+    // Keys rather than the whole object: the merge returns a
+    // `ClusterOptionsType`, and comparing it against a bare `{}` is a type
+    // error even when the value is right.
+    expect(Object.keys(withClusterConfigDefaults(configured, {} as ClusterOptionsType))).toEqual([]);
   });
 });

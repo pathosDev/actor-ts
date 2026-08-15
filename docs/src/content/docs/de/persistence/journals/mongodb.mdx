@@ -50,13 +50,15 @@ Composite, dann erben sie alle drei Komponenten:
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   MongoDurableStateStoreOptions,
   MongoJournalOptions,
   MongoSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterMongoPluginsOptions,
   registerMongoPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Die MongoDB-Plugins als aktives Journal + Snapshot-Store auswählen.
@@ -210,7 +212,7 @@ Event — eine Query auf einen Tag plus eine Timestamp-Untergrenze läuft damit
 einen zusammenhängenden Bereich ab statt zu scannen:
 
 ```ts
-import { MongoQuery, offsetStart } from 'actor-ts';
+import { MongoQuery, offsetStart } from 'actor-ts/persistence';
 
 const query = new MongoQuery(journal);
 const tagged = await query.currentEventsByTag({ all: ['ledger'], not: ['audit'] }, offsetStart);

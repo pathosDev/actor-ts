@@ -226,13 +226,19 @@ Der Handler bekommt eine `HttpRequest`:
 ```ts
 type HttpRequest = {
   readonly method:  HttpMethod;
-  readonly path:    string;
+  readonly path:    string;   // nur der Pfadname — '/orders/42', nie '/orders/42?page=2'
   readonly headers: Record<string, string>;
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
 };
 ```
+
+`path` ist auf jedem Backend **nur der Pfadname** — der Query-String
+taucht dort nie auf, weil die Parameter bereits in `query` geparst
+sind.  Das zählt für alles, was durch Anhängen an `path` gebaut wird:
+ein Redirect-Ziel, ein Cache-Key, ein Request-Fingerprint.
+Prozent-Escapes bleiben kodiert; einmal dekodieren, dann validieren.
 
 ### Pfadparameter
 

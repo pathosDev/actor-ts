@@ -10,13 +10,15 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   HttpExtensionId,
   WebsocketClientActor,
   WebsocketClientOptions,
   WebsocketServerActor,
   websocket,
   websocketSend,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type Up = { kind: 'tick'; n: number };   // client → server

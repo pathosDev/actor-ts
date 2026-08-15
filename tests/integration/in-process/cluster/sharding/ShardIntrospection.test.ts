@@ -11,7 +11,7 @@ import { ShardMapChanged } from '../../../../../src/cluster/ClusterEvents.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { shardRegionName } from '../../../../../src/internal/SystemPaths.js';
-import { regionSegments } from '../../../../util/systemPaths.js';
+import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 

@@ -11,6 +11,7 @@ import {
   CspOptions,
   CsrfOptions,
   HstsOptions,
+  HttpClientOptions,
   RequestIdOptions,
   SameOriginOptions,
   SecurityHeadersOptions,
@@ -49,15 +50,21 @@ describe('option builders — every withX sets its field', () => {
       .withCookie({ secure: false, sameSite: 'strict' })
       .withVerifyOrigin(false)
       .withAllowedOrigins('https://a.example')
+      .withExpectedScheme('http')
       .withFormField('_csrf');
     const fields = bag(builder);
     expect(fields.cookieName).toBe('c');
     expect(fields.headerName).toBe('x-c');
     expect(fields.verifyOrigin).toBe(false);
+    expect(fields.expectedScheme).toBe('http');
     expect(fields.formFieldName).toBe('_csrf');
 
-    const so = SameOriginOptions.create().withAllowedOrigins('https://a.example').withAllowMissingOrigin();
+    const so = SameOriginOptions.create()
+      .withAllowedOrigins('https://a.example')
+      .withAllowMissingOrigin()
+      .withExpectedScheme('http');
     expect(bag(so).allowMissingOrigin).toBe(true);
+    expect(bag(so).expectedScheme).toBe('http');
   });
 
   test('HstsOptions', () => {
@@ -117,6 +124,19 @@ describe('option builders — every withX sets its field', () => {
     const fields = bag(builder);
     expect(fields.ms).toBe(1234);
     expect(fields.onTimeout).toBe(onTimeout);
+  });
+
+  test('HttpClientOptions', () => {
+    const builder = HttpClientOptions.create()
+      .withMaxResponseBytes(2048)
+      .withDefaultTimeoutMs(7_500)
+      .withRedirect('manual')
+      .withMaxRedirects(2);
+    const fields = bag(builder);
+    expect(fields.maxResponseBytes).toBe(2048);
+    expect(fields.defaultTimeoutMs).toBe(7_500);
+    expect(fields.redirect).toBe('manual');
+    expect(fields.maxRedirects).toBe(2);
   });
 
   test('StaticFilesOptions', () => {

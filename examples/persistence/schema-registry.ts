@@ -23,12 +23,14 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   PersistentActor,
   InMemorySchemaRegistry,
   InMemoryJournal,
   zodCodec,
   type ParserLike,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 /* ------------------- Domain types (three versions) ------------------- */

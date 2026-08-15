@@ -43,13 +43,15 @@ Cloudflare dashboard or `wrangler d1 info <name>`.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   D1DurableStateStoreOptions,
   D1JournalOptions,
   D1SnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterD1PluginsOptions,
   registerD1Plugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Select the D1 plugins as the active journal + snapshot store.

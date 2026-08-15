@@ -130,7 +130,7 @@ stopped without ever reaching `up`.
 ## Observing the transition
 
 ```ts
-import { MemberWeaklyUp, MemberUp } from 'actor-ts';
+import { MemberWeaklyUp, MemberUp } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof MemberWeaklyUp) {

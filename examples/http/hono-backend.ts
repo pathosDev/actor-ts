@@ -16,6 +16,8 @@
  */
 import {
   ActorSystem,
+} from '../../src/index.js';
+import {
   HonoBackend,
   HonoBackendOptions,
   Status,
@@ -26,7 +28,7 @@ import {
   get,
   path,
   post,
-} from '../../src/index.js';
+} from '../../src/http/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type User = { readonly id: string; readonly name: string; };
@@ -54,7 +56,7 @@ async function main(): Promise<void> {
     )),
   );
 
-  const backendOptions = HonoBackendOptions.create().withMaxBodyBytes(1 * 1024 * 1024);
+  const backendOptions = HonoBackendOptions.create().withMaxBodyBytes(4 * 1024 * 1024);
   const backend = new HonoBackend(backendOptions);
   // Optional: reach through to the raw Hono app to attach native middleware.
   //   const app = backend.getApp();

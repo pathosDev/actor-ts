@@ -13,11 +13,13 @@ shared too; that is exactly what this backend is for.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   CassandraJournal,
   CassandraJournalOptions,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
@@ -97,6 +99,16 @@ single-row `LIMIT 1` read — no scan.  `loadBefore(seq)` adds a
 `sequence_nr < ?` bound.  The keyspace must already exist (or pass
 `withAutoCreateKeyspace(true)`); the framework creates the table, not
 the keyspace.
+
+`keyspace` and `snapshotsTable` are interpolated into CQL as identifiers
+— identifiers cannot be bound — so both are validated against
+`/^[A-Za-z_][A-Za-z0-9_]*$/`, including inside the `CREATE KEYSPACE`
+that `autoCreateKeyspace` issues before the store ever touches its
+table.  Data-center names in `replication.dataCenters` are CQL *string*
+values rather than identifiers, so they keep the hyphens an
+`Ec2Snitch`-derived name carries (`us-east-1`) and are quote-escaped
+instead.  Everything else — persistenceIds, sequence numbers, payloads
+— travels as bind parameters, never string-concatenated.
 
 ## Pitfalls
 

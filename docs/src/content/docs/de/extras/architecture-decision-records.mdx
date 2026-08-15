@@ -1,138 +1,56 @@
 ---
 title: Architecture Decision Records
-description: Wo die wesentlichen architektonischen Entscheidungen des Projekts festgehalten sind — Design-Rationale, betrachtete Alternativen, warum ein Ansatz gegenüber einem anderen gewählt wurde. Optionale Lektüre; nützlich beim Beitragen oder beim Versuch zu verstehen "warum ist das so?"
+description: Dieses Projekt führt kein nummeriertes ADR-Log — Design-Rationale wird stattdessen als Fließtext festgehalten. Wo du sie findest, und wohin die Begründung gehört, wenn du selbst eine Entscheidung beiträgst.
 ---
 
-Das Projekt führt **Architecture Decision Records** (ADRs) für
-nicht-triviale Design-Entscheidungen.  Jeder ADR dokumentiert:
+**Dieses Projekt führt kein ADR-Log.**  Es gibt kein `docs/adr/`-Verzeichnis
+und keine nummerierte Reihe von Decision Records zum Nachlesen.
 
-- **Die Entscheidung** — was entschieden wurde.
-- **Kontext** — welches Problem die Wahl angestoßen hat.
-- **Betrachtete Alternativen** — was sonst zur Wahl stand.
-- **Trade-offs** — was aufgegeben vs. gewonnen wurde.
-- **Konsequenzen** — was das für die Codebase impliziert.
+Die Entscheidungen selbst *sind* festgehalten — als Fließtext statt als
+nummerierte Reihe, an vier Stellen, von denen jede eine andere Körnung von
+"Warum" trägt.  Diese Seite sagt dir, zu welcher du greifen musst.
 
-Für die meisten Nutzer sind ADRs **optionale Lektüre** — sie
-sind für Contributors + neugierige Nutzer, die das tiefe "Warum"
-wollen.
+## Wo das "Warum" lebt
 
-## Wo sie leben
-
-ADRs werden im Repo unter
-[`docs/adr/`](https://github.com/pathosDev/actor-ts/tree/main/docs/adr)
-geführt (falls vorhanden) oder als Long-Form-Kommentare in den
-relevanten Quelldateien.
-
-Das Framework folgt dem
-[ADR-Pattern](https://github.com/joelparkerhenderson/architecture-decision-record)
-locker — nicht jeder PR erzeugt einen ADR, aber große
-Entscheidungen schon.
-
-## Bestehende ADRs
-
-(Die tatsächliche ADR-Liste ist im Repo; das ist ein
-hochrangiges Sample.)
-
-| ADR | Thema |
+| Wo | Was dort steht |
 | --- | --- |
-| **001** | Warum Bun als primäre Runtime. |
-| **002** | Der TypeScript-First-Message-Vertrag (vs. Runtime-Checks). |
-| **003** | HOCON über YAML für Konfiguration. |
-| **004** | Die CRDT-Typ-Menge (welche auszuliefern, warum nicht mehr). |
-| **005** | Single-Prozess vs. Multi-Prozess Clustering als Default. |
-| **006** | Die `Lease`-Abstraktion (vs. eingebettete Koordination). |
-| **007** | At-Least-Once-Delivery-Modell (vs. Exactly-Once-Versprechen). |
-| **008** | Warum `ts-pattern` als Peer-Dependency, nicht gebündelt. |
-| **009** | Das Schema-Migration-Envelope-Format. |
+| **[Design-Entscheidungen](/de/extras/design-decisions/)** | Die Entscheidungen auf Framework-Ebene und was jede davon kostet: Bun zuerst, `ts-pattern` statt `switch`, das Single-Threaded-Modell, welche CRDTs ausgeliefert werden, HOCON statt YAML, keine Streams-DSL, explizite `replyTo`-Refs, keine Transaktionen über Actors hinweg. |
+| **JSDoc in `src/`** | Warum genau eine Bedingung, Schranke oder ein Trade-off so ist, wie er ist — direkt neben dem Code, für den er gilt.  Die Regel des Repos lautet, dass JSDoc das *Warum* erklärt — Bedingungen, Rationale, nicht offensichtliche Trade-offs — niemals eine Wiederholung des Codes. |
+| **[`CHANGELOG.md`](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)** | Was sich in jedem Release geändert hat und was dazu geführt hat.  Breaking Changes tragen einen `BREAKING`-Marker und eine einzeilige Migrationsnotiz. |
+| **Commit-Bodies + der Issue-Tracker** | Die Arbeitsspur: was versucht wurde, was fehlschlug, und was eine Schranke oder einen Default nach dem Messen verschoben hat. |
 
-Diese Namen sind illustrativ — das tatsächliche ADR-Repo hat
-seine eigene Nummerierung + Scope.
+Für die Stabilitätszusage, die eine Entscheidung mit sich bringt, siehe
+[Versionspolitik](/de/reference/version-policy/).
 
-## Wann ein neuer ADR hinzugefügt wird
+## Wohin eine neue Entscheidung gehört
 
-Ein neuer ADR wird geschrieben, wenn:
+Wenn du etwas beiträgst, das eine Design-Entscheidung ändert, wird kein
+separates ADR erwartet.  Die
+[`AGENTS.md`](https://github.com/pathosDev/actor-ts/blob/main/AGENTS.md)
+des Repos legt fest, wohin die Begründung gehört:
 
-- Eine **Design-Änderung** mehrere Module betrifft.
-- Ein **Trade-off** nicht offensichtlich ist und zukünftige
-  Contributors "warum?" fragen würden.
-- Eine **API-Oberfläche** verbindlich gemacht wird.
+- **Bedingungen und Trade-offs** → JSDoc, neben den Code, für den sie
+  gelten.
+- **Was sich geändert hat und warum** → der Commit-Body, mit Referenz auf
+  das Issue als `#NNN`.
+- **Ein Kurswechsel** → ein Kommentar am Issue, geschrieben *während du es
+  merkst*, nicht hinterher.  Eine Diagnose, die sich als falsch erwies, ein
+  naheliegender Fix, der nicht funktionierte, eine Schranke, die sich nach
+  dem Messen verschoben hat, oder Scope, der in eine andere Schicht gehört
+  — jedes davon ist mehr wert, wenn es aufgeschrieben statt neu hergeleitet
+  wird.
+- **Verhaltens- oder API-Änderungen** → ein `CHANGELOG.md`-Eintrag, dazu
+  beide Dokumentationssprachen, wenn Docs berührt werden.
 
-Triviale Refactors und Bugfixes **bekommen keine ADRs**.  Der
-Maßstab ist "würde ein kluger Contributor in einem Jahr Dir
-danken, dass Du das aufgeschrieben hast?"
-
-## Einen ADR lesen
-
-ADRs sind in einfachem Markdown geschrieben:
-
-```markdown
-# ADR 005: Single-Prozess-Clustering
-
-## Context
-Akka and Pekko run a JVM cluster across processes.  For
-TypeScript, single-process and multi-process are both
-plausible defaults.
-
-## Decision
-Cluster across processes is the default.  Single-process
-"worker mesh" is a separate opt-in.
-
-## Alternatives
-- Single-process default: simpler, less flexible.
-- Worker-thread cluster: complex to debug.
-- TCP-only cluster: today's default, most operationally
-  familiar.
-
-## Trade-offs
-We gain operational simplicity (each process is independent).
-We lose in-memory cluster-internal sharing.
-
-## Consequences
-- The cluster transport defaults to TCP.
-- Worker-mesh has its own transport + setup.
-- Tests use MultiNodeSpec (in-process) or
-  ParallelMultiNodeSpec (process-isolated).
-```
-
-Lies den relevanten ADR, bevor Du Änderungen am selben Bereich
-vorschlägst — Kontext könnte Deinen Vorschlag abschrecken oder
-neu rahmen.
-
-## Beiträge zu ADRs
-
-Wenn Du einen PR einreichst, der eine **wesentliche
-Design-Entscheidung ändert**, füge einen ADR bei.  Reviewer
-werden um einen bitten, wenn er fehlt.
-
-Vorlage:
-
-```markdown
-# ADR NNN: <Titel>
-
-## Context
-<das Problem, das Du löst>
-
-## Decision
-<was Du entschieden hast>
-
-## Alternatives
-<was Du sonst betrachtet hast>
-
-## Trade-offs
-<was Du gewinnst vs. verlierst>
-
-## Consequences
-<was das impliziert>
-```
-
-Halte ADRs **kurz** (1-2 Seiten).  Long-Form-Diskussion gehört
-in den PR oder in ein Design-Doc.
+Die Messlatte ist dieselbe, die schon die Issue-Anleitung verwendet: Würde
+derjenige, der den Faden als Nächstes aufnimmt — dich selbst in sechs
+Monaten eingeschlossen — es dir danken, dass du es aufgeschrieben hast?
 
 ## Wie es weitergeht
 
-- **[Design-Entscheidungen](/de/extras/design-decisions/)** —
-  kürzerer "Warum"-Inhalt.
+- **[Design-Entscheidungen](/de/extras/design-decisions/)** — das
+  ausführliche "Warum" hinter der Form des Frameworks.
+- **[Versionspolitik](/de/reference/version-policy/)** —
+  was stabil vs. experimentell ist.
 - **[FAQ](/de/reference/faq/)** — häufige Fragen zum
   Framework.
-- **[Versionspolitik](/de/reference/version-policy/)** —
-  was stabil ist + die Upgrade-Geschichte.

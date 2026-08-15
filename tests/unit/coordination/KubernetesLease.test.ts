@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions, type KubernetesLeaseOptionsType } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
@@ -7,7 +8,7 @@ import type {
   K8sLeaseObject,
   K8sRequestOptions,
   K8sResponse,
-} from '../../../src/coordination/leases/k8sApi.js';
+} from '../../../src/coordination/leases/K8sApi.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -32,6 +33,8 @@ class FakeK8sServer implements K8sFetchClient {
   forceConflictNext = false;
   /** When set, the next GET pretends the lease is missing. */
   forceMissingNext = false;
+  /** When set, the next DELETE fails with a 500 (API server having a bad day). */
+  forceDeleteErrorNext = false;
   /** Capture every request for assertion. */
   log: Array<{ method: string; path: string; body?: unknown }> = [];
 
@@ -92,6 +95,10 @@ class FakeK8sServer implements K8sFetchClient {
     }
 
     if (options.method === 'DELETE' && name) {
+      if (this.forceDeleteErrorNext) {
+        this.forceDeleteErrorNext = false;
+        return { status: 500, body: { code: 500, reason: 'InternalError' } };
+      }
       const key = `${ns}/${name}`;
       const existed = this.leases.delete(key);
       if (!existed) return { status: 404, body: { code: 404 } };
@@ -154,6 +161,74 @@ const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kuber
   return options;
 };
 
+describe('KubernetesLease — required options (#596)', () => {
+  /**
+   * Each of these used to construct silently and then disable mutual
+   * exclusion on the wire: no `owner` means no `spec.holderIdentity`
+   * (JSON.stringify drops the undefined key), which `isStillHeldByOther`
+   * reads as "unowned" for every Pod; no `ttlMs` makes the expiry `NaN`,
+   * which is never greater than `Date.now()`.
+   */
+  test('rejects a missing owner instead of writing a lease without a holderIdentity', () => {
+    const withoutOwner = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutOwner)).toThrow(OptionsError);
+    expect(() => new KubernetesLease(withoutOwner)).toThrow(/owner is required/);
+  });
+
+  test('rejects a missing ttlMs', () => {
+    const withoutTtl = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withOwner('test-pod');
+    expect(() => new KubernetesLease(withoutTtl)).toThrow(/ttlMs is required/);
+  });
+
+  test('rejects a missing name and a missing namespace', () => {
+    const withoutName = KubernetesLeaseOptions.create()
+      .withNamespace('default')
+      .withOwner('test-pod')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutName)).toThrow(/name is required/);
+
+    const withoutNamespace = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withOwner('test-pod')
+      .withTtlMs(5_000);
+    expect(() => new KubernetesLease(withoutNamespace)).toThrow(/namespace is required/);
+  });
+
+  test('rejects an options-less construction', () => {
+    expect(() => new KubernetesLease()).toThrow(OptionsError);
+  });
+
+  test('a plain options object is held to the same requirement as the builder', () => {
+    expect(() => new KubernetesLease({ name: 'test-lease', namespace: 'default', ttlMs: 5_000 }))
+      .toThrow(/owner is required/);
+  });
+});
+
+describe('KubernetesLease — API-server credentials (#599)', () => {
+  test('rejects an apiServerUrl without its token and CA cert', () => {
+    // Accepting it meant the Pod's mounted ServiceAccount token was sent
+    // to whatever host the caller named.
+    const partialCredential = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withNamespace('default')
+      .withOwner('test-pod')
+      .withTtlMs(5_000)
+      .withApiServerUrl('https://k8s.example.internal');
+    expect(() => new KubernetesLease(partialCredential)).toThrow(OptionsError);
+    expect(() => new KubernetesLease(partialCredential)).toThrow(/authToken \+ caCert/);
+  });
+
+  test('accepts the complete triple', () => {
+    expect(() => new KubernetesLease(baseOptions())).not.toThrow();
+  });
+});
+
 describe('KubernetesLease — acquire (no existing lease)', () => {
   test('creates the lease object and sets holderIdentity', async () => {
     const lease = new KubernetesLease(baseOptions());
@@ -171,6 +246,31 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
     await lease.release();
     expect(lease.checkAlive()).toBe(false);
     expect(server.peek('default', 'test-lease')).toBeUndefined();
+  });
+
+  test('release rejects when the DELETE fails, and stops renewing anyway (#600)', async () => {
+    // Swallowing the failure reported a clean release for a record still
+    // claimed on the server — which is exactly the ambiguity
+    // LeaseMajority's fail-safe exists for, and made it unreachable.
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 20 }));
+    await lease.acquire();
+    server.forceDeleteErrorNext = true;
+    await expect(lease.release()).rejects.toThrow(/DELETE lease default\/test-lease/);
+    expect(lease.checkAlive()).toBe(false);
+
+    // The record is still there — that is the point of the rejection —
+    // but this process must not keep renewing it.
+    const stored = server.peek('default', 'test-lease');
+    expect(stored).toBeDefined();
+    const renewTimeAfterRelease = stored!.spec.renewTime;
+    await sleep(80);
+    expect(server.peek('default', 'test-lease')?.spec.renewTime).toBe(renewTimeAfterRelease);
+  });
+
+  test('release is a no-op when the lease was never held', async () => {
+    const lease = new KubernetesLease(baseOptions());
+    await lease.release();
+    expect(server.log.filter((l) => l.method === 'DELETE')).toHaveLength(0);
   });
 });
 
@@ -211,6 +311,71 @@ describe('KubernetesLease — contention with another holder', () => {
     expect(stored?.spec.holderIdentity).toBe('test-pod');
     expect(stored?.spec.leaseTransitions).toBe(2);  // bumped on takeover
     await lease.release();
+  });
+});
+
+describe('KubernetesLease — hostile lease records (#598)', () => {
+  /** Seed a lease held by `other-pod` with the given spec overrides. */
+  const seedForeignLease = (spec: Partial<K8sLeaseObject['spec']>): void => {
+    server.seedLease('default', {
+      apiVersion: 'coordination.k8s.io/v1',
+      kind: 'Lease',
+      metadata: { name: 'test-lease', namespace: 'default' },
+      spec: { holderIdentity: 'other-pod', leaseTransitions: 1, ...spec },
+    });
+  };
+
+  test('a hostile leaseDurationSeconds cannot pin the lease past the local budget', async () => {
+    // 68 years of "duration", renewed a minute ago.  Unbounded, this
+    // reads as live until 2093; capped at 4 × our 5 s TTL it expired
+    // 40 s ago.
+    seedForeignLease({
+      leaseDurationSeconds: 2_147_483_647,
+      renewTime: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(true);
+    await lease.release();
+  });
+
+  test('a renewTime far in the future is not credible and does not wedge the lease', async () => {
+    seedForeignLease({
+      leaseDurationSeconds: 30,
+      renewTime: new Date(Date.now() + 10 * 365 * 24 * 60 * 60_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(true);
+    await lease.release();
+  });
+
+  test('an unparseable renewTime reads as live, not as free for the taking', async () => {
+    // `new Date('yesterday-ish').getTime()` is NaN, and `NaN > now` is
+    // false — which used to hand the lease to whoever asked next.
+    seedForeignLease({ leaseDurationSeconds: 30, renewTime: 'yesterday-ish' });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);
+  });
+
+  test('a live holder configured with a larger ttl is not stolen', async () => {
+    // The rolling-upgrade case that rules out clamping at exactly our own
+    // TTL: the holder runs ttlMs 15 s, we still run 5 s, and it renewed
+    // 10 s ago.  A `Math.min(remote, ours)` clamp would call it expired
+    // and take a live lease.
+    seedForeignLease({
+      leaseDurationSeconds: 15,
+      renewTime: new Date(Date.now() - 10_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);
+  });
+
+  test('a negative leaseDurationSeconds falls back to the local ttl', async () => {
+    seedForeignLease({
+      leaseDurationSeconds: -1,
+      renewTime: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const lease = new KubernetesLease(baseOptions());
+    expect(await lease.acquire()).toBe(false);   // 1 s ago + our 5 s TTL → still live
   });
 });
 

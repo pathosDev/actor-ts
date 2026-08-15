@@ -12,13 +12,15 @@ erfahren über Gossip von fremden Registrierungen.
 ```ts
 import {
   Actor,
+} from 'actor-ts';
+import {
   ReceptionistId,
   ServiceKey,
   Register,
   Find,
-  ReceptionistSubscribe,
+  Subscribe as ReceptionistSubscribe,
   Listing,
-} from 'actor-ts';
+} from 'actor-ts/discovery';
 
 const receptionist = system.extension(ReceptionistId).start(cluster);
 
@@ -186,7 +188,7 @@ nicht verworfen**: `replyTo` erhält statt des ersten `Listing` ein
 Listings.
 
 ```ts
-import { ReceptionistSubscribeRejected } from 'actor-ts';
+import { SubscribeRejected as ReceptionistSubscribeRejected } from 'actor-ts/discovery';
 
 class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
   override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {

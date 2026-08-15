@@ -11,9 +11,14 @@ you implement.  For **outbound** client connections, see
 
 ```ts
 import {
-  ActorSystem, HttpExtensionId,
-  WebsocketServerActor, websocket, type WebsocketConnection,
+  ActorSystem,
 } from 'actor-ts';
+import {
+  HttpExtensionId,
+  WebsocketServerActor,
+  websocket,
+  type WebsocketConnection,
+} from 'actor-ts/http';
 import { match } from 'ts-pattern';
 
 type SetNameMessage = { kind: 'setName'; name: string };
@@ -64,7 +69,7 @@ the [route DSL](/http/route-dsl/) — `path()`, `concat()`, and
 `withMiddleware()`.  Two forms:
 
 ```ts
-import { websocket, path, concat } from 'actor-ts';
+import { websocket, path, concat } from 'actor-ts/http';
 
 // 1. Bare directive — mount it under a path yourself:
 path('ws', websocket(chat));
@@ -106,6 +111,45 @@ The frame-size cap is enforced on the **raw frame before decode**.
 `onInvalidMessage: 'hook'` routes decode failures to the actor's
 `onInvalidMessage` hook instead of closing.
 
+#### Where the cap is enforced
+
+`maxFrameBytes` is checked twice, at two different moments:
+
+- **In the transport**, at **1 MiB** — the built-in default, handed to the
+  runtime's own socket when the server binds.  A frame over it is refused
+  *while it arrives*, so a hostile peer cannot make the process buffer a
+  16 MiB (Bun) or 100 MiB (`ws`) frame just to have it thrown away
+  afterwards.  Because the runtime hangs up rather than sending a policy
+  close, the client sees an abnormal close (**1006**) here, not 1009.
+- **In the connection actor**, at your `maxFrameBytes` — on the fully
+  received frame, before the codec decodes it, closing with **1009**.
+
+The consequence worth knowing: the transport cap is the framework default,
+not your route's number.  Lowering `maxFrameBytes` works exactly as
+written; **raising it above 1 MiB does not raise the transport cap**, so
+frames between 1 MiB and your limit are still cut off.  Backends cannot see
+a route's policy at bind time — it is resolved on the first connection —
+which is what a configurable transport cap still has to solve.
+
+<Aside type="caution" title="Deno has no transport cap">
+On Deno the first layer does not exist.  `Deno.upgradeWebSocket` accepts a
+subprotocol and an idle timeout and no payload limit, so there is nothing
+for the framework to set: an oversize frame is fully buffered by the
+runtime and only then rejected by the connection actor.  The guarantee
+holds — the frame never reaches your actor — but the memory is spent
+before it is refused.  For an internet-facing WebSocket endpoint under
+Deno, put a proxy with its own frame limit in front of it.
+</Aside>
+
+<Aside type="note" title="Hono on Node needs @hono/node-ws 1.2.0 or newer">
+On Node the cap is written onto the `ws` server `@hono/node-ws` hands back
+as `wss`, and that member only exists from **1.2.0** — 1.0.x and 1.1.x keep
+the server to themselves, so there is nothing to cap.  Rather than bind an
+uncapped socket, the backend refuses to build the WebSocket bridge and
+names the version in the error.  That is why the peer range starts at
+1.2.0; a plain `npm install @hono/node-ws` already picks a new enough one.
+</Aside>
+
 ### Origin allowlist (CSWSH defence)
 
 Browsers attach the user's cookies to a WebSocket upgrade automatically, so a
@@ -138,13 +182,34 @@ HTTP error and the upgrade never completes, so auth middleware
 like `BearerTokenAuth` or `IpAllowlist` gates the handshake:
 
 ```ts
-import { websocket, withMiddleware } from 'actor-ts';
+import { websocket, withMiddleware } from 'actor-ts/http';
 
 withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 // A bad token → HTTP 401, no upgrade.  A good token → the socket opens.
 ```
 
 See the [HTTP overview](/http/overview/) for the middleware set.
+
+### Backend-native middleware runs too
+
+`withMiddleware()` is the portable path — it works the same on every
+backend — but a handshake is also a normal request to the underlying
+framework, and **that** framework's own middleware runs as well:
+
+| Backend | What also runs at the handshake |
+| --- | --- |
+| **Fastify** | route hooks, including `preValidation` |
+| **Express** | everything registered with `app.use(...)` |
+| **Hono** | everything registered with `app.use(...)` |
+
+So an app that gates `/ws` with `app.use(requireLogin)` really is
+gated, and a native middleware that answers the request refuses the
+upgrade.  The framework's own guard runs after all of them, so
+`withMiddleware()` and `allowedOrigins` always have the last word.
+
+Prefer `withMiddleware()` when a route should behave identically
+across backends; reach for native middleware when you are reusing an
+existing ecosystem (sessions, rate limiting, observability).
 
 ## `WebsocketServerActor`
 
@@ -253,7 +318,8 @@ The route codec decodes inbound frames into `TIn` and encodes
 `TOut` replies.  Default is `jsonCodec()`:
 
 ```ts
-import { jsonCodec, WebsocketRouteOptions } from 'actor-ts';
+import { WebsocketRouteOptions } from 'actor-ts/http';
+import { jsonCodec } from 'actor-ts/persistence';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
@@ -266,7 +332,12 @@ For binary protocols, `rawCodec()` gives you raw frames
 
 ```ts
 import { match } from 'ts-pattern';
-import { rawCodec, WebsocketRouteOptions, WebsocketServerActor, type WebsocketFrame } from 'actor-ts';
+import {
+  rawCodec,
+  WebsocketRouteOptions,
+  WebsocketServerActor,
+  type WebsocketFrame,
+} from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
 class BinaryHub extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
@@ -300,7 +371,7 @@ Decode failures throw `WebsocketDecodeError` and follow the route's
 ```bash
 npm install @fastify/websocket   # Fastify (default)
 npm install ws                   # Express
-npm install @hono/node-ws        # Hono on Node only
+npm install @hono/node-ws        # Hono on Node only, 1.2.0 or newer
 ```
 
 ## HOCON config

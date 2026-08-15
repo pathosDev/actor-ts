@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
-import { REFERENCE_CONF } from '../../../src/config/reference.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 
 /**
  * The docs publish the bundled reference configuration verbatim so a reader
@@ -43,7 +43,7 @@ describe('the docs reproduce reference.conf verbatim', () => {
     expect(block, `${path} has no fenced hocon block starting with "actor-ts {"`).not.toBeNull();
     expect(
       block,
-      'The published reference configuration has drifted from src/config/reference.ts. '
+      'The published reference configuration has drifted from src/config/Reference.ts. '
       + 'Copy REFERENCE_CONF into the hocon block on both language pages.',
     ).toBe(REFERENCE_CONF.replace(/\r\n/g, '\n'));
   });

@@ -229,7 +229,7 @@ spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 | `remote.tcp.host` | `"0.0.0.0"` | Bind-Adresse.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
 | `remote.tcp.port` | `2552` | Bind-Port.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
-| `remote.tls.enabled` | `false` | **Nicht implementiert** — siehe unten. |
+| `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
 
 Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
 komplett aus dem Code herausziehen:
@@ -246,14 +246,22 @@ selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
 `withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
 keinen Transport, den es nicht erzeugt hat.
 
-:::caution[`remote.tls.enabled` tut nichts]
-Dieser Key ist weiterhin inert: ihn auf `true` zu setzen aktiviert **kein**
-TLS, und du bekommst keinen Fehler.  TLS ist derzeit nur erreichbar, indem
-du einen `TcpTransport` mit TLS-Konfiguration konstruierst und ihn an
-`ClusterOptions.withTransport(…)` übergibst.  Verfolgt als
-[Issue #591](https://github.com/pathosDev/actor-ts/issues/591); der Key ist
-bewusst als bekannt-toter Key gelistet statt entfernt, damit der Wert seine
-Bedeutung behält, sobald die Implementierung landet.
+:::caution[`remote.tls.enabled` verschlüsselt nichts]
+Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen
+aktiviert **kein** TLS — der Node loggt beim Start ein `WARN`, das den Key
+nennt und sagt, dass die Cluster-Verbindung Klartext ist.  Ein
+Security-Setting, das das Framework ignoriert, taucht damit in deinen Logs
+auf und nicht nur auf dieser Seite
+([Issue #591](https://github.com/pathosDev/actor-ts/issues/591)).  Den
+Transport zu verschlüsseln ist separat verfolgt als
+[Issue #941](https://github.com/pathosDev/actor-ts/issues/941); bis das
+landet, behandle das Cluster-Netz als etwas, das du anderweitig absichern
+musst.
+
+Die Warnung gilt für den Transport, den der Cluster sich selbst baut.
+Übergibst du per `ClusterOptions.withTransport(…)` einen eigenen, bleibt der
+Node zu diesem Key still: was dieser Transport mit TLS macht, entscheidest
+du, und das Framework kann von außen nicht erkennen, ob er verschlüsselt ist.
 :::
 
 ### `actor-ts.http`
@@ -498,6 +506,26 @@ Die Prüfung vergleicht exakt, ähnlich aussehende Schlüssel sind also
 unproblematisch: `_proto_`, `constructorName` und `prototypes`
 funktionieren normal.
 
+#### Lesend sind nur eigene Schlüssel sichtbar
+
+Drei abgelehnte Namen sichern die Schreibseite.  Die Leseseite ist
+andersherum abgesichert — positiv — denn `Object.prototype` hat ein Dutzend
+weitere Member, und eine Liste käme dabei nie hinterher:
+
+```hocon
+name = ${toString}    # Fehler: unaufgelöste Substitution — keine native Funktion
+port = ${?valueOf}    # optional: fällt auf die Umgebung durch, dann weg
+```
+
+Jeder Zugriff — eine Substitution, `hasPath` und jeder typisierte Getter —
+liest ausschließlich **eigene** Schlüssel, im Config-Baum wie in der
+Umgebung.  Ein Name, der zufällig einem geerbten Member entspricht, geht
+damit ins Leere, statt zu dem aufzulösen, was auf dem Prototypen liegt, und
+`hasPath('toString')` ist `false`, solange die Config keinen eigenen
+`toString`-Schlüssel deklariert.  Das bleibt erlaubt und funktioniert
+weiterhin: ein eigener Schlüssel überdeckt den geerbten Member,
+`toString = "mine"` liest sich also als `"mine"` zurück.
+
 ## Config im Code lesen
 
 ```ts
@@ -613,6 +641,26 @@ MqttOptions: protocolVersion must be one of 4, 5 (got 6)
 falscher Typ, fehlender Pfad) und `BrokerOptionsError` (ein
 Broker-Pflichtfeld fehlt in jeder Ebene).  Ungesetzte optionale Felder
 lösen ihn nie aus; sie fallen auf ihre Defaults zurück.
+
+<Aside type="note" title="Eine abgelehnte URL wird mit maskierten Zugangsdaten gemeldet">
+  ```text
+  MqttOptions: brokerUrl must use protocol mqtt, mqtts (got "amqp://***@rabbit:5672/vhost")
+  ```
+  Jede Regel, die eine URL ablehnt — der Check-Helfer `url` und die
+  Verbindungs-URL-Regeln der Mongo-, libSQL-, D1- und DynamoDB-Stores —
+  ersetzt die Userinfo durch `***`, und zwar **sowohl** in der Meldung
+  **als auch** in `OptionsError.value`.  Eine abgelehnte Broker-URL wird
+  auf ERROR geloggt, wenn sie den `preStart` eines Aktors scheitern lässt,
+  und ein Passwort, das einen Log-Aggregator erreicht hat, muss rotiert
+  werden — löschen genügt nicht.
+
+  Sonst wird am Wert nichts angefasst — keine Normalisierung, kein
+  angehängter Schrägstrich, kein kleingeschriebener Host —, du erkennst
+  also weiterhin, was du getippt hast, und ein Wert, der gar keine URL ist
+  (`":memory:"`, `"file:local.db"`), kommt unverändert zurück.  Dieselbe
+  Maskierung steht deinem eigenen Code als
+  [`redactUrlCredentials`](/de/reference/utility-helpers/) zur Verfügung.
+</Aside>
 
 ```ts
 import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';

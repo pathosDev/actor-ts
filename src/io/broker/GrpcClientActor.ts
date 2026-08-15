@@ -143,6 +143,11 @@ type OutboundOp = {
  * response arrives as an ordinary `'reply'`, which is what a
  * client-streaming RPC returns; a failure arrives as `'rpc-error'`.
  *
+ * Deadlines: `deadlineMs` bounds a **unary** call and nothing else.
+ * A gRPC deadline covers the whole RPC, so one value cannot both fail
+ * a request/response call promptly and let a long-lived stream live —
+ * see `buildCallOptions`.
+ *
  * Bidi streams still use the older in-band handshake: `bidiStart`
  * publishes a `'stream-data'` frame whose chunk is `{ __streamId }`,
  * and `bidiSend` / `bidiClose` address that bare number.  That
@@ -184,7 +189,18 @@ export class GrpcClientActor
   protected override optionsValidator(): GrpcClientOptionsValidator { return new GrpcClientOptionsValidator(); }
   protected endpointLabel(): string { return `grpc://${this.options.endpoint}`; }
 
-  protected async connectImplementation(): Promise<void> {
+  /**
+   * Build the grpc-js service client for the configured proto.
+   *
+   * Its own hook rather than the body of `connectImplementation` so a
+   * test subclass can inject a fake client: the two `@grpc/*` peer
+   * dependencies are heavy and not installed for the unit suite, yet
+   * everything worth asserting about this actor — what the call sites
+   * hand grpc-js, and who is allowed to write into a stream — lives on
+   * the far side of them.  Same seam as `JetStreamActor`'s
+   * `createNatsConnection`.
+   */
+  protected async createServiceClient(): Promise<GrpcServiceClient> {
     const grpc = await grpcLazy.get();
     const protoLoader = await protoLoaderLazy.get();
 
@@ -211,7 +227,11 @@ export class GrpcClientActor
     }
 
     const creds = this.buildCredentials(grpc);
-    this.serviceClient = new ServiceConstructor(this.options.endpoint!, creds);
+    return new ServiceConstructor(this.options.endpoint!, creds);
+  }
+
+  protected async connectImplementation(): Promise<void> {
+    this.serviceClient = await this.createServiceClient();
   }
 
   protected async disconnectImplementation(): Promise<void> {
@@ -292,6 +312,30 @@ export class GrpcClientActor
 
   /* ----------------------------- internals ----------------------------- */
 
+  /**
+   * Per-call options for grpc-js, carrying the configured deadline.
+   *
+   * Minted per call because a gRPC deadline is an absolute instant, not
+   * a duration: `deadlineMs` counts from *this* call's start, so a
+   * cached options object would hand every later call an already
+   * expired one.
+   *
+   * Deliberately used by `onUnary` alone.  A deadline bounds the whole
+   * RPC, streams included, so applying the same value to the three
+   * streaming classes would tear down every stream that outlives it —
+   * and a long-lived stream is a documented, supported pattern here.
+   * `deadlineMs` is one knob: a value generous enough for an hour-long
+   * bidi stream is useless on a unary call, and a value right for a
+   * unary call kills the stream.  Bounding a stream whose peer has gone
+   * quiet is a channel-level concern (HTTP/2 keepalive), tracked
+   * separately as #790.
+   */
+  private buildCallOptions(): GrpcCallOptions {
+    const deadlineMs = this.options.deadlineMs;
+    if (deadlineMs === undefined) return {};
+    return { deadline: new Date(Date.now() + deadlineMs) };
+  }
+
   private onUnary(op: UnaryCommand): void {
     const client = this.serviceClient;
     if (!client) return;
@@ -300,7 +344,7 @@ export class GrpcClientActor
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
     }
-    invoke.call(client, op.request, (err, response) => {
+    invoke.call(client, op.request, this.buildCallOptions(), (err, response) => {
       if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
       else op.target.tell({ kind: 'reply', target: op.target, response } as never);
     });
@@ -397,42 +441,69 @@ export class GrpcClientActor
 
 /* --------------------------- shared internals -------------------------- */
 
+/*
+ * The structural shims below are exported for the same reason the
+ * server side exports `GrpcServerUnaryRequest` & co.: they are the
+ * whole contract a `createServiceClient` override has to satisfy, so a
+ * fake client can be written — in this repo's unit suite or in a
+ * user's — without `@grpc/grpc-js` installed.  They describe grpc-js's
+ * shape, they are not a re-declaration of its API.
+ */
+
 interface GrpcServiceConstructor {
   new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
 }
 
-interface GrpcServiceClient {
+export interface GrpcServiceClient {
   close?(): void;
   [method: string]: unknown;
 }
 
-interface GrpcUnaryFunction {
-  call(client: GrpcServiceClient, request: unknown,
+/**
+ * Per-call options, the slot after the request.
+ *
+ * grpc-js parses `method(request, [metadata], [options], callback)`
+ * positionally *and* by type — an object that is not a `Metadata`
+ * instance is read as the options — which is why a bare data shape
+ * carrying only what this actor sets is enough.
+ */
+export type GrpcCallOptions = {
+  /** Absolute instant the call must complete by; grpc-js fails it with `DEADLINE_EXCEEDED`. */
+  readonly deadline?: Date;
+};
+
+export interface GrpcUnaryFunction {
+  call(client: GrpcServiceClient, request: unknown, options: GrpcCallOptions,
        callback: (err: Error | null, response: unknown) => void): void;
 }
 
-interface GrpcServerStreamCall {
+/**
+ * grpc-js `ClientReadableStream` — a server-streaming call is
+ * read-only.  Named for the direction, not the call class, so it does
+ * not collide with the server actor's `GrpcServerStreamCall`.
+ */
+export interface GrpcReadableCall {
   on(event: 'data', listener: (chunk: unknown) => void): void;
   on(event: 'end', listener: () => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
 }
 
-interface GrpcServerStreamFunction {
-  call(client: GrpcServiceClient, request: unknown): GrpcServerStreamCall;
+export interface GrpcServerStreamFunction {
+  call(client: GrpcServiceClient, request: unknown): GrpcReadableCall;
 }
 
 /** grpc-js `ClientWritableStream` — a client-streaming call is write-only. */
-interface GrpcWritableCall {
+export interface GrpcWritableCall {
   write(chunk: unknown): void;
   end(): void;
 }
 
-interface GrpcClientStreamFunction {
+export interface GrpcClientStreamFunction {
   call(client: GrpcServiceClient,
        callback: (err: Error | null, response: unknown) => void): GrpcWritableCall;
 }
 
-interface GrpcDuplexCall {
+export interface GrpcDuplexCall {
   on(event: 'data', listener: (chunk: unknown) => void): void;
   on(event: 'end', listener: () => void): void;
   on(event: 'error', listener: (err: Error) => void): void;
@@ -440,7 +511,7 @@ interface GrpcDuplexCall {
   end(): void;
 }
 
-interface GrpcBidiFunction {
+export interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
 }
 

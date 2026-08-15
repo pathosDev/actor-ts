@@ -65,7 +65,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
-  private readonly requireIntegrity: boolean;
+  private readonly allowUntaggedBodies: boolean;
   private readonly maxDecompressedBytes: number;
   private readonly etagCache = new Map<string, CachedEntry>();
 
@@ -81,7 +81,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
-    this.requireIntegrity = resolvedOptions.requireIntegrity ?? false;
+    this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     this.serializer = resolvedOptions.serializer;
   }
@@ -94,20 +94,18 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
-    if (this.requireIntegrity && integrity.mode !== 'hmac-sha256') {
-      throw new JournalError(
-        `ObjectStorageDurableStateStore.load: requireIntegrity=true demands `
-        + `an integrity config with mode='hmac-sha256' (persistenceId=${persistenceId}).`,
-      );
-    }
     const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
+    // Handing `decodeBody` the key is what demands a tag — an untagged
+    // body is refused unless the operator opened the migration window
+    // (#579).  Note this covers the per-call `options.integrity` path
+    // too: the demand travels with the key, not with the store field.
     const decodeOptions: import('../object-storage/BodyCodec.js').DecodeOptions = {
       ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
       ...(integrity.mode === 'hmac-sha256'
         ? {
             integrity: {
               integrityKey: integrity.integrityKey,
-              requireIntegrity: this.requireIntegrity,
+              allowUntaggedBodies: this.allowUntaggedBodies,
             },
           }
         : {}),

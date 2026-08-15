@@ -5,7 +5,7 @@ import { ConfigError } from '../../../src/config/Config.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { complete, get } from '../../../src/http/Route.js';
-import { Status } from '../../../src/http/types.js';
+import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 

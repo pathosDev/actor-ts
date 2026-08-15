@@ -9,7 +9,8 @@ Actor-Lebenszyklus, die Nachrichtenverarbeitung, beschränkte
 Mailboxen und den Cluster abdecken.
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const metrics = system.extension(MetricsExtensionId).enable();
 // Stock-Metriken zeichnen jetzt in die Live-Registry auf — kein weiteres Setup
@@ -67,6 +68,7 @@ Mailbox aus `withMailbox`.
 | `cluster_members_up` | gauge | — | Mitglieder aktuell im Zustand `up` (Sicht dieses Knotens). |
 | `cluster_gossip_rounds_total` | counter | — | Von diesem Knoten initiierte Gossip-Push-Runden. |
 | `cluster_gossip_records_refused_total` | counter | `reason` | Von einer Merge-Pfad-Wache abgelehnte gegossipte Member-Records. |
+| `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes, deren Payload einen anderen Absender nennt als die Verbindung, auf der sie ankamen. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -81,9 +83,28 @@ Zum Monitoring der Cluster-Gesundheit:
   liegen weiter vor der Uhr dieses Knotens als `maxVersionSkewMs` —
   entweder ist die Uhr eines Peers abgedriftet, oder jemand versucht,
   eine Adresse vorab zu beanspruchen. Bewegung auf `reason="map-cap"`
-  heißt, `max-members` / `max-tombstones` ist voll. Der Zähler wird
-  einmal pro Frame um dessen Anzahl erhöht, und die Label-Menge ist
-  auf diese zwei Werte geschlossen.
+  heißt, `max-members` / `max-tombstones` ist voll.
+  `reason="timestamp-skew"` ist ein Tombstone, dessen `removedAt` kein
+  plausibler Zeitpunkt ist. `reason="replayed-frame"` ist ein ganzer
+  Gossip-Frame, der den letzten von diesem Peer akzeptierten nicht
+  überbietet — ein Duplikat, oder jemand sendet einen vom Draht
+  mitgeschnittenen Frame erneut. Der Zähler wird einmal pro Frame um
+  dessen Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
+  geschlossen.
+- `cluster_envelope_from_mismatch_total` sollte ebenfalls bei null
+  liegen. Er bewegt sich, wenn die Payload eines Envelopes einen
+  anderen Absender nennt als die Verbindung, auf der es ankam — ein
+  Client, der alt genug ist, dieses Feld noch zu senden, und sich über
+  seine eigene Adresse irrt, oder jemand, der testet, ob der Knoten auf
+  Payload routet. Am Verhalten des Knotens ändert das nie etwas: Die
+  Antwort geht so oder so über die Verbindung zurück. Das Label `frame`
+  ist die Wire-Art, aus dem Code gezogen und nie aus der Payload — die
+  Anzahl der Zeitreihen ist damit dadurch begrenzt, wie viele
+  Wire-Handler diese Prüfung machen, heute genau einer:
+  `cluster-client-envelope`. Die behauptete Adresse ist bewusst *kein*
+  Label; dort geprägt würde sie eine Zeitreihe pro Adresse erzeugen,
+  die ein Sender sich ausdenkt. Stell das Log des Knotens auf `debug`,
+  um zu sehen, welche Verbindung sie trägt.
 
 ## DistributedData-Metriken
 

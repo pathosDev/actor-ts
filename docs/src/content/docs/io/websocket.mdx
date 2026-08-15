@@ -12,7 +12,7 @@ side), see [server WebSocket](/http/websocket/).
 
 ```ts
 import { match } from 'ts-pattern';
-import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts';
+import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts/http';
 
 type ClientMessage = { kind: 'ping'; n: number };
 type ServerMessage = { kind: 'pong'; n: number } | { kind: 'event'; data: unknown };
@@ -107,7 +107,7 @@ Other actors don't call `send` directly; they push a typed send
 through the ref with the `websocketSend` helper:
 
 ```ts
-import { websocketSend } from 'actor-ts';
+import { websocketSend } from 'actor-ts/http';
 
 feed.tell(websocketSend({ kind: 'ping', n: 42 }));
 ```
@@ -130,7 +130,7 @@ The codec turns `TOut` messages into wire frames and wire frames
 back into `TIn` messages.  The default is `jsonCodec()`:
 
 ```ts
-import { jsonCodec } from 'actor-ts';
+import { jsonCodec } from 'actor-ts/persistence';
 
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
@@ -156,7 +156,7 @@ yourself:
 
 ```ts
 import { match } from 'ts-pattern';
-import { rawCodec, type WebsocketFrame } from 'actor-ts';
+import { rawCodec, type WebsocketFrame } from 'actor-ts/http';
 
 class Binary extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
   constructor() {
@@ -181,6 +181,15 @@ A `WebsocketFrame` is `{ kind: 'text'; data: string }` or
 `{ kind: 'binary'; data: Uint8Array }`.  Decode failures throw a
 `WebsocketDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
 enforced on the **raw frame before decode**.
+
+An oversize frame is dropped with a warning, one per frame — so the peer
+decides how often that line is written.  It therefore names the connection
+by a redacted label (`wss://feed.example.com/ws/orders`) rather than by
+`url`: the userinfo and the query string are stripped, since a WebSocket
+endpoint is commonly authenticated with a `?token=…`, and the path is kept
+because it is what tells two connections to the same host apart.  The same
+masking is available to your own code as
+[`redactedUrlLabel`](/reference/utility-helpers/).
 
 ## Reconnect and buffering
 

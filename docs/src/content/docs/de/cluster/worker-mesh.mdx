@@ -57,7 +57,7 @@ Node — sodass derselbe Code überall läuft.
 
 ```ts
 // main.ts — Hauptthread
-import { WorkerCluster, WorkerClusterOptions } from 'actor-ts';
+import { WorkerCluster, WorkerClusterOptions } from 'actor-ts/worker';
 
 const workerClusterOptions = WorkerClusterOptions.create()
   .withWorkers(4)
@@ -80,7 +80,9 @@ und tritt dann dem Cluster bei wie jeder andere Knoten:
 
 ```ts
 // worker-node.ts — läuft in jedem Worker
-import { ActorSystem, Cluster, ClusterOptions, WorkerNode } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { WorkerNode } from 'actor-ts/worker';
 
 async function main(): Promise<void> {
   const context = await WorkerNode.join<{ seedAddress?: string }>();
@@ -139,7 +141,8 @@ Per-Node-Setup.
 ```ts
 // main.ts — Hauptthread
 import { Worker } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
 
 const channel = new MessageChannel();
 
@@ -164,7 +167,8 @@ await Cluster.join(
 
 // worker.js — läuft im Worker-Thread
 import { parentPort, workerData } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
 
 const workerAddress = new NodeAddress('w1', 'w1', 0);
 const transport = new MessageChannelTransport(workerAddress, workerData.mainPort);
@@ -194,7 +198,8 @@ Port** — sein eigenes Ende eines Channels zum Broker, niemals ein
 Array:
 
 ```ts
-import { MessageChannelTransport, NodeAddress, WorkerBroker } from 'actor-ts';
+import { MessageChannelTransport, NodeAddress } from 'actor-ts/cluster';
+import { WorkerBroker } from 'actor-ts/worker';
 
 // Hauptthread: ein Broker ist die Nabe für jeden Node.
 const broker = new WorkerBroker();

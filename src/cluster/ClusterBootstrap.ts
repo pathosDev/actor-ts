@@ -5,7 +5,7 @@ import {
   ReceptionistId,
   type SeedProvider,
 } from '../discovery/index.js';
-import { autoDiscovery, singleProviderDiscovery } from '../discovery/autoDiscovery.js';
+import { autoDiscovery, singleProviderDiscovery } from '../discovery/AutoDiscovery.js';
 import { AutoDiscoveryOptions } from '../discovery/AutoDiscoveryOptions.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
@@ -18,6 +18,7 @@ import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
 import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
+import type { ProcessSignal } from '../util/ProcessSignal.js';
 import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
 import {
   ClusterBootstrapOptionsValidator,
@@ -343,11 +344,11 @@ async function awaitSelfUp(cluster: Cluster, mode: boolean | number): Promise<vo
 }
 
 function installSignalHandlers(
-  mode: boolean | ReadonlyArray<NodeJS.Signals>,
+  mode: boolean | ReadonlyArray<ProcessSignal>,
   shutdown: () => Promise<void>,
 ): void {
   if (mode === false) return;
-  const signals: ReadonlyArray<NodeJS.Signals> = Array.isArray(mode)
+  const signals: ReadonlyArray<ProcessSignal> = Array.isArray(mode)
     ? mode
     : (['SIGTERM', 'SIGINT'] as const);
   for (const sig of signals) {

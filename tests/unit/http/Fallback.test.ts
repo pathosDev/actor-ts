@@ -18,7 +18,7 @@ import {
   type Route,
 } from '../../../src/http/Route.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { HttpError, Status } from '../../../src/http/types.js';
+import { HttpError, Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 
 const backends: Array<[string, () => HttpServerBackend]> = [

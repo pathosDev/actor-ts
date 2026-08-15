@@ -12,13 +12,15 @@ import { match, P } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   PersistentActor,
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
   everyNEvents,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };

@@ -11,6 +11,8 @@ import { match } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
+} from '../../src/index.js';
+import {
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournalOptions,
@@ -19,7 +21,7 @@ import {
   PersistentActor,
   RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
-} from '../../src/index.js';
+} from '../../src/persistence/index.js';
 import { FakeCassandraClient } from '../../tests/integration/in-process/persistence/FakeCassandraClient.js';
 import { attachDevTools } from '../devtools.js';
 

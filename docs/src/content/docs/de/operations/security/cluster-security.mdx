@@ -27,7 +27,7 @@ jeden nach außen gerichteten Cluster — das adressiert beide.
 ## TLS aktivieren
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
 import fs from 'node:fs';
 
 const transport = new TcpTransport(
@@ -262,8 +262,12 @@ erreichen.
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
+| Frame in tausende Chunks zerlegt, um die Decode-Kosten zu vervielfachen | Linearer Decode-Puffer — jedes Byte wird einmal kopiert, beim Eintreffen |
+| Socket öffnet, schickt einen halben Frame und verstummt | Stall-Deadline auf einem unvollständigen Frame, dazu eine Obergrenze für eingehende Verbindungen |
+| Massenhaft geöffnete Sockets, die gar nichts senden, um die Obergrenze zu füllen | Handshake-Deadline auf jedem angenommenen Socket, damit kein Slot unbefristet gehalten wird |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
+| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt akzeptierten überbieten |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
@@ -355,6 +359,71 @@ Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
 eine Versionsabweichung und ein feindlicher Peer sehen im Log
 unterschiedlich aus.
+
+## Was das Decodieren eines Frames kostet
+
+Die Prüfung läuft auf einem ganzen Frame, und ein ganzer Frame
+muss aus so vielen TCP-Chunks zusammengesetzt werden, wie der
+Sender ihn zerlegt hat. **Der Peer wählt diese Zerlegung**, und
+das war früher die teure Hälfte: der Decoder baute seinen
+Akkumulator bei jedem Chunk neu auf, sodass das Zusammensetzen
+eines Frames quadratisch in der Chunk-Anzahl kostete. Ein Frame
+knapp unter der 16-MiB-Grenze, geliefert in TCP-großen
+~1400-Byte-Writes, sind rund 12 000 Chunks und ≈ 100 GB
+Speicherkopieren — etwa 6000-fache Verstärkung auf Bytes, die
+der Angreifer nie senden musste, und erreichbar vor dem
+`hello`-Gate, also ganz ohne Mitgliedschaft. Der Decoder hängt
+jetzt an einen Puffer an, den er durch Verdoppeln wachsen lässt:
+jedes Byte wird beim Eintreffen einmal kopiert, die Verstärkung
+ist 1×.
+
+Drei Grenzen decken ab, was ein unauthentifizierter Socket
+während der Verbindung noch halten darf:
+
+- Ein **unvollständiger Frame** darf 30 Sekunden liegen, ohne
+  dass ein weiteres Byte eintrifft, dann wird die Verbindung
+  geschlossen. Das ist eine Stall-Grenze, kein Budget für den
+  Frame: die Deadline wird bei jedem Chunk neu gestellt, ein
+  Peer mit einem großen Frame auf einer überlasteten Leitung
+  wird also nie für Langsamkeit bestraft — nur fürs Verstummen.
+- **Der Handshake selbst** hat 5 Sekunden, gerechnet ab dem
+  Annehmen des Sockets; ein angenommener Socket, der bis dahin
+  kein `hello` geschickt hat, wird geschlossen. Genau das deckt
+  ein unvollständiger Frame nicht ab: ein Socket, der *gar
+  keine Bytes* sendet, steckt in keinem Frame fest, also wird
+  an ihm auch nichts verfolgt. Es sind dieselben 5 Sekunden,
+  die sich die wählende Seite selbst gibt, und deren Uhr läuft
+  früher los — vor dem TCP-Connect und dem TLS-Handshake — ein
+  Peer, der es noch versucht, hat also immer schon vorher
+  aufgegeben. Sobald das `hello` da ist, ist die Deadline weg:
+  ein etablierter Peer zwischen zwei Gossip-Runden ist von
+  Natur aus untätig und wird dafür nie geschlossen.
+- **Eingehende Verbindungen** sind auf 1024 begrenzt. Ein voll
+  vermaschter Cluster braucht eine pro Peer, die Grenze liegt
+  also weit über jeder realistischen Topologie; was sie nimmt,
+  ist die Möglichkeit, die Kosten pro Verbindung durch das
+  Öffnen von Sockets in einer Schleife zu vervielfachen. Die
+  neueste Verbindung wird abgewiesen, statt eine etablierte zu
+  verdrängen — Verdrängung ließe einen Angreifer echte Peers
+  vom Knoten stoßen.
+
+Die zweite und die dritte gehören zusammen. Eine Obergrenze ist
+nur so viel wert wie der Durchsatz ihrer Slots, und ohne
+Handshake-Deadline wird die Obergrenze selbst zum Angriff: 1024
+Verbindungen, die nichts senden, halten jeden Slot für die
+Lebensdauer des Prozesses, und jeder Peer und jeder
+`ClusterClient` danach wird abgewiesen. Auf Bun ist das sogar
+unter mTLS erreichbar, denn der `open`-Callback eines Sockets
+feuert *bevor* der TLS-Handshake fertig ist — der Slot wäre
+belegt, während es noch gar kein Zertifikat zu prüfen gibt.
+
+Die erste und die dritte begrenzen den eingehenden
+Decode-Speicher überhaupt erst: als Produkt der beiden, wobei
+der Term pro Verbindung schon durch
+`actor-ts.remote.max-frame-bytes` gedeckelt ist. Diesen Key zu
+senken ist auch der Hebel für ein Deployment, das nie große
+Envelopes schickt — die residenten Kosten pro Verbindung folgen
+ihm direkt.
 
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
@@ -489,13 +558,25 @@ Regeln:
 
 Beide Regeln hängen am Peer der **Verbindung**, nicht am
 `from`-Feld des Payloads: genau dieses Feld kontrolliert ein
-Angreifer vollständig. Dieselbe Überlegung deckt zwei Nachbarn
-mit ab: ein `leave` wird nur vom scheidenden Knoten selbst
-akzeptiert, und ein Heartbeat frischt den Failure Detector für
-den *sendenden* Peer auf statt für die Adresse, die er nennt —
-letzteres ließ vorher einen Peer einen toten Knoten dauerhaft
-gesund erscheinen und brachte den Empfänger dazu, einen
-angreiferbestimmten Host anzuwählen.
+Angreifer vollständig. Dieselbe Überlegung deckt drei Nachbarn
+mit ab. Ein `leave` wird nur vom scheidenden Knoten selbst
+akzeptiert. Ein Heartbeat frischt den Failure Detector für den
+*sendenden* Peer auf statt für die Adresse, die er nennt —
+das ließ vorher einen Peer einen toten Knoten dauerhaft gesund
+erscheinen und brachte den Empfänger dazu, einen
+angreiferbestimmten Host anzuwählen. Und ein `ClusterClient`-ask
+wird über die Verbindung beantwortet, auf der das Envelope
+ankam: auf der Payload zu routen ließ jede verbundene
+Gegenstelle die Adresse wählen, an die dieser Knoten antwortete
+und zu der er eine Verbindung aufbaute.
+
+Das Client-Envelope trägt überhaupt kein Absenderfeld mehr —
+nach der obigen Regel hatte es genau einen richtigen Wert, und
+zwar den, den der Empfänger ohnehin schon hat. Ein Envelope,
+das weiterhin eine andere Adresse als seine eigene Verbindung
+nennt, wird auf `cluster_envelope_from_mismatch_total{frame}`
+gezählt und sonst ignoriert; siehe
+[ClusterClient](/de/cluster/cluster-client/).
 
 Unerreichbarkeit ist bewusst **nicht** von diesen Regeln
 erfasst: „Ich erreiche C nicht" ist naturgemäß eine
@@ -569,16 +650,74 @@ zweiten Gossip-Frame des Knotens aufgehoben zu werden.
 
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
-Zähler `cluster_gossip_records_refused_total{reason}` mit `reason`
-gleich `version-skew` oder `map-cap`. Pro Record zu loggen würde
+Zähler `cluster_gossip_records_refused_total{reason}`, dessen
+Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`
+und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
 einem Peer Log-Verstärkung schenken statt des Wachstums, das er
 gerade verloren hat.
+
+### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen, solange sein Absender Member ist
+
+Ein Gossip-Frame ist eine Momentaufnahme der Member-Map, und die
+Version eines Members bewegt sich nur, wenn sich sein Status
+bewegt — ein vom Draht mitgeschnittener Frame bleibt also
+unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
+das nichts: jeder Record darin verliert den Vergleich „höhere
+Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
+wird es bei einem Eintrag, den der Empfänger **gelöscht** hat.
+Der Down-Pfad des Failure Detectors löscht rundheraus, statt
+einen Tombstone zu hinterlassen, damit eine Partition nach dem
+Heilen den Peer wiederfinden kann — und ein abgelaufener
+Tombstone wird aus demselben Grund entfernt. So oder so bleibt
+nichts zum Vergleichen übrig, und der Zweig, der eine
+Erstsichtung ablegt, hat überhaupt keine untere Versionsgrenze.
+
+Das Wiedereinspielen des eigenen Records eines heruntergefahrenen
+Members brachte ihn also zurück: gleiche Adresse, gleiche
+Version, `up`, mit den Rollen, die er hatte. Shard-Platzierung
+und Singleton-Hosting richten sich nach den Rollen, der Cluster
+schickt also Arbeit an einen Knoten, den er verstoßen hatte.
+
+Jeder Gossip-Frame trägt deshalb eine **Sequence**, die sein
+Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
+Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
+die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
+diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
+ein einziger Record darin angesehen wird. Es gibt keinen
+Stellknopf: verglichen wird ein Peer mit *sich selbst*, das
+braucht kein Uhren-Skew-Budget. Und eine Sequence, die zu weit
+vor der Uhr des Empfängers liegt, um plausibel zu sein, wird zwar
+gemerged, aber nie als Marke übernommen — sonst würde ein
+einziger Frame mit `Number.MAX_SAFE_INTEGER` den echten Knoten
+für immer verstummen lassen, genau der Exploit, den die
+Versionsgrenze oben verhindert.
+
+Zwei Dinge schließt das **nicht**. Erstens einen Peer, der sich
+Standing erworben hat und einen *frischen* Frame komponiert, der
+eine gelöschte Adresse mit ihrer alten Version nennt: Das ist eine
+Fälschung, kein Replay, und um sie von einer echten
+Wiederentdeckung zu unterscheiden, braucht die Adresse selbst
+eine Inkarnationsidentität — der Neustart eines Knotens muss ein
+*anderes* Member unter demselben `host:port` sein.
+
+Zweitens — und es ist dieselbe fehlende Inkarnationsidentität —
+lebt die Marke nur so lange wie ihr Absender. Ein gelöschtes
+Member verliert seine Marke, und eine fehlende Marke lässt alles
+zu. Sobald also der **Absender** selbst evakuiert wurde (eine
+gewöhnliche Partition trifft Absender und Subjekt gemeinsam),
+lässt sich die mitgeschnittene Konversation in Aufnahmereihenfolge
+abspielen: Der Selbstdatensatz des Absenders wird immer
+zugelassen, wodurch er wiederbelebt *und* die Marke aus dem alten
+Frame neu gesetzt wird — und der nächste mitgeschnittene Frame
+spricht dann für das Subjekt.
+
+Beide Restrisiken werden separat verfolgt.
 
 ## Per-Deployment-Rezept
 
 ```ts
 // production.ts
-import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts';
+import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const tlsOptionsType = {
   cert: fs.readFileSync(process.env.TLS_CERT_PATH!),

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -10,8 +10,9 @@ import { HonoBackend } from '../../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../../src/http/HttpExtension.js';
 import { compile, concat, type CompiledRoute, type Route } from '../../../../src/http/Route.js';
 import { getFromBrowseableDirectory, getFromDirectory, getFromFile } from '../../../../src/http/static/StaticFiles.js';
+import type { StaticFilesOptions } from '../../../../src/http/static/StaticFilesOptions.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
-import type { HttpRequest, HttpResponse } from '../../../../src/http/types.js';
+import type { HttpRequest, HttpResponse } from '../../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 let root: string;
@@ -75,6 +76,27 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
     const response = await fetch(`${url}/static`, { redirect: 'manual' });
     expect(response.status).toBe(301);
     expect(response.headers.get('location')).toBe('/static/');
+  });
+
+  test('the directory redirect keeps the query and puts the slash on the path', async () => {
+    // The query is re-appended after the trailing slash, never inside it.
+    // A backend reporting the raw request target in `HttpRequest.path`
+    // produced `/static?a=1/` here — the slash landing in the query value,
+    // so the redirect target addressed a different resource and the
+    // documented "query preserved" guarantee held on two backends of three.
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/static?a=1&b=2`, { redirect: 'manual' });
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('/static/?a=1&b=2');
+  });
+
+  test('the directory listing heading is the pathname, without the query', async () => {
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/browse/sub/?show=all`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('/browse/sub/');
+    expect(html).not.toContain('show=all');
   });
 
   test('serves a nested file', async () => {
@@ -187,5 +209,181 @@ describe('static files — nosniff on the served file', () => {
     const response = await route.handler({ ...requestFor(), method: 'HEAD' });
     expect(response.status).toBe(200);
     expect(response.headers?.['x-content-type-options']).toBe('nosniff');
+  });
+});
+
+/*
+ * `symlinks: 'within-root'` (#575) — the policy has to hold on every
+ * filesystem hop a request touches, not only on the one the URL resolves to:
+ * a directory's index file and each listing entry are hops of their own.
+ * Directive-level for the same reason as the block above — this is the
+ * directive's own policy, and a live backend would add nothing but three
+ * server starts per case.
+ */
+
+/** Drive a compiled `getFromDirectory`; `rest` `''` hits the mount-root endpoint. */
+async function serveFrom(fsRoot: string, options: StaticFilesOptions | undefined, urlPath: string, rest = ''): Promise<HttpResponse> {
+  const compiled = compile(getFromDirectory(fsRoot, options));
+  const route = compiled[rest === '' ? 0 : 1] as CompiledRoute;
+  const request: HttpRequest = {
+    method: 'GET', path: urlPath, headers: {}, query: {}, params: rest === '' ? {} : { '*': rest }, body: null,
+  };
+  return await route.handler(request);
+}
+
+const bodyText = (response: HttpResponse): string =>
+  typeof response.body === 'string' ? response.body : new TextDecoder().decode(response.body as Uint8Array);
+
+/*
+ * Directory links run everywhere: `symlink(..., 'junction')` asks Windows for
+ * a junction, which an unprivileged process may create, while POSIX ignores
+ * the type and makes an ordinary symlink.  Both are reparse hops `realpath`
+ * resolves, so this half of the policy is pinned on a developer machine too,
+ * not only on CI.
+ */
+describe('static files — within-root confinement on directory links', () => {
+  let linkedRoot: string;
+  let outside: string;
+
+  beforeAll(async () => {
+    outside = await mkdtemp(join(tmpdir(), 'actor-ts-static-outside-'));
+    await mkdir(join(outside, 'elsewhere'));
+    await writeFile(join(outside, 'elsewhere', 'secret.txt'), 'out-of-root secret');
+
+    linkedRoot = await mkdtemp(join(tmpdir(), 'actor-ts-static-junctions-'));
+    await mkdir(join(linkedRoot, 'real-directory'));
+    await mkdir(join(linkedRoot, 'sub'));
+    await symlink(join(outside, 'elsewhere'), join(linkedRoot, 'sub', 'directory-escape'), 'junction');
+    await symlink(join(linkedRoot, 'real-directory'), join(linkedRoot, 'sub', 'directory-alias'), 'junction');
+  });
+  afterAll(async () => {
+    // `rm` unlinks a link instead of following it, so the targets under
+    // `outside` survive until it is removed on its own line.
+    await rm(linkedRoot, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  const serve = (options: StaticFilesOptions | undefined, urlPath: string, rest = ''): Promise<HttpResponse> =>
+    serveFrom(linkedRoot, options, urlPath, rest);
+
+  test('the escaping directory itself is refused', async () => {
+    expect((await serve(undefined, '/sub/directory-escape/', 'sub/directory-escape/')).status).toBe(404);
+    expect((await serve(undefined, '/sub/directory-escape/secret.txt', 'sub/directory-escape/secret.txt')).status).toBe(404);
+  });
+
+  test('the listing omits it and keeps the in-root link, as a directory', async () => {
+    const response = await serve({ browse: true }, '/sub/', 'sub/');
+    expect(response.status).toBe(200);
+    const html = bodyText(response);
+    expect(html).toContain('href="directory-alias/"'); // trailing slash: a link to a directory is one
+    expect(html).not.toContain('directory-escape');
+  });
+
+  test("'follow' puts the escaping directory back", async () => {
+    const options: StaticFilesOptions = { browse: true, symlinks: 'follow' };
+    const response = await serve(options, '/sub/', 'sub/');
+    expect(response.status).toBe(200);
+    expect(bodyText(response)).toContain('href="directory-escape/"');
+    expect((await serve(options, '/sub/directory-escape/secret.txt', 'sub/directory-escape/secret.txt')).status).toBe(200);
+  });
+});
+
+/**
+ * Capability probe for the file-link block below.  A stock Windows box
+ * refuses `fs.symlink` to a file without elevation or Developer Mode, and
+ * that is the ONLY reason those cases may be skipped: any other failure
+ * re-throws, so a genuinely broken filesystem cannot hide behind the guard
+ * and let the block pass forever.  The Linux CI runner creates symlinks
+ * freely, so they do run where it counts.
+ */
+async function fileSymlinksAreCreatable(): Promise<boolean> {
+  const probeDirectory = await mkdtemp(join(tmpdir(), 'actor-ts-symlink-probe-'));
+  try {
+    await writeFile(join(probeDirectory, 'target'), 'probe');
+    await symlink(join(probeDirectory, 'target'), join(probeDirectory, 'link'));
+    return true;
+  } catch (error) {
+    const code = (error as { readonly code?: string }).code;
+    if (code === 'EPERM' || code === 'EACCES') return false;
+    throw error;
+  } finally {
+    await rm(probeDirectory, { recursive: true, force: true });
+  }
+}
+
+const describeIfFileSymlinks = (await fileSymlinksAreCreatable()) ? describe : describe.skip;
+
+/*
+ * A file link is the reachable half of #575: the index file the directory
+ * branch serves, and the entries the listing reports.
+ */
+describeIfFileSymlinks('static files — within-root confinement on file links', () => {
+  let linkedRoot: string;
+  let outside: string;
+
+  beforeAll(async () => {
+    outside = await mkdtemp(join(tmpdir(), 'actor-ts-static-outside-file-'));
+    await writeFile(join(outside, 'secret.txt'), 'out-of-root secret');
+
+    linkedRoot = await mkdtemp(join(tmpdir(), 'actor-ts-static-links-'));
+    await writeFile(join(linkedRoot, 'inside.txt'), 'in root');
+    await mkdir(join(linkedRoot, 'sub'));
+    // Both index candidates the directory requests below reach are links out
+    // of the tree — the mount root's own and the subdirectory's.
+    await symlink(join(outside, 'secret.txt'), join(linkedRoot, 'index.html'));
+    await symlink(join(outside, 'secret.txt'), join(linkedRoot, 'sub', 'index.html'));
+    await symlink(join(outside, 'secret.txt'), join(linkedRoot, 'sub', 'escape.txt'));
+    // …and one that stays inside it, to prove the check does not over-block.
+    await symlink(join(linkedRoot, 'inside.txt'), join(linkedRoot, 'sub', 'alias.txt'));
+  });
+  afterAll(async () => {
+    await rm(linkedRoot, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  const serve = (options: StaticFilesOptions | undefined, urlPath: string, rest = ''): Promise<HttpResponse> =>
+    serveFrom(linkedRoot, options, urlPath, rest);
+
+  test('the mount root index file is refused when it links out of the root', async () => {
+    expect((await serve(undefined, '/')).status).toBe(404);
+  });
+
+  test("'follow' serves that same index file", async () => {
+    const response = await serve({ symlinks: 'follow' }, '/');
+    expect(response.status).toBe(200);
+    expect(bodyText(response)).toBe('out-of-root secret');
+  });
+
+  test('a subdirectory index file is refused when it links out of the root', async () => {
+    expect((await serve(undefined, '/sub/', 'sub/')).status).toBe(404);
+  });
+
+  test('the direct request for that same index file still 404s', async () => {
+    expect((await serve(undefined, '/sub/index.html', 'sub/index.html')).status).toBe(404);
+  });
+
+  test('a link that stays inside the root is served, one that escapes is not', async () => {
+    const alias = await serve(undefined, '/sub/alias.txt', 'sub/alias.txt');
+    expect(alias.status).toBe(200);
+    expect(bodyText(alias)).toBe('in root');
+    expect((await serve(undefined, '/sub/escape.txt', 'sub/escape.txt')).status).toBe(404);
+  });
+
+  test('the listing omits the escaping entries and keeps the in-root one', async () => {
+    const response = await serve({ browse: true }, '/sub/', 'sub/');
+    expect(response.status).toBe(200); // the escaping index counts as absent → listing
+    const html = bodyText(response);
+    expect(html).toContain('alias.txt');
+    expect(html).not.toContain('index.html');
+    expect(html).not.toContain('escape.txt');
+  });
+
+  test("'follow' puts the escaping entries back into the listing", async () => {
+    const options: StaticFilesOptions = { browse: true, symlinks: 'follow', indexFiles: [] };
+    const response = await serve(options, '/sub/', 'sub/');
+    expect(response.status).toBe(200);
+    const html = bodyText(response);
+    expect(html).toContain('escape.txt');
+    expect(html).toContain('index.html');
   });
 });

@@ -9,6 +9,1629 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-15
+
+### Changed
+
+- **BREAKING — the root `'actor-ts'` export is core-only; subsystems moved
+  to subpath exports** (#414).  The root barrel re-exported every subsystem,
+  which dragged the whole framework through one entry point — the testkit
+  shipped in the production entry (#685), and `import { ActorSystem }` paid
+  for whatever any subsystem pulled in eagerly (#1005).  Core — actors,
+  supervision, scheduler/dispatcher, EventStream, system messages, config,
+  mailboxes, patterns/Router, typed behaviors, the util value types and the
+  base loggers — stays at `'actor-ts'`; everything else lives at its own
+  entry: `actor-ts/cache`, `/cluster`, `/coordination`, `/crdt`, `/delivery`,
+  `/devtools`, `/discovery`, `/fsm`, `/http`, `/io`, `/logging`,
+  `/management`, `/metrics`, `/persistence`, `/serialization`, `/testkit`,
+  `/tracing`, `/worker`.
+
+  *Migration:* import moved symbols from their subsystem entry — e.g.
+  `import { PersistentActor } from 'actor-ts/persistence'`,
+  `import { Cluster } from 'actor-ts/cluster'`,
+  `import { FileSink } from 'actor-ts/logging'`.  Aliased root names keep
+  working as spelled aliases: `import { Subscribe as ReceptionistSubscribe }
+  from 'actor-ts/discovery'`, `import { Transition as FsmTransition } from
+  'actor-ts/fsm'`.
+
+- **The default Fastify backend loads lazily** (#1005).  `import
+  { ActorSystem } from 'actor-ts'` no longer parses Fastify and its ~20
+  transitive packages; the default backend resolves on the first bind,
+  exactly like the express and hono arms always did.  fastify remains a
+  hard dependency.
+
+- **The package no longer ships source maps** (#1007).  `declarationMap` and
+  `sourceMap` were on while `files` publishes only `dist/`, so all 1262 maps
+  in the tarball — one `.js.map` and one `.d.ts.map` per module — pointed at
+  a `../src/*.ts` that was never packed, and not one of them carried
+  `sourcesContent` as a fallback.  A dangling map is worse than an absent
+  one: a missing map degrades cleanly to the `.d.ts`, a dangling map sends
+  the editor and the debugger looking for a file that will never arrive.
+  Dropping them takes the installed package from 6.43 MB to about 4.19 MB —
+  35 % of it was maps that could not work.  Go-to-definition still lands on
+  the `.d.ts`, which is exactly where it landed before.
+
+- **The build resolves modules as `NodeNext`** (#1008).  The build tsconfig
+  said `moduleResolution: "Bundler"`, but no bundler runs — `tsc` emits ESM
+  into `dist/` and the consumer is Node ≥ 24 or Deno going through the real
+  ESM resolver.  `Bundler` relaxes exactly the rules that resolver enforces,
+  so the compiler was validating the emitted specifiers against a ruleset
+  nothing downstream applies.  The project's mandatory `.js` suffix happened
+  to satisfy `NodeNext` already, which is why the switch compiles clean and
+  leaves the emitted JavaScript byte-identical; what it buys is that the
+  *next* forgotten suffix is a compile error here instead of an
+  `ERR_MODULE_NOT_FOUND` in a consumer's process.  It also makes `.d.ts`
+  resolution `exports`-map-aware, which starts to matter now that #414 gives
+  the package eighteen subpaths, and it settles the standing disagreement
+  between the compiler and `attw --profile esm-only` about which resolver is
+  authoritative.
+
+- **BREAKING — `MemcachedClientLike` is typed in `Uint8Array`, not `Buffer`**
+  (#1006).  The shipped declarations used Node-only types in public
+  signatures while `@types/node` was declared only as a devDependency, so a
+  consumer type-checking with `skipLibCheck: false` got errors out of
+  `node_modules/actor-ts/` that were not theirs to fix.  Two of the three
+  offending surfaces are gone:
+
+  - `NodeJS.Signals` is replaced by the new `ProcessSignal`, exported from
+    the root entry.  It mirrors `NodeJS.Signals` member for member, so it is
+    assignable in both directions and every existing call keeps compiling —
+    `installProcessHooks(['SIGTERM', 'SIGINT'])`, `ProcessTerminateReason
+    .signal` and the cluster bootstrap's `shutdownOnSignals` are unchanged at
+    the call site.
+  - `MemcachedClientLike` speaks `Uint8Array`.  A real memjs client still
+    satisfies it — `Buffer` *is* a `Uint8Array` — and so does any custom
+    stand-in that returns one.  Internally the value is decoded with
+    `TextDecoder` rather than `Buffer.toString('utf8')`, since the type
+    change alone would have left the Node dependency alive at the value
+    level.
+
+  *Migration:* only code that reads a value **through** the
+  `MemcachedClientLike` type is affected, and only where it used a
+  `Buffer`-specific method: `value.toString('utf8')` becomes `new
+  TextDecoder().decode(value)`.  Implementing the interface, and passing a
+  memjs client to `MemcachedCache`, both need no change.
+
+  `node:http` in `ExpressBackend` deliberately stays: `ServerResponse` is
+  constructed at run time there, and a structural stand-in for a Node class
+  the code actually instantiates would be regression risk for a cosmetic
+  gain.  Instead `@types/node` is now declared as an **optional peer
+  dependency**, which is what it always was in practice — npm can surface it,
+  and a Deno-or-browser consumer that never touches those entries is not
+  forced to install it.
+
+  Measured against the packed tarball, installed into a tree with no
+  `@types` package at all, under `skipLibCheck: false` / `types: []` /
+  `lib: ["ES2022", "DOM"]`: importing `'actor-ts'` reports **zero** errors,
+  and importing all nineteen entry points reports **two**, both of them the
+  `node:http` line above.  Installing the now-declared peer takes every count
+  to zero.  (A strict consumer needed it regardless — fastify's own
+  declarations and its `pino` / `light-my-request` / `sonic-boom`
+  dependencies account for 33 further errors without it, which no change on
+  this side could have removed.)
+
+### Added
+
+- **Per-subsystem subpath exports** (#414, #1001).  The exports map grew one
+  entry per subsystem barrel (sixteen new entries next to `./testkit` and
+  `./devtools`), so the subpaths the documentation already used —
+  `actor-ts/http`, `/coordination`, `/serialization`, `/discovery` — resolve
+  now, and the smoke suite loads every declared entry on Bun, Node and Deno
+  (#1003).
+
+- **`getSqliteDriver` and the `SqliteDriver` type are published** via
+  `actor-ts/persistence`, next to `buildSqliteDatabase` and for the same
+  #124 reason — the last documented symbols no entry point served (#1002).
+
+- **Logging grew a sink architecture** (#1150).  The logger wrote to exactly
+  one place; it now fans one record out to as many destinations as you
+  configure — console, rotating files, and ten log platforms — each with its
+  own minimum level, bounded delivery and a flush on shutdown.  The
+  individual entries below cover the pipeline (#1151, #1152), the file sink
+  (#1153) and the platform sinks (#1154–#1161).
+
+  Nothing about the existing surface changed: `Logger`, `ConsoleLogger`,
+  `JsonLogger` and `NoopLogger` are untouched, `this.log` behaves as before,
+  and a system whose config nobody edited logs exactly what it logged
+  yesterday.  Every integration is dependency-free — the two that could have
+  pulled an SDK, OpenTelemetry and Sentry, take the opposite routes and say
+  why on their own pages.
+
+- **Multi-sink logging — one record, several destinations** (#1151).  The
+  logger wrote to exactly one place: `system.log` was a single `Logger`, and
+  the only knob was `actor-ts.logger.level`.  Sending the same record to the
+  console *and* a file *and* an aggregator meant hand-writing a `Logger` that
+  multiplexes and re-implements level handling, MDC merging and formatting.
+
+  `MultiSinkLogger` fans each record out to a list of `LogSink`s, each with
+  its own minimum level:
+
+  ```ts
+  const consoleSink = new ConsoleSink({ minLevel: LogLevel.Info });
+  const auditSink = new ConsoleSink({ minLevel: LogLevel.Error, format: 'json' });
+  const systemOptions = ActorSystemOptions.create().withLogSinks([consoleSink, auditSink]);
+  const system = ActorSystem.create('my-app', systemOptions);
+  ```
+
+  Or from configuration — every sink ships disabled, and enabling one
+  replaces the default single `ConsoleLogger`:
+
+  ```hocon
+  actor-ts.logger.sinks.console { enabled = true, min-level = "info", format = "json" }
+  ```
+
+  The pieces: `LogRecord` (built once per call, carrying the MDC captured
+  **synchronously at emit**, since a sink that flushes later runs in another
+  async context and could not read it), the `LogSink` contract
+  (`{ name, minLevel, write }` is a complete sink, with `attach` / `flush` /
+  `close` optional), `ConsoleSink`, and `formatTextLine` / `formatJsonLine` —
+  which reproduce `ConsoleLogger` and `JsonLogger` byte for byte, key order
+  included, so existing log parsers keep working.
+
+  The level gate runs at the call site, so a suppressed call costs a
+  comparison.  A sink that throws is caught, reported through a rate limiter
+  to `console.error` — never through the logger it is part of — and skipped,
+  while the other sinks still get the record.  `withSource` / `withFields`
+  return views over one shared pipeline, so a thousand actors still mean one
+  set of sinks, attached once and closed once.
+
+  `terminate()` now flushes and closes the logger before `whenTerminated()`
+  resolves, bounded by the new `actor-ts.logger.close-timeout` (3 s).  That
+  seam covers both shutdown paths, since `CoordinatedShutdown` ends by
+  calling `terminate()`, and it runs after the last `postStop` so a parting
+  message is still in the batch.  Any logger with a `close()` is flushed —
+  the check is structural, so a third-party one benefits too.
+
+  `Logger`, `ConsoleLogger`, `JsonLogger` and `NoopLogger` are untouched;
+  `Logger` remains a documented extension point and gained no members.
+
+- **`BatchingSink` — bounded, batched, retrying log delivery** (#1152).  The
+  base class every sink that writes somewhere slower than memory extends.  A
+  subclass implements one method, `emitBatch(records)`, and inherits a
+  bounded queue, batching, retry with jittered backoff, drop accounting and
+  a drain on close.
+
+  Settings live in a nested `delivery` block (`maxBatchSize` 100,
+  `flushIntervalMs` 2000, `queueCapacity` 10 000, `overflow` `drop-new` |
+  `drop-head`, `maxRetries` 5, `minBackoffMs` 1000, `maxBackoffMs` 30 000,
+  `randomFactor` 0.2), shared by every sink so the same word means the same
+  thing everywhere.
+
+  `SinkDeliveryError` carries whether a failure is worth retrying, plus an
+  optional server-supplied `retryAfterMs`.  A non-retryable failure — a 401
+  from a wrong key — is dropped at once instead of being retried five times
+  with backoff.  Anything that is *not* a `SinkDeliveryError` counts as
+  retryable, which is what a socket reset or a failed `fetch` looks like.
+
+  The queue is bounded on purpose: an unbounded buffer does not save the
+  records, it converts "some logs were lost" into "the process died".
+  Losses are counted on `droppedCount` and reported to the console at most
+  once a minute per reason.  On close the queue is drained with retries
+  switched off, since the caller already holds a deadline.
+
+- **`FileSink` — log files on disk, with rotation and retention** (#1153).
+  There was no way to write logs to a file; every deployment that is not a
+  container scraping stdout had to build it.
+
+  ```ts
+  const fileSinkOptions = FileSinkOptions.create()
+    .withDirectory('/var/log/my-app')
+    .withRotateInterval('daily')
+    .withMaxFiles(14);
+  const systemOptions = ActorSystemOptions.create().withLogSinks([new FileSink(fileSinkOptions)]);
+  ```
+
+  Files are named `log-<yyyy-MM-dd>-<HH-mm-ss>.txt` after the moment they
+  were opened, and roll over on size (`maxFileBytes`), on the clock
+  boundary (`rotateInterval`: `off` | `hourly` | `daily`), or both.
+  Retention takes a file count and an age; rotated files can be gzipped.
+
+  **Rolling over opens a new file — the active one is never renamed.**
+  Windows will not rename an open file, and a crash can never catch a file
+  mid-rename this way.  **No record is split across two files**: the
+  rotation check runs before each line, not per batch.  **Retention only
+  deletes this sink's own files** — matching prefix, extension and
+  timestamp shape, never the active file and never anything else in the
+  directory.
+
+  A directory that cannot be written disables the sink after one console
+  message instead of failing every flush forever.
+
+  `AppendOnlyFile` is the first long-lived file handle in the codebase: one
+  lazy `node:fs/promises` import serving Bun, Node and Deno, with writes
+  looping until every byte is accepted, since a single `write` is not
+  guaranteed to take the whole buffer and half a line in a log file is
+  worse than none.  A smoke case runs the sink on all three runtimes.
+
+- **`OtlpHttpSink` — OpenTelemetry logs over HTTP** (#1154).  One endpoint
+  format reaches Grafana Loki 3+, Parseable, SigNoz, Datadog, Axiom,
+  Honeycomb, New Relic and every OpenTelemetry Collector, so this is the
+  sink to reach for before a platform-specific one.
+
+  ```ts
+  const otlpSinkOptions = OtlpHttpSinkOptions.create()
+    .withUrl('http://collector:4318/v1/logs')
+    .withGzip(true);
+  ```
+
+  Records go out as an `ExportLogsServiceRequest` in proto3 JSON — no
+  protobuf library and, deliberately, no OpenTelemetry SDK: the protocol is
+  stable and its JSON encoding specified, while the JavaScript logs SDK is
+  still an experimental 0.x whose releases may break.  Levels map onto the
+  OTel severity bands, fields become typed attributes, `service.name`
+  defaults to the actor system's name, and the body can be gzipped.
+
+  Timestamps go through `BigInt`.  `ms * 1e6` lands 64 ns short for a 2026
+  timestamp — and `String()` hides it, because JavaScript prints the
+  shortest decimal that round-trips to the wrong double.
+
+  Retry classification follows the specification: 429, 502, 503 and 504 are
+  retried honouring `Retry-After`; everything else describes the request and
+  is dropped rather than resent unchanged.  Request headers are code-only,
+  with no HOCON leaf, because they carry credentials.
+
+  `HttpDelivery` factors that classification out for the platform sinks
+  still to come.
+
+- **`GelfSink` — Graylog over UDP, TCP or HTTP** (#1155).  The one platform
+  the OTLP sink cannot reach: Graylog's OpenTelemetry input accepts OTLP
+  over **gRPC only**, so there is no HTTP path to it without a collector in
+  between.  GELF also lands structured fields as first-class searchable
+  keys rather than `otel_attributes_*`.
+
+  ```ts
+  const gelfSinkOptions = GelfSinkOptions.create()
+    .withHost('graylog.internal')
+    .withProtocol('udp');
+  ```
+
+  No SDK — GELF is a JSON document, and the transports are a datagram, a
+  null-delimited stream and an HTTP POST.  UDP datagrams are gzipped by
+  default (the server detects it from the magic bytes) and chunked with the
+  spec's 12-byte header when they outgrow one packet; the default 1420-byte
+  datagram keeps the whole packet inside an Ethernet MTU with room for a
+  tunnel header.  A record needing more than the protocol's 128 chunks is
+  dropped and reported rather than retried — a retry cannot make it
+  smaller.  TLS for the TCP transport is code-only: those fields carry the
+  key material itself, not a path to it.
+
+- **`ParseableSink` — Parseable's REST ingestion** (#1156).  A batch becomes
+  a JSON array POSTed to `/api/v1/ingest` with the dataset in the
+  `X-P-Stream` header; Parseable creates the dataset on first use.  No SDK
+  exists and none is needed.
+
+  Records are sent flat, because Parseable flattens nested objects at
+  ingest anyway — flat keeps every field individually queryable and skips a
+  round of server-side rewriting.  Authentication is an API key **or**
+  basic-auth credentials, and the validator rejects both-at-once and
+  half-a-pair at construction rather than letting every flush fail.
+
+  A batch over Parseable's 10 MiB request cap is split rather than sent and
+  rejected: exceeding it is not a retryable failure, so an oversized batch
+  would be lost in full.
+
+  Parseable also accepts OTLP/HTTP, so `OtlpHttpSink` reaches it too — this
+  sink is for the simpler record shape.
+
+- **`sentrySink()` — Sentry through your own SDK** (#1157).  A factory, not
+  a class, mirroring `otelLogger`: you pass your initialised `@sentry/node`
+  import and the framework never imports it, declares no dependency, and
+  has no version to keep in step.
+
+  ```ts
+  const sentry = await import('@sentry/node');
+  sentry.init({ dsn: process.env['SENTRY_DSN'] });
+  const systemOptions = ActorSystemOptions.create()
+    .withLogSinks([new ConsoleSink(), sentrySink(SentrySinkOptions.create().withSdk(sentry))]);
+  ```
+
+  Error-level records with an `Error` argument go to `captureException` —
+  which is what gives Sentry a stack to group on — and without one to
+  `captureMessage`.  Everything else that passes the level gate goes to the
+  structured-logs product when the SDK has one.  A warning is deliberately
+  *not* an issue.
+
+  The default `minLevel` is `warn`, stricter than every other sink: Sentry
+  is priced per event, so a debug firehose pointed at it is a billing
+  incident rather than a preference.
+
+  There is no `actor-ts.logger.sinks.sentry` block, because the sink needs
+  a live SDK object; `reference.conf` says so where a reader would look for
+  it.
+
+  Delegating rather than speaking Sentry's envelope protocol is the point:
+  grouping, stack-trace processing, release detection and breadcrumbs all
+  live in the SDK, and a hand-rolled transport would duplicate them badly
+  or lose them.
+
+- **`LokiSink` — Grafana Loki's native push API** (#1158).  A batch becomes
+  one push to `/loki/api/v1/push` in plain JSON, which Loki accepts as an
+  alternative to snappy-compressed protobuf.
+
+  **Labels are static by construction.**  They are Loki's index, and a
+  per-record value in there multiplies streams without bound — the standard
+  way to make a Loki cluster unusable — so the options type does not accept
+  one.  Variable data (the actor path, the fields, the level) goes into
+  structured metadata, which Loki stores per entry instead of indexing.
+  `service` defaults to the actor system's name.
+
+  Timestamps are nanosecond strings: Loki answers a JSON number with a 400.
+  `nanosecondsOf` moved to its own module now that two sinks need it.
+
+  Loki 3+ also ingests OTLP, so `OtlpHttpSink` reaches it too — this sink
+  is for direct push and explicit label control.
+
+- **`SeqSink` — Seq over CLEF** (#1159).  A batch becomes newline-delimited
+  CLEF POSTed to `/ingest/clef`: the NDJSON the framework already emits
+  with four keys renamed.  Levels use Serilog's vocabulary, so `info`
+  becomes `Information` — the value Seq rejects if you guess it.
+
+  A field whose name starts with `@` has its sigil doubled, per CLEF's own
+  escaping rule, so a `@t` arriving over the cluster wire cannot forge the
+  record's timestamp.
+
+- **`SplunkSink` — the HTTP Event Collector** (#1160).  A batch goes to
+  `/services/collector/event` with `Authorization: Splunk <token>`.  Events
+  are concatenated back to back rather than wrapped in a JSON array —
+  newer Splunk versions accept an array, but concatenation is the batch
+  format every version understands.
+
+  `fields` carries indexed fields flat, because HEC rejects a nested value
+  there and the key only works on the `/event` endpoint at all.  `host`
+  defaults to the actor system's name.
+
+- **`SyslogSink` — RFC 5424 over UDP, TCP and TLS** (#1161).  The one
+  integration that needs no vendor: rsyslog, syslog-ng, journald's
+  forwarder, Papertrail and a long tail of appliances all speak it.
+
+  ```
+  <134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+  ```
+
+  The priority is `facility · 8 + severity`; `facility` defaults to 16
+  (`local0`), the range reserved for applications.  `APP-NAME` defaults to
+  the actor system's name.
+
+  The structured-data element is deliberately `-`: a well-formed `SD-ID`
+  needs an IANA private enterprise number, and inventing one would file
+  records under somebody else's identifier.  Fields ride in `MSG` in the
+  same `{k=v}` form the console uses.
+
+  Stream framing defaults to `octet-counting` (RFC 6587) — the only framing
+  that survives a message containing a newline, which a stack trace always
+  does — and counts **bytes**, so a multi-byte character cannot make the
+  receiver cut the frame short.  `lf` is available for receivers that
+  accept nothing else, and collapses the newlines it cannot represent.
+
+- **`redactUrlCredentials` and `redactedUrlLabel`** (#590, #592).  Both are
+  exported from the package root, next to `safeStringify`.  The framework
+  runs every connection URL it reports through them, but it cannot redact
+  what your own log line prints.  `redactUrlCredentials(value)` masks the
+  userinfo and changes nothing else, and is a strict no-op on anything
+  without a `scheme://…@` authority, so it is safe to apply to a value that
+  only might be a URL.  `redactedUrlLabel(value)` goes further and reduces a
+  URL to a stable identity — scheme, host, port and path — dropping the
+  query string as well, for a line you emit repeatedly.  Both are also what
+  you call inside a `MultiSinkLogger` `transform` when a credential reached
+  a record's fields rather than its message.
+
+- **`cluster_envelope_from_mismatch_total{frame}`** (#121).  It counts
+  envelopes whose payload names a sender other than the connection they
+  arrived on.  Nothing the node does depends on that field any more, but a
+  claim contradicting the connection is still worth a number: it is either a
+  client old enough to still send it and wrong about its own address, or
+  someone probing whether this node routes on payload, and an operator wants
+  to see both.  A matching claim is not counted — that is the compatibility
+  direction that has to keep working.  It is a new family rather than a fifth
+  reason on `cluster_gossip_records_refused_total`, whose subject is a
+  gossiped member record a merge-path guard refused: this is neither a
+  gossip record nor a refusal, since the envelope is delivered and only the
+  hint in it ignored.  The `frame` label is the wire kind, drawn from code
+  and never from the payload, so the series count is bounded by how many
+  wire handlers make the check — one today — and the same question asked of
+  another seam lands as a second label value instead of a second metric
+  name.  The claimed address is deliberately neither a label nor log text: as
+  a label it is one series per address a sender cares to invent, and as log
+  text it is an unvalidated payload string.  The log line is `debug` and the
+  counter carries the signal, because every envelope is its own frame and a
+  warning per envelope would let a client write the node's log at line rate.
+
+- **A gRPC client can now be faked without installing the `@grpc/*` peer
+  dependencies** (#1040).  `GrpcClientActor.createServiceClient()` is a
+  protected hook holding the module load and client construction that used
+  to sit inside `connectImplementation` — the same test seam
+  `JetStreamActor.createNatsConnection` provides — and the structural shims
+  an override has to satisfy (`GrpcServiceClient`, `GrpcCallOptions`, the
+  four call-shape interfaces, `GrpcReadableCall`, `GrpcWritableCall`,
+  `GrpcDuplexCall`) are exported from the broker barrel.  That makes the
+  client's call sites and its client-stream registry assertable in the unit
+  suite for the first time: seven new tests cover the deadline reaching the
+  wire and the fact that the stream handle's token, not its stream id, is
+  what grants access to a stream.  The client-side `GrpcServerStreamCall`
+  interface is renamed `GrpcReadableCall` — it was module-local and collided
+  with the server actor's exported type of the same name.
+
+- **`DispatcherError` is a new event on the `EventStream`, and `Dispatcher`
+  has an optional `onError` sink** (#410).  The event carries the failing
+  dispatcher's `id`, the `cause`, and the `ActorRef` whose turn it was
+  (`null` for work handed straight to `dispatcher.execute`).  It is not an
+  `ActorLifecycleEvent` — it is no transition in an actor's life and its
+  `actor` may be `null`, so subscribing to the lifecycle base must not start
+  delivering failures.  The sink is optional, so a custom dispatcher stays a
+  two-member implementation; `ActorSystem` fills it in only when the slot is
+  free, leaving a sink you wired yourself untouched.
+
+- **`IdempotencyOptions` gained a `maxKeyLength` field, with
+  `withMaxKeyLength()` on the builder** (#607).  It bounds the accepted
+  `Idempotency-Key` and defaults to the newly exported
+  `DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH` (255).  `IdempotencyOptionsValidator`
+  rejects a non-positive or non-integer value at consume time, like every
+  other bound in the family.
+
+### Changed
+
+- **BREAKING — `Lease.release()` reports a failure instead of swallowing it**
+  (#600).  `KubernetesLease.release()` used to discard a failed DELETE and
+  resolve as though the lease had been dropped, which left the record claimed
+  on the server while the process had locally forgotten it — exactly the
+  ambiguity `LeaseMajority`'s fail-safe exists for, and what made that fail-safe
+  dead code.  It now rejects, after stopping the renewal timer so a failed
+  DELETE cannot leave a lease being quietly renewed.  Every caller inside the
+  framework already treated release as best-effort and catches.
+
+  *Migration:* wrap `lease.release()` in `.catch(...)` where it is used purely
+  as cleanup; third-party `Lease` backends should propagate a release failure
+  rather than swallow it.
+
+- **BREAKING — `HttpRequest.path` is the bare pathname on every backend**
+  (#601).  The Fastify backend passed Fastify's raw request target straight
+  through, so `GET /orders?page=2` arrived as `path: '/orders?page=2'` on
+  the default backend while Express and Hono both reported `'/orders'` — the
+  field's meaning depended on which backend was serving, which is exactly
+  the kind of divergence a backend-agnostic request type exists to prevent.
+  It is now the pathname everywhere, with the parameters in `query`, and the
+  contract is documented on the field itself so the next backend has
+  something to normalise against.
+
+  *Migration:* code that read the query out of `request.path` on Fastify
+  must read `request.query` instead.  Nothing typechecks this: a
+  response-cache key built from `request.path` alone silently stops varying
+  by query, and a hand-rolled `request.path.split('?')[0]` quietly becomes a
+  no-op.  Debug access logs on Fastify now print the pathname only, which
+  matches what the other two backends already logged.
+
+- **BREAKING — Every HTTP backend now caps a request body at the same 1
+  MiB** (#357).  Express and Hono each hardcoded 10 MiB while Fastify was
+  never handed a `bodyLimit` at all and sat on its own 1 MiB default, so how
+  large a request the framework accepted changed with the backend rather
+  than with anything the application asked for.  The shared value is
+  `DEFAULT_HTTP_MAX_BODY_BYTES` in the new `src/http/Constants.ts` — 1 MiB
+  rather than 10 because it is the stricter of the two and the number the
+  default backend already enforced; raising it instead would have widened
+  the accept-anything window for every application that never made a choice.
+  Lift it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)`
+  on the Express and Hono backend options, `bodyLimit` in the
+  `FastifyBackend` options bag.
+
+  *Migration:* an Express or Hono backend that relied on the implicit 10 MiB
+  cap now answers 413 above 1 MiB.  Restore the old cap explicitly:
+  `ExpressBackendOptions.create().withMaxBodyBytes(10 * 1024 * 1024)`,
+  likewise `HonoBackendOptions`.
+
+- **BREAKING — Raising a Hono route's `maxFrameBytes` above 1 MiB no longer
+  lets frames over 1 MiB through** (#586).  Backends cannot see a route's
+  policy when they bind — it is resolved lazily on the first connection — so
+  every backend installs the shared 1 MiB default as its transport limit.  On
+  Express and Fastify this has been true since the WS-3 fix; the Hono
+  transport cap now extends it to the third backend.  A route configured for
+  larger frames still has them cut off by the runtime, and because Bun drops
+  the connection rather than sending a policy close, the peer observes an
+  abnormal close (1006) instead of the application layer's clean 1009.
+  Lowering `maxFrameBytes` is unaffected.
+
+  *Migration:* if a Hono WebSocket route relies on frames larger than 1 MiB,
+  put a proxy with a matching frame limit in front of it or keep the route
+  on Express/Fastify until #373 makes the transport cap configurable — the
+  route-level `withMaxFrameBytes(...)` no longer raises it on its own.
+
+- **A decompression-cap violation now reports one wording whichever
+  mechanism caught it** (#580).  zlib's own `Cannot create a Buffer larger
+  than N bytes` names neither the algorithm nor the fact that a configured
+  bound stopped the read, and it is the text an operator sees — the snapshot
+  store re-throws a decode failure as-is and the durable-state store wraps
+  it in a `JournalError` whose own message only says "integrity / decode
+  failure".  All three algorithms now throw `<algorithm> decompression
+  exceeded maxOutputBytes=<n>`, with a tail that distinguishes the two
+  mechanisms: `(aborted before the output was allocated)` versus `(got
+  <n>)`.  Anything matching on the raw zlib string for an over-cap gzip read
+  needs updating.
+
+- **BREAKING — The gRPC server's four call shims now share one exported
+  `GrpcCallMetadata` type** (#611).  Each previously declared `metadata?: {
+  get?: (key: string) => string[] }` inline, describing a method nothing
+  ever called — reading a full header set needs `getMap()`, which the shim
+  did not expose.  `GrpcServerUnaryRequest` and `GrpcServerReadableCall` are
+  exported so a caller can build a fake call or host the health service
+  standalone, so the shape change is visible from outside.
+
+  *Migration:* a hand-built fake call object declares `metadata?:
+  GrpcCallMetadata` and supplies `getMap()` in place of the former `get()`;
+  the type is re-exported from the broker barrel.
+
+- **BREAKING — `DEFAULT_MIME_TYPES` now has a null prototype instead of only
+  being frozen** (#608).  Freezing blocked writes and said nothing about
+  reads, and the table is public API — a downstream
+  `DEFAULT_MIME_TYPES[ext]` reproduced the same prototype-chain defect in
+  the caller's own file.  Bracket reads, `Object.keys`, `in`, spreading and
+  `JSON.stringify` are unaffected, and the 44 entries are unchanged.
+
+  *Migration:* `DEFAULT_MIME_TYPES.hasOwnProperty(ext)` and string-coercing
+  the map now throw — use `Object.hasOwn(DEFAULT_MIME_TYPES, ext)` and
+  `JSON.stringify(...)`.  It also logs as `[Object: null prototype] { … }`.
+
+- **`DeathPactError` is documented as manual-use only, and tests now hold
+  that line** (#453).  The class is public API with no producer anywhere in
+  `src/`, and both halves of that are the contract: the runtime never raises
+  it, and an application throws it deliberately when a watched actor's death
+  leaves the watcher without a purpose.  Until now that contract lived in a
+  single JSDoc line, reachable only through the generated API reference —
+  nothing stopped it from being deleted, and a half-implemented automatic
+  throw would have turned nothing red.  The death-watch page (EN + DE) gained
+  an *Ignoring a `Terminated`* section covering what an ignored death
+  actually costs in each API — a silent no-op under `Actor.onReceive`, a
+  supervision restart under the `match(…).exhaustive()` idiom this project
+  documents everywhere, dead letters in the typed API — plus a worked
+  example of raising the error yourself and letting a decider, rather than
+  the framework, price a broken pact.  Three tests in `DeathWatch.test.ts`
+  pin it: an ignored `Terminated` raises nothing and the watcher keeps
+  processing; an application-thrown `DeathPactError` reaches supervision
+  carrying the dead actor's path; and a `Terminated` that no `.exhaustive()`
+  arm covers fails as ts-pattern's own error rather than as a death pact.
+  The JSDoc's "an unhandled Terminated is swallowed" went with it, because
+  there is no framework-level swallow: the cell dispatches the signal and
+  reads nothing back.  That is also precisely why no pact can be automatic —
+  `Actor.onReceive` returns `void`, so "handled" and "ignored" are
+  indistinguishable from the outside.  Raising it automatically still waits
+  on the dedicated termination hook in #662.
+
+- **BREAKING — `serializeCookie` is now safe by omission** (#626).  An
+  attribute the caller does not mention resolves to the strict end —
+  `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` — so
+  `serializeCookie('session', id)`, previously a bare `session=<id>` with no
+  protection at all, is a cookie you can ship, and one that satisfies the
+  `__Host-` prefix rules without further argument.  `Path` is always emitted,
+  because omitting it lets the browser derive the scope from the request
+  URI, covering `/account` or `/` depending on which endpoint happened to
+  mint the cookie.  The three Secure-related throws (`SameSite=None`,
+  `__Secure-`, `__Host-`) consequently fire only on an explicit `secure:
+  false`, which is the point: they existed to catch a cookie the browser
+  would silently drop, and an omitted attribute no longer produces one.  The
+  CSRF middleware is unaffected — it already passed every attribute
+  explicitly.
+
+  *Migration:* a cookie that same-origin JS must read now needs `httpOnly:
+  false`, and a plain-HTTP deployment needs `secure: false`; a scope
+  narrower than `/` needs `path` spelled out.
+
+- **BREAKING — `@hono/node-ws` must be 1.2.0 or newer for `websocket()` routes
+  on the Hono backend under Node** (#586).  The transport frame cap added in
+  this same release installs itself by writing `maxPayload` onto the `ws`
+  server the adapter exposes as `wss` — a member that only exists from 1.2.0.
+  On 1.0.x and 1.1.x that server is a closure variable with no way out, so the
+  cap cannot be installed at all, and the backend refuses to build the
+  WebSocket bridge rather than bind an uncapped socket where a peer could
+  buffer 100 MiB per frame.  The declared peer range moves from `^1.0.0` to
+  `^1.2.0` so the supported window matches what the code can actually run on;
+  it was previously wider than the implementation, which turned a working
+  server into a startup error for anyone pinned below 1.2.0.
+
+  *Migration:* on the Hono backend under Node, upgrade the peer dependency —
+  `npm install @hono/node-ws@^1.2.0`.  Nothing else is affected: Bun and Deno
+  get their WebSocket helpers from `hono` itself and never load this package,
+  and a Node application with no `websocket()` route never reaches the bridge.
+
+### Removed
+
+- **BREAKING — the ClusterClient envelope no longer carries a sender field**
+  (#121).  `cluster-client-envelope` used to repeat, on every message, the
+  address the client's `hello` handshake had already established.  The
+  receptionist stopped reading it when it started replying down the
+  connection the request arrived on: the payload's copy was absent often
+  enough to throw a `TypeError` out of the frame-dispatch loop, and when
+  present but forged it made the node send a reply — and open a connection —
+  to an address of the sender's choosing.  What was left was a field with
+  exactly one correct value, and that value is one the receiver already
+  holds.  That is not information, it is a second answer to a question that
+  already had one, and it survives only until the next reader reaches for
+  the cheaper of the two.  A client states who it is once now, in the
+  handshake, where the transport binds the claim to the socket.
+
+  *Migration:* `ClusterClientEnvelopeMessage` is publicly re-exported and no
+  longer has `from`; drop the field if you compose the frame yourself.
+  Compatibility runs one way and only one way: a current node still serves a
+  pre-upgrade client that sends the field — the value is ignored, and a
+  value that contradicts the connection is counted on the new mismatch
+  metric.  The reverse does not work: a current client against a node older
+  than v0.14.0 hits `NodeAddress.fromJSON(undefined)` and throws out of that
+  node's frame-dispatch loop.  Upgrade the cluster nodes before the clients.
+
+- **The internal WebSocket path matcher is gone** (#623).
+  `matchWebsocketPattern` existed only because, as its own doc comment put
+  it, "the `upgrade` event bypasses the router entirely" on the Express
+  backend.  Now that upgrades are dispatched through the app, Express matches
+  the pattern and populates `req.params` itself, so the hand-rolled matcher
+  has no caller.  It was never exported from a barrel, so nothing public
+  changes.
+
+- **The dead raw WebSocket upgrade-response writer is gone, taking an
+  unreachable response-splitting hole with it** (#624).
+  `writeRawHttpResponse` stripped CR/LF from every app-supplied header name
+  and value but interpolated the app-supplied `contentType` raw onto the
+  content-type line above the header/body boundary, so a guard echoing
+  attacker-influenced data there could inject header lines and a body.  Its
+  only caller vanished when #623 rerouted Express upgrade rejections through
+  a synthesised `ServerResponse`, whose `setHeader` makes the runtime itself
+  reject a CR or LF — which removes the injection class structurally — so
+  the module was deleted rather than patched.  It was never exported from a
+  barrel and the package `exports` map has no wildcard subpath, so no
+  consumer could reach it.
+
+### Fixed
+
+- **A lease built without `name`, `owner`, `ttlMs` — or `namespace` for the
+  Kubernetes backend — is now rejected at construction** (#596).  It used to
+  come up silently and then disable mutual exclusion on the wire: without an
+  `owner` the CREATE/PUT carries no `spec.holderIdentity` (the undefined key
+  drops out of the JSON body) and a holder-less lease reads as free to every
+  node, so every `acquire()` returned true; without `ttlMs` the expiry is
+  `NaN`, which is never later than now, and the renewal interval is `NaN` too,
+  which `setInterval` clamps to about a millisecond.  Both shipped backends
+  were affected.  Required-ness is checked separately from the value rules,
+  because the options-validator helpers are contractually a no-op on unset
+  fields.
+
+- **`LeaseMajority`'s release-on-abandon and fail-safe do something now**
+  (#600).  The release fired from the timeout branch while the acquire it meant
+  to undo was still in flight — and a lease is a no-op to release before its
+  acquire resolves, so the abandoned attempt went on to land, take the lease
+  and renew it forever on a node whose own strategy had written the attempt
+  off.  An acquire is abandoned two ways: it blows `acquireTimeoutMs`, or a
+  partition heal or changed unreachable set retires its epoch — the second being
+  the likelier, since the acquire budget is 5 s by default.  Both are now
+  tracked the same way: the undo waits for the abandoned attempt to report back
+  and releases only if it won, and no fresh acquire starts in the meantime — a
+  same-owner re-acquire would win trivially and claim survival, and a release
+  landing after that would delete the very record being claimed.  The fail-safe
+  on a failed release, previously unreachable for both shipped backends, is now
+  both reachable and covered.
+
+- **Directory listings classify entries by the followed `stat`** (#575).  An
+  in-root symlink to a directory was rendered as a file — it carried the
+  directory's size and linked without a trailing slash — because the directory
+  flag came from the raw directory entry while size and mtime came from the
+  followed `stat`.  Both now come from the same source, so a link to an
+  in-root directory is listed as a directory.  The internal `readDirectory`
+  helper returns names accordingly; directory-entry type flags are unreliable
+  anyway (a filesystem answering `DT_UNKNOWN` reports every kind as false).
+
+- **Query-bearing URLs no longer produce mangled redirects and headings on
+  the Fastify backend** (#601).  Everything that builds a target by appending
+  to `HttpRequest.path` was doing so with the query still inside it, and so
+  was correct on two backends and wrong on the default one: the static-file
+  directory redirect answered `Location: /static?a=1/` instead of
+  `/static/?a=1`, breaking the query-preserving redirect the static-files
+  documentation already promised; the DevTools shell redirect answered
+  `Location: /devtools?x=1/`, putting the trailing slash inside a query
+  value and defeating the relative-asset resolution that redirect exists to
+  guarantee; the directory listing was headed `Index of /files/sub?a=1`; and
+  WebSocket handlers received a query-bearing `upgrade.path`.  All four
+  follow from the pathname fix and needed no change of their own.
+
+- **A TCP peer can no longer stall the event loop by never completing a
+  frame** (#610).  The `lines` extractor decoded all buffered bytes and
+  restarted the delimiter search at offset 0 per chunk — O(buffered) each
+  time, O(N²) over a delimiter-free stream, entirely inside a cap the docs
+  call a DoS limit.  The scan now runs over the raw bytes against the encoded
+  delimiter, only completed lines are decoded, and the search position is
+  carried across chunks.  Appending the chunk was the other half, and the
+  larger one: the inbound buffer was re-allocated and copied in full per
+  chunk, so the stream stayed O(N²) with the scan already fixed.  Both TCP
+  actors now accumulate into a buffer grown by doubling behind a read cursor —
+  sized from what arrived rather than from any length a peer claims, compacted
+  in place instead of reallocated, and released once it drains above 64 KiB.
+  256 KiB delivered in 64-byte chunks now moves 516 KiB instead of 512 MiB,
+  and `length-prefixed` loses its per-pass re-slice of the leftover along the
+  way.  The same
+  rewrite fixes a corruption bug: a chunk boundary splitting a multi-byte
+  character used to be decoded to U+FFFD and re-encoded into the leftover,
+  so the continuation byte arriving next could never repair it.  Applies to
+  the listener too, per accepted connection.
+
+- **`maxLineLen` now counts bytes, the unit its validator has always
+  claimed** (#752).  Both cap checks compared the length of the decoded
+  string, i.e.  UTF-16 code units: 1,048,576 CJK characters are exactly the
+  default cap in code units and 3,145,728 bytes, so a peer could hold three
+  times the configured limit with no overflow reported.  This is a semantic
+  tightening you can observe — the same `maxLineLen` now trips up to 3x
+  earlier on a non-ASCII line protocol, and the 1 MiB default means 1 MiB of
+  bytes rather than up to 3 MiB.
+
+- **A rejected WebSocket upgrade now reaches the client on Bun** (#623).  The
+  Express backend wrote its rejection straight to the hijacked socket, which
+  under Bun 1.3.1 delivered zero bytes — a client refused by an upgrade
+  guard saw a bare connection close instead of the guard's 401, while the
+  same code under Node delivered the full response.  Routing the rejection
+  through a `ServerResponse` bound to that socket delivers it on both.  Deno
+  delivers neither, before or after: its `'upgrade'` socket is write-only in
+  the direction of a completed handshake, so a refused client there sees no
+  response *and* no close, and only notices when its own timeout fires.  The
+  handshake is refused correctly on all three either way — only the
+  explanatory body was missing.
+
+- **A body-size refusal now reads the same whichever backend served it**
+  (#357).  All three answer 413 with the `text/plain` body `Payload Too
+  Large` and the server-wide default response headers, written through the
+  backend's own response writer.  Fastify used to let its own
+  `FST_ERR_CTP_BODY_TOO_LARGE` JSON envelope through — and, once
+  `withErrorHandler` was installed, reported the refusal as a 500, because
+  the app-level hook maps every non-`HttpError` to one.  That hook is now
+  installed for every server and answers the refusal itself: a body cap is a
+  transport decision, and the Express and Hono backends never consulted the
+  user's error handler for it either.  Every other error on a server without
+  an error handler is still handed back to Fastify's default serialisation
+  untouched.
+
+- **The Express backend refuses an over-long declared `Content-Length`
+  before reading a byte of the body** (#357).  It used to stream and count
+  instead, so a client announcing a gigabyte still had a full cap's worth
+  read and buffered before the 413 went out.  Hono and Fastify already
+  refused up front; the shared predicate now sits beside the backend
+  contract in `HttpServerBackend.ts`.  A chunked body that declares no length
+  is measured as it arrives on Express and Fastify — that is the one path a
+  size cap cannot short-circuit without help from the runtime adapters.  On
+  Hono it is still buffered whole before the check, because the adapter hands
+  the body over as one `arrayBuffer()`; that gap is not closed here.
+
+- **A work unit that throws on a dispatcher now reaches the system logger
+  and the event stream** (#410).  It went to `console.error` and nowhere
+  else, which made it invisible to every configured log sink, to
+  `JsonLogger`, to MDC and to tests — the three unit tests that covered it
+  did so by silencing the console and asserting only that nothing
+  propagated.  That was already a blind spot before the multi-sink logging
+  work and a much bigger one after it.  The catch sits at the actor cell, so
+  it attributes the failure to an `ActorRef` and covers per-actor and
+  third-party dispatchers the system never sees; `console.error` remains
+  only as the last resort for a dispatcher used outside an actor system.
+
+- **zstd on Deno now fails with a sentence instead of dying inside a missing
+  native binding** (#580, #321).  Deno's `node:zlib` exports
+  `zstdCompressSync` and `zstdDecompressSync` as present functions with no
+  binding behind them, and both resolvers accepted a candidate because the
+  symbol existed.  A read therefore threw `binding.ZstdDecompress is not a
+  constructor` with the documented `fzstd` fallback sitting unreachable
+  underneath it, and a write threw `binding.ZstdCompress is not a
+  constructor` downstream of the `probeCompressionAvailability` call that
+  exists to catch exactly that at plugin-init — the class of bug #321
+  closed.  Both resolvers now select by calling a candidate against a 17-byte
+  canary frame, once per process and memoised alongside the implementation
+  it picked.
+
+- **The gRPC documentation no longer implies `deadlineMs` bounds a streaming
+  call** (#611, #577).  The client-side deadline reaches unary calls only, by
+  design — a gRPC deadline covers a whole RPC, so one value cannot both fail
+  a request/response call promptly and let a long-lived stream run.  The
+  pages still described an unqualified per-call deadline, which read as
+  though the three streaming modes were covered too.  Both language versions
+  now name the call class it applies to and say why the others are left
+  unbounded.
+
+- **The in-memory-cache page claimed `setIfAbsent` moves a key to the
+  most-recently-used end; it does not** (#607).  It returns early on a
+  present key without touching the iteration order, so a claimed idempotency
+  record is not kept hot by repeated probes and ages towards eviction from
+  the moment it is stored -- only `get`, `incr` and `mget` bump.  The HTTP
+  overview's middleware sample also passed a `Route` into
+  `cached(...)(...)`, which takes a handler, and its English prose still
+  called the three middlewares `Route -> Route` transformers where the
+  German mirror had already been corrected to "handler wrapper".
+
+- **The documentation no longer claims that cross-node messages travel
+  through the pluggable serializer stack** (#450).  Four pages per language —
+  `cluster/refs-across-nodes`, `cluster/transports`, `fundamentals/messages`
+  and `fundamentals/pattern-matching` — described a
+  `SerializationExtension`-mediated cluster wire with selectable CBOR, told
+  readers the serializer reads `kind` to reconstitute a value, and suggested
+  `TcpTransport` over loopback to exercise the CBOR codec.  In fact the
+  cluster frames each envelope with a bare `JSON.stringify`, no cluster
+  transport can reach the CBOR codec, and the wire carries no type identity
+  of its own.  The pages now state that messages must be JSON-safe, that a
+  `bigint` throws where a symbol is silently dropped and that registering a
+  serializer changes neither, and that `kind` is what the receiving actor's
+  `match(...)` dispatches on.  German mirrors updated 1:1.  The
+  serializer-on-the-wire work itself remains open.
+
+### Security
+
+- **GELF field names cannot be forged by a remote peer** (#1155, relates to
+  #573).  The MDC can carry values that arrived over the cluster wire, so
+  the GELF sink sanitises additional-field names to what the spec permits,
+  drops the forbidden `_id`, and drops any field that would land on one of
+  GELF's own top-level keys — `short_message`, `timestamp`, `level`,
+  `host`.  Without that, a peer could overwrite the message, the severity
+  or the origin of the record reporting on it.
+
+- **A redaction seam for log records** (#1151).  `MultiSinkLoggerOptions`
+  takes a `transform` hook applied once, before fan-out, that rewrites a
+  record or drops it by returning `null` — one place to mask a token or a
+  credential-bearing URL that reached the MDC, rather than one per sink
+  (relevant to #590, #592, #741).  No sink option that carries a credential
+  is readable from HOCON.
+
+- **BREAKING — a recorded gossip frame can no longer be played back while its
+  sender is still a member** (#112, relates to #940).  A gossip frame is a
+  snapshot of the member map, and a
+  member's version only moves when its status does, so a frame captured off
+  the wire stayed valid indefinitely.  Against a converged receiver that was
+  harmless — every record lost the "higher version wins" comparison — but not
+  against an entry the receiver had *deleted*: the failure detector's down
+  path deletes outright so a healed partition can re-discover the peer, an
+  expired tombstone is pruned for the same reason, and the branch that files a
+  first sighting had no lower version bound at all.  Replaying a downed
+  member's own pre-down record therefore brought it back at its old version,
+  `up`, carrying its roles — and roles are what shard placement, singleton
+  hosting and downing quorums are computed from.
+
+  Every frame now carries a sequence its author stamps, seeded from that
+  node's wall clock at startup so a restart out-numbers its own previous
+  incarnation, and a receiver drops any frame that does not out-number the
+  highest it has accepted from that connection peer.  There is no new knob:
+  the comparison is between a peer and itself, so it needs no clock-skew
+  budget, and a sequence too far ahead to be plausible is merged but never
+  adopted as the mark — otherwise one frame numbered `Number.MAX_SAFE_INTEGER`
+  would silence the real node forever.  Refusals are reported through the
+  existing `cluster_gossip_records_refused_total` under a fourth reason,
+  `replayed-frame`, rather than a new metric series.
+
+  *Migration:* `GossipMessage` gains a required `sequence` field, and a frame
+  without it is refused at the decode boundary.  Nothing outside the framework
+  composes gossip frames, so application code is unaffected — but **a rolling
+  upgrade is not gossip-compatible in either direction**: an upgraded peer
+  refuses an old node's frames for the missing field, and an old node ignores
+  the new one.  Upgrade the cluster in one step, or accept that membership
+  does not converge while both versions are running.
+
+- **Cluster frame decoding is linear in the bytes received** (#588).
+  `FrameDecoder` rebuilt its whole accumulator on every arriving chunk, and
+  the peer chooses how a frame is split across TCP writes — so assembling one
+  frame cost work quadratic in the chunk count.  A frame just under the 16 MiB
+  cap delivered in ~1400-byte writes is roughly 12 000 chunks and about 100 GB
+  of memory copying, an amplification of ~6000x on bytes the attacker never
+  had to send, on a path that runs before the `hello` gate and therefore needs
+  no membership and no certificate.  The decoder now appends into a buffer it
+  grows by doubling, so each byte is copied once on arrival.  Growth is sized
+  from what actually arrived and never from the length a peer claims, which is
+  what keeps the pre-sizing variant of the original OOM vector closed, and a
+  buffer larger than 64 KiB is released once it drains so a single oversized
+  envelope does not pin memory per connection.
+
+- **An idle inbound cluster socket is now bounded in both directions** (#588).
+  A connection holding a half-received frame is closed if no further byte
+  arrives within 30 seconds — a stall bound rather than a budget for the
+  frame, re-armed on every chunk, so a peer shipping a large frame over a
+  congested link is never punished for being slow.  Concurrent inbound
+  connections are capped at 1024, refusing the newest rather than evicting an
+  established peer, because eviction would let an attacker push real members
+  off the node.  The handshake itself is on the same clock in both directions,
+  from the moment each connection exists: an accepted socket that has not sent
+  its `hello` within `HANDSHAKE_TIMEOUT_MS` is closed and gives its slot back.
+  That is the case a stall deadline cannot see — a socket sending nothing is not
+  stuck mid-frame, so nothing about it is tracked — and without it the cap would
+  have become the exploit rather than the defence, since silent sockets held
+  every slot for the life of the process.  Only the outbound dial was ever
+  bounded before; on Bun the inbound gap was reachable even under mTLS, because
+  a socket's `open` callback fires before the TLS handshake completes, so the
+  slot was taken while there was still no certificate to check.  The bound is on
+  the handshake and not on the connection, and it is the same deadline the
+  dialling side already applies to itself from an earlier moment, so a peer that
+  is still trying has always given up first and an established peer idle between
+  gossip rounds is never dropped.
+
+- **BREAKING — `getFromDirectory` enforces `symlinks: 'within-root'` on every
+  filesystem hop** (#575).  The confinement check ran once, against the path a
+  URL resolved to, so the two hops a directory request takes afterwards
+  escaped it: the index file it serves, and every entry of a browsable
+  listing.  The static directives use `stat`, not `lstat`, so a link is
+  followed silently and `isFile` says nothing about where the bytes live —
+  under the documented default policy `GET /static/sub/index.html` was
+  correctly refused while `GET /static/sub/` returned the out-of-root file's
+  bytes, and a listing exposed out-of-root names, sizes and mtimes.  The
+  canonical root is now resolved once per request and checked against each
+  hop: an escaping index file counts as absent (the next index name is tried,
+  then the listing or a 404) and an escaping listing entry is omitted.  The
+  mount root's own `index.html` was affected the same way, which is the
+  likelier real-world precondition — a build output or a package-manager link
+  farm plants exactly that link.
+
+  *Migration:* a tree that deliberately links outside its root now 404s under
+  the default policy, and those entries disappear from directory listings.
+  Opt in with `withSymlinks('follow')` (field `symlinks: 'follow'`).
+
+- **BREAKING — CSRF origin checks compare whole origins** (#604).
+  `csrfProtection` and `requireSameOrigin` compared bare hosts, so
+  `http://app.example` — and any other scheme that parses an authority,
+  `foo://` and `file://` included — passed as same-origin for an HTTPS site.
+  The `allowedOrigins` arm degraded the same way, silently matching by host
+  despite both option families documenting "full origins".  Both arms now
+  compare normalised origins (scheme + host + port, default port dropped,
+  case-insensitive), and an opaque `Origin: null` or an origin-less scheme is
+  rejected outright.  Since a `Host` header carries no scheme and a forwarded
+  scheme header is client-settable and untrusted, the site's own scheme comes
+  from a new `expectedScheme` option on both option families: default
+  `'https'`, except that `csrfProtection` reads `'http'` when `cookie.secure`
+  is explicitly `false`, because turning off the Secure cookie already
+  declares a plain-HTTP deployment.  `requireSameOrigin` also gained a
+  `SameOriginOptionsValidator` — it had no construction-time validation
+  before.
+
+  *Migration:* a plain-HTTP site using `requireSameOrigin` must add
+  `.withExpectedScheme('http')` or it will reject its own unsafe-method
+  requests; `allowedOrigins` entries must be full origins
+  (`'https://app.example'`, not `'app.example'`) or construction throws an
+  `OptionsError`.
+
+- **BREAKING — the CSRF cookie defaults to the `__Host-` prefix, and the HMAC
+  claim is corrected** (#605).  The module header, the `verifyToken` JSDoc and
+  both docs pages stated that a cookie an attacker plants fails HMAC
+  verification.  It does not: a token is bound to the server secret and to
+  nothing else, and every safe-method request — anonymous ones included — is
+  handed a freshly signed one, so a planted signed pair verifies.  What
+  actually closes both vectors named there is the cookie name, because a
+  `__Host-` cookie can be written neither by a sibling subdomain (the prefix
+  forbids `Domain`) nor from a plaintext origin (it requires `Secure`).
+  `DEFAULT_CSRF_COOKIE_NAME` (`'__Host-csrf-token'`) is now the default for
+  both `csrfProtection` and `readCsrfToken`, which each carried their own
+  hardcoded literal, and the prefix's attribute rules are checked by
+  `CsrfOptionsValidator` when the middleware is built rather than by
+  `serializeCookie` while every response is assembled — a wiring-time
+  `OptionsError` instead of a 500 per safe-method request.
+
+  *Migration:* the cookie is now `__Host-csrf-token`, so browser code reading
+  `document.cookie` must use the prefixed name, and cookies in flight under
+  the old name are ignored (the next safe-method request mints a fresh token).
+  A plain-HTTP deployment must opt out with `withCookieName('csrf-token')`,
+  since a `__Host-` cookie cannot be set over plain HTTP at all.
+
+- **Cassandra: the exported CQL DDL helpers now validate what they
+  interpolate** (#616).  `keyspaceDdl` spliced `connection.keyspace` straight
+  into `CREATE KEYSPACE IF NOT EXISTS`, emitted every `replication.dataCenters`
+  key inside single quotes unescaped, and concatenated the replication factors
+  in as bare numbers; `tagIndexDdl` had the same gap on its keyspace and
+  table.  This is the earliest of the Cassandra identifier sites because it
+  runs before any store's own guard — the journal and the snapshot store both
+  call `keyspaceDdl` from `doStart()` ahead of `ensureTables()`, and the
+  remember-entities store called it with no guard at all — so exactly one
+  attacker-shaped `CREATE KEYSPACE` reached the cluster before the next
+  statement failed.  Identifiers now go through `assertSafeIdentifier`.
+  Data-center names are CQL *string* values rather than identifiers, so they
+  are quote-escaped instead and keep the hyphens an `Ec2Snitch`-derived name
+  like `us-east-1` carries; replication factors must be integers, checked at
+  runtime because the connection object is routinely built from environment
+  variables.
+
+  Together with the two entries that follow, this closes the raw-interpolation
+  sites that the 0.13.0 note for #136 already described as "the last
+  raw-interpolation gap in the Cassandra backend".  That claim was premature —
+  three more remained, plus `tagIndexDdl` and `keyspaceDdl` themselves.
+
+- **BREAKING — Cassandra tag-index queries no longer build their table
+  reference by hand** (#614).  `CassandraQuery.fetchTagPartition` concatenated
+  `keyspace.tagIndexTable` itself instead of going through
+  `CassandraJournal.qualified()`, and it was the one Cassandra site nothing
+  else covered: a query-only process never runs `ensureTables()` (skipped
+  entirely with `autoCreateTables: false`) and never appends, so both names
+  first reached CQL there, unvalidated.  The journal now exposes
+  `qualifiedTagIndexTable`, which returns the validated `keyspace.table` form,
+  and the bare name is private again — there is no longer any way to obtain
+  the unqualified name from outside, which is what kept inviting the
+  hand-built copy.  This mirrors `SqliteQuery`, which reads the table name
+  `SqliteJournal` already validated at construction.
+
+  *Migration:* `CassandraJournal.tagIndexTable` is no longer public.  Read
+  `qualifiedTagIndexTable` for the validated `keyspace.table` form, or use the
+  name you passed to `withTagIndexTable(...)`.
+
+- **Cassandra remember-entities store: both of its CQL identifier paths are
+  guarded** (#615).  `CassandraRememberEntitiesStore.qualified()` concatenated
+  `keyspace.table` raw — one string feeding four differently-shaped statements
+  — and the exported `rememberEntitiesDdl` did the same.  The DDL helper
+  mattered as much as the runtime one: unlike the sibling Cassandra stores,
+  whose `ensureTables()` builds its `CREATE TABLE` through the guarded
+  `qualified()`, this store's auto-create (on by default) calls the exported
+  helper directly, so guarding only `qualified()` would have left open the
+  door the store itself walks through.  Both now use `assertSafeIdentifier`.
+  Worth knowing for anyone who read the original report: the pre-fix failure
+  mode was quieter than described, because `ShardCoordinator` catches every
+  remember-store error and downgrades it to a `log.warn` — a bad identifier
+  degraded remember-entities to an empty entity set behind one warning line
+  rather than failing the coordinator.
+
+- **Base64 decoding no longer hands out a view into the shared `Buffer` pool**
+  (#619).  On Node and Deno, `Buffer.from(str, 'base64')` decodes into a pool
+  and returns a view at an arbitrary offset, so a decoded `__bytes__`
+  payload exposed unrelated payloads' plaintext to anything
+  that read its `.buffer` instead of the view — measured at `byteOffset` 1656
+  of a 65536-byte pool on Node 26.7.0 and offset 96 of an 8192-byte pool on
+  Deno 2.6.8, at every size from 1 byte to 8 KB.  It reached user code through
+  HTTP `entity()` bodies decoded by the default `JsonSerializer`, and through
+  every journal, snapshot and durable-state read, where `PayloadCodec` passes
+  the view straight to a custom `Serializer.fromBinary`.  Decoded bytes are
+  now copied into an exact, offset-0 `Uint8Array`.  Bun does not pool base64
+  decodes, so a unit test on the project's own runner cannot see this on its
+  own; a cross-runtime smoke case carries the guarantee on Node and Deno.
+
+- **HOCON substitutions and `Config` accessors no longer read through the
+  object prototype** (#589).  Both path lookups descended with a bare property
+  read, so every member of `Object.prototype` answered a config path:
+  `${toString}` spliced a native function into the resolved config,
+  `hasPath('toString')` returned `true`, and the typed getter behind it then
+  failed with a type error on a function instead of a missing-path error.  The
+  refusal list added in #406 covers three key names, and a blocklist can never
+  enumerate a prototype chain, so reads are now guarded positively with
+  `Object.hasOwn` — in `HoconParser.lookup`, in `Config.lookup`, and in the
+  environment fallback, where `process.env` is prototype-backed and hands back
+  a native function on Node and Deno (Bun returns `undefined`, which is why the
+  hole was invisible on the primary toolchain).  `Config.fromObject`'s deep copy
+  also gained the forbidden-key filter `deepMerge` and `stripUndefined` already
+  had, so an own `__proto__` from `JSON.parse` can no longer re-parent the
+  cloned tree.  Verified on Bun, Node and Deno via the cross-runtime smoke case.
+
+  *Migration:* a config path naming an inherited member now misses instead of
+  resolving — `hasPath('toString')` is `false`, and `${toString}` fails as an
+  unresolved substitution rather than silently yielding a function.  Declaring
+  the key in the config itself still works unchanged; an own key shadows the
+  inherited member.
+
+- **Security headers, CSP, HSTS and the request id now survive a throwing
+  short-circuit** (#606).  The four response-decorating middlewares were written
+  as `applyHeaders(await next(), headers)`, so a rejected `await` skipped the
+  decoration entirely — and throwing `HttpError` is the framework's idiomatic
+  short-circuit, which is exactly what `csrfProtection`, `BasicAuth` and
+  `BearerTokenAuth` do.  A cross-origin POST against the documented stack came
+  back as a 403 with no `X-Frame-Options`, `Referrer-Policy`, COOP, HSTS, CSP or
+  request id — and CSP and the id were unreachable by any other route, since
+  neither has a server-wide equivalent.  The four now rethrow an `HttpError`
+  copy carrying their headers, merged *under* whatever the thrower set itself;
+  anything that is not an `HttpError` is rethrown untouched, because it maps to
+  the generic 500 that deliberately carries nothing from the thrown value, and
+  those responses stay the backend seam's job
+  (`newServerAt(…).withSecurityHeaders(…)`).  Error responses therefore arrive
+  with headers they previously lacked, so a test asserting an exact header set
+  on a 401/403 may need updating.  The documented security stack also moves
+  `handleErrors` outside `csrfProtection`, so the error mapper finally sees that
+  403 while the response it hands back still flows out through the header
+  layers.
+
+- **The DevTools node agent answers the connection, not the payload** (#595).  A
+  `devtools-node-query` used to carry its own return address and the agent
+  replied wherever it pointed, so a single forged frame on the cluster port made
+  any DevTools-enabled clustered node open an outbound connection to an
+  attacker-chosen host and post it the node's entire actor tree — every path,
+  class name, mailbox depth and dispatcher — plus its figures, unprompted.  The
+  reply now goes to the peer the transport supplied, which is the connection the
+  query arrived on, and the query's return-address field is removed rather than
+  validated: a field whose only correct value is one the receiver already holds
+  can only be got wrong later.  This is the same defect class swept out of the
+  cluster in #562/#564/#572/#711, which missed this agent.  The node-to-node
+  DevTools vocabulary carries no compatibility promise, but during a rolling
+  upgrade an unpatched agent drops a patched collector's query, so those peers
+  read as stale on the overview until the upgrade finishes.
+
+- **The DevTools federation collector no longer takes a peer's word for who it
+  is** (#593).  Peer readings were cached under the address written inside the
+  report, so a member could file its figures under another node's name and
+  overwrite that node's row, or under a name no node has and conjure a peer
+  complete with a fabricated actor tree that the overview and the actors panel
+  then showed as real.  Nothing checked membership, and nothing bounded the map
+  — the only eviction pass refuses to drop an entry under an hour old, so forged
+  addresses accumulated an hour at a time.  Reports are now keyed on the address
+  the transport supplied (and that address replaces the one the report claims,
+  so the actors panel still resolves), accepted only from a node the cluster
+  currently holds as a member, capped in number with the oldest reading evicted
+  first, and capped in reported actor-tree size.  The payload check was
+  `typeof figures === 'object'`, which passed an array or a half-populated
+  object through to the cluster-wide totals where the counters are summed; every
+  counter, both latency percentiles and every mailbox-depth row must now be a
+  finite number, because one `undefined` among them used to turn every number on
+  the overview into `NaN`.
+
+- **A Kubernetes lease no longer believes the previous holder's expiry claims
+  without bound** (#598).  Liveness was computed as
+  `renewTime + leaseDurationSeconds` from two fields the previous holder wrote,
+  so one write of a 68-year duration or a `renewTime` in the year 3000 kept the
+  lease reading as held for decades — no pod ever acquires it again, no
+  singleton ever spawns — and the write needs only the Lease CRUD permissions
+  the framework's own RBAC example prescribes.  The remote duration now counts
+  for at most four times the challenger's own `ttlMs` (a generous multiple
+  rather than a straight clamp, so a rolling upgrade that raises the TTL cannot
+  make one node steal a live lease from another), a `renewTime` further ahead
+  than one TTL counts as expired, and a non-positive duration falls back to the
+  local TTL.  An unparseable `renewTime` now counts as live like a missing one;
+  it used to count as free for the taking.
+
+- **BREAKING — the pod's mounted ServiceAccount token is never paired with a
+  caller-supplied API-server address** (#599).  `apiServerUrl`, `authToken` and
+  `caCert` were merged field by field against the in-cluster credentials, so
+  naming only an `apiServerUrl` sent the cluster's own bearer token to that host
+  — a credential travelling to an address it was not issued for.  The pinned CA
+  bounded the damage, but the target of the request is operator-supplied and the
+  token is not.  The three fields are now all-or-nothing: supply all of them, or
+  none and the in-cluster mount is used whole.  `apiServerUrl` is also
+  restricted to `https`, since the client builds its request with `node:https`
+  regardless of what the URL's protocol says.
+
+  *Migration:* supply `apiServerUrl` + `authToken` + `caCert` together, or none
+  of them; a partial set now throws `OptionsError` at construction, and an
+  `http://` API-server URL is rejected.
+
+- **Every GitHub Actions workflow pins its actions to a commit SHA** (#585).
+  All 32 `uses:` references across the 11 workflow files were mutable tags.  A
+  tag is a pointer its owner can move, so an action author — or whoever takes
+  over their account — could have swapped the code that runs inside
+  `publish.yml`'s job, which holds `id-token: write` and publishes to npm with
+  provenance.  Each pin carries its release tag in a trailing `# vX.Y.Z`
+  comment, which is what keeps Dependabot updating it; drop the comment and the
+  repository silently freezes on a stale action instead.
+  `tests/unit/ci/WorkflowHygiene.test.ts` asserts both halves, because workflow
+  YAML is invisible to every other gate the project runs.
+
+- **The GitHub Pages deploy credentials are scoped to the job that deploys**
+  (#621).  `docs.yml` granted `pages: write` + `id-token: write` at workflow
+  level, so the build job — the one that installs the root and docs dependency
+  trees, downloads Chromium and runs `astro build` — held them too, even though
+  its only Pages step authenticates with the Actions runtime token and needs no
+  scope at all.  Both grants moved down to `deploy`, which is a single step and
+  no checkout.  The seven workflows that declared no permissions at all now
+  state `contents: read` explicitly, so a change to the repository default
+  cannot silently widen them.
+
+- **The README-badge push no longer shares a job with the test suite** (#622).
+  `test.yml` ran the entire devDependency tree in a job holding
+  `contents: write` plus a git credential `actions/checkout` had persisted into
+  `.git/config`, purely so the last two steps could update a badge — reachable
+  from any postinstall script in the installed tree.  The suite now runs with
+  `contents: read` and `persist-credentials: false`, and a separate `badge` job
+  that installs nothing consumes its numbers and pushes.  The suite still runs
+  exactly once.  Every `bun install` in CI is `--frozen-lockfile`, so no check
+  can pass against a dependency set the lockfile never recorded; note that
+  Dependabot does not regenerate `bun.lock`, so its pull requests fail until it
+  is synced by hand (#817).
+
+- **The generated DevTools UI bundle shows up in diffs** (#620).
+  `.gitattributes` had marked `src/devtools/generated/uiAssets.ts` `-diff` since
+  the rule was first written, which made git and GitHub report it as binary.
+  `bun run check:ui` proves only that the committed `source-hash` matches the UI
+  sources it claims — it deliberately does not compare the bundle's bytes, since
+  those are not reproducible across operating systems and Bun releases — so
+  nothing binds the embedded payload to those sources, and `-diff` removed the
+  one remaining way a human could notice.  (GitHub still collapses a
+  `linguist-generated` file by default, so a reviewer has to expand it.)  A payload edited without touching
+  `devtools-ui/**` now shows up as `gzipBase64`, `size` and `etag` moving while
+  `source-hash` stays put.  `linguist-generated`, `text` and `eol=lf` are
+  unchanged, and a regenerate is 7 changed lines, only 2 of them large.
+
+- **BREAKING — A rejected connection URL is no longer reported with its
+  password** (#590).  `OptionsValidator.url()` and the connection-URL rules
+  of the Mongo, libSQL, D1 and DynamoDB stores rendered the value exactly as
+  given, and a connection URL is the one setting that routinely carries a
+  secret inline (`amqp://user:pass@host/vhost`,
+  `mongodb+srv://user:pass@cluster`, `redis://:token@host`).  That message is
+  not private: `BrokerActor.preStart` runs the validator, `ActorCell`
+  catches the throw and logs it at ERROR, so one mistyped protocol shipped
+  the password to whatever log aggregator the deployment has — and
+  `OptionsError.value` carried the raw string too, which the default
+  `ConsoleLogger` prints alongside.  The userinfo is now replaced with `***`
+  in both the message and `OptionsError.value`.  Nothing else about the value
+  changes — no normalisation, no trailing slash, no lowercased host — so you
+  still recognise what you typed, and a value that is not a URL at all
+  (`":memory:"`, `"file:local.db"`) comes back verbatim.  All fourteen `url`
+  rule call sites benefit, including the six log-shipping sinks (Loki,
+  Splunk, Seq, GELF, Parseable, OTLP).  Note this masks the userinfo half only:
+  a credential a sink carries in a query parameter is not touched, and in this
+  framework those sinks take their token in a separate option field anyway.
+
+  *Migration:* `OptionsError.value` now holds the redacted string rather
+  than the raw one.  Code that catches an `OptionsError` to re-derive the
+  configured URL gets `***` in place of the userinfo; read the URL from your
+  own settings instead.
+
+- **The WebSocket client's oversize-frame warning names a redacted label
+  instead of the connection URL** (#592).  The warning is written once per
+  offending frame with no latch, so the peer decides how often it appears —
+  a hostile or simply broken server could drive an unbounded number of
+  copies of whatever the URL carried into the log, and a WebSocket endpoint
+  is commonly authenticated with a `?token=…`.  The line now names the
+  connection as `wss://host:port/path`, with the userinfo and the query
+  string stripped.  The path is kept on purpose: it is what tells two
+  connections to the same host apart, so the line still identifies which
+  client dropped the frame.
+
+- **The idempotency-key fingerprint now covers the query string** (#609).
+  `computeRequestFingerprint` hashed only method, path and body, and
+  `HttpRequest` keeps the query in a field of its own — so `POST
+  /refunds?amount=1` and `POST /refunds?amount=9999` sent with the same
+  `Idempotency-Key` and an identical body fingerprinted the same, and the
+  second request replayed the first one's stored response instead of
+  tripping the 422 that exists to catch a key reused for a semantically
+  different request.  Reachable on the Express and Hono backends; the Fastify
+  default escaped only because it reported the raw request target in `path`,
+  which is the very thing the request-path fix removes.  The fingerprint
+  prelude now carries a canonical serialisation of the query: parameter keys
+  are sorted, so a retry that reorders `?a=1&b=2` into `?b=2&a=1` still
+  replays instead of being rejected, while the values of a repeated key keep
+  their original order, so `?tag=a&tag=b` stays distinct from
+  `?tag=b&tag=a`.  Anything from the first `?` onward is stripped off `path`
+  before the canonical query is appended, so pods running different backends
+  against one shared cache compute the same fingerprint for the same
+  request.  Note the direction: folding the query in makes the guard
+  **stricter**, so a request that used to replay may now be answered with
+  422.  The 422 message no longer says "body", since the mismatch can be
+  method, path, query or body.
+
+  *Migration:* cached records written by an earlier build carry the old
+  fingerprint, so during a rolling upgrade a genuine retry that lands on a
+  new pod can see one 422 until those entries age out (24 h by default).
+  There is no fingerprint-version field to tell an old record apart from a
+  real mismatch.
+
+- **A breached TCP framing cap now drops the pending bytes and the socket,
+  not just a log line** (#578).  The client actor reported the overflow and
+  returned above the only assignment that would have cleared its inbound
+  buffer, and reporting a lost connection never touches the transport — so
+  with `reconnect: false`, or once `maxAttempts` ran out, the socket stayed
+  attached with its `data` listener live and the same peer went on growing
+  the buffer the cap had just refused to clear.  The buffer also survived a
+  reconnect, splicing one peer's partial line onto the next connection's
+  first chunk.  The connection is now torn down for real, and the listener
+  releases a closed connection's partial frame as well.
+
+- **An empty `framing.delimiter` is rejected instead of wedging the
+  process** (#789).  An empty delimiter matches at every offset without
+  consuming anything, so the extraction loop never advanced — a synchronous
+  spin no timeout can interrupt, accumulating empty frames until memory ran
+  out, reachable from the client and from the listener per accepted
+  connection.  The shared framing rule now refuses it during options
+  validation, before any socket exists, and the extractor refuses it
+  outright as a precondition that cannot occur.
+
+- **BREAKING — Express WebSocket handshakes now run the app's middleware**
+  (#623).  The Express backend answered Node's `'upgrade'` event itself, so
+  the request never entered the Express app and nothing registered with
+  `app.use(...)` ran for a handshake — an application that gated `/ws` with
+  `app.use(requireLogin)` was not gated, and sessions, authentication and
+  rate limiting were all skipped.  That is precisely the ecosystem this
+  backend exists to reuse, and Fastify (a `preValidation` hook) and Hono (a
+  plain `app.get`) both already routed their handshake through the
+  framework, so Express was the sole outlier of the three.  The upgrade is
+  now dispatched through the app the way `@fastify/websocket` dispatches
+  through `fastify.routing`: each `websocket()` route registers as an
+  ordinary Express `GET`, and reaching its handler means the whole chain let
+  the request through.  A middleware that answers instead cancels the
+  handshake; the DSL's own `withMiddleware()` / `allowedOrigins` guard still
+  runs last and keeps the final word.
+
+  *Migration:* two things change for Express users.  Native middleware now
+  sees WebSocket upgrades, so a catch-all `app.use` that rejects
+  unauthenticated requests will start refusing handshakes it previously let
+  through — which is the point, but check any middleware that answers
+  unconditionally.  And `ExpressAppLike` gained the call signature every
+  Express app already has, so a hand-written implementation of that
+  interface must become callable; a real `express()` app needs no change.
+
+- **BREAKING — An HMAC integrity tag can no longer be stripped to skip
+  verification** (#579).  `FLAG_INTEGRITY_HMAC` lives in the body manifest,
+  so an attacker with write access to the bucket could clear it, drop the 16
+  trailing tag bytes, and hand `decodeBody` a well-formed frame it waved
+  through — `requireIntegrity` defaulted to false and `withIntegrity()`
+  never set it, so the control was bypassable in exactly the configuration
+  the API leads you to.  Stripping a tag is far cheaper than forging one.
+  Supplying an `integrityKey` on decode now means *this corpus is
+  protected*: a body without a tag is refused.  The demand lives in the
+  codec, so it covers the store-level config and a per-call
+  `PersistenceOptions.integrity` alike.
+
+  *Migration:* `withRequireIntegrity(true)` is removed — it is what the
+  default does now.  Its inverse `withAllowUntaggedBodies(true)` (default
+  `false`) re-admits untagged bodies.  A deployment that called
+  `.withIntegrity(...)` against a bucket still holding pre-integrity bodies
+  must add `.withAllowUntaggedBodies(true)`, rewrite every object (a `load`
+  + `upsert` per persistenceId re-frames it with a tag), then drop the
+  option.  Note that `reEncryptObjectStorage` still cannot read
+  integrity-tagged bodies (#739), so finish any pending master-key rotation
+  before enabling integrity.
+
+- **BREAKING — A unary gRPC call is now bounded by the configured deadline**
+  (#577).  `GrpcClientOptions.deadlineMs` was declared, exposed as
+  `withDeadlineMs`, read from HOCON, validated and defaulted to 30 s — and
+  never handed to grpc-js, so every call ran unbounded.  A server that
+  accepts a call and then never answers left a live grpc-js call plus a
+  retained closure over the reply target for as long as the application kept
+  issuing RPCs.  `onUnary` now passes a per-call options object carrying an
+  absolute deadline minted from the configured duration.  The bound is
+  unary-only: a gRPC deadline covers the whole RPC, so applying the same
+  single value to the server-stream, client-stream and bidi call classes
+  would tear down every stream that outlives it, and long-lived streams are
+  a supported pattern.  Detecting a stream whose peer has gone quiet is a
+  channel-level concern (HTTP/2 keepalive, #790).
+
+  *Migration:* a unary call that previously hung forever now fails with
+  `DEADLINE_EXCEEDED` after 30 s by default.  Raise it with
+  `withDeadlineMs(...)` (or the `deadlineMs` HOCON leaf) if you relied on
+  the old unbounded behaviour — and note that a small value which used to be
+  inert is now load-bearing: `deadlineMs: 1` passes validation and will fail
+  every unary call immediately.
+
+- **BREAKING — The Kubernetes API seed provider now percent-encodes the path
+  segments it builds** (#597).  `namespace` and `serviceName` go into
+  `/api/v1/namespaces/…/endpoints/…` through the same kind of helper the
+  sibling lease client has always used.  Both values arrive straight from the
+  pod's environment — `CLUSTER_NAMESPACE` / `CLUSTER_SERVICE_NAME`, via
+  `autoDiscovery` and via the `Cluster.bootstrap({ discovery: 'kubernetes'
+  })` shorthand — so a `/` or `..` in either one previously walked the GET
+  to a different API resource with the pod's ServiceAccount token attached,
+  and a trailing `?watch=true` turned the one-shot GET into a stream whose
+  response accumulator never finished.
+  `KubernetesApiSeedProviderOptionsValidator` additionally requires the
+  names Kubernetes itself would accept: a DNS-1123 label for `namespace`,
+  the wider DNS-1123 subdomain for `serviceName` (an `Endpoints` object may
+  carry a dotted name), so a mangled value is rejected by field name at
+  construction instead of arriving later as a puzzling 404.
+
+  *Migration:* a `namespace` or `serviceName` outside the DNS-1123 shape is
+  now an `OptionsError` at construction, and `Cluster.bootstrap({ discovery:
+  'kubernetes' })` still fails loudly on one.  The rule is scoped to the
+  default in-cluster fetcher — supply `fetchEndpoints` if you use those two
+  fields as plain labels rather than to address a Kubernetes object.  On the
+  env-driven `autoDiscovery` ladder only the rejected rung is dropped: the
+  rest of the chain still runs.
+
+- **One rejected rung no longer takes down the whole discovery ladder**
+  (#597).  `autoDiscovery` builds every rung up front, so the DNS-1123 shape
+  rule above threw from outside `AggregateSeedProvider.lookup()`'s
+  fall-through and outside `ClusterBootstrap`'s lookup `.catch()` — one
+  out-of-shape environment variable killed bootstrap before any provider ran,
+  including the `ConfigSeedProvider` already built from `CLUSTER_SEEDS`, which
+  does not read `serviceName` at all.  That mattered because the same variable
+  drives the DNS rung, where SRV names (`_actor-ts._tcp.example.com`),
+  trailing-dot FQDNs and uppercase are all legal hostnames and none is a
+  DNS-1123 subdomain.  Each rung's construction is now guarded: a rejected
+  rung is dropped and reported through the bootstrap log, and the rest of the
+  chain runs.  The guard covers all three rungs — a `CLUSTER_SEEDS` value that
+  parses to nothing failed the same way.
+
+- **BREAKING — `DevTools.mount()` now demands the same acknowledgement a
+  routable `attach()` does** (#594).  `attach` refuses a non-loopback bind
+  that nothing gates — DevTools reads every actor's class, mailbox and, with
+  time travel, persisted events — while `mount` returned the identical route
+  tree, WebSocket included, with no check at all.  It did not bypass the
+  validator, as first reported: it ran the same one, but the rule had
+  nothing to bite on, because `host` is read only by `bind()`, so on the
+  mount path it describes an interface nobody binds and its loopback default
+  made every ungated mount look safe.  There is no fact in the options a
+  mount could reason from — the routes go to a server the extension never
+  sees — so it now asks instead: `auth`, `ipAllowlist`, or the new
+  `allowUngatedMount` acknowledgement, which also logs one line recording
+  that DevTools is running without a gate of its own.  `attach`'s host rule
+  is unchanged; the validator is simply told which entry point it serves, so
+  both paths enforce one policy.
+
+  *Migration:* `DevTools.mount(system)` throws `OptionsError` unless the
+  options carry `auth`, `ipAllowlist`, or `allowUngatedMount: true`.  Pass a
+  gate, or add `.withAllowUngatedMount()` to keep the previous behaviour.
+  `new DevToolsOptionsValidator()` now takes the exposure it validates for
+  (`'attach'` or `'mount'`), required rather than defaulted so a forgotten
+  argument cannot silently pick the laxer rule.
+
+- **The Hono backend now caps inbound WebSocket frames in the transport, not
+  only after the runtime has buffered them** (#586).  `maxFrameBytes` was
+  previously checked by the connection actor on a frame that had already
+  been materialised in full, while the runner handed the socket to the
+  runtime with no payload limit at all — so a hostile peer could force 16
+  MiB (Bun's `ServerWebSocket` default) or 100 MiB (`ws`'s `maxPayload`
+  default) of buffering per frame and have it discarded afterwards.  Express
+  and Fastify had passed the cap down to `ws` since the WS-3 fix; Hono was
+  the last backend without that first line of defence.  The runner now
+  receives the cap as a parameter — `src/runtime/` sits below `src/http/`,
+  so a runner importing the constant would invert that dependency — and
+  installs it as `maxPayloadLength` on Bun and as `wss.options.maxPayload`
+  on Node.  Because the Node write depends on a `ws` internal, it is verified
+  rather than assumed: a `ws` version that stops exposing a numeric
+  `options.maxPayload` fails the upgrade wiring with an explicit error
+  instead of quietly serving uncapped.  Hono on **Deno** is the one runtime
+  still without a transport cap: `Deno.upgradeWebSocket` offers a
+  subprotocol and an idle timeout and no payload limit, so there is nothing
+  to set — the frame is buffered first and rejected second, which is now
+  stated in the WebSocket and security docs rather than glossed over.
+
+- **A zstd body over the object-storage decompression cap is now refused
+  before its output is allocated** (#580).  The cap was previously checked
+  only against the finished buffer, so a stored object of a few KB could
+  claim hundreds of MB first and be complained about afterwards — the
+  decompression bomb working as designed.  Measured on Bun 1.3.1, a
+  9,619-byte frame declaring 300 MB of output grew the resident set by 317
+  MB before the cap looked at it; it now costs 0 MB.  The algorithm is read
+  from the ATS1 manifest, which is attacker-controlled cleartext, so a
+  deployment that writes every body as gzip was never off this path.  The fix
+  is which zstd implementation the decompress resolver prefers: `node:zlib`
+  (the only one that takes `maxOutputLength`) ahead of
+  `Bun.zstdDecompressSync` (which takes no options at all).  No configuration
+  changes and no wire-format change — `maxDecompressedBytes` keeps its 512
+  MiB default and its meaning.
+
+- **gRPC handlers now receive the client's real request metadata** (#611).
+  `GrpcServerActor` built every call's `metadata` from a stub that returned
+  an empty record, on all four call classes, while four exported interfaces
+  declared the field and the docs promised it.  That is worse than offering
+  no metadata at all: a per-call authorisation check written against it
+  compiles, runs, and passes for every caller, including one that sent no
+  credentials.  The record is now read from grpc-js `Metadata.getMap()` and
+  built on a null-prototype object.  Both halves of that matter — a client
+  may legally send a header named `__proto__` or `constructor`, and with no
+  prototype the assignment has no inherited setter to reach, while a lookup
+  of a header nobody sent answers `undefined` instead of resolving to an
+  `Object.prototype` member.  Repeated headers collapse to their first value
+  and binary (`-bin`) headers are omitted, both consequences of the record
+  holding strings and both now stated in the docs.
+
+- **BREAKING — The `Idempotency-Key` header is now validated before it
+  becomes a cache key** (#607).  A value longer than `maxKeyLength` (default
+  255, Stripe's published cap), or carrying an ASCII control character or a
+  space, is refused with `400 Bad Request` instead of being stored.  The
+  header is client-chosen and was copied verbatim into a cache key that the
+  rate limiter and the response cache typically share, so without a bound
+  one request decided how much of that cache it occupied.  The charset rule
+  mirrors the memcached key rules: those characters are command delimiters
+  in Memcached's text protocol and CR/LF are the classic header-injection
+  pair, so accepting them would make the middleware's safety depend on which
+  `Cache` happened to sit behind it.  The rejection names the limit and the
+  offending index, never the key -- reflecting attacker bytes into a
+  response body is how an error message becomes a payload.
+
+  *Migration:* clients sending an `Idempotency-Key` longer than 255
+  characters, or containing a space or a control character, now receive 400
+  where they previously got service.  Raise the bound with `maxKeyLength` (or
+  `withMaxKeyLength()`) if you control a client fleet that genuinely mints
+  longer keys; the charset rule is not configurable.
+
+- **Handing one `Cache` to `rateLimit`, `cached` and `idempotent` voids both
+  the rate limit and the exactly-once guarantee** (#607).  `InMemoryCache` is
+  LRU-bounded and evicts on recency alone, with no idea which entries carry
+  a guarantee, so a caller who mints distinct keys through any of the three
+  pushes the others' state out: another client's counter disappears and
+  their limit silently resets, an idempotency record disappears and their
+  honest retry re-executes the handler.  Under the composition the HTTP
+  overview documented -- one shared cache, 100 requests per second --
+  turning over the 10 000-entry map takes about 100 seconds, entirely inside
+  the limit.  The three JSDoc headers, the HTTP overview sample, the three
+  middleware pages, both cache pages and
+  `examples/cache/redis-rest-service.ts` now use one named cache per
+  consumer, and say plainly that this narrows the blast radius rather than
+  removing it: an attacker-controlled key space still floods its own cache,
+  which is where Redis belongs.
+
+- **BREAKING — Every `HttpClient` call now carries a deadline and a
+  response-size ceiling** (#602).  The client buffered a whole response with
+  `res.arrayBuffer()` and armed its abort timer only when the caller named a
+  `timeoutMs`, so both of the things a remote peer controls — how long it
+  takes to answer and how many bytes it sends — were unbounded.  The deadline
+  is the load-bearing half: fetch's abort signal tears down an in-flight
+  body read, so a request *with* a timeout was already bounded by bandwidth
+  times deadline, while one without was bounded by nothing.  Defaults are 30
+  s and 8 MiB, both configurable through the new `HttpClientOptions` family
+  and overridable per request.  The body is now read chunk by chunk and
+  refused at the crossing chunk with `HttpResponseTooLargeError`, because a
+  cap checked on `arrayBuffer()`'s result is a cap enforced after the
+  allocation it was meant to prevent.  BREAKING: a call that previously ran
+  without a deadline now aborts after 30 s, and a response over 8 MiB now
+  throws.
+
+  *Migration:* pass `timeoutMs: 0` on a request that legitimately has no
+  deadline; raise `maxResponseBytes` on the request or on the client for one
+  that legitimately downloads more than 8 MiB.
+
+- **BREAKING — `HttpClient` has a redirect policy of its own instead of
+  inheriting the platform's** (#625).  No `redirect` was ever passed to
+  fetch, so redirects were followed unconditionally, 20 hops deep, with no
+  way for any caller to opt out.  Severity is low and honestly so — there is
+  no attacker-reachable path to it in this repo, and the runtime already
+  strips credentials on a cross-origin hop — but the safe behaviour was
+  simply unreachable from the API, which is the actual defect.  `redirect`
+  (`'follow'` | `'error'` | `'manual'`) and `maxRedirects` join the same
+  options family, per client and per request.  Following now happens in the
+  client rather than the platform, so the decisions land between hops rather
+  than after them: a cross-origin hop drops
+  `authorization`/`cookie`/`proxy-authorization`, a 303 (and a 301/302 after
+  a POST) continues as a GET with the body dropped per the Fetch spec, a
+  non-HTTP(S) target is refused outright, and the deadline and byte ceiling
+  stay cumulative across the chain.  `HttpClientResponse` gains `url`, the
+  hop that actually answered.  BREAKING: the hop budget drops from 20 to 5.
+
+  *Migration:* raise `maxRedirects` on the client or the request if a chain
+  legitimately needs more than 5 hops; `redirect: 'follow'` remains the
+  default, so nothing else changes.
+
+- **CORS decoration no longer discards a handler's own `Vary` header**
+  (#603).  The decorator resolved the response's existing `Vary` with an
+  exact-key `headers['vary']` lookup, and nothing normalises a handler's
+  header record on the way there — so a handler that answered `Vary: Cookie`
+  was invisible and the response went out as a bare `Vary: Origin`.  That
+  tells shared caches the response does not depend on the cookie, which lets
+  one user's response be served to the next.  The existing value is now
+  resolved case-insensitively and merged, so the response carries a single
+  `Vary: Cookie, Origin`.  Relatedly, `applyHeaders(…, { overwrite: true })`
+  now replaces a differently-cased key instead of leaving two spellings of
+  one header name in the record, where only insertion order decided which
+  reached the wire.
+
+- **A file extension can no longer resolve a content-type through the
+  prototype chain** (#608).  `contentTypeFor` indexed both its override map
+  and the built-in table with a bare `map[ext]`, and the extension comes
+  straight off the request path.  A served file named `report.constructor`
+  therefore threw a `TypeError` out of the static-file handler — a 500 where
+  the documented answer is `application/octet-stream` — and when an override
+  map was passed, the same lookup returned the `Object` function itself out
+  of a signature that promises `string`, which nothing downstream catches
+  because `HttpResponse.contentType` is typed `string | undefined`.  Both
+  reads are now gated on `Object.hasOwn` and narrowed to a non-empty string,
+  stated positively rather than as a list of names to refuse: an own key a
+  caller deliberately maps still wins, an inherited member never does.  Only
+  `constructor` and `__proto__` were ever reachable, since the extension is
+  lowercased before lookup.
+
+- **`serializeCookie` validates the `Path` and `Domain` attributes it
+  writes** (#626).  Both were interpolated into the header verbatim while the
+  guard block covered only the cookie name, the value, the two prefixes and
+  `maxAgeSeconds` — so a `Path` of `/;Domain=evil.example` appended an
+  attribute of somebody else's choosing, and because `Domain=` is emitted
+  before `Path=` and RFC 6265 §5.3 keeps the *last* `Domain` it saw, the
+  smuggled one overrode a legitimate one rather than losing to it.  `Path`
+  must now be a slash-rooted printable-ASCII string free of `;`, `,` and
+  space; `Domain` must be RFC 1123 labels, optionally with the legacy
+  leading dot, which means an internationalised domain has to arrive
+  punycoded.  An invalid `expires` Date is rejected too, instead of
+  stringifying to `Expires=Invalid Date` and sessionising the cookie
+  unnoticed.  Nothing shipped was exploitable: the only in-repo caller is the
+  CSRF middleware, which passes a constant attribute bag, so this is
+  hardening rather than the closing of a live hole.
+
+- **A node whose configuration sets `actor-ts.remote.tls.enabled = true` now
+  says at startup that its cluster wire is still plaintext** (#591).  The key
+  shipped in `reference.conf` and was documented on four pages, but nothing
+  under `src/` read it and the `Cluster` constructor hard-codes `null` for
+  the TLS argument of the transport it builds — so an operator who
+  configured encryption got none, with no error, no log line and no way to
+  tell from the running node.  The constructor now reads the key and logs one
+  `WARN` naming it, stating that the wire is unencrypted and pointing at
+  #941, where TLS itself is implemented.  The warning is raised only for the
+  transport the cluster builds for itself — an injected
+  `ClusterOptions.withTransport(…)` may carry its own TLS material — and
+  only for an explicit `true`, so a configuration file that spells the
+  shipped `false` out stays silent.  Reading the key also empties the
+  dead-key guard's exemption list: no key in `reference.conf` is excused
+  today.  TLS for the built-in transport is still not implemented.
+
+- **Snapshots stored in object storage can now be integrity-protected**
+  (#613).  `ObjectStorageSnapshotStore` had no integrity plumbing at all and
+  silently discarded `PersistenceOptions.integrity` on both the write and
+  the read path — and recovery folds events *on top of* a snapshot, so
+  whoever could rewrite one dictated the state an actor came back as.  It now
+  takes `integrity` and `allowUntaggedBodies`, signs bodies on `save`, and
+  verifies on `loadLatest` and `loadBefore`.  `registerObjectStoragePlugins`
+  forwards both to the snapshot store **and** the durable-state store, which
+  previously had no way to reach the option through the one-call wiring
+  either.  `IntegrityConfig`, `IntegrityResolver` and `resolveIntegrity` are
+  exported from the package — the option was typed with names it did not
+  export.
+
 ## [0.15.0] — 2026-08-12
 
 ### Added

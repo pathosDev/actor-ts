@@ -8,7 +8,8 @@ records** a baseline of metrics covering the actor lifecycle,
 message handling, bounded mailboxes, and the cluster.
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const metrics = system.extension(MetricsExtensionId).enable();
 // Stock metrics now record into the live registry — no further setup
@@ -62,6 +63,7 @@ yourself and pass to `withMailbox`.
 | `cluster_members_up` | gauge | — | Members currently in the `up` state (this node's view). |
 | `cluster_gossip_rounds_total` | counter | — | Gossip-push rounds initiated by this node. |
 | `cluster_gossip_records_refused_total` | counter | `reason` | Gossiped member records a merge-path guard refused. |
+| `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
 
 For monitoring cluster health:
 
@@ -74,8 +76,24 @@ For monitoring cluster health:
   of this node's clock than `maxVersionSkewMs` — either a peer's clock
   has drifted or someone is trying to pre-claim an address. Movement
   on `reason="map-cap"` means `max-members` / `max-tombstones` is
-  full. The counter is incremented once per frame with that frame's
-  count, and the label set is closed at those two values.
+  full. `reason="timestamp-skew"` is a tombstone whose `removedAt` is
+  not a plausible instant. `reason="replayed-frame"` is a whole gossip
+  frame that did not out-number the last one accepted from that peer —
+  a duplicate, or someone re-sending a frame captured off the wire.
+  The counter is incremented once per frame with that frame's count,
+  and the label set is closed at those four values.
+- `cluster_envelope_from_mismatch_total` should sit at zero too. It
+  moves when an envelope's payload names a sender other than the
+  connection it arrived on — a client old enough to still send that
+  field and wrong about its own address, or someone testing whether
+  the node routes on payload. It never changes what the node does:
+  the reply goes down the connection either way. The `frame` label is
+  the wire kind, drawn from code and never from the payload, so the
+  series count is bounded by how many wire handlers make the check —
+  one today, `cluster-client-envelope`. The claimed address is
+  deliberately *not* a label; putting it there would mint one series
+  per address a sender cares to invent. Turn the node's log to
+  `debug` to see which connection is carrying them.
 
 ## DistributedData metrics
 

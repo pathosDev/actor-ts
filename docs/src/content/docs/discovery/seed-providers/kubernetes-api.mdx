@@ -9,7 +9,8 @@ Works without DNS, without SRV, without manual seed-list
 maintenance — the Service is your contract.
 
 ```ts
-import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace(process.env.K8S_NAMESPACE!)
@@ -50,11 +51,11 @@ type KubernetesApiSeedProviderOptionsType = {
 
 | Field | What |
 | --- | --- |
-| `namespace` | K8s namespace to query — typically your app's namespace. |
-| `serviceName` | The Service (or Endpoints) name whose ready pods form the cluster. |
+| `namespace` | K8s namespace to query — typically your app's namespace.  A DNS-1123 label. |
+| `serviceName` | The Service (or Endpoints) name whose ready pods form the cluster.  A DNS-1123 subdomain. |
 | `systemName` | The actor-system name stamped on each discovered address. |
 | `port` | The cluster-transport port on each backing pod. |
-| `fetchEndpoints` | Override the Endpoints-fetch function — defaults to the in-cluster API. |
+| `fetchEndpoints` | Override the Endpoints-fetch function — defaults to the in-cluster API.  Also lifts the name rules above. |
 | `pinnedAddresses` | CIDRs the discovered pod IPs must fall inside.  Unset means no pinning. |
 | `log` | Reports addresses dropped by `pinnedAddresses`.  Default: no-op. |
 
@@ -62,6 +63,42 @@ For pods running in-cluster, only the last three fields are
 optional — the framework reads the Endpoints from the standard API
 at `https://kubernetes.default.svc` using the mounted
 ServiceAccount token.  The other four fields are required.
+
+## Names go into the API path
+
+The two names are what the provider puts into its request —
+`GET /api/v1/namespaces/<namespace>/endpoints/<serviceName>` — so
+both segments are percent-encoded, and both are checked against the
+shape Kubernetes itself requires:
+
+- `namespace` — a **DNS-1123 label**: lowercase alphanumeric or
+  `-`, starting and ending alphanumeric, at most 63 characters.
+- `serviceName` — a **DNS-1123 subdomain**: dot-separated labels of
+  that form, at most 253 characters, because an `Endpoints` object
+  may carry a dotted name.
+
+Both values come straight out of the pod's environment when you
+bootstrap from it (`CLUSTER_NAMESPACE` / `CLUSTER_SERVICE_NAME`), so
+a `/`, `..` or `?` reaching them would otherwise address a different
+API resource with this pod's ServiceAccount token attached.  A name
+outside the shape is rejected at construction with an `OptionsError`
+naming the field, instead of arriving later as a puzzling 404.
+
+Supplying `fetchEndpoints` lifts the shape rule: your fetcher builds
+its own request, so there the two fields are plain labels and only
+have to be non-empty.
+
+On the env-driven ladder — `Cluster.bootstrap()` with neither `seeds`
+nor `discovery` — a rejected name costs **only this rung**.  The
+Kubernetes provider is dropped, the rejection is reported through the
+bootstrap log, and the `CLUSTER_SEEDS` and DNS rungs still run.  That
+matters because `CLUSTER_SERVICE_NAME` drives the DNS rung as well,
+and a DNS hostname is the wider form: an SRV name like
+`_actor-ts._tcp.example.com`, a root-anchored FQDN with a trailing
+dot, and uppercase are all legal there, and none of them is a
+DNS-1123 subdomain.  The pinned form
+`Cluster.bootstrap({ discovery: 'kubernetes' })` keeps failing loudly
+— pinning one provider is a statement that you want no fallback.
 
 ## Pinning the pod CIDR
 

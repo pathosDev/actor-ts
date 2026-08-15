@@ -11,7 +11,7 @@ zurückgewinnt.  In-Process, keine Abhängigkeiten, geht bei Neustart
 verloren.
 
 ```ts
-import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts';
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts/cache';
 
 // Defaults: maxEntries 10 000, cleanupMs 60 000.
 const cache = new InMemoryCache();
@@ -39,7 +39,7 @@ Werte werden einmalig beim Konstruieren auf den gemergten Settings
 validiert: `maxEntries` muss eine positive Ganzzahl (oder `Infinity`)
 sein und `cleanupMs` eine nicht-negative Zahl (oder `Infinity`).  Ein
 ungültiger Wert wirft
-[`OptionsError`](/de/reference/configuration/#options-validation) — der
+[`OptionsError`](/de/reference/configuration/#validierung) — der
 Builder, ein einfaches Objekt und HOCON treffen alle dieselbe Prüfung.
 
 ## Wann einsetzen
@@ -110,21 +110,77 @@ Semantik für einen Fixed-Window-Rate-Limiter.
 
 `InMemoryCache` ist **LRU-begrenzt** bei `maxEntries` (Default 10 000):
 das Einfügen eines neuen Keys über die Schranke hinaus evictet den am
-längsten nicht genutzten Eintrag.  `get`/`incr`/`setIfAbsent` zählen
-als Nutzung und schieben einen Key ans zuletzt-genutzte Ende, sodass
-heiße Keys überleben und kalte zuerst evictet werden.  Genau das
-verhindert, dass eine Flut eindeutiger, nie erneut gelesener Keys —
-etwa angreiferseitig gewählte `Idempotency-Key`- oder Rate-Limit-Keys —
-die Map unbegrenzt wachsen lässt.
+längsten nicht genutzten Eintrag.  Genau das verhindert, dass eine Flut
+eindeutiger, nie erneut gelesener Keys — etwa angreiferseitig gewählte
+`Idempotency-Key`- oder Rate-Limit-Keys — die Map unbegrenzt wachsen
+lässt.
+
+**Nur ein Read zählt als Nutzung.**  `get`, `incr` und `mget` schieben
+einen Key ans zuletzt-genutzte Ende; `set`, `mset` und `setIfAbsent`
+nicht.  Ein heißer Key überlebt also — aber ein Eintrag, der einmal
+geschrieben und nie zurückgelesen wird (ein Idempotency-Record, der noch
+auf den Retry des Clients wartet), altert ab dem Moment der Speicherung
+auf die Eviction zu.
 
 Setze `maxEntries: Infinity`, um die Eviction ganz abzuschalten.  Tu
 das nur, wenn du den Key-Raum kontrollierst — eine unbegrenzte Map
 läuft dem Prozess irgendwann in einen OOM.
 
+## Eviction ist blind dafür, was ein Eintrag schützt
+
+Aktualität ist das *einzige* Kriterium.  Ein Rate-Limit-Zähler und ein
+Idempotency-Record werden genauso bereitwillig evictet wie ein
+gecachter Response-Body — und das Wegwerfen entwertet stillschweigend
+die Garantie, die der Eintrag getragen hat:
+
+- **Rate-Limit** — der Zähler verschwindet, der nächste Request dieses
+  Clients startet also ein frisches Fenster bei 1.  Das Limit setzt
+  sich zurück, ohne dass es jemand erreicht hätte.
+- **Idempotency** — die gespeicherte Antwort verschwindet, der ehrliche
+  Retry des Clients findet also keinen Record, beansprucht den Key neu
+  und **führt den Handler ein zweites Mal aus**.  Auf einem
+  Payments-Endpoint ist das eine Doppelbelastung.
+
+Beides hinterlässt keine Spur: der Eintrag ist einfach weg, weit
+innerhalb seiner TTL.
+
+Die Exposition entsteht durch das **Teilen einer Cache-Instanz**
+zwischen einem Consumer, der eine Garantie trägt, und einem, dessen
+Key-Raum ein Aufrufer aufzählen kann.  Ein Response-Cache mit einem Key
+aus einem Pfadparameter und ein `idempotent`-Wrapper mit einem Key aus
+einem Client-Header fallen beide in die zweite Kategorie — wer einen
+davon variiert, wälzt die gesamte Map um.  Mit der Default-Schranke von
+10 000 Einträgen und einem großzügigen Limit von 100 Requests pro
+Sekunde dauert das rund 100 Sekunden — vollständig *innerhalb* des
+dokumentierten Rate-Limits.
+
+Die Abhilfe ist ein Cache pro Consumer:
+
+```ts
+import { CacheExtensionId } from 'actor-ts/cache';
+
+const extension = system.extension(CacheExtensionId);
+
+const limiterCache     = extension.cache('rate-limit');
+const idempotencyCache = extension.cache('idempotency');
+const responseCache    = extension.cache('response-cache');
+```
+
+Jeder Name löst zu einer eigenen Instanz auf, eine Flut durch den einen
+erreicht die anderen also nicht.  Dimensioniere `maxEntries` jeweils
+allein für den Key-Raum dieses Consumers.
+
+Das verkleinert den Explosionsradius, beseitigt ihn aber nicht: eine
+Middleware, deren eigener Key-Raum angreiferkontrolliert ist, kann
+weiterhin ihre eigenen Einträge evictieren — ein Client mit einem
+IPv6-`/64` erzeugt beliebig viele Rate-Limit-Keys.  Wo das zählt,
+hinterlege den sicherheitsrelevanten Consumer mit Redis (den du separat
+dimensionierst und überwachst) statt mit einer prozesslokalen LRU.
+
 ## Über das System teilen
 
 ```ts
-import { CacheExtensionId, InMemoryCache } from 'actor-ts';
+import { CacheExtensionId, InMemoryCache } from 'actor-ts/cache';
 
 // The extension's `default` cache is an InMemoryCache out of the box:
 const cache = system.extension(CacheExtensionId).cache();

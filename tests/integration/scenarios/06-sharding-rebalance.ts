@@ -16,7 +16,7 @@
  * that holds entities and works with the remaining cluster size.
  */
 
-import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, waitFor, type Scenario } from './Types.js';
 
 const NUM_ENTITIES = 30;
 const ENTITY_IDS = Array.from({ length: NUM_ENTITIES }, (_, i) => `e-${i + 1}`);

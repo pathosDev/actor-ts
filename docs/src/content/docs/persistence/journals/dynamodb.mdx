@@ -37,13 +37,15 @@ composite and all three components inherit it:
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   DynamoDbDurableStateStoreOptions,
   DynamoDbJournalOptions,
   DynamoDbSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterDynamoDbPluginsOptions,
   registerDynamoDbPlugins,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const systemOptions = ActorSystemOptions.create()
   // Select the DynamoDB plugins as the active journal + snapshot store.

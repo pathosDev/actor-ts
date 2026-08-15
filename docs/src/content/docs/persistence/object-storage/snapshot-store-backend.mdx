@@ -15,7 +15,7 @@ import {
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
   PersistenceExtensionId,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
   .withRegion(region)
@@ -60,6 +60,8 @@ type ObjectStorageSnapshotStoreOptionsType = {
   keepN?:                number;   // default 3
   compression?:          CompressionConfig | CompressionResolver;
   encryption?:           EncryptionConfig | EncryptionResolver;
+  integrity?:            IntegrityConfig | IntegrityResolver;
+  allowUntaggedBodies?:  boolean;  // default false
   maxDecompressedBytes?: number;   // default 512 MiB
 };
 ```
@@ -71,6 +73,8 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `keepN` | Snapshots retained per persistenceId; older ones are pruned on save.  Default 3. |
 | `compression` | At-rest compression — see [Compression](/persistence/object-storage/compression/). |
 | `encryption` | At-rest encryption — see [Encryption](/persistence/object-storage/encryption/). |
+| `integrity` | HMAC-SHA256 tag over each snapshot body — signs writes and requires a tag on reads.  See [Body integrity](/persistence/object-storage/encryption/#body-integrity-hmac). |
+| `allowUntaggedBodies` | Accept untagged snapshots while `integrity` is set — the migration window for a bucket written before integrity.  Default false. |
 | `maxDecompressedBytes` | Decompression-bomb guard — cap on a decoded snapshot's size.  Default 512 MiB. |
 
 ## Key layout

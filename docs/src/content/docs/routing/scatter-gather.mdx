@@ -114,9 +114,11 @@ specifically for "too slow", check the members:
 const allTimedOut = aggregate.errors.every((e) => e instanceof AskTimeoutError);
 ```
 
-`AggregateError` survives the cluster wire — the built-in serializer
-encodes its member errors — so a scatter behind a `ClusterRouter` fails
-the same way on the calling node.
+`AggregateError` does **not** survive the cluster wire. Envelopes are framed
+with a bare `JSON.stringify`, which reaches no serializer and preserves no
+type identity, so a scatter behind a `ClusterRouter` hands the calling node a
+plain object where a local scatter hands it an `AggregateError` — the
+`instanceof` check above does not hold across nodes (#450).
 
 A routee that *throws* rather than replying does not produce an error
 here directly: its supervisor restarts it and the router's ask for that

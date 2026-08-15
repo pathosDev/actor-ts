@@ -37,8 +37,9 @@ Topic hat.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, Actor } from 'actor-ts';
-import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
+import { ActorSystem, Actor } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster';
 
 class ChatMessage {
   constructor(public readonly user: string, public readonly text: string) {}
@@ -84,7 +85,7 @@ Schicke diese an `ps.mediator` (ein `ActorRef`). Nutze `ask`, wenn
 du das Ack brauchst:
 
 ```ts
-import {} from 'actor-ts';
+
 
 await ps.mediator.ask(new Subscribe('chat.room.general', room));
 ```
@@ -265,7 +266,7 @@ Ein `Subscribe` über `maxSubscribersPerTopic` oder `maxTopics` wird
 `SubscribeRejected` mit der Grenze, die es abgelehnt hat:
 
 ```ts
-import { SubscribeRejected } from 'actor-ts';
+import { SubscribeRejected } from 'actor-ts/cluster';
 
 // message.reason: 'maxSubscribersPerTopic' | 'maxTopics'
 // message.limit:  der Wert, auf den diese Grenze gesetzt ist

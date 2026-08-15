@@ -20,4 +20,4 @@ COPY tests/ tests/
 
 ENV NODE_ENV=production
 
-CMD ["bun", "tests/integration/brokers/yugabytedb/runner.ts"]
+CMD ["bun", "tests/integration/brokers/yugabytedb/Runner.ts"]

@@ -171,6 +171,23 @@ describe('Mongo* option validation', () => {
     }
   });
 
+  test('never renders the URL password into the rejection (#590)', () => {
+    // `mongodb://user:pass@host` is the documented shape, and this message
+    // ends up in an ERROR log via ActorCell — a password reaching a log
+    // aggregator has to be rotated, not deleted.
+    let caught: unknown;
+    try {
+      new MongoJournal(MongoJournalOptions.create().withUrl('postgres://admin:hunter2@host/db'));
+    } catch (e) {
+      caught = e;
+    }
+    const err = caught as { message: string; value: unknown };
+    expect(err.message).toContain('must use protocol');
+    expect(err.message).toContain('postgres://***@host/db');
+    expect(err.message).not.toContain('hunter2');
+    expect(err.value).toBe('postgres://***@host/db');
+  });
+
   test('rejects database and collection names MongoDB itself refuses', () => {
     // Caught at wiring time instead of on the first write.
     expect(() => new MongoJournal(MongoJournalOptions.create().withDatabaseName('has space')))

@@ -13,7 +13,7 @@ import {
   ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
@@ -75,9 +75,19 @@ zstd support differs by **direction**:
   dependency is **decompress-only**.  Selecting `zstd` on a runtime
   without native support fails fast — eagerly at plugin
   registration, not cryptically on first persist.
-- **Decompress (read)** — native first, then the optional `fzstd`
-  peer-dep, so a runtime without native zstd can still **read**
-  zstd bodies written elsewhere.
+- **Decompress (read)** — `node:zlib` first (it is the only zstd
+  implementation that takes an allocation-time output bound — see
+  [Decompression cap](#decompression-cap-bomb-protection)), then
+  Bun's global, then the optional `fzstd` peer-dep, so a runtime
+  without native zstd can still **read** zstd bodies written
+  elsewhere once `fzstd` is installed.
+
+Both directions pick an implementation by **calling** it, not by
+checking that the function exists — the two differ on Deno, whose
+`node:zlib` exports zstd entry points with no binding behind them.
+So a runtime without working zstd gets the framework's own message
+naming the missing capability, and the `fzstd` fallback below it
+stays reachable.
 
 `gzip` uses `node:zlib` and works everywhere (Bun, Node, Deno) with
 no extra dependency.
@@ -109,10 +119,21 @@ decodes per its own manifest.
 
 Decompression on read is **bounded to 512 MiB** of output by default, so a
 tampered or hostile compressed body (a few KB that inflates to many GB) can't
-exhaust memory during recovery (security audit #3).  gzip enforces the cap
-at allocation time via zlib's `maxOutputLength`; every path additionally
-asserts the decoded size.  A body that would exceed the cap fails the read
-with an error instead of OOM-ing the process.  Snapshots / durable state are
+exhaust memory during recovery (security audit #3).
+
+**gzip and zstd hand the bound to the decoder** via zlib's
+`maxOutputLength`, so an over-cap body is refused *before* its output is
+allocated — the bomb never gets the memory it was built to claim.  Every
+path additionally asserts the decoded size, which is what bounds the two
+that cannot take the option (Bun's `Bun.zstdDecompressSync`, reached only
+on a Bun without zstd in `node:zlib`, and the `fzstd` fallback).  There the
+cap is still enforced, but only after the output exists — so on a runtime
+that falls back to either, treat the bound as a correctness check rather
+than as bomb protection.
+
+Either way the read fails with an error instead of OOM-ing the process, and
+the error names the bound (`maxOutputBytes=…`) so it is clear which setting
+to reach for.  Snapshots / durable state are
 far smaller than this in practice; if you legitimately store larger bodies,
 raise the bound with `withMaxDecompressedBytes` on the store (or plugin)
 options:

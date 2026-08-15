@@ -46,8 +46,9 @@ trail.
 ## A minimal example
 
 ```ts
-import { DurableStateActor, DurableStateOptions, ActorSystem } from 'actor-ts';
-import { InMemoryDurableStateStore } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions } from 'actor-ts/persistence';
+import { InMemoryDurableStateStore } from 'actor-ts/persistence';
 import { match } from 'ts-pattern';
 
 type AddCommand = { kind: 'add'; sku: string };
@@ -211,7 +212,7 @@ Like `PersistentActor`, durable state supports schema evolution
 through an adapter:
 
 ```ts
-import { StateAdapter } from 'actor-ts';
+import { StateAdapter } from 'actor-ts/persistence';
 
 const v1ToV2Adapter: StateAdapter<StateV2> = {
   manifest: () => 'Cart',

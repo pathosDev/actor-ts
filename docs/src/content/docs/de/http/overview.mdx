@@ -67,7 +67,7 @@ await system.http(8080).bind(routes);
 await system.http(8080, { backend: new HonoBackend() }).bind(routes);
 
 // Volle Kontrolle — die Extension-Surface bleibt erhalten:
-import { HttpExtensionId } from 'actor-ts';
+import { HttpExtensionId } from 'actor-ts/http';
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)
   .useBackend(new HonoBackend())
@@ -104,6 +104,93 @@ Der gemeinsame Client umschließt das native `fetch` der Runtime.
 Funktioniert identisch auf Bun, Node und Deno (jede unterstützte
 Runtime hat fetch eingebaut).
 
+### Schranken, die jeder Aufruf mitbringt
+
+Eine Antwort wird im Speicher gepuffert, bevor du sie siehst —
+deshalb sind die drei Dinge, die die Gegenstelle kontrolliert,
+standardmäßig begrenzt:
+
+| Schranke | Default | Override pro Request |
+| --- | --- | --- |
+| Deadline | 30 s | `timeoutMs` — `0` nimmt einen Aufruf ganz heraus |
+| Response-Body | 8 MiB | `maxResponseBytes` |
+| Redirect-Hops | 5, gefolgt | `redirect`, `maxRedirects` |
+
+Jenseits der Obergrenze wird der Request **abgebrochen, während
+der Body noch eintrifft**, und der Aufruf wirft
+`HttpResponseTooLargeError` — eine übergroße oder endlose Antwort
+alloziert also nie zu Ende.  Jenseits der Deadline bricht er
+genauso ab wie bisher schon bei explizitem `timeoutMs`; neu ist
+nur, dass ein Aufruf ohne genannte Deadline jetzt eine hat.
+
+Hebe sie pro Aufruf an, wenn ein einzelner Endpunkt die Ausnahme
+ist:
+
+```ts
+const report = await system.extension(HttpExtensionId).client.get(
+  'https://api.example.com/exports/daily',
+  { maxResponseBytes: 64 * 1024 * 1024, timeoutMs: 120_000 },
+);
+```
+
+Oder gib einer ganzen Integration ihren eigenen Client, statt den
+zu lockern, den sich alle Aktoren im System teilen:
+
+```ts
+import { HttpClientOptions } from 'actor-ts/http';
+
+const exportClientOptions = HttpClientOptions.create()
+  .withMaxResponseBytes(64 * 1024 * 1024)
+  .withDefaultTimeoutMs(120_000);
+
+const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
+```
+
+### Wohin ein Redirect dich bringen darf
+
+Der Client folgt Redirects selbst, statt sie der Plattform zu
+überlassen — so fallen die Entscheidungen **zwischen** den Hops:
+
+| `redirect` | Verhalten bei einem 3xx mit `Location` |
+| --- | --- |
+| `'follow'` *(Default)* | Folgen, bis zu `maxRedirects` Hops |
+| `'error'` | `HttpRedirectError`; das Ziel wird nie kontaktiert |
+| `'manual'` | Den 3xx unverändert zurückgeben, `Location` in `headers` lesbar |
+
+Gefolgt wird höchstens **5 Hops** weit (die Plattform erlaubt 20),
+und ein gefolgter Hop ist kein blindes Wiederholen des
+ursprünglichen Requests:
+
+- Ein Hop, der **die Origin wechselt**, verliert `authorization`,
+  `cookie` und `proxy-authorization` — ein Redirect kann ein
+  Bearer-Token also nicht zu einem Host tragen, den du nie
+  ausgewählt hast.
+- Ein **`303`** — und ein `301`/`302` nach einem `POST` — läuft als
+  `GET` weiter, ohne Body und ohne dessen `content-type`, genau wie
+  die Fetch-Spezifikation es vorschreibt; ein Schreibzugriff wird
+  so nie gegen einen zweiten Host wiederholt.
+- Ein Ziel, das **nicht `http:` oder `https:`** ist, wird
+  rundheraus abgelehnt.
+- Deadline und Byte-Obergrenze gelten **kumulativ über die ganze
+  Kette**, nicht pro Hop; Bodies von Zwischen-3xx werden verworfen.
+
+Abgelehnt wird, bevor der Hop überhaupt abgesetzt wird — darum geht
+es: Eine Prüfung, wo eine Kette *gelandet ist*, hat jeden Request
+darin bereits gestellt, und genau das Absetzen des Requests ist der
+Seiteneffekt, den es zu verhindern gilt.
+
+```ts
+const webhookClientOptions = HttpClientOptions.create()
+  .withRedirect('error')
+  .withMaxResponseBytes(256 * 1024);
+
+const webhookClient = system.extension(HttpExtensionId).newClient(webhookClientOptions);
+```
+
+`response.url` nennt den Hop, der tatsächlich geantwortet hat —
+darauf prüfst du, wenn es darauf ankommt, *welcher Host* die Bytes
+geliefert hat.
+
 Für aufwendigere Client-Muster (Retries, Caching) wickle den
 Client in einen [Retry](/de/patterns/retry/)- +
 [Circuit-Breaker](/de/patterns/circuit-breaker/)-Aufruf.
@@ -111,27 +198,27 @@ Client in einen [Retry](/de/patterns/retry/)- +
 ## Middleware
 
 ```ts
-import { cached, rateLimit } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { cached, get, path, rateLimit } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts/cache';
 
-const cache = new InMemoryCache();
+// One cache per middleware — never one shared instance (see below).
+const limiterCache = new InMemoryCache();
+const responseCache = new InMemoryCache();
 
-const routes = concat(
-  rateLimit({
-    cache,
-    windowMs: 1_000,
-    max: 100,
-    key: (request) => request.remoteAddress ?? 'unknown',
-  })(
-    cached({
-      cache,
-      ttlMs: 30_000,
-      key: (request) => request.path,
-    })(
-      path('api', /* ... */),
-    ),
-  ),
-);
+const limited = rateLimit({
+  cache: limiterCache,
+  windowMs: 1_000,
+  max: 100,
+  key: (request) => request.remoteAddress ?? 'unknown',
+});
+
+const readThrough = cached({
+  cache: responseCache,
+  ttlMs: 30_000,
+  key: (request) => request.path,
+});
+
+const routes = path('api', get(limited(readThrough(apiHandler))));
 ```
 
 Das Framework liefert drei:
@@ -148,13 +235,33 @@ geschützt werden soll.  Kombiniere durch Verschachteln auf
 Handler-Ebene.  Siehe die
 [Middleware-Seiten](/de/http/middleware/response-cache/).
 
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Jede Middleware bekommt ihren eigenen Cache">
+  ```ts
+  const cache = new InMemoryCache();
+  rateLimit({ cache, /* ... */ });   // ✗ same instance
+  cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
+  ```
+  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge), und seine
+  Eviction ist blind dafür, was ein Eintrag schützt.  Teilst du eine
+  Instanz, evictet ein Aufrufer, der den Response-Cache-Key — oder den
+  `Idempotency-Key`-Header — variiert, die Rate-Limit-Zähler und
+  Idempotency-Records *anderer* Clients: deren Limits setzen sich
+  zurück, und deren Retries führen Handler erneut aus.  Getrennte
+  Instanzen (oder `ext.cache('rate-limit')` / `ext.cache('idempotency')`)
+  halten die Key-Flut der einen Middleware aus dem State der anderen
+  heraus.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+</Aside>
+
 ## HTTP an Actors anschließen
 
 Der Routen-Handler gibt einen `Promise<HttpResponse>` zurück —
 darin kannst du frei Actor-Calls `await`en:
 
 ```ts
-import {} from 'actor-ts';
+
 
 const routes = path('orders',
   path(':id',
@@ -172,8 +279,6 @@ Das ist **das** häufige Muster — HTTP-Handler sind ein dünner
 Adapter: Request parsen, einen Actor fragen, die Antwort
 marshallen.  Halte Business-Logik in Actors; HTTP-Handler bleiben
 kurz.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Teile keinen State in Routen-Handlern">
   ```ts

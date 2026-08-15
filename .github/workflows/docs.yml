@@ -14,9 +14,15 @@
 #   Settings → Pages → Source: GitHub Actions
 # (Without that, the deploy step fails with "Pages site not found".)
 #
-# **Permissions**: the deploy job needs `pages: write` + `id-token:
-# write` to publish the artifact via OIDC.  Workflow-level defaults
-# leave other scopes read-only.
+# **Permissions**: declared per job, never at workflow level (#621).
+# `deploy` needs `pages: write` + `id-token: write` to publish the
+# artifact via OIDC; `build` needs neither.  Granted once at the top,
+# both scopes would also be minted for the job that installs the whole
+# docs dependency tree and drives headless Chromium — the job most
+# likely to execute someone else's code — even though its only Pages
+# step, `actions/upload-pages-artifact`, authenticates with the
+# runtime token instead.  A per-job block keeps the deploy credential
+# in the job that does nothing but deploy.
 name: docs
 
 on:
@@ -37,18 +43,18 @@ concurrency:
   group: "pages-${{ github.ref }}"
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # Reads the repository and uploads an artifact — nothing else.  The
+    # upload action uses the Actions runtime token, not `GITHUB_TOKEN`,
+    # so it needs no Pages scope of its own.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Starlight's `lastUpdated` feature reads Git history to show
           # the per-page last-modified date.  Full history (`0`) lets
@@ -60,12 +66,12 @@ jobs:
       # system Node has to satisfy Astro's minimum (>= 22.12 for Astro 7).
       # We install the repo's `engines` floor.
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -103,7 +109,7 @@ jobs:
         run: bun run build
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/dist
 
@@ -111,10 +117,17 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    # The two scopes `actions/deploy-pages` documents as its minimum, and
+    # they live here rather than at workflow level so only this job — one
+    # step, no checkout, no dependencies — can mint them.  `contents: read`
+    # is deliberately absent: this job never reads the repository.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -1,0 +1,477 @@
+---
+title: Log-Plattform-Integrationen
+description: Logs an einen Collector oder eine Log-Plattform schicken — OTLP über HTTP zuerst, weil ein Endpunktformat die meisten erreicht, und native Sinks dort, wo es das nicht tut.
+---
+
+Sinks, die Records von der Maschine wegschicken.  Fang mit **OTLP** an:
+Ein Endpunktformat erreicht die meisten Plattformen, ein nativer Sink
+lohnt sich also nur dort, wo OTLP nicht hinkommt oder etwas verliert.
+
+| Plattform | Erreichbar über |
+| --- | --- |
+| OpenTelemetry Collector | [OTLP](#otlp--opentelemetry-über-http) |
+| Grafana Loki 3+ | OTLP (`/otlp/v1/logs`) |
+| Parseable | OTLP oder der native Sink |
+| SigNoz, Datadog, Axiom, Honeycomb, New Relic | OTLP |
+| Graylog | **nur GELF** — sein OTLP-Input spricht gRPC, das dieser OTLP-Sink nicht kann |
+| Sentry | das eigene SDK — die Fehlergruppierung *ist* das Produkt |
+
+## OTLP — OpenTelemetry über HTTP
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts/logging';
+
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('http://collector:4318/v1/logs')
+  .withGzip(true);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new OtlpHttpSink(otlpSinkOptions)]);
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+```hocon
+actor-ts.logger.sinks.otlp {
+  enabled = true
+  url     = "http://collector:4318/v1/logs"
+  gzip    = true
+}
+```
+
+Records gehen als `ExportLogsServiceRequest` in proto3-JSON hinaus — ohne
+Protobuf-Bibliothek, ohne OpenTelemetry-SDK:
+
+```json
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"orders"}}]},
+ "scopeLogs":[{"scope":{"name":"actor-ts"},"logRecords":[{
+   "timeUnixNano":"1786527662113000000","severityNumber":9,"severityText":"INFO",
+   "body":{"stringValue":"placing order"},
+   "attributes":[{"key":"actor.path","value":{"stringValue":"actor-ts://orders/user/order"}}]}]}]}]}
+```
+
+`service.name` fällt auf den Namen des Actor-Systems zurück — worauf ein
+Backend gruppiert, sollte sagen, wie der *Dienst* heißt, nicht wie die
+Bibliothek heißt.  Mit `serviceName` überschreibbar.
+
+Die Level bilden auf die OTel-Severity-Bänder ab: `debug` → 5, `info` → 9,
+`warn` → 13, `error` → 17, jeweils mit passendem `severityText`.  Felder
+werden zu typisierten Attributen; der Pfad eines Actors kommt als
+`actor.path` an, sein Display-Name als `actor.name`.
+
+### Warum nicht das OpenTelemetry-SDK?
+
+Für [Tracing](/de/observability/tracing/otel-adapter/) und die
+OTel-Logs-Brücke nutzt das Framework durchaus das SDK-Import des Nutzers.
+Dieser Sink tut das nicht, und der Grund ist asymmetrisch: Das *Protokoll*
+ist stabil und seine JSON-Kodierung spezifiziert, während das
+**JavaScript-Logs-SDK weiterhin ein experimentelles 0.x** ist, dessen
+Releases brechen dürfen.  Ein festes Wire-Format ist die sicherere
+Grundlage.
+
+Wenn du das OTel-SDK ohnehin betreibst und Records durch *dessen* Pipeline
+schicken willst, nimm `otelLogger()` — dieser Weg nimmt dein Import und
+emittiert über den `LoggerProvider` des SDKs.
+
+### Retries
+
+Der Sink folgt der Regel der OTLP-Spezifikation: **429, 502, 503 und 504**
+werden wiederholt (unter Beachtung von `Retry-After`), alles andere nicht.
+Ein 400 oder 401 beschreibt die *Anfrage*; sie unverändert erneut zu
+senden kann keine andere Antwort erzeugen — also wird sie verworfen und
+einmal gemeldet, statt fünfmal gegen einen Dienst zu laufen, der sie nie
+annehmen wird.
+
+### Zugangsdaten
+
+`headers` gibt es nur im Code und ohne HOCON-Leaf:
+
+```ts
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('https://otlp.example.com/v1/logs')
+  .withHeaders({ authorization: `Bearer ${process.env['OTLP_TOKEN']}` });
+```
+
+Ein API-Key in einer Konfigurationsdatei landet in der Versionsverwaltung.
+Lies ihn aus der Umgebung und übergib ihn hier.
+
+## Graylog — GELF
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { GelfSink, GelfSinkOptions } from 'actor-ts/logging';
+
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withHost('graylog.internal')
+  .withProtocol('udp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new GelfSink(gelfSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.gelf {
+  enabled  = true
+  protocol = "udp"          # udp | tcp | http
+  host     = "graylog.internal"
+  port     = 12201
+}
+```
+
+**Graylog ist die eine Plattform, die der OTLP-Sink nicht erreicht.**  Sein
+OpenTelemetry-Input nimmt OTLP ausschließlich über **gRPC** entgegen; ohne
+Collector dazwischen gibt es keinen HTTP-Weg dorthin.  GELF legt
+strukturierte Felder außerdem als erstklassige durchsuchbare Schlüssel ab,
+während der OTLP-Weg sie zu `otel_attributes_*` präfixt.
+
+Records gehen als GELF-1.1-Dokumente hinaus.  Die Level des Frameworks
+bilden auf Syslog-Severities ab (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3), die erste Zeile der Nachricht wird zu `short_message`, der
+Rest samt `Error`-Stack zu `full_message`.  Felder kommen als
+`_`-präfixierte Additional Fields an, der Actor-Pfad als `_source`.
+
+### Transport wählen
+
+| Protokoll | Wann |
+| --- | --- |
+| `udp` | der Standard, und worauf ein unveränderter Graylog-Input lauscht.  Komprimiert und gechunkt; keine Verbindung zu halten |
+| `tcp` | wenn ein verlorenes Datagramm nicht akzeptabel ist oder TLS gebraucht wird.  Nachrichten sind nullbyte-getrennt, damit entfallen Kompression und Chunking |
+| `http` | wenn ein Proxy oder Ingress vor Graylog steht.  Ein POST pro Nachricht |
+
+UDP-Datagramme werden standardmäßig gezippt — der Server erkennt das an
+den Magic Bytes, ohne dass etwas konfiguriert werden muss — und ein
+Dokument, das nicht in ein Datagramm passt, wird gechunkt, bis zur
+Protokollgrenze von 128 Chunks.  Ein Record, der darüber liegt, wird
+verworfen und gemeldet statt wiederholt, denn ein Retry macht ihn nicht
+kleiner; schick ihn stattdessen über TCP.
+
+`max-chunk-bytes` ist standardmäßig 1420 und hält damit das ganze Paket
+innerhalb einer 1500-Byte-Ethernet-MTU, mit Platz für einen Tunnel-Header.
+Ein höherer Wert funktioniert im LAN und fragmentiert still, sobald der
+Verkehr durch irgendetwas Gekapseltes läuft.
+
+### Sicherheit der Feldnamen
+
+GELF schränkt Namen von Additional Fields ein, und das MDC des Frameworks
+kann Werte tragen, die **von einem entfernten Cluster-Peer** stammen
+(#573).  Namen werden deshalb auf das reduziert, was die Spezifikation
+erlaubt, das verbotene `_id` wird verworfen, und ein Feld, das auf einen
+von GELFs eigenen Top-Level-Schlüsseln fiele — `short_message`,
+`timestamp`, `level`, `host` —, wird verworfen, statt ihn überschreiben zu
+dürfen.  Ein Peer kann die Nachricht, über die er berichtet, nicht
+umschreiben.
+
+### TLS
+
+TLS-Material für `tcp` gibt es nur im Code, ohne HOCON-Leaf: Diese Felder
+tragen Zertifikat und Schlüssel *selbst*, nicht Pfade darauf.
+
+```ts
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withProtocol('tcp')
+  .withHost('graylog.internal')
+  .withTls({ ca: process.env['GRAYLOG_CA']! });
+```
+
+## Parseable
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { ParseableSink, ParseableSinkOptions } from 'actor-ts/logging';
+
+const parseableSinkOptions = ParseableSinkOptions.create()
+  .withUrl('https://parseable.internal')
+  .withStream('app-logs')
+  .withApiKey(process.env['PARSEABLE_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new ParseableSink(parseableSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.parseable {
+  enabled = true
+  url     = "https://parseable.internal"
+  stream  = "app-logs"
+  api-key = ${?PARSEABLE_API_KEY}
+}
+```
+
+Ein Batch wird zu einem JSON-Array, das an `/api/v1/ingest` geschickt
+wird, mit dem Ziel-Dataset im Header `X-P-Stream`.  Parseable legt das
+Dataset beim ersten Mal an, es ist also nichts vorzubereiten.
+
+Records gehen **flach** hinaus —
+`{ timestamp, level, source, message, ...fields }` —, weil Parseable
+geschachtelte Objekte beim Ingest ohnehin flach zieht.  Flach zu senden
+hält jedes Feld einzeln abfragbar und spart eine Runde serverseitiges
+Umschreiben.
+
+Authentifiziere entweder mit API-Key oder mit Basic-Auth-Zugangsdaten,
+nie mit beidem; der Validator lehnt die Kombination beim Konstruieren ab,
+statt jeden Flush scheitern zu lassen.
+
+Ein Batch über Parseables 10-MiB-Grenze wird **geteilt**, nicht
+abgeschnitten.  Diese Grenze ist wichtig, weil ihr Überschreiten kein
+wiederholbarer Fehler ist — der Server weist die ganze Anfrage ab, ein zu
+großer Batch ginge also vollständig verloren.
+
+Parseable nimmt auch OTLP/HTTP mit JSON-Body entgegen, der
+[OTLP-Sink](#otlp--opentelemetry-über-http) erreicht es also ebenfalls.
+Nimm diesen hier für die einfachere Record-Form — oder jenen, wenn du
+ohnehin auf OTLP standardisiert bist.
+
+## Grafana Loki
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { LokiSink, LokiSinkOptions } from 'actor-ts/logging';
+
+const lokiSinkOptions = LokiSinkOptions.create()
+  .withUrl('http://loki:3100')
+  .withLabels({ service: 'orders', env: 'prod' });
+const systemOptions = ActorSystemOptions.create().withLogSinks([new LokiSink(lokiSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.loki {
+  enabled   = true
+  url       = "http://loki:3100"
+  tenant-id = "team-a"      # X-Scope-OrgID, for multi-tenant Loki
+  labels { service = "orders" }
+}
+```
+
+Ein Batch wird zu einem Push an `/loki/api/v1/push` in reinem JSON — Loki
+nimmt das als Alternative zu snappy-komprimiertem Protobuf entgegen, es
+ist also weder Kompression noch eine Protobuf-Bibliothek im Spiel.
+
+**Labels sind Lokis Index, und dieser Sink hält sie statisch.**  Jede
+eigene Label-Kombination ist ein eigener Stream; ein Wert pro Record darin
+— ein Actor-Pfad, eine Request-ID — vervielfacht Streams unbegrenzt und
+ist der übliche Weg, einen Loki-Cluster unbrauchbar zu machen.  Der
+Options-Typ nimmt deshalb kein aus dem Record abgeleitetes Label an.
+Variable Daten gehen in **Structured Metadata**, das Loki pro Eintrag
+speichert statt zu indizieren:
+
+```json
+["1786527662113000000", "[…] INFO  placing order",
+ {"level":"info","actor_path":"actor-ts://orders/user/order-42","tenant":"acme"}]
+```
+
+Der Zeitstempel ist ein Nanosekunden-**String**.  Loki beantwortet eine
+JSON-Zahl mit einem 400, und der Wert liegt ohnehin jenseits dessen, was
+ein Double exakt hält.
+
+`service` fällt auf den Namen des Actor-Systems zurück.  Zugangsdaten —
+etwa ein Basic-Auth-Header für Grafana Cloud — laufen über die
+`headers`-Option, die es nur im Code gibt.
+
+**Loki 3+ nimmt außerdem OTLP** unter `/otlp/v1/logs` entgegen, was der
+[OTLP-Sink](#otlp--opentelemetry-über-http) bereits spricht.  Nimm diesen
+Sink für den direkten Push und explizite Label-Kontrolle — und jenen, wenn
+du auf OTLP standardisiert bist.
+
+## Seq
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SeqSink, SeqSinkOptions } from 'actor-ts/logging';
+
+const seqSinkOptions = SeqSinkOptions.create()
+  .withUrl('http://seq:5341')
+  .withApiKey(process.env['SEQ_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SeqSink(seqSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.seq {
+  enabled = true
+  url     = "http://seq:5341"
+  api-key = ${?SEQ_API_KEY}
+}
+```
+
+Ein Batch wird zu newline-getrenntem CLEF, das an `/ingest/clef` geht —
+also zu genau dem NDJSON, das das Framework ohnehin erzeugt, mit vier
+umbenannten Schlüsseln:
+
+```json
+{"@t":"2026-08-12T09:41:02.113Z","@m":"placing order","@l":"Information",
+ "source":"actor-ts://orders/user/order-42","tenant":"acme"}
+```
+
+Die Level nutzen Serilogs Vokabular, aus `info` wird also
+**`Information`** — der eine Wert, den man leicht falsch macht und den Seq
+dann ablehnt.
+
+`@`-präfixierte Schlüssel sind reserviert.  Bei einem Feld, dessen Name
+mit `@` beginnt, wird das Sigil verdoppelt, nach CLEFs eigener
+Escaping-Regel — ein `@t`, das über den Cluster-Draht ankommt, kann den
+Zeitstempel des Records also nicht fälschen.
+
+## Splunk
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SplunkSink, SplunkSinkOptions } from 'actor-ts/logging';
+
+const splunkSinkOptions = SplunkSinkOptions.create()
+  .withUrl('https://splunk.internal:8088')
+  .withToken(process.env['SPLUNK_HEC_TOKEN']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SplunkSink(splunkSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.splunk {
+  enabled = true
+  url     = "https://splunk.internal:8088"
+  token   = ${?SPLUNK_HEC_TOKEN}
+  index   = "main"
+}
+```
+
+Ein Batch geht an den `/services/collector/event`-Endpunkt des HTTP Event
+Collectors, authentifiziert mit `Authorization: Splunk <token>`:
+
+```json
+{"time":1786527662.113,"host":"orders","source":"actor-ts","sourcetype":"_json",
+ "event":{"level":"info","message":"placing order","actorPath":"actor-ts://orders/user/order-42"},
+ "fields":{"tenant":"acme"}}
+```
+
+Events werden **direkt aneinandergehängt**, nicht in ein JSON-Array
+gepackt.  Neuere Splunk-Versionen nehmen auch ein Array, aber die
+Konkatenation ist das Batch-Format, das jede Version versteht, und der
+Unterschied ist ein `join`.
+
+`fields` trägt indizierte Felder und muss **flach** sein — HEC lehnt dort
+verschachtelte Werte ab, und den Schlüssel gibt es überhaupt nur am
+`/event`-Endpunkt, weshalb dieser Sink `/raw` nie benutzt.  Werte werden
+in Strings gewandelt statt verworfen.
+
+`host` fällt auf den Namen des Actor-Systems zurück.  Leg das Token in die
+Umgebung und referenziere es per Substitution, statt es in eine
+Konfigurationsdatei zu schreiben.
+
+## Sentry
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts/logging';
+
+const sentry = await import('@sentry/node');
+sentry.init({ dsn: process.env['SENTRY_DSN'] });
+
+const sentrySinkOptions = SentrySinkOptions.create().withSdk(sentry);
+const systemOptions = ActorSystemOptions.create()
+  .withLogSinks([new ConsoleSink(), sentrySink(sentrySinkOptions)]);
+```
+
+**Du übergibst dein eigenes SDK.**  Das Framework importiert
+`@sentry/node` nie, deklariert keine Abhängigkeit darauf und muss keine
+Version mitziehen — dieselbe Passthrough-Form wie der
+[OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/).  Wichtiger
+noch: Es nutzt den Client, den deine Anwendung ohnehin konfiguriert hat,
+sodass Releases, Environments, Breadcrumbs und vorhandene
+Instrumentierung zusammenpassen, statt zu konkurrieren.
+
+Deshalb gibt es auch **keinen `actor-ts.logger.sinks.sentry`-Block**: Der
+Sink braucht ein lebendes SDK-Objekt, das eine Konfigurationsdatei nicht
+halten kann.  Er wird notwendigerweise im Code konfiguriert, nicht aus
+Versehen.
+
+### Was wohin geht
+
+| Record | Sentry |
+| --- | --- |
+| `error` mit `Error`-Argument | `captureException` — ein echter Stack zum Gruppieren |
+| `error` ohne | `captureMessage(msg, 'error')` |
+| alles andere, das das Level passiert | das Structured-Logs-Produkt, sofern das SDK es hat |
+
+Eine **Warnung ist kein Issue**.  Sie in ein verfolgtes, zuweisbares,
+alarmierendes Event zu verwandeln, ist der Weg, auf dem ein
+Sentry-Projekt zu Lärm wird, den niemand liest — Warnungen gehen also in
+die Logs, und nur Fehler werden zu Issues.
+
+Der Actor-Pfad reist als `actor.path` in den Extra-Daten des Events mit.
+Das macht aus „irgendwas hat geworfen" ein „die Order-Entity für Mandant
+acme hat geworfen".
+
+### Das Standard-Level ist `warn`
+
+Strenger als bei jedem anderen Sink, mit Absicht.  Sentry wird pro Event
+abgerechnet; eine Debug-Feuerwehr darauf zu richten ist eher ein
+Abrechnungsvorfall als eine Konfigurationsvorliebe — und das Signal, auf
+das sich die Rufbereitschaft verlässt, geht so oder so unter.
+
+### Warum nicht das Wire-Protokoll sprechen?
+
+Sentrys Envelope-Format ist dokumentiert und ließe sich ohne Abhängigkeit
+nachbauen.  Es wäre nur schlechter: Was Sentry nützlich macht — Gruppierung,
+Stacktrace-Aufbereitung, Release-Erkennung, Breadcrumbs — steckt im SDK,
+und ein selbstgebauter Transport würde all das entweder schlecht
+nachbauen oder verlieren.
+
+## Syslog (RFC 5424)
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SyslogSink, SyslogSinkOptions } from 'actor-ts/logging';
+
+const syslogSinkOptions = SyslogSinkOptions.create()
+  .withHost('logs.internal')
+  .withTransport('tcp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SyslogSink(syslogSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.syslog {
+  enabled   = true
+  transport = "udp"          # udp | tcp | tls
+  host      = "logs.internal"
+  port      = 514
+  facility  = 16             # local0
+}
+```
+
+**Die Integration, die ohne Anbieter auskommt.**  rsyslog, syslog-ng, der
+Forwarder von journald, Papertrail und eine lange Reihe von
+Netzwerk-Appliances sprechen sie alle — ein Sink deckt also Ziele ab, die
+sonst nichts gemeinsam haben.
+
+```
+<134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+```
+
+Die Priority ist `facility · 8 + severity`, wobei die Level des Frameworks
+auf Syslog-Severities abbilden (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3).  `facility` ist standardmäßig 16 (`local0`) — der für
+Anwendungen reservierte Bereich; darunter gehört dem System, wo die
+Records einer Anwendung falsch einsortiert würden.  `APP-NAME` fällt auf
+den Namen des Actor-Systems zurück, `HOSTNAME` auf den OS-Hostnamen.
+
+### Das Structured-Data-Element ist `-`
+
+Mit Absicht.  Eine wohlgeformte `SD-ID` braucht eine IANA Private
+Enterprise Number; eine zu erfinden hieße, Records unter fremder Kennung
+abzulegen.  Die Felder des Records hängen stattdessen im selben
+`{k=v}`-Format am `MSG`, das auch die Konsole nutzt — es geht also nichts
+verloren, es wird beim Empfänger nur nicht maschinell zerlegt.  Nachrüstbar,
+falls das Projekt je eine Nummer registriert.
+
+### Framing
+
+`udp` braucht keins: Die Datagramm-Grenze *ist* der Rahmen.  Für `tcp` und
+`tls`:
+
+| Framing | Anmerkung |
+| --- | --- |
+| `octet-counting` (Standard, RFC 6587) | längenpräfixiert und das **einzige**, das eine Nachricht mit Zeilenumbruch übersteht — und ein Stacktrace hat immer einen |
+| `lf` | für Empfänger, die nichts anderes annehmen; Zeilenumbrüche in der Nachricht werden zu Leerzeichen, weil das Framing sie nicht darstellen kann |
+
+Die Länge zählt **Bytes**, nicht Zeichen — ein Mehrbyte-Zeichen kann den
+Empfänger also nicht dazu bringen, den Rahmen zu früh abzuschneiden.
+
+TLS-Material gibt es nur im Code, ohne HOCON-Leaf: Diese Felder tragen
+Zertifikat und Schlüssel selbst.
+
+## Verwandt
+
+- [Multi-Sink-Logging](/de/observability/logging/multi-sink/) — die Pipeline, in die das eingehängt wird
+- [Datei-Sink](/de/observability/logging/file-sink/) — lokale Dateien, ohne Collector
+- [OTel-Tracing-Adapter](/de/observability/tracing/otel-adapter/) — dieselben Backends, für Spans

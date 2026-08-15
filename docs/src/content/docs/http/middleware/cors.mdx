@@ -42,7 +42,10 @@ responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
 
 `Access-Control-Allow-Origin` echoes the request origin (the literal `*` is
 sent only for `withAnyOrigin()` **without** credentials), and `Vary: Origin`
-is merged whenever the origin is echoed so caches don't cross-serve.
+is merged whenever the origin is echoed so caches don't cross-serve. The
+merge is case-insensitive and additive: a handler that already answered with
+`Vary: Cookie` keeps that field, and the response goes out as a single
+`Vary: Cookie, Origin`.
 
 import { Aside } from '@astrojs/starlight/components';
 

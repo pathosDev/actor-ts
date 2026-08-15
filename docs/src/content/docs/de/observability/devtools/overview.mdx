@@ -110,18 +110,37 @@ Willst du DevTools neben deine
 statt auf einen eigenen Port, hol dir die Routen und binde sie selbst:
 
 ```ts
-import { concat, path } from 'actor-ts';
-import { DevTools } from 'actor-ts/devtools';
+import { BearerTokenAuth, concat, path } from 'actor-ts/http';
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const devtoolsOptions = DevToolsOptions.create()
+  .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
 
 const routes = concat(
   managementRoutes(system, cluster).routes,
-  path('devtools', DevTools.mount(system)),
+  path('devtools', DevTools.mount(system, devtoolsOptions)),
 );
 await system.http(8558, { host: '127.0.0.1' }).bind(routes);
 ```
 
 Welche Middleware auch immer diesen Teilbaum umschließt, gilt damit auch
 für DevTools.
+
+`mount` verlangt die Absicherung vorab, und zwar aus diesem Grund:
+Anders als `attach` erfährt es nie, wo seine Routen landen.  `host` wird
+auf diesem Weg gar nicht gelesen — es bindet ja der Aufrufer —, also kann
+DevTools einen privaten Port nicht von einem öffentlichen unterscheiden,
+und es rät nicht.  `auth` oder `ipAllowlist` sind die direkte und die
+robustere Antwort: Beide umschließen den zurückgegebenen Baum, die
+Absicherung wandert also mit, egal wo er eingehängt wird.  Sichert der
+umgebende Server den Einhängepunkt bereits ab, sag es stattdessen so:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withAllowUngatedMount();
+```
+
+DevTools schreibt dann eine Zeile ins Log, die festhält, dass es ohne
+eigene Absicherung läuft — den Rest richtig zu machen, ist deine Sache.
 
 ## Optionen
 
@@ -141,7 +160,8 @@ const devtoolsOptions = DevToolsOptions.create()
 | `port` | `9333` | Port zum Binden; `0` sucht einen freien. |
 | `auth` | — | Middleware um den gesamten Baum (z. B. `BearerTokenAuth`). |
 | `ipAllowlist` | — | Middleware um den gesamten Baum. |
-| `allowRemote` | `false` | Ungesichertes, routbares Binden bewusst bestätigen. |
+| `allowRemote` | `false` | Ungesichertes, routbares Binden bewusst bestätigen (`attach`). |
+| `allowUngatedMount` | `false` | Einen von DevTools ungesicherten Routenbaum bewusst bestätigen (`mount`). |
 | `backend` | Framework-Default | HTTP-Backend für den DevTools-Server. |
 | `serveUi` | `true` | `false` lässt den Tap ohne UI laufen. |
 | `allowedOrigins` | Same-Origin | Origins, die den WebSocket öffnen dürfen. |
@@ -168,11 +188,19 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
 
 - **Standardmäßig Loopback.** `host` ist `127.0.0.1`, nichts außerhalb
   der Maschine kommt heran.
-- **Ein routbares Binden muss Absicht sein.** Setzt du `host` auf etwas,
-  das nicht Loopback ist, wirft es — es sei denn, du übergibst zusätzlich
-  `auth`, `ipAllowlist` oder `allowRemote: true`. Die Fehlermeldung nennt
-  alle drei, damit ein Tippfehler im Host-String nicht stillschweigend
-  deinen Actor-Zustand veröffentlicht.
+- **Ein routbares Binden muss Absicht sein.** Setzt du bei `attach`
+  `host` auf etwas, das nicht Loopback ist, wirft es — es sei denn, du
+  übergibst zusätzlich `auth`, `ipAllowlist` oder `allowRemote: true`.
+  Die Fehlermeldung nennt alle drei, damit ein Tippfehler im Host-String
+  nicht stillschweigend deinen Actor-Zustand veröffentlicht.
+- **Ein Mount muss es genauso sein.** `mount` gibt seine Routen an einen
+  Server, den DevTools nie zu sehen bekommt, und kann den Host deshalb
+  nicht prüfen wie `attach` — `host` wird auf diesem Weg nicht einmal
+  gelesen. Also fragt es vorab: `auth`, `ipAllowlist` oder
+  `allowUngatedMount: true`, womit du bestätigst, dass die Absicherung
+  dieses Baums außerhalb von DevTools liegt (und eine Zeile im Log
+  bekommst, die das festhält). Der Loopback-Default zählt hier nicht als
+  Absicherung, denn er ist nicht das, was der Aufrufer bindet.
 - **Absicherungen gelten für alles.** `auth` und `ipAllowlist`
   umschließen die UI, die JSON-Endpunkte *und* das WebSocket-Upgrade —
   eine Absicherung nur auf dem JSON würde den eigentlichen Datenkanal
@@ -190,12 +218,30 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   Die Bindung an Loopback ersetzt das nicht. Ein WebSocket-Handshake
   unterliegt nicht der Same-Origin-Policy, jede Seite im Browser der
   entwickelnden Person erreicht also `127.0.0.1`.
+- **Die Cluster-Seite richtet sich nach der Verbindung.** Übergibst du
+  einen `Cluster`, beantwortet jeder Knoten über den Cluster-Transport
+  die Frage „Wie geht es deinem Knoten?“, und der ausliefernde Knoten
+  sammelt die Antworten ein.  Beide Enden vertrauen der Verbindung, nicht
+  der Nachricht: Ein Knoten antwortet über die Verbindung, auf der die
+  Frage ankam, nie an eine Adresse, die die Frage genannt hat — und der
+  Sammler legt eine Messung unter der Adresse ab, die der Transport
+  geliefert hat, nie unter der, die die Messung für sich selbst
+  behauptet.  Eine Zeile bekommt nur ein Knoten, den der Cluster gerade
+  als Mitglied führt, und sowohl die Anzahl der Zeilen als auch die
+  Größe eines gemeldeten Actor-Baums sind gedeckelt.  Ein lügender Peer
+  kann nur über seine eigene Zeile lügen.
+
+  Das begrenzt, was ein kompromittiertes oder fehlerhaftes Mitglied dem
+  Dashboard antun kann.  Eine Authentifizierung des Cluster-Ports ist es
+  nicht — das ist [mTLS](/de/operations/security/cluster-security/), und das
+  bleibt das, was zu konfigurieren ist, sobald der Port für irgendetwas
+  erreichbar ist, das du nicht selbst betreibst.
 
 Wenn du sie doch exponierst, hänge sie hinter dieselbe Auth wie deine
 Management-Endpunkte und behandle die Credentials als Produktivgeheimnis:
 
 ```ts
-import { BearerTokenAuth } from 'actor-ts';
+import { BearerTokenAuth } from 'actor-ts/http';
 
 const devtoolsOptions = DevToolsOptions.create()
   .withHost('0.0.0.0')

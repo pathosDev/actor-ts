@@ -7,7 +7,7 @@
  * browser bundle pull it in by relative path at build time without
  * dragging the actor runtime along.
  */
-export { DEVTOOLS_PROTOCOL_VERSION } from './version.js';
+export { DEVTOOLS_PROTOCOL_VERSION } from './Version.js';
 
 export {
   DEVTOOLS_CLOSE_VERSION_MISMATCH,

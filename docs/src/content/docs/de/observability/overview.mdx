@@ -1,26 +1,74 @@
 ---
 title: Observability — Überblick
-description: Drei Säulen — Metriken (Counter, Gauges, Histogramme, Exporter), Tracing (Per-Message-Spans via OTel) und Management-Endpunkte (Health Checks, Cluster-Zustand). Alles Extension-basiert; aus, bis du danach greifst.
+description: Vier Säulen — Logs (Multi-Sink, in Dateien und zu Plattformen), Metriken (Counter, Gauges, Histogramme, Exporter), Tracing (Per-Message-Spans via OTel) und Management-Endpunkte (Health Checks, Cluster-Zustand).
 ---
 
-Ein produktives Actor-System braucht drei Dinge, damit es von
+Ein produktives Actor-System braucht vier Dinge, damit es von
 außen beobachtbar ist:
 
 | Säule | Was sie beantwortet | Modul |
 | --- | --- | --- |
+| **Logs** | „Was ist in welcher Reihenfolge passiert, und was hing dran?" | [`MultiSinkLogger`](/de/observability/logging/multi-sink/) |
 | **Metriken** | „Wie hoch ist die Rate / Anzahl / Latenz gerade?" | [`MetricsExtension`](/de/observability/metrics/core-metrics/) |
 | **Tracing** | „Was hat dieser einzelne Request gemacht?" | [`TracingExtension`](/de/observability/tracing/tracer-api/) |
 | **Management** | „Läuft das System und ist es gesund?" | [`managementRoutes`](/de/observability/management/overview/) |
 
-Alle drei sind **Extensions** — sie laufen nicht, bis du danach
-greifst. Eine App, die Observability ignoriert, hat keinen
-Overhead durch ungenutzte Metrik-Puffer oder nicht gestartete
-Trace-Exporter.
+Logging läuft immer — jeder Actor hat `this.log`, standardmäßig auf die
+Konsole.  Die anderen drei sind **Extensions**: Sie laufen nicht, bis du
+danach greifst.  Eine App, die sie ignoriert, hat keinen Overhead durch
+ungenutzte Metrik-Puffer oder nicht gestartete Trace-Exporter.
+
+## Logs
+
+Der Standard-Logger schreibt an eine Stelle.  Mit `withLogSinks` schickst
+du dieselben Records an mehrere gleichzeitig, jede mit eigenem
+Mindest-Level:
+
+```ts
+import { ActorSystem, ActorSystemOptions, LogLevel } from 'actor-ts';
+import { ConsoleSink, FileSink, FileSinkOptions } from 'actor-ts/logging';
+
+const fileSinkOptions = FileSinkOptions.create()
+  .withDirectory('/var/log/my-app')
+  .withRotateInterval('daily');
+const systemOptions = ActorSystemOptions.create()
+  .withLogSinks([new ConsoleSink(), new FileSink(fileSinkOptions)]);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+Records werden einmal gebaut, an jeden Sink aufgefächert, dessen Level
+passt, über eine begrenzte Queue zugestellt und beim Terminieren
+geflusht.  Ein kaputtes Ziel reißt weder die anderen noch die Anwendung
+mit.
+
+### Welcher Sink?
+
+**Fang mit OTLP an.**  Ein Endpunktformat erreicht Grafana Loki 3+,
+Parseable, SigNoz, Datadog, Axiom, Honeycomb, New Relic und jeden
+OpenTelemetry Collector — ein plattformspezifischer Sink lohnt sich also
+nur dort, wo OTLP nicht hinkommt oder etwas verliert:
+
+| Du willst | Nimm |
+| --- | --- |
+| einen Collector oder die meisten SaaS-Plattformen | [OTLP](/de/observability/logging/integrations/#otlp--opentelemetry-über-http) |
+| Log-Dateien auf der Maschine | [Datei-Sink](/de/observability/logging/file-sink/) |
+| Graylog | [GELF](/de/observability/logging/integrations/#graylog--gelf) — sein OTLP-Input kann nur gRPC |
+| Sentry | [den Sentry-Sink](/de/observability/logging/integrations/#sentry) — die Gruppierung *ist* das Produkt |
+| Loki mit expliziter Label-Kontrolle | [Loki-Push](/de/observability/logging/integrations/#grafana-loki) |
+| Seq, Splunk, Parseable | [deren native Sinks](/de/observability/logging/integrations/) |
+| rsyslog, syslog-ng, eine Appliance | [Syslog](/de/observability/logging/integrations/#syslog-rfc-5424) |
+| eine Container-Plattform, die stdout einsammelt | nichts — `ConsoleSink` im `json`-Modus ist bereits NDJSON |
+
+Bewusst **nicht** dabei: `journald` und das Windows Event Log.  Beide
+erreicht man, indem man NDJSON nach stdout schreibt und die Plattform es
+einsammeln lässt — was der Console-Sink schon tut.  Ein eigener Sink
+brächte ein Binärprotokoll ohne zusätzliche Reichweite.
 
 ## Metriken
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const system = ActorSystem.create('my-app');
 const metrics = system.extension(MetricsExtensionId);
@@ -87,7 +135,8 @@ Metrik-Code zu schreiben.
 
 ```ts
 import * as otel from '@opentelemetry/api';
-import { ActorSystem, TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts/tracing';
 
 const system = ActorSystem.create('my-app');
 const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
@@ -133,7 +182,8 @@ existiert für Tests.
 ## Management-Endpunkte
 
 ```ts
-import { managementRoutes, ActorSystem } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
 
@@ -178,13 +228,16 @@ für die Konfiguration.
 
 Für ein neues Produktivsystem:
 
-1. **Metriken** — zumindest die Stock-Metriken, mit einem
+1. **Logs an einen dauerhaften Ort** — ein Datei-Sink oder ein
+   Plattform-Sink. Am schnellsten eingerichtet, und das Erste, wonach
+   nach einem Vorfall gefragt wird.
+2. **Metriken** — zumindest die Stock-Metriken, mit einem
    Prometheus-Exporter. Counter- und Gauge-Dashboards geben dir
    „was macht das System gerade?".
-2. **Health Checks** — Liveness + Readiness für K8s. Selbst wenn
+3. **Health Checks** — Liveness + Readiness für K8s. Selbst wenn
    dein Workload keine fancy Probes braucht, will K8s diese
    Endpunkte.
-3. **Tracing** — zuletzt. Tracing ist aufwendiger
+4. **Tracing** — zuletzt. Tracing ist aufwendiger
    (Exporter-Konfiguration, Sampling, Kosten) und bringt
    abnehmenden Grenznutzen für einfache Apps. Füge es hinzu,
    wenn du Multi-Actor-Requests hast und Ende-zu-Ende-Latenz
@@ -225,6 +278,17 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 ## Wo es weitergeht
+
+### Logs
+
+- **[Multi-Sink-Logging](/de/observability/logging/multi-sink/)** —
+  die Pipeline, Level pro Sink, Redaktion, Flush beim Shutdown.
+- **[Datei-Sink](/de/observability/logging/file-sink/)** —
+  zeitgestempelte Dateien, Rotation, Retention, gzip.
+- **[Plattform-Integrationen](/de/observability/logging/integrations/)** —
+  OTLP, Graylog, Loki, Seq, Splunk, Parseable, Sentry, Syslog.
+- **[Logging-Grundlagen](/de/fundamentals/logging/)** —
+  Level, `withFields`, das MDC, das bei jedem `tell` mitreist.
 
 ### Metriken
 

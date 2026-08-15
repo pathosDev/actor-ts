@@ -19,8 +19,9 @@ this one resumes.
 ## A minimal example
 
 ```ts
-import { PersistentActor, ActorSystem, ActorSystemOptions, type ActorRef } from 'actor-ts';
-import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, type ActorRef } from 'actor-ts';
+import { PersistentActor } from 'actor-ts/persistence';
+import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts/persistence';
 import { match } from 'ts-pattern';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
@@ -255,7 +256,7 @@ the first thing an operator needs, and both carry the
 `persistenceId` and the offending `sequenceNr`:
 
 ```ts
-import { JournalIntegrityError, SnapshotIntegrityError } from 'actor-ts';
+import { JournalIntegrityError, SnapshotIntegrityError } from 'actor-ts/persistence';
 
 override onRecoveryFailure(reason: Error): void {
   if (reason instanceof JournalIntegrityError) {
@@ -369,7 +370,7 @@ validator, where a violation is an `OptionsError` on the
 Check your own IDs against them without starting an actor:
 
 ```ts
-import { assertValidPersistenceId } from 'actor-ts';
+import { assertValidPersistenceId } from 'actor-ts/persistence';
 
 assertValidPersistenceId(`account-${userId}`);
 ```
@@ -385,7 +386,7 @@ Replaying 100 000 events at startup is slow.  Configure a snapshot
 policy:
 
 ```ts
-import { everyNEvents } from 'actor-ts';
+import { everyNEvents } from 'actor-ts/persistence';
 
 class Account extends PersistentActor<...> {
   override snapshotPolicy() { return everyNEvents(100); }
@@ -433,7 +434,7 @@ is split, an enum is added), old events stay in the journal forever.
 The **event adapter** upgrades them on read:
 
 ```ts
-import { EventAdapter } from 'actor-ts';
+import { EventAdapter } from 'actor-ts/persistence';
 
 const v1ToV2Adapter: EventAdapter<EventV2> = {
   manifest: () => 'deposited',

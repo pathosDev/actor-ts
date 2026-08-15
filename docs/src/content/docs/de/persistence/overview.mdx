@@ -90,7 +90,8 @@ Plus einen Erweiterungspunkt — implementiere die Interfaces `Journal` /
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, PersistentActor, ActorSystem } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
+import { PersistentActor } from 'actor-ts/persistence';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
@@ -162,7 +163,8 @@ die vollständige Oberfläche.
 
 ```ts
 import { match } from 'ts-pattern';
-import { DurableStateActor, DurableStateOptions, type ActorRef } from 'actor-ts';
+import { type ActorRef } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions } from 'actor-ts/persistence';
 
 type State = { items: string[]; };
 
@@ -278,7 +280,7 @@ zugeschnitten ist:
 
 ```ts
 import { match } from 'ts-pattern';
-import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
 
 const cartViewOptions = ByTagProjectionOptions.create<CartEvent>()
   .withName('view-cart-summary')

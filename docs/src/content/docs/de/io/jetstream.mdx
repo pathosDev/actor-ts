@@ -11,8 +11,10 @@ Streams, Replay und explizite Bestätigung** mit Kafka-artiger
 `acknowledgment` / `negativeAcknowledgment` / `terminate`-Handshake.
 
 ```ts
-import { ActorSystem, Actor, JetStreamActor, JetStreamOptions } from 'actor-ts';
-import type { ActorRef, JetStreamMessage, JetStreamCommand } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
+import { JetStreamActor, JetStreamOptions } from 'actor-ts/io';
+import type { ActorRef } from 'actor-ts';
+import type { JetStreamMessage, JetStreamCommand } from 'actor-ts/io';
 
 const jetStreamOptions = JetStreamOptions.create()
   .withServers(['nats://localhost:4222'])

@@ -14,11 +14,13 @@ geteilt sein; genau dafür ist dieses Backend da.
 import {
   ActorSystem,
   ActorSystemOptions,
+} from 'actor-ts';
+import {
   CassandraJournal,
   CassandraJournalOptions,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
-} from 'actor-ts';
+} from 'actor-ts/persistence';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
@@ -99,6 +101,17 @@ Single-Row-`LIMIT 1`-Read ist — kein Scan.  `loadBefore(seq)` ergänzt
 eine `sequence_nr < ?`-Schranke.  Das Keyspace muss bereits existieren
 (oder `withAutoCreateKeyspace(true)` setzen); das Framework legt die
 Tabelle an, nicht das Keyspace.
+
+`keyspace` und `snapshotsTable` werden als Identifier in CQL interpoliert
+— Identifier lassen sich nicht binden — also werden beide gegen
+`/^[A-Za-z_][A-Za-z0-9_]*$/` geprüft, auch innerhalb des
+`CREATE KEYSPACE`, das `autoCreateKeyspace` absetzt, bevor der Store
+seine Tabelle überhaupt anfasst.  Data-Center-Namen in
+`replication.dataCenters` sind CQL-*String*-Werte statt Identifier; sie
+behalten also die Bindestriche, die ein `Ec2Snitch`-abgeleiteter Name
+trägt (`us-east-1`), und werden stattdessen quote-escaped.  Alles andere
+— persistenceIds, Sequenznummern, Payloads — geht als Bind-Parameter,
+nie per String-Concat.
 
 ## Stolperfallen
 

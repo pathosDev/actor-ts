@@ -12,7 +12,8 @@ The metrics extension exposes three classic primitives:
 | **Histogram** | Distribution of observations | Latency, payload size. |
 
 ```ts
-import { ActorSystem, MetricsExtensionId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
 
 const metrics = system.extension(MetricsExtensionId).enable();
 
@@ -176,7 +177,7 @@ id — map it onto a **fixed allow-list** before it reaches the
 registry:
 
 ```ts
-import { bucketize } from 'actor-ts';
+import { bucketize } from 'actor-ts/metrics';
 
 const ALLOWED_ROUTES = ['/orders', '/users/:id', '/health'] as const;
 
@@ -213,7 +214,7 @@ into a real one.
 Raise or disable the cap when the registry is installed:
 
 ```ts
-import { MetricsExtensionId, MetricsRegistryOptions } from 'actor-ts';
+import { MetricsExtensionId, MetricsRegistryOptions } from 'actor-ts/metrics';
 
 const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50_000);
 const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);

@@ -1,9 +1,16 @@
 import { describe, expect, test } from 'bun:test';
+import { match } from 'ts-pattern';
 import { Actor } from '../../src/Actor.js';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import {
+  DeathPactError,
+  Directive,
+  OneForOneStrategy,
+  type SupervisorStrategy,
+} from '../../src/Supervision.js';
 import { ActorStopped, Terminated } from '../../src/SystemMessages.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
@@ -401,6 +408,152 @@ describe('watchWith', () => {
       label: 'both incarnations of the worker were reported',
     });
     expect(seen).toEqual(['lost:1', 'lost:2']);
+    await sys.terminate();
+  });
+});
+
+/* --------------------------- death pact (#453) ---------------------------- */
+
+/**
+ * `DeathPactError` is public API with no producer anywhere in `src/`, and both
+ * halves of that are the contract: the runtime never raises it, and an
+ * application throws it itself when a watched actor's death leaves the watcher
+ * without a purpose.  Neither half was pinned before, so a half-landed
+ * automatic death pact would have flipped every watch-and-ignore actor into a
+ * supervision fault with no test going red.
+ */
+describe('death pact', () => {
+  /** Records what supervision was asked to decide, then stops the actor. */
+  const recordingStrategy = (decided: Error[]): SupervisorStrategy =>
+    new OneForOneStrategy((error) => { decided.push(error); return Directive.Stop; });
+
+  test('ignoring a Terminated raises nothing — the runtime never throws DeathPactError', async () => {
+    const decided: Error[] = [];
+    const sawTerminated = { value: false };
+    const pongs: string[] = [];
+
+    class ObservedWorker extends Actor<'die'> {
+      override onReceive(_: 'die'): void { this.self.stop(); }
+    }
+    /**
+     * Takes the death and does nothing with it.  Setting the flag is not
+     * "handling" it in any sense the framework can observe — `onReceive`
+     * returns `void` either way — it is the anchor proving the signal really
+     * was dispatched, so the assertions below cannot pass vacuously on a
+     * Terminated that never arrived.
+     */
+    class SilentWatcher extends Actor<'go' | 'ping' | Terminated> {
+      override onReceive(message: 'go' | 'ping' | Terminated): void {
+        if (message === 'go') {
+          const worker = this.context.spawn(ObservedWorker, 'alice') as ActorRef<'die'>;
+          this.context.watch(worker);
+          worker.tell('die');
+          return;
+        }
+        if (message === 'ping') { pongs.push('pong'); return; }
+        sawTerminated.value = true;
+      }
+    }
+
+    const sys = newSystem('death-pact-silent');
+    const watcher = sys.spawn(SilentWatcher, 'watcher', {
+      supervisorStrategy: recordingStrategy(decided),
+    });
+    watcher.tell('go');
+    await awaitCondition(() => sawTerminated.value, {
+      timeoutMs: 4_000,
+      label: 'the ignored Terminated reached the watcher',
+    });
+
+    // Sent only after the death was dispatched, so the answer proves the
+    // watcher outlived it: a stopped actor never replies, and a restarted one
+    // would have gone through the decider first.
+    watcher.tell('ping');
+    await awaitCondition(() => pongs.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the watcher kept processing after the ignored Terminated',
+    });
+    expect(decided).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('an application may throw DeathPactError itself and supervision decides on it', async () => {
+    const decided: Error[] = [];
+    const watcherStopped = { value: false };
+
+    class ObservedWorker extends Actor<'die'> {
+      override onReceive(_: 'die'): void { this.self.stop(); }
+    }
+    /** The manual death pact: this watcher has no purpose without its worker. */
+    class PactWatcher extends Actor<'go' | Terminated> {
+      override onReceive(message: 'go' | Terminated): void {
+        if (message === 'go') {
+          const worker = this.context.spawn(ObservedWorker, 'alice') as ActorRef<'die'>;
+          this.context.watch(worker);
+          worker.tell('die');
+          return;
+        }
+        throw new DeathPactError(message.actor.path.toString());
+      }
+      override postStop(): void { watcherStopped.value = true; }
+    }
+
+    const sys = newSystem('death-pact-manual');
+    sys.spawn(PactWatcher, 'watcher', { supervisorStrategy: recordingStrategy(decided) }).tell('go');
+
+    await awaitCondition(() => decided.length === 1, {
+      timeoutMs: 4_000,
+      label: 'supervision was asked to decide the death pact',
+    });
+    const failure = decided[0] as DeathPactError;
+    expect(failure).toBeInstanceOf(DeathPactError);
+    expect(failure.name).toBe('DeathPactError');
+    // The path of the actor whose death broke the pact, not the watcher's.
+    expect(failure.actorPath).toContain('alice');
+
+    await awaitCondition(() => watcherStopped.value, {
+      timeoutMs: 4_000,
+      label: 'the directive the decider returned stopped the watcher',
+    });
+    await sys.terminate();
+  });
+
+  test('a Terminated no exhaustive() arm covers fails as itself, not as a death pact', async () => {
+    // The realistic shape of "unhandled": the watcher's protocol never
+    // mentioned `Terminated`, so the matcher has no arm for the death the cell
+    // delivers anyway.  Worth pinning because it is the one case where
+    // ignoring a death does cost something — and what supervision sees is
+    // ts-pattern's error, not a DeathPactError the framework invented.
+    const decided: Error[] = [];
+
+    class ObservedWorker extends Actor<'die'> {
+      override onReceive(_: 'die'): void { this.self.stop(); }
+    }
+    class ExhaustiveWatcher extends Actor<StartCommand> {
+      override onReceive(message: StartCommand): void {
+        match(message)
+          .with({ kind: 'start' }, () => this.onStart())
+          .exhaustive();
+      }
+
+      private onStart(): void {
+        const worker = this.context.spawn(ObservedWorker, 'alice') as ActorRef<'die'>;
+        this.context.watch(worker);
+        worker.tell('die');
+      }
+    }
+
+    const sys = newSystem('death-pact-exhaustive');
+    sys.spawn(ExhaustiveWatcher, 'watcher', { supervisorStrategy: recordingStrategy(decided) })
+      .tell({ kind: 'start' });
+
+    await awaitCondition(() => decided.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the uncovered Terminated reached supervision',
+    });
+    const failure = decided[0] as Error;
+    expect(failure).not.toBeInstanceOf(DeathPactError);
+    expect(failure.message).toContain('no pattern matches value');
     await sys.terminate();
   });
 });

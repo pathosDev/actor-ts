@@ -1,0 +1,462 @@
+---
+title: Log platform integrations
+description: Ship logs to a collector or a log platform — OTLP over HTTP first, because one endpoint format reaches most of them, and native sinks where it does not.
+---
+
+Sinks that ship records off the machine.  Start with **OTLP**: one
+endpoint format reaches most platforms, so a native sink only earns its
+place where OTLP does not reach or loses something.
+
+| Platform | Reach it with |
+| --- | --- |
+| OpenTelemetry Collector | [OTLP](#otlp--opentelemetry-over-http) |
+| Grafana Loki 3+ | OTLP (`/otlp/v1/logs`) |
+| Parseable | OTLP, or the native sink |
+| SigNoz, Datadog, Axiom, Honeycomb, New Relic | OTLP |
+| Graylog | **GELF only** — its OTLP input is gRPC, which this OTLP sink does not speak |
+| Sentry | its own SDK — error grouping is the product |
+
+## OTLP — OpenTelemetry over HTTP
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { OtlpHttpSink, OtlpHttpSinkOptions } from 'actor-ts/logging';
+
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('http://collector:4318/v1/logs')
+  .withGzip(true);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new OtlpHttpSink(otlpSinkOptions)]);
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+```hocon
+actor-ts.logger.sinks.otlp {
+  enabled = true
+  url     = "http://collector:4318/v1/logs"
+  gzip    = true
+}
+```
+
+Records go out as an `ExportLogsServiceRequest` in proto3 JSON — no
+protobuf library, no OpenTelemetry SDK:
+
+```json
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"orders"}}]},
+ "scopeLogs":[{"scope":{"name":"actor-ts"},"logRecords":[{
+   "timeUnixNano":"1786527662113000000","severityNumber":9,"severityText":"INFO",
+   "body":{"stringValue":"placing order"},
+   "attributes":[{"key":"actor.path","value":{"stringValue":"actor-ts://orders/user/order"}}]}]}]}]}
+```
+
+`service.name` defaults to the actor system's name — the thing a backend
+groups by should say what the *service* is called, not what the library
+is called. Set `serviceName` to override it.
+
+Levels map onto the OTel severity bands: `debug` → 5, `info` → 9,
+`warn` → 13, `error` → 17, with the matching `severityText`.  Fields
+become typed attributes; an actor's path arrives as `actor.path` and its
+display name as `actor.name`.
+
+### Why not the OpenTelemetry SDK?
+
+The framework does depend on the user's own OTel import for
+[tracing](/observability/tracing/otel-adapter/) and the OTel logs bridge.
+This sink does not, and the reason is asymmetric: the *protocol* is
+stable and its JSON encoding is specified, while the JavaScript **logs
+SDK is still an experimental 0.x** whose releases may break.  A fixed
+wire format is the safer thing to build on.
+
+If you already run the OTel SDK and want records to flow through *its*
+pipeline instead, use `otelLogger()` — that path takes your import and
+emits through the SDK's `LoggerProvider`.
+
+### Retries
+
+The sink follows the OTLP specification's rule: **429, 502, 503 and 504**
+are retried (honouring `Retry-After`), everything else is not.  A 400 or a
+401 describes the request, and sending it again unchanged cannot produce a
+different answer — so it is dropped and reported once rather than retried
+five times against a service that will never accept it.
+
+### Credentials
+
+`headers` is code-only and has no HOCON leaf:
+
+```ts
+const otlpSinkOptions = OtlpHttpSinkOptions.create()
+  .withUrl('https://otlp.example.com/v1/logs')
+  .withHeaders({ authorization: `Bearer ${process.env['OTLP_TOKEN']}` });
+```
+
+An API key in a config file ends up in version control.  Read it from the
+environment and pass it here.
+
+## Graylog — GELF
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { GelfSink, GelfSinkOptions } from 'actor-ts/logging';
+
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withHost('graylog.internal')
+  .withProtocol('udp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new GelfSink(gelfSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.gelf {
+  enabled  = true
+  protocol = "udp"          # udp | tcp | http
+  host     = "graylog.internal"
+  port     = 12201
+}
+```
+
+**Graylog is the one platform the OTLP sink cannot reach.**  Its
+OpenTelemetry input accepts OTLP over **gRPC only**, so without a
+collector in between there is no HTTP path to it.  GELF also lands
+structured fields as first-class searchable keys, where the OTLP route
+prefixes them into `otel_attributes_*`.
+
+Records go out as GELF 1.1 documents.  The framework's levels map onto
+syslog severities (`debug` → 7, `info` → 6, `warn` → 4, `error` → 3), the
+first line of the message becomes `short_message`, and the rest plus any
+`Error` stack becomes `full_message`.  Fields arrive as `_`-prefixed
+additional fields, with the actor path as `_source`.
+
+### Choosing a transport
+
+| Protocol | When |
+| --- | --- |
+| `udp` | the default, and what a stock Graylog input listens on.  Compressed and chunked; no connection to keep alive |
+| `tcp` | when losing a datagram is not acceptable, or when you need TLS.  Messages are null-delimited, so neither compression nor chunking applies |
+| `http` | when a proxy or an ingress sits in front of Graylog.  One POST per message |
+
+UDP datagrams are gzipped by default — the server detects that from the
+magic bytes, with nothing to configure — and a document too large for one
+datagram is chunked, up to the protocol's limit of 128 chunks.  A record
+that would exceed that is dropped and reported rather than retried,
+because retrying cannot make it smaller; send it over TCP instead.
+
+`max-chunk-bytes` defaults to 1420, which keeps the whole packet inside a
+1500-byte Ethernet MTU with room for a tunnel header.  Raising it works on
+a LAN and starts silently fragmenting the moment traffic crosses anything
+encapsulated.
+
+### Field-name safety
+
+GELF constrains additional-field names, and the framework's MDC can carry
+values that arrived **from a remote cluster peer** (#573).  So names are
+sanitised to what the spec allows, the forbidden `_id` is dropped, and a
+field that would land on one of GELF's own top-level keys —
+`short_message`, `timestamp`, `level`, `host` — is dropped rather than
+allowed to overwrite it.  A peer cannot rewrite the message it is
+reporting.
+
+### TLS
+
+TLS material for `tcp` is code-only, with no HOCON leaf: those fields
+carry the certificate and key *themselves*, not paths to them.
+
+```ts
+const gelfSinkOptions = GelfSinkOptions.create()
+  .withProtocol('tcp')
+  .withHost('graylog.internal')
+  .withTls({ ca: process.env['GRAYLOG_CA']! });
+```
+
+## Parseable
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { ParseableSink, ParseableSinkOptions } from 'actor-ts/logging';
+
+const parseableSinkOptions = ParseableSinkOptions.create()
+  .withUrl('https://parseable.internal')
+  .withStream('app-logs')
+  .withApiKey(process.env['PARSEABLE_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new ParseableSink(parseableSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.parseable {
+  enabled = true
+  url     = "https://parseable.internal"
+  stream  = "app-logs"
+  api-key = ${?PARSEABLE_API_KEY}
+}
+```
+
+A batch becomes a JSON array POSTed to `/api/v1/ingest`, with the target
+dataset in the `X-P-Stream` header.  Parseable creates the dataset on
+first use, so there is nothing to provision.
+
+Records are sent **flat** — `{ timestamp, level, source, message, ...fields }`
+— because Parseable flattens nested objects at ingest anyway.  Sending
+them flat keeps every field individually queryable and skips a round of
+server-side rewriting.
+
+Authenticate with either an API key or basic-auth credentials, never
+both; the validator rejects the combination at construction rather than
+letting every flush fail.
+
+A batch larger than Parseable's 10 MiB request cap is **split**, not
+truncated.  That cap matters because exceeding it is not a retryable
+failure — the server rejects the whole request, so an oversized batch
+would be lost in full.
+
+Parseable also accepts OTLP/HTTP with a JSON body, so the
+[OTLP sink](#otlp--opentelemetry-over-http) reaches it too.  Use this one
+for the simpler record shape, or that one if you are already standardised
+on OTLP.
+
+## Grafana Loki
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { LokiSink, LokiSinkOptions } from 'actor-ts/logging';
+
+const lokiSinkOptions = LokiSinkOptions.create()
+  .withUrl('http://loki:3100')
+  .withLabels({ service: 'orders', env: 'prod' });
+const systemOptions = ActorSystemOptions.create().withLogSinks([new LokiSink(lokiSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.loki {
+  enabled   = true
+  url       = "http://loki:3100"
+  tenant-id = "team-a"      # X-Scope-OrgID, for multi-tenant Loki
+  labels { service = "orders" }
+}
+```
+
+A batch becomes one push to `/loki/api/v1/push` in plain JSON — Loki
+accepts that as an alternative to snappy-compressed protobuf, so no
+compression or protobuf library is involved.
+
+**Labels are Loki's index, and this sink keeps them static.**  Every
+distinct label combination is a separate stream; a per-record value in
+there — an actor path, a request id — multiplies streams without bound and
+is the standard way to make a Loki cluster unusable.  So the options type
+does not accept a label derived from the record.  Variable data goes into
+**structured metadata**, which Loki stores per entry instead of indexing:
+
+```json
+["1786527662113000000", "[…] INFO  placing order",
+ {"level":"info","actor_path":"actor-ts://orders/user/order-42","tenant":"acme"}]
+```
+
+The timestamp is a nanosecond **string**.  Loki answers a JSON number with
+a 400, and the value is past what a double holds exactly anyway.
+
+`service` defaults to the actor system's name.  Credentials — a Grafana
+Cloud basic-auth header — go through the code-only `headers` option.
+
+**Loki 3+ also ingests OTLP** at `/otlp/v1/logs`, which the
+[OTLP sink](#otlp--opentelemetry-over-http) already speaks.  Use this sink
+for direct push and explicit label control; use that one if you are
+standardised on OTLP.
+
+## Seq
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SeqSink, SeqSinkOptions } from 'actor-ts/logging';
+
+const seqSinkOptions = SeqSinkOptions.create()
+  .withUrl('http://seq:5341')
+  .withApiKey(process.env['SEQ_API_KEY']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SeqSink(seqSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.seq {
+  enabled = true
+  url     = "http://seq:5341"
+  api-key = ${?SEQ_API_KEY}
+}
+```
+
+A batch becomes newline-delimited CLEF POSTed to `/ingest/clef` — which is
+the NDJSON the framework already emits with four keys renamed:
+
+```json
+{"@t":"2026-08-12T09:41:02.113Z","@m":"placing order","@l":"Information",
+ "source":"actor-ts://orders/user/order-42","tenant":"acme"}
+```
+
+Levels use Serilog's vocabulary, so `info` becomes **`Information`** — the
+one value that is easy to get wrong, and that Seq rejects if you do.
+
+`@`-prefixed keys are reserved.  A field whose name starts with `@` has
+its sigil doubled, per CLEF's own escaping rule, so a `@t` arriving over
+the cluster wire cannot forge the record's timestamp.
+
+## Splunk
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SplunkSink, SplunkSinkOptions } from 'actor-ts/logging';
+
+const splunkSinkOptions = SplunkSinkOptions.create()
+  .withUrl('https://splunk.internal:8088')
+  .withToken(process.env['SPLUNK_HEC_TOKEN']!);
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SplunkSink(splunkSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.splunk {
+  enabled = true
+  url     = "https://splunk.internal:8088"
+  token   = ${?SPLUNK_HEC_TOKEN}
+  index   = "main"
+}
+```
+
+A batch goes to the HTTP Event Collector's `/services/collector/event`
+endpoint, authenticated with `Authorization: Splunk <token>`:
+
+```json
+{"time":1786527662.113,"host":"orders","source":"actor-ts","sourcetype":"_json",
+ "event":{"level":"info","message":"placing order","actorPath":"actor-ts://orders/user/order-42"},
+ "fields":{"tenant":"acme"}}
+```
+
+Events are **concatenated back to back**, not wrapped in a JSON array.
+Newer Splunk versions accept an array too, but concatenation is the batch
+format every version understands and the difference is one join.
+
+`fields` carries indexed fields and must be **flat** — HEC rejects a
+nested value there, and the key only works on the `/event` endpoint at
+all, which is why this sink never uses `/raw`.  Values are stringified
+rather than dropped.
+
+`host` defaults to the actor system's name.  Put the token in the
+environment and reference it with a substitution rather than writing it
+into a config file.
+
+## Sentry
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { ConsoleSink, SentrySinkOptions, sentrySink } from 'actor-ts/logging';
+
+const sentry = await import('@sentry/node');
+sentry.init({ dsn: process.env['SENTRY_DSN'] });
+
+const sentrySinkOptions = SentrySinkOptions.create().withSdk(sentry);
+const systemOptions = ActorSystemOptions.create()
+  .withLogSinks([new ConsoleSink(), sentrySink(sentrySinkOptions)]);
+```
+
+**You pass your own SDK.**  The framework never imports `@sentry/node`,
+declares no dependency on it, and has no version to keep in step — the
+same passthrough shape as the
+[OTel tracing adapter](/observability/tracing/otel-adapter/).  More
+importantly, it uses the client your application already configured, so
+releases, environments, breadcrumbs and any existing instrumentation all
+line up instead of competing.
+
+That is also why there is **no `actor-ts.logger.sinks.sentry` block**: the
+sink needs a live SDK object, which a config file cannot hold.  It is
+configured in code by necessity, not by oversight.
+
+### What goes where
+
+| Record | Sentry |
+| --- | --- |
+| `error` with an `Error` argument | `captureException` — a real stack to group on |
+| `error` without one | `captureMessage(msg, 'error')` |
+| anything else that passes the level | the structured-logs product, when the SDK has it |
+
+A **warning is not an issue**.  Turning one into a tracked, assignable,
+alert-firing event is how a Sentry project becomes noise nobody reads, so
+warnings go to logs and only errors become issues.
+
+The actor path travels as `actor.path` in the event's extra data, which is
+what turns "something threw" into "the order entity for tenant acme
+threw".
+
+### The default level is `warn`
+
+Stricter than every other sink, on purpose.  Sentry is priced per event;
+pointing a debug firehose at it is a billing incident rather than a
+configuration preference — and the signal an on-call engineer depends on
+drowns either way.
+
+### Why not speak the wire protocol?
+
+Sentry's envelope format is documented and could be hand-rolled without a
+dependency.  It would also be worse: what makes Sentry useful is grouping,
+stack-trace processing, release detection and breadcrumbs — all of which
+live in the SDK, and all of which a hand-rolled transport would either
+duplicate badly or lose.
+
+## Syslog (RFC 5424)
+
+```ts
+import { ActorSystemOptions } from 'actor-ts';
+import { SyslogSink, SyslogSinkOptions } from 'actor-ts/logging';
+
+const syslogSinkOptions = SyslogSinkOptions.create()
+  .withHost('logs.internal')
+  .withTransport('tcp');
+const systemOptions = ActorSystemOptions.create().withLogSinks([new SyslogSink(syslogSinkOptions)]);
+```
+
+```hocon
+actor-ts.logger.sinks.syslog {
+  enabled   = true
+  transport = "udp"          # udp | tcp | tls
+  host      = "logs.internal"
+  port      = 514
+  facility  = 16             # local0
+}
+```
+
+**The integration that needs no vendor.**  rsyslog, syslog-ng, journald's
+forwarder, Papertrail and a long tail of network appliances all speak it,
+so one sink covers destinations that have nothing else in common.
+
+```
+<134>1 2026-08-12T09:41:02.113Z web-01 orders 1234 - - placing order {tenant=acme}
+```
+
+The priority is `facility · 8 + severity`, with the framework's levels
+mapped onto syslog severities (`debug` → 7, `info` → 6, `warn` → 4,
+`error` → 3).  `facility` defaults to 16 (`local0`) — the range reserved
+for applications; below it belongs to the system, where an application's
+records would be misfiled.  `APP-NAME` defaults to the actor system's
+name and `HOSTNAME` to the OS hostname.
+
+### The structured-data element is `-`
+
+Deliberately.  A well-formed `SD-ID` requires an IANA private enterprise
+number, and inventing one would file records under somebody else's
+identifier.  The record's fields are appended to `MSG` in the same
+`{k=v}` form the console uses, so nothing is lost — it is simply not
+machine-parsed by the receiver.  This is revisitable if the project ever
+registers a number.
+
+### Framing
+
+`udp` needs none: the datagram boundary is the frame.  For `tcp` and
+`tls`:
+
+| Framing | Notes |
+| --- | --- |
+| `octet-counting` (default, RFC 6587) | length-prefixed, and the **only** one that survives a message containing a newline — which a stack trace always does |
+| `lf` | for receivers that accept nothing else; newlines in the message are collapsed to spaces, because the framing cannot represent them |
+
+The length is counted in **bytes**, not characters, so a multi-byte
+character cannot make the receiver cut the frame short.
+
+TLS material is code-only, with no HOCON leaf: those fields carry the
+certificate and key themselves.
+
+## Related
+
+- [Multi-sink logging](/observability/logging/multi-sink/) — the pipeline these plug into
+- [File sink](/observability/logging/file-sink/) — local files, no collector needed
+- [OTel tracing adapter](/observability/tracing/otel-adapter/) — the same backends, for spans

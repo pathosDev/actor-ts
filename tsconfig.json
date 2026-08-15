@@ -1,15 +1,29 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "Bundler",
+    // `NodeNext`, not `Bundler`: no bundler runs over this output.  `tsc`
+    // emits ESM straight into `dist/` and the consumer is Node >= 24 or
+    // Deno going through the real ESM resolver, which enforces exactly the
+    // rules `Bundler` relaxes — extensionless relative specifiers,
+    // directory-index resolution, `exports`-unaware `.d.ts` lookup.  Under
+    // `Bundler` the compiler validated the emitted specifiers against a
+    // ruleset nothing downstream applies (#1008).
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": [],
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    // Both map kinds stay OFF: `files` publishes `dist/` and not `src/`,
+    // so every emitted map's `sources` pointed at a `../src/*.ts` the
+    // tarball never carried, and none of them held `sourcesContent`.  A
+    // dangling map is worse than no map — a missing one degrades cleanly,
+    // a dangling one sends the editor and the debugger hunting for a file
+    // that will never appear (#1007).  Turning either back on means
+    // shipping `src/` too, or setting `inlineSources`.
+    "declarationMap": false,
+    "sourceMap": false,
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,

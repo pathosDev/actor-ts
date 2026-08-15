@@ -5,7 +5,8 @@
  *
  *   bun run examples/fsm/connection-state.ts
  */
-import { ActorSystem, FSM } from '../../src/index.js';
+import { ActorSystem } from '../../src/index.js';
+import { FSM } from '../../src/fsm/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type State = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';

@@ -55,6 +55,12 @@ export const inMemoryLeaseStore = new InMemoryLeaseStore();
  * Useful for tests and single-process development.  The store is a plain
  * JS Map, so it is NOT appropriate for multi-process deployments — use
  * `KubernetesLease` for that.
+ *
+ * `name`, `owner` and `ttlMs` are required: the constructor rejects a
+ * missing one with `OptionsError` (#596).  Without an `owner` two leases
+ * would compete under the same `undefined` holder and both win; without
+ * `ttlMs` the expiry is `NaN`, which compares false against every clock
+ * reading and has the same effect.
  */
 export class InMemoryLease implements Lease {
   private readonly renewalIntervalMs: number;
@@ -66,7 +72,11 @@ export class InMemoryLease implements Lease {
 
   constructor(options: LeaseOptions = {}) {
     this.options = options as LeaseOptionsType;
-    new LeaseOptionsValidator().validate(this.options);
+    // Required-ness first, domain validity second — a missing field must be
+    // reported as missing, not as a domain violation of `undefined`.
+    const validator = new LeaseOptionsValidator();
+    validator.validateRequired(this.options);
+    validator.validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(100, Math.floor(this.options.ttlMs / 3));
   }
 

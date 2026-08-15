@@ -63,8 +63,10 @@ export {
   CsrfOptions,
   CsrfOptionsBuilder,
   CsrfOptionsValidator,
+  DEFAULT_CSRF_COOKIE_NAME,
   SameOriginOptions,
   SameOriginOptionsBuilder,
+  SameOriginOptionsValidator,
   requestId,
   requestIdOf,
   DEFAULT_REQUEST_ID_HEADER,
@@ -89,6 +91,7 @@ export type {
   CorsOrigin,
   CsrfOptionsType,
   CsrfCookieOptions,
+  OriginScheme,
   SameOriginOptionsType,
   RequestIdOptionsType,
   BasicAuthOptionsType,
@@ -115,11 +118,21 @@ export type { StaticFilesOptionsType } from './static/index.js';
 export { escapeHtml, html, rawHtml, completeHtml, SafeHtml } from './Html.js';
 
 // Cookie parse/serialise helpers — used by CSRF, handy for handlers too.
-export { parseCookies, serializeCookie } from './cookies.js';
-export type { CookieAttributes } from './cookies.js';
+export { parseCookies, serializeCookie } from './Cookies.js';
+export type { CookieAttributes } from './Cookies.js';
 
-export { HttpClient } from './HttpClient.js';
+export { HttpClient, HttpRedirectError, HttpResponseTooLargeError } from './HttpClient.js';
 export type { HttpClientRequest, HttpClientResponse } from './HttpClient.js';
+export {
+  HttpClientOptions,
+  HttpClientOptionsBuilder,
+  HttpClientOptionsValidator,
+  DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
+  DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+  DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
+  DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+} from './HttpClientOptions.js';
+export type { HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';
@@ -128,7 +141,8 @@ export type { ExpressBackendOptionsType } from './backend/ExpressBackendOptions.
 export { HonoBackend } from './backend/HonoBackend.js';
 export { HonoBackendOptions, HonoBackendOptionsBuilder, HonoBackendOptionsValidator } from './backend/HonoBackendOptions.js';
 export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
-export { DEFAULT_RESPONSE_SECURITY_HEADERS } from './backend/HttpServerBackend.js';
+export { DEFAULT_HTTP_MAX_BODY_BYTES } from './Constants.js';
+export { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,
@@ -143,8 +157,8 @@ export * from './websocket/index.js';
 export {
   HttpError,
   Status,
-} from './types.js';
-export type { HttpMethod, HttpRequest, HttpResponse } from './types.js';
+} from './Types.js';
+export type { HttpMethod, HttpRequest, HttpResponse } from './Types.js';
 
 // HTTP caching middleware (response-cache, rate-limit, idempotency-key).
 export {
@@ -153,6 +167,7 @@ export {
   RateLimitOptionsBuilder,
   RateLimitOptionsValidator,
   idempotent,
+  DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
   IdempotencyOptions,
   IdempotencyOptionsBuilder,
   IdempotencyOptionsValidator,

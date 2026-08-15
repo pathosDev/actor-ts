@@ -24,8 +24,10 @@
 import { match } from 'ts-pattern';
 import {
   Actor,
-  ReplicatedEventSourcedActor,
 } from '../../src/index.js';
+import {
+  ReplicatedEventSourcedActor,
+} from '../../src/persistence/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 
 type Command = { kind: 'add'; amount: number };

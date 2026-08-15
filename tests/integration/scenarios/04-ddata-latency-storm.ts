@@ -18,7 +18,7 @@
  * that flaky).
  */
 
-import { sleep, waitFor, type Scenario } from './types.js';
+import { sleep, waitFor, type Scenario } from './Types.js';
 
 const KEY = 'shared-state';
 

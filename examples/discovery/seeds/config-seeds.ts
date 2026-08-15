@@ -4,7 +4,7 @@
  *
  *   bun run examples/discovery/seeds/config-seeds.ts
  */
-import { ConfigSeedProvider, ConfigSeedProviderOptions, seedsFromEnv } from '../../../src/index.js';
+import { ConfigSeedProvider, ConfigSeedProviderOptions, seedsFromEnv } from '../../../src/discovery/index.js';
 
 async function main(): Promise<void> {
   // From code.

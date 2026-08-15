@@ -24,6 +24,7 @@ import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
+import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import { WebsocketClientOptionsValidator } from './WebsocketClientOptions.js';
 import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
@@ -39,13 +40,13 @@ import {
   type WebsocketClientMessage,
   type WebsocketClientSignal,
 } from './WebsocketMessages.js';
-import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
+import { websocketClientConstructor, type WebsocketLike } from './WebsocketConstructor.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import {
-  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   frameByteLength,
   normalizeInbound,
   type WebsocketFrame,
-} from './types.js';
+} from './Types.js';
 
 export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {
@@ -222,7 +223,15 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     }
     const cap = this.options.maxFrameBytes ?? DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;
     if (frameByteLength(frame) > cap) {
-      this.log.warn(`WebsocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${this.options.url}`);
+      // A label, not the configured URL: the peer decides how often this line
+      // is written (one warn per oversize frame, with no latch), so anything
+      // secret in the URL would be replayed into the log at its discretion.
+      // `redactedUrlLabel` drops the query string as well as the userinfo — a
+      // WebSocket endpoint is commonly authenticated with a `?token=…` — while
+      // keeping the path, which is what tells two connections to the same host
+      // apart (#592).
+      const endpoint = redactedUrlLabel(this.options.url ?? '<unknown>');
+      this.log.warn(`WebsocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${endpoint}`);
       return;
     }
     let decoded: TIn;

@@ -5,8 +5,8 @@
  * downstream is moot.  Exercises the external-target subscribe path
  * (`{ kind: 'subscribe', target }`) that still fans out to a foreign ref.
  */
-import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<MqttContext> = {
   name: 'publish/subscribe round-trip (QoS 0)',

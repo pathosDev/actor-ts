@@ -20,7 +20,8 @@ Seed providers answer: **"Which addresses should I try as cluster
 seeds at join time?"**
 
 ```ts
-import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
   .withNamespace('my-app')
@@ -83,7 +84,7 @@ The receptionist answers: **"Which actors are registered under
 this service key, anywhere in the cluster?"**
 
 ```ts
-import { Find, ReceptionistId, Register, ServiceKey } from 'actor-ts';
+import { Find, ReceptionistId, Register, ServiceKey } from 'actor-ts/discovery';
 
 // On node-A:
 const receptionist = system.extension(ReceptionistId).start(cluster);

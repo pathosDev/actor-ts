@@ -142,7 +142,7 @@ Memcached rundet auf volle Sekunden auf, mit 1 s als Untergrenze.
 bringt das Framework eine mit:
 
 ```ts
-import { acquireLock } from 'actor-ts';
+import { acquireLock } from 'actor-ts/cache';
 
 const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
 if (lock.isNone()) return;              // jemand anderes ist dran
@@ -230,6 +230,20 @@ await cache.mset(new Map([
   Caches sind auf kleine Werte ausgelegt.  Große Objekte
   verschwenden Speicher + Bandbreite.  Cache kleine Referenzen;
   hole volle Objekte aus der DB.
+</Aside>
+
+<Aside type="caution" title="Teile keine Instanz zwischen einer Garantie und einer Key-Flut">
+  ```ts
+  const cache = system.extension(CacheExtensionId).cache();   // ✗ one instance for everything
+  ```
+  Ein begrenzter Cache evictet allein nach Aktualität — ein Eintrag,
+  der eine Garantie trägt (ein Rate-Limit-Zähler, ein
+  Idempotency-Record, ein Lock), geht also genauso bereitwillig wie ein
+  gecachter Response-Body.  Gib jedem Consumer eine eigene benannte
+  Instanz (`cache('rate-limit')`, `cache('idempotency')`), damit ein
+  Aufrufer, der den Key-Raum des einen aufzählt, den State des anderen
+  nicht erreicht.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
 </Aside>
 
 ## Wohin als Nächstes

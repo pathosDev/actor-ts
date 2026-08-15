@@ -80,7 +80,7 @@ Workers, alle gleich, die einen Stream von Arbeit parallelisieren.
 ## Group-Router *(nur Cluster)*
 
 ```ts
-import { ClusterRouter } from 'actor-ts';
+import { ClusterRouter } from 'actor-ts/cluster';
 
 const router = system.spawn(
   ClusterRouter.factory({

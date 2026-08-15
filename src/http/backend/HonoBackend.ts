@@ -6,8 +6,13 @@ import {
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
-import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
+import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import {
+  contentLengthExceeds,
+  DEFAULT_RESPONSE_SECURITY_HEADERS,
+  PAYLOAD_TOO_LARGE_RESPONSE,
+} from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -25,27 +30,6 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   return new Uint8Array(0);
-}
-
-/**
- * True when a declared `Content-Length` exceeds `cap`.  Extracted as a pure
- * function so the fast-path body-size guard (security audit HTTP-1) can be
- * unit-tested directly.  A missing/non-numeric header returns `false` — those
- * fall through to the post-buffer backstop.
- * @internal
- */
-export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
-  if (header === undefined) return false;
-  const declaredLength = Number(header);
-  return Number.isFinite(declaredLength) && declaredLength > cap;
-}
-
-/** Standard 413 response used by the body-size guards. */
-function payloadTooLarge(defaultHeaders: Readonly<Record<string, string>>): Response {
-  return new Response('Payload Too Large', {
-    status: 413,
-    headers: { ...defaultHeaders, 'content-type': 'text/plain; charset=utf-8' },
-  });
 }
 
 /** Read the `Content-Length` header off a Hono context as a string, if present. */
@@ -150,7 +134,7 @@ export class HonoBackend implements HttpServerBackend {
     new HonoBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? 10 * 1024 * 1024;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */
@@ -194,7 +178,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return payloadTooLarge(this.defaultResponseHeaders);
+        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const request = await this.adaptRequest(context);
         const response = await handler(request);
         return this.writeResponse(response);
@@ -227,12 +211,20 @@ export class HonoBackend implements HttpServerBackend {
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
     // and fold the bridge's serve options in (Bun needs `{ websocket }`).
+    //
+    // The runner also gets the frame cap so the *runtime* refuses an oversize
+    // frame while it arrives, matching what Express and Fastify hand `ws`.
+    // Until #373 threads the resolved per-route policy down here, backends
+    // cannot see a route's own `maxFrameBytes` at listen() time — the policy
+    // is resolved on first connect — so every backend installs the shared
+    // default and a route that raises `maxFrameBytes` past it is still cut
+    // off at 1 MiB by the transport.
     let bridge: HonoWebsocketBridge | null = null;
     if (this.wsRegistered.length > 0) {
       if (!runner.webSocket) {
         throw new Error('HonoBackend: this runtime\'s Hono runner does not support websocket() routes.');
       }
-      bridge = await runner.webSocket(app);
+      bridge = await runner.webSocket(app, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
@@ -288,9 +280,9 @@ export class HonoBackend implements HttpServerBackend {
       // body was materialised via arrayBuffer() before any size check,
       // making the 10 MiB cap cosmetic against the runtime's much larger
       // native default.
-      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge(this.defaultResponseHeaders);
+      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       const request = await this.adaptRequest(c);
-      if (request.body && request.body.byteLength > this.maxBodyBytes) return payloadTooLarge(this.defaultResponseHeaders);
+      if (request.body && request.body.byteLength > this.maxBodyBytes) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       // Wildcard contract: expose the matched remainder as params['*'].
       const finalRequest = wildcard
         ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }

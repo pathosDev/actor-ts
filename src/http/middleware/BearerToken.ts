@@ -9,7 +9,7 @@
  */
 
 import { timingSafeEqual } from 'node:crypto';
-import { HttpError, Status } from '../types.js';
+import { HttpError, Status } from '../Types.js';
 import type { Middleware } from '../Route.js';
 
 export type BearerTokenAuthOptions = {

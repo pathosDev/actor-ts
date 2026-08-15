@@ -12,13 +12,13 @@
  */
 import type { ActorFactory } from '../../Actor.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import type { HttpRequest } from '../types.js';
+import type { HttpRequest } from '../Types.js';
 import type { WebsocketSocketAdapter } from './SocketAdapter.js';
 import { websocketAcceptCommand, type WebsocketServerRef } from './WebsocketMessages.js';
 import { WebsocketConnectionActor } from './WebsocketConnectionActor.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 import type { ResolvedWebsocketPolicy } from './WebsocketPolicy.js';
-import type { WebsocketUpgradeInfo } from './types.js';
+import type { WebsocketUpgradeInfo } from './Types.js';
 
 /**
  * Tracks the live server-side sockets of one binding so `unbind()` can

@@ -16,8 +16,8 @@
 export const name = 'sqlite busy timeout';
 export const description = 'identical busy_timeout on Bun, Node and Deno';
 
-export async function run({ actorTs }) {
-  const { buildSqliteDatabase, DEFAULT_SQLITE_BUSY_TIMEOUT_MS, SqliteJournal, SqliteJournalOptions } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { buildSqliteDatabase, DEFAULT_SQLITE_BUSY_TIMEOUT_MS, SqliteJournal, SqliteJournalOptions } = await loadEntry('persistence');
 
   const readTimeout = (db) => db.prepare('PRAGMA busy_timeout').get().timeout;
 

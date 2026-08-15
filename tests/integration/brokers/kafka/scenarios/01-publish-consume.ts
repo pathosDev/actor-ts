@@ -2,8 +2,8 @@
  * Baseline — produce N records, the consumer in the same actor
  * group receives them all.  Auto-commit mode (the default).
  */
-import { spawnInbox, spawnKafka, type KafkaContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnInbox, spawnKafka, type KafkaContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<KafkaContext> = {
   name: 'publish + consume round-trip (auto commit)',

@@ -15,7 +15,7 @@
  * {@link decodeClientFrame}, which is the only thing standing between a
  * hostile page and the tap dispatcher.
  */
-import { DEVTOOLS_PROTOCOL_VERSION } from './version.js';
+import { DEVTOOLS_PROTOCOL_VERSION } from './Version.js';
 import type { ActorStreamPayload, MailboxStreamPayload } from './ActorStreamFrames.js';
 import type { ClusterStreamPayload } from './ClusterStreamFrames.js';
 import type { ExplainStreamPayload } from './ExplainFrames.js';

@@ -126,6 +126,60 @@ describe('OptionsValidator — url helper', () => {
   });
 });
 
+/**
+ * #590 — the rejection message for a connection URL reaches an ERROR log
+ * (ActorCell logs a failed `preStart`), and `OptionsError.value` reaches one
+ * too under the default ConsoleLogger, which prints an Error's own enumerable
+ * properties.  Neither may carry the password that was typed into the URL.
+ */
+describe('OptionsValidator — url helper redacts credentials', () => {
+  const caught = (settings: Partial<Sample>): OptionsError => {
+    try {
+      validate(['endpoint'], settings);
+    } catch (e) {
+      return e as OptionsError;
+    }
+    throw new Error('should have thrown');
+  };
+
+  test('the protocol-mismatch message masks the userinfo', () => {
+    const err = caught({ endpoint: 'http://admin:hunter2@broker:1883' });
+    expect(err.message).toBe(
+      'SampleOptions: endpoint must use protocol mqtt, mqtts (got "http://***@broker:1883")',
+    );
+    expect(err.message).not.toContain('hunter2');
+    expect(err.message).not.toContain('admin');
+  });
+
+  test('the parse-failure message masks the userinfo', () => {
+    const err = caught({ endpoint: 'mqtt://admin:hunter2@bro ker:1883' });
+    expect(err.message).toContain('must be a valid URL');
+    expect(err.message).not.toContain('hunter2');
+    expect(err.message).not.toContain('admin');
+  });
+
+  test('OptionsError.value carries the redacted URL, not the raw one', () => {
+    const err = caught({ endpoint: 'http://admin:hunter2@broker:1883' });
+    expect(err.value).toBe('http://***@broker:1883');
+    expect(String(err.value)).not.toContain('hunter2');
+  });
+
+  test('a credential-free URL is rendered unchanged — no normalisation', () => {
+    // Redaction must not cost the operator the ability to recognise what they
+    // typed, so a URL without userinfo comes back byte-identical (no trailing
+    // slash, no lowercased host).
+    const err = caught({ endpoint: 'http://Broker:1883/Path' });
+    expect(err.message).toBe(
+      'SampleOptions: endpoint must use protocol mqtt, mqtts (got "http://Broker:1883/Path")',
+    );
+  });
+
+  test('a non-URL value survives verbatim', () => {
+    const err = caught({ endpoint: 'not a url' });
+    expect(err.message).toBe('SampleOptions: endpoint must be a valid URL (got "not a url")');
+  });
+});
+
 describe('OptionsValidator — cross-field via fail()', () => {
   test('passes when the relation holds', () => {
     expect(() => validate(['cross'], { low: 1, high: 2 })).not.toThrow();

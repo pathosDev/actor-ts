@@ -69,7 +69,7 @@ has promoted it.
 The one-line path — `bootstrapCluster` runs the phase for you:
 
 ```ts
-import { bootstrapCluster, ClusterBootstrapOptions } from 'actor-ts';
+import { bootstrapCluster, ClusterBootstrapOptions } from 'actor-ts/cluster';
 
 const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
   .withHost(process.env.POD_IP!)
@@ -101,7 +101,7 @@ import {
   NodeAddress,
   StableObservation,
   StableObservationOptions,
-} from 'actor-ts';
+} from 'actor-ts/cluster';
 
 const selfAddress = new NodeAddress('my-app', process.env.POD_IP!, 2552);
 

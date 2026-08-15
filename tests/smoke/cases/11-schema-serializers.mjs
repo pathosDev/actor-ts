@@ -22,11 +22,8 @@
 export const name = 'schema serializers';
 export const description = 'Avro + Protobuf round-trip and byte hygiene on this runtime';
 
-export async function run({ actorTs }) {
-  const {
-    AvroSerializer, AvroSerializerOptions,
-    ProtobufSerializer, ProtobufSerializerOptions,
-  } = actorTs;
+export async function run({ actorTs, loadEntry }) {
+  const { AvroSerializer, AvroSerializerOptions, ProtobufSerializer, ProtobufSerializerOptions } = await loadEntry('serialization');
 
   const avscModule = await import('avsc');
   const avsc = avscModule.default ?? avscModule;

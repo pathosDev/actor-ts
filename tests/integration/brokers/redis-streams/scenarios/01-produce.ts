@@ -3,8 +3,8 @@
  * via a direct XLEN.  Tests the producer half of RedisStreamsActor
  * without involving the consumer pump (which has its own scenario).
  */
-import { spawnRedis, type RedisContext } from '../runner.js';
-import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
+import { spawnRedis, type RedisContext } from '../Runner.js';
+import { waitFor, type BrokerScenario } from '../../lib/Scenario.js';
 
 export const scenario: BrokerScenario<RedisContext> = {
   name: 'XADD — publish entries land on the stream',

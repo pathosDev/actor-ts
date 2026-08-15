@@ -4,34 +4,105 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.15.0 is out** — the *mailboxes and channels* release, cut a day after
-  v0.14.0 because one breaking change should not sit in a window.  **The
-  default mailbox is unbounded again (#1148)**: since #310 every actor
-  spawned without an explicit `mailboxCapacity` got a `drop-head` bound that
-  silently evicted its *oldest* queued message, and the tracker holds one
-  entry per victim — a death-watch `Terminated` (#729), a ReliableDelivery
-  `confirm` that never settled (#732), a DistributedData promise left
-  unsettled (#1078), three WebSocket-hub defects (#717, #985, #986).  The
-  memory ceiling it was traded for never existed, because the system-message
-  queue was never bounded (#794).  Bounding is opt-in now and names its own
-  loss, `actor_mailbox_size` exists to watch what replaced it, and every
-  mailbox reports its drops rather than only the one the framework built
-  (#1149, #661).  **Channels**: `EventStream` accepts `kind`-discriminated
-  types rather than only classes (#1143), and one faulty subscription no
-  longer breaks the bus for every subscriber registered after it (#1010).
-  Underneath, constants got a placement rule (#1142) that turned up a dead
-  export, five duplicated values and a second path-traversal denylist.  See
-  `CHANGELOG.md` — the breaking change carries a migration note.
-- Next window is open (`[Unreleased]`).
+- **v0.16.0 is out** — the *entry points, logging and old defects* release,
+  and the largest window so far at 181 commits.  Three things landed
+  together.
 
-  The obvious heads from here: the `reference.conf` expansion tracked in
-  #887, the remaining `severity: medium` security catalogue, and #766 — whose
-  titled fix turns out to be insufficient on its own, see the issue.
-- ~5 170 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+  **The root export is core-only (#414).**  `'actor-ts'` used to re-export
+  every subsystem through one barrel, which shipped the testkit in the
+  production entry (#685) and made `import { ActorSystem }` pay for whatever
+  any subsystem pulled in eagerly (#1005).  Core stays at the root; the
+  eighteen subsystems each get their own entry (`actor-ts/persistence`,
+  `/cluster`, `/http`, …), the subpaths the documentation already used
+  finally resolve, and the smoke suite loads every declared entry on Bun,
+  Node and Deno (#1003).  This is the migration cost of the release —
+  `CHANGELOG.md` carries the note.
+
+  **Logging grew a sink architecture (#1150).**  The logger wrote to exactly
+  one place; it now fans one record out to as many destinations as you
+  configure — console, rotating files (#1153), and ten log platforms
+  (#1154–#1161) — each with its own minimum level, bounded delivery and a
+  flush on shutdown.  Every integration is dependency-free, and nothing
+  about the existing surface changed: a system whose config nobody edited
+  logs exactly what it logged yesterday.
+
+  **The 50-oldest bug/security wave**, 42 of the 50 oldest open defects
+  resolved, including most of the 2026-08-01 security catalogue (#575–#626).
+  The gossip frame gains a required field, so **a rolling upgrade across
+  this release does not converge in either direction** (#112): an upgraded
+  peer refuses an old node's frames, an old node ignores the new one.
+  Upgrade the cluster in one step, or accept that membership does not
+  converge while both versions are running.
+
+  Alongside, the packaging surface was brought in line with what actually
+  ships: no more dangling source maps (#1007, 1262 files and 35 % of the
+  tarball that could not work), `NodeNext` resolution so the compiler checks
+  the specifiers the real resolver will (#1008), and `@types/node` no longer
+  a silent requirement for reading the public API (#1006).
+
+- Next window is open (`[Unreleased]`).  The obvious heads from here: the
+  `reference.conf` expansion tracked in #887; the residual security items
+  the wave narrowed rather than closed (#112 needs the incarnation identity
+  from #940; #607 needs the eviction policy from #1080); #766, whose titled
+  fix turns out to be insufficient on its own; and the fresh audit round
+  #1166–#1193, which is unstarted and holds several `priority: high`
+  correctness defects — `PersistentActor` has no fencing (#1166),
+  `throttle('pause')` livelocks the `MicrotaskDispatcher` (#1167),
+  `KeepMajority` leaves both sides running on an exact tie (#1170), a
+  singleton that exhausts its restart budget is never re-spawned (#1175),
+  and `ShardCoordinator` ignores the configured shard count (#1026).
+- ~6 250 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
+- **`[Unreleased]` — the 50-oldest bug/security wave:** the 50 oldest open
+  `bug` / `security` issues worked as one unit, in seven batches grouped by
+  which files they touch rather than by module label.  **42 resolved** — 38
+  closing on this window's push plus four closed by hand — and 12 left open on
+  purpose, each with a comment saying why.  The bulk is the 2026-08-01 audit
+  catalogue (#575–#626) plus the four May entries (#112, #118, #121, #132).
+  - **Two of the fifty were not defects at all.** #118's titled timer leak
+    cannot happen — `settle()` clears and nulls the timer and every later
+    `tell()` early-returns — and the issue body already retracted it; it was a
+    duplicate of #177, whose two unique clauses were folded across.  #132 asked
+    for redaction of a trace id that no framework path ever writes to a log
+    record; #995 owns making that bullet true first.  Neither cost a line of
+    code, and finding that out was the point of asking "are the acceptance
+    criteria met" rather than "does the defect still exist"
+  - **Five entries are BREAKING**, each with a migration note in
+    `CHANGELOG.md`.  The consequential one is **#112**: `GossipMessage` gains
+    a required `sequence`, so a cluster must be upgraded in one step — an
+    upgraded peer refuses an old node's frames and an old node ignores the new
+    field.  The others are narrower: object-storage bodies must carry their
+    integrity tag once integrity is configured (#579), the Express and Hono
+    request-body caps drop to match Fastify (#357), a documented-but-inert
+    gRPC deadline starts being enforced (#577), and an ungated
+    `DevTools.mount()` now throws (#594)
+  - **Independent verification found five regressions the wave itself
+    introduced**, all repaired before the merge, each with the failing test
+    written first.  The worst was #588's own fix: the new inbound-connection
+    cap armed no handshake deadline on the accept path, so 1024 sockets that
+    send *nothing* saturated it and refused every real peer — a defence that
+    became the attack.  Also #597 (one malformed environment variable killed
+    the whole discovery ladder, including the explicit seed list that does not
+    read it), #600 (`reset()` orphaned an in-flight acquire, so the very end
+    state the issue exists to prevent survived), #610 (the scan was fixed but
+    not the copy — 95 % of the remaining cost) and #586 (a hard throw on
+    `@hono/node-ws` versions `package.json` still declared supported)
+  - **What the wave narrowed rather than closed**, stated so it is not
+    re-derived later: #112's guard holds only while the sender is still a
+    member — deleting a member drops its high-water mark, so once the sender
+    is also evicted a recording replays again, and closing that needs #940's
+    incarnation identity.  #607's key bound is necessary but not sufficient
+    without #1080's eviction policy.  #602 deliberately has no HOCON key,
+    because one would reach `HttpExtension.client` and silently not the
+    `HttpClient` inside `D1Client` — a bound that applies to some clients and
+    not others is worse than none
+  - **Eleven release notes were corrected** after the fact, most of them
+    overclaims by the wave's own hand.  #121's migration note named the wrong
+    safe version (v0.13.0 for v0.14.0), which would have had an operator roll
+    clients out against nodes that crash on every envelope
 - **v0.15.0 — mailboxes and channels:**
   - **The unbounded mailbox is the default again (#1148)** — BREAKING, and
     the reason this window is a minor.  A mailbox cannot tell a stale sample

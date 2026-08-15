@@ -11,7 +11,7 @@
  * request, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
  */
 import { path, type Route, type WebsocketConnectHandler } from '../Route.js';
-import { Status, type HttpRequest, type HttpResponse } from '../types.js';
+import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
 import { jsonCodec, type WebsocketCodec } from './WebsocketCodec.js';
 import { wireConnection } from './ConnectionWiring.js';
 import type { WebsocketServerRef } from './WebsocketMessages.js';

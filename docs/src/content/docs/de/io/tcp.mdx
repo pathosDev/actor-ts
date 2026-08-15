@@ -20,7 +20,8 @@ denselben [Framing](#framing)-Strategien.
 ## Hinauswählen — `TcpSocketActor`
 
 ```ts
-import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
@@ -72,7 +73,7 @@ er wird auf `system.eventStream` als `BrokerConnected`- /
 teilen:
 
 ```ts
-import { BrokerConnected, BrokerDisconnected } from 'actor-ts';
+import { BrokerConnected, BrokerDisconnected } from 'actor-ts/io';
 
 system.eventStream.subscribe(monitorRef, BrokerConnected);
 system.eventStream.subscribe(monitorRef, BrokerDisconnected);
@@ -81,7 +82,7 @@ system.eventStream.subscribe(monitorRef, BrokerDisconnected);
 ## Framing
 
 ```ts
-import { TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { TcpSocketActor, TcpSocketOptions } from 'actor-ts/io';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost(host)
@@ -105,8 +106,11 @@ type TcpFraming =
 - **`bytes`** (Default) — jeder Chunk wird roh geliefert; das
   Target behandelt die Byte-Stream-Semantik selbst.
 - **`lines`** — split am `delimiter` (Default `'\n'`); jeder Frame
-  kommt als `string` an.  `maxLineLen` begrenzt eine nicht
-  terminierte Zeile.
+  kommt als `string` an.  `maxLineLen` begrenzt eine Zeile in
+  **Bytes**, die nicht terminierte eingeschlossen — diese zweite
+  Hälfte ist es, die den Re-Assembly-Buffer gegen einen Peer
+  begrenzt, der nie einen Delimiter schickt.  Bytes, keine Zeichen:
+  ein CJK-Zeichen kostet drei davon.
 - **`length-prefixed`** — die ersten **4 Bytes** (Big-Endian
   `uint32`) tragen die Payload-Größe; die Prefix-Breite ist fest,
   nur `maxFrameLen` ist konfigurierbar.
@@ -114,6 +118,18 @@ type TcpFraming =
 Mit `lines` oder `length-prefixed` ist jede Nachricht, die das
 Target empfängt, **ein vollständiger Frame**, kein beliebiger
 Chunk.
+
+Ein Frame über seinem Limit wird nie gepuffert: Die noch offenen
+Bytes werden verworfen und die Verbindung mit ihnen.  Der Client
+zerstört seinen Socket und fällt auf seine Reconnect-Policy zurück,
+der Listener schließt nur die betroffene Verbindung.
+
+Beide Actors validieren `framing` beim Start, ein falscher Wert
+wirft also einen `OptionsError`, bevor es einen Socket gibt — nicht
+erst beim ersten eingehenden Byte.  Ein Limit, das keine positive
+Ganzzahl ist, wird abgelehnt, und ein **leerer `delimiter`** ebenso:
+Er passt an jeder Position, ohne etwas zu verbrauchen, und das ist
+kein langsamer Framer, sondern ein festgefahrener Prozess.
 
 Beide Actors lesen dieselben Strategien aus demselben Code — auf
 `TcpServerActor` wird das gewählte Framing **pro angenommener
@@ -128,7 +144,8 @@ TCP-Schicht auf wie der Cluster-Transport — Bun, Node und Deno,
 und TLS, kommen also aus einer Hand.
 
 ```ts
-import { ActorSystem, TcpServerActor, TcpServerOptions } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { TcpServerActor, TcpServerOptions } from 'actor-ts/io';
 
 const tcpServerOptions = TcpServerOptions.create()
   .withBindHost('0.0.0.0')
@@ -179,7 +196,7 @@ kann also die Variante nehmen, um die es ihm geht, statt die Union
 in jedem Arm einzuengen:
 
 ```ts
-import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts';
+import type { FrameMessage, TcpServerCommand, TcpServerMessage } from 'actor-ts/io';
 ```
 
 Ein Echo-Server sind dann die naheliegenden drei Zeilen:
@@ -251,10 +268,14 @@ Config-Datei ist der falsche Ort für einen privaten Schlüssel.
   einen Verbindungsfehler statt eines sauberen Schließens; genau so
   sieht auf TCP-Ebene aus, an der Kapazitätsgrenze abgewiesen zu werden.
 - **Ein Frame über dem `framing`-Limit trennt nur diese Verbindung.**
-  Beim Client-Actor legt derselbe Verstoß den ganzen Actor still,
-  denn dort *ist* die Verbindung der gesamte Transport; ein Listener,
-  der das genauso hielte, ließe jeden einzelnen Client den Dienst für
-  alle abschalten.
+  Der Client-Actor beantwortet denselben Verstoß damit, *seine*
+  Verbindung fallen zu lassen — dort *ist* die eine Verbindung der
+  gesamte Transport — und richtet sich danach nach seiner
+  Reconnect-Policy; ein Listener, der das genauso hielte, ließe jeden
+  einzelnen Client den Dienst für alle abschalten.  In beiden Fällen
+  gehen die noch gepufferten Bytes mit dem Socket: Sinn eines Limits
+  ist nicht, den Verstoß zu protokollieren, sondern aufzuhören, das
+  festzuhalten, was ihn ausgelöst hat.
 - **`outboundBuffer` ist hier `0`** — anders als bei jedem anderen
   Broker-Actor.  Puffern im getrennten Zustand existiert, damit eine
   Nachricht einen Reconnect überlebt — aber "getrennt" heißt beim

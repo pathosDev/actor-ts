@@ -52,28 +52,52 @@ concurrency:
 
 jobs:
   test:
-    # Single job — typecheck, run the suite once with `--coverage`,
-    # parse the resulting stats, and (on `main` push only) flip the
-    # README badge.  Previously the suite ran twice (a `test` job
-    # without coverage, then `update-readme` with coverage), which
-    # gave the parser a different bun output to read than the one the
-    # actual build status came from — a flaky timing-sensitive test
-    # under coverage instrumentation could push the badge to "1489
-    # of 1490" while the build itself stayed green.  One run, one
-    # source of truth.
+    # Typecheck, run the suite ONCE with `--coverage`, and parse the stats
+    # out of that single run.  The suite used to run twice (a `test` job
+    # without coverage, then `update-readme` with coverage), which gave the
+    # parser a different bun output to read than the one the build status
+    # came from — a flaky timing-sensitive test under coverage
+    # instrumentation could push the badge to "1489 of 1490" while the
+    # build itself stayed green.  One run, one source of truth; the `badge`
+    # job below consumes this job's numbers and never re-runs anything.
     runs-on: ubuntu-latest
+    # Read-only, and the checkout below drops its credential too (#622).
+    # This job installs and executes the entire devDependency tree — the
+    # last place a token that can write to the repository belongs.  The
+    # README push it used to do lives in `badge`, which runs no third-party
+    # code at all.
     permissions:
-      contents: write
+      contents: read
+    # Consumed by `badge`.  Written by the parse step even when the suite
+    # fails, which is exactly when the badge has to flip to red.
+    outputs:
+      pass: ${{ steps.stats.outputs.pass }}
+      total: ${{ steps.stats.outputs.total }}
+      lines: ${{ steps.stats.outputs.lines }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this job talks to the remote: no test, source file or
+          # script shells out to git, and `bun.lock` has no git-protocol
+          # dependencies.  So the pushable credential checkout leaves behind
+          # in `.git/config` is pure attack surface for the ~2000 packages
+          # installed one step later.
+          persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
+      # Frozen, like build.yml and publish.yml: an unfrozen install resolves
+      # whatever `package.json`'s ranges allow right now, so the required
+      # `tests` check could pass against a dependency set no lockfile ever
+      # recorded and nobody could reproduce.  Dependabot does not speak the
+      # Bun lockfile format, so its PRs fail here until `bun.lock` is
+      # regenerated — that is the intended signal, and #817 is what removes
+      # the manual step.
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
         run: bun run typecheck
@@ -89,55 +113,121 @@ jobs:
         # is the multi-node CI gate.  See the [CI] tracking issue.
         env:
           ACTOR_TS_SKIP_FLAKY_MNS: '1'
+          # Machine-readable counts and the run log, both in the runner temp
+          # dir so the workspace the next steps inspect stays clean.
+          JUNIT_FILE: ${{ runner.temp }}/test-results.junit.xml
+          LOG_FILE: ${{ runner.temp }}/bun-test.log
         run: |
-          # Capture full output without letting a non-zero exit kill
-          # the step — we always want the parsed numbers in
-          # `steps.stats.outputs` so the README still updates with a
-          # red badge when the suite breaks.  The original exit
-          # status is replayed at the end so the job's final result
-          # is still red on failure.
+          # bun's output goes to a FILE, never through a pipe.  Under GitHub
+          # Actions bun emits one annotation line per test — ~8700 lines for
+          # this suite — and `OUTPUT=$(bun test …)` pushed that whole burst
+          # through a command-substitution pipe.  bun died mid-flush with
+          # `error: An internal error occurred (WriteFailed)`, truncating the
+          # coverage table three-quarters of the way in and taking the JUnit
+          # report with it (oven-sh/bun#15860 is the same family: large
+          # suites, intermittent, "the second attempt ran fine").
+          #
+          # The identical command reproduces clean locally, where bun prints
+          # no per-test lines and the burst is eight times smaller — so the
+          # volume through the pipe is the trigger, not the flags.  A regular
+          # file cannot short-write the way a pipe can.
+          #
+          # Failure is not allowed to kill the step: the parsed numbers have
+          # to reach `steps.stats.outputs` so the README can still flip to a
+          # red badge when the suite breaks.  bun's exit status is replayed
+          # at the end so the job's own result is unchanged.
           set +e
-          OUTPUT=$(bun test --coverage 2>&1)
+          bun test --coverage --reporter=junit --reporter-outfile="$JUNIT_FILE" > "$LOG_FILE" 2>&1
           STATUS=$?
           set -e
 
           # Replay bun's output so the GitHub Actions UI still shows
           # per-test results just like a regular `bun test` step.
-          echo "$OUTPUT"
-          echo
-          echo "----- bun output tail (parser input) -----"
-          echo "$OUTPUT" | tail -20
-          echo "------------------------------------------"
+          cat "$LOG_FILE"
+          echo "bun test exited with status $STATUS"
 
-          # Parse the FINAL summary block.  bun emits exactly one such
-          # block at the very end:
-          #    N pass
-          #    M skip
-          #    K fail
-          #    Q expect() calls
-          #  Ran X tests across Y files. [Zs]
-          # `$` end-anchor rejects per-test lines like "(pass) name [Xms]"
-          # and other noise; `tail -1` guards against any intermediate
-          # match if bun's format ever grows per-file summaries.
-          # Skips stay separate — `total = pass + fail` represents
-          # actually-executed tests, so "1490 of 1490" means "all 1490
-          # active tests passed" (skipped tests counted separately).
-          PASS=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ pass$" | grep -oE "[0-9]+" | tail -1)
-          FAIL=$(echo "$OUTPUT" | grep -E "^[[:space:]]+[0-9]+ fail$" | grep -oE "[0-9]+" | tail -1)
-          [[ -z "$FAIL" ]] && FAIL=0
-          [[ -z "$PASS" ]] && PASS=0
-          TOTAL=$((PASS + FAIL))
+          # Test counts come from the JUnit report, never from the console.
+          # Bun 1.3.14 stopped printing the trailing
+          #    N pass / M skip / K fail / Ran X tests across Y files
+          # summary block under GitHub Actions (it groups its output there and
+          # reports the totals out of band), so the previous
+          # `grep "^[[:space:]]+[0-9]+ pass$"` scrape matched nothing.  That
+          # alone was survivable; what made it ship was the `[[ -z "$PASS" ]]
+          # && PASS=0` fallback, which turned "the parser found nothing" into
+          # a perfectly plausible zero and pushed a `tests-0 of 0` badge from
+          # a green run.  Hence both halves of this rewrite: read a contract
+          # that does not move between bun releases, and treat an unreadable
+          # count as an error rather than as zero.
+          #
+          #   <testsuites name="bun test" tests="6269" failures="0" skipped="23" …>
+          #
+          # `tests` counts skipped tests too, so subtract them.  `total` stays
+          # "actually-executed tests" exactly as before — "6246 of 6246" means
+          # all 6246 active tests passed, with skips counted separately.
+          PASS=''
+          TOTAL=''
+          if [[ -s "$JUNIT_FILE" ]]; then
+            # The root element only — nested <testsuite> rows carry the same
+            # attribute names per file.
+            SUMMARY=$(grep -m1 -o '<testsuites [^>]*>' "$JUNIT_FILE" || true)
+            echo "----- JUnit summary (parser input) -----"
+            echo "${SUMMARY:-<none found>}"
+            echo "----------------------------------------"
+            TESTS=$(printf '%s' "$SUMMARY" | grep -oE ' tests="[0-9]+"' | grep -oE '[0-9]+' || true)
+            FAILURES=$(printf '%s' "$SUMMARY" | grep -oE ' failures="[0-9]+"' | grep -oE '[0-9]+' || true)
+            SKIPPED=$(printf '%s' "$SUMMARY" | grep -oE ' skipped="[0-9]+"' | grep -oE '[0-9]+' || true)
+            if [[ -n "$TESTS" && -n "$FAILURES" && -n "$SKIPPED" ]]; then
+              TOTAL=$((TESTS - SKIPPED))
+              PASS=$((TOTAL - FAILURES))
+            fi
+          else
+            echo "::error::bun wrote no JUnit report to $JUNIT_FILE — the run died before the reporter flushed, or --reporter=junit is no longer supported."
+          fi
+          # A suite that executes nothing is a broken parser, not a green run.
+          if [[ -z "$TOTAL" || "$TOTAL" -le 0 || "$PASS" -lt 0 ]]; then
+            echo "::error::Could not read test counts from the JUnit report — refusing to report a zero. The README keeps its previous figures."
+            PASS=''
+            TOTAL=''
+          fi
+
           # Line coverage from the "All files" aggregate row.  Bun's
           # --coverage table is `File | % Funcs | % Lines | Uncovered`, so
           # the LINE column is awk field $3 ($2 is % Funcs).
-          LINES=$(echo "$OUTPUT" | grep "^All files" | awk -F'|' '{print $3}' | tr -d ' ')
+          LINES=$(grep "^All files" "$LOG_FILE" | awk -F'|' '{print $3}' | tr -d ' ')
           LINES_INT=${LINES%.*}
-          [[ -z "$LINES_INT" ]] && LINES_INT=0
+          if ! [[ "$LINES_INT" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read line coverage from the 'All files' row of the --coverage table."
+            LINES_INT=''
+          fi
 
-          echo "pass=$PASS"     >> "$GITHUB_OUTPUT"
-          echo "total=$TOTAL"   >> "$GITHUB_OUTPUT"
-          echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
-          echo "Parsed: $PASS of $TOTAL tests passing, $LINES_INT% line coverage"
+          # Only ever publish numbers that parsed.  An absent output trips the
+          # `badge` job's guard, which leaves the last good README in place —
+          # far better than overwriting it with a confident-looking zero.
+          if [[ -n "$PASS" ]]; then
+            echo "pass=$PASS"       >> "$GITHUB_OUTPUT"
+            echo "total=$TOTAL"     >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$LINES_INT" ]]; then
+            echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Parsed: ${PASS:-?} of ${TOTAL:-?} tests passing, ${LINES_INT:-?}% line coverage"
+
+          # The two statistics are not the same kind of thing, so they do not
+          # fail the same way.
+          #
+          # Line coverage feeds the ≥ 80 % gate below, and that gate is
+          # skipped when the number is missing — an unevaluated gate must not
+          # read as a passing one, so an unparseable coverage figure fails
+          # here instead.
+          #
+          # The test counts only render a badge. `main` is branch-protected
+          # on this check, so a cosmetic parse failure must never be able to
+          # block a release: the `badge` job annotates a warning and leaves
+          # the README on its previous figures, which is exactly what
+          # publishing nothing rather than a zero is for.
+          if [[ -z "$LINES_INT" ]]; then
+            exit 1
+          fi
 
           # Propagate the original bun exit status — non-zero turns
           # the job red, but the step outputs above are already
@@ -180,21 +270,76 @@ jobs:
           fi
           echo "coverage-gate: PASS (${PARSED_LINES}% ≥ ${COVERAGE_LINE_FLOOR}%)"
 
-      - name: Update README badges + inline references
-        # Always run, including after a failing test step — that's
-        # exactly when the badge needs to flip to red.  PRs and
-        # non-main branches skip via the event/ref check (forks have
-        # no push rights anyway).
-        if: |
-          !cancelled() &&
-          steps.stats.outputs.pass != '' &&
-          steps.stats.outputs.lines != '' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/develop'
+  # The badge updater — the only job in this workflow that can write to the
+  # repository, and deliberately the only one that runs no third-party code
+  # (#622).  It installs nothing, builds nothing and re-runs nothing: it
+  # consumes `test`'s parsed numbers, rewrites README.md with sed, and
+  # pushes.  Before the split, `contents: write` plus a persisted git
+  # credential sat in the same job that executed the whole devDependency
+  # tree, so any postinstall script or compromised transitive package could
+  # have pushed to develop.
+  #
+  # The workflow-level `concurrency` group covers this job too, so two
+  # develop pushes still queue instead of racing on `git push`.
+  badge:
+    name: README badges
+    needs: test
+    # `!cancelled()`, not `success()` — a red suite is exactly when the
+    # badge has to flip to red.  PRs and every branch but develop skip
+    # (forks have no push rights anyway).
+    if: |
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # "The suite failed" and "the suite never ran" used to look identical
+      # from here: both left the outputs empty, both skipped the badge
+      # silently, and the README kept showing the last good numbers.  A
+      # frozen install that rejects a drifted lockfile is exactly the second
+      # case, so say so out loud instead of leaving stale figures on the
+      # front page unexplained.
+      #
+      # The plausibility check below is the second line of defence, added
+      # after a bun upgrade broke the upstream parser and this job cheerfully
+      # published `tests-0 of 0` from a green run: the guard only asked
+      # whether the numbers were *present*, and a zero is present.  Upstream
+      # no longer emits zeros, but the README is the project's front page —
+      # it is worth two jobs disagreeing before it gets rewritten.
+      - name: Check the suite produced numbers
+        id: parsed
+        env:
+          PASS: ${{ needs.test.outputs.pass }}
+          TOTAL: ${{ needs.test.outputs.total }}
+          LINES: ${{ needs.test.outputs.lines }}
         run: |
-          PASS="${{ steps.stats.outputs.pass }}"
-          TOTAL="${{ steps.stats.outputs.total }}"
-          LINES="${{ steps.stats.outputs.lines }}"
+          if [[ -z "$PASS" || -z "$TOTAL" || -z "$LINES" ]]; then
+            echo "::warning title=README badges not updated::The test job produced no numbers — it failed before or during the parse step (a frozen-install rejection, a typecheck error, a runner crash). The README still shows the previous run's figures."
+            echo "updatable=false" >> "$GITHUB_OUTPUT"
+          elif ! [[ "$PASS" =~ ^[0-9]+$ && "$TOTAL" =~ ^[0-9]+$ && "$LINES" =~ ^[0-9]+$ ]] || (( TOTAL == 0 )); then
+            echo "::warning title=README badges not updated::The test job reported an implausible result ($PASS of $TOTAL tests, $LINES% coverage). A zero or non-numeric count means the parser broke, not that the suite is empty — the README still shows the previous run's figures."
+            echo "updatable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "updatable=true" >> "$GITHUB_OUTPUT"
+            echo "the suite reported $PASS of $TOTAL passing at $LINES% line coverage"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.parsed.outputs.updatable == 'true'
+
+      - name: Update README badges + inline references
+        if: steps.parsed.outputs.updatable == 'true'
+        # Through `env:` rather than `${{ }}` inside the script: a workflow
+        # expression is pasted into the shell before it runs, so a parser
+        # that ever yielded something other than digits would be executing
+        # it.  Environment variables are values, never code.
+        env:
+          PASS: ${{ needs.test.outputs.pass }}
+          TOTAL: ${{ needs.test.outputs.total }}
+          LINES: ${{ needs.test.outputs.lines }}
+        run: |
           # Pick badge color from pass/total ratio:
           #   pass == total → green   (22c55e)  — all green
           #   pass <  total → red     (ef4444)  — at least one fail
@@ -236,11 +381,7 @@ jobs:
           fi
 
       - name: Commit + push README if changed
-        if: |
-          !cancelled() &&
-          steps.stats.outputs.pass != '' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/develop'
+        if: steps.parsed.outputs.updatable == 'true'
         run: |
           if [[ -n "$(git status --porcelain README.md)" ]]; then
             git config user.name "github-actions[bot]"

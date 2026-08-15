@@ -15,7 +15,7 @@ exponierst:
   aus).
 
 ```ts
-import { managementRoutes } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 // Build the routes (cluster is optional — pass null to skip /cluster/*),
 // then bind them on a dedicated port.
@@ -160,7 +160,8 @@ gar keinen eigenen Port — `concat` sie in die bestehenden
 [HTTP-Routen](/de/http/overview/) deiner App:
 
 ```ts
-import { managementRoutes, concat } from 'actor-ts';
+import { concat } from 'actor-ts/http';
+import { managementRoutes } from 'actor-ts/management';
 
 const { routes: mgmt } = managementRoutes(system, cluster);
 await system.http(8080).bind(concat(appRoutes, mgmt));

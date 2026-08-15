@@ -57,6 +57,28 @@ export class KubernetesApiSeedProvider implements SeedProvider {
 }
 
 /**
+ * Path of the `Endpoints` object backing one Service.
+ *
+ * Both segments are percent-encoded, exactly as `leasePath` in
+ * `src/coordination/leases/K8sApi.ts` does for the sibling lease client —
+ * that client got it right and this one did not (#597).  The values reach
+ * here straight out of the pod's environment (`CLUSTER_NAMESPACE` /
+ * `CLUSTER_SERVICE_NAME`, via both `autoDiscovery` and
+ * `singleProviderDiscovery`), so a `/` or `..` in either one otherwise
+ * walks the request to a different API resource with the pod's
+ * ServiceAccount token attached, and a `?` appends query parameters —
+ * `?watch=true` turns the one-shot GET into a stream the body accumulator
+ * below never terminates.
+ *
+ * Exported because it is the only seam that makes the encoding testable:
+ * the `fetchEndpoints` hook replaces the whole fetcher, path construction
+ * included, so injecting it can never observe what the default builds.
+ */
+export function endpointsPath(namespace: string, serviceName: string): string {
+  return `/api/v1/namespaces/${encodeURIComponent(namespace)}/endpoints/${encodeURIComponent(serviceName)}`;
+}
+
+/**
  * Minimal in-cluster endpoints fetcher.  Reads the in-pod ServiceAccount
  * credentials and calls the core API.  Keeps the code path small — real
  * production deployments often swap this for the canonical K8s client.
@@ -69,7 +91,7 @@ function defaultFetchEndpoints(options: KubernetesApiSeedProviderOptionsType): (
     const ca = await fs.readFile('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').catch(() => undefined);
     if (!token) throw new Error('KubernetesApiSeedProvider: no ServiceAccount token found — run inside a pod or provide fetchEndpoints');
 
-    const path = `/api/v1/namespaces/${options.namespace}/endpoints/${options.serviceName}`;
+    const path = endpointsPath(options.namespace, options.serviceName);
     const agent = new https.Agent(ca ? { ca } : {});
     const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const request = https.request({

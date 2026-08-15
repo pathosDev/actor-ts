@@ -36,8 +36,9 @@ that has subscribers for that topic.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, Actor } from 'actor-ts';
-import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
+import { ActorSystem, Actor } from 'actor-ts';
+import { Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster';
 
 class ChatMessage {
   constructor(public readonly user: string, public readonly text: string) {}
@@ -83,7 +84,7 @@ Send these to `ps.mediator` (an `ActorRef`).  Use `ask` if you
 need the ack:
 
 ```ts
-import {} from 'actor-ts';
+
 
 await ps.mediator.ask(new Subscribe('chat.room.general', room));
 ```
@@ -255,7 +256,7 @@ A `Subscribe` over `maxSubscribersPerTopic` or `maxTopics` is
 carrying the cap that refused it:
 
 ```ts
-import { SubscribeRejected } from 'actor-ts';
+import { SubscribeRejected } from 'actor-ts/cluster';
 
 // message.reason: 'maxSubscribersPerTopic' | 'maxTopics'
 // message.limit:  the value that cap is set to

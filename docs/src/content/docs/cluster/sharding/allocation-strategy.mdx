@@ -22,7 +22,7 @@ The two built-in strategies trade simplicity for balance:
 ## HashAllocationStrategy
 
 ```ts
-import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts';
+import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts/cluster';
 
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('cart')
@@ -64,7 +64,7 @@ something smarter.
 ## LeastShardAllocationStrategy
 
 ```ts
-import { LeastShardAllocationStrategy, StartShardingOptions } from 'actor-ts';
+import { LeastShardAllocationStrategy, StartShardingOptions } from 'actor-ts/cluster';
 
 const shardingOptions = StartShardingOptions.create()
   // ...

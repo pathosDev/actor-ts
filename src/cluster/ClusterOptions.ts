@@ -480,6 +480,26 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
 }
 
 /**
+ * Whether the config asks for an encrypted cluster wire —
+ * `actor-ts.remote.tls.enabled`.
+ *
+ * Deliberately **not** part of {@link ClusterConfigDefaults}: there is no
+ * `ClusterOptionsType` field to merge it into, because nothing honours it yet
+ * (#941).  It exists so `Cluster` can say out loud that the flag is set and
+ * the socket is still plaintext — an operator who configures encryption and
+ * gets neither encryption nor a word about it is the whole defect (#591).
+ *
+ * Only an explicit `true` counts.  `reference.conf` ships the key with
+ * `false`, so the path is always present once the reference layer is loaded,
+ * and a config file that spells the default out must behave like one that
+ * omits it — the rule `tombstone.min-retention` already follows (#841).
+ */
+export function isRemoteTlsRequested(config: Config): boolean {
+  const remote = ConfigKeys.remote;
+  return config.hasPath(remote.tls.enabled) && config.getBoolean(remote.tls.enabled);
+}
+
+/**
  * Layer the cluster config block under the caller's options — the
  * precedence every configurable thing in the framework documents:
  * **explicit options > HOCON > built-in defaults**.

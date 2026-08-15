@@ -25,8 +25,8 @@ const routes =
   withMiddleware(securityHeaders(),
   cors(corsOptions,
   withMiddleware(requestTimeout(15_000),
-  withMiddleware(csrf,
   handleErrors(errorMapper,
+  withMiddleware(csrf,
     concat(
       appRoutes,
       fallback(notFound),
@@ -36,11 +36,11 @@ const routes =
 | Layer | Why here |
 | --- | --- |
 | `requestId` | outermost, so every log line (including errors) has an id |
-| `securityHeaders` | stamp headers on **every** response, even short-circuits |
+| `securityHeaders` | above everything that rejects, so those responses carry the headers too |
 | `cors` | **outside** auth — preflights are anonymous by spec |
 | `requestTimeout` | bound latency before doing real work |
+| `handleErrors` | **outside `csrf`**, so it maps that middleware's own 403 — and inside the header layers, so what it hands back still flows through them |
 | `csrf` | browser apps only; after CORS, before handlers |
-| `handleErrors` | map thrown errors to responses close to the routes |
 | `fallback` | at the root — answers anything unmatched |
 
 ## What every response already carries
@@ -79,9 +79,13 @@ same-origin` and the rest. A plain object works as well
 `withSecurityHeaders(false)` turns the mechanism off entirely.
 
 Server-wide or as `securityHeaders()` middleware — both stamp the same set.
-Reach for the middleware when only a route subtree needs it; reach for the
-builder when the whole server does, because the middleware is skipped
-wherever a response never comes back through it.
+The middleware covers its own subtree, and that includes a **short-circuit
+that throws**: an `HttpError` from a layer below it — a CSRF 403, an auth
+401 — carries the headers out with it. What it never sees is a response
+raised outside its subtree: the backend's own 404, the body-too-large 413,
+and the generic 500 that a non-`HttpError` throw maps to. Reach for the
+middleware when only a route subtree needs it; reach for the builder when
+the whole server does.
 
 ## Operational environment
 
@@ -97,10 +101,38 @@ wherever a response never comes back through it.
 ## Cookies
 
 Prefer the `__Host-` prefix (requires `Secure`, `Path=/`, no `Domain`) and
-`SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) is
-deliberately not `HttpOnly` (double-submit needs JS to read it); your
-session/auth cookie should be `HttpOnly`. `serializeCookie` refuses values
-that could inject a second header.
+`SameSite=Lax` or `Strict`. The [CSRF cookie](/http/middleware/csrf/) uses
+that prefix by default — it is what stops a sibling subdomain from planting
+a token — and is deliberately not `HttpOnly` (double-submit needs JS to read
+it); your session/auth cookie should be `HttpOnly`.
+
+`serializeCookie` gets you there by omission. An attribute you don't
+mention resolves to the strict end — `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Path=/` — so the two-argument call is already shippable, and what it
+produces satisfies the `__Host-` rules without a word about them.
+Loosening is the part you write down:
+
+```ts
+import { serializeCookie } from 'actor-ts/http';
+
+// __Host-session=<id>; Path=/; HttpOnly; Secure; SameSite=Lax
+const sessionCookie = serializeCookie('__Host-session', sessionId);
+
+// Plain-HTTP local dev, and a cookie same-origin JS has to read.
+const readableCookie = serializeCookie('token', value, { secure: false, httpOnly: false });
+```
+
+`Path` is always emitted, because the alternative is worse: without it a
+browser derives the scope from the request URI, so the same cookie covers
+`/account` when minted from `/account/login` and `/` when minted from the
+root.
+
+It also refuses anything that could break out of the cookie it is
+building — an illegal name or value, and a `Path` or `Domain` that is not
+one. Those two reach the header verbatim, so an unchecked `Path` of
+`'/;Domain=evil.example'` would append an attribute of somebody else's
+choosing, and the *last* `Domain` is the one that counts: it would override
+yours rather than lose to it.
 
 ## Error hygiene
 
@@ -109,6 +141,14 @@ to return a generic body, and log the detail server-side keyed by the
 request id. Keep `403`/`404` responses unspecific — the static-file layer
 returns a uniform `404` for every rejected path so it never reveals what
 exists.
+
+The server-side copy needs hygiene too, and the usual leak there is a
+connection URL: a rejected option value and the WebSocket client's
+oversize-frame warning both name one, and both are written with the
+userinfo masked. When you log a URL yourself, run it through
+[`redactUrlCredentials` or `redactedUrlLabel`](/reference/utility-helpers/)
+— a password that has reached a log aggregator has to be rotated, not
+deleted.
 
 ## Redirects
 
@@ -124,9 +164,23 @@ the [Route DSL](/http/route-dsl/).
 
 ## Capping untrusted input
 
-- **Request bodies** are capped by the backend (Fastify 1 MiB default;
-  Express/Hono ~10 MiB) — tune per backend for your payloads.
-- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default).
+- **Request bodies** are capped at **1 MiB** on every backend, and a body over
+  it is refused with the same `413 Payload Too Large` whichever backend serves
+  it — before the handler runs, and without consulting `withErrorHandler`,
+  because a size cap is a transport decision rather than an application error.
+  Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
+  the Express and Hono backend options, `bodyLimit` in the options bag of
+  `FastifyBackend`. A chunked body that declares no `Content-Length` is the one
+  case still measured while it arrives rather than refused up front.
+- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default), and the
+  default is also handed to the runtime's own socket so an oversize frame is
+  refused *while it arrives* rather than after the process has buffered it —
+  otherwise a peer could force 16 MiB (Bun) or 100 MiB (`ws`) of buffering per
+  frame that the framework would then discard. The one exception is Hono on
+  **Deno**, whose `upgradeWebSocket` exposes no payload limit: there the frame
+  is buffered first and rejected second. Raising `maxFrameBytes` past 1 MiB
+  does not raise the transport limit with it. See
+  [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
 
@@ -147,7 +201,7 @@ so it gates the handshake.
 | Measure | How |
 | --- | --- |
 | MIME-sniffing disabled on every response | nothing — on by default |
-| Security headers on every response | `securityHeaders()`, or `withSecurityHeaders(...)` server-wide |
+| Security headers on every response | `withSecurityHeaders(...)` server-wide — `securityHeaders()` covers a subtree, rejections included |
 | HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
 | Cross-origin controlled | `cors(...)` |
 | CSRF (browser forms) | `csrfProtection(...)` |

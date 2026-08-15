@@ -199,6 +199,58 @@ describe('TcpSocketActor — length-prefixed framing', () => {
   });
 });
 
+describe('TcpSocketActor — a breached framing cap (#578)', () => {
+  test('closes the socket even when the reconnect policy is off', async () => {
+    // The BRK-1 guard fired before this fix too — and did nothing that
+    // mattered.  `handleConnectionLost` never touches the transport, and with
+    // `reconnect: false` the policy never gets as far as reconnecting, so the
+    // socket stayed attached with its 'data' listener live and the same peer
+    // went on growing the buffer the cap had just refused to clear.  A real
+    // socket is the only thing that can witness the difference; the unit
+    // harness has none.
+    let peerSawClose = false;
+    const flooder: Server = createServer((sock) => {
+      const flood = (): boolean => sock.write('x'.repeat(4096));  // never a '\n'
+      const timer = setInterval(flood, 5);
+      sock.on('close', () => { peerSawClose = true; clearInterval(timer); });
+      sock.on('error', () => { clearInterval(timer); });  // the client aborting us
+      flood();
+    });
+    await new Promise<void>((resolve) => flooder.listen(0, '127.0.0.1', () => resolve()));
+    const address = flooder.address();
+    if (typeof address === 'string' || !address) throw new Error('no port assigned');
+
+    try {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const sys = ActorSystem.create('tcp-6', sysOptions);
+      const collector = new CollectActor();
+      const target = sys.spawnAnonymous(() => collector);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(address.port)
+        .withTarget(target)
+        .withFraming({ kind: 'lines', maxLineLen: 64 })
+        .withReconnect(false);
+      const link = connectionWatcher(sys);
+      sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+      await awaitConnected(link, 'cap breach');
+
+      await awaitCondition(() => peerSawClose, {
+        timeoutMs: 4_000, label: 'the client dropped the socket after the cap breach',
+      });
+      // Nothing over the cap reaches the target — the frames are the other
+      // half of the claim, and a settle window is what can see a surplus.
+      await sleep(SETTLE_MS);
+      expect(collector.received).toEqual([]);
+      await sys.terminate();
+    } finally {
+      await new Promise<void>((resolve) => flooder.close(() => resolve()));
+    }
+  });
+});
+
 describe('TcpSocketActor — options validation', () => {
   test('missing host/port throws BrokerOptionsError', async () => {
     const sysOptions = ActorSystemOptions.create()

@@ -54,6 +54,8 @@ const FORBIDDEN = [
   { pattern: 'asInternal(', reason: 'renamed — ActorOptions.withInternal()' },
   { pattern: 'BackoffSupervisor.props', reason: 'renamed — BackoffSupervisor.factory' },
   { pattern: 'ClusterRouter.props', reason: 'renamed — ClusterRouter.factory' },
+  // The core-only root cut (#414) left no nested subpaths in the exports map.
+  { pattern: "from 'actor-ts/cluster/pubsub'", reason: 'no such subpath — import from actor-ts/cluster' },
 ];
 
 function* walk(dir) {

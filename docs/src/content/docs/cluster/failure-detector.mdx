@@ -162,7 +162,7 @@ for now you use it standalone.
 ## Diagnosing failure-detector decisions
 
 ```ts
-import { MemberUnreachable, MemberReachable } from 'actor-ts';
+import { MemberUnreachable, MemberReachable } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof MemberUnreachable) {
@@ -196,7 +196,7 @@ wrong signal for two questions it looks like it answers:
 either caveat:
 
 ```ts
-import { ReachabilityChanged } from 'actor-ts';
+import { ReachabilityChanged } from 'actor-ts/cluster';
 
 cluster.subscribe((evt) => {
   if (evt instanceof ReachabilityChanged) {

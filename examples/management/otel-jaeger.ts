@@ -31,10 +31,14 @@
  * writes the W3C `traceparent` header on every envelope.
  */
 import {
-  Actor, ActorSystem,
-  TracingExtensionId,
-  otelTracer, OtelAdapterOptions,
+  Actor,
+  ActorSystem,
 } from '../../src/index.js';
+import {
+  TracingExtensionId,
+  otelTracer,
+  OtelAdapterOptions,
+} from '../../src/tracing/index.js';
 import { attachDevTools } from '../devtools.js';
 
 // 1. Bring up the OTel SDK with the OTLP exporter.  Loaded lazily so

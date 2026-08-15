@@ -8,7 +8,8 @@ into the **Prometheus text format** that Prometheus / Grafana /
 Thanos scrape from `/metrics`.
 
 ```ts
-import { ActorSystem, MetricsExtensionId, exportPrometheus } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
+import { MetricsExtensionId, exportPrometheus } from 'actor-ts/metrics';
 
 const system = ActorSystem.create('my-app');
 const metrics = system.extension(MetricsExtensionId);
@@ -47,7 +48,7 @@ The easiest path is via the
 [management routes](/observability/management/overview/):
 
 ```ts
-import { managementRoutes } from 'actor-ts';
+import { managementRoutes } from 'actor-ts/management';
 
 // cluster can be null when you only need the metrics endpoint
 const { routes } = managementRoutes(system, null, {
@@ -76,7 +77,7 @@ yourself:
 
 ```ts
 import { path, get } from 'actor-ts/http';
-import { exportPrometheus } from 'actor-ts';
+import { exportPrometheus } from 'actor-ts/metrics';
 
 const routes = path('metrics',
   get(async () => ({

@@ -20,7 +20,14 @@ export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
   /** Server endpoint (`'host:port'`). */
   readonly endpoint?: string;
   readonly credentials?: GrpcCredentials;
-  /** Per-call deadline in ms.  Default 30_000. */
+  /**
+   * Deadline for a **unary** call, in ms.  Default 30_000.
+   *
+   * Not applied to the three streaming call classes: a gRPC deadline
+   * bounds the whole RPC, so one value cannot both fail a unary call
+   * promptly and let a long-lived stream run (see #790 for the
+   * channel-level keepalive that covers those).
+   */
   readonly deadlineMs?: number;
 }
 
@@ -55,7 +62,7 @@ export class GrpcClientOptionsBuilder extends BrokerOptionsBuilder<GrpcClientOpt
     return this.set('credentials', credentials);
   }
 
-  /** Per-call deadline in ms.  Default 30000. */
+  /** Deadline for a unary call, in ms.  Default 30000; streams are not bounded by it. */
   withDeadlineMs(ms: number): this {
     return this.set('deadlineMs', ms);
   }

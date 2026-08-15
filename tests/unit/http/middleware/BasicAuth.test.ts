@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { BasicAuth } from '../../../../src/http/middleware/BasicAuth.js';
 import { BasicAuthOptions } from '../../../../src/http/middleware/BasicAuthOptions.js';
-import { HttpError, Status, type HttpRequest } from '../../../../src/http/types.js';
+import { HttpError, Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const ok = { status: Status.OK, body: 'ok' };
 const next = async () => ok;

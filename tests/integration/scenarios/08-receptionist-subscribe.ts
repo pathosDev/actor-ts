@@ -28,7 +28,7 @@
  *      every change, not just on initial Subscribe.
  */
 
-import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
+import { clusterLiveNodes, waitFor, type Scenario } from './Types.js';
 
 type SubscribedResponse = {
   readonly refs: ReadonlyArray<string>;

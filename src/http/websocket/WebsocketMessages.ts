@@ -15,7 +15,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorFactory } from '../../Actor.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
-import type { WebsocketCloseInfo } from './types.js';
+import type { WebsocketCloseInfo } from './Types.js';
 
 /* ------------------------------ server-side ------------------------------ */
 

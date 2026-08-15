@@ -2,12 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import type { HttpRequest } from '../../../../src/http/types.js';
+import type { HttpRequest } from '../../../../src/http/Types.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.js';
 import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { jsonCodec, WebsocketDecodeError } from '../../../../src/http/websocket/WebsocketCodec.js';
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../../src/http/websocket/types.js';
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../../src/http/Constants.js';
 import type {
   WebsocketListeners,
   WebsocketSocketAdapter,

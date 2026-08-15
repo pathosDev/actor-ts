@@ -23,7 +23,7 @@
  * Acceptance: counts come back as expected after each respawn.
  */
 
-import { clusterLiveNodes, sleep, type Scenario } from './types.js';
+import { clusterLiveNodes, sleep, type Scenario } from './Types.js';
 
 const ID = 'integration-persistent-counter';
 

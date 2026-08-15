@@ -30,7 +30,7 @@ payloads.  Each entry pairs a numeric `version` (embedded in the
 payload manifest) with the 32-byte AES-256 key:
 
 ```ts
-import type { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts/persistence';
 
 const keyring: MasterKeyRing = {
   active:  { version: 2, key: newKey },       // new writes use this
@@ -82,7 +82,7 @@ with.
 ## The sweep
 
 ```ts
-import { reEncryptObjectStorage } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts/persistence';
 
 const result = await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',                      // which keys to process
@@ -118,7 +118,7 @@ pass a **progress store** so a crashed sweep resumes near where it
 stopped instead of re-scanning from the start:
 
 ```ts
-import { InMemoryReEncryptProgressStore } from 'actor-ts';
+import { InMemoryReEncryptProgressStore } from 'actor-ts/persistence';
 
 await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',

@@ -10,7 +10,7 @@ aufzurufen.
 
 ```ts
 import { cached, path, get } from 'actor-ts/http';
-import { InMemoryCache } from 'actor-ts';
+import { InMemoryCache } from 'actor-ts/cache';
 
 const productCache = cached({
   cache: new InMemoryCache(),
@@ -63,7 +63,16 @@ key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
 key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
+
+// Query-sensitive — the query is NOT part of req.path:
+key: (req) => `${req.path}|page=${req.query.page ?? '1'}`,
 ```
+
+`req.path` ist **nur der Pfadname** — `/api/products`, nie
+`/api/products?page=2`.  Ein Endpunkt, dessen Response von einem
+Query-Parameter abhängt, muss diesen Parameter selbst in den Key
+falten; sonst teilen sich alle Seiten einen Eintrag und Seite 2
+bekommt Seite 1 ausgeliefert.
 
 Baue den Key so, dass er über äquivalente Requests deterministisch,
 aber über getrennt zu cachende Responses eindeutig ist.
@@ -110,7 +119,7 @@ versehenen Key direkt `delete`n, wenn ein Write ihn invalidieren soll.
 ## Geteilter Cache über Pods
 
 ```ts
-import { RedisCache, RedisCacheOptions } from 'actor-ts';
+import { RedisCache, RedisCacheOptions } from 'actor-ts/cache';
 
 const redisCacheOptions = RedisCacheOptions.create().withUrl('redis://...');
 const productCache = cached({
@@ -176,6 +185,24 @@ import { Aside } from '@astrojs/starlight/components';
   kleine Schranke evictet heiße Responses zu früh.  Dimensioniere
   `maxEntries` auf die Zahl der erwarteten eindeutigen Cache-Keys.
   Siehe [In-Memory-Cache](/de/cache/in-memory/).
+</Aside>
+
+<Aside type="caution" title="Hier entstehen die Keys — teile die Instanz nicht">
+  ```ts
+  const responseCache = new InMemoryCache();   // ✓ this middleware's own instance
+  ```
+  `key(request)` leitet sich fast immer aus etwas ab, das der Client
+  kontrolliert — einem Pfadparameter, einem Mandanten-Header.  Wer das
+  variiert, erzeugt pro Request einen neuen Eintrag.  Hier ist das
+  harmlos: die LRU-Schranke ist genau das, was den Response-Cache am
+  unbegrenzten Wachsen hindert.  In einer Instanz, die mit `rateLimit`
+  oder `idempotent` geteilt wird, ist es das nicht — die Eviction nimmt
+  den am längsten nicht genutzten Eintrag, ohne zu wissen, dass er
+  einen Rate-Limit-Zähler oder einen Record hält, der eine doppelte
+  Zahlung verhindert.  Gib dieser Middleware eine eigene Instanz — oder
+  `ext.cache('response-cache')` — statt der, die eine Garantie
+  durchsetzt.  Siehe
+  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
 </Aside>
 
 ## Wohin als Nächstes

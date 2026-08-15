@@ -13,7 +13,7 @@ class FakeMemcached implements MemcachedClientLike {
   store = new Map<string, { value: string; expires: number }>();
   log: Array<{ op: string; args: unknown[] }> = [];
 
-  async get(key: string): Promise<{ value: Buffer | null }> {
+  async get(key: string): Promise<{ value: Uint8Array | null }> {
     this.log.push({ op: 'get', args: [key] });
     const entry = this.store.get(key);
     if (!entry) return { value: null };
@@ -23,18 +23,18 @@ class FakeMemcached implements MemcachedClientLike {
     }
     return { value: Buffer.from(entry.value, 'utf8') };
   }
-  async set(key: string, value: string | Buffer, options: { expires?: number } = {}): Promise<boolean> {
+  async set(key: string, value: string | Uint8Array, options: { expires?: number } = {}): Promise<boolean> {
     this.log.push({ op: 'set', args: [key, value, options] });
-    this.store.set(key, { value: value.toString(), expires: secondsAhead(options.expires) });
+    this.store.set(key, { value: asText(value), expires: secondsAhead(options.expires) });
     return true;
   }
-  async add(key: string, value: string | Buffer, options: { expires?: number } = {}): Promise<boolean> {
+  async add(key: string, value: string | Uint8Array, options: { expires?: number } = {}): Promise<boolean> {
     this.log.push({ op: 'add', args: [key, value, options] });
     if (this.store.has(key)) {
       const entry = this.store.get(key)!;
       if (entry.expires === 0 || entry.expires >= Date.now() / 1000) return false;
     }
-    this.store.set(key, { value: value.toString(), expires: secondsAhead(options.expires) });
+    this.store.set(key, { value: asText(value), expires: secondsAhead(options.expires) });
     return true;
   }
   async delete(key: string): Promise<boolean> {
@@ -59,6 +59,16 @@ class FakeMemcached implements MemcachedClientLike {
     this.log.push({ op: 'quit', args: [] });
   }
 }
+/**
+ * The fake stores text, so a byte payload has to be decoded rather than
+ * `toString()`ed — `Uint8Array.toString()` yields comma-separated digits.
+ * The framework only ever sends strings, but the interface permits bytes and
+ * the fake should honour what it claims to implement.
+ */
+function asText(value: string | Uint8Array): string {
+  return typeof value === 'string' ? value : new TextDecoder().decode(value);
+}
+
 function secondsAhead(seconds: number | undefined): number {
   if (seconds === undefined) return 0;  // 0 = no expiry in memcached
   return Math.floor(Date.now() / 1000) + seconds;

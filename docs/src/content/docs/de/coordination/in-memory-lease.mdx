@@ -23,6 +23,13 @@ const lease = new InMemoryLease(
 await lease.acquire();   // → true (erstes Acquire)
 ```
 
+`name`, `owner` und `ttlMs` sind Pflicht — der Konstruktor wirft
+`OptionsError`, sobald eines fehlt, statt ein Lease zu bauen, das
+niemanden ausschließen kann.  Zwei Leases ohne `owner` konkurrieren
+beide unter demselben `undefined`-Holder und gewinnen beide; ohne
+`ttlMs` ist die Ablaufzeit `NaN` und liegt damit nie nach jetzt, ein
+bestehender Holder liest sich also immer als abgelaufen.
+
 ## Wann du sie einsetzt
 
 - **Unit Tests** für Actors, die einen `Lease`-Parameter
@@ -119,7 +126,7 @@ direkt (`inMemoryLeaseStore._clear()`).
 import { describe, it, expect } from 'bun:test';
 import { TestKit } from 'actor-ts/testkit';
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
-import { StartSingletonOptions } from 'actor-ts';
+import { StartSingletonOptions } from 'actor-ts/cluster';
 
 describe('SingletonManager mit Lease', () => {
   it('nur ein Halter spawnt den Singleton', async () => {

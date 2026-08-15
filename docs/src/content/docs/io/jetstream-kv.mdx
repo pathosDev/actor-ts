@@ -19,8 +19,10 @@ wants.
 ## Key-Value
 
 ```ts
-import { ActorSystem, Actor, JetStreamKeyValueActor, JetStreamKeyValueOptions } from 'actor-ts';
-import type { ActorRef, JetStreamKeyValueMessage } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
+import { JetStreamKeyValueActor, JetStreamKeyValueOptions } from 'actor-ts/io';
+import type { ActorRef } from 'actor-ts';
+import type { JetStreamKeyValueMessage } from 'actor-ts/io';
 
 const sessionOptions = JetStreamKeyValueOptions.create()
   .withServers(['nats://localhost:4222'])
@@ -159,7 +161,7 @@ actor-ts.io.broker.jetstream-key-value {
 ## Object Store
 
 ```ts
-import { JetStreamObjectStoreActor, JetStreamObjectStoreOptions } from 'actor-ts';
+import { JetStreamObjectStoreActor, JetStreamObjectStoreOptions } from 'actor-ts/io';
 
 const assetOptions = JetStreamObjectStoreOptions.create()
   .withServers(['nats://localhost:4222'])

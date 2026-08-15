@@ -1,7 +1,9 @@
 /**
  * Worker-side script.  Bun spawns one instance of this file per core.
  */
-import { Actor, ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, WorkerNode } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions } from '../../src/index.js';
+import { Cluster, ClusterOptions } from '../../src/cluster/index.js';
+import { WorkerNode } from '../../src/worker/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class HelloWorker extends Actor<'greet'> {

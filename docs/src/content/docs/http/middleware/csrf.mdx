@@ -1,13 +1,13 @@
 ---
 title: CSRF protection
-description: csrfProtection() is a stateless double-submit scheme hardened with an HMAC; requireSameOrigin() is the lightweight Origin/Referer check. Both guard unsafe methods against cross-site request forgery.
+description: csrfProtection() is a stateless double-submit scheme with an HMAC-signed token in a __Host- cookie; requireSameOrigin() is the lightweight Origin/Referer check. Both guard unsafe methods against cross-site request forgery.
 ---
 
 `csrfProtection` is a **stateless** CSRF defence: the token is
-`payload.hmac(secret, payload)`, so a cookie an attacker plants from a
-sibling subdomain fails verification. Safe methods mint/refresh the token;
-unsafe methods (`POST`/`PUT`/`PATCH`/`DELETE`) must present a matching
-cookie **and** header.
+`payload.hmac(secret, payload)`, carried in a `__Host-`-prefixed cookie.
+Safe methods mint/refresh the token; unsafe methods
+(`POST`/`PUT`/`PATCH`/`DELETE`) must present a matching cookie **and**
+header.
 
 ```ts
 import { csrfProtection, CsrfOptions, withMiddleware } from 'actor-ts/http';
@@ -25,22 +25,68 @@ templates it into a form field or `<meta>` tag. The browser echoes it back
 in the `X-CSRF-Token` header (or a configured form field) on the next
 unsafe request.
 
+## What each part buys
+
+Three separate things carry the defence, and it pays to be exact about
+which does what:
+
+- The **HMAC** rejects tokens this server never minted — garbage, a guess,
+  a token from another deployment. It binds a token to the server secret
+  and to nothing else, so a token minted for one client verifies for every
+  other. It is *not* what stops cookie planting.
+- The **`__Host-` cookie name** is what stops planting, and it is the
+  default. A browser refuses such a cookie unless it is `Secure`, `Path=/`
+  and carries no `Domain`, which locks it to exactly this host: a sibling
+  subdomain cannot write it, and a plaintext origin cannot write it at all.
+- The **Origin/Referer gate** on unsafe methods rejects the cross-site
+  request that would carry a planted pair in the first place.
+
 ## Configuration
 
 | Builder method | Field | Default |
 | --- | --- | --- |
 | `withSecret(s)` | `secret` | **required**, ≥ 16 bytes |
-| `withCookieName(n)` | `cookieName` | `'csrf-token'` |
+| `withCookieName(n)` | `cookieName` | `'__Host-csrf-token'` |
 | `withHeaderName(n)` | `headerName` | `'x-csrf-token'` |
 | `withCookie(attrs)` | `cookie` | `Path=/`, `Secure`, `SameSite=Lax` |
 | `withVerifyOrigin(flag?)` | `verifyOrigin` | `true` — also check Origin/Referer |
-| `withAllowedOrigins(...o)` | `allowedOrigins` | extra accepted origins |
+| `withAllowedOrigins(...o)` | `allowedOrigins` | extra accepted **full** origins |
+| `withExpectedScheme(s)` | `expectedScheme` | `'https'` — or `'http'` when the cookie is not `Secure` |
 | `withFormField(name)` | `formFieldName` | off — read the token from a urlencoded body field too |
+
+## What "same origin" means here
+
+The origin check compares **whole origins** — scheme, host and port — on
+both arms: the request's own origin and every `allowedOrigins` entry. So
+`https://app.example` accepts neither `http://app.example` nor
+`https://app.example:8443`, and an `Origin: null` (an opaque origin, e.g. a
+sandboxed iframe) is always rejected.
+
+A request tells you its host, in the `Host` header, but never its scheme —
+TLS may terminate at a proxy, and a forwarded scheme header is set by the
+client, so it isn't trusted. `expectedScheme` supplies that missing half.
+It defaults to `'https'`; `csrfProtection` reads `'http'` instead when you
+explicitly turn off the `Secure` cookie attribute, since that already
+declares a plain-HTTP deployment:
+
+```ts
+const csrfOptions = CsrfOptions.create()
+  .withSecret(process.env.CSRF_SECRET!)
+  // Local dev over plain HTTP: a __Host- cookie cannot be set at all, and
+  // dropping Secure also switches the expected scheme to http.
+  .withCookieName('csrf-token')
+  .withCookie({ secure: false });
+```
+
+Entries of `allowedOrigins` must be full origins (`'https://partner.example'`,
+not `'partner.example'`); anything else throws an `OptionsError` when the
+middleware is built, because it could never match.
 
 ## The lightweight alternative — `requireSameOrigin`
 
 If you only need modern-browser protection, `requireSameOrigin()` rejects
-unsafe-method requests whose `Origin`/`Referer` host isn't the request host:
+unsafe-method requests whose `Origin`/`Referer` isn't the request's own
+origin:
 
 ```ts
 import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
@@ -48,11 +94,26 @@ import { requireSameOrigin, withMiddleware } from 'actor-ts/http';
 const routes = withMiddleware(requireSameOrigin(), appRoutes);
 ```
 
+It takes the same `allowedOrigins` and `expectedScheme` (plus
+`allowMissingOrigin`), with the same `'https'` default — a plain-HTTP site
+needs `SameOriginOptions.create().withExpectedScheme('http')`, as there is
+no cookie here to infer it from.
+
 `csrfProtection` is the belt-and-suspenders option (it runs this check too);
 `requireSameOrigin` alone is lighter but relies on the browser sending a
 correct `Origin`/`Referer`.
 
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The __Host- prefix needs HTTPS">
+  A `__Host-` cookie requires `Secure`, `Path=/` and no `Domain` — a
+  browser drops it otherwise, and it cannot be set over plain HTTP at all.
+  `csrfProtection` therefore rejects an incompatible `withCookie(...)` when
+  the middleware is built (an `OptionsError`, not a per-request 500). For
+  local development over HTTP, pick an unprefixed name with
+  `withCookieName('csrf-token')`. Browser code reading the cookie must use
+  the full name including the prefix.
+</Aside>
 
 <Aside type="note" title="Why the cookie is not HttpOnly">
   Double-submit **requires** same-origin JavaScript to read the cookie and

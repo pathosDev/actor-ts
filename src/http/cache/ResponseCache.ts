@@ -1,5 +1,5 @@
 import type { Cache } from '../../cache/Cache.js';
-import type { HttpRequest, HttpResponse } from '../types.js';
+import type { HttpRequest, HttpResponse } from '../Types.js';
 
 /**
  * HTTP response-cache directive.  Wraps a handler with a read-through
@@ -21,11 +21,24 @@ import type { HttpRequest, HttpResponse } from '../types.js';
  * Usage:
  *
  *   const userCache = cached({
- *     cache: ext.cache(),
+ *     cache: ext.cache('response-cache'),
  *     ttlMs: 30_000,
  *     key: (request) => `users:${request.params.id}`,
  *   });
  *   route(get('/users/:id', userCache(request => askUserActor(request.params.id))));
+ *
+ * **Security — give this middleware its own cache (security audit
+ * HTTP-8):** `key(request)` almost always derives from something the
+ * client controls (a path parameter, a tenant header), so a caller who
+ * varies it mints a new cache entry per request.  That is harmless here
+ * — `InMemoryCache`'s LRU bound is what keeps the response cache from
+ * growing without limit — but it is NOT harmless in a `Cache` shared
+ * with `rateLimit` or `idempotent`: eviction picks the least-recently-
+ * used entry with no idea that it is holding a rate-limit counter or a
+ * record that stops a payment being taken twice.  This middleware is the
+ * key-minting side of that trade, so hand it a dedicated instance
+ * (`ext.cache('response-cache')`) rather than the one enforcing a
+ * security guarantee.
  */
 
 export type ResponseCacheOptions = {

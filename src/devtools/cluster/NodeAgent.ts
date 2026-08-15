@@ -16,7 +16,7 @@ import {
   isNodeQuery,
   type NodeReportMessage,
 } from './NodeProtocol.js';
-import { NodeAddress } from '../../cluster/NodeAddress.js';
+import type { NodeAddress } from '../../cluster/NodeAddress.js';
 
 export class DevToolsNodeAgent {
   private unregister: (() => void) | null = null;
@@ -34,7 +34,7 @@ export class DevToolsNodeAgent {
     if (this.unregister !== null) return;
     this.unregister = this.cluster._registerEnvelopeHandler(
       DEVTOOLS_AGENT_PATH,
-      (envelope) => this.onEnvelope(envelope.body),
+      (envelope, from) => this.onEnvelope(envelope.body, from),
     );
   }
 
@@ -48,7 +48,7 @@ export class DevToolsNodeAgent {
     return this.sampler.figures(this.cluster.selfAddress.toString());
   }
 
-  private onEnvelope(body: unknown): void {
+  private onEnvelope(body: unknown, from: NodeAddress): void {
     // The body arrives off the network.  Anything that is not a
     // well-formed query is dropped rather than answered: a DevTools
     // agent has no business guessing at malformed input.
@@ -64,28 +64,17 @@ export class DevToolsNodeAgent {
         }
         : {}),
     };
-    const to = parseAddress(body.from);
-    if (to === null) return;
-    this.cluster._sendEnvelope(to, {
+    // Answer the connection the query came in on, never an address the
+    // body named — the rule the whole cluster was hardened to in #564,
+    // and the one this agent was missed by.  A query used to carry its
+    // own return address; a forged one made this node open an outbound
+    // connection to any host an attacker picked and post it the full
+    // actor tree, unprompted and unauthenticated (#595).
+    this.cluster._sendEnvelope(from, {
       kind: 'envelope',
       to: DEVTOOLS_COLLECTOR_PATH,
       from: DEVTOOLS_AGENT_PATH,
       body: report,
     });
   }
-}
-
-/**
- * `systemName@host:port` back into an address.
- *
- * Hand-parsed rather than trusted: the string came off the wire, and a
- * reply sent to a mangled address is a reply sent somewhere.
- */
-function parseAddress(text: string): NodeAddress | null {
-  const at = text.indexOf('@');
-  const colon = text.lastIndexOf(':');
-  if (at <= 0 || colon <= at + 1) return null;
-  const port = Number(text.slice(colon + 1));
-  if (!Number.isInteger(port) || port <= 0) return null;
-  return new NodeAddress(text.slice(0, at), text.slice(at + 1, colon), port);
 }

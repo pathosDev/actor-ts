@@ -26,8 +26,8 @@ const routes =
   withMiddleware(securityHeaders(),
   cors(corsOptions,
   withMiddleware(requestTimeout(15_000),
-  withMiddleware(csrf,
   handleErrors(errorMapper,
+  withMiddleware(csrf,
     concat(
       appRoutes,
       fallback(notFound),
@@ -37,11 +37,11 @@ const routes =
 | Schicht | Warum hier |
 | --- | --- |
 | `requestId` | ganz außen, damit jede Log-Zeile (auch Fehler) eine ID hat |
-| `securityHeaders` | Header auf **jeder** Response setzen, auch bei Short-Circuits |
+| `securityHeaders` | über allem, was ablehnt — damit auch diese Responses die Header tragen |
 | `cors` | **außerhalb** der Auth — Preflights sind laut Spec anonym |
 | `requestTimeout` | Latenz begrenzen, bevor echte Arbeit läuft |
+| `handleErrors` | **außerhalb von `csrf`**, damit es dessen eigene 403 mappt — und innerhalb der Header-Schichten, damit das Ergebnis noch durch sie läuft |
 | `csrf` | nur Browser-Apps; nach CORS, vor den Handlern |
-| `handleErrors` | geworfene Fehler nahe den Routen auf Responses mappen |
 | `fallback` | an der Wurzel — beantwortet alles Unpassende |
 
 ## Was jede Response ohnehin schon trägt
@@ -81,9 +81,14 @@ Objekt geht genauso (`withSecurityHeaders({ frameOptions: 'SAMEORIGIN' })`),
 und `withSecurityHeaders(false)` schaltet den Mechanismus komplett ab.
 
 Serverweit oder als `securityHeaders()`-Middleware — beide setzen dieselbe
-Menge. Zur Middleware greifst du, wenn nur ein Routen-Teilbaum sie braucht;
-zum Builder, wenn der ganze Server sie braucht — denn die Middleware wird
-überall dort übersprungen, wo eine Response nie durch sie zurückläuft.
+Menge. Die Middleware deckt ihren eigenen Teilbaum ab, und dazu gehört auch
+ein **Short-Circuit, der wirft**: Ein `HttpError` aus einer Schicht darunter
+— eine CSRF-403, eine Auth-401 — nimmt die Header mit hinaus. Was sie nie
+sieht, ist eine Response, die außerhalb ihres Teilbaums entsteht: der
+backend-eigene 404, der 413 bei zu großem Body und die generische 500, auf
+die ein Wurf ohne `HttpError` gemappt wird. Zur Middleware greifst du, wenn
+nur ein Routen-Teilbaum sie braucht; zum Builder, wenn der ganze Server sie
+braucht.
 
 ## Betriebsumfeld
 
@@ -101,9 +106,38 @@ zum Builder, wenn der ganze Server sie braucht — denn die Middleware wird
 
 Bevorzuge das `__Host-`-Präfix (erfordert `Secure`, `Path=/`, kein `Domain`)
 und `SameSite=Lax` oder `Strict`. Das [CSRF-Cookie](/de/http/middleware/csrf/)
-ist bewusst nicht `HttpOnly` (Double-Submit braucht JS zum Lesen); dein
-Session-/Auth-Cookie sollte `HttpOnly` sein. `serializeCookie` verweigert
-Werte, die einen zweiten Header injizieren könnten.
+nutzt dieses Präfix per Default — es ist das, was eine Geschwister-Subdomain
+am Platzieren eines Tokens hindert — und ist bewusst nicht `HttpOnly`
+(Double-Submit braucht JS zum Lesen); dein Session-/Auth-Cookie sollte
+`HttpOnly` sein.
+
+`serializeCookie` bringt dich per Weglassen dorthin. Ein Attribut, das du
+nicht nennst, löst sich zum strikten Ende hin auf — `Secure`, `HttpOnly`,
+`SameSite=Lax`, `Path=/` —, der Aufruf mit zwei Argumenten ist also schon
+auslieferbar, und was dabei herauskommt, erfüllt die `__Host-`-Regeln, ohne
+dass ein Wort darüber fällt. Aufweichen ist der Teil, den du hinschreibst:
+
+```ts
+import { serializeCookie } from 'actor-ts/http';
+
+// __Host-session=<id>; Path=/; HttpOnly; Secure; SameSite=Lax
+const sessionCookie = serializeCookie('__Host-session', sessionId);
+
+// Plain-HTTP local dev, and a cookie same-origin JS has to read.
+const readableCookie = serializeCookie('token', value, { secure: false, httpOnly: false });
+```
+
+`Path` wird immer geschrieben, weil die Alternative schlimmer ist: ohne das
+Attribut leitet der Browser den Geltungsbereich aus der Request-URI ab —
+dasselbe Cookie deckt dann `/account` ab, wenn es von `/account/login` kommt,
+und `/`, wenn es von der Wurzel kommt.
+
+Ebenso verweigert die Funktion alles, was aus dem Cookie ausbrechen könnte,
+das sie gerade baut — einen unzulässigen Namen oder Wert und einen `Path`
+oder eine `Domain`, die keine sind. Diese beiden landen unverändert im
+Header: ein ungeprüfter `Path` von `'/;Domain=evil.example'` würde ein
+Attribut nach fremder Wahl anhängen, und die *letzte* `Domain` ist die, die
+zählt — sie würde deine überschreiben, statt gegen sie zu verlieren.
 
 ## Fehlerhygiene
 
@@ -112,6 +146,15 @@ Interna nicht leaken. Nutze `withErrorHandler` (oder ein Top-Level
 Detail serverseitig, verschlüsselt über die Request-ID. Halte `403`/`404`
 unspezifisch — die Static-File-Schicht liefert für jeden abgelehnten Pfad
 einen einheitlichen `404`, verrät also nie, was existiert.
+
+Auch die serverseitige Kopie braucht Hygiene, und das übliche Leck dort ist
+eine Verbindungs-URL: ein abgelehnter Optionswert und die
+Oversize-Frame-Warnung des WebSocket-Clients benennen beide eine, und beide
+werden mit maskierter Userinfo geschrieben. Wenn du selbst eine URL loggst,
+schick sie durch
+[`redactUrlCredentials` oder `redactedUrlLabel`](/de/reference/utility-helpers/)
+— ein Passwort, das einen Log-Aggregator erreicht hat, muss rotiert werden;
+löschen genügt nicht.
 
 ## Redirects
 
@@ -127,9 +170,24 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 
 ## Untrusted Input begrenzen
 
-- **Request-Bodies** werden vom Backend gekappt (Fastify 1 MiB Default;
-  Express/Hono ~10 MiB) — pro Backend an deine Payloads anpassen.
-- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
+- **Request-Bodies** sind auf jedem Backend bei **1 MiB** gekappt, und ein
+  größerer Body wird mit demselben `413 Payload Too Large` abgewiesen, egal
+  welches Backend bedient — bevor der Handler läuft und ohne `withErrorHandler`
+  zu fragen, denn ein Size-Cap ist eine Transport-Entscheidung und kein
+  Anwendungsfehler. Heb ihn dort an, wo ein Endpunkt wirklich mehr annimmt:
+  `withMaxBodyBytes(bytes)` in den Express- und Hono-Backend-Options,
+  `bodyLimit` in der Options-Bag von `FastifyBackend`. Der einzige Fall, der
+  weiterhin beim Eintreffen gemessen statt vorab abgewiesen wird, ist ein
+  gechunkter Body ohne `Content-Length`.
+- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default),
+  und dieser Default geht zusätzlich an den Socket der Laufzeit selbst: Ein zu
+  großer Frame wird abgewiesen, *während er eintrifft*, statt erst nachdem der
+  Prozess ihn gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder
+  100 MiB (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft.
+  Die einzige Ausnahme ist Hono auf **Deno**, dessen `upgradeWebSocket` kein
+  Payload-Limit anbietet: Dort wird zuerst gepuffert und danach abgewiesen.
+  `maxFrameBytes` über 1 MiB anzuheben, hebt das Transport-Limit nicht mit an.
+  Siehe [WebSocket](/de/http/websocket/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.
@@ -151,7 +209,7 @@ Upgrade-Zeit und gated damit den Handshake.
 | Maßnahme | Womit |
 | --- | --- |
 | MIME-Sniffing auf jeder Response abgeschaltet | nichts — per Default an |
-| Security-Header auf jeder Response | `securityHeaders()`, oder serverweit `withSecurityHeaders(...)` |
+| Security-Header auf jeder Response | serverweit `withSecurityHeaders(...)` — `securityHeaders()` deckt einen Teilbaum ab, Ablehnungen eingeschlossen |
 | HTTPS vom Browser erzwungen | `strictTransportSecurity()` / `withHsts` |
 | Cross-Origin kontrolliert | `cors(...)` |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |

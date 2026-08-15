@@ -1,4 +1,4 @@
-import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
+import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
@@ -55,6 +55,40 @@ export interface ServerBinding {
 export const DEFAULT_RESPONSE_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'x-content-type-options': 'nosniff',
 });
+
+/**
+ * The answer every shipped backend writes once a request body exceeds the
+ * cap — declared once so all three agree on status, body *and* content type.
+ *
+ * A client that posts too much has to be able to recognise the refusal
+ * without knowing which backend served it, and before #357 it could not:
+ * Express and Hono wrote this `text/plain` line while Fastify let its own
+ * `FST_ERR_CTP_BODY_TOO_LARGE` JSON envelope through untouched — or, once
+ * `withErrorHandler` was installed, reported the rejection as a 500.
+ *
+ * Passed through each backend's `writeResponse`, so the server-wide default
+ * headers land on it like on any other response.
+ */
+export const PAYLOAD_TOO_LARGE_RESPONSE: HttpResponse = Object.freeze({
+  status: 413,
+  body: 'Payload Too Large',
+  contentType: 'text/plain; charset=utf-8',
+});
+
+/**
+ * True when a declared `Content-Length` exceeds `cap`.
+ *
+ * Shared by the backends that read a body themselves (Express, Hono) so both
+ * refuse an over-long request before a byte of it is read — Fastify applies
+ * the same rule inside its own body parser.  A missing or non-numeric header
+ * returns `false`: a chunked body declares no length, so it can only be
+ * measured while it arrives.
+ */
+export function contentLengthExceeds(header: string | undefined, cap: number): boolean {
+  if (header === undefined) return false;
+  const declaredLength = Number(header);
+  return Number.isFinite(declaredLength) && declaredLength > cap;
+}
 
 /**
  * Pluggable HTTP server abstraction.  Backends translate our generic

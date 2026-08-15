@@ -22,4 +22,4 @@ export type {
   ScenarioContext,
   ScenarioModule,
   MemberSnapshot,
-} from './internal/parallel-multi-node-bootstrap.js';
+} from './internal/ParallelMultiNodeBootstrap.js';

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { rateLimit } from '../../../../src/http/cache/RateLimit.js';
 import { complete } from '../../../../src/http/Route.js';
-import { Status, type HttpRequest } from '../../../../src/http/types.js';
+import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 

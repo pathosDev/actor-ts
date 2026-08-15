@@ -196,7 +196,7 @@ that set, in code or via
 [`actor-ts.distributed-data`](/reference/configuration/#actor-tsdistributed-data):
 
 ```ts
-import { DistributedDataId, DistributedDataOptions } from 'actor-ts';
+import { DistributedDataId, DistributedDataOptions } from 'actor-ts/crdt';
 
 const distributedDataOptions = DistributedDataOptions.create()
   .withMaxPendingQuorumRequests(1_000)

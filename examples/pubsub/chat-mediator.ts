@@ -6,7 +6,8 @@
  *
  * Expected output: each subscriber logs every message posted to "chat".
  */
-import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/index.js';
+import { Actor, ActorSystem } from '../../src/index.js';
+import { Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/cluster/index.js';
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 

@@ -56,7 +56,7 @@ Randbedingungen (siehe Auswahlabschnitt unten).
 ## Konfiguration
 
 ```ts
-import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts';
+import { Cluster, ClusterOptions, KeepMajority } from 'actor-ts/cluster';
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)
@@ -78,7 +78,7 @@ Menge bedeutet "noch keine Entscheidung — abwarten."
 ## KeepMajority
 
 ```ts
-import { KeepMajority } from 'actor-ts';
+import { KeepMajority } from 'actor-ts/cluster';
 
 new KeepMajority();
 ```
@@ -106,7 +106,7 @@ besondere Deployments.
 ## KeepOldest
 
 ```ts
-import { KeepOldest, KeepOldestOptions } from 'actor-ts';
+import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
 const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
@@ -144,7 +144,7 @@ Komplett-Split selbst zum Cluster erklärt.
 ## KeepReferee
 
 ```ts
-import { KeepReferee, KeepRefereeOptions } from 'actor-ts';
+import { KeepReferee, KeepRefereeOptions } from 'actor-ts/cluster';
 
 const keepRefereeOptions = KeepRefereeOptions.create()
   .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
@@ -178,7 +178,7 @@ einem neutralen Ort (drittes DC, eine Control-Plane-K8s-Namespace).
 ## StaticQuorum
 
 ```ts
-import { StaticQuorum, StaticQuorumOptions } from 'actor-ts';
+import { StaticQuorum, StaticQuorumOptions } from 'actor-ts/cluster';
 
 const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
@@ -205,7 +205,7 @@ Falsche-Seite-Überleben zu riskieren.
 ## LeaseMajority
 
 ```ts
-import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts';
+import { LeaseMajority, LeaseMajorityOptions } from 'actor-ts/cluster';
 
 const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(someLeaseImplementation);
 new LeaseMajority(
@@ -230,6 +230,45 @@ betrachtet.
 
 Richtig für paranoide Produktionsszenarien, in denen du eher
 **doppelten Aufwand** für Split-Brain-Schutz akzeptierst.
+
+### Wenn ein Acquire aufgegeben wird
+
+Der interessante Fall ist nicht „die Lease sagt nein“, sondern
+„die Lease sagt gar nichts“.  Zwei Dinge machen ein `acquire()`
+unerwünscht, während es noch auf der Leitung ist: Es resolved
+nicht innerhalb von `acquireTimeoutMs` (Default 5 s), oder die
+Partitionssicht zieht darunter weiter — die Partition heilt, oder
+das Unreachable-Set ändert sich.  Der zweite Fall ist der
+wahrscheinlichere, denn eine Mitgliedschaftsänderung innerhalb
+eines 5-Sekunden-Fensters braucht gar keine Verzögerung.  In
+beiden Fällen hört die Strategie auf, auf den Versuch zu warten,
+und muss dann damit rechnen, dass er auf der Leitung trotzdem noch
+erfolgreich ist und die Lease bei einem Node beansprucht
+zurücklässt, der nicht mehr glaubt, gewonnen zu haben.  Für beide
+gelten dieselben drei Regeln:
+
+- **Das späte Ergebnis wird verworfen.**  Jeder Versuch trägt eine
+  Epoch; ein Ergebnis, das nach dem Ausmustern seiner Epoch
+  eintrifft, kann keine Entscheidung mehr schreiben.  Ein langsames
+  `acquire() → true` kann diese Seite also nicht nachträglich zur
+  Überlebenden erklären.
+- **Ein später Gewinn wird released — und bis dahin startet
+  nichts Neues.**  Eigentum beginnt erst, wenn das Acquire
+  resolved, also wartet das Rückgängigmachen darauf, dass es sich
+  zurückmeldet; früher zu releasen wäre ein No-op.  Solange das
+  offen ist, liefert `decide()` weiter eine leere Entscheidung,
+  statt einen zweiten Versuch zu starten: zwei überlappende
+  Versuche sind genau der Weg, auf dem das Aufräumen eine Lease
+  löschen könnte, die diese Seite gerade beansprucht.
+- **Schlägt das Release fehl, entscheidet die Strategie nicht
+  mehr.**  Der Zustand der Lease ist dann unbekannt, also geht sie
+  in den *Fail-safe* und liefert für diese Partitionssicht eine
+  leere Entscheidung, bis die Partition heilt.  Nichts zu
+  entscheiden ist immer sicher; falsch zu entscheiden nicht.
+
+Das sichtbare Symptom eines Lease-Providers mit einem schlechten
+Tag ist deshalb ein Cluster, der wartet — keiner, der auseinander
+fällt.
 
 ## Eine Strategie auswählen
 
