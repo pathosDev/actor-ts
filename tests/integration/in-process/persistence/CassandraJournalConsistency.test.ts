@@ -58,7 +58,7 @@ describe('CassandraJournal — consistency level is honoured', () => {
   test('configured consistency is forwarded to data-path execute() and batch() calls', async () => {
     const client = new SpyCassandraClient();
     const journal = journalWith(client, 6);
-    await journal.append('acct-1', ['e1', 'e2'], 0);
+    await journal.append('acct-1', [{ event: 'e1' }, { event: 'e2' }], 0);
 
     // The batch that writes the events carries the configured consistency.
     expect(client.batchOptions.length).toBeGreaterThan(0);
@@ -78,7 +78,7 @@ describe('CassandraJournal — consistency level is honoured', () => {
   test('without a configured consistency, no consistency option is sent', async () => {
     const client = new SpyCassandraClient();
     const journal = journalWith(client);
-    await journal.append('acct-2', ['e1'], 0);
+    await journal.append('acct-2', [{ event: 'e1' }], 0);
     for (const options of client.executeOptions) {
       expect(options?.consistency).toBeUndefined();
     }

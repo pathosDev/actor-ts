@@ -55,7 +55,7 @@ describe('per-store serializer option (#888)', () => {
       .withSerializer(moneySerializer);
     const journal = new SqliteJournal(journalOptions);
     try {
-      await journal.append('wallet-1', [new Money('EUR', 1550)], 0);
+      await journal.append('wallet-1', [{ event: new Money('EUR', 1550) }], 0);
       const [entry] = await journal.read<Money>('wallet-1', 1);
       expect(entry!.event).toBeInstanceOf(Money);
       expect(entry!.event.formatted()).toBe('EUR 15.50');
@@ -85,7 +85,7 @@ describe('per-store serializer option (#888)', () => {
       .withSerializer(moneySerializer);
     const journal = new SqliteJournal(journalOptions);
     try {
-      await journal.append('wallet-3', [new Money('CHF', 500)], 0, ['payments']);
+      await journal.append('wallet-3', [{ event: new Money('CHF', 500), tags: ['payments'] }], 0);
       const query = new SqliteQuery(journal);
       const tagged = await query.currentEventsByTag<Money>('payments', offsetStart);
       expect(tagged.length).toBe(1);
@@ -101,7 +101,7 @@ describe('per-store serializer option (#888)', () => {
 
     const legacyOptions = SqliteJournalOptions.create().withPath(path);
     const legacyJournal = new SqliteJournal(legacyOptions);
-    await legacyJournal.append('wallet-4', [{ kind: 'opened', roles: new Set(['owner']) }], 0);
+    await legacyJournal.append('wallet-4', [{ event: { kind: 'opened', roles: new Set(['owner']) } }], 0);
     await legacyJournal.close();
 
     const framedOptions = SqliteJournalOptions.create()
@@ -109,7 +109,7 @@ describe('per-store serializer option (#888)', () => {
       .withSerializer(moneySerializer);
     const framedJournal = new SqliteJournal(framedOptions);
     try {
-      await framedJournal.append('wallet-4', [new Money('EUR', 100)], 1);
+      await framedJournal.append('wallet-4', [{ event: new Money('EUR', 100) }], 1);
       const events = await framedJournal.read<unknown>('wallet-4', 1);
       // Row 1 was written by the default codec; row 2 carries the frame —
       // decode dispatches per row, so both come back intact.
@@ -129,7 +129,7 @@ describe('per-store serializer option (#888)', () => {
       .withPath(path)
       .withSerializer(moneySerializer);
     const framedJournal = new SqliteJournal(framedOptions);
-    await framedJournal.append('wallet-5', [new Money('EUR', 1)], 0);
+    await framedJournal.append('wallet-5', [{ event: new Money('EUR', 1) }], 0);
     await framedJournal.close();
 
     const plainOptions = SqliteJournalOptions.create().withPath(path);
@@ -147,7 +147,7 @@ describe('per-store serializer option (#888)', () => {
       .withSerializer(moneySerializer);
     const journal = new PostgresJournal(journalOptions);
     try {
-      await journal.append('wallet-6', [new Money('GBP', 250)], 0);
+      await journal.append('wallet-6', [{ event: new Money('GBP', 250) }], 0);
       const [entry] = await journal.read<Money>('wallet-6', 1);
       expect(entry!.event).toBeInstanceOf(Money);
       expect(entry!.event.formatted()).toBe('GBP 2.50');

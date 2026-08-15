@@ -43,14 +43,14 @@ async function timeBlockedAppend(fileName: string, busyTimeoutMs: number): Promi
   const journal = new SqliteJournal(journalOptions);
   let blocker: SqliteDb | undefined;
   try {
-    await journal.append('account-1', ['created'], 0);
+    await journal.append('account-1', [{ event: 'created' }], 0);
 
     const driver = await getSqliteDriver();
     blocker = driver.open(join(tempDirectory, fileName));
     blocker.exec('BEGIN IMMEDIATE');
 
     const startedAt = Date.now();
-    await expect(journal.append('account-1', ['deposited'], 1)).rejects.toThrow(JournalError);
+    await expect(journal.append('account-1', [{ event: 'deposited' }], 1)).rejects.toThrow(JournalError);
     return Date.now() - startedAt;
   } finally {
     if (blocker) {

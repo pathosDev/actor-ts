@@ -76,7 +76,7 @@ describe('SQLite busy timeout — the package default (#124)', () => {
       .withDriver(driver);
     const journal = new SqliteJournal(journalOptions);
     try {
-      await journal.append('account-1', ['created'], 0);
+      await journal.append('account-1', [{ event: 'created' }], 0);
       expect(driver.opened).toHaveLength(1);
       expect(busyTimeoutOf(driver.opened[0]!)).toBe(DEFAULT_SQLITE_BUSY_TIMEOUT_MS);
     } finally {
@@ -137,7 +137,7 @@ describe('SQLite busy timeout — explicit values (#124)', () => {
       .withBusyTimeoutMs(750);
     const journal = new SqliteJournal(journalOptions);
     try {
-      await journal.append('account-1', ['created'], 0);
+      await journal.append('account-1', [{ event: 'created' }], 0);
       expect(busyTimeoutOf(driver.opened[0]!)).toBe(750);
     } finally {
       await journal.close();
@@ -163,7 +163,7 @@ describe('SQLite busy timeout — explicit values (#124)', () => {
     const driver = await recordingDriver();
     const journal = new SqliteJournal({ path: ':memory:', driver, busyTimeoutMs: 333 });
     try {
-      await journal.append('account-1', ['created'], 0);
+      await journal.append('account-1', [{ event: 'created' }], 0);
       expect(busyTimeoutOf(driver.opened[0]!)).toBe(333);
     } finally {
       await journal.close();

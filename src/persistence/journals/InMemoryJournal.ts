@@ -3,11 +3,12 @@ import { persistenceIdPage } from '../Journal.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -37,17 +38,16 @@ export class InMemoryJournal implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     assertValidPersistenceId(persistenceId, 'InMemoryJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     // Nothing is being written, so there is nothing to conflict over — an
     // empty append is a no-op, and notably does NOT run the optimistic-
     // concurrency check.  Every other journal returns early here; the
     // in-memory one used to fall through and reject a stale expectedSeq.
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     const stream = this.streams.get(persistenceId) ?? [];
     const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {
@@ -56,18 +56,19 @@ export class InMemoryJournal implements Journal {
     // Round-trip every payload BEFORE touching the stream: a real store's
     // transaction rolls back when one event of a batch fails to encode, and
     // mutating incrementally here would leave a partial append behind.
-    const roundTripped = events.map((ev) => decodePayload(encodePayload(ev)));
+    const roundTripped = entries.map((entry) => decodePayload(encodePayload(entry.event)));
     const now = Date.now();
     const appended: PersistentEvent<E>[] = [];
     let seq = actualSeq;
-    for (let index = 0; index < events.length; index++) {
+    for (let index = 0; index < entries.length; index++) {
       seq++;
+      const entry = entries[index]!;
       const pe: PersistentEvent<E> = {
         persistenceId: persistenceId,
         sequenceNr: seq,
-        event: events[index]!,
+        event: entry.event,
         timestamp: now,
-        tags: tags ? [...tags] : undefined,
+        tags: entry.tags ? [...entry.tags] : undefined,
       };
       appended.push(pe);
       stream.push({ ...pe, event: roundTripped[index] } as PersistentEvent<unknown>);

@@ -1,12 +1,13 @@
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 import { expandPlaceholders, type JournalTableNames } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 import type { SqlExecutor } from './SqlPool.js';
@@ -101,13 +102,12 @@ export class RelationalJournal extends RelationalStore implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'RelationalJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     const pool = await this.ensureOpen();
     const now = Date.now();
     try {
@@ -117,12 +117,13 @@ export class RelationalJournal extends RelationalStore implements Journal {
           throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
         }
         const written: PersistentEvent<E>[] = [];
-        const tagString = tags && tags.length ? tags.join(',') : null;
         let seq = actualSeq;
-        for (const event of events) {
+        for (const entry of entries) {
           seq++;
+          const tags = entry.tags;
+          const tagString = tags && tags.length ? tags.join(',') : null;
           await transaction.query(this.statements.insertEvent, [
-            persistenceId, seq, encodePayload(event, this.serializer), tagString, now,
+            persistenceId, seq, encodePayload(entry.event, this.serializer), tagString, now,
           ]);
           if (tags) {
             for (const tag of tags) {
@@ -133,7 +134,7 @@ export class RelationalJournal extends RelationalStore implements Journal {
           written.push({
             persistenceId,
             sequenceNr: seq,
-            event,
+            event: entry.event,
             timestamp: now,
             tags: tags ? [...tags] : undefined,
           });

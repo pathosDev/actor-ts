@@ -1,5 +1,5 @@
 import type { JournalEventBus } from './JournalEventBus.js';
-import type { PersistentEvent } from './JournalTypes.js';
+import type { JournalEntry, PersistentEvent } from './JournalTypes.js';
 
 /**
  * Pluggable event journal — the persistence-plugin boundary.  Core ships
@@ -9,16 +9,20 @@ import type { PersistentEvent } from './JournalTypes.js';
  */
 export interface Journal {
   /**
-   * Append `events` to the stream of `persistenceId`, enforcing optimistic
+   * Append `entries` to the stream of `persistenceId`, enforcing optimistic
    * concurrency: the current highest sequence number MUST equal `expectedSeq`
    * or the call throws `JournalConcurrencyError`.  Returns the written events
    * with their assigned sequence numbers.
+   *
+   * **Tags are per entry, not per batch** ({@link JournalEntry}).  A batch is
+   * still one atomic append — splitting it by tag set is explicitly not the
+   * contract (#959) — but each event carries only the tags it was given, and
+   * the per-event tag cap is enforced per event rather than per call (#631).
    */
   append<E = unknown>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]>;
 
   /**

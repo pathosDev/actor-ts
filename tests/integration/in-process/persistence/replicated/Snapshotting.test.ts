@@ -214,7 +214,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
       timestamp: Date.now(),
       event: { kind: 'added', n: 100 },
     };
-    await journal.append('snap-counter', [peerEnvelope], 0, ['replicated-es']);
+    await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], 0);
 
     const a1 = await startActor('snap-3', 70_021, journal, snapshotStore);
     // After preStart: the peer event was absorbed once → state.value = 100,
@@ -242,7 +242,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     // simulate a re-broadcast, we manually re-append the same peer
     // event to the journal under a fresh local seq — this would
     // happen in production if peer-x re-broadcast its event.
-    await journal.append('snap-counter', [peerEnvelope], await journal.highestSeq('snap-counter'), ['replicated-es']);
+    await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], await journal.highestSeq('snap-counter'));
 
     CountingCounter.onEventCallCount = 0;
     const a2 = await startActor('snap-3-restart', 70_022, journal, snapshotStore);

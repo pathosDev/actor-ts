@@ -53,11 +53,16 @@ describeIfAvailable('NodeSqliteDriver — journal and snapshot store', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withDriver(new NodeSqliteDriver());
     const journal = new SqliteJournal(journalOptions);
-    const written = await journal.append('account-1', ['created', 'deposited'], 0, ['ledger']);
+    const written = await journal.append('account-1', [
+      { event: 'created', tags: ['ledger'] },
+      { event: 'deposited', tags: ['ledger', 'audit'] },
+    ], 0);
     expect(written.map((e) => e.sequenceNr)).toEqual([1, 2]);
     const read = await journal.read<string>('account-1', 1);
     expect(read.map((e) => e.event)).toEqual(['created', 'deposited']);
-    expect(read[0]!.tags).toEqual(['ledger']);
+    // Per-event tags through the real node:sqlite driver — CSV column and
+    // tags join table both (#631).
+    expect(read.map((e) => e.tags)).toEqual([['ledger'], ['ledger', 'audit']]);
     expect(await journal.highestSeq('account-1')).toBe(2);
     await journal.close();
   });
@@ -66,14 +71,14 @@ describeIfAvailable('NodeSqliteDriver — journal and snapshot store', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withDriver(new NodeSqliteDriver());
     const journal = new SqliteJournal(journalOptions);
-    await journal.append('account-2', ['a'], 0);
+    await journal.append('account-2', [{ event: 'a' }], 0);
     // `node:sqlite` has no `transaction()` helper, so the driver issues
     // BEGIN / COMMIT / ROLLBACK itself — this is what proves the rollback arm
     // works and does not leave the connection inside a transaction.
-    await expect(journal.append('account-2', ['b'], 0)).rejects.toBeInstanceOf(JournalConcurrencyError);
+    await expect(journal.append('account-2', [{ event: 'b' }], 0)).rejects.toBeInstanceOf(JournalConcurrencyError);
     expect(await journal.highestSeq('account-2')).toBe(1);
     // The connection is usable afterwards, which a leaked BEGIN would prevent.
-    expect((await journal.append('account-2', ['b'], 1)).map((e) => e.sequenceNr)).toEqual([2]);
+    expect((await journal.append('account-2', [{ event: 'b' }], 1)).map((e) => e.sequenceNr)).toEqual([2]);
     await journal.close();
   });
 

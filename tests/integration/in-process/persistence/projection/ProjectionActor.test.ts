@@ -51,7 +51,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
 describe('ProjectionActor — by persistence id', () => {
   test('round-trip: every appended event reaches the handler in order', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('alice', [{ n: 1 }, { n: 2 }, { n: 3 }], 0);
+    await journal.append('alice', [{ event: { n: 1 } }, { event: { n: 2 } }, { event: { n: 3 } }], 0);
 
     const seen: number[] = [];
     const sys = newSystem('proj-rt');
@@ -66,7 +66,7 @@ describe('ProjectionActor — by persistence id', () => {
     await waitFor(() => seen.length === 3);
 
     // Append more after the projection is running — pull-model must catch them.
-    await journal.append('alice', [{ n: 4 }, { n: 5 }], 3);
+    await journal.append('alice', [{ event: { n: 4 } }, { event: { n: 5 } }], 3);
     await waitFor(() => seen.length === 5);
 
     expect(seen).toEqual([1, 2, 3, 4, 5]);
@@ -79,7 +79,7 @@ describe('ProjectionActor — by persistence id', () => {
     const journal = new InMemoryJournal();
     const offsetStore = new InMemoryOffsetStore();
     const query = new InMemoryQuery(journal);
-    await journal.append('counter', [{ n: 1 }, { n: 2 }, { n: 3 }], 0);
+    await journal.append('counter', [{ event: { n: 1 } }, { event: { n: 2 } }, { event: { n: 3 } }], 0);
 
     // First instance — process events, then stop.
     const sys1 = newSystem('proj-resume-1');
@@ -102,7 +102,7 @@ describe('ProjectionActor — by persistence id', () => {
     );
 
     // Append fresh events while no projection is running.
-    await journal.append('counter', [{ n: 4 }, { n: 5 }], 3);
+    await journal.append('counter', [{ event: { n: 4 } }, { event: { n: 5 } }], 3);
 
     // Second instance — same projection name + same offsetStore.
     const sys2 = newSystem('proj-resume-2');
@@ -127,7 +127,7 @@ describe('ProjectionActor — by persistence id', () => {
   test('idempotency: at-least-once delivery survives a handler that intentionally fails the first time', async () => {
     const journal = new InMemoryJournal();
     const offsetStore = new InMemoryOffsetStore();
-    await journal.append('flaky', [{ n: 1 }, { n: 2 }, { n: 3 }], 0);
+    await journal.append('flaky', [{ event: { n: 1 } }, { event: { n: 2 } }, { event: { n: 3 } }], 0);
 
     let firstAttemptThrowOnce = true;
     const seen: number[] = [];
@@ -161,13 +161,13 @@ describe('ProjectionActor — by tag', () => {
   test('only events tagged with the projection tag are delivered', async () => {
     const journal = new InMemoryJournal();
     // Mix of tags across two pids.
-    await journal.append('a', [{ s: 'a1' }], 0, ['orders']);
+    await journal.append('a', [{ event: { s: 'a1' }, tags: ['orders'] }], 0);
     await sleep(2);
-    await journal.append('b', [{ s: 'b1' }], 0, ['orders', 'vip']);
+    await journal.append('b', [{ event: { s: 'b1' }, tags: ['orders', 'vip'] }], 0);
     await sleep(2);
-    await journal.append('a', [{ s: 'a2' }], 1, ['internal']);
+    await journal.append('a', [{ event: { s: 'a2' }, tags: ['internal'] }], 1);
     await sleep(2);
-    await journal.append('b', [{ s: 'b2' }], 1, ['orders']);
+    await journal.append('b', [{ event: { s: 'b2' }, tags: ['orders'] }], 1);
 
     const sys = newSystem('proj-tag');
     const seen: string[] = [];
@@ -190,9 +190,9 @@ describe('ProjectionActor — by tag', () => {
     const journal = new InMemoryJournal();
     const offsetStore = new DurableStateOffsetStore(new InMemoryDurableStateStore());
 
-    await journal.append('a', [{ s: 'a1' }], 0, ['t']);
+    await journal.append('a', [{ event: { s: 'a1' }, tags: ['t'] }], 0);
     await sleep(2);
-    await journal.append('b', [{ s: 'b1' }], 0, ['t']);
+    await journal.append('b', [{ event: { s: 'b1' }, tags: ['t'] }], 0);
 
     const sys1 = newSystem('proj-tag-resume-1');
     const seen1: string[] = [];
@@ -214,7 +214,7 @@ describe('ProjectionActor — by tag', () => {
 
     // While the projection is down, append more.
     await sleep(2);
-    await journal.append('a', [{ s: 'a2' }], 1, ['t']);
+    await journal.append('a', [{ event: { s: 'a2' }, tags: ['t'] }], 1);
 
     // Restart the projection — should NOT replay a1/b1.
     const sys2 = newSystem('proj-tag-resume-2');
@@ -236,7 +236,7 @@ describe('ProjectionActor — by tag', () => {
 
   test('explicit offsetStart cursor replays from the beginning', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ s: 'a1' }, { s: 'a2' }], 0, ['t']);
+    await journal.append('a', [{ event: { s: 'a1' }, tags: ['t'] }, { event: { s: 'a2' }, tags: ['t'] }], 0);
 
     const offsetStore = new InMemoryOffsetStore();
     // Pre-seed the cursor so the projection thinks it's already past a1.
@@ -280,7 +280,7 @@ describe('ProjectionActor — concurrent writers', () => {
     const target = 5;
     const writers = ['w1', 'w2'].map(async (persistenceId) => {
       for (let i = 1; i <= target; i++) {
-        await journal.append(persistenceId, [{ persistenceId, n: i }], i - 1, ['shared']);
+        await journal.append(persistenceId, [{ event: { persistenceId, n: i }, tags: ['shared'] }], i - 1);
         await sleep(5);
       }
     });
@@ -345,11 +345,11 @@ describe('byTag projection — TagFilter support (#393)', () => {
 
   test('a not-filter projection skips the excluded events end to end', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ s: 'kept' }], 0, ['orders']);
+    await journal.append('a', [{ event: { s: 'kept' }, tags: ['orders'] }], 0);
     await sleep(2);
-    await journal.append('b', [{ s: 'dropped' }], 0, ['orders', 'cancelled']);
+    await journal.append('b', [{ event: { s: 'dropped' }, tags: ['orders', 'cancelled'] }], 0);
     await sleep(2);
-    await journal.append('c', [{ s: 'kept-2' }], 0, ['orders']);
+    await journal.append('c', [{ event: { s: 'kept-2' }, tags: ['orders'] }], 0);
 
     const sys = newSystem('proj-tag-filter');
     const seen: string[] = [];

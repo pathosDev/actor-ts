@@ -18,6 +18,27 @@ export type PersistentEvent<E = unknown> = {
   readonly tags?: ReadonlyArray<string>;
 };
 
+/**
+ * One event on its way *into* a journal, carrying the tags that belong to
+ * that event and no other.
+ *
+ * The write-side mirror of {@link PersistentEvent}: the caller supplies what
+ * only it knows (payload and tags), the journal assigns what only it can
+ * (sequence number, timestamp).  Pairing the two *structurally* is the point
+ * — `append` used to take one batch-wide tag list, which could only stamp
+ * every event of a mixed batch with the same tags, so a `persistAll` of two
+ * differently-tagged events silently mis-tagged all but the first (#631).
+ * A parallel `tags[]` argument would have fixed the expressiveness and kept
+ * the hazard: nothing would stop it from drifting out of alignment with the
+ * events it describes.
+ */
+export type JournalEntry<E = unknown> = {
+  /** User-domain event payload. */
+  readonly event: E;
+  /** Optional tags for THIS event that Projections / Persistence-Query filter on. */
+  readonly tags?: ReadonlyArray<string>;
+};
+
 /** A snapshot of an entity's state at a given sequence number. */
 export type Snapshot<S = unknown> = {
   readonly persistenceId: string;

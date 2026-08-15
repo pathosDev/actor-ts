@@ -148,8 +148,8 @@ describe('PersistentActor — v1 → v2 upcast on recovery', () => {
     const { system, journal } = makeSystem('uc');
     // Pre-populate journal with v1 envelopes (no currency).
     await journal.append<unknown>('acct-uc', [
-      { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 10 } as DepositedV1 },
-      { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 5 } as DepositedV1 },
+      { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 10 } as DepositedV1 } },
+      { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 5 } as DepositedV1 } },
     ], 0);
 
     const seen: unknown[] = [];
@@ -163,9 +163,9 @@ describe('PersistentActor — v1 → v2 upcast on recovery', () => {
   test('mixed v1+v2 stream replays in order with per-event upcasting', async () => {
     const { system, journal } = makeSystem('mix');
     await journal.append<unknown>('acct-mix', [
-      { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 10 } },
-      { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 5, currency: 'EUR' } },
-      { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 3 } },
+      { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 10 } } },
+      { event: { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 5, currency: 'EUR' } } },
+      { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 3 } } },
     ], 0);
 
     const seen: unknown[] = [];
@@ -185,7 +185,7 @@ describe('PersistentActor — strict mode', () => {
     // Pre-populate with a RAW v1 event (no envelope) — what bare-bones older
     // apps would have on disk before adopting the adapter.
     await journal.append<unknown>('acct-strict', [
-      { kind: 'deposited', amount: 10 } as DepositedV1,
+      { event: { kind: 'deposited', amount: 10 } as DepositedV1 },
     ], 0);
 
     let recovered: unknown = null;
@@ -297,9 +297,9 @@ describe('PersistentActor — MigrationChain non-additive', () => {
   test('v1 → v2 → v3 chain converts amount to cents on recovery', async () => {
     const { system, journal } = makeSystem('chain');
     await journal.append<unknown>('acct-chain', [
-      { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 1 } },
-      { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 2, currency: 'EUR' } },
-      { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 250, currency: 'USD' } },
+      { event: { _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 1 } } },
+      { event: { _v: 2, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 2, currency: 'EUR' } } },
+      { event: { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 250, currency: 'USD' } } },
     ], 0);
     const seen: unknown[] = [];
     system.spawn(() => new CentsAccount('acct-chain', seen), 'a');

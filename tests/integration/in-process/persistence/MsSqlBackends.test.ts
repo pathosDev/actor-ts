@@ -30,7 +30,7 @@ describe('MsSqlJournal — T-SQL statements and named parameters', () => {
   test('emits guarded DDL and T-SQL DML, not another dialect', async () => {
     const pool = new FakeMsSqlPool();
     const journal = new MsSqlJournal(MsSqlJournalOptions.create().withPool(pool));
-    await journal.append('account-1', ['created'], 0, ['ledger']);
+    await journal.append('account-1', [{ event: 'created', tags: ['ledger'] }], 0);
     await journal.delete('account-1', 1);   // issues the high-water-mark MERGE
     const issued = pool.log.join('\n');
     // T-SQL has no `IF NOT EXISTS` for tables, no upsert clause, no LIMIT.
@@ -64,13 +64,13 @@ describe('MsSqlJournal — T-SQL statements and named parameters', () => {
   test('append runs inside a transaction that commits, and rolls back on rejection', async () => {
     const pool = new FakeMsSqlPool();
     const journal = new MsSqlJournal(MsSqlJournalOptions.create().withPool(pool));
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     expect(pool.transactionLog).toEqual(['begin', 'commit']);
 
     // A stale expectedSeq must roll the transaction back, not leave it open —
     // `mssql` throws on any further use of a settled Transaction, so a missing
     // rollback would surface as a cascade of confusing errors.
-    await expect(journal.append('account-1', ['b'], 0)).rejects.toMatchObject({
+    await expect(journal.append('account-1', [{ event: 'b' }], 0)).rejects.toMatchObject({
       name: 'JournalConcurrencyError',
     });
     expect(pool.transactionLog).toEqual(['begin', 'commit', 'begin', 'rollback']);
@@ -80,10 +80,10 @@ describe('MsSqlJournal — T-SQL statements and named parameters', () => {
   test('a duplicate key (2627) from the server becomes a concurrency error', async () => {
     const pool = new FakeMsSqlPool();
     const journal = new MsSqlJournal(MsSqlJournalOptions.create().withPool(pool));
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     // The fake enforces the primary key exactly as the server does, so this
     // exercises the dialect's 2627 classification through the real code path.
-    await expect(journal.append('account-1', ['b'], 0)).rejects.toMatchObject({
+    await expect(journal.append('account-1', [{ event: 'b' }], 0)).rejects.toMatchObject({
       name: 'JournalConcurrencyError',
       expectedSeq: 0,
       actualSeq: 1,
@@ -134,7 +134,7 @@ describe('MsSql* pool ownership', () => {
     const journal = new MsSqlJournal(MsSqlJournalOptions.create().withPool(pool));
     const snapshots = new MsSqlSnapshotStore(MsSqlSnapshotStoreOptions.create().withPool(pool));
     const state = new MsSqlDurableStateStore(MsSqlDurableStateStoreOptions.create().withPool(pool));
-    await journal.append('account-1', ['a'], 0);   // force the stores open
+    await journal.append('account-1', [{ event: 'a' }], 0);   // force the stores open
     await snapshots.save('account-1', 1, { v: 1 });
     await state.upsert('account-1', 0, { v: 1 });
 
@@ -183,7 +183,7 @@ describe('registerMsSqlPlugins', () => {
       // All three writing through the one fake proves the merge reached each
       // leaf — none fell back to building its own pool (which would have thrown
       // for want of a connection).
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       await persistence.snapshotStore.save('account-1', 1, { v: 1 });
       await handles.durableStateStore.upsert('account-1', 0, { v: 1 });
       expect(pool.log.some((sql) => sql.startsWith('INSERT INTO events('))).toBe(true);
@@ -207,7 +207,7 @@ describe('registerMsSqlPlugins', () => {
         .withJournal(journalOptions);
       registerMsSqlPlugins(persistence, pluginOptions);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(pool.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
     } finally {
       await system.terminate();

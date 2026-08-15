@@ -2,6 +2,7 @@ import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import {
@@ -15,7 +16,7 @@ import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 type EventRow = {
@@ -125,13 +126,12 @@ export class CassandraJournal implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'CassandraJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     await this.ensureStarted();
 
     // 1) Read current max-seq from metadata; throw on mismatch.  Under LWT
@@ -147,9 +147,8 @@ export class CassandraJournal implements Journal {
 
     const now = Date.now();
     const partitionSize = this.options.partitionSize ?? 500_000;
-    const tagList = tags ? Array.from(tags) : null;
     const written: PersistentEvent<E>[] = [];
-    const lastSeq = actualSeq + events.length;
+    const lastSeq = actualSeq + entries.length;
 
     // 2) Claim the whole range [actualSeq+1, lastSeq] on the metadata row
     //    BEFORE writing any event.  Ordering matters: the events insert is
@@ -182,12 +181,13 @@ export class CassandraJournal implements Journal {
 
     let seq = actualSeq;
     try {
-      for (const ev of events) {
+      for (const entry of entries) {
         seq++;
         const partition = Math.floor((seq - 1) / partitionSize);
         if (batchPartition !== null && partition !== batchPartition) await flush();
         batchPartition = partition;
-        const payload = encodePayload(ev, this.options.serializer);
+        const tagList = entry.tags ? Array.from(entry.tags) : null;
+        const payload = encodePayload(entry.event, this.options.serializer);
         batchOps.push({
           query:
             `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -209,7 +209,7 @@ export class CassandraJournal implements Journal {
         written.push({
           persistenceId: persistenceId,
           sequenceNr: seq,
-          event: ev,
+          event: entry.event,
           timestamp: now,
           tags: tagList ? [...tagList] : undefined,
         });

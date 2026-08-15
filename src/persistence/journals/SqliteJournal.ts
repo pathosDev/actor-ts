@@ -4,13 +4,14 @@ import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
@@ -85,18 +86,17 @@ export class SqliteJournal implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     assertValidPersistenceId(persistenceId, 'SqliteJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     await this.ensureOpen();
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     const db = this.db!;
     const stmts = this.stmts!;
     const now = Date.now();
-    const txn = (items: unknown[]): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
+    const txn = (items: ReadonlyArray<JournalEntry<E>>): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
       const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
       const del = (stmts.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
       const actualSeq = Math.max(row?.hi ?? 0, del);
@@ -105,9 +105,10 @@ export class SqliteJournal implements Journal {
       }
       const out: PersistentEvent<E>[] = [];
       let seq = actualSeq;
-      for (const ev of items as E[]) {
+      for (const entry of items) {
         seq++;
-        const payload = encodePayload(ev, this.options.serializer);
+        const tags = entry.tags;
+        const payload = encodePayload(entry.event, this.options.serializer);
         const tagString = tags && tags.length ? tags.join(',') : null;
         stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
@@ -123,7 +124,7 @@ export class SqliteJournal implements Journal {
         out.push({
           persistenceId: persistenceId,
           sequenceNr: seq,
-          event: ev,
+          event: entry.event,
           timestamp: now,
           tags: tags ? [...tags] : undefined,
         });
@@ -132,7 +133,7 @@ export class SqliteJournal implements Journal {
     });
     let written: PersistentEvent<E>[];
     try {
-      written = txn([...events]);
+      written = txn(entries);
     } catch (e) {
       if (e instanceof JournalConcurrencyError) throw e;
       throw new JournalError(`SqliteJournal.append failed: ${(e as Error).message}`, e);

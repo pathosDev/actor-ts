@@ -3,12 +3,13 @@ import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 import {
   buildDynamoDbOperations,
   isConditionalCheckFailed,
@@ -94,19 +95,18 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'DynamoDbJournal.append');
-    assertValidTags(tags);
-    if (events.length > DYNAMODB_MAX_TRANSACTION_ITEMS) {
+    assertValidEntryTags(entries);
+    if (entries.length > DYNAMODB_MAX_TRANSACTION_ITEMS) {
       // Chunking would break atomicity, which is the property this backend's
       // concurrency rests on — so refuse clearly instead of silently degrading.
       throw new JournalError(
         `DynamoDbJournal.append: DynamoDB caps an atomic transaction at ${DYNAMODB_MAX_TRANSACTION_ITEMS} items, `
-        + `got ${events.length} events.  Persist them in smaller batches.`,
+        + `got ${entries.length} events.  Persist them in smaller batches.`,
       );
     }
     const operations = await this.ensureOpen();
@@ -119,15 +119,16 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       const written: PersistentEvent<E>[] = [];
       const transactItems: Array<Record<string, unknown>> = [];
       let seq = actualSeq;
-      for (const event of events) {
+      for (const entry of entries) {
         seq++;
+        const tags = entry.tags;
         transactItems.push({
           Put: {
             TableName: this.tableName,
             Item: {
               pid: stringAttribute(persistenceId),
               seq: numberAttribute(seq),
-              payload: stringAttribute(encodePayload(event, this.serializer)),
+              payload: stringAttribute(encodePayload(entry.event, this.serializer)),
               ts: numberAttribute(now),
               // A DynamoDB set cannot be empty, so an untagged event simply has
               // no `tags` attribute.
@@ -139,7 +140,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
         written.push({
           persistenceId,
           sequenceNr: seq,
-          event,
+          event: entry.event,
           timestamp: now,
           tags: tags ? [...tags] : undefined,
         });
