@@ -82,10 +82,10 @@ const ref = system.spawnAnonymous(MyActor);
 ref.tell({ ... });
 ref.tell({ ... });
 
-// 3. Wait for processing (a small await or expect on a probe).
-await new Promise(r => setTimeout(r, 100));
-
-// 4. Print result + clean up.
+// 3. Print result + clean up.  `terminate()` drains the mailboxes
+//    first, so there is nothing to sleep for — unless the snippet
+//    waits on a timer or an un-awaited promise, which the drain does
+//    not follow.
 console.log(...);
 await system.terminate();
 ```

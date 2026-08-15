@@ -145,7 +145,6 @@ const ref    = system.spawn(Greeter, 'greeter');
 
 ref.tell('world');
 
-await new Promise(r => setTimeout(r, 20));
 await system.terminate();
 ```
 

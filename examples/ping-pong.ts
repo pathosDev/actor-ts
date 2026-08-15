@@ -60,8 +60,8 @@ async function main(): Promise<void> {
 
   pinger.tell({ kind: 'start' });
 
-  // Let them finish, then clean up.
-  await new Promise(resolve => setTimeout(resolve, 100));
+  // No sleep: terminate() waits for the two of them to go quiet, and each
+  // bounce keeps the other busy, so the whole rally completes first.
   await system.terminate();
 }
 

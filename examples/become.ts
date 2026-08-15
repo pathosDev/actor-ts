@@ -38,7 +38,6 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < 6; i++) lamp.tell('toggle');
 
-  await new Promise(resolve => setTimeout(resolve, 80));
   await system.terminate();
 }
 

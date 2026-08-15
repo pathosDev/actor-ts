@@ -201,6 +201,60 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   DevTools, and advertised the harness as "about thirty lines" when it was
   286; both claims are corrected.
 
+- **`system.terminate()` now drains the actors under `/user` before it
+  stops them (#663).** `ref.tell('x'); await system.terminate()` used to
+  lose `x`, and every example, the README quickstart and both quickstart
+  pages taught the workaround: sleep twenty milliseconds and hope.
+
+  The mechanism was subtler than "system commands come first".
+  `ActorCell.run()` re-evaluates its `while (mailbox.hasSystemMessages())`
+  condition after every `await`, so a `terminate` arriving during an open
+  await window is picked up in that same turn — before the user message
+  already queued behind it — and a cell that has flipped to `terminating`
+  stops dequeuing user messages entirely. The loss was therefore
+  race-dependent rather than deterministic: measured against the old code,
+  spawn+tell+terminate delivered 0 of 1, while a started idle actor
+  delivered exactly 2 of 5, 2 of 10 and 2 of 50, one per hop of the root →
+  /user-guardian → child cascade.
+
+  The wait sits in front of the cascade rather than inside it, because the
+  cascade is precisely what cannot be made to wait; the teardown itself is
+  unchanged. Quiescence is per cell — no turn in flight, nothing
+  dispatchable queued — and it is transitive for free, because a cell is
+  marked busy synchronously at `tell` time. A reply that has been sent but
+  not yet run already counts, so a ping-pong, a router fan-out and a
+  supervision restart all keep the drain going instead of flushing each
+  mailbox once. `system.awaitQuiescence(timeoutMs)` exposes the same wait
+  and reports whether the tree settled or the budget expired.
+
+  Three things are deliberately not waited for. A throttle-paused mailbox
+  and a supervisor-suspended one count as quiet, because neither drains at
+  a rate a shutdown can wait for — a `qps: 10` bucket would run shutdown
+  at ten messages a second. Nothing under `/system` is inspected:
+  heartbeats, failure detectors and broker reconnect loops are never quiet
+  by design. And work that is not in a mailbox yet — a `context.timers`
+  tick, a `tell` from an un-awaited promise — arrives after the tree looks
+  quiet.
+
+  The new `actor-ts.system.shutdown-drain-timeout` bounds the whole thing,
+  defaulting to 2 s. That is deliberately under
+  `coordinated-shutdown.default-phase-timeout`: the pipeline's last phase
+  is a task that awaits `terminate()`, and a drain as long as the phase
+  could burn the entire budget before a single actor had been told to
+  stop, leaving the phase abandoned with the system still up. An idle
+  system pays nothing — the first quiescence probe is synchronous, so
+  `terminate()` on a quiet tree is as fast as it ever was.
+
+  *Migration:* Set `actor-ts.system.shutdown-drain-timeout = 0` to restore
+  the previous behaviour exactly — the drain is skipped and a queued
+  backlog is dead-lettered by the teardown as before. This only matters
+  for code that relied on shutdown discarding pending user messages, or on
+  `terminate()` resolving without letting them run; anything that already
+  awaited its work is unaffected. Note that a value above
+  `actor-ts.coordinated-shutdown.default-phase-timeout` will get the
+  `actor-system-terminate` phase abandoned mid-drain, so raise both
+  together if you raise either.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -273,6 +327,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is suspended, which is when it matters most, and `unstashAll()` on a
   full priority mailbox can now drop, because `prependUser` re-runs the
   priority function through `enqueue`.
+
+- **`gracefulStop(ref, timeoutMs)` stops one actor after its mailbox
+  drains, and lets you await it (#663).** `ActorRef.stop()` has always
+  meant stop-after-drain — it sends a `PoisonPill`, an ordinary user
+  message ordered behind everything already queued — but it is
+  fire-and-forget, and outside an actor there is no `context.watch` to
+  learn when the stop actually happened.
+
+  The new helper sends the same pill and resolves `true` once the actor is
+  confirmed terminated, or `false` if the budget runs out — and in that
+  case it escalates, enqueueing the system command that jumps the user
+  queue, so a caller who has run out of patience is not also left with a
+  live actor. A timeout resolves rather than rejects because it is an
+  outcome, not an error: the caller asked for a bounded stop and got one,
+  and the two answers differ only in whether the mailbox finished. The
+  budget is a required argument, since a default one would be the number
+  that silently truncates somebody's shutdown.
+
+  The confirmation comes from the target cell's own watcher set, which is
+  why only a locally-hosted actor can be observed this way; a cluster ref
+  still receives the stop but has nothing local to confirm it with, so
+  watch it from inside an actor with `context.watch(ref)` instead.
+  `ActorSystem.stop()`'s JSDoc, which had promised "a promise that
+  resolves once it is fully terminated" above a `void` signature, now says
+  what it actually does and points here.
 
 ### Fixed
 

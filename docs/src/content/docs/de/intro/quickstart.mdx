@@ -83,11 +83,10 @@ const ref = system.spawn(Greeter, 'greeter');
 //    auf seiner eigenen Mailbox.
 ref.tell('world');
 
-// 5. Gib der Mailbox einen Tick zum Leerlaufen, dann fahre herunter.
-//    In einer echten App würdest Du via `CoordinatedShutdown` auf
-//    SIGTERM terminieren; für dieses Skript reicht ein kurzes
-//    Sleep.
-await new Promise((resolve) => setTimeout(resolve, 20));
+// 5. Herunterfahren.  `terminate()` leert zuerst die Mailboxen, die
+//    eine Zeile zuvor gesendete Nachricht wird also noch verarbeitet,
+//    bevor irgendetwas stoppt — kein Sleep nötig.  In einer echten App
+//    würdest Du via `CoordinatedShutdown` auf SIGTERM terminieren.
 await system.terminate();
 ```
 
@@ -297,12 +296,21 @@ Singleton, HTTP-Routing, sechs austauschbare Frontends, alles.
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`bun run hello.ts` beendet sich ohne Ausgabe">
-  Du hast wahrscheinlich die Zeile `await new Promise(r => setTimeout(r, 20))`
-  weggelassen — `tell` queued asynchron, und `system.terminate()`
-  bricht in-flight Processing ab, wenn die Mailbox noch nicht
-  geleert wurde.  Der 20 ms Sleep gibt dem Dispatcher einen Tick,
-  um `onReceive` auszuführen.  Echte Anwendungen terminieren auf
-  SIGTERM, nachdem alle Business-Logik sich gesetzt hat.
+  Sollte es nicht — `system.terminate()` leert die Mailboxen unter
+  `/user`, bevor irgendetwas stoppt; eine kurz vor dem Shutdown
+  gesendete Nachricht wird also noch verarbeitet.  Worauf es *nicht*
+  wartet, ist Arbeit, die noch in keiner Mailbox liegt: ein noch nicht
+  gefeuerter `context.timers`-Tick oder ein `tell` aus einem Promise,
+  das Dein Handler gestartet und nicht `await`ed hat.  Darauf musst Du
+  explizit warten.
+
+  Ebenso wenig wartet es auf eine bewusst geparkte Mailbox — eine
+  hinter `context.throttle(...)` oder eine, die suspendiert ist,
+  während ein Supervisor entscheidet — denn keine von beiden leert sich
+  in einem Tempo, auf das ein Shutdown warten kann.  Der gesamte
+  Drain ist durch `actor-ts.system.shutdown-drain-timeout` begrenzt
+  (Standard 2 s; 0 schaltet ihn ab); was beim Ablauf des Budgets noch
+  in der Queue steht, geht in die Dead Letters.
 </Aside>
 
 <Aside type="caution" title="TypeScript beschwert sich über `override`">

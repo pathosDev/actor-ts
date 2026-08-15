@@ -25,7 +25,8 @@ async function main(): Promise<void> {
   // Broadcast a message to every worker.
   pool.tell(new Broadcast('shutdown-notice'));
 
-  await new Promise(resolve => setTimeout(resolve, 100));
+  // The drain follows the fan-out: the router's own queue empties into the
+  // routees', and terminate() waits for those too.
   await system.terminate();
 }
 

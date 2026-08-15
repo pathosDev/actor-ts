@@ -3,11 +3,12 @@ title: Poison Pill und Kill
 description: Die zwei eingebauten Stop-Signale — `PoisonPill` ist das saubere "stoppen nach Drain"-Envelope, `Kill` löst eine Exception aus, die durch die Supervision läuft. Plus `ref.stop()`, `context.stopSelf()` und der zugrunde liegende Lebenszyklus.
 ---
 
-Es gibt vier Wege, einen Actor zu terminieren:
+Es gibt fünf Wege, einen Actor zu terminieren:
 
 | Signal | Effekt | Läuft durch Supervision? |
 | --- | --- | --- |
 | `ref.stop()` | Äquivalent zu `tell(PoisonPill.instance)`.  Stoppt, nachdem die aktuelle Mailbox gedrained ist. | Nein (sauberer Stop). |
+| `gracefulStop(ref, timeoutMs)` | Derselbe Stop, nur awaitbar — resolved `true` bei `Terminated`, oder `false` nach `timeoutMs` und stoppt den Actor dann hart. | Nein. |
 | `context.stopSelf()` | Der Actor stoppt sich selbst; gleiche Drain-dann-Stop-Semantik. | Nein. |
 | `ref.tell(PoisonPill.instance)` | Wie `ref.stop()` — die explizite Form. | Nein. |
 | `ref.tell(Kill.instance)` | Sofortiger Fehler — wirft `ActorKilledError` an den Supervisor. | **Ja** — Supervisor entscheidet Restart / Resume / Stop / Escalate. |
@@ -88,6 +89,39 @@ verbleibenden Mailbox-Inhalt und stoppt *dann* — gleiche
 Drain-dann-Stop-Semantik wie PoisonPill von außen.  Verwende das
 für Actors, die ihr eigenes End-of-Life entscheiden ("Once-only"-Workers,
 Sagas, die sich selbst abschließen und aufräumen).
+
+### `gracefulStop(ref, timeoutMs)` — der awaitbare Stop
+
+`ref.stop()` ist fire-and-forget, und außerhalb eines Actors gibt es
+kein `context.watch`, um zu erfahren, wann der Stop tatsächlich
+passiert ist.  `gracefulStop` ist genau diese fehlende Hälfte:
+
+```ts
+import { gracefulStop } from 'actor-ts';
+
+const stopped = await gracefulStop(worker, 5_000);
+if (!stopped) console.warn('worker overran its budget and was killed');
+```
+
+Es sendet dieselbe `PoisonPill`, der Stop bleibt also hinter allem
+bereits Eingereihten einsortiert, und resolved:
+
+- `true`, sobald der Actor bestätigt terminiert ist;
+- `false`, wenn vorher `timeoutMs` abläuft — und eskaliert dann, indem
+  es das System-Kommando einreiht, das die User-Queue überholt.  Wer
+  die Geduld verliert, bleibt so nicht zusätzlich auf einem lebenden
+  Actor sitzen.  Die restliche Mailbox geht in die Dead Letters.
+
+Ein Timeout ist ein Ergebnis, kein Fehler — deshalb gibt das hier
+einen Boolean zurück statt zu rejecten.  Das Budget ist ein
+Pflichtargument: ein Default wäre genau die Zahl, die still und leise
+irgendjemandes Shutdown abschneidet.
+
+Bestätigen lässt sich das nur bei einem lokal gehosteten Actor.  Bei
+einer Cluster-Ref wird der Stop zwar zugestellt, aber es gibt lokal
+nichts, was ihn beobachten könnte — `gracefulStop` resolved dann
+`false`, sobald das Budget abläuft.  Beobachte ihn stattdessen aus
+einem Actor heraus mit `context.watch(ref)`.
 
 ## `Kill` — terminieren via Supervision
 

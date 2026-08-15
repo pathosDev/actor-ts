@@ -59,7 +59,9 @@ async function main(): Promise<void> {
 
   for (let i = 1; i <= 6; i++) parent.tell(i);
 
-  await new Promise(resolve => setTimeout(resolve, 150));
+  // Restarts happen inside the drain: a failure suspends the child, the
+  // supervisor's decision resumes it, and the queue behind it keeps the tree
+  // busy until every message has been through.
   await system.terminate();
 }
 

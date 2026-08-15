@@ -272,11 +272,22 @@ describe('ActorContext.throttle — the pause window is a wait, not a spin (#116
   }, 6_000);
 
   test('a paused actor does not hold up system-driven termination', async () => {
-    // The other half of the fix: parking the user queue must not park the
-    // lifecycle.  If `hasDispatchableWork` returned false outright while the
-    // timer was armed, nothing would dispatch a turn to pick up the terminate
-    // command and shutdown would wait out the pause — trading a spin for an
-    // unresponsive actor.
+    // The other half of the #1167 fix: parking the user queue must not park
+    // the lifecycle.  If `hasDispatchableWork` returned false outright while
+    // the timer was armed, nothing would dispatch a turn to pick up the
+    // terminate command and shutdown would wait out the pause — trading a spin
+    // for an unresponsive actor.
+    //
+    // #663 later gave `terminate()` a draining phase — it waits for the actors
+    // under `/user` to finish what is already queued — and this test is the
+    // reason the drain does NOT wait on a throttle-paused mailbox.  A `qps: 10`
+    // bucket is a deliberate rate limit on *processing*, not a promise that a
+    // backlog will be flushed at shutdown; waiting for one would mean every
+    // shutdown of a throttled actor runs at ten messages a second and spends
+    // the whole drain budget.  `ActorCell._isQuiescent` therefore reads the
+    // same `hasDispatchableWork` as the dispatch path, so a parked queue counts
+    // as quiet and the remainder is dead-lettered by the ordinary teardown.
+    // Both assertions below still hold, and they hold for that reason.
     //
     // Note this goes through `system.terminate()`, not `ref.stop()`.  `stop()`
     // sends a `PoisonPill`, which is an ordinary *user* message and therefore
@@ -291,8 +302,8 @@ describe('ActorContext.throttle — the pause window is a wait, not a spin (#116
     ref.tell({ kind: 'configure-throttle' });
     for (let i = 0; i < 20; i++) ref.tell({ kind: 'tick' });
 
-    // At qps=10 / burst=2 the queued ticks need ~1.8 s to drain.  Termination
-    // must not wait for them.
+    // At qps=10 / burst=2 the queued ticks need ~1.8 s to drain.  Neither the
+    // drain nor the teardown may wait for them.
     const startedAt = Date.now();
     await sys.terminate();
     const elapsedMs = Date.now() - startedAt;

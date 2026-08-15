@@ -1,7 +1,12 @@
 import { match } from 'ts-pattern';
 import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
-import { DEFAULT_DISPATCHER_THROUGHPUT } from './Constants.js';
+import {
+  DEFAULT_DISPATCHER_THROUGHPUT,
+  DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  QUIESCENCE_POLL_INTERVAL_MS,
+  QUIESCENCE_POLL_MAX_INTERVAL_MS,
+} from './Constants.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { none, some, type Option } from './util/Option.js';
@@ -64,6 +69,11 @@ export class ActorSystem {
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */
   private readonly loggerCloseTimeoutMs: number;
+  /**
+   * How long `terminate()` lets `/user` finish its queued work before the
+   * stop cascade starts.  0 skips the drain — see {@link terminate}.
+   */
+  private readonly shutdownDrainTimeoutMs: number;
   readonly deadLetters: ActorRef;
   /** Full merged configuration in effect for this system. */
   readonly config: Config;
@@ -130,6 +140,7 @@ export class ActorSystem {
     this.scheduler = options.scheduler ?? new Scheduler();
     this.eventStream = new EventStream();
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
+    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends
@@ -424,23 +435,115 @@ export class ActorSystem {
     return some(cell.self);
   }
 
-  /** Stop any actor by reference. Returns a promise that resolves once it is fully terminated. */
+  /**
+   * Stop an actor once it has worked through its mailbox — fire and forget.
+   *
+   * The same graceful stop `ActorRef.stop()` performs, and like it this
+   * returns nothing: the JSDoc promised a promise for a signature that never
+   * had one (#663).  Await the stop with `gracefulStop(ref, timeoutMs)`.
+   */
   stop(ref: ActorRef): void {
     ref.stop();
   }
 
   /**
-   * Shut down: stops `/user` (children first), then `/system`, and resolves
-   * once everything is drained.  The two guardians go in sequence so a user
-   * actor's `postStop` can still reach the framework actors it depends on —
-   * see `GUARDIAN_SHUTDOWN_ORDER`.
+   * Shut down: drains `/user`, stops it (children first), then `/system`, and
+   * resolves once everything is torn down.  The two guardians go in sequence
+   * so a user actor's `postStop` can still reach the framework actors it
+   * depends on — see `GUARDIAN_SHUTDOWN_ORDER`.
+   *
+   * The drain in front is what makes `ref.tell(x); await system.terminate()`
+   * deliver `x` (#663).  It has to be here rather than inside the cascade
+   * because a `terminate` is a *system* command: `ActorCell.run()` re-checks
+   * its system queue after every `await`, so a terminate that lands in a
+   * running turn's await window is picked up before the user message queued
+   * behind it — and the cell that has flipped to `terminating` no longer
+   * dequeues user messages at all, so the rest went to dead letters.  Waiting
+   * for quiescence *before* the first `terminate` is enqueued is the only
+   * ordering that does not fight that, and it leaves the teardown itself
+   * exactly as it was.
+   *
+   * Bounded by `actor-ts.system.shutdown-drain-timeout`; set it to 0 to skip
+   * the drain entirely.  See {@link awaitQuiescence} for what "quiet" means
+   * and which mailboxes are deliberately not waited on.
    */
   terminate(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
     this._terminating = true;
-    this.rootCell.enqueueSystem({ kind: 'terminate' });
-    return this.whenTerminated();
+    const terminated = this.whenTerminated();
+    if (this.shutdownDrainTimeoutMs <= 0) {
+      this.rootCell.enqueueSystem({ kind: 'terminate' });
+      return terminated;
+    }
+    // Not awaited: `terminate()` stays synchronous up to its first suspension
+    // point so `_terminating` is set before any caller can re-enter, and the
+    // promise it hands back is `whenTerminated()` either way.
+    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
+    // Same handler on both settlements on purpose.  Nothing in the drain is
+    // supposed to throw, and if something ever does, the failure mode must not
+    // be a system that never tears down and a `terminate()` that never
+    // settles — the drain is an optimisation over the teardown, not a
+    // precondition for it.
+    void this.awaitQuiescence(this.shutdownDrainTimeoutMs).then(startTeardown, startTeardown);
+    return terminated;
+  }
+
+  /**
+   * Wait until nothing under `/user` has work left it can dispatch, or until
+   * `timeoutMs` elapses.  Resolves `true` if the tree went quiet, `false` if
+   * the budget ran out first.
+   *
+   * "Quiet" is per cell: no turn in flight and no dispatchable message queued.
+   * Because a cell is marked busy at `tell` time — synchronously, by the
+   * sender's turn — a reply that has been sent but not yet run already counts,
+   * which is what carries the wait across a ping-pong, a router fan-out or a
+   * supervision restart instead of flushing one mailbox once.
+   *
+   * Two kinds of mailbox are deliberately *not* waited on, because neither
+   * drains at a rate a shutdown could wait for: one parked by
+   * `context.throttle(...)`, and one suspended while its actor's supervisor
+   * decides. Both are treated as quiet, and whatever is still queued in them
+   * is dead-lettered by the ordinary teardown.
+   *
+   * Only `/user` is inspected.  Framework actors under `/system` — cluster
+   * heartbeats, failure detectors, broker reconnect loops — are never quiet by
+   * design, so including them would spend the whole budget on every shutdown.
+   *
+   * Work that is not in a mailbox yet is not waited for either: a scheduled
+   * tick, or a `tell` from a promise the handler did not await, can still
+   * arrive after this resolves.
+   */
+  async awaitQuiescence(
+    timeoutMs: number = this.shutdownDrainTimeoutMs,
+  ): Promise<boolean> {
+    if (this._terminated) return true;
+    // Probed once before any sleep, so an already-idle system pays nothing at
+    // all — which matters because every `terminate()` goes through here.  It
+    // is safe to look this early precisely because a cell is marked busy
+    // synchronously by the sender: `ref.tell(x)` has already scheduled the
+    // receiving cell by the time this runs, so the message queued a line
+    // earlier cannot read as quiet.
+    if (this.isUserTreeQuiescent()) return true;
+    const deadline = Date.now() + timeoutMs;
+    let intervalMs = QUIESCENCE_POLL_INTERVAL_MS;
+    while (Date.now() < deadline) {
+      await sleep(intervalMs);
+      if (this.isUserTreeQuiescent()) return true;
+      intervalMs = Math.min(intervalMs * 2, QUIESCENCE_POLL_MAX_INTERVAL_MS);
+    }
+    return this.isUserTreeQuiescent();
+  }
+
+  /** Is every cell under `/user` — the guardian included — out of work? */
+  private isUserTreeQuiescent(): boolean {
+    const busy = (cell: ActorCell<unknown>): boolean => {
+      if (!cell._isQuiescent()) return true;
+      let childBusy = false;
+      cell._eachChildCell((child) => { childBusy ||= busy(child); });
+      return childBusy;
+    };
+    return !busy(this.userGuardianCell);
   }
 
   /** Promise that resolves when the system has finished shutting down. */
@@ -542,6 +645,28 @@ function systemNameFromConfig(config: Config): string {
   return config.hasPath(ConfigKeys.system.name)
     ? config.getString(ConfigKeys.system.name)
     : 'default';
+}
+
+/** `actor-ts.system.shutdown-drain-timeout` — the `terminate()` drain budget. */
+function shutdownDrainTimeoutFromConfig(config: Config): number {
+  return config.hasPath(ConfigKeys.system.shutdownDrainTimeout)
+    ? config.getDuration(ConfigKeys.system.shutdownDrainTimeout)
+    : DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+}
+
+/**
+ * Gap between two quiescence probes.
+ *
+ * A bare `setTimeout` rather than the system {@link Scheduler}: this runs on
+ * the shutdown path, where the scheduler is about to be — and on a second
+ * `terminate()` already has been — shut down, and a drain that silently
+ * stopped ticking would hand back "quiet" for a system that is merely
+ * unscheduled.  Referenced, not `unref`'d, for the same reason `withinBudget`
+ * below is: the wait exists to be waited out, and an unreferenced timer in an
+ * otherwise empty loop is not guaranteed to fire at all.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 }
 
 /* ----------------------------- Logger helpers ----------------------------- */

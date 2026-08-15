@@ -223,16 +223,47 @@ await system.terminate();
 
 1. Cluster benachrichtigen (falls beigetreten) — "ich verlasse"
    gossipen, damit Peers nicht mehr zu diesem Node routen.
-2. `/user` rekursiv stoppen — deine Actors bekommen `postStop`,
+2. **`/user` leeren** — warten, bis dort kein Actor mehr einen Turn
+   laufen oder eine Nachricht in der Queue hat, sodass
+   `ref.tell(x); await system.terminate()` das `x` noch verarbeitet.
+   Das Warten ist transitiv: eine Zelle gilt in dem Moment als
+   beschäftigt, in dem ihr jemand etwas sendet, also halten Antworten,
+   Router-Fan-outs und Restarts den Drain am Laufen, statt jede Mailbox
+   nur einmal durchzuspülen.
+3. `/user` rekursiv stoppen — deine Actors bekommen `postStop`,
    Kinder zuerst.  Actors mit laufenden async `onReceive`s beenden
    ihre aktuelle Nachricht, bevor sie stoppen.
-3. `/system` stoppen — Framework-Internas wickeln sich ab.  Das beginnt
+4. `/system` stoppen — Framework-Internas wickeln sich ab.  Das beginnt
    erst, wenn `/user` vollständig geleert ist, sodass ein `postStop` aus
-   Schritt 2 noch mit den Sharding-, PubSub- oder Delivery-Actors reden
+   Schritt 3 noch mit den Sharding-, PubSub- oder Delivery-Actors reden
    kann, von denen es abhängt.
-4. Dispatcher und Scheduler schließen — keine neuen Nachrichten,
+5. Dispatcher und Scheduler schließen — keine neuen Nachrichten,
    keine neuen Timer.
-5. Das zurückgegebene Promise resolven.
+6. Das zurückgegebene Promise resolven.
+
+Der Drain in Schritt 2 ist durch
+`actor-ts.system.shutdown-drain-timeout` begrenzt (Standard 2 s) und
+kehrt sofort zurück, sobald der Baum ruhig ist — ein untätiges System
+zahlt einen Tick, nicht das Budget.  Setze ihn auf `0`, um das Leeren
+ganz zu überspringen; was beim Ablauf des Budgets noch in der Queue
+steht, landet über Schritt 3 in den Dead Letters — genau das passierte
+vor dem Drain mit dem gesamten Rückstau.
+
+Auf drei Dinge wird bewusst **nicht** gewartet:
+
+- eine durch `context.throttle(...)` geparkte Mailbox und eine, die
+  suspendiert ist, während ein Supervisor entscheidet — keine von
+  beiden leert sich in einem Tempo, auf das ein Shutdown warten kann,
+  also gelten beide als ruhig;
+- alles unter `/system` — Heartbeats, Failure Detectors und
+  Broker-Reconnect-Schleifen sind konstruktionsbedingt nie ruhig;
+- Arbeit, die noch in keiner Mailbox liegt — ein noch nicht gefeuerter
+  `context.timers`-Tick oder ein `tell` aus einem Promise, das ein
+  Handler ohne `await` gestartet hat.
+
+Um **einen** Actor nach dem Leeren seiner Mailbox zu stoppen und
+darauf zu warten, nimm `gracefulStop(ref, timeoutMs)` — siehe
+[PoisonPill & Kill](/de/fundamentals/poison-pill-and-kill/).
 
 Für Produktions-Apps wickelst du das typischerweise in einen
 SIGTERM-Handler:
