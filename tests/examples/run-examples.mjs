@@ -298,9 +298,23 @@ async function stop(child) {
   signalGroup(child, 'SIGKILL');
 }
 
-/** Signal the child's whole process group. POSIX only — see `stop()`. */
+/**
+ * Signal the child's whole process group.  POSIX only — see `stop()`.
+ *
+ * Falls back to signalling the child alone if the group is not there to be
+ * signalled.  That is usually just an already-empty group (ESRCH, nothing
+ * to do), but it would also be what a `detached: true` that did not take
+ * effect looks like — and in that case the group signal is the *only* thing
+ * stopping the example, so swallowing the failure would leave every server
+ * case running until the job timeout.  Falling back costs nothing and turns
+ * that into a leak of one process instead of all of them.
+ */
 function signalGroup(child, signal) {
-  try { process.kill(-child.pid, signal); } catch { /* group already empty */ }
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* already gone */ }
+  }
 }
 
 /**
