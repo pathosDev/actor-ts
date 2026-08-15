@@ -8,8 +8,15 @@
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    // Both map kinds stay OFF: `files` publishes `dist/` and not `src/`,
+    // so every emitted map's `sources` pointed at a `../src/*.ts` the
+    // tarball never carried, and none of them held `sourcesContent`.  A
+    // dangling map is worse than no map — a missing one degrades cleanly,
+    // a dangling one sends the editor and the debugger hunting for a file
+    // that will never appear (#1007).  Turning either back on means
+    // shipping `src/` too, or setting `inlineSources`.
+    "declarationMap": false,
+    "sourceMap": false,
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,

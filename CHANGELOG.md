@@ -38,6 +38,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   exactly like the express and hono arms always did.  fastify remains a
   hard dependency.
 
+- **The package no longer ships source maps** (#1007).  `declarationMap` and
+  `sourceMap` were on while `files` publishes only `dist/`, so all 1262 maps
+  in the tarball — one `.js.map` and one `.d.ts.map` per module — pointed at
+  a `../src/*.ts` that was never packed, and not one of them carried
+  `sourcesContent` as a fallback.  A dangling map is worse than an absent
+  one: a missing map degrades cleanly to the `.d.ts`, a dangling map sends
+  the editor and the debugger looking for a file that will never arrive.
+  Dropping them takes the installed package from 6.43 MB to about 4.19 MB —
+  35 % of it was maps that could not work.  Go-to-definition still lands on
+  the `.d.ts`, which is exactly where it landed before.
+
 ### Added
 
 - **Per-subsystem subpath exports** (#414, #1001).  The exports map grew one
