@@ -291,7 +291,8 @@ import { entity } from 'actor-ts/http';
 
 post(async (req) => {
   const order = entity<NewOrder>(req);
-  // ↑ dekodiert JSON / CBOR je nach Content-Type, wirft 400 bei Malformed.
+  // ↑ dekodiert JSON / CBOR / Form je nach Content-Type, wirft 400 bei
+  //   Malformed und 415 bei einem Typ, den nichts dekodiert.
 });
 ```
 
