@@ -104,6 +104,69 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   region the first call made; start each type once per node, as either a
   hosting region or a proxy.
 
+- **`actor-ts.remote.tls.enabled` is now type-checked, and the startup
+  warning it produces no longer quotes back a spelling you may not have
+  written (#591).**
+
+  The warning that told you the flag buys no encryption left three edges
+  behind. Reading the key at all means going through `Config.getBoolean`,
+  so a malformed value — `enabled = maybe`, or a numeric `1` — throws a
+  `ConfigError` out of `Cluster.join` and the node does not start, where a
+  typo used to be inert and the node came up plaintext. That is kept
+  deliberately rather than softened: guessing what a mistyped *security*
+  toggle meant has two defensible answers, and the forgiving one ("not the
+  literal `true`, so: off") hands you a plaintext wire while your config
+  says TLS — the exact state the warning exists to rule out. It is also
+  what every other typed key in the framework already does. The throw
+  names the key and what it expected. Both `reference/configuration.mdx`
+  caution blocks now spell out which spellings enable, which decline, and
+  that anything else stops the node.
+
+  The warning text said "is true", but HOCON also spells a boolean `on`
+  and `yes`; an operator who wrote `on` was sent hunting their config for
+  a line that was not in it. It now says "asks for TLS", which holds for
+  every spelling. And the guard was gated on `transport === undefined`
+  while the line it guards selects the transport with `??`, which falls
+  through on `null` too — so a `transport: null` built the plaintext
+  transport and then said nothing about it. Unreachable from typed code,
+  but it is the one case the warning exists for, so the `== null` is
+  pinned by a test.
+
+  Encrypting the cluster wire is still #941; none of this changes what
+  goes over the socket.
+
+- **Both mailbox queues are backed by a ring buffer, so a deep backlog no
+  longer costs more per message than a shallow one (#408).**
+
+  Every removal from a mailbox used to be an `Array.prototype.shift()` —
+  `dequeueUser`, the `drop-head` eviction, and `dequeueSystem` alike — and
+  `shift()` reindexes everything still queued. That was a bounded
+  annoyance while the default mailbox was bounded. It stopped being one
+  when the unbounded mailbox became the default again: a production
+  backlog is now capped by the heap and nothing else, and 10 000 survives
+  only as the depth at which a cell starts warning. The queue paying the
+  tax was the one every actor gets by default.
+
+  The replacement is a circular buffer with a moving head, power-of-two
+  capacity and doubling growth, so pushes are amortized O(1) and taking
+  the front is O(1). Measured on Bun 1.3.1 with the new
+  `benchmarks/single-node/deep-mailbox.ts`, a full enqueue-then-drain
+  cycle went from 6.6M to 9.3M msg/s at depth 1 000, from 9.8M to 14.2M at
+  depth 10 000, and from 12.9M to 28.9M at depth 50 000; the gap widening
+  with depth is the reindex being removed. End-to-end through an actor the
+  difference is small and flat, because a `setImmediate` round trip per
+  message dwarfs the queue operation.
+
+  `prependUser` now moves a stash replay in one bulk insert instead of
+  `unshift(...envs)`, which spread up to a thousand envelopes onto the
+  call stack and reindexed the backlog once per envelope.
+  `ThroughputDispatcher`'s work queue gets the same treatment, since it is
+  drained from the front once per scheduled tick and holds every actor's
+  pending unit. None of this is visible to a `Mailbox` subclass — both
+  queues are private and the only seam, `protected removeOldest()`, is
+  unchanged — and the queue type itself is exported as `RingBuffer` for
+  anyone who wants it.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -141,6 +204,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `stopSelf()` as a terminal state, and the manager releases its lease instead
   of re-spawning — so another node could host later, rather than the manager
   holding a lease over a child that is gone.
+
+- **`PriorityMailbox` accepts a capacity and an overflow policy, so
+  priority ordering and a bound are no longer an either/or (#647).**
+
+  Choosing priority meant choosing an unbounded queue, and there was no
+  way around it: `ActorOptions` rejects `withMailbox` combined with
+  `withMailboxCapacity`, because a supplied mailbox brings its own bound,
+  and `PriorityMailboxOptions` had exactly one field. The options type now
+  carries `capacity`, `overflow` and `onDrop`, with matching builder
+  methods and a `PriorityMailboxOptionsValidator` at parity with the
+  bounded one — which also means a missing or non-callable `priorityFor`
+  now throws `OptionsError` at construction rather than surfacing as "is
+  not a function" inside the first sender's `tell`.
+
+  The policies are `drop-lowest-priority`, `drop-new` and `reject`,
+  defaulting to `reject`. `drop-head` is deliberately not among them. On a
+  FIFO queue it means "discard the stalest", which holds because arrival
+  order is the only order there is; on a priority queue the head is the
+  message the priority function called most important, so dropping it
+  defeats the reason for choosing the mailbox. `drop-lowest-priority`
+  sheds from the other end instead, which is O(1) and is the version of
+  shedding load that a priority mailbox exists to express. The arriving
+  message competes on the same terms as the backlog, so one ranked below
+  everything queued is itself the one shed — and is reported as
+  `drop-new`, keeping the metric's closed two-value reason vocabulary
+  honest without widening it.
+
+  Drops flow through the same `onDrop` hook and
+  `actor_mailbox_dropped_total` counter as `BoundedMailbox`, because that
+  bookkeeping moved into a shared `DroppingMailbox` base rather than being
+  copied; the base is exported so a mailbox of your own can inherit it
+  too. Two behaviours are worth knowing: the bound holds while the actor
+  is suspended, which is when it matters most, and `unstashAll()` on a
+  full priority mailbox can now drop, because `prependUser` re-runs the
+  priority function through `enqueue`.
 
 ### Fixed
 
@@ -517,6 +615,55 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that a dead letter minted from this buffer carries no original sender,
   since there is no single sender to attribute a buffer of bare messages
   to.
+
+- **`migrateBetweenJournals` now preserves a compacted source's sequence
+  numbers instead of renumbering the copy from 1 (#630).**
+
+  A journal compacted past a snapshot no longer starts at sequence 1, and
+  one compacted completely holds no events at all while its high-water
+  mark still remembers the numbers it handed out. The copy helper derived
+  every written sequence from a locally incremented counter and ignored
+  the source event's own, so both cases arrived on the target renumbered —
+  detaching the paired snapshot, every read-side offset and every
+  projection cursor, all of which name `(persistenceId, sequenceNr)`.
+
+  Only one of the three resulting failures was loud. When the latest
+  snapshot sat above the surviving-event count, recovery threw
+  `SnapshotIntegrityError` and the entity would not start. But
+  `PersistentActor.deleteHistory` deliberately keeps the snapshot *at* the
+  compaction point, so the everyday layout passed the integrity check
+  instead and folded a later tail onto an earlier state — no error, no
+  `onRecoveryFailure`, an actor serving commands from a state that never
+  existed. A fully compacted source was the third shape: nothing to copy,
+  so the target's high-water mark stayed 0 while the copied snapshot set
+  the actor's sequence to the source head, and every later `persist`
+  failed with `JournalConcurrencyError` permanently.
+
+  All three come from the same missing information, so one fix covers
+  them. A new optional `Journal.raiseCompactionMark(persistenceId,
+  throughSeq)` records a compacted prefix without there being anything to
+  delete; every one of the ten built-in journals implements it, since each
+  already stored the mark (`deleted_to`, `deletedTo`, `max_sequence_nr`)
+  and simply had no way to be told one. It is monotonic by contract — a
+  value at or below the current mark is a no-op, never a rewind. The
+  migration raises the target's mark to just below the source's first
+  surviving event before appending, so `expectedSeq` lines up and `append`
+  reproduces the source's numbering exactly. A target journal without the
+  method throws the new `CompactedSourceError` rather than writing a
+  renumbered copy, and a source that breaks `Journal.read`'s contiguity
+  promise now stops the copy instead of having its hole silently closed
+  up. A legitimate mid-pid resume is unaffected: the gap test compares
+  against the target's head, not against 1.
+
+  `migrateBetweenSnapshotStores` gains `sourcePersistenceOptions` and
+  `targetPersistenceOptions`. Two fields rather than one, because a re-key
+  sweep is an ordinary reason to migrate and the two stores routinely hold
+  different keys or keyrings. The read side already worked for a store
+  built with `withEncryption(...)`, which falls back to its own
+  configuration — the gap was per-call, actor-supplied keys. The write
+  side was the worse half: with no options a target that encrypts per call
+  resolved to `{ mode: 'none' }` and the migrated snapshot landed in the
+  bucket as plaintext.
 
 ### Security
 
