@@ -61,6 +61,12 @@ export type { BidirectionalMapJson } from './util/BidirectionalMap.js';
 export { BidirectionalMultiMap } from './util/BidirectionalMultiMap.js';
 export type { BidirectionalMultiMapJson } from './util/BidirectionalMultiMap.js';
 
+// RingBuffer<T> — a FIFO queue whose removal from the front is O(1) instead of
+// the O(n) reindex `Array.prototype.shift()` performs.  Backs both mailbox
+// queues and the ThroughputDispatcher work queue; exported because a queue
+// that stays fast when it gets deep is not framework-specific.
+export { RingBuffer } from './util/RingBuffer.js';
+
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
@@ -239,13 +245,16 @@ export type { ProcessSignal } from './util/ProcessSignal.js';
 // Mailboxes: the unbounded base (the default since #1148) and its variants.
 export {
   Mailbox,
+  DroppingMailbox,
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
   BoundedMailboxOptions,
   BoundedMailboxOptionsBuilder,
+  BoundedMailboxOptionsValidator,
   PriorityMailboxOptions,
   PriorityMailboxOptionsBuilder,
+  PriorityMailboxOptionsValidator,
 } from './mailbox/index.js';
 export type {
   DropReportingMailbox,
@@ -254,6 +263,7 @@ export type {
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
   PriorityMailboxOptionsType,
+  PriorityMailboxOverflow,
   PriorityFunction,
 } from './mailbox/index.js';
 

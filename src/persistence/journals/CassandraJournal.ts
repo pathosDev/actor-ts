@@ -309,6 +309,49 @@ export class CassandraJournal implements Journal {
     }
   }
 
+  /**
+   * Here the high-water mark IS `max_sequence_nr` — there is no separate
+   * `deleted_to` column, which is why `delete` leaves the metadata row alone
+   * and why raising the mark goes through the very same claim `append` uses.
+   * Taking the LWT rather than a bare `INSERT` matters: the metadata row is
+   * the append serializer, so an unconditional write would clobber a
+   * concurrent writer's claim and hand two writers the same sequence range.
+   * A losing claim surfaces as `JournalConcurrencyError`, exactly as it does
+   * for an append that raced.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    await this.ensureStarted();
+    const metadata = await this.readMetadata(persistenceId);
+    const current = metadata?.maxSequenceNr ?? 0;
+    // Monotonic: a mark already at or above `throughSeq` is left alone rather
+    // than rewound, and a re-run of a migration is therefore free.
+    if (current >= throughSeq) return;
+    const now = Date.now();
+    if (this.lightweightTransactions) {
+      await this.claimSequenceRange(persistenceId, metadata !== null, current, throughSeq, now);
+    } else {
+      try {
+        await this.client.execute(
+          `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
+          [persistenceId, throughSeq, now],
+          this.readOptions(),
+        );
+      } catch (e) {
+        throw new JournalError(`CassandraJournal.raiseCompactionMark failed: ${(e as Error).message}`, e);
+      }
+    }
+    // Index the id the way `append` does at seq 0, so a stream that carries a
+    // mark but no surviving events still enumerates — which is what a fully
+    // compacted stream looks like once it has been migrated.
+    try {
+      await this.client.execute(
+        `INSERT INTO ${this.qualified(this.allIdsTable)} (tag, persistence_id) VALUES (?, ?)`,
+        ['_all', persistenceId],
+        this.readOptions(),
+      );
+    } catch { /* non-fatal — listing is best-effort */ }
+  }
+
   async persistenceIds(): Promise<string[]> {
     await this.ensureStarted();
     try {

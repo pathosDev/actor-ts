@@ -54,6 +54,14 @@ const system = ActorSystem.create('mixed-workload', actorSystemOptions);
   // HTTP-Response-Latenz.
 ```
 
+`ThroughputDispatcher` ist der einzige der drei, der eine eigene Queue
+hält — die anderen beiden reichen jede Einheit direkt an die Runtime
+weiter.  Diese Queue ist aus demselben Grund ein
+[`RingBuffer`](/de/reference/utility-helpers/) wie eine Mailbox: sie wird
+pro Tick `throughput`-mal von vorne abgearbeitet und hält die
+ausstehende Einheit jedes Actors, ist also genau dann am tiefsten, wenn
+das System am beschäftigsten ist.
+
 ## Wann die Dispatcher-Wahl wichtig ist
 
 import { Aside } from '@astrojs/starlight/components';

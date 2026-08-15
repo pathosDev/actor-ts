@@ -489,10 +489,21 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
  * the socket is still plaintext — an operator who configures encryption and
  * gets neither encryption nor a word about it is the whole defect (#591).
  *
- * Only an explicit `true` counts.  `reference.conf` ships the key with
- * `false`, so the path is always present once the reference layer is loaded,
- * and a config file that spells the default out must behave like one that
- * omits it — the rule `tombstone.min-retention` already follows (#841).
+ * Only a true value counts — `true`, `on` or `yes`, the three spellings HOCON
+ * gives a boolean.  `reference.conf` ships the key with `false`, so the path
+ * is always present once the reference layer is loaded, and a config file that
+ * spells the default out must behave like one that omits it — the rule
+ * `tombstone.min-retention` already follows (#841).
+ *
+ * A value that is neither — `enabled = maybe`, or a numeric `1` — throws
+ * `ConfigError` out of `getBoolean` and takes the node's startup with it.
+ * That is deliberate, and it is what every other typed key in the framework
+ * already does.  Guessing is the worse failure here: both readings of a
+ * malformed *security* toggle are defensible ("they obviously meant on" /
+ * "it is not the literal `true`"), and the tolerant one hands the operator a
+ * plaintext wire they believe is encrypted — the exact outcome #591 exists to
+ * prevent, re-entered through the back door.  Refusing to start names the key
+ * and what was wrong with its value, at the one moment someone is watching.
  */
 export function isRemoteTlsRequested(config: Config): boolean {
   const remote = ConfigKeys.remote;

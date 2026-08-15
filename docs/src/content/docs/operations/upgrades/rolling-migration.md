@@ -188,6 +188,16 @@ be read on the hot path, you can:
     });
     ```
 
+    Sequence numbers survive the copy, compacted sources included —
+    the target inherits the source's compaction mark, so an entity
+    whose journal was compacted past a snapshot keeps the numbering
+    its snapshot and its projection cursors refer to.  Run the
+    journal copy **before** the snapshot copy, and pass
+    `sourcePersistenceOptions` / `targetPersistenceOptions` to
+    `migrateBetweenSnapshotStores` whenever the master key comes
+    from the actor rather than the store's own configuration — see
+    [Migration recipes](/persistence/migration/recipes/).
+
 2. **Drop the v1 step** from the `MigrationChain` once the
    backfill is complete:
 

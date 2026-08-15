@@ -46,6 +46,15 @@ erschöpfter Heap, lange GC-Pausen, ein Producer, der nie erfährt, dass
 es ein Problem gibt — kündigt sich also lange vorher an. Achte auf die
 Warnung; begrenze die Actors, die sie produzieren.
 
+**Tiefe ist kein Durchsatzproblem.** Beide Queues in einer Mailbox sind
+Ring-Buffer: die nächste Nachricht zu entnehmen rückt einen Index vor,
+statt den Backlog dahinter neu zu indizieren — eine Queue von einer
+Million kostet pro Nachricht dasselbe wie eine von zehn. Was eine tiefe
+Queue sehr wohl kostet, ist Speicher und Latenz: jede Nachricht darin
+wird gehalten, und die hinterste wartet auf alles, was vor ihr liegt.
+Das sind die Gründe zu begrenzen, und keiner davon wird durch eine
+schnellere Queue behoben.
+
 ## Wann einen Bound einführen
 
 Drei Muster, in denen eine unbegrenzte Queue die falsche Antwort ist.
@@ -205,6 +214,35 @@ Nutze für:
 
 - **HTTP-Antworten** (dringend) vs **Batch-Jobs** (aufschiebbar).
 - **Health-Pings** vs **Bulk-Metriken**.
+
+### Priorität *und* ein Bound
+
+Ordnung und eine Obergrenze sind kein Entweder-oder. `withMailbox` und
+`withMailboxCapacity` lassen sich nicht kombinieren, die Capacity liegt
+also auf den Options der Mailbox selbst:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((m) => m.kind === 'urgent' ? 0 : 5)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+Die Policy-Menge ist `'drop-lowest-priority'` / `'drop-new'` /
+`'reject'`, per Default `reject`. `drop-head` fehlt mit Absicht: der
+Kopf einer Priority-Queue ist die Nachricht, die du als wichtigste
+bezeichnet hast. `drop-lowest-priority` wirft stattdessen vom anderen
+Ende ab — das ist die Variante von "Last abwerfen", für die eine
+Priority-Mailbox überhaupt existiert: die dringende Schicht überlebt,
+die Bulk-Schicht zahlt.
+
+Drops landen wie alle anderen in `actor_mailbox_dropped_total`, dasselbe
+Alerting gilt also weiter.
 
 Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die volle
 PriorityMailbox-Oberfläche.

@@ -5,6 +5,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { BoundedMailbox } from '../../../src/mailbox/BoundedMailbox.js';
+import { PriorityMailbox } from '../../../src/mailbox/PriorityMailbox.js';
 import { Mailbox, type Envelope, type MailboxDropReason } from '../../../src/internal/Mailbox.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type { MetricSample } from '../../../src/metrics/Metrics.js';
@@ -99,6 +100,32 @@ describe('mailbox drop reporting (#1149)', () => {
     expect(samples.length).toBe(1);
     expect(samples[0]!.value).toBeGreaterThan(0);
     expect(samples[0]!.labels.reason).toBe('drop-new');
+    release();
+  });
+
+  test('a bounded PriorityMailbox reports through the same probe (#647)', async () => {
+    // The second built-in bound.  It shares the drop bookkeeping with
+    // `BoundedMailbox` through `DroppingMailbox` rather than reimplementing
+    // it, which is what keeps it out of the failure mode #1149 fixed: a
+    // second copy of the wiring is a second chance to leave the observer out.
+    const system = startSystem('drop-priority');
+    const options = ActorOptions.create<number>().withMailbox(
+      // Negated so every arrival outranks the backlog and the *tail* is what
+      // gets shed — the `drop-head` reason rather than `drop-new`.
+      () => new PriorityMailbox<number>({
+        priorityFor: (n) => -n,
+        capacity: 4,
+        overflow: 'drop-lowest-priority',
+      }) as never,
+    );
+
+    const release = await floodBehindLatch(system, options, 64);
+
+    const samples = dropSamples(system);
+    expect(samples.length).toBe(1);
+    expect(samples[0]!.value).toBeGreaterThan(0);
+    expect(samples[0]!.labels.reason).toBe('drop-head');
+    expect(samples[0]!.labels.class).toBe('Sink');
     release();
   });
 

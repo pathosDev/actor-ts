@@ -329,6 +329,67 @@ Verwende dafür
 lies vom alten, schreibe die transformierte Kopie in ein
 frisches Target.
 
+### "Was, wenn die Quelle kompaktiert wurde?"
+
+Sie wird so kopiert, wie sie ist — die Kompaktierung
+eingeschlossen.  Ein Journal, das über einen Snapshot hinaus
+kompaktiert wurde, beginnt nicht mehr bei Sequenznummer 1; ein
+vollständig kompaktiertes hält gar keine Events mehr, während
+seine High-Water-Mark sich noch an die vergebenen Nummern
+erinnert.  `migrateBetweenJournals` bildet beides ab: Es hebt die
+Kompaktierungsmarke des Targets auf den Wert direkt unterhalb des
+ersten überlebenden Events an, bevor es anhängt — so landet jedes
+Event auf genau der Sequenznummer, die es in der Quelle hatte.
+
+Das ist wichtig, weil eine Sequenznummer eine **Referenz** ist und
+nicht bloß eine Ordnungszahl: Der zugehörige Snapshot, jeder
+Read-Side-Offset und jeder Projektions-Cursor benennt
+`(persistenceId, sequenceNr)`.  Ein Umnummerieren des überlebenden
+Endes löst sie alle gleichzeitig von ihrem Ziel — und in der
+Form, die eine Kompaktierung normalerweise hinterlässt (der
+Snapshot liegt *auf* dem Kompaktierungspunkt), schlägt nichts laut
+fehl: Die Recovery faltet ein späteres Ende auf einen früheren
+Zustand, und der Actor bedient Commands aus einem Zustand, den es
+nie gegeben hat.
+
+Zwei Konsequenzen für einen gepaarten Lauf:
+
+- **Erst das Journal kopieren, dann die Snapshots.**  Ein Snapshot
+  wird auf der Sequenznummer geschrieben, die er bereits hat, und
+  bedeutet nur gegenüber einem gleich nummerierten Journal etwas.
+- **Ein fremdes Target-Journal muss
+  `Journal.raiseCompactionMark` implementieren.**  Alle zehn
+  eingebauten Journals tun das.  Eines, das es nicht tut, lässt
+  die Kopie mit `CompactedSourceError` fehlschlagen, statt den
+  Stream umzunummerieren — mehr kann ein Target, das keine Marke
+  festhalten kann, ehrlicherweise nicht anbieten.
+
+### "Meine Snapshots sind verschlüsselt — kommt die Kopie damit klar?"
+
+Nur, wenn du ihr sagst, welche Schlüssel sie verwenden soll — und
+zwar **zweimal**:
+
+```ts
+await migrateBetweenSnapshotStores(oldSnapshots, newSnapshots, {
+  persistenceIds: await oldJournal.persistenceIds(),
+  sourcePersistenceOptions: { encryption: oldEncryption },
+  targetPersistenceOptions: { encryption: newEncryption },
+});
+```
+
+Die beiden Seiten sind bewusst getrennt: Ein Re-Key-Durchlauf ist
+ein ganz gewöhnlicher Grund zu migrieren, also halten Quelle und
+Target regelmäßig unterschiedliche Schlüssel oder Keyrings.
+
+Du brauchst sie nur, wenn der Master-Key **pro Aufruf** geliefert
+wird — etwa durch den `encryption()`-Hook eines
+`PersistentActor`.  Ein Store, der mit `withEncryption(...)`
+gebaut wurde, greift auf seine eigene Konfiguration zurück und
+braucht keins von beidem.  Lass aber `targetPersistenceOptions`
+bei einem Target, das pro Aufruf verschlüsselt, nicht weg: Der
+Schreibvorgang fällt still auf `{ mode: 'none' }` zurück, und der
+migrierte Snapshot landet im Bucket als Klartext.
+
 ---
 
 ## Referenz

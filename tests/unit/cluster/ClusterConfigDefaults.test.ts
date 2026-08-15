@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -198,6 +198,27 @@ describe('isRemoteTlsRequested', () => {
     // `on` asked for TLS just as clearly as one who wrote `true`.
     expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = on'))).toBe(true);
     expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = off'))).toBe(false);
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = yes'))).toBe(true);
+    expect(isRemoteTlsRequested(Config.parseString('actor-ts.remote.tls.enabled = no'))).toBe(false);
+  });
+
+  test.each([
+    ['a word that is not a boolean', 'maybe'],
+    ['a numeric truthy', '1'],
+    ['a quoted numeric', '"0"'],
+  ])('%s is rejected rather than guessed at', (_case, value) => {
+    // The decision behind the throw, pinned so it cannot be softened by
+    // accident: reading a *security* toggle tolerantly means picking one of
+    // two defensible guesses, and the "not the literal true" guess silently
+    // returns the node to plaintext-while-configured-for-TLS — the state #591
+    // exists to make impossible.  Refusing is also just what every other typed
+    // key does, so an operator who mistypes this one is not surprised twice.
+    const configured = Config.parseString(`actor-ts.remote.tls.enabled = ${value}`);
+
+    expect(() => isRemoteTlsRequested(configured)).toThrow(ConfigError);
+    // The message has to be actionable on its own — it is the whole benefit
+    // of failing over guessing.
+    expect(() => isRemoteTlsRequested(configured)).toThrow(/actor-ts\.remote\.tls\.enabled/);
   });
 
   test('it stays out of the merged cluster options', () => {

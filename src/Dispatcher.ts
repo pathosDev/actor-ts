@@ -1,4 +1,5 @@
 import { DEFAULT_DISPATCHER_THROUGHPUT } from './Constants.js';
+import { RingBuffer } from './util/RingBuffer.js';
 
 /**
  * Where a dispatcher reports a unit of work that threw.
@@ -114,7 +115,14 @@ export class ImmediateDispatcher implements Dispatcher {
 export class ThroughputDispatcher implements Dispatcher {
   readonly id: string;
   onError?: DispatcherErrorSink;
-  private queue: Array<() => void | Promise<void>> = [];
+  /**
+   * A ring rather than an array for the same reason the mailbox is one
+   * (#408): this queue is drained from the front `throughput` times per
+   * tick, and `Array.prototype.shift()` reindexes everything still queued.
+   * The backlog here is every actor's pending unit, so it is deepest
+   * precisely when the system is busiest.
+   */
+  private readonly queue = new RingBuffer<() => void | Promise<void>>();
   private scheduled = false;
 
   constructor(

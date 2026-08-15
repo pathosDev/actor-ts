@@ -19,6 +19,8 @@
 import type { Journal } from '../Journal.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import type { PersistentEvent } from '../JournalTypes.js';
+import type { PersistenceOptions } from '../PersistenceOptions.js';
+import { JournalIntegrityError } from '../Replay.js';
 
 /* ============================== progress ============================== */
 
@@ -53,6 +55,39 @@ export class InMemoryMigrationProgressStore implements MigrationProgressStore {
 }
 
 /* ============================== journal ============================== */
+
+/**
+ * Raised when a source stream's history starts above where the target's
+ * does and the target journal has no {@link Journal.raiseCompactionMark} to
+ * record the difference (#630).
+ *
+ * The alternative would be to append the surviving events from wherever the
+ * target happens to be, which renumbers them — and a renumbered stream is
+ * not a copy: the paired snapshot, every read-side offset and every
+ * projection cursor still name the source's sequence numbers.  In the layout
+ * `PersistentActor.deleteHistory` actually leaves behind (snapshot AT the
+ * compaction point) the renumbering does not even fail loudly — recovery
+ * folds a later tail onto an earlier state and the actor serves commands
+ * from a state that never existed.  Refusing is the only honest answer a
+ * target that cannot hold a mark can give.
+ */
+export class CompactedSourceError extends Error {
+  constructor(
+    readonly persistenceId: string,
+    /** First sequence number the source still holds — above `targetHighestSeq + 1`. */
+    readonly firstSourceSequenceNr: number,
+    /** What the target reported before the copy. */
+    readonly targetHighestSeq: number,
+  ) {
+    super(
+      `[persistence] '${persistenceId}' source history starts at sequenceNr=${firstSourceSequenceNr} `
+      + `but the target is at ${targetHighestSeq} and its journal cannot record a compaction mark `
+      + '(no raiseCompactionMark) — refusing to copy, because appending here would renumber the '
+      + 'stream and detach it from its snapshot and read-side offsets',
+    );
+    this.name = 'CompactedSourceError';
+  }
+}
 
 export type MigrateJournalsOptions<E = unknown> = {
   /**
@@ -90,6 +125,12 @@ export type MigrateJournalsResult = {
   readonly persistenceIdsSkippedExistingTarget: number;
   /** Total events written to the target. */
   readonly eventsWritten: number;
+  /**
+   * Pids whose source had a compacted prefix the target had to inherit
+   * before the copy (#630).  Non-zero means the source was compacted —
+   * useful as a sanity check when a run is expected to be gap-free.
+   */
+  readonly persistenceIdsCompactionMarkRaised: number;
 };
 
 /**
@@ -111,6 +152,18 @@ export type MigrateJournalsResult = {
  * tagged the same way.  Events are still appended one call at a time —
  * more round-trips than a batched copy, but it keeps every write a
  * separate resume point.
+ *
+ * **Sequence numbers are preserved, including across a compaction** (#630).
+ * A source that has been compacted past a snapshot no longer starts at 1,
+ * and may hold no events at all while its high-water mark still remembers
+ * them.  Both are copied faithfully: the target's compaction mark is raised
+ * to just below the first surviving event first (see
+ * {@link Journal.raiseCompactionMark}), so `append` lands every event on the
+ * sequence number it had in the source.  That is what keeps the paired
+ * snapshot, the read-side offsets and the projection cursors — all of which
+ * name `(persistenceId, sequenceNr)` — pointing at the same events after the
+ * move.  A target journal that cannot record a mark makes the copy throw
+ * {@link CompactedSourceError} rather than renumber the stream.
  *
  *   await migrateBetweenJournals(sqliteSource, cassandraTarget, {
  *     eventTransform: (e) => ({
@@ -136,6 +189,7 @@ export async function migrateBetweenJournals<E = unknown>(
     persistenceIdsSkippedAlreadyDone: 0,
     persistenceIdsSkippedExistingTarget: 0,
     eventsWritten: 0,
+    persistenceIdsCompactionMarkRaised: 0,
   };
 
   for (let index = 0; index < allPersistenceIds.length; index++) {
@@ -158,10 +212,44 @@ export async function migrateBetweenJournals<E = unknown>(
 
     // Source events strictly above what's already in the target.
     const sourceEvents = await source.read<E>(persistenceId, targetHigh + 1);
+    // Where the source's surviving history begins.  With nothing left to copy
+    // that is one past its high-water mark — a fully compacted stream holds no
+    // events but still remembers the sequence numbers it handed out, and the
+    // target has to inherit that or it restarts the stream at 1 (#630).  The
+    // extra read only happens on the empty path.
+    const firstSourceSeq = sourceEvents.length > 0
+      ? sourceEvents[0]!.sequenceNr
+      : (await source.highestSeq(persistenceId)) + 1;
+
+    // A gap between the two means the source was compacted past what the
+    // target holds.  Adopt the mark BEFORE appending, so `expectedSeq` and
+    // therefore every written sequence number line up with the source's.
+    if (firstSourceSeq > targetHigh + 1) {
+      if (target.raiseCompactionMark === undefined) {
+        throw new CompactedSourceError(persistenceId, firstSourceSeq, targetHigh);
+      }
+      await target.raiseCompactionMark(persistenceId, firstSourceSeq - 1);
+      result.persistenceIdsCompactionMarkRaised += 1;
+    }
+
     if (sourceEvents.length > 0) {
-      let expected = targetHigh;
-      for (const se of sourceEvents) {
-        const transformed = transform(se);
+      let expected = firstSourceSeq - 1;
+      for (const sourceEvent of sourceEvents) {
+        // `append` derives what it writes from `expectedSeq`, so this is the
+        // one place "the copy preserves sequence numbers" is actually decided.
+        // A source that handed back a hole would have it silently closed up
+        // here, renumbering everything after it — `Journal.read` promises
+        // contiguity, and a source that breaks the promise is worth stopping
+        // on rather than writing a differently-numbered copy of.
+        if (sourceEvent.sequenceNr !== expected + 1) {
+          throw new JournalIntegrityError(
+            `[persistence] '${persistenceId}' source journal has a gap: expected sequenceNr=${expected + 1}, `
+            + `got ${sourceEvent.sequenceNr} — refusing to copy a stream whose sequence numbers cannot be preserved`,
+            persistenceId,
+            sourceEvent.sequenceNr,
+          );
+        }
+        const transformed = transform(sourceEvent);
         await target.append(
           persistenceId, [{ event: transformed.event, tags: transformed.tags }], expected,
         );
@@ -192,6 +280,28 @@ export type MigrateSnapshotStoresOptions<S = unknown> = {
   readonly onProgress?: (e: { persistenceId: string; index: number; total: number; copied: boolean }) => void;
   /** Skip pids whose target already has a latest snapshot. */
   readonly skipExistingPersistenceIds?: boolean;
+  /**
+   * Per-call options for every read from `source` — in practice the
+   * `encryption` config a client-side-encrypted snapshot was written under,
+   * since the store has no other way to obtain the master key.
+   *
+   * Only needed when the key is supplied per call (a `PersistentActor`'s
+   * `persistenceOptions()`); a store constructed `withEncryption(...)` falls
+   * back to its own config and reads fine without this.
+   */
+  readonly sourcePersistenceOptions?: PersistenceOptions;
+  /**
+   * Per-call options for every write to `target`, and for the
+   * `skipExistingPersistenceIds` probe that reads it.
+   *
+   * **Separate from `sourcePersistenceOptions` on purpose.**  A re-key sweep
+   * is an ordinary reason to migrate, so the two stores routinely hold
+   * different keys or keyrings — one shared field could not express it.  And
+   * omitting this on a target that encrypts per call is not benign: the
+   * write silently degrades to `{ mode: 'none' }` and the migrated snapshot
+   * lands in the bucket as plaintext.
+   */
+  readonly targetPersistenceOptions?: PersistenceOptions;
 };
 
 export type MigrateSnapshotStoresResult = {
@@ -209,6 +319,19 @@ export type MigrateSnapshotStoresResult = {
  * shape varies wildly across backends), so the caller hands in the pid
  * list — typically `await sourceJournal.persistenceIds()` when running
  * a paired journal + snapshot migration.
+ *
+ * **Run the journal half first when running the pair.**  A snapshot is copied
+ * at the sequence number it already has, and it only means anything against a
+ * journal numbered the same way; `migrateBetweenJournals` is what makes that
+ * true, including for a compacted source (#630).  Copying snapshots onto a
+ * target whose journal is empty or renumbered is what produced the failure
+ * that seam exists to prevent.
+ *
+ * **Encryption is per call, and per side.**  Pass
+ * `sourcePersistenceOptions` / `targetPersistenceOptions` whenever the actor
+ * — rather than the store's own constructor — supplies the master key.
+ * Without the target one, a store that would have encrypted resolves to
+ * `{ mode: 'none' }` and writes the snapshot in the clear.
  *
  * Historical snapshots aren't copied — only the most recent one per
  * pid.  Cold-start recovery only ever reads the latest plus events
@@ -240,7 +363,7 @@ export async function migrateBetweenSnapshotStores<S = unknown>(
       continue;
     }
     if (options.skipExistingPersistenceIds) {
-      const existing = await target.loadLatest<S>(persistenceId);
+      const existing = await target.loadLatest<S>(persistenceId, options.targetPersistenceOptions);
       if (!existing.isNone()) {
         result.persistenceIdsSkippedExistingTarget += 1;
         completed.add(persistenceId);
@@ -249,12 +372,17 @@ export async function migrateBetweenSnapshotStores<S = unknown>(
       }
     }
 
-    const latest = await source.loadLatest<S>(persistenceId);
+    const latest = await source.loadLatest<S>(persistenceId, options.sourcePersistenceOptions);
     if (latest.isNone()) {
       result.persistenceIdsEmpty += 1;
     } else {
-      const snap = latest.value;
-      await target.save<S>(persistenceId, snap.sequenceNr, transform(snap.state));
+      const snapshot = latest.value;
+      await target.save<S>(
+        persistenceId,
+        snapshot.sequenceNr,
+        transform(snapshot.state),
+        options.targetPersistenceOptions,
+      );
       result.persistenceIdsCopied += 1;
     }
 

@@ -245,9 +245,18 @@ export class Cluster {
     // built the transport: an injected one was constructed by the caller and
     // may well carry its own TLS material, and warning about that would be a
     // false alarm.
-    if (options.transport === undefined && isRemoteTlsRequested(system.config)) {
+    //
+    // `== null` and not `=== undefined`, so the guard accepts exactly what the
+    // `??` above falls through on.  A `transport: null` is unreachable from
+    // typed code, but it builds the plaintext transport all the same, and a
+    // guard that missed it would go quiet in the one case it exists for.
+    //
+    // "asks for TLS" rather than "is true": HOCON spells a boolean `true`,
+    // `on` or `yes`, and quoting back a spelling the operator did not write
+    // sends them looking through their config for a line that is not in it.
+    if (options.transport == null && isRemoteTlsRequested(system.config)) {
       this.log.warn(
-        `${ConfigKeys.remote.tls.enabled} is true, but the cluster transport this node `
+        `${ConfigKeys.remote.tls.enabled} asks for TLS, but the cluster transport this node `
         + 'built is plaintext — TLS for it is not implemented yet (#941). The wire is '
         + 'unencrypted; keep the cluster on a trusted network until it lands.',
       );

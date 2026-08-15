@@ -316,6 +316,61 @@ that wraps old-manifest events as new-manifest envelopes.  Use
 this — read from the old, write the transformed copy to a fresh
 target.
 
+### "What if the source has been compacted?"
+
+It is copied as it stands, including the compaction.  A journal
+that has been compacted past a snapshot no longer starts at
+sequence 1, and one that was compacted completely holds no events
+at all while its high-water mark still remembers the numbers it
+handed out.  `migrateBetweenJournals` reproduces both: it raises
+the target's compaction mark to just below the first surviving
+event before appending, so every event lands on the sequence
+number it had in the source.
+
+That matters because a sequence number is a **reference**, not
+just an ordinal — the paired snapshot, every read-side offset and
+every projection cursor names `(persistenceId, sequenceNr)`.
+Renumbering the surviving tail detaches all of them at once, and
+in the layout compaction normally leaves behind (the snapshot
+sitting *at* the compaction point) nothing fails loudly: recovery
+folds a later tail onto an earlier state and the actor serves
+commands from a state that never existed.
+
+Two consequences for a paired run:
+
+- **Copy the journal first, then the snapshots.**  A snapshot is
+  written at the sequence number it already has, and only means
+  anything against a journal numbered the same way.
+- **A third-party target journal must implement
+  `Journal.raiseCompactionMark`.**  All ten built-in journals do.
+  One that does not makes the copy throw `CompactedSourceError`
+  rather than renumber the stream — refusing is the only honest
+  answer a target that cannot record a mark can give.
+
+### "My snapshots are encrypted — does the copy handle that?"
+
+Only if you tell it which keys to use, and you tell it **twice**:
+
+```ts
+await migrateBetweenSnapshotStores(oldSnapshots, newSnapshots, {
+  persistenceIds: await oldJournal.persistenceIds(),
+  sourcePersistenceOptions: { encryption: oldEncryption },
+  targetPersistenceOptions: { encryption: newEncryption },
+});
+```
+
+The two sides are separate on purpose: a re-key sweep is an
+ordinary reason to migrate, so source and target routinely hold
+different keys or keyrings.
+
+You only need these when the master key is supplied **per call**
+— by a `PersistentActor`'s `encryption()` hook, say.  A store
+built with `withEncryption(...)` falls back to its own
+configuration and needs neither.  But do not omit
+`targetPersistenceOptions` on a target that encrypts per call:
+the write silently resolves to `{ mode: 'none' }` and the
+migrated snapshot lands in the bucket as plaintext.
+
 ---
 
 ## Reference
