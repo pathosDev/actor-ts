@@ -9,6 +9,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
+  case, printed both green summary lines, and then hung forever — no exit
+  code ever arrived, so the cross-runtime gate could only be read by a human
+  rather than trusted by a script.  The leak was in the harness, not the
+  framework: `20-express-upgrade-middleware` deliberately drives a *refused*
+  WebSocket handshake, and on Deno a refused upgrade reaches the client as
+  neither a response nor a close — so the case settled that outcome from its
+  timeout and left the socket parked in `CONNECTING`.  That pinned two ops
+  nothing would ever resolve: the client's own `op_ws_create`, and the
+  backend's `op_http_close`, since a connection that never ends means the
+  graceful `server.close()` never completes.  The helper now releases the
+  socket on every outcome, and the same abandon-on-the-unhappy-path shape is
+  fixed where it sat latent in `06-devtools`.  `run-cases.mjs` additionally
+  arms an unref'd watchdog — exiting naturally stays the default, but if the
+  loop is still alive 15 s after the last case the harness names the runtime
+  and exits with the status the run earned, so the next leak costs a line of
+  stderr instead of the gate.  CI never caught this because the
+  `multi-runtime` matrix is `ubuntu-latest` only, where the same run exits in
+  ~21 s; #816 tracks the Windows leg that would have.
+
 ## [0.16.0] — 2026-08-15
 
 ### Changed

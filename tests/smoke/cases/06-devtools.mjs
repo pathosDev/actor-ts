@@ -117,6 +117,11 @@ function handshake(url, protocolVersion) {
     });
     socket.addEventListener('error', () => {
       clearTimeout(timer);
+      // Release it here too, not just on the two paths above: a socket
+      // abandoned mid-handshake keeps the event loop alive on Deno, which
+      // would turn this failure into a hung run rather than a red one
+      // (#1196).
+      socket.close();
       reject(new Error('DevTools websocket failed to open'));
     });
   });
