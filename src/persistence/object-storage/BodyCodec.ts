@@ -256,8 +256,8 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
   // A context can only be bound to something that authenticates it.  On a
   // body with neither encryption nor a tag it is dropped rather than
   // flagged — the flag would announce a property nothing can verify.
-  const context = (subKey || integrityKey) && options.context !== undefined
-    ? utf8.encode(options.context)
+  const context = (subKey || integrityKey) && suppliedContext(options.context) !== undefined
+    ? utf8.encode(options.context!)
     : undefined;
 
   // Step 1: compress (if requested).  Encryption-after-compression
@@ -340,7 +340,8 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       + 'wrote the body and cannot be verified.',
     );
   }
-  if (options.requireContextBinding === true && options.context === undefined) {
+  const givenContext = suppliedContext(options.context);
+  if (options.requireContextBinding === true && givenContext === undefined) {
     throw new Error(
       'BodyCodec: requireContextBinding was set but no context was supplied — there is '
       + 'nothing to verify the binding against.',
@@ -354,13 +355,13 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       + 'authentic body replayed onto a storage key it was never written to.',
     );
   }
-  if (contextBound && options.context === undefined) {
+  if (contextBound && givenContext === undefined) {
     throw new Error(
       'BodyCodec: body carries FLAG_CONTEXT_BOUND but no context was supplied for '
       + 'decoding.',
     );
   }
-  const context = contextBound ? utf8.encode(options.context!) : undefined;
+  const context = contextBound ? utf8.encode(givenContext!) : undefined;
 
   // Integrity check FIRST — before we trust any other manifest byte
   // beyond `flags` (which we already used to know the tag is there).
@@ -456,6 +457,21 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
 }
 
 /* ----------------------------- internals -------------------------------- */
+
+/**
+ * Normalise a caller-supplied context, treating the empty string as no
+ * context at all.
+ *
+ * A zero-length context would otherwise reach the wire as a
+ * zero-length AES-GCM AAD, and that is not portably the same thing as
+ * omitting the AAD — the tag a runtime computes for one need not match
+ * the other.  A body written that way on Bun might fail to decrypt on
+ * Deno.  Since no storage key is ever empty, nothing is lost by ruling
+ * the case out here instead.
+ */
+function suppliedContext(context: string | undefined): string | undefined {
+  return context !== undefined && context.length > 0 ? context : undefined;
+}
 
 function magicMatches(buffer: Uint8Array): boolean {
   return buffer[0] === ATS1_MAGIC[0]

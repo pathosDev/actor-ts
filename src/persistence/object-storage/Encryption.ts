@@ -173,7 +173,7 @@ export async function aesGcmEncrypt(
   const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['encrypt']);
   const ciphertext = await subtle.encrypt(
-    aesGcmParams(iv, additionalData),
+    aesGcmAlgorithm(iv, additionalData),
     key,
     plaintext as unknown as BufferSource,
   );
@@ -202,7 +202,7 @@ export async function aesGcmDecrypt(
   const subtle = getSubtle();
   const key = await subtle.importKey('raw', subkey as unknown as BufferSource, { name: 'AES-GCM' }, false, ['decrypt']);
   const plaintext = await subtle.decrypt(
-    aesGcmParams(iv, additionalData),
+    aesGcmAlgorithm(iv, additionalData),
     key,
     ciphertext as unknown as BufferSource,
   );
@@ -217,9 +217,10 @@ export async function aesGcmDecrypt(
  * by some WebCrypto implementations and rejected by others, and a
  * zero-length AAD is not universally the same tag as no AAD at all.
  * Leaving the property out is the one form every runtime treats as the
- * unbound case, which is what keeps pre-#612 bodies decrypting.
+ * unbound case, which is what keeps pre-#612 bodies decrypting.  For the
+ * same reason `BodyCodec` never hands a zero-length context down here.
  */
-function aesGcmParams(iv: Uint8Array, additionalData?: Uint8Array): AesGcmParams {
+function aesGcmAlgorithm(iv: Uint8Array, additionalData?: Uint8Array): AesGcmParams {
   return {
     name: 'AES-GCM',
     iv: iv as unknown as BufferSource,

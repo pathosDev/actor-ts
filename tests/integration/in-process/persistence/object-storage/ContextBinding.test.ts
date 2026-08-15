@@ -353,6 +353,21 @@ describe('#612 — FLAG_CONTEXT_BOUND', () => {
     expect(fromUtf8(decoded.payload)).toBe('legacy payload');
   });
 
+  test('an empty context is no context — it never reaches the wire', async () => {
+    // A zero-length AES-GCM AAD is not portably the same tag as an
+    // omitted one, so a body written with `context: ''` on one runtime
+    // could fail to decrypt on another.  No storage key is ever empty,
+    // so the case is ruled out rather than encoded.
+    const framed = await encodeBody(utf8('x'), {
+      compression: 'none',
+      integrity: { integrityKey: INTEGRITY_KEY },
+      context: '',
+    });
+    expect(framed[4]! & FLAG_CONTEXT_BOUND).toBe(0);
+    await expect(decodeBody(framed, { integrity: { integrityKey: INTEGRITY_KEY }, requireContextBinding: true, context: '' }))
+      .rejects.toThrow(/nothing to verify the binding against/);
+  });
+
   test('a context is only bound where an authenticator carries it', async () => {
     const framed = await encodeBody(utf8('x'), { compression: 'none', context: 'k' });
     expect(framed[4]! & FLAG_CONTEXT_BOUND).toBe(0);
