@@ -48,10 +48,12 @@ Please include, once you are on a private channel:
   shapes below,
 - any mitigation you already found.
 
-**Expect a first response within a week.** This is a single-maintainer
-project; there is no security team and no paid SLA behind that number.
-If a report goes unanswered past that, ping the tracker with a
-content-free nudge.
+**I will respond as quickly as I can.** This is a single-maintainer
+project: there is no security team and no paid SLA, so no fixed window is
+promised here rather than promised and missed. Reports are read, and a
+serious one is worked before feature work. If yours has gone quiet longer
+than feels right, ping the tracker with a content-free nudge — that is a
+reasonable thing to do, not a rude one.
 
 ### Findings you can file in the open
 

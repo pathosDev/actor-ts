@@ -98,6 +98,22 @@ describe('security policy', () => {
     ).toContain('plain TCP with no peer');
   });
 
+  /**
+   * A policy nobody can find is not a policy.  GitHub surfaces SECURITY.md on
+   * its own tab, but the README is where a reader who arrives from npm or a
+   * search result actually lands, and that reader has no reason to guess the
+   * file exists.
+   */
+  test('README.md points at SECURITY.md', () => {
+    const readme = readFileSync(join(REPOSITORY_ROOT, 'README.md'), 'utf8');
+    expect(
+      readme,
+      'README.md must link SECURITY.md so a reporter arriving from npm or a '
+      + 'search result finds the reporting channel without knowing to look '
+      + 'for the file.',
+    ).toContain('SECURITY.md');
+  });
+
   test('the security issue template points at SECURITY.md without a hedge', () => {
     expect(securityTemplate).toContain('SECURITY.md');
     expect(
