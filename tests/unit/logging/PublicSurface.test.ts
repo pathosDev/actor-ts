@@ -62,7 +62,10 @@ const EXTENSION_POINTS = [
 const surface = logging as unknown as Record<string, unknown>;
 
 describe('the logging surface is reachable from the actor-ts/logging entry', () => {
-  it.each(SINK_CLASSES)('exports %s', (name) => {
+  // Spread rather than drop the `as const` from the three name lists:
+  // `it.each` wants a mutable array, and widening them to `string[]` would
+  // cost the literal-typed guard that is the point of this file.
+  it.each([...SINK_CLASSES])('exports %s', (name) => {
     expect(typeof surface[name]).toBe('function');
   });
 
@@ -71,12 +74,12 @@ describe('the logging surface is reachable from the actor-ts/logging entry', () 
     expect(typeof surface['sentrySink']).toBe('function');
   });
 
-  it.each(OPTIONS_FAMILIES)('exports %s with a create()', (name) => {
+  it.each([...OPTIONS_FAMILIES])('exports %s with a create()', (name) => {
     const family = surface[name] as { create?: unknown } | undefined;
     expect(typeof family?.create).toBe('function');
   });
 
-  it.each(EXTENSION_POINTS)('exports %s', (name) => {
+  it.each([...EXTENSION_POINTS])('exports %s', (name) => {
     expect(surface[name]).toBeDefined();
   });
 

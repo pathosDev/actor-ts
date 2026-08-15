@@ -67,7 +67,7 @@ describe('ClusterSingleton + Lease', () => {
   test('1. acquire success → child is spawned', async () => {
     inMemoryLeaseStore._clear();
     const nodeA = await startNode('sng-lease-1', 'h', 60_001);
-    const probe = nodeA.kit.createTestProbe<string>();
+    const probe = nodeA.kit.createTestProbe();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -100,7 +100,7 @@ describe('ClusterSingleton + Lease', () => {
     expect(await otherHolder.acquire()).toBe(true);
 
     const nodeA = await startNode('sng-lease-2', 'h', 60_002);
-    const probe = nodeA.kit.createTestProbe<string>();
+    const probe = nodeA.kit.createTestProbe();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
@@ -131,7 +131,7 @@ describe('ClusterSingleton + Lease', () => {
   test('3. lease lost mid-flight → child is stopped, manager re-attempts', async () => {
     inMemoryLeaseStore._clear();
     const nodeA = await startNode('sng-lease-3', 'h', 60_003);
-    const probe = nodeA.kit.createTestProbe<string>();
+    const probe = nodeA.kit.createTestProbe();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override postStop(): void { probe.tell('stopped'); }
@@ -173,7 +173,7 @@ describe('ClusterSingleton + Lease', () => {
   test('4. graceful manager stop releases the lease', async () => {
     inMemoryLeaseStore._clear();
     const nodeA = await startNode('sng-lease-4', 'h', 60_004);
-    const probe = nodeA.kit.createTestProbe<string>();
+    const probe = nodeA.kit.createTestProbe();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(): void {}
@@ -202,7 +202,7 @@ describe('ClusterSingleton + Lease', () => {
     // ClusterSingleton.test.ts case but with an explicit assertion that
     // the sync spawn happens BEFORE we tell the proxy.
     const nodeA = await startNode('sng-lease-5', 'h', 60_005);
-    const probe = nodeA.kit.createTestProbe<string>();
+    const probe = nodeA.kit.createTestProbe();
     class Echo extends Actor<string> {
       override preStart(): void { probe.tell('started'); }
       override onReceive(m: string): void { probe.tell(`got:${m}`); }

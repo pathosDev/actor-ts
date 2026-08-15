@@ -142,6 +142,9 @@ describe('migratingAdapter — writeVersion edge cases', () => {
 
   test('manifest accessor returns the chain manifest', () => {
     const adapter = migratingAdapter(buildChain());
-    expect(adapter.manifest()).toBe('BankAccount.Deposited');
+    // `manifest` takes the value — implementations may pick a manifest per
+    // variant.  This one ignores it, which is what the assertion pins.
+    expect(adapter.manifest({ kind: 'deposited', amount: 1, currency: 'USD' }))
+      .toBe('BankAccount.Deposited');
   });
 });

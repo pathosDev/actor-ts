@@ -43,7 +43,7 @@ describe('pipeTo', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('pipe-raw', kitOptions);
-    const probe = kit.createTestProbe<unknown>();
+    const probe = kit.createTestProbe();
     pipeTo(Promise.resolve({ ok: 1 }), probe, { wrap: false });
     const got = await probe.receiveOne(200);
     expect(got).toEqual({ ok: 1 });

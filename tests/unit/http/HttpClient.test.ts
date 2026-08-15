@@ -237,6 +237,88 @@ describe('HttpClientOptions', () => {
   });
 });
 
+/**
+ * The per-request half of the same defect.  Every bound is consumed as a
+ * comparison — `timeoutMs > 0`, `total > maxBytes`, `hops >= maxRedirects` —
+ * and a `NaN` loses all three of them silently: no exception, no log, just an
+ * unbounded call.  Which is what the issue's title describes, reached from the
+ * caller's side instead of the client's.
+ *
+ * These run against a server that never answers or never stops, so a bound
+ * that failed to arm would hang the test rather than pass it.
+ */
+describe('HttpClient — per-request limits are validated', () => {
+  const silent = (): Promise<string> => serve(() => { /* never responds */ });
+
+  test('a NaN or negative timeoutMs is refused instead of disarming the deadline', async () => {
+    const url = await silent();
+    const client = new HttpClient({ defaultTimeoutMs: 50 });
+    // `if (timeoutMs > 0)` is false for both, so before this check neither
+    // armed a timer and the call waited on the peer forever.
+    expect(await failureOf(() => client.get(url, { timeoutMs: Number.NaN }))).toBeInstanceOf(OptionsError);
+    expect(await failureOf(() => client.get(url, { timeoutMs: -1 }))).toBeInstanceOf(OptionsError);
+  });
+
+  test('a NaN or Infinite maxResponseBytes is refused instead of removing the ceiling', async () => {
+    // The body never ends: only a real ceiling can end this call.
+    const url = await serve((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      for (let i = 0; i < 32; i++) response.write(Buffer.alloc(1024, 0x62));
+    });
+    const client = new HttpClient({ maxResponseBytes: 2048 });
+    for (const maxResponseBytes of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+      expect(await failureOf(() => client.get(url, { maxResponseBytes, timeoutMs: 60_000 })))
+        .toBeInstanceOf(OptionsError);
+    }
+  });
+
+  test('a NaN maxRedirects is refused instead of granting an endless chain', async () => {
+    const server = await redirectServer((path) => {
+      const match = /^\/hop\/(\d+)$/.exec(path);
+      return match === null ? null : { status: 302, location: `/hop/${Number(match[1]) + 1}` };
+    });
+    const error = await failureOf(() => new HttpClient().get(`${server.url}/hop/0`, { maxRedirects: Number.NaN }));
+    expect(error).toBeInstanceOf(OptionsError);
+    // Refused before the first request, not after walking the chain.
+    expect(server.hits.get('/hop/0')).toBeUndefined();
+  });
+
+  test('an unknown per-request redirect mode is refused', async () => {
+    const url = await silent();
+    expect(await failureOf(() => new HttpClient().get(url, { redirect: 'sideways' as 'follow' })))
+      .toBeInstanceOf(OptionsError);
+  });
+
+  /**
+   * The landmine.  `timeoutMs: 0` is the documented opt-out (see the deadline
+   * suite above), so the per-request rule set CANNOT be the client-wide one —
+   * there `defaultTimeoutMs: 0` stays a rejection, because it would disarm
+   * every call rather than one.  Both halves are asserted here so a future
+   * "let's share one validator" change fails on whichever half it broke.
+   */
+  test('the per-request and client-wide rules for the same field stay different', async () => {
+    const url = await serve((_request, response) => {
+      setTimeout(() => { response.writeHead(200); response.end('late'); }, 200);
+    });
+    const client = new HttpClient({ defaultTimeoutMs: 25 });
+    expect((await client.get(url, { timeoutMs: 0 })).text()).toBe('late');
+    expect(() => new HttpClient({ defaultTimeoutMs: 0 })).toThrow(OptionsError);
+    // And `maxRedirects: 0` is a policy on both, as it always was.
+    expect(() => new HttpClient({ maxRedirects: 0 })).not.toThrow();
+  });
+
+  test('the whole valid domain still passes — validation refuses, it does not narrow', async () => {
+    const url = await serve(fixedBody(64));
+    const response = await new HttpClient().get(url, {
+      timeoutMs: 5_000,
+      maxResponseBytes: 1024,
+      redirect: 'manual',
+      maxRedirects: 0,
+    });
+    expect(response.body.byteLength).toBe(64);
+  });
+});
+
 /** What `/end` reports back about the request it actually received. */
 type EchoedRequest = {
   readonly method: string;

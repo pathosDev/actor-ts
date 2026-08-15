@@ -39,7 +39,7 @@ async function awaitListing(
   key: ServiceKey<string>,
   count: number,
 ): Promise<Listing<string>> {
-  const probe = node.kit.createTestProbe<Listing<string>>();
+  const probe = node.kit.createTestProbe();
   let latest: Listing<string> | null = null;
   await awaitCondition(async () => {
     probe.clearInbox();
@@ -64,7 +64,7 @@ describe('Receptionist — local', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('recp-local', kitOptions);
-    const probe = kit.createTestProbe<Listing<string>>();
+    const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
     const svc = kit.system.spawn(Service, 'svc');
@@ -83,7 +83,7 @@ describe('Receptionist — local', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('recp-sub', kitOptions);
-    const probe = kit.createTestProbe<Listing<string>>();
+    const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
     const key = ServiceKey.of<string>('workers');
@@ -128,7 +128,7 @@ describe('Receptionist — local', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('recp-dereg', kitOptions);
-    const probe = kit.createTestProbe<Listing<string>>();
+    const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
     const svc = kit.system.spawn(Service, 'svc');
@@ -213,7 +213,7 @@ describe('Receptionist — cluster-wide', () => {
     // assertion then fails on convergence rather than on the leave.
     await awaitListing(second, key, 1);
 
-    const probe = second.kit.createTestProbe<Listing<string>>();
+    const probe = second.kit.createTestProbe();
     second.receptionist.tell(new Subscribe(key, probe) as never);
     let last = await probe.expectMessageType(Listing, 1_500) as Listing<string>;
     expect(last.refs.length).toBe(1);

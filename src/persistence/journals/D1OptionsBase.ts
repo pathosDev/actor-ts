@@ -39,6 +39,15 @@ export abstract class D1OptionsBuilderBase<T extends D1OptionsBaseType> extends 
     return this.set('timeoutMs' as keyof T, timeoutMs as T[keyof T]);
   }
 
+  /**
+   * Ceiling on one D1 response body, in bytes.  Default: 64 MiB.  Raise it
+   * for an actor whose replay outgrows that — the whole history arrives as a
+   * single response.
+   */
+  withMaxResponseBytes(maxResponseBytes: number): this {
+    return this.set('maxResponseBytes' as keyof T, maxResponseBytes as T[keyof T]);
+  }
+
   /** Pre-built transport — bypasses the HTTP client; share it across stores. */
   withClient(client: D1ClientLike): this {
     return this.set('client' as keyof T, client as T[keyof T]);
@@ -60,6 +69,7 @@ export abstract class D1OptionsValidatorBase<T extends D1OptionsBaseType> extend
     this.nonEmptyString('databaseId' as never);
     this.nonEmptyString('apiToken' as never);
     this.positiveInt('timeoutMs' as never);
+    this.positiveInt('maxResponseBytes' as never);
     if (s.baseUrl !== undefined) assertD1BaseUrl(this.family, s.baseUrl);
     // Partial credentials are the mistake worth catching: two of three set means
     // a forgotten environment variable, and the store would otherwise fail on

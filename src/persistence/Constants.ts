@@ -62,6 +62,37 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * Ceiling on one Cloudflare D1 REST response body, in bytes — 64 MiB.
+ *
+ * D1 is the one backend that speaks over `HttpClient`, so it inherited that
+ * client's generic 8 MiB response ceiling the moment the ceiling existed
+ * (#602).  8 MiB is the wrong number here in both directions of the trade-off
+ * it was sized for: it bounds an *untrusted third-party API*, whereas this
+ * peer is the operator's own database, reached with the operator's own token,
+ * returning the operator's own rows.
+ *
+ * And the response it has to fit is not a page.  `RelationalJournal.readFrom`
+ * selects an actor's entire event history in one statement with no `LIMIT`,
+ * and the D1 transport is one statement per HTTP request — so this bounds a
+ * whole replay.  Under 8 MiB an actor whose history outgrew that number
+ * stopped *recovering*, having recovered fine the day before, which is why
+ * the D1 default is its own number rather than the client's.
+ *
+ * 64 MiB is the figure the HTTP docs already use for a call that legitimately
+ * downloads a lot, and it is still a bound: the body is materialised in memory
+ * before it is parsed, so "no ceiling" is not on the table for a transport
+ * that a hostile or misconfigured proxy can also answer.  A history that
+ * routinely approaches it wants snapshots or compaction rather than a bigger
+ * buffer — but `maxResponseBytes` on any of the three D1 option families
+ * raises it when that is genuinely the answer.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `maxResponseBytes` field of *all three* D1 families (journal, snapshot
+ * store, durable-state store), which share it through `D1Connection`.
+ */
+export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
+/**
  * Longest accepted id — the width of the `persistence_id` column in every
  * relational dialect's DDL.  Anything longer cannot round-trip.
  */

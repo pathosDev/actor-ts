@@ -23,7 +23,6 @@ import {
   registerCassandraPlugins,
 } from '../../src/persistence/index.js';
 import { FakeCassandraClient } from '../../tests/integration/in-process/persistence/FakeCassandraClient.js';
-import { attachDevTools } from '../devtools.js';
 
 type IncrementCommand = { kind: 'increment'; amount: number };
 type GetCommand = { kind: 'get' };
@@ -67,7 +66,6 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('cassandra-hello', systemOptions);
-  const devtools = await attachDevTools(system);
   const ext = system.extension(PersistenceExtensionId);
   const journalOptions = CassandraJournalOptions.create()
     .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true);
@@ -94,7 +92,6 @@ async function main(): Promise<void> {
   const value = await counter.ask<number>({ kind: 'get' }, 500);
   console.log(`counter after replay: ${value}`); // expect 42
 
-  await devtools.holdOpen();
   await system.terminate();
 }
 

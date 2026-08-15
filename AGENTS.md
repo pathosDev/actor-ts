@@ -146,8 +146,22 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 ## Verification gates (before every commit)
 
 - **`bun run typecheck`** (build tsconfig — excludes `examples/`,
-  `tests/` and `benchmarks/`) passes. `bun run typecheck:dev`
-  additionally checks those.
+  `tests/` and `benchmarks/`) passes.
+- **`bun run typecheck:dev`** passes too — same compile plus those three
+  trees. Green since #540 and gated by the `typecheck (dev)` workflow, so
+  a regression is a red check rather than a number that drifts. It is the
+  only gate that sees the library from a *caller's* side, which is a whole
+  class of defect on its own: an exported class narrower than the interface
+  it implements still satisfies `implements`, and an exported type whose
+  properties are all optional is satisfied by nothing at all. Neither shows
+  up in `bun test` (which transpiles without checking) or in `bun run
+  typecheck` (which never compiles a call site).
+
+  `tsconfig.dev.json` excludes the three trees whose imports another
+  manifest resolves — the example frontends, the broker runners, and three
+  examples demonstrating an undeclared optional peer. Its header says which
+  CI job covers each. Adding to that list is not a way to make a compile
+  error go away: the rule is a *different manifest*, not a difficult error.
 - **`bun test`** is green. Line coverage floor is **≥ 80 %** —
   `bun run test:coverage:gate`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on

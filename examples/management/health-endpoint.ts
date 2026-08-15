@@ -20,11 +20,9 @@ import {
 import {
   managementRoutes,
 } from '../../src/management/index.js';
-import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('mgmt-hello');
-  const devtools = await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost('local')
     .withPort(1)
@@ -44,7 +42,6 @@ async function main(): Promise<void> {
 
   await binding.unbind();
   await cluster.leave();
-  await devtools.holdOpen();
   await system.terminate();
 }
 

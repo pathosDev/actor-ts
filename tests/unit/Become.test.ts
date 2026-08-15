@@ -38,7 +38,7 @@ describe('become / unbecome', () => {
       override onReceive(m: string): void {
         out.push(`base:${m}`);
         if (m === 'push-top') {
-          this.context.become((n: string) => out.push(`top:${n}`), false);
+          this.context.become((n: string) => { out.push(`top:${n}`); }, false);
         }
       }
     }

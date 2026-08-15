@@ -25,7 +25,6 @@ import {
   defaultsAdapter,
   type EventAdapter,
 } from '../../src/persistence/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
@@ -81,7 +80,6 @@ async function main(): Promise<void> {
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });
   const sys = ActorSystem.create('migration-additive', sysOptions);
-  const devtools = await attachDevTools(sys);
 
   const acct = sys.spawn(() => new Account('alice'), 'alice');
   console.log('after recovery →', await acct.ask({ kind: 'balance' }, 500));
@@ -92,7 +90,6 @@ async function main(): Promise<void> {
   const stored = await journal.read<unknown>('alice', 1);
   for (const ev of stored) console.log('journal:', JSON.stringify(ev.event));
 
-  await devtools.holdOpen();
   await sys.terminate();
 }
 

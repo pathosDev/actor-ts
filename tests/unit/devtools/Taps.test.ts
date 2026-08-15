@@ -74,7 +74,7 @@ function startedSampler(system: ActorSystem): NodeSampler {
 describe('ActorTreeTap', () => {
   test('snapshots the whole tree', () => {
     const system = newSystem('tap-tree-snapshot');
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install(() => {});
     try {
       const [payload] = tap.snapshot() as [ActorTreeSnapshotPayload];
@@ -88,7 +88,7 @@ describe('ActorTreeTap', () => {
   test('emits a delta when an actor starts, carrying live figures', async () => {
     const system = newSystem('tap-tree-start');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       system.spawn(IdleActor, 'watched');
@@ -108,7 +108,7 @@ describe('ActorTreeTap', () => {
   test('emits a delta when an actor stops', async () => {
     const system = newSystem('tap-tree-stop');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       const ref = system.spawn(IdleActor, 'doomed');
@@ -126,7 +126,7 @@ describe('ActorTreeTap', () => {
   test('carries the display name, and null when the actor never named itself', async () => {
     const system = newSystem('tap-tree-display-name');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       system.spawn(IdleActor, 'anonymous');
@@ -149,7 +149,7 @@ describe('ActorTreeTap', () => {
   test('stops emitting once uninstalled', async () => {
     const system = newSystem('tap-tree-uninstall');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     tap.uninstall();
 

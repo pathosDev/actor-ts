@@ -15,5 +15,52 @@
     "benchmarks/**/*.ts",
     "examples/**/*.ts"
   ],
-  "exclude": ["node_modules", "dist"]
+  // Everything below `node_modules` / `dist` is excluded for the obvious
+  // reason.  The rest is one rule, applied narrowly (#540):
+  //
+  //   A file is excluded when its imports are resolved by a manifest OTHER
+  //   than the root `package.json`.
+  //
+  // That is not a burn-down shortcut — it is the only correct scope.  The
+  // root install is deliberately tiny (two runtime deps; every backend is
+  // an optional peer), so a file whose dependencies come from a different
+  // manifest can never resolve here no matter how much of it is fixed, and
+  // a config that is permanently red cannot gate anything.  Each entry
+  // below names the manifest that DOES own it and the CI job that DOES
+  // check it, so nothing is merely dropped.
+  "exclude": [
+    "node_modules",
+    "dist",
+
+    // The eight bundled example frontends: each carries its own
+    // package.json + package-lock.json + tsconfig, and its dependencies
+    // (`@angular/core`, `react`, `vite`, `@sveltejs/kit/vite`, …) are
+    // installed per-directory by `npm ci` in `.github/workflows/examples.yml`
+    // — never by the root `bun install`.  That workflow's matrix runs
+    // `npm ci && npm run build` in all eight, which is a stronger check
+    // than this config could give them: it compiles each one against the
+    // framework version it actually declares.
+    "examples/*/frontend-*/**",
+
+    // The live-broker test runners: `tests/integration/brokers/package.json`
+    // is a second dependency context on purpose — it "[m]irrors what an
+    // end-user would install", one regular `dependencies` entry per adapter
+    // peer, so `Dockerfile.runner` needs no peer-dep tricks.  `amqplib`,
+    // `ioredis`, `@aws-sdk/client-s3` and the rest are absent from the root
+    // node_modules by design.  These files are compiled and run inside the
+    // containers `bun run test:integration:brokers` starts.
+    "tests/integration/brokers/**",
+
+    // Three examples that demonstrate an optional peer the root install does
+    // not carry.  Each one loads it through a guarded `import()` and prints
+    // an "install it with …" message when it is missing — the type positions
+    // (`typeof import('@opentelemetry/api')`) are what the root cannot
+    // resolve, not the code around them.  `smoke-test.ts` is a black-box
+    // script: it spawns the voice backend as a subprocess and talks to it
+    // over a socket, so it imports nothing from `src/` and this config would
+    // catch no API drift in it either way.
+    "examples/management/otel-jaeger.ts",
+    "examples/management/prom-client-shared.ts",
+    "examples/voice/smoke-test.ts"
+  ]
 }

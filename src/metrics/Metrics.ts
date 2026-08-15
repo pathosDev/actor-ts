@@ -479,11 +479,19 @@ const NOOP_HIST: Histogram = {
  * Used as the default on `ActorSystem.metrics` so instrumentation
  * sprinkled through the codebase pays nothing when metrics aren't
  * enabled.
+ *
+ * The three accessors spell out {@link MetricsRegistry}'s parameters
+ * even though they discard every one of them.  Omitting them still
+ * satisfies `implements` — a function that ignores its arguments is
+ * assignable to one that takes them — but this class is exported, so a
+ * caller holding the concrete type rather than the interface got
+ * `Expected 0 arguments, but got 1` on the ordinary `counter('name')`
+ * call the interface documents (#540).
  */
 export class NoopMetricsRegistry implements MetricsRegistry {
-  counter(): Counter { return NOOP_COUNTER; }
-  gauge(): Gauge { return NOOP_GAUGE; }
-  histogram(): Histogram { return NOOP_HIST; }
+  counter(_name: string, _labels?: Labels, _options?: CounterOptions): Counter { return NOOP_COUNTER; }
+  gauge(_name: string, _labels?: Labels, _options?: GaugeOptions): Gauge { return NOOP_GAUGE; }
+  histogram(_name: string, _labels?: Labels, _options?: HistogramOptions): Histogram { return NOOP_HIST; }
   collect(): ReadonlyArray<MetricSample> { return []; }
   clear(): void {}
 }

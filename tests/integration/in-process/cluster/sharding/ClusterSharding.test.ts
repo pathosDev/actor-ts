@@ -303,7 +303,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       // their tag stays stable.  (We DON'T check 'c' because the
       // exact eviction count depends on serialised mailbox timing.)
       const eAgain = await node.region.ask<string>({ id: 'e', kind: 'ping' }, 3_000,);
-      expect(eAgain).toBe(firstTags.get('e'));
+      expect(eAgain).toBe(firstTags.get('e')!);
     } finally {
       await stopAll([node]);
     }
@@ -329,7 +329,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       });
       for (const id of ids) {
         const same = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
-        expect(same).toBe(firstTags.get(id));
+        expect(same).toBe(firstTags.get(id)!);
       }
     } finally {
       await stopAll([node]);

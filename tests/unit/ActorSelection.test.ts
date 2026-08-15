@@ -54,7 +54,7 @@ describe('ActorSelection — basics', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('tell-sel', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
     kit.system.spawn(Echo, 'echo');
@@ -86,7 +86,7 @@ describe('ActorSelection — nested paths', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('nested-sel', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Leaf extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
     const leafSpawned = { value: false };

@@ -64,7 +64,8 @@ describe('ActorSystem — config integration', () => {
       .withConfig({ 'actor-ts': { logger: { level: 'warn' } } })
       .withLogger({
         level: LogLevel.Off, // unused in this assertion
-        debug() {}, info() {}, warn() {}, error() {}, withSource() { return this; },
+        debug() {}, info() {}, warn() {}, error() {},
+        withSource() { return this; }, withFields() { return this; },
       });
     const sys = ActorSystem.create('cfg', sysOptions);
     void captured;

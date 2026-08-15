@@ -55,7 +55,7 @@ describe('ClusterSingleton — single node', () => {
   test('singleton is hosted on the sole leader', async () => {
     const nodeA = await startNode('sng-1', 'h', 52001);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -81,7 +81,7 @@ describe('ClusterSingleton — single node', () => {
     // circuited to it — returning a proxy that silently dropped everything.
     const nodeA = await startNode('sng-restart', 'h', 52003);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -153,7 +153,7 @@ describe('ClusterSingleton — single node', () => {
     // lost across the observer window.
     const nodeA = await startNode('sng-buf', 'h', 52002);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(m); }

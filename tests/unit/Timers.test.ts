@@ -104,7 +104,9 @@ describe('context.timers.startSingleTimer', () => {
       timeoutMs: 4_000,
       label: 'the actor reported the cancel result',
     });
-    expect(result).toBe(false);
+    // Written only inside `onReceive`, so flow analysis still has `result` at
+    // its `null` initialiser here; the `awaitCondition` above is the proof.
+    expect<boolean | null>(result).toBe(false);
     await sys.terminate();
   });
 });
@@ -287,8 +289,9 @@ describe('timer bookkeeping after a one-shot fires', () => {
       label: 'the actor reported both cancel results',
     });
 
-    expect(cancelledPending).toBe(true);
-    expect(cancelledFired).toBe(false);
+    // Same nested-writer situation as above.
+    expect<boolean | null>(cancelledPending).toBe(true);
+    expect<boolean | null>(cancelledFired).toBe(false);
     await sys.terminate();
   });
 

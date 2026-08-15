@@ -132,12 +132,17 @@ export {
   HttpClientOptions,
   HttpClientOptionsBuilder,
   HttpClientOptionsValidator,
+  HttpClientRequestLimitsValidator,
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from './HttpClientOptions.js';
-export type { HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
+export type {
+  HttpClientOptionsType,
+  HttpClientRequestLimits,
+  HttpRedirectMode,
+} from './HttpClientOptions.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';

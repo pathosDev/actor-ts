@@ -107,15 +107,24 @@ export class ConsoleLogger implements Logger {
   }
 }
 
-/** A logger that discards every call. Handy for tests and benchmarks. */
+/**
+ * A logger that discards every call. Handy for tests and benchmarks.
+ *
+ * The parameters are spelled out and then discarded.  Leaving them off
+ * still satisfies `implements Logger` — a function that ignores its
+ * arguments is assignable to one that takes them — but this class is
+ * exported, and a caller holding the concrete type rather than the
+ * interface got `Expected 0 arguments, but got 1` on the ordinary
+ * `log.info('hello')` (#540).
+ */
 export class NoopLogger implements Logger {
   readonly level = LogLevel.Off;
-  debug(): void {}
-  info(): void {}
-  warn(): void {}
-  error(): void {}
-  withSource(): Logger { return this; }
-  withFields(): Logger { return this; }
+  debug(_message: string, ..._args: unknown[]): void {}
+  info(_message: string, ..._args: unknown[]): void {}
+  warn(_message: string, ..._args: unknown[]): void {}
+  error(_message: string, ..._args: unknown[]): void {}
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
 }
 
 /* ----------------------------- JsonLogger (#311) ----------------------------- */

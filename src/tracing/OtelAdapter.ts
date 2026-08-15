@@ -52,11 +52,21 @@ export interface OtelSpanLike {
   isRecording(): boolean;
 }
 
-export type OtelContextLike = {
-  // Opaque — OTel's Context is a structural type with `getValue`/`setValue`
-  // we don't need to call directly.  Treated as a black box here.
-  readonly __opaque?: never;
-};
+/**
+ * OTel's `Context`, as much of it as this adapter needs to name.
+ *
+ * It is still a black box — nothing here calls either method; contexts are
+ * only ever received from the caller's own API namespace and handed back to
+ * it.  But the shape has to be *inhabited*, and the previous
+ * `{ readonly __opaque?: never }` was not: a type whose properties are all
+ * optional triggers TypeScript's weak-type check, which rejects any source
+ * with no property in common — including the real `@opentelemetry/api`
+ * `Context`, whose members are exactly the two below (#540).
+ */
+export interface OtelContextLike {
+  getValue(key: symbol): unknown;
+  setValue(key: symbol, value: unknown): OtelContextLike;
+}
 
 export interface OtelTracerLike {
   startSpan(

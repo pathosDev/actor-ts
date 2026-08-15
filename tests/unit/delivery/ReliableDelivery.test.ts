@@ -150,7 +150,11 @@ describe('ReliableDelivery — resilience', () => {
       label: 'a resend finally got through to the flaky consumer',
     });
     expect(seen).toBeGreaterThanOrEqual(3);
-    expect(delivered).toBe('persistent-message');
+    // Explicit `expect<T>`: the only writer is the actor's `onReceive`, a
+    // nested function, so the compiler's flow analysis still has `delivered`
+    // at its `null` initialiser here.  The `awaitCondition` above is the
+    // runtime proof it is not.
+    expect<string | null>(delivered).toBe('persistent-message');
     producer.stop();
     await kit.system.terminate();
   });

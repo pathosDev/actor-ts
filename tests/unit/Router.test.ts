@@ -48,7 +48,7 @@ function countingWorker(hits: Map<string, number>) {
 
 describe('roundRobinStrategy', () => {
   test('cycles through routees deterministically', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const strategy = roundRobinStrategy();
     const chosen = [0, 1, 2, 3, 4, 5].map(i =>
       Array.from(strategy(routees, { messageIndex: i }))[0]!,
@@ -63,7 +63,7 @@ describe('roundRobinStrategy', () => {
 
 describe('randomStrategy', () => {
   test('returns one routee per call from the given set', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     for (let i = 0; i < 20; i++) {
       const picked = Array.from(randomStrategy()(routees, { messageIndex: i }));
       expect(picked.length).toBe(1);
@@ -78,7 +78,7 @@ describe('randomStrategy', () => {
 
 describe('broadcastStrategy', () => {
   test('returns every routee', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const out = Array.from(broadcastStrategy()(routees, { messageIndex: 0 }));
     expect(out).toEqual(routees);
   });
@@ -148,7 +148,7 @@ describe('smallestMailboxStrategy (#154)', () => {
     // A ref that is not locally hosted has no mailbox this process can read.
     // The strategy must still route — silently dropping would be worse than
     // degrading to round-robin.
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const strategy = smallestMailboxStrategy();
     const chosen = [0, 1, 2, 3, 4, 5].map(i =>
       Array.from(strategy(routees, { messageIndex: i }))[0]!,

@@ -1,6 +1,13 @@
 name: examples
 
-# Installs and builds the six bundled example frontends (#903).
+# Installs and builds the eight bundled example frontends (#903).
+#
+# The two React legs were added by #540.  `tsconfig.dev.json` excludes
+# every `examples/*/frontend-*` directory — their dependencies come from
+# the per-directory `npm ci` below and are unresolvable from the root
+# install — and React was the only pair this matrix did not already
+# cover, so without them those two directories would have had no check
+# of any kind.
 #
 # These directories had no CI coverage at all until now: no workflow
 # carried `examples/**` in a path filter, so a PR touching only the
@@ -21,8 +28,8 @@ name: examples
 #
 # What this job deliberately does NOT do is rebuild the committed
 # bundles under `examples/*/static/**` and diff the bytes.  That is not
-# a judgement call — for four of the six it is impossible.  Two builds
-# from an identical tree were compared:
+# a judgement call — for four of the original six legs it is impossible.
+# Two builds from an identical tree were compared:
 #
 #   - Next   — a fresh build id every run (`Kb3j7R17-emTNVLO8IAvl` ->
 #              `BcT-Fi9UF2LGQStSayjG0`), which renames the build-id
@@ -73,9 +80,11 @@ jobs:
         directory:
           - examples/chat/frontend-angular
           - examples/chat/frontend-next
+          - examples/chat/frontend-react
           - examples/chat/frontend-svelte
           - examples/voice/frontend-angular
           - examples/voice/frontend-next
+          - examples/voice/frontend-react
           - examples/voice/frontend-svelte
     name: ${{ matrix.directory }}
     steps:

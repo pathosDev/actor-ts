@@ -97,12 +97,13 @@ live integration suite behind it.
 
 ```ts
 type D1Connection = {
-  accountId?:  string;        // Cloudflare account id
-  databaseId?: string;        // the database UUID, not its name
-  apiToken?:   string;        // token with D1:Edit
-  baseUrl?:    string;        // override for a proxy; default api.cloudflare.com
-  timeoutMs?:  number;        // per-request timeout, default 30_000
-  client?:     D1ClientLike;  // pre-built / shared transport
+  accountId?:        string;        // Cloudflare account id
+  databaseId?:       string;        // the database UUID, not its name
+  apiToken?:         string;        // token with D1:Edit
+  baseUrl?:          string;        // override for a proxy; default api.cloudflare.com
+  timeoutMs?:        number;        // per-request timeout, default 30_000
+  maxResponseBytes?: number;        // response body ceiling, default 64 MiB
+  client?:           D1ClientLike;  // pre-built / shared transport
 };
 
 interface D1JournalOptions extends D1Connection {
@@ -190,6 +191,16 @@ So, precisely:
   API calls plus overhead, and each carries authentication and TLS. Snapshot
   aggressively, and do not expect journal throughput comparable to a local
   database or even to Turso.
+</Aside>
+
+<Aside type="caution" title="A replay arrives as one response">
+  `readFrom` selects an actor's whole history in a single statement, and this
+  transport is one statement per HTTP response — so `maxResponseBytes` bounds an
+  entire replay rather than a page of one. The default is 64 MiB, well above the
+  `HttpClient`'s generic 8 MiB, because the peer here is your own database rather
+  than an untrusted API. A recovery that outgrows it fails with
+  `HttpResponseTooLargeError`: raise the knob to get moving again, then snapshot
+  or compact, since the body is buffered in memory before it is parsed.
 </Aside>
 
 <Aside type="caution" title="D1 has service limits">

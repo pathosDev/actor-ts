@@ -80,7 +80,7 @@ class Account extends PersistentActor<Command, Event, State> {
 
   private async onDeposit(command: DepositCommand): Promise<void> {
     await this.persist({ kind: 'deposited', amount: command.amount, currency: 'EUR' },
-      (s) => this.seen.push({ balance: s.balance, currency: s.currency }));
+      (s) => { this.seen.push({ balance: s.balance, currency: s.currency }); });
   }
 
   private onBalance(state: State): void {

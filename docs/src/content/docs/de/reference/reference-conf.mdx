@@ -339,6 +339,18 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Outbound HttpClient defaults — the system's shared client and any
+    # newClient(...) that leaves a field unset.  Leaf names match the
+    # HttpClientOptions fields (camelCase) and are validated on read (a bad
+    # value throws OptionsError).  A request may still override each of them
+    # per call; these are the floor the fleet inherits without a code change.
+    client {
+      maxResponseBytes = 8M       # buffered response body ceiling
+      defaultTimeoutMs = 30s      # deadline for a call that names none
+      redirect         = "follow" # follow | error | manual
+      maxRedirects     = 5        # hops a followed chain may take
+    }
+
     # Server-side defaults for websocket() routes (per-connection policy).
     # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
     # may override any of them, and the resolved values are validated

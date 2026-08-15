@@ -167,6 +167,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   unchanged — and the queue type itself is exported as `RingBuffer` for
   anyone who wants it.
 
+- **The examples that finish on their own no longer carry the DevTools
+  harness (#552).**
+
+  Forty-three short-lived examples each carried the same three lines of
+  wiring — the `attachDevTools` import, the attach, and a `holdOpen()`
+  parked before shutdown — or five, where the example builds two systems.
+  Those are the files people copy to start from, and the first of those
+  lines does not resolve at all once the file leaves this repository, so
+  the scaffolding had to be understood and deleted before the example was
+  the thing it claimed to be. `examples/hello-world.ts` is now twenty-six
+  lines of actor code and nothing else.
+
+  The harness stays where it earns its place. The dividing line is whether
+  the example ends by itself: the twenty-five that run until you stop them
+  — the HTTP and cache services, the cluster demos, the chat and voice
+  backends — keep their wiring, and `--devtools` behaves there exactly as
+  before. That is also the only place it was ever useful, since a script
+  that is over in a few hundred milliseconds cannot be opened in a
+  browser. Parking one just before shutdown was the workaround for
+  precisely that, and with the short examples unwired it has no callers
+  left, so `holdOpen` and `waitForInterrupt` are gone from
+  `examples/devtools.ts`. The opt-in gate itself is unchanged and was
+  never the cost: it has lived inside the harness since 3cf46220, so a
+  disabled example already paid nothing at runtime.
+
+  The DevTools documentation walked through `examples/hello-world.ts`,
+  which would now demonstrate nothing; both languages run
+  `examples/http/rest-service.ts` instead — a service that stays up, with
+  a sharded actor tree that moves while the panels watch it. The
+  `singleton-hello` fences are unchanged, that example being in the keep
+  set. Both overview pages also claimed every example was wired for
+  DevTools, and advertised the harness as "about thirty lines" when it was
+  286; both claims are corrected.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -665,6 +699,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   resolved to `{ mode: 'none' }` and the migrated snapshot landed in the
   bucket as plaintext.
 
+- **`typecheck:dev` is green and gated, and five exported declarations
+  that no caller could actually use are fixed (#540).**
+  `tsconfig.dev.json` is the only configuration that compiles `tests/`,
+  `examples/` and `benchmarks/` alongside `src/`. Nothing ran it: `bun
+  test` transpiles without type-checking and `bun run typecheck` uses the
+  build tsconfig, which excludes all three trees. Between them an entire
+  class of defect was invisible — anything that compiles for the library
+  and breaks only for a caller.
+
+  Five of those surfaced. `NoopLogger`, `NoopMetricsRegistry` and
+  `HashAllocationStrategy` each declared fewer parameters than the
+  interface they implement; `implements` accepts that, because a function
+  ignoring its arguments is assignable to one that takes them, but all
+  three are exported, so `new NoopLogger().info('hello')`, `new
+  NoopMetricsRegistry().counter('a')` and the three-argument
+  `allocate(shardId, candidates, currentShards)` the sharding
+  documentation shows all failed to compile. `OtelContextLike` was `{
+  readonly __opaque?: never }` — a type whose properties are all optional
+  triggers TypeScript's weak-type check, so nothing at all satisfied it,
+  including the real `@opentelemetry/api` `Context`; it now names the
+  `getValue` / `setValue` pair that context actually has. And
+  `SchemaRegistry` had two: `upcastFromPrev` was hard-typed `(prev:
+  unknown) => …`, rejecting the `(v1: DepositedV1): DepositedV2 => …` form
+  its own header and both documentation pages show, and `eventAdapter`
+  returned `EventAdapter<E, unknown>`, which cannot be returned from
+  `PersistentActor.eventAdapter()` — so the schema-registry feature was
+  unreachable from the actor hook it exists to fill. Both gain a defaulted
+  type parameter (`Previous`, `JournalShape`), which leaves every existing
+  call site unchanged.
+
+  The remaining 215 diagnostics were test and example drift, burnt down
+  without weakening a single assertion: unions narrowed rather than cast,
+  type arguments supplied where a generic had nothing to infer from, and
+  stale fixtures brought back in line with the shapes they fake.
+  `TestProbe` stays non-generic — the 28 `createTestProbe<T>()` call sites
+  never compiled and the decision is now recorded in its JSDoc and on the
+  TestProbe page — and `NoopMetricsRegistry`'s six assertions were kept
+  exactly as written, since they were the only evidence the class was
+  wrong.
+
+  A `typecheck (dev)` workflow keeps it green. It is separate from `tests`
+  because path filters are per-workflow: a step there would never fire on
+  an `examples/**` or `benchmarks/**` change, which is precisely what this
+  configuration covers. `tsconfig.dev.json` excludes the trees whose
+  imports a different manifest resolves — the example frontends, the
+  live-broker runners, three examples demonstrating an undeclared optional
+  peer — and its header names the CI job that covers each instead. The two
+  React example frontends joined the `examples` matrix in the same change,
+  so excluding them leaves them with build coverage rather than none.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
@@ -885,6 +969,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dependency tree, and the scan is narrowed to what the package actually
   ships — otherwise the ten manifests under `docs/`, `tests/` and the
   example front-ends would land in the document as though they shipped.
+
+- **The outbound `HttpClient` bounds can no longer be disabled from the
+  caller's side, and no longer break the D1 journal (#602).**
+
+  Every bound the client enforces is enforced by a comparison, and a `NaN`
+  loses a comparison without complaining. Only the client-wide settings
+  were validated, at construction; a request's own overrides went straight
+  to those comparisons. So a `timeoutMs` of `NaN` or a negative number
+  made `timeoutMs > 0` false and armed no timer at all, a
+  `maxResponseBytes` of `NaN` or `Infinity` made `total > maxBytes`
+  permanently false and let the body buffer without limit, and a
+  `maxRedirects` of `NaN` made `hops >= maxRedirects` false and followed a
+  hostile chain forever. Each of those is the unbounded call the issue was
+  filed about, reached from the caller rather than from the client, and
+  none of them needs a typo to arrive — a computed budget such as
+  `deadline - Date.now()` gone negative gets there on its own. A request's
+  `timeoutMs`, `maxResponseBytes`, `redirect` and `maxRedirects` are now
+  checked once per call, before a socket is opened, and an out-of-domain
+  value throws `OptionsError` naming the field. The per-request rule set
+  is deliberately not the client-wide one and the two must stay apart:
+  `timeoutMs: 0` remains the documented way to opt a single call out of
+  any deadline, while `defaultTimeoutMs: 0` on a client would disarm every
+  call that named no deadline of its own and stays rejected there.
+
+  The same 8 MiB default silently broke the shipped Cloudflare D1 backend.
+  `buildD1Client` constructed a bare `new HttpClient()`, so the transport
+  inherited a ceiling sized for an untrusted third-party API — while the
+  peer here is the operator's own database, reached with the operator's
+  own token, returning the operator's own rows. Worse, there is no page to
+  truncate: `RelationalJournal.readFrom` selects an actor's entire event
+  history in one statement with no `LIMIT`, and this transport is one
+  statement per HTTP response, so the ceiling bounded a whole replay. An
+  actor whose history had grown past 8 MiB of JSON stopped recovering,
+  having recovered fine the day before. `D1Connection` now carries its own
+  `maxResponseBytes`, defaulting to 64 MiB and reaching the client
+  explicitly, settable on all three D1 option families through the shared
+  connection base. It stays a bound rather than becoming unbounded again,
+  because the body is still materialised in memory before it is parsed.
+
+  The bounds are also operable at last. `actor-ts.http.client` carries
+  `maxResponseBytes`, `defaultTimeoutMs`, `redirect` and `maxRedirects`,
+  in naming lockstep with the builder and the fields, applied by
+  `HttpExtension` to the system's shared client and to any
+  `newClient(...)` that leaves a field unset. Precedence is the project's
+  usual one: a request beats the client it was made on, which beats HOCON,
+  which beats the built-in defaults. Until now the shared client took the
+  built-in numbers and offered no way to change them, so a deployment that
+  needed a different ceiling had to abandon the shared client entirely —
+  and a ceiling nobody can raise is a ceiling that gets raised by deleting
+  it. A `new HttpClient()` built directly, with no system to read config
+  from, still gets the built-in numbers.
+
+  One upgrade note that is not a migration but is worth knowing: a caller
+  that was passing a computed `timeoutMs` which could go negative, or a
+  `maxResponseBytes` of `Infinity`, will now see an `OptionsError` where
+  it previously saw an unbounded request succeed. That previous behaviour
+  was the defect rather than a supported mode, so nothing is being taken
+  away that could have been relied on deliberately.
 
 ## [0.16.0] — 2026-08-15
 

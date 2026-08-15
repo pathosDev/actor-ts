@@ -3,7 +3,10 @@ import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { CachedSnapshotStore } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
 import { CachedSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStoreOptions.js';
 import { InMemorySnapshotStore } from '../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import type { Snapshot } from '../../../../src/persistence/JournalTypes.js';
+import type { PersistenceOptions } from '../../../../src/persistence/PersistenceOptions.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
+import type { Option } from '../../../../src/util/Option.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -19,17 +22,38 @@ class CountingStore implements SnapshotStore {
   loadBeforeCalls = 0;
   deleteCalls = 0;
   constructor(private readonly inner: SnapshotStore) {}
-  async save<S>(...args: Parameters<SnapshotStore['save']>): ReturnType<SnapshotStore['save']> {
-    this.saveCalls++; return this.inner.save(...(args as Parameters<typeof this.inner.save>)) as ReturnType<SnapshotStore['save']>;
+
+  /*
+   * Spelled out rather than forwarded through `Parameters<SnapshotStore
+   * ['save']>`.  That trick reads as "whatever the interface takes", but
+   * it instantiates the generic at its default — so `save` promised
+   * `Snapshot<unknown>` where the interface promises `Snapshot<S>`, and
+   * this fake stopped being assignable to the thing it fakes.
+   */
+  async save<S = unknown>(
+    persistenceId: string, seq: number, state: S, options?: PersistenceOptions,
+  ): Promise<Snapshot<S>> {
+    this.saveCalls++;
+    return this.inner.save<S>(persistenceId, seq, state, options);
   }
-  async loadLatest<S>(...args: Parameters<SnapshotStore['loadLatest']>): ReturnType<SnapshotStore['loadLatest']> {
-    this.loadLatestCalls++; return this.inner.loadLatest(...args);
+
+  async loadLatest<S = unknown>(
+    persistenceId: string, options?: PersistenceOptions,
+  ): Promise<Option<Snapshot<S>>> {
+    this.loadLatestCalls++;
+    return this.inner.loadLatest<S>(persistenceId, options);
   }
-  async loadBefore<S>(...args: Parameters<SnapshotStore['loadBefore']>): ReturnType<SnapshotStore['loadBefore']> {
-    this.loadBeforeCalls++; return this.inner.loadBefore(...args);
+
+  async loadBefore<S = unknown>(
+    persistenceId: string, seq: number, options?: PersistenceOptions,
+  ): Promise<Option<Snapshot<S>>> {
+    this.loadBeforeCalls++;
+    return this.inner.loadBefore<S>(persistenceId, seq, options);
   }
-  async delete(...args: Parameters<SnapshotStore['delete']>): ReturnType<SnapshotStore['delete']> {
-    this.deleteCalls++; return this.inner.delete(...args);
+
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    this.deleteCalls++;
+    return this.inner.delete(persistenceId, toSeq);
   }
 }
 

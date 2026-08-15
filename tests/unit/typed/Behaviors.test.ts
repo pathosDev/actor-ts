@@ -63,7 +63,7 @@ describe('Behaviors.receive — basic handler', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-transition', kitOptions);
-    const probe = kit.createTestProbe<number>();
+    const probe = kit.createTestProbe();
 
     const counter = (n: number): Behavior<'inc' | 'get'> =>
       Behaviors.receive((_context, message) => {
@@ -110,7 +110,7 @@ describe('Behaviors.setup', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-setup', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
     let setupCalls = 0;
     let handled = 0;
 
@@ -145,7 +145,7 @@ describe('Behaviors.withTimers', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-timers', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     const behavior = Behaviors.withTimers<string>((timers) => {
       timers.startSingleTimer('once', 'tick', 20);
@@ -169,7 +169,7 @@ describe('Behaviors.withStash', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-stash', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     type Message = { kind: 'ready' } | { kind: 'work'; id: number };
 
@@ -375,7 +375,7 @@ describe('Behaviors.supervise', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-supervise', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
     let initCount = 0;
 
     const inner = Behaviors.setup<string>((_context) => {
@@ -411,7 +411,7 @@ describe('Behaviors.supervise', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-resume', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
     let initCount = 0;
 
     const inner = Behaviors.setup<string>(() => {
@@ -458,7 +458,7 @@ describe('typedActor — interop with OO Actor API', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('typed-actor', kitOptions);
-    const probe = kit.createTestProbe<number>();
+    const probe = kit.createTestProbe();
 
     const behavior = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
     const ref = kit.system.spawnAnonymous(typedActor(behavior));

@@ -5,9 +5,10 @@
  */
 import { Actor } from '../../src/index.js';
 import { TestKit } from '../../src/testkit/index.js';
+import type { TestProbe } from '../../src/testkit/index.js';
 
 class Heartbeat extends Actor<'tick'> {
-  constructor(private readonly probe: import('../../src/index.js').TestProbe) { super(); }
+  constructor(private readonly probe: TestProbe) { super(); }
   override preStart(): void {
     this.context.timers.startTimerWithFixedDelay('hb', 'tick', 100, 50);
   }

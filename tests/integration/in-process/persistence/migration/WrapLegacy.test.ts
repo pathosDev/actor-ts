@@ -42,7 +42,11 @@ describe('wrapEventAsEnvelope — pure helper', () => {
   test('idempotent — already-enveloped events pass through unchanged', () => {
     const env = { _v: 2, _t: 'X', _e: { y: 1 } };
     const out = wrapEventAsEnvelope(env, () => 'should-not-be-called');
-    expect(out).toBe(env);   // same reference, no copy
+    // `expect<unknown>`: the claim is reference identity.  In the idempotent
+    // case the function hands back its argument, so the returned value is the
+    // input envelope, not the `JournalEnvelope<typeof env>` the signature
+    // promises for a fresh wrap.
+    expect<unknown>(out).toBe(env);   // same reference, no copy
   });
 
   test('honours explicit version override', () => {
@@ -68,7 +72,7 @@ describe('wrapStateAsEnvelope — pure helper', () => {
 
   test('idempotent', () => {
     const env = { _v: 2, _t: 'BankAccount.State', _e: { balance: 99 } };
-    expect(wrapStateAsEnvelope(env, () => 'X')).toBe(env);
+    expect<unknown>(wrapStateAsEnvelope(env, () => 'X')).toBe(env);
   });
 });
 

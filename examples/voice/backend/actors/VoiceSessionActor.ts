@@ -463,7 +463,6 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
       .with({ kind: 'peer' },  (t) => this.sendEndMarkerToPeer(t, marker))
       .with({ kind: 'group' }, (t) => this.sendEndMarkerToGroup(t, marker))
       .with({ kind: 'room' },  (t) => this.sendEndMarkerToRoom(t, marker))
-      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
     this.currentTarget = { kind: 'idle' };
   }
@@ -495,7 +494,6 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
       .with({ kind: 'peer' },  (t) => this.streamFrameToPeer(t, frame))
       .with({ kind: 'group' }, (t) => this.streamFrameToGroup(t, frame))
       .with({ kind: 'room' },  (t) => this.streamFrameToRoom(t, frame))
-      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
   }
 

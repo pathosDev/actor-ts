@@ -1,0 +1,97 @@
+name: typecheck (dev)
+
+# The gate for `tsconfig.dev.json` — the only configuration that compiles
+# `tests/`, `examples/` and `benchmarks/` alongside `src/` (#540).
+#
+# Why it is its own workflow rather than a step in test.yml:
+#
+#   - **Path filters are per-workflow, not per-job.**  test.yml triggers on
+#     `src/**` and `tests/**` only, so a step added there would never fire on
+#     an `examples/**` or `benchmarks/**` change — the very changes this
+#     configuration exists to cover.  Widening test.yml's filters instead
+#     would run the full ~4-minute suite plus the coverage gate on every
+#     example edit.
+#   - **It is cheap.**  One `tsc --noEmit` over the whole tree, seconds after
+#     the install, so it can be a required check without slowing anything.
+#
+# What it catches that nothing else does: `bun test` transpiles without
+# type-checking and `bun run typecheck` uses the build tsconfig, which
+# excludes all three trees.  Between them, an entire class of defect was
+# invisible — an exported class narrower than the interface it implements
+# (`NoopLogger`, `NoopMetricsRegistry`, `HashAllocationStrategy.allocate`),
+# an exported type nothing could satisfy (`OtelContextLike`), a documented
+# call shape that never compiled (`SchemaRegistry.eventAdapter` into
+# `PersistentActor`) — all of it compiled *for the library* and broke only
+# for a caller, which is what `tests/` and `examples/` are.
+#
+# It also stops the count re-inflating.  The burn-down that made this green
+# cleared 321 diagnostics; two of them had arrived in the days before it,
+# from adoption sweeps that missed an example.
+
+on:
+  # Every branch push: feature work merges locally, so a branch push is
+  # often the only pre-merge signal.
+  push:
+    branches: ['**']
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'benchmarks/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/typecheck-dev.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'benchmarks/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.dev.json'
+      - '.github/workflows/typecheck-dev.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege, stated rather than inherited: the repository default is
+# read-only today, but a settings flip would otherwise hand a write token to
+# a job that installs the whole dependency tree.  #621
+permissions:
+  contents: read
+
+jobs:
+  typecheck-dev:
+    runs-on: ubuntu-latest
+    # A `tsc` run over ~1000 files takes well under a minute.  The cap turns
+    # a pathological compile (a circular type, an editor-server hang) into a
+    # red job rather than a stalled queue slot.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here talks to the remote, and the step below installs
+          # the entire devDependency tree.  A pushable credential left in
+          # `.git/config` is pure attack surface for it (#622).
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      # Frozen, like every other install in CI: an unfrozen resolve can
+      # green-light a dependency set no lockfile records, so the check
+      # passes against something nobody can reproduce.  #622
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck tests, examples and benchmarks
+        run: bun run typecheck:dev

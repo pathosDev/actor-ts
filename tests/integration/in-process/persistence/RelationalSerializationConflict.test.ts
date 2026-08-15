@@ -71,6 +71,21 @@ function journalOn(pool: ContendedMariaDbPool): MariaDbJournal {
   return new MariaDbJournal(MariaDbJournalOptions.create().withPool(pool));
 }
 
+/**
+ * Await a call that must reject and hand back the `Error`.
+ *
+ * The suite used to write `.catch((e: Error) => e)`, which types the result
+ * as `Success | Error` — so every `failure.name` below was reaching through
+ * a union that might have been a row array.  This also turns a *successful*
+ * call into a failure here rather than into a confusing assertion further
+ * down.
+ */
+async function rejectionOf(call: Promise<unknown>): Promise<Error> {
+  const failure = await call.then(() => null, (e: unknown) => e as Error);
+  if (failure === null) throw new Error('expected the call to reject, but it resolved');
+  return failure;
+}
+
 describe('RelationalJournal — a contention abort that lost a race', () => {
   test('reports JournalConcurrencyError with the head the winner left', async () => {
     const pool = new ContendedMariaDbPool();
@@ -82,7 +97,7 @@ describe('RelationalJournal — a contention abort that lost a race', () => {
     pool.abortNextInsertInto = 'events';
     pool.beforeAbort = async () => { await rival.append('pid', [{ event: 'winner' }], 0); };
 
-    const failure = await journal.append('pid', [{ event: 'loser' }], 0).catch((e: Error) => e);
+    const failure = await rejectionOf(journal.append('pid', [{ event: 'loser' }], 0));
     expect(failure.name).toBe('JournalConcurrencyError');
     expect((failure as unknown as { expectedSeq: number }).expectedSeq).toBe(0);
     expect((failure as unknown as { actualSeq: number }).actualSeq).toBe(1);
@@ -102,7 +117,7 @@ describe('RelationalJournal — a contention abort that lost a race', () => {
       pool.abortNextInsertInto = 'events';
       pool.beforeAbort = async () => { await rival.append('pid', [{ event: 'winner' }], 0); };
 
-      const failure = await journal.append('pid', [{ event: 'loser' }], 0).catch((e: Error) => e);
+      const failure = await rejectionOf(journal.append('pid', [{ event: 'loser' }], 0));
       expect(failure.name).toBe(`JournalConcurrencyError`);
       expect(failure.message).toContain('journal has 1');
     }
@@ -116,7 +131,7 @@ describe('RelationalJournal — a contention abort that did NOT lose a race', ()
     // Nobody moved the head — this is a lock problem, not a lost race.
     pool.abortNextInsertInto = 'events';
 
-    const failure = await journal.append('pid', [{ event: 'only' }], 0).catch((e: Error) => e);
+    const failure = await rejectionOf(journal.append('pid', [{ event: 'only' }], 0));
     expect(failure.name).toBe('JournalError');
     expect(failure.message).toContain('1020');
     // Reporting a concurrency conflict here would send the caller into a
@@ -135,7 +150,7 @@ describe('RelationalDurableStateStore — the same hole', () => {
     await store.upsert('pid', 1, { count: 2 });   // revision 2 — someone else won
 
     pool.abortNextInsertInto = 'durable_state';
-    const failure = await store.upsert('pid', 0, { count: 9 }).catch((e: Error) => e);
+    const failure = await rejectionOf(store.upsert('pid', 0, { count: 9 }));
     expect(failure.name).toBe('DurableStateConcurrencyError');
     expect((failure as unknown as { expected: number }).expected).toBe(0);
     expect((failure as unknown as { actual: number }).actual).toBe(2);
@@ -148,7 +163,7 @@ describe('RelationalDurableStateStore — the same hole', () => {
     );
     pool.abortNextInsertInto = 'durable_state';
 
-    const failure = await store.upsert('pid', 0, { count: 1 }).catch((e: Error) => e);
+    const failure = await rejectionOf(store.upsert('pid', 0, { count: 1 }));
     expect(failure.name).toBe('JournalError');
   });
 });

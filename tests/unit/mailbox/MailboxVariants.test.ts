@@ -393,7 +393,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('mbox-pri', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Worker extends Actor<{ label: string; pri: number }> {
       override onReceive(m: { label: string; pri: number }): void { probe.tell(m.label); }

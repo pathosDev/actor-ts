@@ -32,7 +32,12 @@ type Row = Record<string, unknown>;
 
 type TableState = {
   readonly table: string;
-  readonly rows: Row[];
+  /**
+   * Not `readonly`: `handleDelete` replaces the whole array rather than
+   * splicing it, so the declaration and the code disagreed — the code is
+   * the one that was right, since this is the fake's own mutable storage.
+   */
+  rows: Row[];
 };
 
 /** Comparison operators the WHERE-clause parser understands. */
