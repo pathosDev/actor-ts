@@ -29,8 +29,9 @@ export type BrokerCommonOptionsType = {
   /**
    * Reconnect strategy applied when the underlying connection drops or
    * `connectImplementation` throws.  Default: exponential backoff starting at
-   * `200ms`, doubling, capped at `30s`, infinite attempts.  Set to
-   * `false` to disable auto-reconnect (one-shot connections).
+   * `200ms`, doubling, capped at `30s`, jittered by ±20 %, infinite
+   * attempts.  Set to `false` to disable auto-reconnect (one-shot
+   * connections).
    */
   readonly reconnect?: false | {
     readonly initialDelayMs?: number;
@@ -38,6 +39,24 @@ export type BrokerCommonOptionsType = {
     readonly factor?: number;
     /** Cap on retry attempts.  Default: `Infinity` (retry forever). */
     readonly maxAttempts?: number;
+    /**
+     * Jitter fraction in `[0, 1]`, applied to every reconnect wake-up.
+     * Default `0.2` (±20 %).
+     *
+     * Without it the delay is a pure function of the attempt counter and
+     * these options, so every broker actor that lost the same broker in the
+     * same instant retries in the same millisecond — a thundering herd that
+     * re-forms on every wave and can keep the recovering broker down
+     * (#652).  `0` restores that fully deterministic schedule.
+     */
+    readonly randomFactor?: number;
+    /**
+     * Override `Math.random` for the jitter — the seam that makes a
+     * reconnect schedule assertable in a test.  No HOCON leaf: a function
+     * cannot come from config, and this is a test seam rather than a
+     * tunable.
+     */
+    readonly random?: () => number;
   };
 
   /**
@@ -66,6 +85,13 @@ export const DEFAULT_RECONNECT = {
   maxDelayMs: 30_000,
   factor: 2,
   maxAttempts: Number.POSITIVE_INFINITY,
+  /**
+   * ±20 %, the same spread `exponentialBackoff` in `pattern/BackoffPolicy`
+   * defaults to.  Jitter is on by default because the failure mode it
+   * prevents — a fleet retrying in lockstep — only shows up in the
+   * deployments least able to absorb it.
+   */
+  randomFactor: 0.2,
 } as const;
 
 export const DEFAULT_OUTBOUND_BUFFER = 1000;
@@ -89,6 +115,9 @@ export function readCommonOptions(config: Config): BrokerCommonOptionsType {
       maxDelayMs: sub.hasPath('maxDelayMs') ? sub.getDuration('maxDelayMs') : undefined,
       factor: sub.hasPath('factor') ? sub.getNumber('factor') : undefined,
       maxAttempts: sub.hasPath('maxAttempts') ? sub.getNumber('maxAttempts') : undefined,
+      // getNumber, not getInt: the jitter factor is a fraction.  `random`
+      // has no leaf — a function cannot come from HOCON.
+      randomFactor: sub.hasPath('randomFactor') ? sub.getNumber('randomFactor') : undefined,
     };
   }
 
@@ -168,6 +197,17 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
         (typeof reconnect.maxAttempts !== 'number' || Number.isNaN(reconnect.maxAttempts) || reconnect.maxAttempts <= 0)
       ) {
         this.fail('reconnect.maxAttempts', 'must be a positive number (Infinity allowed)', reconnect.maxAttempts);
+      }
+      // The bound is checked here rather than left to the scheduling site:
+      // a fraction outside [0, 1] would only ever surface as a nonsensical
+      // delay on a reconnect — i.e. during an outage, which is the worst
+      // moment to learn the config was wrong.  Written as `!(… && …)` so
+      // NaN is rejected too.
+      if (
+        reconnect.randomFactor !== undefined &&
+        (typeof reconnect.randomFactor !== 'number' || !(reconnect.randomFactor >= 0 && reconnect.randomFactor <= 1))
+      ) {
+        this.fail('reconnect.randomFactor', 'must be a number in [0, 1]', reconnect.randomFactor);
       }
     }
 

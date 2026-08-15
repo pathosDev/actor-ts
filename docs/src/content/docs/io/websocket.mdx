@@ -68,9 +68,10 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
 ```
 
 Because the settings extend `BrokerCommonOptionsType`, the
-`reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
-`outboundBuffer`, and `circuitBreaker` blocks all apply — see the
-[BrokerActor base](/io/broker-actor-base/) for their semantics.
+`reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer`, and `circuitBreaker` blocks all
+apply — see the [BrokerActor base](/io/broker-actor-base/) for their
+semantics.
 
 ## Sending and receiving
 
@@ -200,7 +201,8 @@ An unexpected disconnect is handled by the
   `BrokerDisconnected` on the event stream.
 - The reconnect cycle starts, with exponential backoff per the
   `reconnect` settings (`initialDelayMs`, `maxDelayMs`, `factor`,
-  `maxAttempts`).
+  `maxAttempts`) — jittered by `randomFactor` (default ±20 %) so a
+  fleet does not reconnect in lockstep.
 - After a successful re-connect, `onConnected()` runs and
   `BrokerConnected` fires.
 
@@ -243,7 +245,7 @@ actor-ts.io.broker.websocket {
   protocols       = ["my-proto-v1"]
   pingIntervalMs  = 30000
   maxFrameBytes   = 1048576
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0 }   // maxAttempts omitted = unlimited (the default)
+  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { /* ... */ }
   outboundBuffer  { /* ... */ }
 }

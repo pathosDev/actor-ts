@@ -18,6 +18,7 @@ import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { Terminated } from '../../../../../src/SystemMessages.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
+import { Scheduler, type Cancellable } from '../../../../../src/Scheduler.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /** `Terminated` arrives via `onReceive` but is not in the typed command union. */
@@ -357,6 +358,181 @@ describe('BrokerActor — reconnect', () => {
     expect(broker.connectAttempts).toBeGreaterThanOrEqual(2);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(reconnectAttempts).toBeGreaterThanOrEqual(1);
+    await sys.terminate();
+  });
+});
+
+/* ------------------------- Reconnect jitter (#652) ---------------------- */
+
+/**
+ * Records every one-shot delay the system asks for.  Both reconnect
+ * wake-ups go through `scheduleOnceFunction`, and observing the *requested*
+ * delay rather than the achieved one keeps the assertions independent of
+ * how loaded the machine is — which matters most for the circuit-breaker
+ * path, whose wake-up publishes no event to key off.
+ */
+class RecordingScheduler extends Scheduler {
+  readonly delays: number[] = [];
+  override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    this.delays.push(delayMs);
+    return super.scheduleOnceFunction(delayMs, task);
+  }
+}
+
+/**
+ * Subscribe a probe that records the first `BrokerReconnectAttempt` delay
+ * per endpoint.  Keying on the endpoint (rather than the actor path) is
+ * what lets one system host two brokers whose schedules a test can tell
+ * apart without knowing which anonymous path each one got.
+ */
+function recordFirstDelayPerEndpoint(sys: ActorSystem): Map<string, number> {
+  const firstDelays = new Map<string, number>();
+  sys.eventStream.subscribe(
+    sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(m: unknown): void {
+        const attempt = m as BrokerReconnectAttempt;
+        if (!firstDelays.has(attempt.endpoint)) firstDelays.set(attempt.endpoint, attempt.delayMs);
+      }
+    })()),
+    BrokerReconnectAttempt,
+  );
+  return firstDelays;
+}
+
+describe('BrokerActor — reconnect jitter (#652)', () => {
+  test('two actors that fail in the same instant do not retry in the same millisecond', async () => {
+    const sys = makeSystem('jit-1');
+    const firstDelays = recordFirstDelayPerEndpoint(sys);
+    // Identical policy, identical failure instant, identical attempt
+    // counter: un-jittered, both actors compute byte-identical delays and
+    // hit the recovering broker together on every wave.
+    const policy = { initialDelayMs: 100, maxDelayMs: 100, factor: 1, randomFactor: 0.5 } as const;
+    for (const endpoint of ['herd-a', 'herd-b']) {
+      spawnFake(sys, { endpoint, reconnect: policy }, (broker) => { broker.failNextConnects = 1; });
+    }
+
+    await awaitCondition(() => firstDelays.size === 2, { label: 'both brokers scheduled a reconnect' });
+    const a = firstDelays.get('herd-a')!;
+    const b = firstDelays.get('herd-b')!;
+    expect(a).not.toBe(b);
+    // Both still inside ±50 % of the un-jittered 100 ms.
+    for (const delay of [a, b]) {
+      expect(delay).toBeGreaterThanOrEqual(50);
+      expect(delay).toBeLessThanOrEqual(150);
+    }
+    await sys.terminate();
+  });
+
+  test('the random seam pins the delay to an exact value', async () => {
+    const sys = makeSystem('jit-2');
+    const firstDelays = recordFirstDelayPerEndpoint(sys);
+    const base = { initialDelayMs: 100, maxDelayMs: 100, factor: 1, randomFactor: 0.25 } as const;
+    // random() === 1 maps to the top of the band, random() === 0 to the bottom.
+    spawnFake(sys, { endpoint: 'top', reconnect: { ...base, random: () => 1 } },
+      (broker) => { broker.failNextConnects = 1; });
+    spawnFake(sys, { endpoint: 'bottom', reconnect: { ...base, random: () => 0 } },
+      (broker) => { broker.failNextConnects = 1; });
+
+    await awaitCondition(() => firstDelays.size === 2, { label: 'both brokers scheduled a reconnect' });
+    expect(firstDelays.get('top')).toBe(125);
+    expect(firstDelays.get('bottom')).toBe(75);
+    await sys.terminate();
+  });
+
+  test('randomFactor: 0 restores the un-jittered schedule, factor included', async () => {
+    const sys = makeSystem('jit-3');
+    const delays: number[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(m: unknown): void { delays.push((m as BrokerReconnectAttempt).delayMs); }
+      })()),
+      BrokerReconnectAttempt,
+    );
+    // factor 3 — a base `exponentialBackoff` cannot express, which is why
+    // the broker keeps its own arithmetic.
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: { initialDelayMs: 40, maxDelayMs: 10_000, factor: 3, randomFactor: 0 } },
+      (broker) => { broker.failNextConnects = 2; },
+    );
+    await brokerReady;
+
+    await awaitCondition(() => delays.length >= 2, { label: 'two reconnect attempts were scheduled' });
+    expect(delays.slice(0, 2)).toEqual([40, 120]);
+    await sys.terminate();
+  });
+
+  test('reconnect.randomFactor resolves from HOCON', async () => {
+    const sys = makeSystem('jit-4', {
+      'actor-ts': {
+        io: {
+          broker: {
+            fake: {
+              endpoint: 'cfg.local',
+              reconnect: { initialDelayMs: 100, maxDelayMs: 100, factor: 1, randomFactor: 0 },
+            },
+          },
+        },
+      },
+    });
+    const firstDelays = recordFirstDelayPerEndpoint(sys);
+    spawnFake(sys, {}, (broker) => { broker.failNextConnects = 1; });
+
+    await awaitCondition(() => firstDelays.size === 1, { label: 'the broker scheduled a reconnect' });
+    // Exactly 100 only if the leaf was read: an unset randomFactor falls
+    // through to the built-in 0.2 and jitters the delay off the round number.
+    expect(firstDelays.get('cfg.local')).toBe(100);
+    await sys.terminate();
+  });
+
+  test('an open circuit breaker wakes on a spread deadline, never before it', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'jit-5', scheduler });
+    // failureThreshold 1 → the breaker opens on the first failure, so the
+    // second `_tryConnect` takes the early-return path that never reaches
+    // the backoff calculation.  A 5 ms backoff gets it there promptly.
+    spawnFake(
+      sys,
+      {
+        endpoint: 'host:1',
+        circuitBreaker: { failureThreshold: 1, resetMs: 400 },
+        reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 1, random: () => 1 },
+      },
+      (broker) => { broker.failNextConnects = 5; },
+    );
+
+    await awaitCondition(() => scheduler.delays.some((d) => d > 400), {
+      label: 'the breaker wake-up was scheduled',
+    });
+    const breakerWait = scheduler.delays.find((d) => d > 400)!;
+    // Un-jittered this is exactly the time left on the deadline (< 400 ms).
+    // One-sided jitter with random() === 1 doubles it, and never shortens it.
+    expect(breakerWait).toBeGreaterThan(600);
+    expect(breakerWait).toBeLessThanOrEqual(800);
+    await sys.terminate();
+  });
+
+  test('randomFactor: 0 leaves the breaker wake-up on the bare deadline', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'jit-6', scheduler });
+    // The control for the test above: same shape, jitter off.  It pins the
+    // recorded delay to `resetMs`, which is what makes the >600 ms reading
+    // there attributable to the spread rather than to scheduler noise.
+    spawnFake(
+      sys,
+      {
+        endpoint: 'host:1',
+        circuitBreaker: { failureThreshold: 1, resetMs: 400 },
+        reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 },
+      },
+      (broker) => { broker.failNextConnects = 5; },
+    );
+
+    await awaitCondition(() => scheduler.delays.some((d) => d > 300), {
+      label: 'the breaker wake-up was scheduled',
+    });
+    const breakerWait = scheduler.delays.find((d) => d > 300)!;
+    expect(breakerWait).toBeLessThanOrEqual(400);
     await sys.terminate();
   });
 });

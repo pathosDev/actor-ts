@@ -129,12 +129,18 @@ Konfigurierbar über `BrokerCommonOptionsType`:
     initialDelayMs: 200,
     maxDelayMs:     30_000,
     factor:         2,
+    randomFactor:   0.2,
     // maxAttempts weggelassen → Infinity (endlos wiederholen); eine
     // endliche positive Zahl begrenzt die Versuche.  reconnect: false
     // schaltet ihn ab.
   }
 }
 ```
+
+Jede Verzögerung wird mit `1 ± randomFactor` gejittert (Default ±20 %),
+damit eine Flotte von Broker-Actors, die denselben Broker gemeinsam
+verloren hat, nicht im Gleichschritt wiederholt; `randomFactor: 0`
+schaltet das ab.
 
 Jeder Versuch löst ein `BrokerReconnectAttempt`-Event aus.  Wenn
 `maxAttempts` überschritten wird (sofern endlich), meldet der Actor
