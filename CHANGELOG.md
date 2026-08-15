@@ -413,6 +413,111 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Large` the other two backends already sent. Raise `maxBodyBytes` on the
   backend options where an endpoint genuinely takes more.
 
+- **`entity()` answers 415 for a Content-Type it cannot decode, and
+  decodes `application/x-www-form-urlencoded` form bodies (#669).**
+
+  Every content type the request-side table did not recognise was handed
+  to a `JsonSerializer`. For `text/xml` that surfaced as a misleading `400
+  Cannot decode body: Unexpected token <`; for
+  `application/x-www-form-urlencoded` — what a browser `<form>` and a bare
+  `curl -d` both send — the same 400, so form POSTs were simply
+  undeliverable. Worse, when an unrecognised type carried a body that
+  happened to parse as JSON, the call did not fail at all: it succeeded on
+  a codec the client never asked for. `Status.UnsupportedMediaType` had
+  existed since the beginning and was referenced nowhere in `src/`.
+
+  The request side now reduces the header to a bare media type and looks
+  that up exactly, decoding form bodies into a flat record of strings and
+  rejecting anything else with a 415 that names the accepted set — as an
+  `Accept` response header (RFC 9110 §12.5.1: what to send next time) and
+  as an `accepted` field in the body, both derived from the dispatch table
+  so they cannot drift from what actually decodes.
+
+  The matching was replaced rather than fenced off with a rejection
+  branch, because the old table was not safe to make authoritative. It
+  tested unanchored regexes against the *whole* header, so
+  `multipart/form-data; boundary=----application/cbor` selected the CBOR
+  entry off its boundary parameter. That was harmless noise while every
+  miss fell back to JSON, and a straight bypass of the rejection the
+  moment a miss became a 415 — a caller could pick a decoder, and slip
+  past the 415, by naming one inside a parameter.
+
+  Two shapes are deliberately still accepted. RFC 6839 structured-syntax
+  suffixes follow their base type, so `application/vnd.api+json`,
+  `application/merge-patch+json` and `application/problem+json` keep
+  decoding — they had only ever worked by missing the table and hitting
+  the fallback, and a strict 415 without this rule would have turned three
+  working request shapes into rejections. And a *missing* Content-Type
+  still defaults to JSON rather than joining the rejected set: RFC 9110
+  §8.3 leaves a recipient free to guess when the sender states nothing,
+  and `HttpClient.normaliseHeaders` sets the header only for object
+  bodies, so a string body ships bare and a blanket rule would have
+  rejected the framework's own client.
+
+  Form decoding lives in the new `FormUrlEncodedSerializer` under
+  `src/http/` rather than beside `JsonSerializer`, because form encoding
+  is not a wire codec — no types, no nesting — and is deliberately not
+  registered with `SerializationExtension`. It writes decoded fields with
+  `Object.defineProperty`: plain assignment is `[[Set]]`, and a repeated
+  `__proto__=a&__proto__=b` decodes to an array, which the inherited
+  setter would use to re-parent the decoded record.
+
+  Response-side 406 is not part of this and #669 stays open for it.
+
+  *Migration:* Two behaviour changes need checking. First, a request whose
+  Content-Type is outside `application/json`, `application/cbor`,
+  `application/x-cbor`, `application/x-www-form-urlencoded` (plus `+json`
+  / `+cbor` suffixes) now gets a 415 where it previously got the JSON
+  fallback — set the correct header on the client, or branch on the media
+  type before calling `entity()` if the endpoint really does accept
+  something else. `application/*`, which the old regex matched, is no
+  longer accepted as a *request* type; a wildcard is not a valid
+  Content-Type and no in-repo caller sent one. Second, and much louder:
+  `curl -d '{"id":"alice"}' …` with no `-H` sends
+  `application/x-www-form-urlencoded`, and that request used to succeed
+  because `JSON.parse` happened to accept the body — it now decodes as a
+  form into `{ '{"id":"alice"}': '' }`, with no error and a wrong value.
+  Any client posting JSON without an explicit `Content-Type:
+  application/json` must set the header. Finally, `pickRequestSerializer`
+  is exported from `actor-ts/http` and was a total function; it now throws
+  `HttpError(415)`, so direct callers outside a route handler need a
+  try/catch or a pre-check.
+
+- **The typed `Behaviors.withStash` buffer now replays ahead of the
+  mailbox, and reaches dead letters when the actor stops or restarts
+  (#639).**
+
+  `StashBuffer.unstashAll()` replayed with `self.tell`, which appends to
+  the *tail* of the user queue. Every message that arrived while the stash
+  was filling was therefore handled before the replay — the exact
+  inversion stashing exists to prevent, and the opposite of the prepend
+  `ActorContext.unstashAll()` has always performed and the docs promised
+  for both forms. The typed buffer was also never drained on the way out:
+  `TypedActor` collected its stash buffers into a field nothing in the
+  repository read, so a stop or a restart discarded the parked messages in
+  silence. That is the loss #518 fixed for the cell's own stash, in the
+  half of the framework that fix did not reach — and it is the worst shape
+  a lost message can take, because a stashed message arrived *before*
+  everything still queued and is the one a sender is most likely waiting
+  on.
+
+  The replay now goes through the cell's mailbox prepend, so stashed
+  messages come out ahead of anything queued behind the unstash trigger,
+  still in the order they were stashed. Whatever is left parked is
+  published as a `DeadLetter` on all three exits: the stop path, the
+  cell's restart, and the restart a `Behaviors.supervise` strategy
+  performs on its own — that last one re-resolves the behavior in place
+  and never reaches the cell, so it needed its own drain.
+
+  The typed buffer keeps its own storage rather than folding into the
+  cell's, and that is deliberate: `StashBuffer.stash(message)` takes an
+  arbitrary value where `context.stash()` can only park the message
+  currently being handled, and the capacity stays the one passed to
+  `withStash` rather than one actor-wide default. The one consequence is
+  that a dead letter minted from this buffer carries no original sender,
+  since there is no single sender to attribute a buffer of bare messages
+  to.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
@@ -575,6 +680,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   unaffected. And an `OptionsError` from a malformed WebSocket policy (a
   bad HOCON enum, a non-positive byte cap) now throws from `bind()`
   instead of from the first upgrade.
+
+- **Security scanning and a security policy: CodeQL, an advisory gate over
+  `bun.lock`, a CycloneDX SBOM on every release, and a `SECURITY.md` that
+  names a channel (#539).**
+
+  The repository had never been statically analysed once —
+  `code-scanning/alerts` answered 404 "no analysis found" — and had no
+  security policy, while the security issue template told reporters to
+  "first check the project's security policy in `SECURITY.md` (or, if
+  absent, contact the maintainer privately)". Both halves of that sentence
+  pointed nowhere: the file had never existed in the history, and no
+  private channel was named anywhere. Anyone following the instruction
+  either disclosed in public or gave up.
+
+  `SECURITY.md` now names GitHub private vulnerability reporting as the
+  channel, with a fallback that works even before that repository setting
+  is enabled: a content-free `[Security]` placeholder asking for a private
+  channel, which discloses nothing. It also writes down the scope
+  boundary, which is the part a generic policy cannot carry — the cluster
+  transport ships as plain TCP without peer authentication **on purpose**,
+  documented next to the TLS recipe, so a report of that default is not a
+  vulnerability, while a documented mitigation that fails to deliver what
+  it promises is one. The issue template drops the hedge and links the
+  policy.
+
+  `codeql.yml` analyses the whole repository on pull requests, on pushes
+  to `main` and `develop`, and weekly — weekly because CodeQL ships new
+  queries continuously, so a file that was clean when it was written can
+  be flagged months later with nobody having touched it. It runs the
+  default high-precision query suite rather than `security-extended`: the
+  first analysis of a codebase this size produces an unknown number of
+  alerts and each one has to be fixed or dismissed with a recorded reason
+  before the baseline means anything.
+
+  The advisory gate is `bun audit` rather than
+  `actions/dependency-review-action`, and the difference is not stylistic.
+  GitHub's dependency graph does not resolve this repository's root Bun
+  lockfile — it records `fastify ^5.10.0`, the unresolved range out of
+  package.json, and carries no `find-my-way` entry at all while `bun.lock`
+  pins 9.6.0. That is why every Dependabot alert this repository has ever
+  raised comes from the npm lockfiles under `examples/` and none from the
+  shipped closure. `bun run lint:audit` reads the lockfile directly and
+  gates `package-health.yml`, on the existing triggers plus a weekly cron,
+  because an advisory is published upstream against a lockfile that did
+  not change. It ships baselined: the eleven high advisories already
+  present are suppressed by ID and listed in `SECURITY.md`, with a test
+  that fails if the two sets drift apart, so the gate is green from its
+  first run and still fails on everything new.
+
+  Every GitHub Release now carries a CycloneDX SBOM. `--provenance`
+  already answered who built a tarball; the SBOM answers what is inside
+  it, so "is release X affected by advisory Y" no longer requires
+  reconstructing the closure by hand. It is generated in its own job and
+  uploaded from a second one, because a job that can push to the
+  repository must not also run the postinstall scripts of the entire
+  dependency tree, and the scan is narrowed to what the package actually
+  ships — otherwise the ten manifests under `docs/`, `tests/` and the
+  example front-ends would land in the document as though they shipped.
 
 ## [0.16.0] — 2026-08-15
 
