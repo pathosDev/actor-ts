@@ -41,13 +41,13 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 25)
 
 type Node = { system: ActorSystem; cluster: Cluster; kit: TestKit };
 
-async function startNode(systemName: string, port: number): Promise<Node> {
+async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<Node> {
   const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const kit = TestKit.create(systemName, kitOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
-    .withSeeds([])
+    .withSeeds(seeds)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withGossipIntervalMs(80);
   const cluster = await Cluster.join(kit.system, clusterOptions);
@@ -74,7 +74,8 @@ class SelfStopper extends Actor<Command> {
 class RecordingLease implements Lease {
   held = false;
   releases = 0;
-  async acquire(): Promise<boolean> { this.held = true; return true; }
+  acquires = 0;
+  async acquire(): Promise<boolean> { this.held = true; this.acquires++; return true; }
   async release(): Promise<void> { this.held = false; this.releases++; }
   async check(): Promise<boolean> { return this.held; }
   onLost(): () => void { return () => {}; }
@@ -137,4 +138,56 @@ describe('ClusterSingleton — an unexpected child death (#1175)', () => {
     node.cluster.singleton.stop('terminal');
     await stopNode(node);
   }, 15_000);
+
+  /**
+   * #637 widened the manager's reconcile trigger from `LeaderChanged` alone to
+   * every event that can move the host, which put this opt-out squarely in the
+   * blast radius: both reconcile paths decide from `want && no child`, and
+   * that reads a terminal stop as "never spawned".  Under the old trigger set
+   * a stable cluster might simply never fire again and hide it; now any member
+   * joining anywhere reconciles, so "do not re-spawn" had to become state
+   * rather than an absence of events.
+   *
+   * The lease is the sharper half of the assertion: a re-acquire would rebuild
+   * exactly the "holding a lease over a dead child" state #1175 released it to
+   * avoid, and would block every other node from hosting too.
+   */
+  test('a membership change after a terminal stop does not resurrect the singleton', async () => {
+    starts = 0;
+    const lease = new RecordingLease();
+    const systemName = 'sng-restart-off-membership';
+    const nodeA = await startNode(systemName, 52403);
+
+    const singletonOptions = StartSingletonOptions.create<Command>()
+      .withTypeName('terminal-membership')
+      .withActor(SelfStopper)
+      .withLease(lease)
+      .withRestartOnTermination(false);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
+
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
+    await waitFor(() => starts === 1);
+    await waitFor(() => lease.held);
+    const acquiresBefore = lease.acquires;
+
+    singletonRef.tell({ kind: 'die' });
+    await waitFor(() => lease.releases >= 1);
+
+    // A second node joins *above* A's address, so A stays the leader and the
+    // only new events are membership ones.  Before the latch this drove a
+    // reconcile straight back into acquire-and-spawn.
+    const nodeB = await startNode(systemName, 52404, [`${systemName}@h:52403`]);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2);
+    expect(nodeA.cluster.isLeader()).toBe(true);
+
+    // Comfortably past the restart backoff and the lease retry interval.
+    await sleep(1_500);
+    expect(starts).toBe(1);
+    expect(lease.held).toBe(false);
+    expect(lease.acquires).toBe(acquiresBefore);
+
+    nodeA.cluster.singleton.stop('terminal-membership');
+    await stopNode(nodeB);
+    await stopNode(nodeA);
+  }, 20_000);
 });

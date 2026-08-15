@@ -2,10 +2,14 @@ import { match, P } from 'ts-pattern';
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cluster } from '../Cluster.js';
-import { LeaderChanged } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
 import { singletonProxyName } from '../../internal/SystemPaths.js';
-import { singletonHost, singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
+import {
+  changesSingletonHost,
+  singletonHost,
+  singletonManagerPath,
+  type SingletonDeliver,
+} from './ClusterSingletonManager.js';
 import { DEFAULT_BUFFER_SIZE } from './StartSingletonOptions.js';
 import type { SingletonKey } from './SingletonKey.js';
 
@@ -13,8 +17,9 @@ import type { SingletonKey } from './SingletonKey.js';
  * Location-transparent handle to a cluster-wide singleton.  Every call to
  * `tell` looks up the current host and forwards to that node's
  * ClusterSingletonManager (via direct `tell` if local, via envelope if
- * remote).  Messages sent before the cluster has a host are
- * buffered and drained when the first `LeaderChanged` event fires.
+ * remote).  Messages sent before the cluster has a host are buffered and
+ * drained on the first cluster event that can have produced one — see
+ * {@link changesSingletonHost}.
  *
  * The proxy extends ActorRef<T> so it can be passed anywhere an ActorRef is
  * expected (e.g. as a sender for ask patterns).  It is not backed by a real
@@ -59,7 +64,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
       .child(singletonProxyName(key.typeName));
     this.unsubscribe = cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+        .with(P.when(changesSingletonHost), () => this.onSingletonHostMayHaveChanged())
         .otherwise(() => this.onOtherClusterEvent()),
     );
     // Drain in case a leader is already known by the time we start.
@@ -176,8 +181,8 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   /**
    * This node is the elected host but runs no manager, so nothing anywhere is
    * hosting the singleton.  Dead-letter rather than buffer: unlike "no host
-   * yet" — which the buffer above handles and `LeaderChanged` drains — this
-   * state does not heal on its own, it heals when someone changes the
+   * yet" — which the buffer above handles and a host-changing event drains —
+   * this state does not heal on its own, it heals when someone changes the
    * deployment, so a buffer would just grow.  The warning is latched so a hot
    * path cannot flood the log.
    */
@@ -196,12 +201,22 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     this.cluster.system.deadLetters.tell(message as never);
   }
 
-  private onLeaderChanged(): void {
+  /**
+   * A host-changing event landed, so whatever is buffered may be routable now.
+   *
+   * This used to be `LeaderChanged` alone, which left a buffer that never
+   * drained rather than one that drained late (#637): a role-restricted
+   * singleton on a cluster whose only member is a role-less leader buffers
+   * every `tell`, and the first role-carrying member to join changes no
+   * leader — so nothing fired, and those messages sat there indefinitely
+   * while every `tell` sent afterwards routed normally.
+   */
+  private onSingletonHostMayHaveChanged(): void {
     this.drainBuffer();
   }
 
   private onOtherClusterEvent(): void {
-    /* leader-change is the only event we react to */
+    /* nothing else can move the host — see `changesSingletonHost` */
   }
 
   private drainBuffer(): void {
