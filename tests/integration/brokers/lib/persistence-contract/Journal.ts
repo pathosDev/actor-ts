@@ -318,6 +318,62 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       },
     },
     {
+      name: 'raiseCompactionMark seeds the high-water mark of a stream with no events',
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('seed-mark');
+        // A journal-to-journal copy of a compacted stream is the caller (#630):
+        // the target has to inherit the prefix the source deleted, or the copy
+        // renumbers every surviving event and detaches it from its snapshot.
+        const raiseCompactionMark = journal.raiseCompactionMark?.bind(journal);
+        try {
+          assert(raiseCompactionMark !== undefined, 'journal implements raiseCompactionMark');
+          await raiseCompactionMark!(persistenceId, 4);
+          assertEqual(await journal.highestSeq(persistenceId), 4, 'the mark becomes the high-water mark');
+          assertEqual(await journal.read(persistenceId, 1), [], 'no events are invented');
+          // The mark is what `expectedSeq` is checked against, so a writer that
+          // believes the stream is empty is rejected rather than renumbering it.
+          const error = await expectThrows(
+            () => journal.append(persistenceId, [{ event: 'x' }], 0),
+            'JournalConcurrencyError',
+            'append below the seeded mark',
+          ) as JournalConcurrencyError;
+          assertEqual(error.actualSeq, 4, 'the rejection reports the seeded mark');
+          const written = await journal.append(persistenceId, [{ event: 'e5' }], 4);
+          assertEqual(written.map((e) => e.sequenceNr), [5], 'append continues the source numbering');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      name: 'raiseCompactionMark is monotonic and never deletes events',
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('monotonic-mark');
+        const raiseCompactionMark = journal.raiseCompactionMark?.bind(journal);
+        try {
+          assert(raiseCompactionMark !== undefined, 'journal implements raiseCompactionMark');
+          await journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
+          // Below the head: a sequence number handed out once may never be
+          // handed out again, so this must not rewind anything.
+          await raiseCompactionMark!(persistenceId, 1);
+          assertEqual(await journal.highestSeq(persistenceId), 3, 'a lower mark does not rewind the head');
+          assertEqual((await journal.read(persistenceId, 1)).length, 3, 'raising a mark deletes nothing');
+
+          await raiseCompactionMark!(persistenceId, 10);
+          assertEqual(await journal.highestSeq(persistenceId), 10, 'a higher mark is adopted');
+          // Idempotent, so re-running an interrupted migration is free.
+          await raiseCompactionMark!(persistenceId, 10);
+          assertEqual(await journal.highestSeq(persistenceId), 10, 'repeating the same mark is a no-op');
+          const written = await journal.append(persistenceId, [{ event: 'e11' }], 10);
+          assertEqual(written.map((e) => e.sequenceNr), [11], 'append continues from the raised mark');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
       name: 'delete is idempotent and tolerates an unknown persistence id',
       async run(harness) {
         const journal = await harness.make();

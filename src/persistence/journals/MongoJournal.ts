@@ -201,6 +201,20 @@ export class MongoJournal extends MongoStore implements Journal {
     }
   }
 
+  /** The same `$max` upsert `delete` ends with, without the `deleteMany`. */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const { database } = await this.ensureOpen();
+    try {
+      await this.meta(database).updateOne(
+        { _id: persistenceId },
+        { $max: { deletedTo: throughSeq } },
+        { upsert: true },
+      );
+    } catch (e) {
+      this.fail('raiseCompactionMark', e);
+    }
+  }
+
   /**
    * No `persistenceIdsPaginated` counterpart, deliberately.  `distinct` is the
    * only way to reach the id set through this driver shim and it has no

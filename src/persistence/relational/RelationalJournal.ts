@@ -209,6 +209,21 @@ export class RelationalJournal extends RelationalStore implements Journal {
     }
   }
 
+  /**
+   * The same `deleted_to` upsert `delete` ends with, without the two DELETEs
+   * in front of it.  Every dialect spells it monotonically (`GREATEST`,
+   * `MAX`, a `MERGE` guarded on `<`), so a mark already at or above
+   * `throughSeq` is left alone by the statement itself.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const pool = await this.ensureOpen();
+    try {
+      await pool.query(this.statements.upsertDeletedTo, [persistenceId, throughSeq]);
+    } catch (e) {
+      this.fail('raiseCompactionMark', e);
+    }
+  }
+
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
     try {

@@ -207,6 +207,19 @@ export class SqliteJournal implements Journal {
     }
   }
 
+  /**
+   * The same upsert `delete` ends with, without the two DELETEs in front of
+   * it — `MAX(deleted_to, excluded.deleted_to)` makes it monotonic on its own.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    await this.ensureOpen();
+    try {
+      this.stmts!.upsertDeletedTo.run(persistenceId, throughSeq);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.raiseCompactionMark failed: ${(e as Error).message}`, e);
+    }
+  }
+
   async persistenceIds(): Promise<string[]> {
     await this.ensureOpen();
     try {
