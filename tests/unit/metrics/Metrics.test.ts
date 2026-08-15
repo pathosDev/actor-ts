@@ -62,7 +62,9 @@ describe('DefaultMetricsRegistry — Histogram', () => {
   test('default buckets match the documented Prom defaults', () => {
     const histogram = new DefaultMetricsRegistry().histogram('latency');
     // The +Inf bucket is appended internally.
-    expect(histogram.buckets.slice(0, -1)).toEqual(DEFAULT_HISTOGRAM_BUCKETS);
+    // Spread rather than widen the constant: `DEFAULT_HISTOGRAM_BUCKETS` is
+    // `readonly number[]` on purpose, and `toEqual` wants a mutable array.
+    expect(histogram.buckets.slice(0, -1)).toEqual([...DEFAULT_HISTOGRAM_BUCKETS]);
     expect(histogram.buckets[histogram.buckets.length - 1]).toBe(Number.POSITIVE_INFINITY);
   });
 
