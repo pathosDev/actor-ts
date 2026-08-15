@@ -1,13 +1,21 @@
 /**
- * #586 — end-to-end proof that the Hono backend's frame cap is enforced by the
- * *transport*, not only by the connection actor.
+ * #586 / #373 — end-to-end proof that a WebSocket route's frame cap is
+ * enforced by the *transport*, not only by the connection actor, and that the
+ * number the transport enforces is the route's own.
  *
- * The discriminator matters: the shared backend suite's oversize case caps a
- * route at 64 KiB and sends 80 KiB, which is inside every runtime's own
- * buffering window, so it stays green whether or not a transport cap exists.
- * Here the route is opened *wider* than the transport cap on purpose, and the
- * frame sits between the two.  Only a runtime-level limit can reject it — the
- * application layer would happily accept it.
+ * The discriminator matters: the shared backend suite's oversize case sends a
+ * frame only slightly over the route's cap, which is inside every runtime's
+ * own buffering window, so it stays green whether or not a transport cap
+ * exists.  Here each route is deliberately set *away* from the framework
+ * default and the frame sits between the two numbers, so only a transport
+ * limit derived from the route can produce the expected outcome:
+ *
+ *   - a 64 KiB route refusing a 2 MiB frame proves the cap is installed at
+ *     all, and installed *below* the 1 MiB default (#586 kept that frame
+ *     inside the transport window, and it was the actor that refused it);
+ *   - an 8 MiB route accepting a 2 MiB frame proves the cap is the route's
+ *     and not the default (before #373 the transport cut this one off, and
+ *     this test asserted that as correct).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -35,8 +43,12 @@ class EchoServer extends WebsocketServerActor<EchoOut, EchoIn> {
   }
 }
 
-/** Route cap deliberately above the transport cap — see the file header. */
-const ROUTE_FRAME_CAP_BYTES = 8 * 1024 * 1024;
+/** Route cap deliberately above the framework default — see the file header. */
+const WIDE_ROUTE_FRAME_CAP_BYTES = 8 * 1024 * 1024;
+/** Route cap deliberately below it. */
+const NARROW_ROUTE_FRAME_CAP_BYTES = 64 * 1024;
+/** The frame both routes are probed with — between the two caps. */
+const PROBE_FRAME_BYTES = 2 * 1024 * 1024;
 
 const systems: ActorSystem[] = [];
 const bindings: ServerBinding[] = [];
@@ -48,19 +60,37 @@ afterEach(async () => {
   await Promise.all(systems.splice(0).map((s) => s.terminate().catch(() => {})));
 });
 
-async function bindEchoServer(accepted: number[]): Promise<string> {
+async function bindEchoServer(accepted: number[], maxFrameBytes: number): Promise<string> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('ws-transport-frame-cap', systemOptions);
   systems.push(system);
   const server = system.spawn(() => new EchoServer(accepted), 'echo-server');
-  const routeOptions = WebsocketRouteOptions.create().withMaxFrameBytes(ROUTE_FRAME_CAP_BYTES);
+  const routeOptions = WebsocketRouteOptions.create().withMaxFrameBytes(maxFrameBytes);
   const binding = await system
     .extension(HttpExtensionId)
     .newServerAt('127.0.0.1', 0)
     .useBackend(new HonoBackend())
     .bind(websocket('/ws', server, routeOptions));
+  bindings.push(binding);
+  return `ws://127.0.0.1:${binding.port}/ws`;
+}
+
+/** Same, but the cap comes only from HOCON — no route option at all. */
+async function bindEchoServerConfiguredOnly(accepted: number[], maxFrameBytes: number): Promise<string> {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig({ 'actor-ts': { http: { websocket: { maxFrameBytes } } } });
+  const system = ActorSystem.create('ws-transport-frame-cap-hocon', systemOptions);
+  systems.push(system);
+  const server = system.spawn(() => new EchoServer(accepted), 'echo-server');
+  const binding = await system
+    .extension(HttpExtensionId)
+    .newServerAt('127.0.0.1', 0)
+    .useBackend(new HonoBackend())
+    .bind(websocket('/ws', server));
   bindings.push(binding);
   return `ws://127.0.0.1:${binding.port}/ws`;
 }
@@ -88,17 +118,23 @@ function replyOrClose(socket: WebSocket, timeoutMs = 5000): Promise<{ kind: 'mes
   });
 }
 
-describe('Hono backend — transport-level WebSocket frame cap (#586)', () => {
-  test('a frame over the transport cap is cut off even though the route allows it', async () => {
+/** A JSON `echo` message whose serialised form is at least `bytes` long. */
+function probeFrame(bytes: number): string {
+  const frame = JSON.stringify({ kind: 'echo', text: 'x'.repeat(bytes) });
+  expect(frame.length).toBeGreaterThanOrEqual(bytes);
+  return frame;
+}
+
+describe('Hono backend — transport-level WebSocket frame cap (#586, #373)', () => {
+  test('a frame above the route\'s own cap is cut off by the transport', async () => {
     const accepted: number[] = [];
-    const url = await bindEchoServer(accepted);
+    const url = await bindEchoServer(accepted, NARROW_ROUTE_FRAME_CAP_BYTES);
     const socket = await wsOpen(url);
 
-    // Comfortably over the 1 MiB transport cap, comfortably under the route's
-    // 8 MiB — the byte range that only a runtime-level limit can refuse.
-    const oversize = JSON.stringify({ kind: 'echo', text: 'x'.repeat(2 * 1024 * 1024) });
-    expect(oversize.length).toBeGreaterThan(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
-    expect(oversize.length).toBeLessThan(ROUTE_FRAME_CAP_BYTES);
+    // Over the route's 64 KiB *and* over the framework's 1 MiB default, so a
+    // transport still wired to the default would refuse it too — what
+    // separates the two is the raised-cap test below.
+    const oversize = probeFrame(PROBE_FRAME_BYTES);
     const pending = replyOrClose(socket);
     socket.send(oversize);
     const outcome = await pending;
@@ -116,11 +152,53 @@ describe('Hono backend — transport-level WebSocket frame cap (#586)', () => {
     expect(accepted).toEqual([]);
   });
 
+  test('a route that raises maxFrameBytes past the default really receives that frame', async () => {
+    // The #373 case.  Before it, the transport was wired to the 1 MiB
+    // framework default whatever the route said, so this frame — comfortably
+    // over the default and comfortably under the route's cap — was cut off,
+    // and a test in this very file asserted that as correct behaviour.
+    const accepted: number[] = [];
+    const url = await bindEchoServer(accepted, WIDE_ROUTE_FRAME_CAP_BYTES);
+    const socket = await wsOpen(url);
+
+    const oversize = probeFrame(PROBE_FRAME_BYTES);
+    expect(oversize.length).toBeGreaterThan(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
+    expect(oversize.length).toBeLessThan(WIDE_ROUTE_FRAME_CAP_BYTES);
+    const pending = replyOrClose(socket);
+    socket.send(oversize);
+
+    expect(await pending).toEqual({ kind: 'message' });
+    expect(accepted).toEqual([PROBE_FRAME_BYTES]);
+    socket.close();
+  });
+
+  test('a HOCON-lowered cap narrows the transport window too', async () => {
+    // The direction the issue never mentioned and the cheaper half of the
+    // fix: an operator who lowers the cap server-wide used to keep a 1 MiB
+    // buffering window regardless, which is the allocation amplification the
+    // cap exists to prevent.
+    const accepted: number[] = [];
+    const url = await bindEchoServerConfiguredOnly(accepted, NARROW_ROUTE_FRAME_CAP_BYTES);
+    const socket = await wsOpen(url);
+
+    // Under the framework default, over the configured cap — only a transport
+    // that read the configuration can refuse this one before the actor does.
+    const oversize = probeFrame(256 * 1024);
+    expect(oversize.length).toBeLessThan(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
+    const pending = replyOrClose(socket);
+    socket.send(oversize);
+    const outcome = await pending;
+
+    expect(outcome.kind).toBe('close');
+    expect([1006, 1009]).toContain((outcome as { code: number }).code);
+    expect(accepted).toEqual([]);
+  });
+
   test('a frame under the transport cap still reaches the actor', async () => {
     // Guards the obvious over-correction — a cap that closed everything would
-    // pass the test above.
+    // pass the refusal tests above.
     const accepted: number[] = [];
-    const url = await bindEchoServer(accepted);
+    const url = await bindEchoServer(accepted, NARROW_ROUTE_FRAME_CAP_BYTES);
     const socket = await wsOpen(url);
 
     const outcome = replyOrClose(socket);

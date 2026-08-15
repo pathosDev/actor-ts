@@ -14,12 +14,13 @@ import {
 } from '../../../../src/http/Route.js';
 import { HttpError, Status } from '../../../../src/http/Types.js';
 import type { HttpRequest } from '../../../../src/http/Types.js';
+import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
 
 const noopConnect: WebsocketConnectHandler = () => {};
 
 /** Build a raw websocket Route node (the public `websocket()` directive lands later). */
 function ws(connect: WebsocketConnectHandler = noopConnect): Route {
-  return { kind: 'websocket', connect };
+  return { kind: 'websocket', connect, resolvePolicy: () => DEFAULT_WEBSOCKET_POLICY };
 }
 
 function wsOnly(endpoints: CompiledEndpoint[]): CompiledWebsocketRoute[] {

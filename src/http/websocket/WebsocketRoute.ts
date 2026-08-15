@@ -10,7 +10,7 @@
  * Middleware wrapping the route runs once, against the HTTP upgrade
  * request, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
  */
-import { path, type Route, type WebsocketConnectHandler } from '../Route.js';
+import { path, type Route, type WebsocketConnectHandler, type WebsocketPolicyResolver } from '../Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
 import { jsonCodec, type WebsocketCodec } from './WebsocketCodec.js';
 import { wireConnection } from './ConnectionWiring.js';
@@ -54,13 +54,19 @@ export function websocket<TOut, TIn, TSelf = never>(
   new WebsocketRouteOptionsValidator<TOut, TIn>().validate(options);
 
   const codec: WebsocketCodec<TOut, TIn> = options.codec ?? jsonCodec<TOut, TIn>();
-  // Policy needs the ActorSystem's config, only available at connect
-  // time; resolve once (route options > HOCON > defaults) and memoise.
+  // Policy needs the ActorSystem's config, so it cannot be resolved while the
+  // route tree is being built; resolve once (route options > HOCON >
+  // defaults) and memoise.  Two callers share that single answer: the backend
+  // reads `maxFrameBytes` off it at bind time to size the transport (#373),
+  // and every connection wires itself with it.
   let policy: ResolvedWebsocketPolicy | null = null;
+  const resolvePolicy: WebsocketPolicyResolver = (system) => {
+    if (policy === null) policy = resolveWebsocketPolicy(system, options);
+    return policy;
+  };
 
   const connect: WebsocketConnectHandler = (system, request, socket) => {
-    if (policy === null) policy = resolveWebsocketPolicy(system, options);
-    wireConnection<TOut, TIn, TSelf>(system, target, request, socket, codec, policy);
+    wireConnection<TOut, TIn, TSelf>(system, target, request, socket, codec, resolvePolicy(system));
   };
 
   // CSWSH defence — the origin rules fold into the route's innermost
@@ -70,8 +76,8 @@ export function websocket<TOut, TIn, TSelf = never>(
   const originGuard = makeOriginGuard(options.allowedOrigins, options.requireSameOrigin ?? false);
 
   const node: Route = originGuard
-    ? { kind: 'websocket', connect, authorize: originGuard }
-    : { kind: 'websocket', connect };
+    ? { kind: 'websocket', connect, resolvePolicy, authorize: originGuard }
+    : { kind: 'websocket', connect, resolvePolicy };
   return segment === null ? node : path(segment, node);
 }
 

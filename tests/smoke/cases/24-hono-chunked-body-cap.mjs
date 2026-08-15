@@ -57,7 +57,7 @@ export async function run({ actorTs, loadEntry }) {
     }));
     try {
       binding = await system.extension(HttpExtensionId)
-        .newServerAt('127.0.0.1', 0)
+        .newServerAt('127.0.0.1', await freePort())
         .useBackend(new HonoBackend(backendOptions))
         .bind(routes);
     } catch (e) {
@@ -128,6 +128,29 @@ async function streamOverCapBody(port) {
     return { status: statusOf(received), chunksWritten };
   } finally {
     socket.destroy();
+  }
+}
+
+/**
+ * A port that is free right now, so the server can be asked for a concrete one.
+ *
+ * `newServerAt(host, 0)` is not usable here: on Deno the Hono runner reports
+ * the port it was *asked* for rather than the one it bound (`Deno.serve`
+ * exposes the real one as `server.addr.port` and the runner drops it), so
+ * `binding.port` comes back as 0 and nothing can connect.  Every runner does
+ * echo back a port it was given, so asking for a concrete one works
+ * everywhere.  Probed through `node:net`, which all three runtimes implement.
+ */
+async function freePort() {
+  const probe = net.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', resolve);
+    });
+    return probe.address().port;
+  } finally {
+    await new Promise((resolve) => probe.close(resolve));
   }
 }
 

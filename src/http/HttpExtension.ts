@@ -164,10 +164,22 @@ export class HttpExtension implements Extension {
         // WebSocket routes: every accepted socket flows through the
         // shared ConnectionTracker so unbind() can close it — otherwise
         // a long-lived socket keeps the server's close() pending forever.
+        //
+        // The policy is resolved here rather than left to the first
+        // connection because this is the only place that holds both the
+        // routes and the system whose config they resolve against, and the
+        // backend needs `maxFrameBytes` one moment earlier than that — at
+        // listen(), to size the runtime's own payload limit (#373).
+        // Resolution is memoised per route, so the connections still see the
+        // very same policy object.  It also moves an `OptionsError` from a
+        // malformed policy to bind() instead of the first upgrade, which is
+        // where a configuration error belongs.
         const tracker = new ConnectionTracker();
         for (const route of wsRoutes) {
+          const policy = route.resolvePolicy(system);
           active.registerWebSocket!({
             pattern: route.pattern,
+            maxFrameBytes: policy.maxFrameBytes,
             authorize: route.authorize,
             onConnection: (request, socket) => {
               system.log.debug(`[ws] upgrade ${request.path}`);

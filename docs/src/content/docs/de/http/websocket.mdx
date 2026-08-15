@@ -116,23 +116,32 @@ schließen.
 
 `maxFrameBytes` wird zweimal geprüft, zu zwei verschiedenen Zeitpunkten:
 
-- **Im Transport**, bei **1 MiB** — dem eingebauten Default, den das
-  Framework beim Binden an den Socket der Laufzeit weiterreicht.  Ein
-  größerer Frame wird abgewiesen, *während er eintrifft*; ein feindlicher
-  Peer kann den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB
-  (`ws`) zu puffern, nur damit das Ergebnis anschließend verworfen wird.
-  Weil die Laufzeit dabei auflegt, statt einen Policy-Close zu senden,
-  sieht der Client hier einen abnormalen Close (**1006**) und keine 1009.
-- **Im Connection-Actor**, bei deinem `maxFrameBytes` — am vollständig
+- **Im Transport**, bei deinem aufgelösten `maxFrameBytes` — das Framework
+  reicht es beim Binden an den Socket der Laufzeit weiter.  Ein größerer
+  Frame wird abgewiesen, *während er eintrifft*; ein feindlicher Peer kann
+  den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB (`ws`) zu
+  puffern, nur damit das Ergebnis anschließend verworfen wird.  Weil die
+  Laufzeit dabei auflegt, statt einen Policy-Close zu senden, sieht der
+  Client hier einen abnormalen Close (**1006**) und keine 1009.
+- **Im Connection-Actor**, bei demselben `maxFrameBytes` — am vollständig
   empfangenen Frame, vor dem Dekodieren, mit Close **1009**.
 
-Wichtig dabei: Das Transport-Limit ist der Framework-Default, nicht die
-Zahl deiner Route.  `maxFrameBytes` zu **senken** wirkt genau wie
-geschrieben; es **über 1 MiB anzuheben, hebt das Transport-Limit nicht
-mit** — Frames zwischen 1 MiB und deinem Limit werden weiterhin
-abgeschnitten.  Backends sehen die Policy einer Route beim Binden nicht;
-sie wird erst bei der ersten Verbindung aufgelöst.  Genau das muss ein
-konfigurierbares Transport-Limit noch lösen.
+Die Zahl ist in beide Richtungen deine: `maxFrameBytes` zu senken
+verkleinert auch das Puffer-Fenster, und es über den 1-MiB-Default
+anzuheben, lässt Frames dieser Größe tatsächlich durch.  Aufgelöst wird
+wie üblich — Route-Options, dann `actor-ts.http.websocket.maxFrameBytes`,
+dann der eingebaute Default —, und zwar beim Binden des Servers; ein
+ungültiger Wert ist damit ein Fehler in `bind()` und nicht erst beim
+ersten Upgrade.
+
+Ein Vorbehalt kommt aus der Laufzeit, nicht aus der Route: Ein Server hat
+genau einen Transport für alle seine WebSocket-Routen (ein
+`WebSocketServer` auf Express, eine Plugin-Registrierung auf Fastify, ein
+`Bun.serve`).  Wo mehrere Routen sich unterscheiden, nimmt der Transport
+deshalb das **größte** ihrer Limits.  Was eine strengere Route annimmt,
+ändert das nicht — der Connection-Actor weist ihre zu großen Frames
+weiterhin mit 1009 ab —, sie bekommt nur nicht das engere Puffer-Fenster,
+das sie allein gehabt hätte.
 
 <Aside type="caution" title="Deno hat kein Transport-Limit">
 Auf Deno existiert die erste Ebene nicht.  `Deno.upgradeWebSocket` nimmt

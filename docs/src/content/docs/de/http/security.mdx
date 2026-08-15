@@ -182,14 +182,15 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
   dahinter werden nie entgegengenommen.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default),
-  und dieser Default geht zusätzlich an den Socket der Laufzeit selbst: Ein zu
-  großer Frame wird abgewiesen, *während er eintrifft*, statt erst nachdem der
-  Prozess ihn gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder
-  100 MiB (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft.
-  Die einzige Ausnahme ist Hono auf **Deno**, dessen `upgradeWebSocket` kein
-  Payload-Limit anbietet: Dort wird zuerst gepuffert und danach abgewiesen.
-  `maxFrameBytes` über 1 MiB anzuheben, hebt das Transport-Limit nicht mit an.
-  Siehe [WebSocket](/de/http/websocket/).
+  und das aufgelöste Limit geht zusätzlich an den Socket der Laufzeit selbst:
+  Ein zu großer Frame wird abgewiesen, *während er eintrifft*, statt erst
+  nachdem der Prozess ihn gepuffert hat — sonst könnte ein Peer pro Frame
+  16 MiB (Bun) oder 100 MiB (`ws`) Pufferung erzwingen, die das Framework
+  anschließend verwirft. Das Limit zu senken — pro Route oder über
+  `actor-ts.http.websocket.maxFrameBytes` — verkleinert dieses Puffer-Fenster
+  mit. Die einzige Ausnahme ist Hono auf **Deno**, dessen `upgradeWebSocket`
+  kein Payload-Limit anbietet: Dort wird zuerst gepuffert und danach
+  abgewiesen. Siehe [WebSocket](/de/http/websocket/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.

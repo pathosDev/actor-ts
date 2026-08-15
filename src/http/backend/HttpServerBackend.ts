@@ -1,3 +1,4 @@
+import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
@@ -21,6 +22,18 @@ export type RouteRegistration = {
 export type WebsocketRouteRegistration = {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
+  /**
+   * The route's resolved inbound frame cap — route options > HOCON >
+   * built-in default, decided before `listen`.
+   *
+   * A backend that can hand its runtime a payload limit must derive that
+   * limit from these rather than from the built-in default, or the number an
+   * application configured governs only what the connection actor accepts and
+   * not what the process buffers first (#373).  See
+   * {@link transportFrameCapOf} for how a single shared transport reconciles
+   * several routes.
+   */
+  readonly maxFrameBytes: number;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
@@ -90,6 +103,34 @@ export function contentLengthExceeds(header: string | undefined, cap: number): b
   if (header === undefined) return false;
   const declaredLength = Number(header);
   return Number.isFinite(declaredLength) && declaredLength > cap;
+}
+
+/**
+ * The payload limit to install on the one transport a server's WebSocket
+ * routes share — the largest frame any of them admits.
+ *
+ * `max` rather than per route because the transport is not per route: Express
+ * builds one `WebSocketServer` for the whole app, `@fastify/websocket` is
+ * registered once, and Bun's `maxPayloadLength` belongs to the entire
+ * `Bun.serve`.  A single number therefore has to serve every route, and the
+ * only safe direction is the widest of them: taking the smallest would cut a
+ * route off below its own configured cap, which is a silent wrong answer,
+ * while the widest merely leaves a stricter route's surplus frames to the
+ * connection actor — which refuses them with a clean 1009 exactly as it did
+ * before this existed.
+ *
+ * What this buys is the part that was missing: the number is now the
+ * application's, so *lowering* `maxFrameBytes` (per route or in HOCON) really
+ * does narrow the buffering window, and raising it above 1 MiB is no longer
+ * silently undone by the transport.
+ *
+ * An empty list falls back to the built-in default; no shipped backend calls
+ * it that way, but the answer has to be a bound rather than `-Infinity`.
+ */
+export function transportFrameCapOf(registrations: ReadonlyArray<WebsocketRouteRegistration>): number {
+  let cap = 0;
+  for (const registration of registrations) cap = Math.max(cap, registration.maxFrameBytes);
+  return cap > 0 ? cap : DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;
 }
 
 /**
