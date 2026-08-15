@@ -36,11 +36,15 @@ export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
  *
  * It lives here rather than in one options file because it is the fallback of
  * *two* separate options families — the server-side route policy
- * (`WebsocketPolicy`) and the client (`WebsocketClientOptions`) — and, since
- * #586, also the number every backend hands its runtime as the *transport*
- * frame limit, so that a frame over it is refused while it arrives instead of
- * after it has been fully buffered.  No single `XOptions.ts` owns all three
- * readers, and writing the number down per reader is what let the transport
- * side drift open in the first place.
+ * (`WebsocketPolicy`) and the client (`WebsocketClientOptions`).  No single
+ * `XOptions.ts` owns both readers, and writing the number down per reader is
+ * what let the transport side drift open in the first place.
+ *
+ * What a backend hands its runtime as the *transport* frame limit is derived
+ * from the routes it registered, not from this constant: `transportFrameCapOf`
+ * takes the widest cap any of them resolved to, so a route or a HOCON setting
+ * that moves `maxFrameBytes` moves the buffering window with it (#373).  This
+ * number is where that resolution starts when nothing else says otherwise, and
+ * `transportFrameCapOf`'s own fallback for a server with no WebSocket routes.
  */
 export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;

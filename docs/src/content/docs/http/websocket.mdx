@@ -115,21 +115,29 @@ The frame-size cap is enforced on the **raw frame before decode**.
 
 `maxFrameBytes` is checked twice, at two different moments:
 
-- **In the transport**, at **1 MiB** — the built-in default, handed to the
+- **In the transport**, at your resolved `maxFrameBytes` — handed to the
   runtime's own socket when the server binds.  A frame over it is refused
   *while it arrives*, so a hostile peer cannot make the process buffer a
   16 MiB (Bun) or 100 MiB (`ws`) frame just to have it thrown away
   afterwards.  Because the runtime hangs up rather than sending a policy
   close, the client sees an abnormal close (**1006**) here, not 1009.
-- **In the connection actor**, at your `maxFrameBytes` — on the fully
+- **In the connection actor**, at the same `maxFrameBytes` — on the fully
   received frame, before the codec decodes it, closing with **1009**.
 
-The consequence worth knowing: the transport cap is the framework default,
-not your route's number.  Lowering `maxFrameBytes` works exactly as
-written; **raising it above 1 MiB does not raise the transport cap**, so
-frames between 1 MiB and your limit are still cut off.  Backends cannot see
-a route's policy at bind time — it is resolved on the first connection —
-which is what a configurable transport cap still has to solve.
+The number is yours in both directions: lowering `maxFrameBytes` narrows
+the buffering window too, and raising it above the 1 MiB default really
+does let frames that large through.  It is resolved the usual way — route
+options, then `actor-ts.http.websocket.maxFrameBytes`, then the built-in
+default — and the resolution happens when the server binds, so a
+malformed value is an error at `bind()` rather than on the first upgrade.
+
+One caveat comes from the runtime rather than the route: a server has a
+single transport shared by all its WebSocket routes (one `WebSocketServer`
+on Express, one plugin registration on Fastify, one `Bun.serve`), so where
+several routes disagree the transport takes the **widest** of their caps.
+A stricter route is unaffected in what it accepts — the connection actor
+still refuses its oversize frames with 1009 — it just does not get the
+narrower buffering window it would have had on its own.
 
 <Aside type="caution" title="Deno has no transport cap">
 On Deno the first layer does not exist.  `Deno.upgradeWebSocket` accepts a

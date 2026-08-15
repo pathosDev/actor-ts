@@ -8,11 +8,12 @@ import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
@@ -304,10 +305,14 @@ export class ExpressBackend implements HttpServerBackend {
    */
   private async attachWebsocketRoutes(app: ExpressAppLike): Promise<void> {
     const WebsocketServerConstructor = await wsServerConstructorLazy.get();
-    // Cap the transport payload at the default WS frame size so an oversized
-    // frame is rejected at the protocol level instead of being buffered up to
-    // the `ws` default of 100 MiB first (security audit WS-3).
-    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES });
+    // Cap the transport payload so an oversized frame is rejected at the
+    // protocol level instead of being buffered up to the `ws` default of
+    // 100 MiB first (security audit WS-3).  The number is the widest frame any
+    // registered route admits, not the framework default, so a route or a
+    // HOCON setting that moves `maxFrameBytes` moves this with it (#373) —
+    // one `WebSocketServer` serves every route on this app, so the routes have
+    // to agree on one limit.
+    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: transportFrameCapOf(this.wsRegistered) });
     this.wss = wss;
     for (const registration of this.wsRegistered) {
       app.get(registration.pattern, (req, res, next) => {
