@@ -9,7 +9,17 @@ import type { Cluster } from '../Cluster.js';
 import type { Member } from '../Member.js';
 import { ClusterSingletonManagerOptionsValidator } from './ClusterSingletonManagerOptions.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
-import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
+import type { ClusterEvent } from '../ClusterEvents.js';
+import {
+  LeaderChanged,
+  MemberDown,
+  MemberLeft,
+  MemberReachable,
+  MemberRemoved,
+  MemberUnreachable,
+  MemberUp,
+  SelfUp,
+} from '../ClusterEvents.js';
 import { SINGLETON_RESTART_BACKOFF_MS } from '../Constants.js';
 
 /**
@@ -44,6 +54,61 @@ export function singletonManagerPath(systemName: string, typeName: string): stri
 export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
   if (role === undefined) return cluster.leader();
   return fromNullable(cluster.upMembersWithRole(role)[0]);
+}
+
+/**
+ * Whether `event` is one after which {@link singletonHost} may return someone
+ * else.  Used by the manager (to reconcile hosting) and by the proxy (to
+ * drain its buffer at the new host).
+ *
+ * One predicate rather than two lists, for the same reason `singletonHost` is
+ * one function: the two sides have to agree on *when* to look again, not only
+ * on what they see when they do.  A trigger set that drifts leaves one of them
+ * acting on a host the other has not noticed — the manager keeping a child it
+ * should have stopped, or the proxy sitting on a buffer it should have
+ * drained.
+ *
+ * Both forms of the host are the **first address-ordered `up` member** (the
+ * leader; or, under a role, the first carrying that role), so *every*
+ * transition into or out of `up` can move it.  Watching `LeaderChanged` alone
+ * was the defect (#637): it fires only when the leader's *identity* changes,
+ * so a role-carrying member joining below a role-less leader announced nothing
+ * at all, and the incumbent host kept its child forever while the new one
+ * spawned a second — two live singletons, which is the one thing a singleton
+ * exists to prevent.
+ *
+ * Absent on purpose:
+ *
+ * - `MemberJoined` / `MemberWeaklyUp` — neither `joining` nor `weakly-up`
+ *   members appear in `upMembers()`, so neither status can host.
+ * - `ReachabilityChanged` — this node's private opinion about a peer, which
+ *   does not itself move member status.  The half of it that does arrives as
+ *   `MemberUnreachable` / `MemberReachable`.
+ *
+ * Over-triggering is safe and under-triggering is not, so borderline events
+ * are included: `reconcile` is idempotent, and both `MemberUp` and
+ * `MemberReachable` already fire together on the unreachable → up recovery.
+ */
+export function changesSingletonHost(event: ClusterEvent): boolean {
+  // A match that computes a value, so its arms stay inline.  A predicate
+  // rather than an exported `P.union(...)` because ts-pattern does not export
+  // the type of one, and the inferred type names its internals — a shared
+  // constant would compile only via a deep import into `ts-pattern/dist`.
+  return match(event)
+    .with(
+      P.union(
+        P.instanceOf(LeaderChanged),
+        P.instanceOf(SelfUp),
+        P.instanceOf(MemberUp),
+        P.instanceOf(MemberUnreachable),
+        P.instanceOf(MemberReachable),
+        P.instanceOf(MemberDown),
+        P.instanceOf(MemberLeft),
+        P.instanceOf(MemberRemoved),
+      ),
+      () => true,
+    )
+    .otherwise(() => false);
 }
 
 /** Internal delivery wrapper — body is the user's typed message. */
@@ -111,6 +176,26 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /** Lease lifecycle — only used when `options.lease` is set. */
   private leaseState: 'none' | 'acquiring' | 'held' = 'none';
 
+  /**
+   * Latched when the child died unexpectedly while `restartOnTermination` was
+   * off — see {@link onChildDiedUnexpectedly}.
+   *
+   * Without it "do not re-spawn" only holds until the next reconcile, because
+   * both reconcile paths decide from `want && no child` and that is
+   * indistinguishable from "never spawned at all".  It was survivable while
+   * `LeaderChanged` was the only membership trigger — in a stable cluster it
+   * may never fire again — and stops being survivable now that every up/down
+   * transition of any member reconciles (#637).
+   *
+   * A latch on *this manager*, deliberately, not on the singleton: the node
+   * that opted out goes out of rotation until its manager is restarted
+   * (`cluster.singleton.stop()` then `start()`), while every other node stays
+   * free to host.  That is what releasing the lease is for, and holding the
+   * latch narrower — say, until the host moves away and back — would put this
+   * node's own reconcile straight back where the opt-out was meant to stop it.
+   */
+  private terminallyStopped = false;
+
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
 
@@ -134,23 +219,16 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   override preStart(): void {
     const cluster = this.options.cluster;
     // No-lease path stays sync: cluster events drive `reconcileSync()`
-    // directly, so a leader-change result is visible the moment the
-    // event fires.  This preserves the v1 timing guarantee (proxies
-    // can ask the cluster for the leader and immediately route).
+    // directly, so a change of host is visible the moment the event
+    // fires.  This preserves the v1 timing guarantee (proxies can ask
+    // the cluster for the host and immediately route).
     //
     // With a lease, every state transition has to flow through the
     // manager's own mailbox so concurrent cluster events can't race
     // with an in-flight `acquire()` — see `handleReconcile`.
     this.unsubscribeCluster = cluster.subscribe((evt) =>
       match(evt)
-        .with(
-          P.union(
-            P.instanceOf(LeaderChanged),
-            P.instanceOf(SelfUp),
-            P.instanceOf(MemberRemoved),
-          ),
-          () => this.onClusterMembershipChanged(),
-        )
+        .with(P.when(changesSingletonHost), () => this.onClusterMembershipChanged())
         .otherwise(() => this.onOtherClusterEvent()),
     );
 
@@ -301,15 +379,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       `singleton '${this.options.typeName}' terminated unexpectedly and `
       + `restartOnTermination is off — not re-spawning`,
     );
+    this.terminallyStopped = true;
     void this.releaseLeaseAfterTerminalStop();
   }
 
   /** Best-effort lease release on the no-restart path.  Never throws. */
   private async releaseLeaseAfterTerminalStop(): Promise<void> {
     if (!this.options.lease || this.leaseState !== 'held') return;
+    // Ahead of the await, not after it: a reconcile landing in the await
+    // window would otherwise still read 'held' and issue a second release.
+    this.leaseState = 'none';
     try { await this.options.lease.release(); }
     catch (e) { this.log.warn(`lease release failed`, e); }
-    this.leaseState = 'none';
   }
 
   /**
@@ -441,6 +522,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /* -------------------------- helpers -------------------------- */
 
   private wantHosted(): boolean {
+    // Checked ahead of the membership question so it also gates the lease:
+    // re-acquiring for a child this manager will never spawn again rebuilds
+    // exactly the "lease held over nothing" state the opt-out avoids.
+    if (this.terminallyStopped) return false;
     const cluster = this.options.cluster;
     return singletonHost(cluster, this.options.role)
       .exists((host) => host.address.equals(cluster.selfAddress));
