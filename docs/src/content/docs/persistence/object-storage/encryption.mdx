@@ -3,6 +3,8 @@ title: Encryption
 description: AES-GCM encryption at rest for object-storage payloads — keys are managed as a single master key or a versioned key ring for online rotation. Each blob is encrypted under a per-persistenceId subkey; the key version travels in the body manifest.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Object-storage payloads support **client-side AES-GCM
 encryption** — the framework encrypts before put, decrypts on
 get, keys managed as a single master key or a versioned
@@ -39,7 +41,8 @@ encryption** built-in.  Why also encrypt client-side?
 | Threat | Server-side | Client-side |
 | --- | --- | --- |
 | Storage compromise (someone reads from disk) | ✓ | ✓ |
-| Account compromise (someone has S3 credentials) | ✗ | ✓ |
+| Account compromise — **reading** (someone has S3 credentials) | ✗ | ✓ |
+| Account compromise — **writing** (see below) | ✗ | partly |
 | Cloud provider compromise | ✗ | ✓ |
 | Audit / compliance requiring "we hold the keys" | ✗ | ✓ |
 
@@ -47,6 +50,29 @@ encryption** built-in.  Why also encrypt client-side?
 costs more (CPU per op, key-management overhead).  Most apps
 should use both: server-side as baseline + client-side for
 sensitive payloads.
+
+### What encryption does not cover
+
+An attacker who can **write** to the bucket is a different attacker from
+one who can only read it, and encryption answers only half of what they
+can do.  They cannot forge a body — that needs the key — but they can
+**move and replay** the authentic ones they find, and the auth tag
+travels with the bytes.
+
+Two shapes of that, both closed since
+[#612](https://github.com/pathosDev/actor-ts/issues/612) and neither by
+encryption alone:
+
+- **Replaying a body onto a different object.**  One
+  `persistenceId`'s state copied onto another's key, or one snapshot
+  copied over a later sequence number.  The storage key is now
+  authenticated alongside the body, so the copy no longer verifies —
+  see [Binding a body to its key](#binding-a-body-to-its-key).
+- **Replaying an older body over a newer one.**  Same key, same
+  everything, just stale.  No authenticator can see this: the revision
+  lives *inside* the authenticated bytes.  The durable-state store
+  keeps an in-process floor instead — see
+  [Rollback protection](#rollback-protection-durable-state).
 
 ## Configuration
 
@@ -327,7 +353,83 @@ tagged bodies and a sweep over them fails
 ([#739](https://github.com/pathosDev/actor-ts/issues/739)).  Finish
 any pending key rotation before you enable integrity on a bucket.
 
-import { Aside } from '@astrojs/starlight/components';
+## Binding a body to its key
+
+A tag answers "did the holder of the key produce these bytes?" and
+nothing else.  It does not answer "were they produced *for this
+object?*" — so an authentic body moved to another storage key used to
+verify there just as well.
+
+That mattered most in the plain-HMAC configuration.  `integrityKey` is
+one flat secret for the whole deployment, with no per-`persistenceId`
+derivation of any kind, and `load` returns the **requested**
+`persistenceId` with the **body's** state.  So one account's object
+copied onto another account's key came back as that other account's
+state.  Client-side encryption narrowed this without closing it: HKDF
+salts the subkey with the `persistenceId`, which separates two pids but
+not two objects of one pid — so a snapshot could still be replayed onto
+a different sequence number of the same actor.
+
+Every write now binds the storage key.  It goes into AES-GCM's
+additional authenticated data on an encrypted body and, length-prefixed,
+into the HMAC input on a tagged one; a manifest bit records that it was
+done.  Nothing to configure — both object-storage stores know the key
+they are writing to.
+
+### Requiring the binding
+
+Bodies written before this existed carry no binding, and they still
+decode: an old bucket keeps working. That is also the gap, because the
+bit that says "this body is bound" is a manifest byte like any other, so
+one authentic pre-binding body remains a replay token for every key in
+the bucket until unbound bodies stop being accepted:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey })
+  .withRequireContextBinding();
+```
+
+Rewrite the corpus first, or reads will start failing.  For durable
+state that is a `load` + `upsert` per `persistenceId`; snapshots reach it
+through `keepN` pruning; a bucket that is mid-rotation gets there via
+`reEncryptObjectStorage`, which rebinds every body it passes and no
+longer skips one merely because its key version is current.
+
+<Aside type="caution" title="The prefix is part of the key">
+  The binding covers the whole storage key, `prefix` included.  Changing
+  a store's `prefix` after the fact makes existing bodies fail to
+  verify — treat it like changing `info`, and run
+  `reEncryptObjectStorage` if you have to.
+</Aside>
+
+## Rollback protection (durable state)
+
+One replay stays invisible to every authenticator: the **same** body at
+the **same** key, just an older one.  It was written by the legitimate
+writer, its tag is genuine, and the `revision` an attacker wants to roll
+back sits inside the bytes the tag covers.  There is nothing to detect —
+except that this process has already seen a higher revision.
+
+`ObjectStorageDurableStateStore` remembers that highest revision per
+`persistenceId` and refuses to load below it.  It is on by default:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withRejectRevisionRollback(false);   // opt out
+```
+
+Two limits worth knowing:
+
+- **It is in-process.**  A restart of the process forgets the floor.  A
+  durable floor needs trusted state outside the bucket, which the
+  framework has no seam for yet.
+- **It fires on a legitimate delete-and-recreate from another writer.**
+  A recreated record restarts at revision 1.  Deleting through *this*
+  store drops the floor with it, so this only applies across processes —
+  and it is the case `withRejectRevisionRollback(false)` exists for.
 
 <Aside type="caution" title="Lose the key, lose the data">
   ```ts
