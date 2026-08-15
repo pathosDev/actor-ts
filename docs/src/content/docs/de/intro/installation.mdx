@@ -173,7 +173,8 @@ class Ping extends Actor<'ping'> {
 const system = ActorSystem.create('verify');
 const ref = system.spawnAnonymous(Ping);
 ref.tell('ping');
-await new Promise((r) => setTimeout(r, 20));
+// `terminate()` leert die Mailbox, bevor es irgendetwas stoppt — `pong`
+// wird also ohne Sleep dazwischen ausgegeben.
 await system.terminate();
 console.log('install OK');
 ```

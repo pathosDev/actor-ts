@@ -81,10 +81,10 @@ const ref = system.spawn(Greeter, 'greeter');
 //    its own mailbox.
 ref.tell('world');
 
-// 5. Give the mailbox a tick to drain, then shut down.  In a real
-//    app you'd terminate on SIGTERM via `CoordinatedShutdown`; for
-//    this script a short sleep is enough.
-await new Promise((resolve) => setTimeout(resolve, 20));
+// 5. Shut down.  `terminate()` drains the mailboxes first, so the
+//    message told a line ago is handled before anything stops — no
+//    sleep needed.  In a real app you'd terminate on SIGTERM via
+//    `CoordinatedShutdown`.
 await system.terminate();
 ```
 
@@ -286,12 +286,20 @@ HTTP routing, six interchangeable frontends, the lot.
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`bun run hello.ts` exits without printing">
-  You probably skipped the `await new Promise(r => setTimeout(r, 20))`
-  line — `tell` enqueues asynchronously, and `system.terminate()`
-  cancels in-flight processing if the mailbox hasn't drained yet.
-  The 20 ms sleep gives the dispatcher one tick to run the
-  `onReceive`.  Real applications terminate on SIGTERM after all
-  business logic has settled.
+  It shouldn't — `system.terminate()` drains the mailboxes under
+  `/user` before it stops anything, so a message told just before the
+  shutdown is still handled.  What it does *not* wait for is work that
+  is not in a mailbox yet: a `context.timers` tick that has not fired,
+  or a `tell` from a promise your handler started and did not `await`.
+  Wait for those explicitly.
+
+  It also does not wait on a mailbox that is deliberately parked — one
+  behind `context.throttle(...)`, or one suspended while a supervisor
+  decides — because neither drains at a rate a shutdown can wait for.
+  The whole drain is bounded by
+  `actor-ts.system.shutdown-drain-timeout` (2 s by default; 0 turns it
+  off); anything still queued when the budget runs out goes to dead
+  letters.
 </Aside>
 
 <Aside type="caution" title="TypeScript complains about `override`">
