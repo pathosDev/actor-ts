@@ -27,11 +27,28 @@ import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './Memcach
  * detect lost atomicity.
  */
 
-/** Subset of `memjs.Client` we use.  memjs uses Buffer; we always pass strings. */
+/**
+ * Decodes what memcached hands back.  Non-fatal so a corrupt byte yields
+ * U+FFFD and fails at `JSON.parse` — the same swallow-and-miss the callers
+ * below already expect — rather than throwing out of the decoder.
+ */
+const textDecoder = /* @__PURE__ */ new TextDecoder('utf-8', { fatal: false });
+
+/**
+ * Subset of `memjs.Client` we use.  memjs hands back a `Buffer`; we always
+ * pass strings and only ever decode what comes out.
+ *
+ * Spelled `Uint8Array` rather than `Buffer` so the published declarations do
+ * not need `@types/node` (#1006).  A real memjs client still satisfies this —
+ * `Buffer` *is* a `Uint8Array` — and so does any stand-in that returns one.
+ * Reads go through `TextDecoder` for the same reason: `Buffer.toString('utf8')`
+ * would have kept the Node dependency alive at the value level after the type
+ * stopped naming it.
+ */
 export interface MemcachedClientLike {
-  get(key: string): Promise<{ value: Buffer | null; flags?: Buffer | null }>;
-  set(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
-  add(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
+  get(key: string): Promise<{ value: Uint8Array | null; flags?: Uint8Array | null }>;
+  set(key: string, value: string | Uint8Array, settings?: { expires?: number }): Promise<boolean>;
+  add(key: string, value: string | Uint8Array, settings?: { expires?: number }): Promise<boolean>;
   delete(key: string): Promise<boolean>;
   increment(key: string, amount: number, settings?: { initial?: number; expires?: number }): Promise<{ value: number | null }>;
   quit(): Promise<void>;
@@ -68,7 +85,7 @@ export class MemcachedCache implements Cache {
       const client = await this.clientLazy.get();
       const { value } = await client.get(this.k(key));
       if (!value) return none;
-      return some(JSON.parse(value.toString('utf8')) as V);
+      return some(JSON.parse(textDecoder.decode(value)) as V);
     } catch {
       return none;
     }
@@ -158,7 +175,7 @@ export class MemcachedCache implements Cache {
           try {
             const { value } = await client.get(this.k(k));
             if (!value) return null;
-            try { return JSON.parse(value.toString('utf8')) as V; } catch { return null; }
+            try { return JSON.parse(textDecoder.decode(value)) as V; } catch { return null; }
           } catch { return null; }
         }),
       );

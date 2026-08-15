@@ -223,6 +223,7 @@
     "@grpc/proto-loader": "^0.8.1",
     "@hono/node-server": "^2.0.0",
     "@hono/node-ws": "^1.2.0",
+    "@types/node": "^24.0.0",
     "amqplib": "^2.0.1",
     "better-sqlite3": "^12.9.0 || ^13.0.0",
     "cassandra-driver": "^4.0.0",
@@ -268,6 +269,9 @@
       "optional": true
     },
     "@hono/node-server": {
+      "optional": true
+    },
+    "@types/node": {
       "optional": true
     },
     "amqplib": {
