@@ -11,7 +11,7 @@ import {
   ProtobufSerializerOptions,
   type ProtobufMessageType,
 } from '../../../src/serialization/ProtobufSerializerOptions.js';
-import { SerializationError } from '../../../src/serialization/Serializer.js';
+import { SerializationError, type SerializedValue } from '../../../src/serialization/Serializer.js';
 
 const MANIFEST = 'BankAccount.Deposited';
 
@@ -105,12 +105,16 @@ describe('serializerCodec', () => {
 describe('serializerCodec + SchemaRegistry — one manifest, two wire formats', () => {
   test('writes the latest version in Protobuf and reads an Avro v1 row forward', () => {
     const registry = registryWithBothFormats();
-    const adapter = registry.eventAdapter<DepositedV2>(MANIFEST);
+    // The journal shape is spelled out: a `serializerCodec` encodes to a
+    // `SerializedValue`, not to the domain type the adapter reads back.
+    const adapter = registry.eventAdapter<DepositedV2, SerializedValue>(MANIFEST);
 
     // A row written before v2 existed: Avro bytes, version 1.
     const legacyRegistry = new InMemorySchemaRegistry();
     legacyRegistry.register<DepositedV1>(MANIFEST, 1, { codec: serializerCodec(avroSerializer) });
-    const legacyFrame = legacyRegistry.eventAdapter<DepositedV1>(MANIFEST).toJournal({ amount: 25 });
+    const legacyFrame = legacyRegistry
+      .eventAdapter<DepositedV1, SerializedValue>(MANIFEST)
+      .toJournal({ amount: 25 });
     expect(legacyFrame.version).toBe(1);
 
     // Through the journal's string form, exactly as a store would hold it.
@@ -123,7 +127,7 @@ describe('serializerCodec + SchemaRegistry — one manifest, two wire formats', 
     // New writes go out as Protobuf at v2.
     const fresh = adapter.toJournal({ amount: 40, currency: 'EUR' });
     expect(fresh.version).toBe(2);
-    expect((fresh.payload as { serializerId: number }).serializerId).toBe(101);
+    expect(fresh.payload.serializerId).toBe(101);
     expect(adapter.fromJournal({ manifest: MANIFEST, version: 2, payload: fresh.payload }))
       .toEqual({ amount: 40, currency: 'EUR' });
   });

@@ -84,8 +84,7 @@ describe('DistributedData decode isolation', () => {
     } as unknown as WireMessage);
     await sleep(200);
 
-    const merged = await data.get('good', () => GCounter.empty());
-    expect(merged.value()).toBe(7);
+    expect(data.get<GCounter>('good')?.value()).toBe(7);
   });
 
   test('a malformed entry does not cost the other entries of the same frame (#699)', async () => {
@@ -107,7 +106,7 @@ describe('DistributedData decode isolation', () => {
     } as unknown as WireMessage);
     await sleep(250);
 
-    expect((await data.get('first', () => GCounter.empty())).value()).toBe(3);
-    expect((await data.get('last', () => GCounter.empty())).value()).toBe(5);
+    expect(data.get<GCounter>('first')?.value()).toBe(3);
+    expect(data.get<GCounter>('last')?.value()).toBe(5);
   });
 });

@@ -60,7 +60,8 @@ describe('encodeEvent / decodeEvent', () => {
 
   test('passthrough when no adapter is supplied (greenfield default)', () => {
     const raw = { kind: 'deposited', amount: 100 };
-    expect(decodeEvent(raw, undefined)).toEqual(raw);
+    // `decodeEvent<E>` has no value to infer `E` from — the caller states it.
+    expect(decodeEvent<typeof raw>(raw, undefined)).toEqual(raw);
   });
 
   test('strict mode: adapter active + raw payload throws MigrationError', () => {
@@ -103,6 +104,6 @@ describe('encodeState / decodeState', () => {
 
   test('passthrough when no adapter is supplied', () => {
     const raw = { balance: 5 };
-    expect(decodeState(raw, undefined)).toEqual(raw);
+    expect(decodeState<typeof raw>(raw, undefined)).toEqual(raw);
   });
 });

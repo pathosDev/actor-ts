@@ -97,7 +97,10 @@ describe('Either — Left (alternative)', () => {
 
   test('flatMap passes Left through untouched', () => {
     const either: Either<string, number> = left('err');
-    expect(either.flatMap(n => right(n))).toBe(either as Either<string, number>);
+    // `Left.flatMap` types its callback `(r: never) => …`, so `R2` infers as
+    // `never` and the result is an `Either<string, never>`.  The claim here is
+    // reference identity, not the right-hand type.
+    expect<unknown>(either.flatMap(n => right(n))).toBe(either);
   });
 
   test('mapLeft transforms the Left value', () => {

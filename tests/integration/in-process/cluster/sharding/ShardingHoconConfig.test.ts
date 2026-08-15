@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
@@ -69,7 +70,7 @@ let running: Node | null = null;
 async function startNode(
   systemName: string,
   port: number,
-  config: Record<string, unknown>,
+  config: ConfigObject,
   options?: (builder: StartShardingOptionsBuilder<Command>) => void,
 ): Promise<Node> {
   const systemOptions = ActorSystemOptions.create()

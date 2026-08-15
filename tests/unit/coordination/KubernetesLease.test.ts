@@ -108,8 +108,16 @@ class FakeK8sServer implements K8sFetchClient {
     return { status: 405, body: { code: 405 } };
   }
 
-  /** Test helper — directly insert a lease as if another holder had created it. */
-  seedLease(namespace: string, lease: Omit<K8sLeaseObject, 'metadata'> & { metadata: Omit<K8sLeaseObject['metadata'], 'resourceVersion'> }): K8sLeaseObject {
+  /**
+   * Test helper — directly insert a lease as if another holder had created it.
+   *
+   * Takes a plain `K8sLeaseObject`: `resourceVersion` is already optional on
+   * it, and the `Omit<…, 'resourceVersion'>` this used to carry was worse
+   * than redundant — `metadata` has an index signature, and `Omit` over one
+   * collapses to `{ [x: string]: unknown }`, dropping the required `name`
+   * and `namespace` from the spread below.
+   */
+  seedLease(namespace: string, lease: K8sLeaseObject): K8sLeaseObject {
     const stamped: K8sLeaseObject = {
       ...lease,
       metadata: { ...lease.metadata, resourceVersion: String(this.rvCounter++) },
@@ -425,7 +433,9 @@ describe('KubernetesLease — renewal loop', () => {
     await lease.acquire();
     server.forceConflictNext = true;
     await sleep(80);
-    expect(lostReason).toContain('lease lost');
+    // Written only by the `onLost` callback, so flow analysis still has
+    // `lostReason` at its `null` initialiser here.
+    expect<string | null>(lostReason).toContain('lease lost');
     expect(lease.checkAlive()).toBe(false);
     await lease.release();
   });

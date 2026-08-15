@@ -200,7 +200,7 @@ describe('deleteHistory', () => {
 
     const latest = await snapshots.loadLatest<State>('ledger-4');
     expect(latest.isSome()).toBe(true);
-    expect(latest.value.sequenceNr).toBe(2);
+    expect(latest.toNullable()!.sequenceNr).toBe(2);
     // The earlier one is gone — compaction still prunes.
     expect((await snapshots.loadBefore<State>('ledger-4', 2)).isSome()).toBe(false);
 

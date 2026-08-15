@@ -65,7 +65,9 @@ async function startEverything(): Promise<{ system: ActorSystem; cluster: Cluste
 
   // Named explicitly: the auto-generated `consumer-N` counter is module-global,
   // so it would differ between the two tests in this file.
-  ReliableDelivery.consumer<string>(system, { handle: () => { /* no-op */ } }, 'orders');
+  // `handler`, not `handle` — the misspelling type-checked nowhere and was
+  // silently dropped, so the controller under test had no handler at all.
+  ReliableDelivery.consumer<string>(system, { handler: () => { /* no-op */ } }, 'orders');
 
   return { system, cluster };
 }

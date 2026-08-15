@@ -12,6 +12,7 @@ import {
   path,
   post,
 } from '../../../src/http/Route.js';
+import type { Route } from '../../../src/http/Route.js';
 import { entity } from '../../../src/http/Marshalling.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpError, Status } from '../../../src/http/Types.js';
@@ -23,7 +24,7 @@ afterEach(async () => {
   while (bindings.length) await bindings.shift()!.unbind();
 });
 
-async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHttp>['newServerAt']>['bind']>[0]): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
+async function startServer(routes: Route): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -33,11 +34,6 @@ async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHt
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
   bindings.push(binding);
   return { url: `http://${binding.host}:${binding.port}`, system, binding };
-}
-
-function newHttp(): ReturnType<ActorSystem['extension']> extends object ? any : never {
-  // Only used for the type inference helper above.
-  return null as unknown as never;
 }
 
 describe('FastifyBackend — plain routes', () => {
@@ -249,7 +245,7 @@ describe('HttpExtension — client round-trip', () => {
     const client = system.extension(HttpExtensionId).client;
     const response = await client.get(`${url}/`);
     expect(response.status).toBe(200);
-    expect(response.json()).toEqual({ pong: true });
+    expect(response.json<{ pong: boolean }>()).toEqual({ pong: true });
   });
 
   test('HttpClient.post round-trips a JSON body', async () => {
@@ -259,6 +255,6 @@ describe('HttpExtension — client round-trip', () => {
     const client = system.extension(HttpExtensionId).client;
     const response = await client.post(`${url}/echo`, { body: { hello: 'world' } });
     expect(response.status).toBe(200);
-    expect(response.json()).toEqual({ hello: 'world' });
+    expect(response.json<{ hello: string }>()).toEqual({ hello: 'world' });
   });
 });

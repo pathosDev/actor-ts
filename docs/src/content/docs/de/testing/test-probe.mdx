@@ -47,6 +47,16 @@ Caste, falls nötig:
 ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 ```
 
+Ein `createTestProbe<T>()` gibt es bewusst **nicht**. Der Wert
+einer Probe liegt gerade darin, für Empfänger mit
+unterschiedlichen Nachrichtentypen einzuspringen — dieselbe Probe
+geht in einem Test an Aktoren mit völlig verschiedenen Protokollen
+—, ein festes `T` müsste an den meisten Aufrufstellen also wieder
+aufgeweitet werden. Stattdessen sind die Methoden generisch, die
+eine Nachricht zurückgeben: `expectMessage<T>`,
+`expectMessageType<T>` und `fishForMessage<T>` liefern jeweils den
+Typ, den du anforderst.
+
 ## Erwartungen
 
 ### `expectMessage(expected)`

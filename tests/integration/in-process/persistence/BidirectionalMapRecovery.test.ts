@@ -57,7 +57,7 @@ class SeatingPlan extends PersistentActor<Command, Event, State> {
     return { seats: new BidirectionalMap<string, number>() };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 

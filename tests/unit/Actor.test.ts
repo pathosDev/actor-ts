@@ -5,6 +5,7 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import type { ActorFactory } from '../../src/Actor.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel, NoopLogger } from '../../src/Logger.js';
+import { Directive } from '../../src/Supervision.js';
 import { Behaviors, same } from '../../src/typed/Behaviors.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
@@ -115,7 +116,7 @@ describe('Actor lifecycle', () => {
   test('supervisorStrategy() default resolves to defaultStrategy', () => {
     class A extends Actor<string> { override onReceive(_: string): void {} }
     const actorRef = new A();
-    expect(actorRef.supervisorStrategy().decider(new Error())).toBe('restart');
+    expect(actorRef.supervisorStrategy().decider(new Error())).toBe(Directive.Restart);
   });
 
   test('self/sender/system/log accessors are bound after attach', async () => {

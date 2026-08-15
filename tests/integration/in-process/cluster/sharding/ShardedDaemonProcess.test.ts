@@ -46,7 +46,7 @@ describe('ShardedDaemonProcess — single node', () => {
   test('spawns exactly N daemons and routes messages by index', async () => {
     const nodeA = await startNode('sdp-1', 'h', 53001);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Worker extends Actor<string> {
       private readonly index: number;
@@ -134,7 +134,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
   test('handle.stop() cancels the heartbeat without leaking timers', async () => {
     const nodeA = await startNode('sdp-live', 'h', 53201);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class W extends Actor<string> {
       constructor(private readonly i: number) { super(); }
@@ -171,7 +171,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
   test('livenessIntervalMs: 0 disables the heartbeat', async () => {
     const nodeA = await startNode('sdp-noheart', 'h', 53202);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class W extends Actor<string> {
       constructor(private readonly i: number) { super(); }

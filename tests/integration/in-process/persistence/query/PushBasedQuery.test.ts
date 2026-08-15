@@ -78,7 +78,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     expect((third.value as PersistentEvent<{ n: number }>).event.n).toBe(3);
 
     // Make sure no fourth event slipped in.
-    let extra: { value: unknown; done: boolean | undefined } | null = null;
+    let extra: IteratorResult<PersistentEvent<{ n: number }>> | null = null;
     void (async (): Promise<void> => { extra = await it.next(); })();
     await sleep(50);
     expect(extra).toBeNull();

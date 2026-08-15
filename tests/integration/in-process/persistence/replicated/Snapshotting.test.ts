@@ -156,7 +156,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
       actorRef.instance.persistenceId,
     );
     expect(stored.isSome()).toBe(true);
-    const snap = stored.value!.state;
+    const snap = stored.toNullable()!.state;
     // Most recent snapshot is at the second policy hit (observedCount = 10).
     expect(snap.events.length).toBe(10);
     expect(snap.state.value).toBe(10);

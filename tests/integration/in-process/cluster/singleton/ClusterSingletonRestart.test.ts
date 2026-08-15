@@ -77,7 +77,7 @@ class RecordingLease implements Lease {
   acquires = 0;
   async acquire(): Promise<boolean> { this.held = true; this.acquires++; return true; }
   async release(): Promise<void> { this.held = false; this.releases++; }
-  async check(): Promise<boolean> { return this.held; }
+  checkAlive(): boolean { return this.held; }
   onLost(): () => void { return () => {}; }
 }
 

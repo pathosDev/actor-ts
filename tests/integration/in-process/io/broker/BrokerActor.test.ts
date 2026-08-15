@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { BrokerActor, type OutboundEnvelope } from '../../../../../src/io/broker/BrokerActor.js';
 import {
   BrokerConnected,
@@ -172,7 +173,7 @@ class CapturingLogger implements Logger {
   withFields(): Logger { return this; }
 }
 
-function makeSystem(name = 'broker-test', config?: Record<string, unknown>): ActorSystem {
+function makeSystem(name = 'broker-test', config?: ConfigObject): ActorSystem {
   // Thin wrapper around the shared `createTestActorSystem` helper.
   // Kept named `makeSystem` to match the per-file convention used by
   // existing tests; the test body's `makeSystem('foo')` calls don't

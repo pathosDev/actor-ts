@@ -227,7 +227,7 @@ describe('LWWRegister replica ids (#724)', () => {
     // A number: `>` between a string and a number is false in BOTH
     // directions, so `a.merge(b)` and `b.merge(a)` each keep their own value
     // and the replicas never converge on that key.
-    expect(5 > 'sys@a:1').toBe(false);
+    expect((5 as unknown as string) > 'sys@a:1').toBe(false);
     expect('sys@a:1' > (5 as unknown as string)).toBe(false);
     // An array: coerces to its single element, so it wins every tie while
     // not being a string — exploit step 3, delivered past a `typeof` check

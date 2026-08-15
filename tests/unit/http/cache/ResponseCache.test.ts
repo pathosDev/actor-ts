@@ -28,7 +28,7 @@ describe('cached — basic round-trip', () => {
     const cache = new InMemoryCache();
     let calls = 0;
     const handler = cached({ cache, ttlMs: 5_000, key: (request) => request.path })(
-      () => { calls++; return complete(Status.OK, calls); },
+      () => { calls++; return complete(Status.OK, String(calls)); },
     );
     await handler(makeRequest('/users/1'));
     await handler(makeRequest('/users/2'));
@@ -96,7 +96,7 @@ describe('cached — stampede protection', () => {
     const cache = new InMemoryCache();
     let calls = 0;
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
-      async () => { calls++; await sleep(20); return complete(Status.OK, calls); },
+      async () => { calls++; await sleep(20); return complete(Status.OK, String(calls)); },
     );
     await handler(makeRequest('/'));
     await handler(makeRequest('/'));
@@ -125,7 +125,7 @@ describe('cached — explicit invalidation', () => {
     let calls = 0;
     const keyFn = (): string => 'rsp:k';  // matches default keyPrefix='rsp:' + 'k'
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
-      () => { calls++; return complete(Status.OK, calls); },
+      () => { calls++; return complete(Status.OK, String(calls)); },
     );
     await handler(makeRequest('/'));
     await cache.delete(keyFn());  // user-side invalidation

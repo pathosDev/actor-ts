@@ -21,10 +21,12 @@ class BarError extends Error { constructor() { super('bar'); this.name = 'BarErr
 
 describe('Directive enum', () => {
   test('has the four standard directives', () => {
-    expect(Directive.Resume).toBe('resume');
-    expect(Directive.Restart).toBe('restart');
-    expect(Directive.Stop).toBe('stop');
-    expect(Directive.Escalate).toBe('escalate');
+    // `expect<string>`: this is the one place that pins the *wire* values of
+    // the enum, so the literals stay on the right-hand side.
+    expect<string>(Directive.Resume).toBe('resume');
+    expect<string>(Directive.Restart).toBe('restart');
+    expect<string>(Directive.Stop).toBe('stop');
+    expect<string>(Directive.Escalate).toBe('escalate');
   });
 });
 

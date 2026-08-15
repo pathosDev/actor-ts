@@ -47,7 +47,7 @@ class Roster extends PersistentActor<Command, Event, State> {
   initialState(): State { return { members: new Set(), joinedAt: new Map(), lastChange: null }; }
   // Snapshot after every 2nd event so a 3-event run proves BOTH paths:
   // recovery folds snapshot(seq 2) + journal event 3.
-  override snapshotPolicy(): SnapshotPolicy { return everyNEvents(2); }
+  override snapshotPolicy(): SnapshotPolicy<State, Event> { return everyNEvents(2); }
   onEvent(s: State, e: Event): State {
     return match(e)
       .with({ kind: 'memberAdded' }, (m) => ({

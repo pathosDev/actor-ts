@@ -107,7 +107,7 @@ describe('Lazy.getSync (#279)', () => {
   test('returns the cached value for sync Lazy', () => {
     const lazyValue = Lazy.of(() => 'hello');
     lazyValue.get();
-    expect(lazyValue.getSync()).toBe('hello');
+    expect(lazyValue.getSync<string>()).toBe('hello');
   });
 
   test('throws when called before evaluation', () => {
@@ -118,7 +118,7 @@ describe('Lazy.getSync (#279)', () => {
   test('respects setOverride — returns the override value', () => {
     const lazyValue = Lazy.of(() => 'real');
     lazyValue.setOverride('fake');
-    expect(lazyValue.getSync()).toBe('fake');
+    expect(lazyValue.getSync<string>()).toBe('fake');
   });
 
   test('re-throws the cached error from the thunk', () => {

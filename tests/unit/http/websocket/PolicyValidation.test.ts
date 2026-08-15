@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import {
@@ -16,7 +17,7 @@ import type { WebsocketServerRef } from '../../../../src/http/websocket/Websocke
 
 const target = {} as unknown as WebsocketServerRef<unknown, unknown, never>;
 
-function systemWith(config: Record<string, unknown>): ActorSystem {
+function systemWith(config: ConfigObject): ActorSystem {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
