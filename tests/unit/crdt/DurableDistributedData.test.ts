@@ -244,7 +244,7 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
     const restarted = new DurableDistributedDataStore(store, 'replica-a');
     // Corrupt one entry the way a peer or a version skew could.
     const raw = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
-    await store.upsert('ddata|replica-a', raw.value.revision, {
+    await store.upsert('ddata|replica-a', raw.toNullable()!.revision, {
       entries: { counter: { kind: 'GCounter', state: { a: 'not-a-number' } } },
     });
 
@@ -256,7 +256,7 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
 
     const survived = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
     expect(survived.isSome()).toBe(true);
-    expect(Object.keys(survived.value.state.entries)).toEqual(['counter']);
+    expect(Object.keys(survived.toNullable()!.state.entries)).toEqual(['counter']);
   });
 
   test('a clean load still adopts the revision and can save', async () => {
@@ -271,6 +271,6 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
 
     await restarted.save(new Map([['counter', GCounter.empty().increment('a', 9)]]));
     const after = await store.load<{ entries: Record<string, { state: Record<string, number> }> }>('ddata|replica-b');
-    expect(after.value.state.entries['counter']!.state['a']).toBe(9);
+    expect(after.toNullable()!.state.entries['counter']!.state['a']).toBe(9);
   });
 });
