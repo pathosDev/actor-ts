@@ -172,6 +172,24 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   exiting — no exit code, so the gate stops being a gate (#1196). The
   runner's watchdog demotes that to a warning after 15 s; it does not excuse
   it. `deno test -A --trace-leaks` over the suspect case names the op.
+- **Examples:** `bun run test:examples` spawns every runnable snippet under
+  `examples/` and asserts on its output (~90 s). A change to a `src/` API
+  that an example calls needs it; the `examples` workflow gates it, and its
+  path filter carries `src/**` for that reason.
+
+  Every standalone example is classified in
+  `tests/examples/examples.manifest.json` — either runnable, with a
+  substring of its output that must appear, or skipped with the reason it
+  cannot run (a Docker broker, cloud credentials, an optional peer nothing
+  declares). The runner fails when the manifest and the tree disagree in
+  either direction, so **a new example is not finished until it has an
+  entry**. The output assertion is not decoration: `exited 0` is also what
+  `examples/io/grpc-sensor.ts` does after ten failed actor starts, so a
+  runnable case without an `expect` would gate on nothing.
+
+  Runs on Bun only, deliberately — the cross-runtime question belongs to
+  `bun run smoke`, whose cases are written runtime-neutral; the examples
+  are written for Bun.
 - **Benchmarks:** a change to a `src/` API that `benchmarks/` calls also
   needs `bun run typecheck:bench` (benchmarks-only compile) and, for
   anything that could break at runtime, `bun run bench:smoke` (~30 s —

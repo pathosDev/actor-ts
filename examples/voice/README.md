@@ -130,6 +130,11 @@ verifies the relay path round-trips correctly (including the
 self-filter for room mode).  Does NOT exercise audio playback —
 that's a browser concern.
 
+Because it brings its own backend, it needs no setup to run
+unattended: `bun run test:examples` runs it alongside every other
+runnable example on every push that touches `src/` or `examples/`,
+so a framework change that breaks the relay path is a red check.
+
 ## Trade-offs
 
 - **`MediaSource`** is the right primitive for streamed Opus on the

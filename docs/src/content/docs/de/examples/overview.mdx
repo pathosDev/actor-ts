@@ -37,6 +37,41 @@ bun examples/chat/backend/main.ts
 
 Jedes Beispiel hat seine eigene README mit Setup-Schritten.
 
+## In CI abgesichert
+
+Die Beispiele sind ein Gate, keine Dekoration.  `bun run
+test:examples` startet jedes lauffähige Snippet als eigenen Prozess
+und prüft dessen Ausgabe; der `examples`-Workflow führt das bei
+jedem Push aus, der `src/` oder `examples/` berührt — eine
+Framework-Änderung, die ein Beispiel bricht, ist damit ein roter
+Check und nicht etwas, das erst ein Leser entdeckt.
+
+```bash
+bun run test:examples              # all of them, ~90 s
+bun run test:examples persistence  # just the ones matching a substring
+```
+
+Die Klassifikation liegt in
+[`tests/examples/examples.manifest.json`](https://github.com/pathosDev/actor-ts/blob/main/tests/examples/examples.manifest.json).
+Jedes eigenständige Beispiel steht dort genau einmal, entweder als:
+
+- **lauffähig** — mit einem Teilstring seiner Ausgabe, der
+  erscheinen muss.  Exit-Code 0 allein genügt nicht: ein Snippet,
+  dessen externe Abhängigkeit fehlt, kann seine eigentliche Arbeit
+  verfehlen und trotzdem mit 0 enden.
+- **übersprungen** — mit dem Grund, warum es unbeaufsichtigt nicht
+  laufen kann.  Das sind die Fälle, die einen Docker-Broker (Kafka,
+  NATS, MQTT), Cloud- oder Kubernetes-Zugangsdaten oder eine
+  optionale Peer-Abhängigkeit brauchen, die das Repository nicht
+  deklariert.
+
+Der Runner schlägt fehl, sobald diese Liste und der Baum in
+irgendeine Richtung auseinanderlaufen — ein neues Beispiel
+aufzunehmen heißt also, sich für eine der beiden Kategorien zu
+entscheiden.  Die beiden Anwendungs-Samples sind dabei: Chat- und
+Voice-Smoke-Test laufen beide im Gate und bringen jeweils ihr
+eigenes Backend mit.
+
 ## Ein Beispiel auswählen
 
 Wenn du sehen willst...
