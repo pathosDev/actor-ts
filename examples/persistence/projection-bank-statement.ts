@@ -33,7 +33,6 @@ import {
   PersistentActor,
   ProjectionActor,
 } from '../../src/persistence/index.js';
-import { attachDevTools } from '../devtools.js';
 
 /* --------------------------- write side ------------------------------- */
 
@@ -137,7 +136,6 @@ async function main(): Promise<void> {
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('bank', sysOptions);
-  const devtools = await attachDevTools(sys);
 
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see
@@ -166,7 +164,6 @@ async function main(): Promise<void> {
   projectionRef.stop();
   ledger.print();
 
-  await devtools.holdOpen();
   await sys.terminate();
   await journal.close();
 }

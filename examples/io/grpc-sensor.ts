@@ -44,7 +44,6 @@ import {
   type StreamErrorMessage,
   type StreamStartedMessage,
 } from '../../src/io/index.js';
-import { attachDevTools } from '../devtools.js';
 
 // --- proto definition (inlined for self-contained example) -----------------
 
@@ -173,7 +172,6 @@ async function main(): Promise<void> {
 
   try {
     const sys = ActorSystem.create('grpc-demo');
-    const devtools = await attachDevTools(sys);
 
     // Server side.
     const getHandler = sys.spawn(GetSensorHandler, 'get');
@@ -221,7 +219,6 @@ async function main(): Promise<void> {
     client.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: collector });
 
     await Bun.sleep(1_500);
-    await devtools.holdOpen();
     await sys.terminate();
   } finally {
     try { unlinkSync(protoPath); } catch { /* ignore */ }

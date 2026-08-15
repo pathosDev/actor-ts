@@ -29,7 +29,6 @@ import {
   InMemoryJournal,
 } from '../../src/persistence/index.js';
 import type { ActorRef } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type OrderState = 'pending' | 'paid' | 'shipped' | 'cancelled';
 
@@ -93,7 +92,6 @@ async function main(): Promise<void> {
   // --- run 1: drive the workflow ---
   const sys1Options = ActorSystemOptions.create().withPersistence({ journal });
   const sys1 = ActorSystem.create('order-demo-1', sys1Options);
-  const devtools = await attachDevTools(sys1);
 
   const ref1 = sys1.spawn(OrderFsm, 'order');
   await pretty(ref1, 'initial');
@@ -107,19 +105,16 @@ async function main(): Promise<void> {
   ref1.tell({ kind: 'ship', carrier: 'fedex' });
   await pretty(ref1, 'after ship');
 
-  await devtools.holdOpen();
   await sys1.terminate();
 
   // --- run 2: brand-new system, same journal — verify recovery ---
   console.log('\n--- restart, recovering from journal ---');
   const sys2Options = ActorSystemOptions.create().withPersistence({ journal });
   const sys2 = ActorSystem.create('order-demo-2', sys2Options);
-  const secondDevtools = await attachDevTools(sys2);
 
   const ref2 = sys2.spawn(OrderFsm, 'order');
   await pretty(ref2, 'recovered');
 
-  await secondDevtools.holdOpen();
   await sys2.terminate();
 }
 

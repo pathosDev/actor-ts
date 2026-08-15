@@ -1,22 +1,27 @@
 /**
- * Shared DevTools wiring for the examples.
+ * Shared DevTools wiring for the *long-running* examples.
  *
- * Every example can be inspected in the DevTools UI, but none of them
- * pay for it by default:
+ * Only the examples that run until you stop them — the HTTP and cache
+ * services, the cluster demos, the chat and voice backends — import this
+ * file, and none of them pay for it by default:
  *
- *     bun run examples/hello-world.ts              # unchanged
- *     bun run examples/hello-world.ts --devtools   # + http://127.0.0.1:9333
+ *     bun run examples/http/rest-service.ts              # unchanged
+ *     bun run examples/http/rest-service.ts --devtools   # + http://127.0.0.1:9333
+ *
+ * The examples that finish on their own carry no reference to this
+ * harness at all (#552).  They are the ones people copy into a project
+ * to start from, and three lines of debugging scaffolding in a
+ * twenty-six-line hello-world is three lines that have to be understood
+ * and deleted first.  There was nothing to see in them either: a script
+ * that is over in a few hundred milliseconds cannot be opened in a
+ * browser, and the harness used to park it just before shutdown purely
+ * so that it could be.  DevTools belongs where a system stays up long
+ * enough to watch it work.
  *
  * The `--devtools` argument works in every shell.  `DEVTOOLS=1` does the
  * same on a POSIX shell, but `VAR=value command` is a parser error in
  * PowerShell — which is most Windows contributors — so the flag is the
  * form worth leading with.
- *
- * Most examples are scripts that finish in a few hundred milliseconds —
- * far too fast to open a browser.  {@link ExampleDevTools.holdOpen}
- * solves that: when enabled it parks the example just before shutdown so
- * you can actually look at it, and when not it returns immediately,
- * leaving the example's timing exactly as it was.
  *
  * Multi-system examples (cluster demos, two-node persistence) call
  * `attachDevTools` per system and each gets its own port, counting up
@@ -51,18 +56,12 @@ import { DevTools, DevToolsOptions, isLoopbackHost, type DevToolsBinding } from 
 export interface ExampleDevTools {
   /** Browser URL, or `null` when DevTools was not enabled. */
   readonly url: string | null;
-  /**
-   * Keep the example alive while you look at it.  Resolves immediately
-   * unless DevTools is attached; otherwise waits for Ctrl+C.
-   */
-  holdOpen(): Promise<void>;
   /** Release the port.  Safe when DevTools was never attached. */
   detach(): Promise<void>;
 }
 
 const DISABLED: ExampleDevTools = {
   url: null,
-  holdOpen: () => Promise.resolve(),
   detach: () => Promise.resolve(),
 };
 
@@ -112,10 +111,8 @@ export async function attachDevTools(
   const devtools = await attachScanning(system, options, readHost(), first, slots);
   if (devtools === null) return DISABLED;
 
-  const url = browsableUrl(devtools.host, devtools.port);
   return {
-    url,
-    holdOpen: () => waitForInterrupt(url),
+    url: browsableUrl(devtools.host, devtools.port),
     detach: () => devtools.detach(),
   };
 }
@@ -263,24 +260,4 @@ function browsableUrl(host: string, port: number): string {
   if (host === '::' || host === '[::]') return `http://[::1]:${port}`;
   const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return `http://${authority}:${port}`;
-}
-
-/**
- * Park until the user interrupts.  Examples run in a terminal, so
- * Ctrl+C is the natural "I'm done looking" signal; the promise resolves
- * rather than exiting so the example still runs its own shutdown.
- */
-function waitForInterrupt(url: string): Promise<void> {
-  console.log(`[devtools] holding ${url} open — press Ctrl+C to continue shutdown`);
-  return new Promise<void>((resolve) => {
-    const scope = globalThis as {
-      process?: { once(event: string, listener: () => void): unknown };
-    };
-    if (scope.process?.once === undefined) {
-      // No signal handling available — do not hang the example forever.
-      resolve();
-      return;
-    }
-    scope.process.once('SIGINT', () => resolve());
-  });
 }

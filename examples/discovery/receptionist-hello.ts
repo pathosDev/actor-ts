@@ -16,7 +16,6 @@ import {
   Register,
   ServiceKey,
 } from '../../src/discovery/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {
   override onReceive(m: string): void { console.log(`[echo] received ${m}`); }
@@ -31,7 +30,6 @@ class Client extends Actor<Listing<string>> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('recp-hello');
-  const devtools = await attachDevTools(system);
   const receptionist = system.extension(ReceptionistId).start(null);
 
   const echoKey = ServiceKey.of<string>('echo');
@@ -42,7 +40,6 @@ async function main(): Promise<void> {
   receptionist.tell(new Find(echoKey, client));
 
   await Bun.sleep(50);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

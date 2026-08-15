@@ -11,7 +11,6 @@ import {
   decideBy,
 } from '../src/index.js';
 import type { ActorRef } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 class FlakyWorker extends Actor<number> {
   private handled = 0;
@@ -56,13 +55,11 @@ class ParentActor extends Actor<number> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('supervision');
-  const devtools = await attachDevTools(system);
   const parent = system.spawn(ParentActor, 'parent');
 
   for (let i = 1; i <= 6; i++) parent.tell(i);
 
   await new Promise(resolve => setTimeout(resolve, 150));
-  await devtools.holdOpen();
   await system.terminate();
 }
 
