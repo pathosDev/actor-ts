@@ -245,13 +245,16 @@ export type { ProcessSignal } from './util/ProcessSignal.js';
 // Mailboxes: the unbounded base (the default since #1148) and its variants.
 export {
   Mailbox,
+  DroppingMailbox,
   BoundedMailbox,
   MailboxFullError,
   PriorityMailbox,
   BoundedMailboxOptions,
   BoundedMailboxOptionsBuilder,
+  BoundedMailboxOptionsValidator,
   PriorityMailboxOptions,
   PriorityMailboxOptionsBuilder,
+  PriorityMailboxOptionsValidator,
 } from './mailbox/index.js';
 export type {
   DropReportingMailbox,
@@ -260,6 +263,7 @@ export type {
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,
   PriorityMailboxOptionsType,
+  PriorityMailboxOverflow,
   PriorityFunction,
 } from './mailbox/index.js';
 

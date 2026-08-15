@@ -8,6 +8,8 @@ import {
   BoundedMailboxOptions,
   MailboxFullError,
   PriorityMailbox,
+  PriorityMailboxOptions,
+  type MailboxDropReason,
 } from '../../../src/mailbox/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -206,6 +208,182 @@ describe('PriorityMailbox', () => {
     const sorted = [...xs].sort((a, b) => a - b);
     const drained = mbox.drainUser().map((e) => e.message);
     expect(drained).toEqual(sorted);
+  });
+});
+
+// #647 — a priority mailbox could not be bounded at all, and `ActorOptions`
+// forbids `withMailbox` + `withMailboxCapacity`, so there was no route to one.
+describe('PriorityMailbox — capacity and overflow', () => {
+  test('unbounded by default — a capacity is something you ask for', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    for (let i = 0; i < 20_000; i++) mbox.enqueue({ message: i, sender: null });
+    expect(mbox.size).toBe(20_000);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('drop-lowest-priority sheds the tail, not the head', () => {
+    // The head is the message the priority function called most important —
+    // dropping it would defeat the reason for choosing this mailbox.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 3,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [1, 2, 3]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 0, sender: null });
+    expect(mbox.size).toBe(3);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1, 2]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('drop-lowest-priority reports drop-new when the arrival is the least important', () => {
+    // Insert-then-evict lets the arrival compete on the same terms, and the
+    // identity check then reports honestly rather than claiming a queued
+    // message was destroyed.
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => reasons.push(reason),
+    });
+    for (const n of [1, 2]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 9, sender: null });   // worse than everything queued
+    mbox.enqueue({ message: 0, sender: null });   // better than everything queued
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1]);
+    expect(reasons).toEqual(['drop-new', 'drop-head']);
+  });
+
+  test('drop-lowest-priority keeps the older of an equal-priority pair', () => {
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: () => 5,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const s of ['a', 'b', 'c']) mbox.enqueue({ message: s, sender: null });
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b']);
+  });
+
+  test('drop-new discards the arrival whatever priority it was given', () => {
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const n of [5, 6]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 0, sender: null });   // urgent, and dropped anyway
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([5, 6]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('reject is the default once a capacity is named', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n, capacity: 2 });
+    mbox.enqueue({ message: 1, sender: null });
+    mbox.enqueue({ message: 2, sender: null });
+    expect(() => mbox.enqueue({ message: 0, sender: null })).toThrow(MailboxFullError);
+    expect(mbox.droppedCount).toBe(0);   // refusing is not dropping
+  });
+
+  test('the bound holds while the actor is suspended — #407 parity', () => {
+    // Suspension is the supervision window: the actor has failed and messages
+    // keep arriving.  `dequeueUser` refuses then, so the eviction goes through
+    // `removeOldest`, which does not.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [5, 6]) mbox.enqueue({ message: n, sender: null });
+    mbox.suspend();
+    for (const n of [1, 2, 3]) mbox.enqueue({ message: n, sender: null });
+    expect(mbox.size).toBe(2);
+    mbox.resume();
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([1, 2]);
+    expect(mbox.droppedCount).toBe(3);
+  });
+
+  test('the bound applies to the unstash path too', () => {
+    // `prependUser` re-enters `enqueue` here, unlike BoundedMailbox — so
+    // `unstashAll()` on a full priority mailbox can drop, which is worth
+    // knowing before it surprises someone.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [1, 2]) mbox.enqueue({ message: n, sender: null });
+    mbox.prependUser([{ message: 9, sender: null }, { message: 0, sender: null }]);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1]);
+    expect(mbox.droppedCount).toBe(2);
+  });
+
+  test('drops reach observeDrops alongside the caller onDrop', () => {
+    // The additive contract the cell relies on: wiring the stock counter must
+    // not unhook a metric the caller wired at construction.
+    const mine: MailboxDropReason[] = [];
+    const framework: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => mine.push(reason),
+    });
+    mbox.observeDrops((reason) => framework.push(reason));
+    for (const n of [3, 1, 2]) mbox.enqueue({ message: n, sender: null });
+    expect(mine.length).toBe(2);
+    expect(framework).toEqual(mine);
+    expect(mbox.droppedCount).toBe(2);
+  });
+});
+
+describe('PriorityMailbox — options validation', () => {
+  test('builder form is equivalent to a plain object', () => {
+    const priorityOptions = PriorityMailboxOptions.create<number>()
+      .withPriorityFor((n) => n)
+      .withCapacity(2)
+      .withOverflow('drop-lowest-priority');
+    const mbox = new PriorityMailbox<number>(priorityOptions);
+    for (const n of [3, 1, 2]) mbox.enqueue({ message: n, sender: null });
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([1, 2]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('a missing priorityFor throws OptionsError at construction', () => {
+    // It used to type-check (the accepted union includes Partial<...>) and
+    // fail as `this.priorityFor is not a function` on the first enqueue —
+    // inside the sender's `tell`, a long way from the mistake.
+    expect(() => new PriorityMailbox({})).toThrow(OptionsError);
+    expect(() => new PriorityMailbox({})).toThrow(/priorityFor/);
+    expect(() => new PriorityMailbox(PriorityMailboxOptions.create<number>().withCapacity(2)))
+      .toThrow(/priorityFor/);
+  });
+
+  test('a non-callable priorityFor throws OptionsError', () => {
+    expect(() => new PriorityMailbox({ priorityFor: 7 as never })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox({ priorityFor: 7 as never })).toThrow(/priorityFor/);
+  });
+
+  test('rejects a non-positive / non-integer capacity', () => {
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 0 })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: -3 })).toThrow(/capacity/);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 1.5 })).toThrow(/capacity/);
+  });
+
+  test('rejects an unknown overflow policy — including BoundedMailbox drop-head', () => {
+    // `drop-head` is deliberately absent: the head here is the message the
+    // priority function called most important.
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 2, overflow: 'drop-head' as never }))
+      .toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 2, overflow: 'drop-head' as never }))
+      .toThrow(/overflow/);
+  });
+
+  test('rejects an overflow policy without a capacity', () => {
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, overflow: 'drop-new' })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, overflow: 'drop-new' })).toThrow(/overflow/);
   });
 });
 
