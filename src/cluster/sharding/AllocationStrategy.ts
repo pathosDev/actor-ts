@@ -31,7 +31,19 @@ export interface AllocationStrategy {
  * candidate set changes).
  */
 export class HashAllocationStrategy implements AllocationStrategy {
-  allocate(shardId: number, candidates: ReadonlyArray<NodeAddress>): NodeAddress {
+  /**
+   * `currentShards` is declared and ignored: hashing needs only the
+   * candidate list.  Leaving the parameter off still satisfies
+   * `implements AllocationStrategy`, but the class is exported from
+   * `src/cluster/index.ts`, so a caller holding the concrete type got
+   * `Expected 2 arguments, but got 3` on the three-argument call the
+   * interface — and every other strategy — documents (#540).
+   */
+  allocate(
+    shardId: number,
+    candidates: ReadonlyArray<NodeAddress>,
+    _currentShards?: ReadonlyMap<string, ReadonlySet<number>>,
+  ): NodeAddress {
     if (candidates.length === 0) throw new Error('HashAllocationStrategy: no candidates');
     const sorted = [...candidates].sort((a, b) => a.compareTo(b));
     return sorted[shardId % sorted.length]!;

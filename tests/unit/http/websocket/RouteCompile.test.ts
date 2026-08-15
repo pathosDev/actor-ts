@@ -43,9 +43,12 @@ describe('compile — websocket routes', () => {
     expect(eps).toHaveLength(1);
     const endpoint = eps[0]!;
     expect(endpoint.kind).toBe('websocket');
+    // Narrow on the discriminant before reading `method` / `pattern`: the
+    // fallback member of `CompiledEndpoint` carries neither.
+    if (endpoint.kind !== 'websocket') throw new Error(`expected a ws route, got ${endpoint.kind}`);
     expect(endpoint.method).toBe('GET');
     expect(endpoint.pattern).toBe('/');
-    const ws0 = endpoint as CompiledWebsocketRoute;
+    const ws0: CompiledWebsocketRoute = endpoint;
     expect(ws0.connect).toBe(noopConnect);
     // Default authorize accepts (null).
     expect(await ws0.authorize(request())).toBeNull();

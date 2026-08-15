@@ -69,7 +69,8 @@ async function main(): Promise<void> {
   }
 
   // Subscribe on node A; expect to see 1, then 2, then 3 workers over time.
-  const aReceptionist = nodeA.sys.extension(ReceptionistId).get()!;
+  // `get()` hands back an `Option` — `!` alone does not unwrap one.
+  const aReceptionist = nodeA.sys.extension(ReceptionistId).get().toNullable()!;
   const client = nodeA.sys.spawn(StreamClient, 'client');
   aReceptionist.tell(new Subscribe(key, client));
 

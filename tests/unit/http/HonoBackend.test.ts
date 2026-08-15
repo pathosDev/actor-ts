@@ -356,6 +356,6 @@ describe('HttpExtension + HonoBackend — client round-trip', () => {
     const client = system.extension(HttpExtensionId).client;
     const response = await client.post(`${url}/echo`, { body: { hello: 'world' } });
     expect(response.status).toBe(200);
-    expect(response.json()).toEqual({ hello: 'world' });
+    expect(response.json<{ hello: string }>()).toEqual({ hello: 'world' });
   });
 });

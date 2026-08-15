@@ -163,7 +163,9 @@ describe('PersistentActor — actor-level encryption hook', () => {
     }
     sys2.spawn(() => new Recoverer('a', { algorithm: 'none' }, enc), 'a');
     await awaitCondition(() => recoveredState !== null, { label: 'recovery completed' });
-    expect(recoveredState).toEqual({ count: 2 });
+    // Written only by `onRecoveryComplete`, a nested function, so flow
+    // analysis still has it at its `null` initialiser here.
+    expect<State | null>(recoveredState).toEqual({ count: 2 });
     await sys2.terminate();
   });
 });

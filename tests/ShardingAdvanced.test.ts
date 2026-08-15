@@ -132,7 +132,9 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
 
   await c1.leave(); await sys1.terminate();
   await waitFor(() => leaderSeen === 'leader-x@10.11.0.2:32002', 1_500);
-  expect(leaderSeen).toBe('leader-x@10.11.0.2:32002');
+  // Explicit `expect<T>`: the only writer is the `subscribe` callback, so
+  // flow analysis still has `leaderSeen` at its `null` initialiser here.
+  expect<string | null>(leaderSeen).toBe('leader-x@10.11.0.2:32002');
 
   await c2.leave(); await sys2.terminate();
 });

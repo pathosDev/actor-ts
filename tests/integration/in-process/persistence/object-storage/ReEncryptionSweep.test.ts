@@ -27,7 +27,7 @@ import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snaps
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
 import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
-import type { ObjectStorageBackend, ObjectFetched } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import type { ObjectStorageBackend, ObjectFetched, ObjectInfo } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { some, type Option } from '../../../../../src/util/Option.js';
 
 let dir: string;
@@ -470,8 +470,8 @@ class MalformedKeyBackend implements ObjectStorageBackend {
   readonly written: string[] = [];
   constructor(private readonly keys: string[]) {}
 
-  async list(): Promise<Array<{ key: string; size: number }>> {
-    return this.keys.map(key => ({ key, size: 1 }));
+  async list(): Promise<ObjectInfo[]> {
+    return this.keys.map(key => ({ key, size: 1, lastModified: new Date(0) }));
   }
   async get(key: string): Promise<Option<ObjectFetched>> {
     this.fetched.push(key);

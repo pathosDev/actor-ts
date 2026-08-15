@@ -147,7 +147,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const { base } = await bindServer([], (s) => websocket('/ws', s));
       const ws = await wsOpen(`${base}/ws`);
       ws.send(JSON.stringify({ kind: 'ping', n: 42 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 42 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 42 });
       ws.close();
     });
 
@@ -299,7 +299,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
       const ws = await wsOpen(`${base}/ws?token=secret`);
       ws.send(JSON.stringify({ kind: 'ping', n: 1 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 1 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 1 });
       ws.close();
     });
 
@@ -317,7 +317,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
       const ws = await wsOpen(`${base}/ws`);
       ws.send(JSON.stringify({ kind: 'ping', n: 7 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 7 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 7 });
       ws.close();
     });
   });
