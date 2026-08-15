@@ -162,7 +162,7 @@ perspective.  Behind the scenes:
 | --- | --- |
 | **Region** | One per node.  Routes messages to the right shard's owner, and decides when local entities — and shards left empty — passivate. |
 | **Shard** | One per shard hosted here, a child of the region.  Owns the entity actors: spawns them, stops them, buffers for one on its way out.  Goes away itself once it has stood empty for its window, and comes back with the next message. |
-| **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
+| **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes, and on a region shutting down. |
 | **Entity** | One per `entityId`.  A child of its shard, on whichever node currently owns the shard the ID hashes to. |
 
 That gives entities a real path —
@@ -449,7 +449,8 @@ one that is merely empty.
 
 ## Rebalancing
 
-When the cluster topology changes (a node joins or leaves), the
+When the cluster topology changes (a node joins or leaves) — or a
+region stops, which tells the coordinator on its way down — the
 coordinator runs a rebalance pass:
 
 1. Compute the new shard-to-node assignment from the active

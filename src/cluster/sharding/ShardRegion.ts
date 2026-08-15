@@ -29,6 +29,7 @@ import {
   isShardingMessage,
   type RegisterRegion,
   type RegisterRefused,
+  type RegionTerminated,
   type ShardEnvelope,
   type ShardReply,
   type ShardingMessage,
@@ -273,6 +274,46 @@ export class ShardRegion<TMessage = unknown>
     this.passivationTimer?.cancel();
     this.registerTimer?.cancel();
     this.asksSweepTimer?.cancel();
+    this.tellCoordinatorTerminated();
+  }
+
+  /**
+   * Tell the coordinator this region is gone (#648).
+   *
+   * Without it the only thing that ever removes a region from the coordinator's
+   * registry is `MemberRemoved`, so stopping a region on a node that stays in
+   * the cluster left its shards allocated to an actor that no longer exists:
+   * the coordinator kept answering `GetShardHome` with the dead region, senders
+   * cached that home and delivered into a stopped cell, and nothing self-healed
+   * — `candidates()` is derived from the registry with no liveness check, so
+   * the rebalance tick saw a perfectly balanced cluster.
+   *
+   * Ordering is already safe: `postStop` runs only once every child has
+   * terminated, so the entities are provably gone before the coordinator is
+   * free to place their shards elsewhere.  Sent directly rather than through
+   * `tellCoordinator`, which would re-enter the register loop (and arm a timer)
+   * on a region that is shutting down.
+   */
+  private tellCoordinatorTerminated(): void {
+    const coordinator = this.coordinatorRef;
+    if (!coordinator) return;
+    const terminated: RegionTerminated = {
+      kind: 'sharding.RegionTerminated',
+      // Must be byte-identical to what `register()` sent, or the coordinator's
+      // `regionKey` misses and `onRegionTerminated` silently no-ops.
+      region: this.self.path.toString(),
+      node: this.config.cluster.selfAddress.toJSON(),
+    };
+    try {
+      coordinator.tell(terminated);
+    } catch (error) {
+      // A transport that is already down on the shutdown path must not turn
+      // into a failed `postStop`; the `MemberRemoved` route still covers it.
+      this.log.debug(
+        `[sharding] could not tell the coordinator that region '${this.config.typeName}' stopped`,
+        error,
+      );
+    }
   }
 
   override onReceive(

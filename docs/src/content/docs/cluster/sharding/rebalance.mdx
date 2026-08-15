@@ -27,7 +27,7 @@ nothing races past a half-moved entity.
 
 ## What triggers rebalance
 
-Two paths:
+Three paths:
 
 1. **Membership-driven** — `MemberUp` (a new node), `MemberRemoved`
    (a leaving node), or any cluster transition that changes the
@@ -39,8 +39,27 @@ Two paths:
    for its rebalance recommendations.  `LeastShardAllocationStrategy`
    returns shards to drain off busy nodes; `HashAllocationStrategy`
    returns shards whose hash-target moved.
+3. **A region stopping** — a region tells the coordinator on its way
+   down, and its shards are reallocated immediately.  This covers a
+   region stopped on a node that stays in the cluster, where no
+   membership event fires at all.
 
-Both feed into the same handoff protocol.
+The first two feed into the handoff protocol below.  The third does
+not: the region is already gone, so there is nothing to hand off —
+the coordinator simply drops it from the registry and re-allocates.
+
+Without that third path a stopped region left its shards **orphaned**:
+the coordinator kept naming it as their home, senders cached that home
+and delivered into a stopped actor, and the messages became dead
+letters.  Nothing recovered it either — the candidate set is derived
+from the registry with no liveness check, so the rebalance tick saw a
+balanced cluster and moved nothing.  It stayed that way until the node
+left the cluster entirely.
+
+The notification is best-effort and idempotent: it is skipped if the
+region never found a coordinator, a transport failure on the way down
+is logged and swallowed, and the `MemberRemoved` path that follows a
+whole-node shutdown finds the region already gone and does nothing.
 
 ## The handoff sequence
 

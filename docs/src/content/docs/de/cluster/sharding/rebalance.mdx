@@ -28,7 +28,7 @@ Entity vorbei rast.
 
 ## Was Rebalance auslöst
 
-Zwei Pfade:
+Drei Pfade:
 
 1. **Mitgliedschaftsgetrieben** — `MemberUp` (ein neuer Node),
    `MemberRemoved` (ein gehender Node) oder jeder
@@ -42,8 +42,31 @@ Zwei Pfade:
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
    Shards zurück, deren Hash-Ziel gewandert ist.
+3. **Eine Region, die stoppt** — eine Region meldet sich beim
+   Koordinator ab, während sie herunterfährt, und ihre Shards werden
+   sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
+   gestoppt wird, der im Cluster bleibt — dort feuert überhaupt kein
+   Membership-Event.
 
-Beide speisen denselben Handoff-Mechanismus.
+Die ersten beiden speisen den Handoff-Mechanismus unten. Der dritte
+nicht: Die Region ist bereits weg, es gibt also nichts zu übergeben —
+der Koordinator streicht sie schlicht aus der Registry und alloziert
+neu.
+
+Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
+**verwaist** zurück: Der Koordinator nannte sie weiterhin als deren
+Zuhause, Sender cachten dieses Zuhause und stellten in einen
+gestoppten Actor zu, und die Nachrichten wurden zu Dead Letters.
+Es erholte sich auch nichts — die Kandidatenmenge wird aus der
+Registry abgeleitet, ohne Liveness-Prüfung, der Rebalance-Tick sah
+also einen ausgeglichenen Cluster und verschob nichts. Das blieb so,
+bis der Node den Cluster ganz verließ.
+
+Die Meldung ist Best-Effort und idempotent: Sie entfällt, wenn die
+Region nie einen Koordinator gefunden hat, ein Transportfehler auf dem
+Weg nach unten wird geloggt und geschluckt, und der `MemberRemoved`-
+Pfad, der einem kompletten Node-Shutdown folgt, findet die Region
+bereits weg und tut nichts.
 
 ## Die Handoff-Sequenz
 

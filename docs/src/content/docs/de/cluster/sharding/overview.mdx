@@ -164,7 +164,7 @@ Aus Sicht des Aufrufers ist die `cartRegion` ein einzelner
 | --- | --- |
 | **Region** | Eine pro Node. Routet Nachrichten an den Besitzer des richtigen Shards und entscheidet, wann lokale Entities — und leer gewordene Shards — passiviert werden. |
 | **Shard** | Einer pro hier gehostetem Shard, Kind der Region. Besitzt die Entity-Actors: spawnt sie, stoppt sie, puffert für eine, die gerade geht. Verschwindet selbst, sobald er sein Fenster lang leer stand, und kommt mit der nächsten Nachricht zurück. |
-| **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen. |
+| **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen und beim Herunterfahren einer Region. |
 | **Entity** | Eine pro `entityId`. Kind ihres Shards, auf dem Node, dem aktuell der Shard gehört, in den die ID hasht. |
 
 Damit haben Entities einen echten Pfad —
@@ -467,7 +467,8 @@ einem bloß leeren unterscheidet.
 ## Rebalancing
 
 Wenn sich die Cluster-Topologie ändert (ein Node tritt bei oder
-geht), führt der Koordinator einen Rebalance-Lauf durch:
+geht) — oder wenn eine Region stoppt und sich dabei beim Koordinator
+abmeldet —, führt der Koordinator einen Rebalance-Lauf durch:
 
 1. Berechne die neue Shard-zu-Node-Zuordnung aus der aktiven
    Allokationsstrategie (Default: Hash modulo Regionen).
