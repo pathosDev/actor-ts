@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-15
+
 ### Changed
 
 - **BREAKING — the root `'actor-ts'` export is core-only; subsystems moved
