@@ -18,8 +18,8 @@ async function main(): Promise<void> {
   greeter.tell('World');
   greeter.tell('actor-ts');
 
-  // Give the dispatcher a tick to run, then shut down.
-  await new Promise(resolve => setTimeout(resolve, 20));
+  // No sleep: terminate() drains what is already queued before it stops
+  // anything, so both greetings are printed.
   await system.terminate();
 }
 

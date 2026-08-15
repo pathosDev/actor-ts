@@ -45,6 +45,10 @@ async function main(): Promise<void> {
   repo.tell({ kind: 'query', q: 'bob' });
   repo.tell({ kind: 'query', q: 'carol' });
 
+  // Not a drain sleep: this waits for the 80 ms load *timer* in preStart.
+  // terminate() drains the mailboxes, but it does not wait for work that has
+  // not been enqueued yet — a scheduled tick can still be pending when the
+  // tree is quiet, and here the unstash depends on one.
   await new Promise(r => setTimeout(r, 200));
   await system.terminate();
 }
