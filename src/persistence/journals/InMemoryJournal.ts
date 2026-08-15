@@ -104,6 +104,17 @@ export class InMemoryJournal implements Journal {
     this.streams.set(persistenceId, next);
   }
 
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const current = this.highWater.get(persistenceId) ?? 0;
+    if (throughSeq > current) this.highWater.set(persistenceId, throughSeq);
+    // Materialise the (empty) stream as well, so the id shows up in
+    // `persistenceIds()`.  That is the shape a compacted stream has here —
+    // `delete` leaves the emptied array behind rather than dropping the key —
+    // and a migration target that has adopted a mark but holds no events yet
+    // is the same thing: known, currently without surviving history.
+    if (!this.streams.has(persistenceId)) this.streams.set(persistenceId, []);
+  }
+
   async persistenceIds(): Promise<string[]> {
     return Array.from(this.streams.keys());
   }

@@ -60,6 +60,39 @@ export interface Journal {
    */
   delete(persistenceId: string, toSeq: number): Promise<void>;
 
+  /**
+   * Raise the compaction high-water mark to `throughSeq` without deleting
+   * anything — the write half of what `delete` leaves behind, for a stream
+   * whose prefix was compacted somewhere else.
+   *
+   * **Monotonic.**  A `throughSeq` at or below the current mark is a no-op,
+   * never a rewind: a sequence number handed out once may never be handed
+   * out again, which is why every backend's underlying primitive is a
+   * `GREATEST` / `MAX` / `$max` / conditional update rather than a plain
+   * assignment.
+   *
+   * **Why the contract needs it.**  A journal-to-journal copy is the caller
+   * (#630).  `append` derives the sequence it writes from `expectedSeq`
+   * alone, so copying a compacted stream — one whose first surviving event
+   * is 5, not 1 — into a fresh target renumbered it from 1, and the paired
+   * snapshot then referred to a sequence that no longer meant what it said:
+   * either loud (`SnapshotIntegrityError`) or, in the layout
+   * `PersistentActor.deleteHistory` actually produces, silent, folding the
+   * wrong tail onto the snapshot's state.  Seeding the mark first makes the
+   * target's `expectedSeq` line up with the source's numbering, so the copy
+   * preserves it and every read-side offset, projection cursor and snapshot
+   * that refers to `(persistenceId, sequenceNr)` still points at the same
+   * event.
+   *
+   * **Optional, and absence is meaningful.**  Every in-tree journal
+   * implements it — all of them already store the mark (`deleted_to`,
+   * `deletedTo`, `max_sequence_nr`); they simply had no way to be told one.
+   * A third-party journal that cannot record a mark independently of its
+   * events omits the method, and `migrateBetweenJournals` refuses a
+   * compacted stream rather than silently renumbering it.
+   */
+  raiseCompactionMark?(persistenceId: string, throughSeq: number): Promise<void>;
+
   /** Persistence IDs currently known to the journal (useful for projections). */
   persistenceIds(): Promise<string[]>;
 

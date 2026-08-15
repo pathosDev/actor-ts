@@ -219,6 +219,16 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
     }
   }
 
+  /** The mark half of `delete`, without the query-and-batch-delete in front of it. */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const operations = await this.ensureOpen();
+    try {
+      await this.raiseDeletedTo(operations, persistenceId, throughSeq);
+    } catch (e) {
+      this.fail('raiseCompactionMark', e);
+    }
+  }
+
   /**
    * No `persistenceIdsPaginated` counterpart, deliberately.  Paging needs a
    * *sorted* index over the ids, and a DynamoDB table has no order across

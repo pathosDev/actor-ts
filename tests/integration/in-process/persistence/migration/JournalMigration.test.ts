@@ -10,11 +10,29 @@
  *   - Snapshot store copy: latest snapshot lands at the same seq in
  *     target; empty pids are no-ops.
  *   - skipExistingPersistenceIds: bypasses pids that already have data in target.
+ *   - Compacted sources (#630): the target inherits the source's compaction
+ *     mark, so sequence numbers survive the copy and the paired snapshot
+ *     still recovers.
+ *   - Per-side `PersistenceOptions` on the snapshot copy (#630).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Journal } from '../../../../../src/persistence/Journal.js';
+import type { Snapshot } from '../../../../../src/persistence/JournalTypes.js';
+import type { EncryptionConfig, PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
+import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
+import type { Option } from '../../../../../src/util/Option.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { replayState } from '../../../../../src/persistence/Replay.js';
 import {
+  CompactedSourceError,
   InMemoryMigrationProgressStore,
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
@@ -102,9 +120,13 @@ describe('migrateBetweenJournals', () => {
 
     const result = await migrateBetweenJournals(source, target);
     expect(result.eventsWritten).toBe(1);
+    // A legitimate mid-pid resume is NOT a compacted source: the slice starts
+    // at `targetHigh + 1`, so nothing may be treated as a gap (#630).
+    expect(result.persistenceIdsCompactionMarkRaised).toBe(0);
 
     const tgt = await target.read<{ x: number }>('pid-1', 1);
     expect(tgt.map((e) => e.event.x)).toEqual([1, 2, 3]);
+    expect(tgt.map((e) => e.sequenceNr)).toEqual([1, 2, 3]);
   });
 
   test('progressStore skips completed pids on a resumed run', async () => {
@@ -170,6 +192,145 @@ describe('migrateBetweenJournals', () => {
   });
 });
 
+/* ---------------------- compacted sources (#630) ------------------------ */
+
+/** A counter stream: event `n` adds `n`, so a wrong tail shows up in the sum. */
+type CounterEvent = { n: number };
+type CounterState = { total: number };
+
+const counterEvents = (from: number, to: number): Array<{ event: CounterEvent }> =>
+  Array.from({ length: to - from + 1 }, (_, index) => ({ event: { n: from + index } }));
+
+const sumTo = (n: number): number => (n * (n + 1)) / 2;
+
+const replayCounter = (journal: Journal, snapshotStore: SnapshotStore, persistenceId: string) =>
+  replayState<CounterEvent, CounterState>({
+    journal,
+    snapshotStore,
+    persistenceId,
+    initialState: () => ({ total: 0 }),
+    fold: (state, event) => ({ total: state.total + event.n }),
+  });
+
+/** A third-party journal: everything `Journal` requires, no optional extras. */
+class MarklessJournal implements Journal {
+  constructor(private readonly inner: Journal) {}
+  append: Journal['append'] = (persistenceId, entries, expectedSeq) =>
+    this.inner.append(persistenceId, entries, expectedSeq);
+  read: Journal['read'] = (persistenceId, fromSeq, toSeq) => this.inner.read(persistenceId, fromSeq, toSeq);
+  highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+}
+
+/** A journal whose `read` breaks the contiguity half of the `read` contract. */
+class HoledJournal implements Journal {
+  constructor(private readonly sequenceNumbers: ReadonlyArray<number>) {}
+  async append(): Promise<never> { throw new Error('HoledJournal is read-only'); }
+  async read(persistenceId: string): Promise<Array<{
+    persistenceId: string; sequenceNr: number; event: unknown; timestamp: number;
+  }>> {
+    return this.sequenceNumbers.map((sequenceNr) => ({
+      persistenceId, sequenceNr, event: { n: sequenceNr }, timestamp: 0,
+    }));
+  }
+  async highestSeq(): Promise<number> { return this.sequenceNumbers[this.sequenceNumbers.length - 1] ?? 0; }
+  async delete(): Promise<void> { /* read-only */ }
+  async persistenceIds(): Promise<string[]> { return ['holed']; }
+}
+
+describe('migrateBetweenJournals — compacted sources (#630)', () => {
+  test('preserves sequence numbers when the source was compacted past a snapshot', async () => {
+    // The layout `PersistentActor.deleteHistory` actually leaves behind:
+    // events 5..10 survive and the snapshot sits AT the compaction point.
+    await source.append('counter-1', counterEvents(1, 10), 0);
+    await source.delete('counter-1', 4);
+    const sourceSnapshots = new InMemorySnapshotStore();
+    const targetSnapshots = new InMemorySnapshotStore();
+    await sourceSnapshots.save<CounterState>('counter-1', 4, { total: sumTo(4) });
+
+    const result = await migrateBetweenJournals(source, target);
+    await migrateBetweenSnapshotStores<CounterState>(sourceSnapshots, targetSnapshots, {
+      persistenceIds: ['counter-1'],
+    });
+
+    expect(result.eventsWritten).toBe(6);
+    expect(result.persistenceIdsCompactionMarkRaised).toBe(1);
+
+    // The events keep the numbers they had — before the fix they were
+    // renumbered 1..6, which no snapshot, offset or cursor refers to.
+    const copied = await target.read<CounterEvent>('counter-1', 1);
+    expect(copied.map((e) => e.sequenceNr)).toEqual([5, 6, 7, 8, 9, 10]);
+    expect(copied.map((e) => e.event.n)).toEqual([5, 6, 7, 8, 9, 10]);
+    expect(await target.highestSeq('counter-1')).toBe(10);
+
+    // And recovery reaches the state it would have on the source.  The
+    // pre-fix target recovered SILENTLY WRONG here: the snapshot at 4 passed
+    // the integrity check against a 6-event journal and the fold applied the
+    // last two events on top of it.
+    const replayed = await replayCounter(target, targetSnapshots, 'counter-1');
+    expect(replayed.sequenceNr).toBe(10);
+    expect(replayed.state).toEqual({ total: sumTo(10) });
+  });
+
+  test('carries the high-water mark of a fully compacted source', async () => {
+    // Nothing survives, but the source still remembers 10 sequence numbers.
+    await source.append('counter-2', counterEvents(1, 10), 0);
+    await source.delete('counter-2', 10);
+    const sourceSnapshots = new InMemorySnapshotStore();
+    const targetSnapshots = new InMemorySnapshotStore();
+    await sourceSnapshots.save<CounterState>('counter-2', 10, { total: sumTo(10) });
+
+    const result = await migrateBetweenJournals(source, target);
+    await migrateBetweenSnapshotStores<CounterState>(sourceSnapshots, targetSnapshots, {
+      persistenceIds: ['counter-2'],
+    });
+
+    expect(result.eventsWritten).toBe(0);
+    expect(result.persistenceIdsCompactionMarkRaised).toBe(1);
+    expect(await target.highestSeq('counter-2')).toBe(10);
+
+    const replayed = await replayCounter(target, targetSnapshots, 'counter-2');
+    expect(replayed.sequenceNr).toBe(10);
+    expect(replayed.state).toEqual({ total: sumTo(10) });
+
+    // The pathology #628 closed, re-introduced through migration: a target
+    // whose high-water mark stayed 0 rejected every later persist forever.
+    const written = await target.append('counter-2', [{ event: { n: 11 } }], replayed.sequenceNr);
+    expect(written.map((e) => e.sequenceNr)).toEqual([11]);
+  });
+
+  test('a re-run of a compacted copy is idempotent', async () => {
+    await source.append('counter-3', counterEvents(1, 6), 0);
+    await source.delete('counter-3', 3);
+
+    const first = await migrateBetweenJournals(source, target);
+    expect(first.eventsWritten).toBe(3);
+    const second = await migrateBetweenJournals(source, target);
+    expect(second.eventsWritten).toBe(0);
+    expect(second.persistenceIdsCompactionMarkRaised).toBe(0);
+    expect((await target.read('counter-3', 1)).map((e) => e.sequenceNr)).toEqual([4, 5, 6]);
+  });
+
+  test('refuses a compacted source when the target journal cannot record a mark', async () => {
+    await source.append('pid-1', counterEvents(1, 3), 0);
+    await source.delete('pid-1', 2);
+
+    await expect(migrateBetweenJournals(source, new MarklessJournal(target)))
+      .rejects.toThrow(CompactedSourceError);
+    // Nothing renumbered was written on the way to the refusal.
+    expect(await target.read('pid-1', 1)).toEqual([]);
+  });
+
+  test('refuses a source stream with a hole rather than renumbering the tail', async () => {
+    const holed = new HoledJournal([1, 2, 4]);
+    await expect(migrateBetweenJournals(holed, target)).rejects.toThrow(/has a gap/);
+    // The two events before the hole are already across; the copy stops there
+    // rather than writing event 4 at sequence 3.
+    expect((await target.read('holed', 1)).map((e) => e.sequenceNr)).toEqual([1, 2]);
+  });
+});
+
 describe('migrateBetweenSnapshotStores', () => {
   test('copies the latest snapshot per pid', async () => {
     const src = new InMemorySnapshotStore();
@@ -229,5 +390,131 @@ describe('migrateBetweenSnapshotStores', () => {
     const loaded = await tgt.loadLatest<{ from: string }>('p');
     expect(loaded.toNullable()?.state).toEqual({ from: 'tgt' });
     expect(loaded.toNullable()?.sequenceNr).toBe(3);
+  });
+});
+
+/* ------------- per-side PersistenceOptions on snapshots (#630) ---------- */
+
+/** Records the per-call options each store method was handed. */
+class RecordingSnapshotStore implements SnapshotStore {
+  readonly loadOptions: Array<PersistenceOptions | undefined> = [];
+  readonly saveOptions: Array<PersistenceOptions | undefined> = [];
+  constructor(private readonly inner: SnapshotStore) {}
+  save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    this.saveOptions.push(options);
+    return this.inner.save<S>(persistenceId, seq, state, options);
+  }
+  loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    this.loadOptions.push(options);
+    return this.inner.loadLatest<S>(persistenceId, options);
+  }
+  loadBefore<S>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    return this.inner.loadBefore<S>(persistenceId, seq, options);
+  }
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+}
+
+describe('migrateBetweenSnapshotStores — per-side PersistenceOptions (#630)', () => {
+  test('reads use the source options and writes use the target options', async () => {
+    // Two sides, two configs: a re-key sweep is an ordinary reason to migrate,
+    // so one shared field could not express what the copy needs.
+    const sourceOptions: PersistenceOptions = { compression: { algorithm: 'gzip' } };
+    const targetOptions: PersistenceOptions = { compression: { algorithm: 'zstd' } };
+    const innerSource = new InMemorySnapshotStore();
+    await innerSource.save('p', 3, { v: 1 });
+    const src = new RecordingSnapshotStore(innerSource);
+    const tgt = new RecordingSnapshotStore(new InMemorySnapshotStore());
+
+    await migrateBetweenSnapshotStores(src, tgt, {
+      persistenceIds: ['p'],
+      // Turned on so the target-side probe is exercised too.
+      skipExistingPersistenceIds: true,
+      sourcePersistenceOptions: sourceOptions,
+      targetPersistenceOptions: targetOptions,
+    });
+
+    expect(src.loadOptions).toEqual([sourceOptions]);
+    // The skip probe reads the TARGET, so it must carry the target's config.
+    expect(tgt.loadOptions).toEqual([targetOptions]);
+    // The write is the half the issue never mentioned: without this the store
+    // resolves to `{ mode: 'none' }` and lands the snapshot in the clear.
+    expect(tgt.saveOptions).toEqual([targetOptions]);
+  });
+
+  test('omitting them leaves the stores on their own configuration', async () => {
+    const innerSource = new InMemorySnapshotStore();
+    await innerSource.save('p', 1, { v: 1 });
+    const src = new RecordingSnapshotStore(innerSource);
+    const tgt = new RecordingSnapshotStore(new InMemorySnapshotStore());
+
+    await migrateBetweenSnapshotStores(src, tgt, { persistenceIds: ['p'] });
+
+    expect(src.loadOptions).toEqual([undefined]);
+    expect(tgt.saveOptions).toEqual([undefined]);
+  });
+});
+
+/* -------- encrypted snapshots through the copy, end to end (#630) ------- */
+
+describe('migrateBetweenSnapshotStores — client-side encryption round-trip (#630)', () => {
+  // `ObjectStorageSnapshotStore` is the only store that honours encryption at
+  // all, so this is where the round-trip can actually be observed.
+  let sourceDirectory: string;
+  let targetDirectory: string;
+
+  const encryptionWith = (byte: number, info: string): EncryptionConfig => ({
+    mode: 'client-aes256-gcm',
+    masterKey: new Uint8Array(32).fill(byte),
+    info,
+  });
+
+  const storeOver = (directory: string): ObjectStorageSnapshotStore => {
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(directory);
+    // Deliberately no `withEncryption(...)`: the gap is the per-call key an
+    // actor supplies, which the constructor fallback cannot stand in for.
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(new FilesystemObjectStorageBackend(backendOptions));
+    return new ObjectStorageSnapshotStore(storeOptions);
+  };
+
+  beforeEach(() => {
+    sourceDirectory = mkdtempSync(join(tmpdir(), 'actor-ts-migrate-source-'));
+    targetDirectory = mkdtempSync(join(tmpdir(), 'actor-ts-migrate-target-'));
+  });
+  afterEach(() => {
+    for (const directory of [sourceDirectory, targetDirectory]) {
+      try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  test('re-keys a snapshot from the source key to a different target key', async () => {
+    const sourceEncryption = encryptionWith(1, 'acme/old/snapshot/v1');
+    const targetEncryption = encryptionWith(2, 'acme/new/snapshot/v1');
+    const src = storeOver(sourceDirectory);
+    const tgt = storeOver(targetDirectory);
+    try {
+      await src.save('account-1', 7, { balance: 42 }, { encryption: sourceEncryption });
+
+      const result = await migrateBetweenSnapshotStores<{ balance: number }>(src, tgt, {
+        persistenceIds: ['account-1'],
+        sourcePersistenceOptions: { encryption: sourceEncryption },
+        targetPersistenceOptions: { encryption: targetEncryption },
+      });
+      expect(result.persistenceIdsCopied).toBe(1);
+
+      const loaded = await tgt.loadLatest<{ balance: number }>('account-1', { encryption: targetEncryption });
+      expect(loaded.toNullable()?.sequenceNr).toBe(7);
+      expect(loaded.toNullable()?.state).toEqual({ balance: 42 });
+
+      // Proof the write did not silently degrade: without the target key the
+      // body is undecodable, so it is genuinely ciphertext and not plaintext
+      // that merely happened to read back.
+      await expect(tgt.loadLatest('account-1')).rejects.toThrow();
+      await expect(tgt.loadLatest('account-1', { encryption: sourceEncryption })).rejects.toThrow();
+    } finally {
+      await src.close();
+      await tgt.close();
+    }
   });
 });

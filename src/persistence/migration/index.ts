@@ -56,6 +56,7 @@ export {
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
   InMemoryMigrationProgressStore,
+  CompactedSourceError,
 } from './JournalMigration.js';
 export type {
   MigrateJournalsOptions,
