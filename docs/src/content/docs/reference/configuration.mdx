@@ -106,6 +106,7 @@ Place this at the project root.  The framework auto-loads it on
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `system.name` | `"default"` | System name — used in actor paths and cluster identification.  Applies when `ActorSystem.create()` is called without a name; an explicit `create('billing')` wins. |
+| `system.shutdown-drain-timeout` | `2s` | How long `terminate()` lets the actors under `/user` finish queued work before the stop cascade starts.  Returns as soon as the tree is quiet, so an idle system pays a tick.  Keep it under `coordinated-shutdown.default-phase-timeout`; `0` disables draining. |
 
 ### `actor-ts.logger`
 

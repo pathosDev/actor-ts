@@ -30,6 +30,19 @@ this page is the exhaustive list, that one is the explanation.
 actor-ts {
   system {
     name = "default"
+
+    # How long terminate() lets the actors under /user finish the work they
+    # already have before the stop cascade starts.  The wait ends as soon as
+    # the tree goes quiet, so an idle system pays a tick rather than the
+    # budget; what is still queued when the budget runs out is dead-lettered
+    # exactly as it was before.  Keep it under
+    # coordinated-shutdown.default-phase-timeout — the last phase awaits
+    # terminate(), so a drain as long as the phase leaves no room to stop
+    # anything.  0 disables draining and restores the pre-#663 behaviour.
+    #
+    # A throttled or suspended mailbox is never waited on: neither drains at
+    # a rate a shutdown can wait for.
+    shutdown-drain-timeout = 2s
   }
 
   logger {

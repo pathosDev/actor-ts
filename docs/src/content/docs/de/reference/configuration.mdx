@@ -108,6 +108,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
+| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter `coordinated-shutdown.default-phase-timeout`; `0` schaltet den Drain ab. |
 
 ### `actor-ts.logger`
 

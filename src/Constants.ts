@@ -43,3 +43,44 @@ export const DEFAULT_DISPATCHER_THROUGHPUT = 16;
  * value and then overwritten from HOCON if the key is set.
  */
 export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
+
+/**
+ * How long `ActorSystem.terminate()` lets the `/user` subtree finish the work
+ * it already has before the stop cascade begins (#663).
+ *
+ * Deliberately **under** {@link DEFAULT_PHASE_TIMEOUT_MS}, and that is the
+ * whole reason it is not 5 s too.  `CoordinatedShutdown`'s last phase is a
+ * task that awaits `terminate()`, bounded by the phase timeout; a drain
+ * budget equal to it could burn the entire phase before a single actor had
+ * been told to stop, and the phase would then be abandoned with the system
+ * still up.  2 s leaves the teardown itself three, and still gives a backlog
+ * a real chance — the drain returns the moment the tree goes quiet, so a
+ * system that is already idle pays a tick, not a budget.
+ *
+ * Not an options default: like `actor-ts.logger.close-timeout`, the drain
+ * budget is HOCON-only (`actor-ts.system.shutdown-drain-timeout`) — it is an
+ * operational knob for a deployment, not something the code that constructs
+ * the system should have to restate.
+ */
+export const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+
+/**
+ * First gap between two quiescence probes while `terminate()` drains.
+ *
+ * One millisecond because the overwhelmingly common case is an idle system —
+ * or one message in flight — and the probe has to yield at least one macrotask
+ * for the pending turn to run at all.  The scheduler clamps a zero-delay
+ * timer to roughly this anyway.
+ */
+export const QUIESCENCE_POLL_INTERVAL_MS = 1;
+
+/**
+ * Ceiling the quiescence probe backs off to.
+ *
+ * Each probe walks the `/user` subtree, so a fixed 1 ms would cost a full
+ * tree walk per millisecond for the whole budget on the one system that
+ * needs the budget — a deep tree that is genuinely busy.  Doubling up to
+ * this bound keeps the idle case as fast as it was while making the busy
+ * case cost tens of walks rather than thousands.
+ */
+export const QUIESCENCE_POLL_MAX_INTERVAL_MS = 25;
