@@ -122,6 +122,21 @@ tracks the highest sequence number per pid; `all_persistence_ids`
 backs `persistenceIds()`.  The optional `events_by_tag` table is
 keyed by `tag` — projection queries hit one partition per tag.
 
+**Compaction reaches the side table.**  `events_by_tag` is a real
+table this journal dual-writes, not an index Cassandra maintains, so
+`delete` compacts it explicitly: the tag rows of the deleted prefix
+go first, then the events.  That matters more here than it looks —
+each side-table row carries its own copy of the **payload**, so a row
+left behind would keep both answering `currentEventsByTag` and
+storing the event body after the event itself was compacted away.
+Because the side table is partitioned by `tag` and clustered on
+`timestamp`, neither of which is derivable from
+`(persistenceId, toSeq)`, the delete first reads the compacted
+prefix's `(sequence_nr, timestamp, tags)` back from `events` to
+rebuild those keys.  Budget one extra `SELECT` per partition plus one
+`DELETE` per (event, tag) pair on a `useTagIndex` journal; with the
+index off, `delete` issues exactly the statements it always did.
+
 `keyspace` and every table name are interpolated into CQL as identifiers
 — identifiers cannot be bound — so each is validated against
 `/^[A-Za-z_][A-Za-z0-9_]*$/` before it reaches a statement: on the write

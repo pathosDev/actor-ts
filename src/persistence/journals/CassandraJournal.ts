@@ -29,6 +29,17 @@ type EventRow = {
 };
 
 /**
+ * The narrow projection `delete` reads back to rebuild the `events_by_tag`
+ * primary key `(tag, timestamp, persistence_id, sequence_nr)` — deliberately
+ * payload-free, see `deleteTagIndexRows`.
+ */
+type TagIndexKeyRow = {
+  sequence_nr: string | number;
+  timestamp: string | number;
+  tags: string[] | null;
+};
+
+/**
  * Journal backed by Apache Cassandra or ScyllaDB — same CQL protocol, one
  * plug-in serves both.  Schema:
  *   - composite partition key `(persistence_id, partition_nr)` — keeps
@@ -292,12 +303,28 @@ export class CassandraJournal implements Journal {
     return this.readHighestSeq(persistenceId);
   }
 
+  /**
+   * Compaction has to reach the tag index too (#654).  `events_by_tag` is a
+   * separate physical table this class dual-writes in `append` — not a
+   * secondary index Cassandra maintains — so nothing removes its rows when
+   * the events go, and each of them carries the **full payload**.  Left
+   * behind, a compacted event stayed both readable through
+   * `CassandraQuery.currentEventsByTag` and stored forever, which is a
+   * correctness defect and a data-retention one at the same time.
+   *
+   * The tag rows go first, matching `SqliteJournal` and `RelationalJournal`:
+   * a crash between the two deletes then leaves events whose tag rows are
+   * already gone — a re-run of the same `delete` still reaches them — rather
+   * than tag rows pointing at events that no longer exist, which no later
+   * compaction could ever find.
+   */
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
     const partitionSize = this.options.partitionSize ?? 500_000;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
     for (let partition = 0; partition <= lastPartition; partition++) {
       try {
+        if (this.useTagIndex) await this.deleteTagIndexRows(persistenceId, partition, toSeq);
         await this.client.execute(
           `DELETE FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
           [persistenceId, partition, toSeq],
@@ -305,6 +332,46 @@ export class CassandraJournal implements Journal {
         );
       } catch (e) {
         throw new JournalError(`CassandraJournal.delete failed: ${(e as Error).message}`, e);
+      }
+    }
+  }
+
+  /**
+   * Drop the `events_by_tag` rows of one partition's compacted prefix.
+   *
+   * It has to be read-then-delete rather than a range delete: the side table
+   * is partitioned by `(tag)` and clustered on `timestamp` first, and neither
+   * is derivable from `(persistenceId, toSeq)`.  The events row is the only
+   * place the `(timestamp, tags)` pair is recorded — which is also why this
+   * runs *before* the events are deleted rather than after.
+   *
+   * One statement per (event, tag) pair, deliberately not a batch: every tag
+   * is its own partition, so batching them is exactly the multi-partition
+   * batch `append` splits itself up to avoid.
+   */
+  private async deleteTagIndexRows(
+    persistenceId: string,
+    partition: number,
+    toSeq: number,
+  ): Promise<void> {
+    // Only the three columns the side table's key is rebuilt from — pulling
+    // `payload` back for a prefix being compacted would be the largest read
+    // in the delete path and nothing here reads it.
+    const response = await this.client.execute(
+      `SELECT sequence_nr, timestamp, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
+      [persistenceId, partition, toSeq],
+      this.readOptions(),
+    );
+    for (const row of response.rows as unknown as TagIndexKeyRow[]) {
+      // A CQL `set<text>` comes back null (or empty) for an untagged event,
+      // which never produced a side-table row in the first place.
+      if (!row.tags || row.tags.length === 0) continue;
+      for (const tag of row.tags) {
+        await this.client.execute(
+          `DELETE FROM ${this.qualified(this.tagIndexTable)} WHERE tag = ? AND timestamp = ? AND persistence_id = ? AND sequence_nr = ?`,
+          [tag, Number(row.timestamp), persistenceId, Number(row.sequence_nr)],
+          this.readOptions(),
+        );
       }
     }
   }
