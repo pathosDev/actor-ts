@@ -27,8 +27,8 @@ Implements the `SnapshotStore` interface — `save`, `loadLatest`,
 `loadBefore`, `delete`.  Each `persistenceId` maps to an array of
 snapshots ordered by sequence number.
 
-- **`save(persistenceId, seq, state, options?)`** — append to the pid's
-  array.
+- **`save(persistenceId, seq, state, options?)`** — insert into the pid's
+  array, replacing any existing entry at the same sequence number.
 - **`loadLatest(persistenceId, options?)`** — return the highest-seq
   snapshot, or `None`.
 - **`loadBefore(persistenceId, seq, options?)`** — return the newest
@@ -39,6 +39,29 @@ snapshots ordered by sequence number.
 The implementation is **reference semantics** — every other
 snapshot store must match this behavior (modulo persistence /
 encryption / compression specifics).
+
+## Retention
+
+`keepN` bounds how many snapshots are kept per `persistenceId`;
+older ones are pruned on save.  `<= 0` keeps everything.
+
+```ts
+import { InMemorySnapshotStore, InMemorySnapshotStoreOptions } from 'actor-ts/persistence';
+
+const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3)
+const snapshotStore = new InMemorySnapshotStore(inMemorySnapshotStoreOptions);
+```
+
+**Unset, it keeps every snapshot** — and that is the one place
+this store deliberately differs from the family, where every
+persistent store defaults to `keepN: 3`.  This is the store you
+get when nothing is configured, so a default bound would change
+what every unconfigured application retains without anyone asking
+for it.  Opt in explicitly instead.
+
+Re-saving at a sequence number that already exists **replaces**
+that snapshot rather than appending a second one, matching the
+relational stores' `(persistence_id, sequence_nr)` primary key.
 
 ## When to use it
 
@@ -59,10 +82,10 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Long-running tests">
-  Snapshots accumulate in memory.  A benchmark that takes 1M
-  snapshots over a run grows the Map linearly.  For long tests,
-  configure `delete` cleanup or use the SQLite store with
-  `:memory:`.
+  Snapshots accumulate in memory by default.  A benchmark that
+  takes 1M snapshots over a run grows the Map linearly.  For long
+  tests, set `keepN`, call `delete` yourself, or use the SQLite
+  store with `:memory:`.
 </Aside>
 
 ## Where to next

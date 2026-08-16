@@ -46,6 +46,11 @@ export {
 } from './journals/SqliteJournalOptions.js';
 export type { SqliteJournalOptionsType } from './journals/SqliteJournalOptions.js';
 export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
+export {
+  InMemorySnapshotStoreOptions,
+  InMemorySnapshotStoreOptionsBuilder,
+} from './snapshot-stores/InMemorySnapshotStoreOptions.js';
+export type { InMemorySnapshotStoreOptionsType } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export {
   SqliteSnapshotStoreOptions,

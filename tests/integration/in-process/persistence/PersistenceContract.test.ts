@@ -19,6 +19,7 @@ import {
   InMemoryDurableStateStore,
   InMemoryJournal,
   InMemorySnapshotStore,
+  InMemorySnapshotStoreOptions,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
   SqliteDurableStateStore,
@@ -182,9 +183,14 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'InMemorySnapshotStore',
     pid: namespacer('inmem'),
-    // The reference store deliberately keeps every snapshot.
-    capabilities: { keepN: 'none' },
-    make: async () => new InMemorySnapshotStore(),
+    // Unset `keepN` keeps every snapshot — the reference store's default
+    // stays unbounded (#493) — but the bound is honoured when asked for,
+    // so both keepN scenarios apply.
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = InMemorySnapshotStoreOptions.create();
+      return new InMemorySnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
   },
   {
     label: 'SqliteSnapshotStore',
