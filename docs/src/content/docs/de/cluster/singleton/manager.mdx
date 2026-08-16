@@ -82,6 +82,13 @@ Formen lesen dieselbe adressgeordnete Member-Liste, also wählt jede
 Node unabhängig dieselbe aus, und der Proxy löst den Host genau so auf
 wie die Manager.
 
+Dieselbe Regel — aber jede Node wendet sie auf *ihre eigene* Sicht des
+Clusters an.  Diese Sichten stimmen überein, sobald Gossip konvergiert
+ist, und genau deshalb funktioniert das; auseinanderfallen können sie
+bei Unerreichbarkeit, und die ist
+[bewusst davon ausgenommen, was den Host
+verschiebt](#unerreichbarkeit-ist-bewusst-kein-trigger).
+
 ## Die Namenskonvention
 
 Der Manager **muss** an einem Pfad gespawnt werden, der
@@ -123,23 +130,57 @@ nur bei einem Leader-Wechsel:
 | `LeaderChanged` | Der uneingeschränkte Host **ist** der Leader. |
 | `SelfUp` | Dieser Node ist gerade hosting-fähig geworden. |
 | `MemberUp` | Ein Mitglied ist der Up-Menge beigetreten — möglicherweise unterhalb des aktuellen Hosts. |
-| `MemberUnreachable` | Ein Up-Mitglied ist aus der Up-Menge gefallen, ohne entfernt zu werden. |
-| `MemberReachable` | … und ist ihr wieder beigetreten. |
 | `MemberDown` / `MemberLeft` / `MemberRemoved` | Der Host ist im Begriff zu gehen. |
 
 `MemberJoined` und `MemberWeaklyUp` fehlen bewusst: Weder `joining`- noch
 `weakly-up`-Mitglieder tauchen in `upMembers()` auf, also kann keines von
 beiden hosten.
 
+### Unerreichbarkeit ist bewusst kein Trigger
+
+`MemberUnreachable` und `MemberReachable` verschieben den Host
+**sehr wohl** — ein unerreichbares Mitglied fällt aus `upMembers()`
+heraus, ohne entfernt zu werden — und stehen trotzdem nicht in der
+Menge.
+
+Jedes Event, das *in* der Menge steht, benennt eine
+Mitgliedschaftstatsache, auf die der ganze Cluster konvergiert; jeder
+Node berechnet damit denselben Host. Unerreichbarkeit ist das nicht.
+Sie ist die Aussage des Failure Detectors *eines* Nodes: *„ich erreiche
+dieses Mitglied nicht"* — und das Mitglied, um das es geht, kann die
+Peers, die sich diese Meinung gebildet haben, gar nicht hören; es zu
+erreichen ist ja genau das, was fehlgeschlagen ist. Ein Manager, der
+darauf reconcilen würde, beförderte sich selbst, während der Amtsinhaber
+— dem niemand etwas sagt — sein Kind behält. Kein Leader wandert, also
+löst nichts es auf: Der Cluster betreibt für die Dauer des Ausfalls
+**zwei lebende Singletons**.
+
+Der Preis des Weglassens ist real und der kleinere. Solange ein
+Rollen-Host für seine Peers unerreichbar ist, gilt das Singleton aus
+deren Sicht als nirgends gehostet, und ihre Nachrichten
+[gehen in die Dead Letters](#nachrichten-während-niemand-hostet), bis
+das Mitglied gedownt wird (`downAfterMs`) oder zurückkehrt.
+Verfügbarkeit ist wiederherstellbar und durch Downing begrenzt; ein
+zweites lebendes Singleton ist beides nicht. Auf dem Pfad ohne Lease
+kannst du nicht beides haben — einen unerreichbaren Node kann man nicht
+bitten zurückzutreten. Wenn du beides brauchst, ist genau dafür
+[der Lease-Pfad](#mit-lease) da: Er wird von einer dritten Instanz
+arbitriert, die beide Seiten *erreichen können*, also hält ihn genau
+eine von ihnen.
+
+An den Rändern geht nichts verloren. Die Auflösung einer
+Unerreichbarkeit kommt so oder so als Event an, das in der Menge steht:
+Downing feuert `MemberDown`, und die Erholung feuert `MemberUp` neben
+`MemberReachable`.
+
 **Vor v0.17.0 war der Trigger allein `LeaderChanged`.** Ein
 rollentragendes Mitglied, das *unterhalb* eines rollenlosen Leaders
 beitritt, verschiebt den Rollen-Host und ändert keinen Leader — es feuerte
 also nichts. Der beitretende Node spawnte trotzdem (über sein eigenes
 `SelfUp`), dem Amtsinhaber wurde nie gesagt, er solle stoppen, und der
-Cluster pendelte sich auf **zwei lebende Singletons** ein. Dieselbe Lücke
-ließ einen Rollen-Host, der `unreachable` wurde, überhaupt nirgends
-gehostet, bis er schließlich gedownt wurde. Wenn du auf einer älteren
-Version bist, ist das die Form, nach der du suchen solltest.
+Cluster pendelte sich auf **zwei lebende Singletons** ein. Wenn du auf
+einer älteren Version bist, ist das die Form, nach der du suchen
+solltest.
 
 ## Die zwei operativen Pfade
 
@@ -270,6 +311,37 @@ Mitgliedschaftsänderung würde direkt wieder in ein Spawn hineinlaufen.
 Andere Nodes sind davon nicht betroffen; genau dafür wird die Lease
 freigegeben.
 
+## Nachrichten, während niemand hostet
+
+Ein Proxy löst den Host aus der Sicht *seines eigenen* Nodes auf und
+leitet dorthin weiter; der Manager auf der Gegenseite entscheidet aus
+*seiner* Sicht, ob er hostet. Diese beiden Sichten stimmen überein,
+sobald die Mitgliedschaft es tut — also fast immer — und nicht, solange
+ein Mitglied für die eine Seite unerreichbar ist und für die andere
+nicht.
+
+Eine Nachricht, die bei einem Manager ankommt, der nicht hostet, geht
+in `system.deadLetters`, mit einer einmaligen, verriegelten Warnung, die
+das Singleton benennt. Sie wird nicht still verworfen, taucht also dort
+auf, wo du Dead Letters ohnehin beobachtest — Metriken, DevTools, eine
+`eventStream`-Subscription auf `DeadLetter`:
+
+```ts
+import { DeadLetter } from 'actor-ts';
+
+system.eventStream.subscribe(auditRef, DeadLetter);
+```
+
+Zwei benachbarte Fälle enden bewusst genauso. Der Proxy puffert,
+solange *gar kein* Node das Singleton hostet, und schickt jenseits von
+`bufferSize` in die Dead Letters; und er schickt sofort dorthin, wenn
+dieser Node der gewählte Host ist, aber nie `start(...)` aufgerufen hat
+— ein Deployment-Fehler, der von allein nicht heilt.
+
+**Vor v0.17.0 loggte der Manager pro Nachricht eine Warnung und verwarf
+sie.** Nichts erreichte den Dead-Letter-Stream, der Verlust war also für
+alles außer dem Log unsichtbar.
+
 ## Restart-Semantik
 
 Wenn der Manager selbst ausfällt (was selten ist), startet sein
@@ -319,8 +391,16 @@ gesteuert. Wenn du vermutest, dass der Manager sich falsch verhält,
 logge die vollständige Trigger-Menge aus [Worauf der Manager
 reagiert](#worauf-der-manager-reagiert) — nicht nur `LeaderChanged`.
 Gerade ein rollenbeschränktes Singleton wechselt den Host bei
-`MemberUp` / `MemberUnreachable`, während der Leader stillsteht; wer
-nur auf das Leadership schaut, sieht dann schlicht nichts passieren.
+`MemberUp` / `MemberDown`, während der Leader stillsteht; wer nur auf
+das Leadership schaut, sieht dann schlicht nichts passieren.
+
+Wenn das Symptom eher *verschwindende Nachrichten* als ein falscher
+Host-Node ist, beobachte zusätzlich `MemberUnreachable` — nicht weil
+der Manager darauf reagiert ([das tut er bewusst
+nicht](#unerreichbarkeit-ist-bewusst-kein-trigger)), sondern weil es
+die Bedingung ist, unter der Sender und Host sich darüber uneinig sind,
+wer hostet. Kombiniere das mit einer `DeadLetter`-Subscription; dorthin
+gehen diese Nachrichten.
 
 Für den Lease-Pfad logge auch `lease.acquire()`-Rückgaben — der
 Manager loggt diese standardmäßig auf Debug-Level.
