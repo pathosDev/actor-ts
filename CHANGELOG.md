@@ -459,6 +459,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   being silently stripped — grep your logs for `dropping a '<kind>' frame`
   after the upgrade.
 
+- **BREAKING — `managementRoutes(...)` returns the `Route` tree directly
+  instead of `{ routes, health }` (#655).**
+
+  The function no longer owns a `HealthCheckRegistry` — it reads the
+  system's. Keeping the field would have preserved the misleading signal
+  that the registry is born at route-building time, which is the shape
+  that made the framework unable to register anything into it. Every
+  registration that matters now happens before the call.
+
+  *Migration:* Replace `const { routes, health } =
+  managementRoutes(system, cluster)` with `const routes =
+  managementRoutes(system, cluster)`, and obtain the registry with
+  `healthChecksOf(system)` from `actor-ts/management`. Note that the
+  `cluster` argument now selects which endpoints exist, not what readiness
+  means: passing `null` on a system that did join a cluster still leaves
+  `/ready` gated on that cluster's checks.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -859,6 +876,80 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   round-trip runs 104-108k/s against a 106-108k/s baseline and tell is
   equal or better at every batch size. `Envelope` gains an optional
   `replayed` field; it is additive and public.
+
+- **Documented default values are now pinned to the constants they are
+  published from (#470).**
+
+  Every default is written down twice — as a `DEFAULT_*` constant in
+  `src/`, and as a HOCON literal in `REFERENCE_CONF` — and nothing
+  compared the two. The existing guards stop at the same ceiling: they
+  prove a reference, not a correct value, so a wrong number typed into the
+  hand-maintained `REFERENCE_CONF` was copied faithfully onto both
+  language pages with every check still green.
+
+  The new assertion chains onto the existing byte-pin, so a documented
+  default is the shipped default transitively. 76 keys are covered, each
+  linked by importing the constant, so a rename is a compile error rather
+  than a silently dropped assertion. Values are read through `Config`, the
+  loader the runtime uses, rather than a regex — a test that re-implements
+  duration and byte parsing ends up asserting its own arithmetic. Keys
+  where `reference.conf` deliberately overrides a shared constant are
+  recorded as such rather than omitted, because it is a layer above the
+  constants and not a copy of them.
+
+- **A compile harness for the fenced TypeScript samples, run with `bun run
+  check:doc-samples` (#470).**
+
+  Doc fences are the one body of code here that nothing type-checks, and
+  the existing api-drift guard is a literal-substring blocklist that
+  cannot see a name imported from the wrong subpath. This resolves
+  `actor-ts…` through `package.json#exports` — the map is derived from
+  that block rather than hand-written — and reports each failure at its
+  real page and line.
+
+  It is deliberately not wired into CI yet: roughly 158 samples need
+  completing or an explicit exemption first, and enabling it before that
+  sweep would only add a permanently-red job. The script's header records
+  the full measurement the sweep decision needs, including the finding
+  that carrying an import does not imply a sample is self-contained.
+
+- **`/health` and `/ready` now aggregate framework-owned health checks
+  instead of an always-empty list (#655).**
+
+  The `HealthCheckRegistry` became an `ActorSystem` extension, reached
+  with `healthChecksOf(system)`. That is what the feature needed: a
+  `Cluster`, a `ShardRegion` or a transport starts long before anyone
+  builds a management route tree, so a registry created inside
+  `managementRoutes` had no component able to register with it. Nothing in
+  `src/` ever called `addLiveness`/`addReadiness` — every caller was an
+  example, a test or a docs snippet — so `/health` returned `{status:'UP',
+  checks:[]}` unconditionally and `/ready` added only self-is-up. A pod
+  whose cluster transport was dead still reported ready and kept taking
+  traffic.
+
+  Three checks ship with it. Liveness gets exactly one, `actor-system`
+  ("has this system shut down?"), and deliberately nothing else: a failing
+  liveness check gets the pod killed, so it may depend on nothing a
+  restart can fix — a check that goes red when a shared database blinks
+  turns one outage into a fleet-wide restart storm. Readiness gets two,
+  registered by `Cluster._start` and removed by `leave()`.
+  `cluster-membership` is the self-is-`up` test the endpoint used to
+  compute inline. `cluster-transport` is new: it fails when the node has
+  no transport connection to any peer it still expects. That is a *total
+  isolation* test, not full reachability — a partial partition leaves the
+  node able to gossip, converge and route, and dropping it from the load
+  balancer would take capacity from a cluster that is coping. Members
+  marked `unreachable` still count as expected, because excluding them
+  would turn the check green a few seconds into every partition, which is
+  exactly when the answer matters; a peer that was actually downed stops
+  counting, so a legitimate lone survivor stays ready. A single-node
+  cluster expects nobody and always passes.
+
+  The same registry is what `GrpcServerOptionsType.health` feeds
+  `grpc.health.v1.Health` from, so the management endpoint and the gRPC
+  health service now read one instance rather than two that can disagree.
+  `/ready`'s `clusterReady` field is read back out of the aggregate by
+  name rather than recomputed in the handler, for the same reason.
 
 ### Fixed
 
@@ -1712,6 +1803,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `AggregateError` now does survive the wire with its `errors` array,
   though its members arrive as plain `Error`s carrying the original
   `name`, so the page gives the name comparison that works across nodes.
+
+- **Six documentation pages published an API that does not exist (#470).**
+
+  All four WebSocket pages imported `jsonCodec` from
+  `actor-ts/persistence` and then called it in the WebSocket codec's
+  shape. Two unrelated subpaths export that name — the WebSocket one takes
+  two type parameters and an options argument, the persistence one takes
+  one type parameter and no arguments — so the sample was a type error the
+  moment anyone compiled it. It is now imported from `actor-ts/http`,
+  alongside `WebsocketRouteOptions`. Twelve lines below, the same page
+  already imported `rawCodec` from the correct barrel: the rewrite that
+  introduced this got every non-colliding name right and the one colliding
+  name wrong.
+
+  Both schema-registry pages still listed the pre-`d3f49a9e` signatures —
+  `SchemaRegistration<Wire, Upcasted>` with `upcastFromPrev?: (prev:
+  unknown) => Upcasted`, and adapters returning `EventAdapter<E, unknown>`
+  / `SnapshotAdapter<S, unknown>`. That fix added the `Previous` type
+  parameter precisely so `(v1: DepositedV1): DepositedV2 => …` compiles, a
+  form the same pages use five times, so each page contradicted itself.
+  Both now publish the three-parameter form.
 
 ### Security
 

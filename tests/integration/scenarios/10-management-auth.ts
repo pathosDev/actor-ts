@@ -115,7 +115,10 @@ export const scenario: Scenario = {
       }
     }
 
-    // 6. /health without auth → 200.  Standard probe contract.
+    // 6. /health without auth → 200.  Standard probe contract.  The
+    //    `status: 'UP'` assertion below stopped being a tautology with
+    //    #655: the registry now carries the framework's liveness check, so
+    //    an empty aggregate would be a bug rather than the normal case.
     console.log('[10] GET /health without auth (probe contract)...');
     {
       const response = await fetch(`${base}/health`);

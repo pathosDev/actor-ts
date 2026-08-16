@@ -92,21 +92,21 @@ latest shape.
 
 ```ts
 interface SchemaRegistry {
-  register<Wire, Upcasted>(
+  register<Wire = unknown, Upcasted = unknown, Previous = unknown>(
     manifest: string,
     version: number,
-    registration: SchemaRegistration<Wire, Upcasted>,
+    registration: SchemaRegistration<Wire, Upcasted, Previous>,
   ): void;
   get(manifest: string, version: number): SchemaDescriptor | undefined;
   latestVersion(manifest: string): number | undefined;
   list(): ReadonlyArray<SchemaDescriptor>;
-  eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
-  snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
+  eventAdapter<E, JournalShape = E>(manifest: string): EventAdapter<E, JournalShape>;
+  snapshotAdapter<S, StoredShape = S>(manifest: string): SnapshotAdapter<S, StoredShape>;
 }
 
-type SchemaRegistration<Wire, Upcasted> = {
+type SchemaRegistration<Wire = unknown, Upcasted = unknown, Previous = unknown> = {
   readonly codec: Codec<Wire>;
-  readonly upcastFromPrev?: (prev: unknown) => Upcasted;
+  readonly upcastFromPrev?: (prev: Previous) => Upcasted;
   readonly compatibility?: 'none' | 'backward' | 'sample';
   readonly sample?: unknown;
 };

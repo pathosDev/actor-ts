@@ -110,7 +110,7 @@ const devtoolsOptions = DevToolsOptions.create()
   .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
 
 const routes = concat(
-  managementRoutes(system, cluster).routes,
+  managementRoutes(system, cluster),
   path('devtools', DevTools.mount(system, devtoolsOptions)),
 );
 await system.http(8558, { host: '127.0.0.1' }).bind(routes);

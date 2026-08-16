@@ -227,14 +227,17 @@ The framework's
 [management routes](/observability/management/overview/)
 expose these endpoints.
 
-- **`/ready`** — "should this pod receive traffic?"
-  Returns 503 during shutdown so the LB drops it before SIGTERM.
-  Use to gate per-app health checks (DB reachable, dependencies
-  warm, etc.).
-- **`/health`** — "is this pod fundamentally broken?"
-  Failing means K8s restarts the pod.  Reserve for genuinely
-  unrecoverable states — actor-system not running, OOM-like
-  conditions.
+- **`/ready`** — "should a load balancer send this pod traffic?"
+  Already gated on the framework's own checks: `cluster-membership`
+  (this node is `up`) and `cluster-transport` (it is not cut off
+  from every peer).  Add your per-app checks — database reachable,
+  dependencies warm — with `healthChecksOf(system).addReadiness`.
+- **`/health`** — "would restarting this pod help?"
+  Failing means K8s restarts it, so it depends on nothing outside
+  the process — the framework's only liveness check is
+  `actor-system`.  Never put a database or a downstream service
+  here: a shared outage would restart the whole fleet, and the
+  restarts would not fix it.
 
 ## App-side wiring
 
@@ -263,7 +266,7 @@ const clusterOptions = ClusterOptions.create()
 const cluster = await Cluster.join(system, clusterOptions);
 
 // 2. Management endpoints
-const { routes: mgmtRoutes } = managementRoutes(system, cluster);
+const mgmtRoutes = managementRoutes(system, cluster);
 await system.http(8558).bind(mgmtRoutes);
 
 // 3. App HTTP server

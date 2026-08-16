@@ -131,7 +131,7 @@ The codec turns `TOut` messages into wire frames and wire frames
 back into `TIn` messages.  The default is `jsonCodec()`:
 
 ```ts
-import { jsonCodec } from 'actor-ts/persistence';
+import { jsonCodec } from 'actor-ts/http';
 
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
