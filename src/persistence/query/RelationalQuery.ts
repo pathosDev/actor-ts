@@ -84,9 +84,11 @@ export class RelationalQuery extends InMemoryQuery {
     const allTags = spec.all ?? [];
     const anyTags = spec.any ?? [];
 
-    // Strategy 1: range-walk the join table on the first `all` tag.  The other
-    // constraints are narrower than this one by construction, so pre-filtering
-    // on any of them would return a superset of the same candidate rows.
+    // Strategy 1: range-walk the join table on the first `all` tag.  Every tag
+    // in `all` must be present, so seeding on *any* of them yields a superset
+    // of the answer and the JS refinement cuts it down — `all[0]` rather than
+    // the most selective one because the query layer has no statistics to pick
+    // with, and guessing wrong costs rows, not correctness.
     if (allTags.length > 0) {
       const access = await this.relational.openForQuery();
       const sql = this.singleTagSql(access);
