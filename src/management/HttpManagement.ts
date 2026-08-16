@@ -17,8 +17,9 @@ import {
 } from '../http/index.js';
 import { exportPrometheus } from '../metrics/PrometheusExporter.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
 import type { HealthCheckResult } from './HealthCheck.js';
-import { HealthCheckRegistry } from './HealthCheck.js';
+import { healthChecksOf } from './HealthCheckExtension.js';
 
 
 /**
@@ -31,18 +32,24 @@ import { HealthCheckRegistry } from './HealthCheck.js';
  *   - `GET /cluster/leader`                   →  leader info
  *   - `GET /cluster/shards?type=<typeName>`   →  shard-to-region map for one type (#56)
  *   - `GET /health`                           →  liveness (200 iff all checks pass)
- *   - `GET /ready`                            →  readiness (200 iff cluster is up + all checks pass)
+ *   - `GET /ready`                            →  readiness (200 iff all checks pass)
  *   - `POST /cluster/leave`                   →  graceful leave (optional, off by default)
  *   - `POST /cluster/down`  body `{address}`  →  force-down a peer (optional, off by default) (#56)
  *   - `GET /metrics`                          →  Prometheus text format (optional, off by default) (#56)
+ *
+ * The checks behind `/health` and `/ready` come from
+ * `healthChecksOf(system)`; this function only *reads* that registry, it
+ * does not own one.  Register application checks on it whenever you like —
+ * before this call or long after — and the framework's own are already in
+ * it, put there by the components that can observe them (#655).
  */
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
   optionsInput: ManagementRoutesOptions = {},
-): { routes: Route; health: HealthCheckRegistry } {
+): Route {
   const options = optionsInput as ManagementRoutesOptionsType;
-  const health = new HealthCheckRegistry();
+  const health = healthChecksOf(system);
 
   const clusterMembers = get(async () => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
@@ -75,12 +82,20 @@ export function managementRoutes(
     });
   });
 
+  /**
+   * `clusterReady` is *read back out of* the aggregate rather than
+   * recomputed here.  `Cluster._start` registers the membership check
+   * itself (#655), so evaluating the same predicate a second time in this
+   * handler would give the endpoint a private answer that the gRPC health
+   * service — which sees only the registry — could contradict.  A system
+   * with no cluster has no such check, and the field stays `true`, exactly
+   * as when this handler owned the test.
+   */
   const readiness = get(async () => {
     const results = await health.checkReadiness();
-    const clusterReady = cluster
-      ? cluster.getMembers().some((m) => m.address.equals(cluster.selfAddress) && m.status === 'up')
-      : true;
-    const ok = clusterReady && results.every((r) => r.status);
+    const clusterReady = results
+      .find((r) => r.name === CLUSTER_MEMBERSHIP_CHECK_NAME)?.status ?? true;
+    const ok = results.every((r) => r.status);
     return completeJson(ok ? Status.OK : Status.ServiceUnavailable, {
       status: ok ? 'UP' : 'DOWN',
       clusterReady,
@@ -224,10 +239,7 @@ export function managementRoutes(
     all = withMiddleware(options.ipAllowlist, all);
   }
 
-  // Suppress unused warning in case the caller doesn't use the system reference.
-  void system;
-
-  return { routes: all, health };
+  return all;
 }
 
 export function isHealthy(results: HealthCheckResult[]): boolean {

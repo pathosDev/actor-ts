@@ -11,6 +11,8 @@ import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
+import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
+import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import {
   ClusterOptionsValidator,
@@ -212,6 +214,18 @@ export class Cluster {
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
+
+  /**
+   * Undo for the readiness checks `_start` installed on the system's
+   * {@link HealthCheckRegistry} — see `registerClusterHealthChecks`.
+   *
+   * Held so `leave()` can take them back out.  A left cluster answers no
+   * gossip and has shut its transport down, so leaving the checks behind
+   * would pin `/ready` to 503 for a process that may well go on to join a
+   * new cluster (`join` is last-write-wins, and each incarnation registers
+   * its own pair).
+   */
+  private removeHealthChecks: (() => void) | null = null;
 
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
@@ -600,6 +614,8 @@ export class Cluster {
   async leave(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    this.removeHealthChecks?.();
+    this.removeHealthChecks = null;
     const me = this.members.get(this.selfAddress.toString());
     if (me) {
       this.updateMember(me.withStatus('leaving'));
@@ -700,6 +716,12 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+
+    // Last, so a start that threw earlier leaves nothing registered: the
+    // rollback in `join` puts the extension slot back but has no cluster to
+    // take checks off, and a half-started one answering `/ready` would be
+    // worse than a system with none at all (#655).
+    this.removeHealthChecks = registerClusterHealthChecks(this, healthChecksOf(this.system));
   }
 
   private contactSeeds(): void {

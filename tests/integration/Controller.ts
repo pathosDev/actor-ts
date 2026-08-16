@@ -31,6 +31,7 @@ import { scenario as pubsubFanout } from './scenarios/12-pubsub-fanout.js';
 import { scenario as coordinatedShutdown } from './scenarios/13-coordinated-shutdown.js';
 import { scenario as backpressure } from './scenarios/14-backpressure.js';
 import { scenario as dnsSeedDiscovery } from './scenarios/15-dns-seed-discovery.js';
+import { scenario as readinessGates } from './scenarios/16-readiness-gates.js';
 import type { ControllerContext, Scenario } from './scenarios/Types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -68,6 +69,7 @@ const scenarios: Scenario[] = [
   pubsubFanout,         // non-destructive
   backpressure,         // non-destructive
   dnsSeedDiscovery,     // non-destructive
+  readinessGates,       // non-destructive (partitions one node, then heals)
   shardingRebalance,    // — removes one node via cluster.leave()
   singletonFailover,    // — removes ANOTHER node via cluster.leave()
   coordinatedShutdown,  // — removes a THIRD node via CoordinatedShutdown.run()

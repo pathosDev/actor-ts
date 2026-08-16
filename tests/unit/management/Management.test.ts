@@ -4,13 +4,19 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import {
+  CLUSTER_MEMBERSHIP_CHECK_NAME,
+  CLUSTER_TRANSPORT_CHECK_NAME,
+} from '../../../src/cluster/ClusterHealthChecks.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
+  ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckRegistry,
+  healthChecksOf,
   isHealthy,
   managementRoutes,
 } from '../../../src/management/index.js';
@@ -60,7 +66,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/members returns the current membership as JSON', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -76,8 +82,8 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/health is 200 when all liveness checks pass', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster);
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    const routes = managementRoutes(sys, cluster);
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -92,8 +98,8 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/health is 503 when a liveness check fails', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster);
-    health.addLiveness(() => ({ name: 'db', status: false, detail: 'conn refused' }));
+    const routes = managementRoutes(sys, cluster);
+    healthChecksOf(sys).addLiveness(() => ({ name: 'database', status: false, detail: 'connection refused' }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -104,9 +110,14 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
-  test('/ready reflects cluster Up state', async () => {
+  // The endpoint no longer computes membership itself — `Cluster._start`
+  // registers that check, and `clusterReady` is read back off the aggregate
+  // (#655).  Asserting both here is what pins the two together: a future
+  // change that recomputes the field in the handler would keep
+  // `clusterReady` true while the check it is supposed to mirror is absent.
+  test('/ready reports the framework readiness checks and mirrors membership in clusterReady', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -114,9 +125,39 @@ describe('managementRoutes — cluster queries', () => {
     await Bun.sleep(150);
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/ready`);
-    const body = await response.json() as { status: string; clusterReady: boolean };
+    const body = await response.json() as {
+      status: string;
+      clusterReady: boolean;
+      checks: Array<{ name: string; status: boolean }>;
+    };
+    expect(body.checks.map((c) => c.name).sort())
+      .toEqual([CLUSTER_MEMBERSHIP_CHECK_NAME, CLUSTER_TRANSPORT_CHECK_NAME].sort());
+    expect(body.checks.every((c) => c.status)).toBe(true);
     expect(body.clusterReady).toBe(true);
     expect(body.status).toBe('UP');
+    expect(response.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  // Liveness must not grow a cluster dependency: the same node that is
+  // `/ready` above is `/health` UP purely on "the actor system is running",
+  // and that is the entire framework-owned liveness list.
+  test('/health carries exactly the framework liveness check', async () => {
+    const { sys, cluster } = await startNode();
+    const routes = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const response = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    const body = await response.json() as {
+      status: string;
+      checks: Array<{ name: string; status: boolean }>;
+    };
+    expect(body.checks.map((c) => c.name)).toEqual([ACTOR_SYSTEM_LIVENESS_CHECK_NAME]);
+    expect(body.status).toBe('UP');
+    expect(response.status).toBe(200);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -125,7 +166,7 @@ describe('managementRoutes — cluster queries', () => {
   test('/cluster/leave triggers cluster.leave when enabled', async () => {
     const { sys, cluster, port } = await startNode();
     void port;
-    const { routes } = managementRoutes(sys, cluster, { enableLeaveEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableLeaveEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -143,7 +184,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down 404s for unknown address (endpoint enabled)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableDownEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -161,7 +202,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down rejects body without address field', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableDownEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -178,7 +219,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down is 404 when endpoint is disabled', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);   // defaults — disabled
+    const routes = managementRoutes(sys, cluster);   // defaults — disabled
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -195,7 +236,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/shards 400s without `type` query parameter', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -208,7 +249,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/shards 404s when DistributedData has no shard state for the type', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -223,7 +264,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/metrics returns Prometheus text format when enabled', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -238,7 +279,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/metrics is 404 when disabled (default)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -324,7 +365,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('/cluster/members is 401 without bearer token; 200 with correct token', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
     });
     const http = sys.extension(HttpExtensionId);
@@ -349,10 +390,10 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('/health and /ready remain anonymous when auth is set (default)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
     });
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -369,11 +410,11 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('authProtectHealth: true forces auth on health/ready too', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
       authProtectHealth: true,
     });
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -391,7 +432,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('ipAllowlist gates every endpoint including /health by network', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       // Allowlist contains nothing useful — we want the middleware to
       // refuse the request, then we'll relax it via getClientIp.
       ipAllowlist: IpAllowlist({

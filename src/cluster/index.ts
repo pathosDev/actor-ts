@@ -1,6 +1,13 @@
 // Cluster entry points.
 export { Cluster, inMemoryTransport } from './Cluster.js';
 export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtension.js';
+export {
+  CLUSTER_MEMBERSHIP_CHECK_NAME,
+  CLUSTER_TRANSPORT_CHECK_NAME,
+  registerClusterHealthChecks,
+  selfIsFullMember,
+  transportReachesCluster,
+} from './ClusterHealthChecks.js';
 export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
 export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
