@@ -315,6 +315,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   keeps sending, so one line per message would be a flood rather than a
   diagnostic.
 
+- **BREAKING — `actor_mailbox_dropped_total` is now labelled `{class,
+  reason}` — the per-actor `path` label is gone (#658).**
+
+  `path` was the one stock label whose values the framework derived per
+  instance rather than the deployment declaring them:
+  `$anonymous-<n>-<random>` for every `spawnAnonymous`, and
+  `entity-<entityId>` under sharding, where the id comes from whoever
+  addressed the shard region. Because the registry mints one child per
+  distinct label tuple and has no per-child eviction, every dropping actor
+  took a permanent time series — and shedding is a bounded mailbox's
+  designed steady state rather than an anomaly, so a system behaving
+  exactly as configured paid the cost. The counter was O(n) in actor count
+  up to the 10 000-series family cap.
+
+  The surviving labels are bounded by the program: `class` is a
+  source-code constant and `reason` a closed two-value set. Per-instance
+  drop counts have not gone away, they moved to where the cardinality
+  budget belongs — `observeDrops` appends rather than assigns, so a
+  `BoundedMailboxOptions.onDrop` of your own still fires alongside the
+  stock counter and can label a series you have sized your own monitoring
+  for.
+
+  The sibling `actor_mailbox_size{class, path}` gauge and the
+  `persistence_projection_*{projection}` families deliberately keep their
+  per-instance labels, for reasons now written down as a rule under "What
+  may become a stock label" in the stock-metrics docs.
+  `maxSeriesPerFamily`'s 10 000 default is unchanged — its recorded
+  rationale was built on the deleted label and has been rewritten onto the
+  two families that can still legitimately reach thousands.
+
+  *Migration:* Dashboards, alert rules and recording rules that group,
+  filter or join `actor_mailbox_dropped_total` on `path` stop resolving —
+  drop the `path` selector and aggregate by `class` instead (`sum by
+  (class, reason) (rate(actor_mailbox_dropped_total[5m]))`). If you
+  genuinely need per-actor drop counts, pass an `onDrop` to your mailbox
+  options and record your own series; it runs alongside the stock counter
+  rather than replacing it, so nothing else changes.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -584,6 +622,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   state the assertion reads. Every assertion survives verbatim; the
   timeouts are larger than the sleeps they replace while the tests get
   faster, because a failure budget is only paid when something is broken.
+
+- **`PersistentActor` and `DurableStateActor` gained an `integrity()`
+  hook, so an actor can declare its own body integrity (#493).**
+
+  `PersistenceOptions.integrity` has existed since #116, and the
+  object-storage stores have honoured it on both the write and the read
+  path since #612, but neither actor base class could reach it —
+  `persistenceOptions()` built `{ compression, encryption }` and dropped
+  integrity on the floor. Override `integrity()` to return `{ mode:
+  'hmac-sha256', integrityKey }` and the stored body is signed;
+  configuring it also makes the tag mandatory on read, with the
+  store-level `allowUntaggedBodies` as the migration window for a
+  pre-integrity corpus.
+
+  Only the object-storage snapshot and durable-state stores read this
+  hook. Ten of the eleven snapshot stores and nine of the ten
+  durable-state stores accept `PersistenceOptions` and never look at it
+  (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
+  in-memory reference store an override buys no tamper detection and
+  raises no error. The persistence docs now state that count in both
+  languages, replacing a sentence that described the same gap as "ignored
+  by stores that don't (in-memory, SQLite)" — the phrasing #960 was filed
+  about, because it reads as a benign footnote rather than a missing
+  control.
+
+- **`InMemorySnapshotStore` now accepts a `keepN` retention bound through
+  the new `InMemorySnapshotStoreOptions` (#493).**
+
+  It was the only snapshot store with no retention at all: nothing but an
+  explicit `delete()` ever shrank the per-`persistenceId` list, so a
+  long-running actor that snapshots on a policy grew the map for the
+  lifetime of the process. Every other store in the family has taken a
+  `keepN` since it was written.
+
+  The default stays keep-everything rather than the family's `3`. This is
+  the store `PersistenceExtension` installs when nothing is configured, so
+  a default bound would silently change what every unconfigured
+  application retains, and retention that only surfaces later as a missing
+  snapshot is a poor thing to opt users into. Set `keepN` explicitly to
+  bound it; `<= 0` keeps everything, matching the rest of the family.
+
+  Re-saving at a sequence number that already exists now replaces that
+  entry instead of appending a second one, matching the relational stores'
+  `(persistence_id, sequence_nr)` primary key. `loadLatest` already
+  returned the newer value, so the duplicate was invisible while retention
+  was unbounded — with a bound it is not, because duplicates counted
+  against it and evicted genuinely older sequences.
 
 ### Fixed
 
@@ -1271,6 +1356,66 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   example gate has watched exit, and the overview must name the wired ones
   that do.
 
+- **`CassandraJournal.delete` now compacts the `events_by_tag` side table
+  instead of leaving it behind (#654).**
+
+  `delete` issued one `DELETE` per partition against `events` and touched
+  nothing else, while `append` dual-writes one `events_by_tag` row per
+  (event, tag) pair whenever `useTagIndex` is enabled. That side table is
+  a separate physical table rather than an index Cassandra maintains, so
+  every compacted event stayed in it — and each of those rows carries its
+  own copy of the payload, so `CassandraQuery.currentEventsByTag` went on
+  serving deleted events indefinitely and the bytes were never reclaimed.
+  A correctness defect and a data-retention one at the same time;
+  Cassandra was the only backend with the gap, since SQLite and the
+  relational family already delete their tag rows first.
+
+  `delete` now fans out to the side table under the same `useTagIndex`
+  guard, reading the compacted prefix's `(sequence_nr, timestamp, tags)`
+  back to rebuild the side table's four-column key — `events_by_tag` is
+  partitioned by `tag` and clustered on `timestamp`, neither derivable
+  from `(persistenceId, toSeq)`. Tag rows are deleted before the events,
+  so a crash between the two strands events whose tag rows are already
+  gone (a re-run still reaches them) rather than tag rows whose keys can
+  no longer be reconstructed. No schema change and no migration. Journals
+  running with `useTagIndex: false` are unaffected and issue exactly the
+  statements they always did; an existing `useTagIndex` deployment keeps
+  whatever rows earlier deletes already stranded, which a re-run of
+  `delete` over the same range now clears.
+
+  The `Journal` contract records the obligation, and a new shared contract
+  scenario — "a deleted event is invisible to `currentEventsByTag`" — runs
+  it against every backend that has a query class: InMemory as the oracle,
+  SQLite, MongoDB, and Cassandra in both the default and tag-index
+  layouts.
+
+- **A failing snapshot retention pass no longer fails the snapshot save
+  (#393).**
+
+  Nine of the ten non-object-storage snapshot stores ran their `keepN`
+  prune inside the save's `try`, so a prune error surfaced as a save
+  error. The caller was told to retry a write that had already succeeded,
+  and a `PersistentActor` that treats a snapshot failure as fatal died
+  over a housekeeping delete. Fixed in `RelationalSnapshotStore`
+  (inherited by the Postgres, MariaDB, MsSQL, LibSQL and D1 stores) and in
+  the SQLite, Cassandra, Mongo and DynamoDB stores. SQLite is worth
+  calling out: it is the recommended local-production backend and it
+  rethrew the prune failure as a `JournalError`.
+
+  `SnapshotStore.save` now states the rule the object-storage store had
+  always followed alone — retention is best-effort, the write is not. The
+  two have opposite failure meanings: a failed write means the snapshot
+  does not exist and retrying is correct, while a failed prune means one
+  row too many exists, which `loadLatest` cannot see and the next save
+  retries anyway. Implementations must therefore run the prune outside the
+  write's error handling.
+
+  The shared persistence contract gains "a failing prune does not fail the
+  save", gated by a new `pruneFailure` capability and backed by a
+  fault-injection seam that rejects the single driver operation the prune
+  uses and the write does not. Seven backends declare the seam; all seven
+  fail the new scenario when the store fixes are reverted.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
@@ -1614,6 +1759,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   segment does scan quadratically — the measurement that cleared it used a
   leading run, which the anchored branch consumes whole. It is fixed
   rather than dismissed.
+
+- **The stock metrics registry no longer stores a label value chosen by a
+  remote party (#745).**
+
+  With `path` removed from `actor_mailbox_dropped_total`, the one stock
+  metric family whose label values an attacker could influence — by
+  addressing distinct sharded entity ids and then overflowing each
+  entity's mailbox — no longer carries them. Each such entity previously
+  contributed one permanent child series that survived the entity's own
+  passivation, costing heap for the life of the process and scrape size on
+  every collection.
+
+  This closes the framework-made half of the finding. The registry's lack
+  of per-child eviction, and the `class="unknown"` series a cell can mint
+  when it drops before its actor instance exists, remain open under #745.
 
 ## [0.16.0] — 2026-08-15
 
