@@ -178,6 +178,40 @@ CREATE TABLE durable_state (
 Lege die Tabellen vorab an (und vergib nur `INSERT/SELECT/UPDATE/DELETE`)
 und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.
 
+## Tag-Queries
+
+`events_tags` ist der Index hinter den By-Tag-Methoden von
+`PersistenceQuery`.  Sein Primärschlüssel beginnt mit
+`(tag, timestamp, …)`, ein By-Tag-Read läuft also einen zusammenhängenden
+Bereich dieses Index ab und joint anschließend für das Payload zurück auf
+`events` — die Kosten hängen an der Historie des Tags, nicht an der des
+Journals.
+
+Gelesen wird er von `PostgresQuery`.  Umschließe damit die
+Journal-Instanz, in die deine Aktoren schreiben, und übergib die Query
+einer Projektion — die übrigen Felder stehen unter
+[Projektionen](/de/persistence/projections/):
+
+```ts
+import { PostgresJournal, PostgresJournalOptions, PostgresQuery } from 'actor-ts/persistence';
+
+const journalOptions = PostgresJournalOptions.create().withUrl(process.env.DATABASE_URL!);
+const eventsJournal = new PostgresJournal(journalOptions);
+const query = new PostgresQuery(eventsJournal);
+```
+
+Drei Filterformen, drei Pläne:
+
+| Filter | Was läuft |
+| --- | --- |
+| `'type:Order'` / `{ all: [...] }` | Index-Bereichslauf auf dem ersten Tag, die übrigen Operatoren werden im Prozess nachgefiltert |
+| `{ any: [...] }` | `t.tag IN (…)` mit `DISTINCT`, damit ein Event mit mehreren der genannten Tags nur einmal zurückkommt |
+| `{ not: [...] }` allein | kein selektives Tag als Startpunkt — fällt auf den Journal-Scan zurück |
+
+Stattdessen zu `InMemoryQuery` zu greifen ist nicht falsch, nur langsam:
+sie spielt bei jedem Poll jede Persistence-Id erneut ab.  Siehe
+[Persistence Query](/de/persistence/persistence-query/).
+
 ## Concurrency-Modell
 
 - **Journal-Append** führt `SELECT MAX(sequence_nr)` und die Inserts in

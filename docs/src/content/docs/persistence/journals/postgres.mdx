@@ -174,6 +174,38 @@ CREATE TABLE durable_state (
 Pre-provision these (and grant only `INSERT/SELECT/UPDATE/DELETE`) and set
 `autoCreateTables: false` if your DB role can't run DDL.
 
+## Tag queries
+
+`events_tags` is the index behind `PersistenceQuery`'s by-tag methods.
+Its primary key leads with `(tag, timestamp, …)`, so a by-tag read walks
+one contiguous range of that index and then joins back to `events` for
+the payload — cost proportional to the tag's own history rather than to
+the journal.
+
+`PostgresQuery` is what reads it.  Wrap the journal instance your actors
+write to, then hand the query to a projection — see
+[Projections](/persistence/projections/) for the remaining fields:
+
+```ts
+import { PostgresJournal, PostgresJournalOptions, PostgresQuery } from 'actor-ts/persistence';
+
+const journalOptions = PostgresJournalOptions.create().withUrl(process.env.DATABASE_URL!);
+const eventsJournal = new PostgresJournal(journalOptions);
+const query = new PostgresQuery(eventsJournal);
+```
+
+Three filter shapes, three plans:
+
+| Filter | What runs |
+| --- | --- |
+| `'type:Order'` / `{ all: [...] }` | index range walk on the first tag, remaining operators refined in process |
+| `{ any: [...] }` | `t.tag IN (…)` with `DISTINCT`, so an event carrying several listed tags comes back once |
+| `{ not: [...] }` alone | no selective tag to seed a walk — falls back to scanning the journal |
+
+Reaching for `InMemoryQuery` here instead is not wrong, only slow: it
+replays every persistence id on every poll.  See
+[Persistence query](/persistence/persistence-query/).
+
 ## Concurrency model
 
 - **Journal append** runs `SELECT MAX(sequence_nr)` and the inserts inside
