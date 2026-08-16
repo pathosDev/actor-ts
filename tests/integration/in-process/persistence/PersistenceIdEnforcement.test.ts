@@ -168,7 +168,10 @@ describe('PersistentActor — an id that cannot be a storage key', () => {
     expect(observations.recoveryFailures).toEqual([]);
     expect(observations.recovered).toEqual([]);
     await system.terminate();
-  });
+    // The 5 s restart-budget wait exactly equals bun's default cap, so the two
+    // deadlines raced and the runner usually won — reporting a bare timeout for
+    // the one wait whose label ("the restart budget ran out") is the diagnosis.
+  }, 15_000);
 
   test('recovers normally with the pipe-separated id the chat example ships', async () => {
     const { system, journal } = makeSystem('persistence-id-pipe');

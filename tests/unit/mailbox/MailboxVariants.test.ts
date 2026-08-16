@@ -500,7 +500,11 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     expect(handled[0]).toBe(0);
     expect(handled[COUNT - 1]).toBe(COUNT - 1);
     await kit.system.terminate();
-  });
+    // Draining 20 000 messages is what the 30 s budget is for, and under bun's
+    // 5 s default cap the run could only ever report a bare timeout — the one
+    // reading that looks identical to the bounded-mailbox regression this test
+    // exists to catch.
+  }, 45_000);
 
   test('a bound is opt-in via withMailboxCapacity, and its drops reach onDrop', async () => {
     // The inverse of the guard above, and the only non-Docker coverage of

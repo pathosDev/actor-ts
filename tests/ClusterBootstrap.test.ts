@@ -123,7 +123,11 @@ describe('Cluster.bootstrap', () => {
       await nodeA.shutdown();
       await nodeB.shutdown();
     }
-  });
+    // The 4 s budget fits bun's 5 s default with exactly 1 s to spare, and two
+    // `Cluster.bootstrap` calls run before the wait even starts.  That is not a
+    // failure budget, it is a coin toss over which message a stalled
+    // convergence reports.  15 s leaves the budget as the thing that fires.
+  }, 15_000);
 
   test('awaitReady=false returns before SelfUp', async () => {
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-4', '127.0.0.1', 50104));
