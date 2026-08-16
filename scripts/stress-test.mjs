@@ -250,7 +250,14 @@ function runOnce({ index, reportPath, logPath, filters, environment }) {
       ['test', ...filters, '--reporter=junit', `--reporter-outfile=${reportPath}`],
       { stdio: ['ignore', logDescriptor, logDescriptor], env: environment, shell: false },
     );
+    // A failed spawn emits `error` and then `close`, so both handlers fire for
+    // one run.  Without the guard the second `closeSync` throws `EBADF` from
+    // inside an event handler and takes the whole harness down — turning "one
+    // run could not start" into "no results at all".
+    let settled = false;
     const finish = (status, spawnError) => {
+      if (settled) return;
+      settled = true;
       closeSync(logDescriptor);
       resolveRun({ index, status, spawnError, durationMs: Date.now() - startedAt });
     };
@@ -405,7 +412,13 @@ function render(aggregated, options) {
   }
   if (aggregated.flaky.length === 0 && aggregated.consistent.length === 0) {
     lines.push('');
-    lines.push('No test failed in any run.');
+    // Qualified when a run went missing: "no test failed" over zero observed
+    // runs is a true sentence and a false reassurance.
+    lines.push(
+      aggregated.runsWithoutReport.length === aggregated.runs
+        ? 'No run reported anything, so nothing can be said about any test.'
+        : 'No test failed in any run that reported.',
+    );
   }
   return lines.join('\n');
 }
@@ -433,7 +446,7 @@ function writeStepSummary(aggregated, options) {
       : []),
     '',
     ...(rows === ''
-      ? ['No test failed in any run.']
+      ? ['No test failed in any run that reported.']
       : ['| failed | test |', '| --- | --- |', rows]),
     '',
   ].join('\n');
