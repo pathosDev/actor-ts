@@ -6,6 +6,7 @@ import {
 import type {
   CompressionConfig,
   EncryptionConfig,
+  IntegrityConfig,
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { StateAdapter } from './migration/Adapter.js';
@@ -73,6 +74,22 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
    */
   protected encryption(): EncryptionConfig | undefined { return undefined; }
 
+  /**
+   * Per-actor body integrity — overrides the plugin default.  Used on the
+   * write path (sign) and the read path (verify).  Default `undefined`
+   * defers to the plugin.
+   *
+   * **Only the object-storage durable-state store honours this today.**
+   * Nine of the ten durable-state stores accept `PersistenceOptions` and
+   * never read it (#960), so on SQLite, Postgres, Mongo, DynamoDB and the
+   * in-memory reference store, configuring `hmac-sha256` here buys no
+   * tamper detection and raises no error — the value is simply dropped.
+   * Treat it as a control you must verify against the store you actually
+   * run, not as one the framework enforces everywhere.  #960 decides
+   * whether an unhonoured directive starts throwing instead.
+   */
+  protected integrity(): IntegrityConfig | undefined { return undefined; }
+
   override async preStart(): Promise<void> {
     const adapter = this.stateAdapter();
     const loaded = await this.options.store.load<unknown>(
@@ -138,12 +155,13 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
 
   /**
    * Build per-call `PersistenceOptions` from this actor's hooks.
-   * Returns `undefined` when neither hook is set.
+   * Returns `undefined` when no hook is set.
    */
   private persistenceOptions(): PersistenceOptions | undefined {
     const compression = this.compression();
     const encryption = this.encryption();
-    if (!compression && !encryption) return undefined;
-    return { compression, encryption };
+    const integrity = this.integrity();
+    if (!compression && !encryption && !integrity) return undefined;
+    return { compression, encryption, integrity };
   }
 }
