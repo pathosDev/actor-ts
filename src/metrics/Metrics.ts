@@ -405,7 +405,7 @@ function labelKey(labels: Labels): string {
 
 /**
  * Label **value** every dimension of an overflow series carries, e.g.
- * `actor_mailbox_dropped_total{path="__overflow__",reason="__overflow__"}`.
+ * `actor_mailbox_size{class="__overflow__",path="__overflow__"}`.
  *
  * A value, deliberately, not a label name: Prometheus reserves label
  * names beginning with `__` for its own use and drops them after

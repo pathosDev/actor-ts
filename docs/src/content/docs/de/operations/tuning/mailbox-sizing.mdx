@@ -148,7 +148,7 @@ exponieren die Mailbox-Tiefe:
 
 ```
 actor_mailbox_size{class="Worker", path="..."}
-actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
+actor_mailbox_dropped_total{class="Worker", reason="drop-head"}
 ```
 
 Beobachte:
@@ -160,7 +160,12 @@ Beobachte:
   liest 0 statt ihres letzten Ausschlags.
 - **`actor_mailbox_dropped_total`** — ungleich Null mit `drop-head` /
   `drop-new` ist bei den Actors beabsichtigt, die du begrenzt hast; bei
-  jedem anderen sollte sie gar nicht auftauchen.
+  jedem anderen sollte sie gar nicht auftauchen. Aggregiert **pro
+  Klasse**, nicht pro Actor — die beiden Metriken unterscheiden sich
+  hier bewusst: eine Tiefen-Serie existiert nur für einen Actor, der
+  bereits in Schwierigkeiten steckt, eine Drop-Serie dagegen für jeden
+  Actor, der seine Arbeit tut. Für Drop-Zahlen pro Instanz nimm ein
+  eigenes `onDrop`.
 - **`MailboxFullError`-Rate** beim Sender — taucht meist als
   Supervisor-Restarts des sendenden Actors auf.
 

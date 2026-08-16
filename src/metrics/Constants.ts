@@ -31,10 +31,27 @@ export const DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS = 2_000;
  * would therefore let a remote party mint a permanent series per entity id
  * for free.
  *
+ * **This floor is why the gauge keeps its `path` when #658 took it off
+ * `actor_mailbox_dropped_total`.**  The rule the removal established is that
+ * a stock label's values must be bounded by what the deployment declares,
+ * never by traffic or by a remote party — and the two families sit on
+ * opposite sides of it.  A bounded mailbox sheds as its *designed* steady
+ * state, so a path-labelled drop counter minted a permanent series per actor
+ * in a healthy system.  This gauge mints one only for an actor that has let
+ * 10 000 messages pile up, so its width counts concurrent incidents, not
+ * entities, and on a healthy system it is empty.
+ *
+ * The label is also constitutive here rather than descriptive: `sample()`
+ * walks the tree calling `.set()` once per cell, so collapsing the tuple
+ * would leave every actor of a class overwriting its siblings within a
+ * single pass and export whichever one the walk reached last.  Dropping
+ * `path` would not make this gauge coarser, it would make it wrong — a
+ * per-class depth signal has to be a different metric, not this one with a
+ * label removed.
+ *
  * Set at the high-water mark, so minting a series costs a sustained backlog
- * of that many messages on one actor — the same price #745 already weighed
- * and rated LOW for the drop counter.  `DEFAULT_MAX_SERIES_PER_FAMILY` is
- * the backstop behind it.
+ * of that many messages on one actor — the price #745 weighed and rated LOW.
+ * `DEFAULT_MAX_SERIES_PER_FAMILY` is the backstop behind it.
  *
  * Kept numerically in step with `internal/Constants.ts`'s
  * `MAILBOX_HIGH_WATER_MARK` rather than importing it: `src/metrics` and

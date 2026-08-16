@@ -3,9 +3,11 @@
  *
  * What this scenario is really for is the chain
  * `BoundedMailbox.onDrop` -> `actor_mailbox_dropped_total` -> `/metrics`,
- * with its `{class, path, reason}` labels intact.  That chain survived
- * #1148; only its trigger moved, from the default mailbox to an explicit
- * `withMailboxCapacity(...)`.
+ * with its `{class, reason}` labels intact.  That chain survived #1148;
+ * only its trigger moved, from the default mailbox to an explicit
+ * `withMailboxCapacity(...)`.  The label set lost `path` in #658 — the
+ * assertions below never read it, since what they prove is that a labelled
+ * series reaches the exposition at all.
  *
  * So the scenario now asserts two things that used to be one:
  *
@@ -104,7 +106,7 @@ export const scenario: Scenario = {
     if (bounded.lines.length === 0) {
       throw new Error(
         '[14] no `actor_mailbox_dropped_total{...}` lines emitted by /metrics — '
-        + 'metric not registered with labels (class/path/reason).',
+        + 'metric not registered with labels (class/reason).',
       );
     }
 
