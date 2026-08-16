@@ -22,6 +22,7 @@ import {
   singleProviderDiscovery,
   type SeedProvider,
 } from '../src/discovery/index.js';
+import { awaitCondition } from './util/AwaitCondition.js';
 
 /* -------------------------------------------------------------------------- */
 /* Cluster.bootstrap — high-level entry point                                  */
@@ -108,12 +109,14 @@ describe('Cluster.bootstrap', () => {
       clusterBootstrapOptions2,
     );
     try {
-      // Both nodes should converge — each sees two up members.
-      const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline) {
-        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
-        await Bun.sleep(25);
-      }
+      // Both nodes should converge — each sees two up members.  The
+      // hand-rolled deadline loop this replaces fell through silently, so a
+      // convergence that merely took longer than the budget failed as
+      // "expected 2, got 1" — indistinguishable from never converging at all.
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+        { timeoutMs: 4_000, label: 'both bootstrapped nodes see a 2-member cluster' },
+      );
       expect(nodeA.cluster.upMembers().length).toBe(2);
       expect(nodeB.cluster.upMembers().length).toBe(2);
     } finally {

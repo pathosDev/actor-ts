@@ -1,0 +1,241 @@
+---
+title: Diagnosing test flakes
+description: Tell a flaky test from a broken one with the repeat-run harness, then match it against the catalog of causes this suite has actually had — fixed sleeps, Bun's timer quantum, a dispatcher hop no poll interval can win, and the three multi-node suites CI does not run.
+---
+
+[Testing overview](/testing/overview/) tells you how to *write* a test that
+does not flake.  This page is the other half: you have a test that already
+does, and you need to know which kind it is.
+
+## First: flaky, or just broken?
+
+A test that fails once and passes on a re-run is not a category — it is an
+observation with a sample size of one.  Run it again, deliberately:
+
+```sh
+# 20 repeats of one file, naming anything that failed at least once
+bun run test:stress -- --runs=20 tests/unit/http/websocket/WebsocketServerActor.test.ts
+```
+
+`bun run test:stress` (`scripts/stress-test.mjs`) runs the suite N times,
+keeps every run's JUnit report and log, and aggregates failures by test
+identity.  Its output splits the two cases that matter:
+
+| Verdict | Meaning | What to do |
+| --- | --- | --- |
+| **flaky** — failed in some runs | The outcome depends on timing, ordering or the machine. | Match it against the catalog below. |
+| **consistently failing** — failed in every run | Broken.  Repetition tells you nothing more. | Fix it, or open an issue.  It is not a flake. |
+
+Other things it names rather than swallows: a run that produced **no JUnit
+report at all** (Bun died before the reporter flushed, so those failures are
+missing from the totals rather than absent), and a run that **exited
+non-zero with no failing test** (a crash in teardown, an unreleased handle).
+Both read as "green" to a naive loop.
+
+```sh
+bun run test:stress                      # 10 repeats of the whole suite
+bun run test:stress -- --runs=3          # 3 repeats
+bun run test:stress -- --concurrency=4   # 4 at once, for real CPU contention
+```
+
+Reports, logs and a machine-readable `summary.json` land in `.stress/`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="The harness runs more than a CI check does">
+  It **removes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it hands to
+  `bun test`**, so the three quarantined suites (see below) are included even
+  when your shell or workflow has the flag set.  Inheriting it would measure a
+  strictly smaller suite than a local run and then report a reliable pass rate
+  over exactly the tests known not to be reliable.  Pass
+  `--skip-quarantined` when the subject of the run is the rest of the suite.
+</Aside>
+
+## What repetition can and cannot find
+
+A loop drives up the probability of a **load-sensitive** flake: a fixed sleep
+that is long enough on an idle machine and short under contention.  That is
+the dominant family here, and the loop finds it.
+
+It says nothing about a **deterministic ordering** bug.  The clearest example
+in this repository is a test that awaited one actor's recorded state and then
+asserted on another actor's — two states separated by a dispatcher hop.  A
+throwaway probe ran the broken condition 200 times: **0 failures at a 5 ms
+poll interval, and still 0 at 1 ms.**  The default dispatcher schedules via
+`setImmediate`, so the second actor's turn is queued *ahead* of the poller's
+next timer and wins every time work runs promptly.  The race is real by
+construction and not locally reproducible.
+
+So a green stress run is evidence about one family, not a clean bill of
+health.  The second family is found by reading:
+
+> Between the state you wait on and the state you assert on, is there a
+> message send?
+
+If yes, the wait is a proxy that a half-finished step already satisfies —
+wait on the *asserted* state instead.
+
+## The catalog
+
+Causes this suite has actually had, with how each was settled.
+
+| Family | Status | Signature |
+| --- | --- | --- |
+| Fixed sleep before an assertion | Being converted | `await sleep(N)` then `expect(...)` on state a background step produces |
+| Bun's timer quantum | Settled | An elapsed-time assertion fails by ~15 ms, on an idle machine |
+| A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
+| Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
+| Filesystem races | Settled | Two suites reading each other's fixtures |
+| Hosted-runner worker respawn | Quarantined | Workers spawn, handshake, then never run — CI only |
+
+### Fixed sleep before an assertion
+
+The dominant shape, by a wide margin.  `N` was picked from a run that
+passed, so it encodes the latency of one machine on one day; under load the
+step takes longer and the assertion reads a value that was never written.
+
+```ts
+// ✗ the sleep is a bet on how fast the machine is
+await sleep(50);
+expect(stopped).toBe(true);
+```
+
+```ts
+// ✓ returns as soon as it holds; the timeout only bounds the broken case
+await awaitCondition(() => stopped, { label: 'the failing child was stopped' });
+expect(stopped).toBe(true);
+```
+
+`tests/util/AwaitCondition.ts` is the shared helper, and
+[Wait on state, not on elapsed time](/testing/overview/#wait-on-state-not-on-elapsed-time)
+covers when a sleep is still the right call — an absence you can only give a
+window to, a duration that *is* the assertion, an interleaving a test needs.
+
+**This conversion is unfinished.**  There are still ~470 `await sleep(`
+sites under `tests/`, against ~620 `awaitCondition(` call sites — and the
+sleep count has gone *up* during the conversion, because new tests keep being
+written in the old shape.  A second helper muddies the picture further:
+`waitFor` is used at ~330 sites and is re-declared as a local
+`async function waitFor(` in more than thirty separate files, each with its
+own timeout and poll interval.  Treat a `sleep`-then-`expect` pair in a
+failing test as a suspect before looking for anything cleverer.
+
+### Bun's timer quantum
+
+Windows' default timer resolution is 15.625 ms, and Bun's event loop decides
+a timer is due on that tick boundary — so a `setTimeout` whose deadline sits
+just *below* a tick multiple fires a full tick **early**.  A `setTimeout(30)`
+was measured firing at 18.67 ms on an idle machine.
+
+The clock is not the problem, so measuring more precisely does not help; the
+tolerance was wrong.  `tests/util/TimerTolerance.ts` carries the measurements
+and `minimumElapsedMs()`, which puts a lower bound a full quantum below
+nominal.  There is **no safe upper bound** — the same 30 ms timer was
+measured at 201 ms under CPU load, and a bound loose enough to survive that
+can no longer tell the delay it is checking apart from a longer one.  Assert
+virtual time with [ManualScheduler](/testing/manual-scheduler/) instead.
+
+### A dispatcher hop between wait and assert
+
+Described above.  The tell is that it **never reproduces in isolation** — not
+at any poll interval, not under CPU load — and fails only inside a large
+parallel run, where the macrotask queue is congested enough for the ordering
+to invert.  Do not spend an afternoon trying to reproduce it; read the two
+states and ask whether a message crosses between them.
+
+### Port collisions and filesystem races
+
+Both settled, and worth knowing because a new test can reintroduce either.
+
+- **Ports.**  Bind `0` and read the assigned port back off the listener, then
+  hand *that* to every client in the test.  A hard-coded port is a collision
+  waiting for a second suite.
+- **Temp directories.**  `mkdtemp` or a `randomUUID` suffix per test, never a
+  shared fixture path.  Roughly two dozen suites do this today; copy one of
+  the object-storage suites if you need a pattern.
+
+## Open entries
+
+Tests observed failing intermittently whose cause is **not** yet established.
+Ruling causes out is not the same as establishing one, so these are listed
+without a verdict rather than guessed at:
+
+| Test | File |
+| --- | --- |
+| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` |
+| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` |
+| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` |
+| `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
+| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
+
+Ports and filesystem paths have been ruled out for all five.  All five have
+since had their fixed sleep — or, in `ClusterBootstrap`'s case, a hand-rolled
+deadline loop that fell through silently — replaced by a wait on the state
+the assertion reads, so **"the sleep was too short" is no longer an available
+explanation** for any of them.
+
+That is the value of writing an open entry down instead of guessing: if a
+nightly names one of these again, the remaining candidates are a genuinely
+slow step and an ordering inversion, and the `summary.json` says how often.
+Add the count here rather than starting over.
+
+## Three suites CI does not run
+
+`ACTOR_TS_SKIP_FLAKY_MNS=1` is set in `test.yml`, `multi-runtime.yml` and
+`publish.yml`, and three suites skip themselves when it is:
+
+- `tests/multi-node/LeaseMajority.test.ts`
+- `tests/multi-node/ParallelPubSub.test.ts`
+- `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
+
+Bun on GitHub's hosted runners cannot respawn functional worker threads after
+the first worker test — they spawn, handshake, and then never run — and the
+same resource starvation delays `LeaseMajority`'s renewal timer past the
+lease TTL, so both sides of a partition acquire and the test sees a false
+split-brain.  Neither reproduces locally or in Docker.
+
+**A green CI check therefore says nothing about these three.**  A local
+`bun test` runs them; so does the real-network `integration` workflow's
+equivalent coverage.
+
+### Getting them back
+
+`.github/workflows/nightly-flakes.yml` runs exactly these three at 04:00 UTC
+with the flag **off**, three repeats a night, and uploads the reports.  It is
+`continue-on-error`: a known-red measurement must not turn into a red
+required check nobody reads, so the result arrives as a run annotation and a
+step summary.
+
+The bar is **14 consecutive green nights** — 42 consecutive green executions.
+Two calendar weeks rather than a smaller number because the failure is a
+property of the runner pool, not of the code: a fortnight spans weekday and
+weekend pools and several `bun-version: latest` rolls, which is what has to
+be shown to have stopped happening.  A single red night resets the count, and
+each night's `summary.json` is the evidence (`greenRuns == runs`).
+
+On reaching it, un-quarantine in one commit:
+
+1. Drop `ACTOR_TS_SKIP_FLAKY_MNS` from `test.yml`, `multi-runtime.yml` and
+   `publish.yml`.
+2. Drop the three `describeMns` guards.
+3. Drop the `coveragePathIgnorePatterns` block in `bunfig.toml` — it excludes
+   the worker harness from the coverage denominator only because that harness
+   cannot execute on the hosted runner.
+4. Drop `--exclude=worker` from `benchmarks.yml`'s smoke step.  The worker
+   benchmark is excluded for exactly the same cause, and is easy to forget
+   because it is not a test.
+5. Revisit `test.yml`'s pragmatic `COVERAGE_LINE_FLOOR: '80'`, lowered for
+   the same reason.
+6. Keep the nightly job.  It becomes the regression guard for the
+   un-quarantining.
+
+## Where to next
+
+- **[Testing overview](/testing/overview/)** — how to write a test that does
+  not flake in the first place.
+- **[ManualScheduler](/testing/manual-scheduler/)** — assert on virtual time
+  instead of on the wall clock.
+- **[TestProbe](/testing/test-probe/)** — wait for a message rather than for
+  a duration.
+- **[ParallelMultiNodeSpec](/testing/parallel-multi-node/)** — the
+  worker-thread harness two of the quarantined suites exercise.

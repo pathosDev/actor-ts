@@ -21,8 +21,10 @@ import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpe
 // Bun there can't respawn functional worker threads after the first test
 // (they spawn + handshake, then never run; reproducible only on the
 // hosted runners, never locally or in Docker).  Runs locally + in Docker.
-// See the [CI] tracking issue.  The `construction` describe spawns no
-// workers, so it stays un-gated.
+// #538 tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs
+// this suite nightly with the flag OFF, and 14 consecutive green nights are
+// what removes this line.  The `construction` describe spawns no workers,
+// so it stays un-gated.
 const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
 
 const TIGHT_FD = {

@@ -31,8 +31,10 @@ import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTranspor
 // same hosted-runner resource issue that kills the worker-thread suites
 // (the lease holder's renewal timer is delayed past the TTL, so both
 // sides acquire).  Not reproducible locally or in Docker.  Runs there;
-// the real-network `integration` suite is the multi-node CI gate.  See
-// the [CI] tracking issue.
+// the real-network `integration` suite is the multi-node CI gate.  #538
+// tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs this
+// suite nightly with the flag OFF, and 14 consecutive green nights are what
+// removes this line.
 const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
 
 const TIGHT_FD = {

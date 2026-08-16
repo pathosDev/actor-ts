@@ -5,10 +5,14 @@
 # (used to *write* tests), exercised only by the ParallelMultiNodeSpec /
 # parallel-pubsub suites — which are quarantined on GitHub's hosted
 # runners because Bun there can't respawn functional worker threads after
-# the first test (see the [CI] tracking issue).  They run + are covered
-# locally and in Docker; gating CI line-coverage on infra that can't
-# execute on the hosted runner would be a false signal.  Product code
-# (incl. LeaseMajority, the cluster, persistence) is unaffected.
+# the first test (#538).  They run + are covered locally and in Docker;
+# gating CI line-coverage on infra that can't execute on the hosted runner
+# would be a false signal.  Product code (incl. LeaseMajority, the cluster,
+# persistence) is unaffected.
+#
+# This block goes away with the quarantine.  `nightly-flakes.yml` measures
+# whether it still has to stand and carries the decision path (14 consecutive
+# green nights); `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
 [test]
 coveragePathIgnorePatterns = [
   "src/testkit/ParallelMultiNodeSpec.ts",

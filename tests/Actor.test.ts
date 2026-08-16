@@ -14,6 +14,7 @@ import {
   Router,
   Terminated,
 } from '../src/index.js';
+import { awaitCondition } from './util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -140,7 +141,7 @@ test('stoppingStrategy stops a failing child', async () => {
   }
   const sys = newSystem();
   sys.spawn(Parent, 'parent');
-  await sleep(50);
+  await awaitCondition(() => stopped, { label: 'the failing child ran postStop' });
   expect(stopped).toBe(true);
   await sys.terminate();
 });

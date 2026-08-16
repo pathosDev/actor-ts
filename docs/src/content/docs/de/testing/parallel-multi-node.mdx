@@ -199,6 +199,20 @@ import { Aside } from '@astrojs/starlight/components';
   laufende Specs hinweg eindeutig.
 </Aside>
 
+<Aside type="caution" title="Diese Suites laufen nicht in CI">
+  Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test
+  keine funktionsfähigen Worker-Threads mehr starten — sie spawnen,
+  machen den Handshake und laufen dann nie.  `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  überspringt dort deshalb jede `ParallelMultiNodeSpec`-Suite, und ein
+  grüner CI-Check sagt über sie nichts aus.  Bei einem lokalen
+  `bun test` und in Docker laufen sie, und ein Nightly-Job führt sie
+  mit abgeschaltetem Flag erneut aus.
+
+  Das heißt: **Lass deinen Worker-Thread-Test lokal laufen, bevor du
+  ihm traust.**  Das Ausstiegskriterium für die Quarantäne steht in
+  [Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/).
+</Aside>
+
 ## Wo es weitergeht
 
 - **[Testing — Überblick](/de/testing/overview/)** — das
@@ -207,3 +221,5 @@ import { Aside } from '@astrojs/starlight/components';
   schnellere In-Process-Variante.
 - **[TestKit](/de/testing/testkit/)** — für Single-System-
   Tests.
+- **[Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/)** —
+  die Quarantäne und wie sie aufgehoben wird.

@@ -274,12 +274,18 @@ shutting down — the dead letter names the message and the recipient.
 
 **Tests pass locally, fail in CI.**
 
-Cause: real-clock timing in tests.  CI machines are slower /
-different.
+The usual cause is real-clock timing: a fixed sleep long enough on
+an idle machine and too short on a loaded CI runner.  Use
+[ManualScheduler](/testing/manual-scheduler/) to control time
+deterministically, or wait on the observable state rather than on a
+duration.
 
-Fix: use
-[ManualScheduler](/testing/manual-scheduler/) and
-control time deterministically.
+That is not the only cause, and guessing between them wastes an
+afternoon.  [Diagnosing test flakes](/testing/diagnosing-flakes/)
+has the repeat-run harness that separates a flake from a broken
+test, plus the catalogued causes — a timer quantum that fires early,
+a dispatcher hop no poll interval can win, and the three multi-node
+suites CI does not run at all.
 
 ## Where to start when nothing's obvious
 

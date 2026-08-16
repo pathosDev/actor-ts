@@ -439,6 +439,142 @@ describe('Behaviors.supervise', () => {
   });
 });
 
+/**
+ * `handleSupervise` used to consult only `strategy.decider`, so `maxRetries`
+ * and `withinTimeRangeMs` were inert in the typed path and a behavior that
+ * always threw restarted for ever inside one `TypedActor` — invisibly, because
+ * swallowing the error also kept the cell's own budget from ever engaging
+ * (#638).
+ *
+ * Past the budget the typed supervisor *escalates* rather than stopping: it is
+ * a wrapper inside the failing actor, not a separate supervisor that would
+ * stay around to observe a `Terminated`, so stopping here would discard the
+ * error with nobody upstream any the wiser.  Every test below therefore reads
+ * "budget exhausted" off the cell's strategy, which is where the escalation
+ * lands.
+ */
+describe('Behaviors.supervise — the strategy restart budget (#638)', () => {
+  /** Records each failure the typed level gave up on, and stops the actor. */
+  const escalationsInto = (escalated: string[]): ActorOptions<string> =>
+    ActorOptions.create<string>().withSupervisorStrategy(
+      new OneForOneStrategy((error) => { escalated.push(error.message); return Directive.Stop; }),
+    );
+
+  /** Blows up on every message; one `init#n` entry per fresh resolve. */
+  const alwaysThrows = (initializations: string[]): Behavior<string> =>
+    Behaviors.setup<string>(() => {
+      initializations.push(`init#${initializations.length + 1}`);
+      return Behaviors.receiveMessage<string>(() => { throw new Error('always'); });
+    });
+
+  test('stops restarting in place once maxRetries is spent, and escalates instead', async () => {
+    const sys = newSys('typed-supervise-budget');
+    const initializations: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(alwaysThrows(initializations)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 60_000 }),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'budgeted', escalationsInto(escalated));
+
+    ref.tell('a'); ref.tell('b'); ref.tell('c');
+    await awaitCondition(() => escalated.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the failure past the budget reached the cell',
+    });
+
+    // One initial resolve plus exactly two restarts.  Two rather than one is
+    // the load-bearing number: the tally has to survive the restarts it counts,
+    // or every failure would look like the first and nothing would ever bite.
+    expect(initializations).toEqual(['init#1', 'init#2', 'init#3']);
+    // The original error travels, not a budget-shaped substitute.
+    expect(escalated).toEqual(['always']);
+
+    // And it stays stopped — nothing revives it behind the assertion.
+    ref.tell('d');
+    await sleep(60);
+    expect(initializations).toEqual(['init#1', 'init#2', 'init#3']);
+    await sys.terminate();
+  });
+
+  test('an ordinary transition inside the supervised child does not refill the budget', async () => {
+    // Every message that does *not* fail still runs a resolve.  If that resolve
+    // reset the allowance, a behavior that alternates work and crashes — the
+    // shape a real crash-loop actually takes — would restart for ever.
+    const sys = newSys('typed-supervise-budget-transitions');
+    const initializations: string[] = [];
+    const escalated: string[] = [];
+
+    const workingThenCrashing = Behaviors.setup<string>(() => {
+      initializations.push(`init#${initializations.length + 1}`);
+      const step = (handled: number): Behavior<string> =>
+        Behaviors.receiveMessage<string>((message) => {
+          if (message === 'boom') throw new Error('crashed');
+          return step(handled + 1); // a real transition, not `Behaviors.same`
+        });
+      return step(0);
+    });
+
+    const behavior = Behaviors.supervise(workingThenCrashing).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2, withinTimeRangeMs: 60_000 }),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'budget-transitions', escalationsInto(escalated));
+
+    for (const message of ['work', 'boom', 'work', 'boom', 'work', 'boom']) ref.tell(message);
+    await awaitCondition(() => escalated.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the third crash escalated despite the transitions in between',
+    });
+
+    expect(initializations).toEqual(['init#1', 'init#2', 'init#3']);
+    expect(escalated).toEqual(['crashed']);
+    await sys.terminate();
+  });
+
+  test('maxRetries: 0 escalates the very first failure without restarting', async () => {
+    const sys = newSys('typed-supervise-budget-zero');
+    const initializations: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(alwaysThrows(initializations)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 0, withinTimeRangeMs: 60_000 }),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'budget-zero', escalationsInto(escalated));
+
+    ref.tell('a');
+    await awaitCondition(() => escalated.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first failure escalated',
+    });
+    expect(initializations).toEqual(['init#1']);
+    await sys.terminate();
+  });
+
+  test('the unlimited default keeps restarting without bound', async () => {
+    // `maxRetries: -1` is what a hand-built `OneForOneStrategy` defaults to and
+    // what every other typed supervise test in this file relies on, so the
+    // budget must stay entirely out of the way for it.
+    const sys = newSys('typed-supervise-unlimited');
+    const initializations: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(alwaysThrows(initializations)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'unbounded', escalationsInto(escalated));
+
+    // Well past `defaultStrategy`'s 10, so a bound leaking in from anywhere
+    // would surface as an escalation.
+    for (let i = 0; i < 25; i++) ref.tell(`m${i}`);
+    await awaitCondition(() => initializations.length === 26, {
+      timeoutMs: 4_000,
+      label: 'all 25 failures restarted in place',
+    });
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+});
+
 describe('Behaviors.empty / Behaviors.ignore', () => {
   test('ignore silently drops all messages', async () => {
     const sys = newSys();

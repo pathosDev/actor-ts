@@ -452,6 +452,79 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   still bounding it. Existing code needs no change to keep compiling:
   every new field is optional.
 
+- **A nightly workflow that runs the three quarantined multi-node suites
+  with `ACTOR_TS_SKIP_FLAKY_MNS` switched off, and a written criterion for
+  lifting the quarantine (#538).**
+
+  `ACTOR_TS_SKIP_FLAKY_MNS=1` removes `LeaseMajority`, `ParallelPubSub`
+  and the `ParallelMultiNodeSpec` self-tests from every CI run, because
+  Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test — the same resource starvation delays
+  LeaseMajority's renewal timer past its lease TTL, so both sides of a
+  partition acquire and the test sees a false split-brain. Nothing
+  re-checked that afterwards, which made the quarantine permanent by
+  default rather than by decision, and every in-repo pointer to the
+  reasoning read "See the [CI] tracking issue" with no number behind it.
+
+  `.github/workflows/nightly-flakes.yml` runs those three suites at 04:00
+  UTC with the flag deliberately absent, three repeats a night, and
+  uploads the per-run JUnit reports and logs — the repository's first
+  artifact upload; the two existing nightlies only echo container logs
+  into the job log, which is unreadable once the log ages out. Both of its
+  jobs are `continue-on-error`: the suites are expected to be red, and a
+  red required check for a known-red measurement is one people learn to
+  ignore, so the result arrives as a run annotation and a step-summary
+  table instead.
+
+  The exit criterion is 14 consecutive green nights — 42 consecutive green
+  executions — stated in the workflow header and in the new `Diagnosing
+  test flakes` documentation page. Two calendar weeks rather than a
+  smaller number because the failure is a property of the runner pool and
+  not of the code: a fortnight spans weekday and weekend pools and several
+  `bun-version: latest` rolls, which is what has to be shown to have
+  stopped happening. A single red night resets the count, and each night's
+  uploaded `summary.json` is the evidence. All eight places that implement
+  or document the quarantine now name #538, including `benchmarks.yml`'s
+  `--exclude=worker`, which shares the cause and would otherwise have been
+  left excluded forever with the reason gone.
+
+- **A repeat-run flake harness (`bun run test:stress`) and a `Diagnosing
+  test flakes` documentation page carrying the catalog of causes this
+  suite has actually had (#290).**
+
+  A single `bun test` answers whether the suite is green right now; it
+  cannot answer which tests are green *most* of the time, which is the
+  only question a flake catalog can be built from.
+  `scripts/stress-test.mjs` runs the suite N times, keeps every run's
+  JUnit report and log, and aggregates failures by test identity —
+  splitting *flaky* (failed in some runs) from *consistently failing*,
+  which is a broken test that repetition tells you nothing new about. It
+  also names two outcomes a naive loop reads as green: a run that produced
+  no JUnit report at all, and a run that exited non-zero with no failing
+  test.
+
+  The harness deletes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it
+  hands to `bun test`. Inheriting it would measure a strictly smaller
+  suite than a local run and then report a reliable pass rate over exactly
+  the three suites known not to be reliable. `--skip-quarantined` opts
+  back in.
+
+  The new documentation page states what repetition can and cannot find,
+  because that is where an afternoon goes: a loop drives up the
+  probability of a load-sensitive flake and says nothing about a
+  deterministic ordering bug, and the worked example is the case that was
+  0 failures in 200 runs at a 1 ms poll interval because the dispatcher
+  schedules via `setImmediate`. Six cause families are catalogued with
+  their status, and five tests observed failing intermittently are listed
+  as open entries without a verdict — ruling causes out is not the same as
+  establishing one.
+
+  Those five have had their fixed sleep, or in one case a hand-rolled
+  deadline loop that fell through silently, replaced by a wait on the
+  state the assertion reads. Every assertion survives verbatim; the
+  timeouts are larger than the sleeps they replace while the tests get
+  faster, because a failure budget is only paid when something is broken.
+
 ### Fixed
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
@@ -942,6 +1015,58 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   regenerated, so the job started failing rather than started passing.
   Regenerated with `npm install --package-lock-only`, which touched
   nothing but the one missing entry in each file.
+
+- **`Behaviors.supervise` now honours the strategy's restart budget
+  instead of ignoring it (#638).** The typed supervisor consulted only
+  `strategy.decider(err)` and re-resolved the wrapped behavior
+  unconditionally, so `maxRetries` and `withinTimeRangeMs` were inert
+  everywhere under `src/typed/` — a behavior that always threw restarted
+  for ever inside one `TypedActor`, and invisibly, because swallowing the
+  error also kept the enclosing cell's own budget from engaging. The typed
+  pages already showed a `maxRetries` example and stated that the
+  directive semantics apply identically, so this was a live doc/code
+  divergence rather than a missing feature.
+
+  A new `RestartBudget` (exported from the package root) carries the
+  sliding window. It is kept apart from `SupervisorStrategy` because a
+  strategy is an immutable description that `defaultStrategy` shares
+  process-wide; a tally living on it would give every actor in the process
+  one allowance. `TypedActor` holds one budget per supervision scope,
+  keyed on the `supervise` node's identity, so the tally accumulates
+  across the restarts it counts rather than resetting on each one. Only
+  granted restarts are recorded, which also bounds the array by
+  `maxRetries` and avoids the unbounded growth its `ActorCell` counterpart
+  shows under `withinTimeRangeMs: 0`.
+
+  Two semantics that the issue and the existing OO code left mutually
+  inconsistent are settled here for the typed path. `maxRetries` is read
+  literally — `maxRetries` restarts are granted and the next attempt is
+  refused, so `maxRetries: 0` means "never restart" — where
+  `ActorCell.registerRestart` returns `length <= maxRetries + 1` and
+  therefore tolerates one more than it advertises. And past the budget the
+  typed supervisor escalates rather than stopping, because a typed
+  `supervise` is a wrapper inside the failing actor rather than a parent
+  that stays around to observe a `Terminated`; stopping there would
+  discard the error with nobody upstream any the wiser. Escalating hands
+  the failure to the actor's own parent, whose restart builds a fresh
+  actor with a fresh typed allowance, so the two budgets layer instead of
+  competing.
+
+  Be aware this changes runtime behaviour for code that already sets a
+  bound: a supervised behavior that used to restart without limit despite
+  `maxRetries` will now stop looping in place once the bound is reached.
+  That is what the documentation always promised. Setting `maxRetries: -1`
+  — the default for a hand-built `OneForOneStrategy` — keeps the old
+  unlimited behaviour.
+
+  The parent-supervised path is deliberately untouched; changing its
+  off-by-one is a behaviour change for every existing actor and belongs
+  with #917/#1019. The supervision documentation, which claimed that with
+  `maxRetries: 10` "the 11th failure escalates", is corrected in both
+  languages to describe what that path actually does (eleven restarts
+  tolerated, then the affected children are stopped), and the remaining
+  divergence between the two forms is called out where a reader setting a
+  bound will hit it.
 
 ### Security
 
