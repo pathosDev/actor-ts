@@ -303,6 +303,11 @@ Das entkoppelt Writes (das Journal des `PersistentActor`) von
 Reads (die View der Projektion) — die Read-Seite kann für die
 Query-Muster, die sie bedient, denormalisiert werden.
 
+Ein Handler, der wirft, blockiert jedes Event dahinter, weil der
+Cursor nur bei Erfolg vorrückt.  `recoveryStrategy` begrenzt das:
+mit Backoff wiederholen und dann stoppen (der Default), das Event
+auf den Dead-Letter-Stream überspringen, oder beides sofort.
+
 Siehe [Projektionen](/de/persistence/projections/) für das
 vollständige Muster.
 
