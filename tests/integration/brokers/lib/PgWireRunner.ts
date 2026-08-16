@@ -21,6 +21,7 @@ import { PostgresDurableStateStore } from '../../../../src/persistence/durable-s
 import { PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
 import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJournal.js';
 import { PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournalOptions.js';
+import { PostgresQuery } from '../../../../src/persistence/query/PostgresQuery.js';
 import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
 import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
 import { waitForPort } from './WaitForPort.js';
@@ -60,6 +61,11 @@ export async function runPgWireSuite(options: PgWireSuiteOptions): Promise<void>
         .withUrl(url);
       return new PostgresJournal(journalOptions);
     },
+    // The one place the tags-table JOIN meets a real server.  The in-process
+    // fake answers the same statement, but only a live Postgres (or the
+    // wire-compatible engines this runner also drives) can prove the SQL is
+    // accepted and the index kept in step with `delete` (#391, #654).
+    makeQuery: (journal) => new PostgresQuery(journal as PostgresJournal),
     async makeSnapshotStore(keepN) {
       const snapshotStoreOptions = PostgresSnapshotStoreOptions.create()
         .withUrl(url)

@@ -58,10 +58,11 @@ export interface JournalHarness extends HarnessBase {
    * way to observe a tag index that `delete` forgot to compact (#654).
    *
    * Optional because a query class is a separate thing from a journal and not
-   * every backend has one: the relational family maintains its tag table
-   * correctly but has no `PersistenceQuery` implementation yet (#532).  A
-   * harness that leaves this unset skips the query-side scenarios rather than
-   * passing them vacuously.
+   * every backend has one.  The relational family now does — `RelationalQuery`
+   * reads the tags table its journals have always written (#391) — so Postgres
+   * and MariaDB set this; MsSQL, libSQL and D1 are still waiting on #532, and
+   * DynamoDB has no query at all.  A harness that leaves this unset skips the
+   * query-side scenarios rather than passing them vacuously.
    */
   makeQuery?(journal: Journal): PersistenceQuery;
   readonly capabilities?: JournalCapabilities;
