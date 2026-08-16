@@ -32,6 +32,14 @@
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
+>
+> Those figures are measured on GitHub's hosted runners, where **three
+> multi-node suites are skipped** — Bun there cannot respawn functional
+> worker threads after the first worker test, so `ACTOR_TS_SKIP_FLAKY_MNS=1`
+> removes `LeaseMajority`, `ParallelPubSub` and the `ParallelMultiNodeSpec`
+> self-tests from the run.  They execute on a local `bun test` and in Docker,
+> and a nightly job re-runs them with the flag off; see
+> [Diagnosing test flakes](https://actor-ts.dev/testing/diagnosing-flakes/).
 
 ---
 

@@ -137,9 +137,9 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   [skip ci]` commits directly to `develop` after test runs. Do NOT edit
   those numbers by hand (the bot overwrites them, with CI-measured values
   that skip the quarantined multi-node suites via
-  `ACTOR_TS_SKIP_FLAKY_MNS`, so they differ slightly from a local full
-  run). After pushing `develop`, fetch again before branching — a bot
-  commit may already have landed on top.
+  `ACTOR_TS_SKIP_FLAKY_MNS` — see *Verification gates* — so they differ
+  slightly from a local full run). After pushing `develop`, fetch again
+  before branching — a bot commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
 
@@ -164,6 +164,26 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   error go away: the rule is a *different manifest*, not a difficult error.
 - **`bun test`** is green. Line coverage floor is **≥ 80 %** —
   `bun run test:coverage:gate`.
+- **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
+  `test.yml`, `multi-runtime.yml` and `publish.yml` skips
+  `tests/multi-node/LeaseMajority.test.ts`,
+  `tests/multi-node/ParallelPubSub.test.ts` and
+  `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — Bun on GitHub's hosted
+  runners cannot respawn functional worker threads after the first worker
+  test, which also starves LeaseMajority's lease arbitration into a false
+  split-brain. **A local `bun test` runs them; a green CI check says nothing
+  about them.** `.github/workflows/nightly-flakes.yml` runs them nightly with
+  the flag OFF; its header carries the exit criterion (14 consecutive green
+  nights), and `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
+  #538.
+- **Repeat-run flake hunting:** `bun run test:stress`
+  (`scripts/stress-test.mjs`) loops the suite N times and aggregates failures
+  by test identity, splitting *flaky* (failed in some runs) from
+  *consistently failing* (broken, not flaky). It **drops
+  `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default** — a
+  harness that inherited it would report a reliable pass rate over exactly
+  the tests known not to be reliable. Not a per-commit gate; reach for it
+  when a test fails intermittently, or when a nightly names one. #290.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the

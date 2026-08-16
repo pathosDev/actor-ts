@@ -8,6 +8,11 @@ coverage/
 *.tsbuildinfo
 bun.lockb
 
+# Per-run JUnit reports, logs and summary.json from `bun run test:stress`
+# (scripts/stress-test.mjs).  A nightly job uploads them as an artifact; a
+# local run leaves ~10 copies of the whole suite's report behind.
+.stress/
+
 # Astro / Starlight build cache (docs site under docs/).  `dist/` +
 # `node_modules/` are already covered by the top-level patterns; the
 # `.astro/`-cache is a separate folder Astro recreates on each build.

@@ -226,6 +226,11 @@ there is no state transition to wait for at all:
 Say which one it is in a comment. A sleep with a reason is documentation; a
 sleep without one is a bet.
 
+All of that is prevention. When a test is *already* failing intermittently,
+[Diagnosing test flakes](/testing/diagnosing-flakes/) has the repeat-run
+harness that tells a flake from a broken test, and the catalog of causes this
+suite has actually had.
+
 ## What not to test
 
 import { Aside } from '@astrojs/starlight/components';

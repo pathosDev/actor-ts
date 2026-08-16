@@ -283,12 +283,20 @@ nennt Nachricht und Empfänger.
 
 **Tests sind lokal grün, fallen aber in CI um.**
 
-Ursache: Real-Clock-Timing in Tests. CI-Maschinen sind langsamer /
-anders.
+Die übliche Ursache ist Real-Clock-Timing: ein fester Sleep, der auf
+einer unbeschäftigten Maschine lang genug ist und auf einem
+ausgelasteten CI-Runner zu kurz. Nutze
+[ManualScheduler](/de/testing/manual-scheduler/), um Zeit
+deterministisch zu steuern, oder warte auf den beobachtbaren Zustand
+statt auf eine Dauer.
 
-Fix: Nutze
-[ManualScheduler](/de/testing/manual-scheduler/) und steuere Zeit
-deterministisch.
+Das ist nicht die einzige Ursache, und zwischen ihnen zu raten kostet
+einen Nachmittag.
+[Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/) hat das
+Repeat-Run-Harness, das einen Flake von einem kaputten Test trennt,
+dazu die katalogisierten Ursachen — ein Timer-Quantum, das zu früh
+feuert, ein Dispatcher-Hop, den kein Poll-Intervall gewinnt, und die
+drei Multi-Node-Suites, die CI gar nicht ausführt.
 
 ## Womit anfangen, wenn nichts offensichtlich ist
 

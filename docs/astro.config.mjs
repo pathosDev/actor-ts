@@ -825,6 +825,7 @@ export default defineConfig({
             { label: 'ManualScheduler',       slug: 'testing/manual-scheduler',    translations: { de: 'ManualScheduler', es: 'ManualScheduler', fr: 'ManualScheduler', ja: 'ManualScheduler', ko: 'ManualScheduler', 'pt-BR': 'ManualScheduler', ru: 'ManualScheduler', 'zh-CN': 'ManualScheduler' } },
             { label: 'MultiNodeSpec',         slug: 'testing/multi-node-spec',     translations: { de: 'MultiNodeSpec', es: 'MultiNodeSpec', fr: 'MultiNodeSpec', ja: 'MultiNodeSpec', ko: 'MultiNodeSpec', 'pt-BR': 'MultiNodeSpec', ru: 'MultiNodeSpec', 'zh-CN': 'MultiNodeSpec' } },
             { label: 'ParallelMultiNodeSpec', slug: 'testing/parallel-multi-node', translations: { de: 'ParallelMultiNodeSpec', es: 'ParallelMultiNodeSpec', fr: 'ParallelMultiNodeSpec', ja: 'ParallelMultiNodeSpec', ko: 'ParallelMultiNodeSpec', 'pt-BR': 'ParallelMultiNodeSpec', ru: 'ParallelMultiNodeSpec', 'zh-CN': 'ParallelMultiNodeSpec' } },
+            { label: 'Diagnosing flakes',     slug: 'testing/diagnosing-flakes',   translations: { de: 'Flakes diagnostizieren', es: 'Diagnosticar tests inestables', fr: 'Diagnostiquer les tests instables', ja: 'フレーキーテストの診断', ko: '불안정한 테스트 진단', 'pt-BR': 'Diagnosticar testes instáveis', ru: 'Диагностика нестабильных тестов', 'zh-CN': '诊断不稳定测试' } },
           ],
         },
         {

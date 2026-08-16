@@ -122,9 +122,9 @@ export class ParallelMultiNodeSpec {
       // suites that use this harness are QUARANTINED on GitHub's hosted
       // runners — Bun there cannot respawn functional workers after the
       // first test (they spawn + handshake, then never run; reproducible
-      // only on the hosted runners, never locally or in Docker).  See the
-      // [CI] tracking issue.  They run locally + in Docker, where this
-      // budget is ample (convergence is ~4-5s).
+      // only on the hosted runners, never locally or in Docker).  See #538
+      // for the quarantine and its exit criterion.  They run locally + in
+      // Docker, where this budget is ample (convergence is ~4-5s).
       awaitTimeoutMs: options.awaitTimeoutMs ?? 30_000,
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,

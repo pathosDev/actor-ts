@@ -21,6 +21,7 @@ import {
   moduloAllocator,
   rendezvousAllocator,
 } from '../src/cluster/index.js';
+import { awaitCondition } from './util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -151,7 +152,15 @@ test('shards rebalance when a node leaves', async () => {
   const n1 = await startNode('cluster-c', '10.0.2.1', 7001);
   const n2 = await startNode('cluster-c', '10.0.2.2', 7002, ['10.0.2.1:7001']);
   const n3 = await startNode('cluster-c', '10.0.2.3', 7003, ['10.0.2.1:7001']);
-  await sleep(500);
+  // Convergence, not 500ms of it: the member list read on the next line
+  // decides which entity the whole test follows, so reading it early picks
+  // the wrong victim and the failure surfaces four assertions later.
+  await awaitCondition(
+    () => n1.cluster.upMembers().length === 3
+      && n2.cluster.upMembers().length === 3
+      && n3.cluster.upMembers().length === 3,
+    { timeoutMs: 5_000, label: 'all three nodes see a 3-member cluster' },
+  );
 
   // Find an entity whose owner is node 2.
   const members = n1.cluster.upMembers().map(m => m.address);
@@ -163,15 +172,24 @@ test('shards rebalance when a node leaves', async () => {
   });
   expect(victim).toBeDefined();
 
-  // Before: the entity lives on node 2.
+  // Before: the entity lives on node 2.  Waiting on node 2's own count is
+  // what makes the following absence assertion meaningful — under the old
+  // fixed sleep, "n1 and n3 saw nothing" could equally mean the message had
+  // not been routed anywhere yet.
   n1.region.tell({ id: victim!, kind: 'increment' });
-  await sleep(150);
+  await awaitCondition(() => (n2.counts.get(victim!) ?? 0) === 1, {
+    timeoutMs: 5_000,
+    label: 'the entity was handled on its owning node',
+  });
   expect(n2.counts.get(victim!) ?? 0).toBe(1);
   expect((n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0)).toBe(0);
 
   // Kill node 2 and wait for failure detection + rebalance.
   await stopNode(n2);
-  await sleep(1_200);
+  await awaitCondition(
+    () => n1.cluster.upMembers().length === 2 && n3.cluster.upMembers().length === 2,
+    { timeoutMs: 10_000, label: 'the survivors downed the departed member' },
+  );
 
   // After: survivors should detect the down member and re-own its shards.
   expect(n1.cluster.upMembers().length).toBe(2);
@@ -180,7 +198,10 @@ test('shards rebalance when a node leaves', async () => {
   // Send to the same entity from node 1; it should now live somewhere still alive.
   n1.region.tell({ id: victim!, kind: 'increment' });
   n1.region.tell({ id: victim!, kind: 'increment' });
-  await sleep(300);
+  await awaitCondition(
+    () => (n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0) === 2,
+    { timeoutMs: 5_000, label: 'both re-sent messages reached the re-owned shard' },
+  );
 
   const afterHits = (n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0);
   expect(afterHits).toBe(2);
