@@ -1582,6 +1582,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `http/security.mdx` now say so, and state the two layers as a guarantee
   plus an optimisation on top of it rather than two equal checks.
 
+- **URL redaction and path trimming are linear again — a hostile redirect
+  could block the event loop for 484 ms (#1198).**
+
+  `redactUrlCredentials` searched for a URL scheme from every start
+  position, so a run of scheme characters with no `://` after it cost
+  O(n²). It is reached from `HttpClient`'s redirect path, which redacts
+  the `Location` header before logging it — and that header is chosen by
+  whatever server the caller was pointed at. Measured on Bun: 7 ms at 2
+  000 characters, 116 ms at 8 000, 1 790 ms at 32 000, and 484 ms at the
+  16 KiB header limit the runtimes actually enforce. On a single-threaded
+  runtime, concurrent requests to one hostile endpoint multiply that. It
+  now locates `://` and validates the scheme backwards, with no length
+  cap, so a 300-character scheme still redacts.
+
+  What gets redacted is unchanged, and that is pinned rather than
+  asserted: the suite runs the new implementation and the old pattern over
+  20 000 generated inputs and compares byte for byte, 8 826 of which
+  actually redact.
+
+  Eight further trailing-run strips became non-backtracking index scans.
+  Two of them are also remote-reachable and neither was reported by the
+  scanner that prompted this: the decoded remainder of a static-file
+  request path, which every request under a static mount passes through
+  (385 ms at 16 KiB, now 0.83 ms), and a hostname from a DNS or Kubernetes
+  API response.
+
+  *Correction to the issue:* the route-segment regex was filed as a false
+  positive on the grounds of being anchored. It is an alternation and only
+  the first branch carries the anchor, so a slash run in the middle of a
+  segment does scan quadratically — the measurement that cleared it used a
+  leading run, which the anchored branch consumes whole. It is fixed
+  rather than dismissed.
+
 ## [0.16.0] — 2026-08-15
 
 ### Changed

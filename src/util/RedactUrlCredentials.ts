@@ -21,15 +21,35 @@
  *     where a bearer token ends up when the userinfo does not carry one.
  *     Disclosure first.
  *
- * **Why a regex rather than a `URL` round-trip** for the first one: blanking
- * `username`/`password` on a parsed `URL` and reading `href` back also
- * lowercases the host, appends a trailing slash and re-encodes the path, so
- * an operator can fail to recognise the value they just mistyped — and the
- * non-special schemes this project speaks (`mqtt:`, `amqp:`, `redis:`,
- * `libsql:`) parse differently across the WHATWG implementations in Bun,
- * Node and Deno.  A regex also stays a strict no-op on the inputs that are
- * not URLs at all (`':memory:'`, `'file:local.db'`, `'not a url'`), which is
- * what keeps it safe to apply unconditionally on an error path.
+ * **Why a hand-written scan rather than a `URL` round-trip** for the first
+ * one: blanking `username`/`password` on a parsed `URL` and reading `href`
+ * back also lowercases the host, appends a trailing slash and re-encodes the
+ * path, so an operator can fail to recognise the value they just mistyped —
+ * and the non-special schemes this project speaks (`mqtt:`, `amqp:`,
+ * `redis:`, `libsql:`) parse differently across the WHATWG implementations
+ * in Bun, Node and Deno.  A scan also stays a strict no-op on the inputs
+ * that are not URLs at all (`':memory:'`, `'file:local.db'`, `'not a url'`),
+ * which is what keeps it safe to apply unconditionally on an error path.
+ *
+ * **And why not a regex.**  This was one until #1198:
+ * `/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g` — unanchored and global, so
+ * the engine retried the scheme quantifier from every start position, and a
+ * run of scheme characters with no `://` behind it cost O(n²).  That input
+ * is not hypothetical: `HttpClient` runs this over the `Location` header of
+ * a redirect, chosen by whichever server the caller was pointed at, which
+ * bought 484 ms of blocked event loop per response at the 16 KiB header
+ * limit — multiplied, on a single-threaded runtime, by every request in
+ * flight.  Finding `://` first and validating the scheme *backwards* visits
+ * each character a bounded number of times: the scheme run before a `://`
+ * and the authority after it are both delimited by characters the other side
+ * cannot contain, so no two candidates can scan the same character twice.
+ *
+ * The grammar is unchanged — {@link isSchemeStart} and
+ * {@link isSchemeCharacter} are that character class, and
+ * {@link lastAtInAuthority} is `[^/?#]*@` with its backtracking written out.
+ * `tests/unit/util/RedactUrlCredentials.test.ts` keeps the original pattern
+ * as an oracle and compares the two over generated input, because what this
+ * function redacts is public API (`src/index.ts`).
  *
  * This is deliberately **not** wired into a logger.  `MultiSinkLogger`'s
  * `transform` hook is the right seam for a record whose MDC already holds a
@@ -46,21 +66,14 @@
  */
 const USERINFO_MASK = '***';
 
-/**
- * Userinfo of an absolute URL: a scheme, `://`, then everything up to the
- * last `@` that is still inside the authority.
- *
- * The character class excludes `/`, `?` and `#`, which is what bounds the
- * match to the authority — an `@` in a path (`redis://host/a@b`) is not
- * userinfo and must survive.  Greedy up to that boundary so the *last* `@`
- * wins, matching how WHATWG splits an authority when the password itself
- * contains an unescaped `@`.
- *
- * Global, so a joined server list (`nats://a:b@h1,nats://c:d@h2` — see
- * `NatsActor`) is covered in full; `//` cannot be crossed by the class, so
- * the entries cannot bleed into one another.
- */
-const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
+/** What separates a scheme from its authority, and the anchor of the scan. */
+const SCHEME_SEPARATOR = '://';
+
+/** The delimiters the scan turns on, as code points. */
+const AT_SIGN = 0x40;
+const SLASH = 0x2f;
+const QUESTION_MARK = 0x3f;
+const NUMBER_SIGN = 0x23;
 
 /** First query or fragment delimiter — everything from here is dropped. */
 const QUERY_OR_FRAGMENT = /[?#]/;
@@ -70,10 +83,92 @@ const QUERY_OR_FRAGMENT = /[?#]/;
  * the rest of the string byte-identical.
  *
  * A no-op on anything without a `scheme://…@` authority, so it is safe to
- * apply to a value that only might be a URL.
+ * apply to a value that only might be a URL.  Every URL in the string is
+ * covered, not just the first: a joined server list
+ * (`nats://a:b@h1,nats://c:d@h2` — see `NatsActor`) has each entry masked,
+ * and the entries cannot bleed into one another because an authority stops
+ * at the `/` that opens the next one.
  */
 export function redactUrlCredentials(value: string): string {
-  return value.replace(URL_USERINFO, `$1${USERINFO_MASK}@`);
+  // Written out rather than accumulated with `+=`: the pieces are slices of
+  // one string, and joining them once keeps the copying proportional to the
+  // output instead of to the number of matches.
+  const pieces: string[] = [];
+  let copiedTo = 0;
+  let searchFrom = 0;
+  for (;;) {
+    const separator = value.indexOf(SCHEME_SEPARATOR, searchFrom);
+    if (separator === -1) break;
+    // Past this `://` unconditionally.  A candidate that fails here can
+    // never succeed from a later start position — the scheme run and the
+    // authority around it are fixed by the `://`, not by where the scan
+    // began — so retrying inside it is exactly the work that made the old
+    // pattern quadratic.
+    const authorityStart = separator + SCHEME_SEPARATOR.length;
+    searchFrom = authorityStart;
+    if (!precededByScheme(value, separator)) continue;
+    const userinfoEnd = lastAtInAuthority(value, authorityStart);
+    if (userinfoEnd === -1) continue;
+    pieces.push(value.slice(copiedTo, authorityStart), USERINFO_MASK);
+    // Resume *at* the `@`: it is part of the output, and the next authority
+    // cannot start before it.
+    copiedTo = userinfoEnd;
+    searchFrom = userinfoEnd + 1;
+  }
+  if (pieces.length === 0) return value;
+  pieces.push(value.slice(copiedTo));
+  return pieces.join('');
+}
+
+/** `ALPHA` — the only characters a scheme may begin with (RFC 3986 §3.1). */
+function isSchemeStart(code: number): boolean {
+  return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a); // A-Z a-z
+}
+
+/** `ALPHA / DIGIT / "+" / "-" / "."` — the rest of a scheme (RFC 3986 §3.1). */
+function isSchemeCharacter(code: number): boolean {
+  return isSchemeStart(code)
+    || (code >= 0x30 && code <= 0x39) // 0-9
+    || code === 0x2b || code === 0x2d || code === 0x2e; // + - .
+}
+
+/**
+ * True when the run of scheme characters ending at `separator` contains at
+ * least one letter — which is exactly the condition for a scheme to exist
+ * there, since a match may begin at any letter in the run and every
+ * character after it is scheme-legal by construction.
+ *
+ * *Where* in the run the scheme begins is deliberately not computed: the
+ * scheme is copied through verbatim either way, so it cannot change the
+ * output.  Walking backwards and stopping at the first letter is what makes
+ * this bounded by the run rather than by the string.  No length cap — RFC
+ * 3986 does not impose one, and a 300-character scheme still redacts.
+ */
+function precededByScheme(value: string, separator: number): boolean {
+  for (let index = separator - 1; index >= 0; index--) {
+    const code = value.charCodeAt(index);
+    if (isSchemeStart(code)) return true;
+    if (!isSchemeCharacter(code)) return false;
+  }
+  return false;
+}
+
+/**
+ * Index of the last `@` in the authority beginning at `from`, or `-1`.
+ *
+ * The authority ends at the first `/`, `?` or `#`, which is what keeps an
+ * `@` in a path (`redis://host/a@b`) or a query out of it.  The *last* one
+ * inside wins, matching how WHATWG splits an authority whose password
+ * contains an unescaped `@`.
+ */
+function lastAtInAuthority(value: string, from: number): number {
+  let found = -1;
+  for (let index = from; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === SLASH || code === QUESTION_MARK || code === NUMBER_SIGN) break;
+    if (code === AT_SIGN) found = index;
+  }
+  return found;
 }
 
 /**

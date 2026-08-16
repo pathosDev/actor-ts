@@ -27,6 +27,26 @@ describe('redactUrlCredentials', () => {
     ['amqp://user:p@ss@rabbit:5672', 'amqp://***@rabbit:5672'],
     // A joined server list — NatsActor builds one of these.
     ['nats://a:b@h1:4222,nats://c:d@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    // -- scheme grammar, pinned because the scan that finds it was rewritten
+    //    to be linear (#1198) and must still accept exactly RFC 3986's
+    //    `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
+    ['HTTPS://user:pass@example.com', 'HTTPS://***@example.com'],
+    ['a+b-c.d://user@host', 'a+b-c.d://***@host'],
+    // The scheme starts at the first LETTER of the run, so the digits ahead
+    // of it are outside the match and survive untouched.
+    ['x1://user@host', 'x1://***@host'],
+    ['1abc://user@host', '1abc://***@host'],
+    // No length cap in RFC 3986, and none imposed here.
+    [`${'s'.repeat(300)}://user:pass@host`, `${'s'.repeat(300)}://***@host`],
+    // An empty scheme *tail*: one letter is the whole scheme.
+    ['a://user@host', 'a://***@host'],
+    // `[^/?#]` cannot cross the second `://`, so the inner URL is the one
+    // with an authority to mask.
+    ['a://b://c@d', 'a://b://***@d'],
+    // Userinfo with no host after it.
+    ['redis://token@', 'redis://***@'],
+    // A second URL later in the line still gets its own pass.
+    ['see amqp://u:p@h/vhost now', 'see amqp://***@h/vhost now'],
   ];
 
   test.each([...masked])('masks the userinfo of %p', (input, expected) => {
@@ -56,6 +76,19 @@ describe('redactUrlCredentials', () => {
     // No `//` authority at all.
     'mailto:ops@example.com',
     'postgres',
+    // -- boundaries of the scan, pinned alongside the linear rewrite (#1198).
+    // No scheme in front of the `://`, so there is no URL here to redact.
+    '://user@host',
+    '//user@host',
+    '1://user@host',
+    '+://user@host',
+    // `?` and `#` close the authority: an `@` past either is query or
+    // fragment, not userinfo.
+    'https://host?u@p',
+    'https://host#u@p',
+    // A run of scheme characters that never reaches a `://` — the shape that
+    // used to cost 484 ms at 16 KiB.
+    'a'.repeat(64),
   ];
 
   test.each([...untouched])('is byte-identical on %p', (input) => {
@@ -70,6 +103,120 @@ describe('redactUrlCredentials', () => {
   test('the guard parsed something — both tables are non-trivial', () => {
     expect(masked.length).toBeGreaterThanOrEqual(10);
     expect(untouched.length).toBeGreaterThanOrEqual(10);
+  });
+
+  /**
+   * The differential half of the #1198 rewrite.
+   *
+   * `redactUrlCredentials` is exported from `src/index.ts`, so its output is
+   * public API: an input that was redacted before has to be redacted
+   * identically after, and one that passed through has to keep passing
+   * through.  The tables above pin the cases a human thought of; this pins
+   * the ones nobody did, by running the **original regex** — kept here
+   * verbatim as an oracle — over inputs built from the alphabet that
+   * decides the match, and demanding byte equality.
+   *
+   * Committed *before* the rewrite on purpose.  Against the original
+   * implementation it is tautological, and that is the point: it fixes the
+   * behaviour at the version everyone already has, so the diff that follows
+   * cannot move it unnoticed.  The generator is seeded, so a failure names a
+   * reproducible input rather than a number that never comes back.
+   */
+  describe('behaviour is byte-identical to the original regex (#1198)', () => {
+    const ORIGINAL_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
+
+    function originalRedaction(value: string): string {
+      return value.replace(ORIGINAL_URL_USERINFO, '$1***@');
+    }
+
+    /**
+     * The pattern's vocabulary, drawn as **tokens** rather than characters:
+     * `://` has to appear as a unit or a random draw over single characters
+     * almost never produces a URL at all, and a corpus of near-misses tests
+     * only the no-op path.
+     */
+    const TOKENS = ['://', '//', '@', 'a', 'A', 'ab', '1', '+', '.', '-', ':', '/', '?', '#', 'x', ' '];
+
+    /** Scheme-legal characters — what `[A-Za-z0-9+.-]*` accepts. */
+    const SCHEME_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', 'x'];
+
+    /** Authority-legal characters — everything `[^/?#]` accepts. */
+    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' '];
+
+    /** xorshift32 — a seeded generator, so a counter-example stays reachable. */
+    function randomSequence(seed: number): () => number {
+      let state = seed;
+      return () => {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        return (state >>> 0) / 0x1_0000_0000;
+      };
+    }
+
+    /**
+     * Half free-form token soup, half a `…://…@…` skeleton filled with the
+     * same soup.  Unbiased draws almost never satisfy the pattern's ordering
+     * constraint, so a pure soup corpus would exercise the no-op path 99 %
+     * of the time; the skeleton puts the delimiters in the right order and
+     * lets the soup break them again — a `/` landing in the authority, a
+     * scheme that starts with a digit, a second `://` inside the userinfo.
+     */
+    function generateInput(next: () => number): string {
+      const draw = (pool: readonly string[], tokens: number): string => {
+        let out = '';
+        for (let i = 0; i < tokens; i++) out += pool[Math.floor(next() * pool.length)];
+        return out;
+      };
+      if (next() < 0.4) return draw(TOKENS, 1 + Math.floor(next() * 12));
+      // Each slot is filled from its own legal pool most of the time and from
+      // the full one otherwise, so the corpus holds both URLs that redact and
+      // URLs one stray `/` away from not redacting.
+      const scheme = next() < 0.75
+        ? `a${draw(SCHEME_TOKENS, Math.floor(next() * 3))}`
+        : draw(TOKENS, 1 + Math.floor(next() * 2));
+      const userinfo = next() < 0.75
+        ? draw(USERINFO_TOKENS, 1 + Math.floor(next() * 3))
+        : draw(TOKENS, 1 + Math.floor(next() * 3));
+      return `${scheme}://${userinfo}@${draw(TOKENS, 1 + Math.floor(next() * 3))}`;
+    }
+
+    test('agrees with the original on 20 000 generated inputs', () => {
+      const next = randomSequence(0x1198_2026);
+      const disagreements: string[] = [];
+      let redacted = 0;
+      for (let i = 0; i < 20_000; i++) {
+        const input = generateInput(next);
+        const expected = originalRedaction(input);
+        if (expected !== input) redacted++;
+        if (redactUrlCredentials(input) !== expected) disagreements.push(input);
+      }
+      // Sliced: five reproducible counter-examples are a diagnosis, twenty
+      // thousand are a wall of text.
+      expect(disagreements.slice(0, 5)).toEqual([]);
+      // The generator has to actually produce URLs, or agreeing proves
+      // nothing: a redactor that returned its input would pass an all-no-op
+      // corpus.
+      expect(redacted).toBeGreaterThan(5_000);
+    });
+
+    test('agrees on long adversarial shapes', () => {
+      const shapes = [
+        'a'.repeat(4_000),
+        `https://${'a'.repeat(4_000)}`,
+        `https://${'a'.repeat(2_000)}@host`,
+        `https://user@${'a'.repeat(2_000)}`,
+        `${'a'.repeat(2_000)}://user:pass@host`,
+        `${'/'.repeat(2_000)}user@host`,
+        `${'a@'.repeat(1_000)}`,
+        `https://${'@'.repeat(1_000)}host`,
+        `${'a://u@h '.repeat(500)}`,
+        `${'a:'.repeat(1_000)}//user@host`,
+      ];
+      for (const shape of shapes) {
+        expect(redactUrlCredentials(shape)).toBe(originalRedaction(shape));
+      }
+    });
   });
 });
 

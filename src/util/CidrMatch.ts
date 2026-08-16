@@ -32,6 +32,7 @@
  */
 
 import { match } from 'ts-pattern';
+import { stripTrailing } from './StripCharacters.js';
 
 /**
  * A canonical dotted-quad octet: decimal, no leading zero, no sign, no
@@ -213,7 +214,7 @@ export function addressMatchesPins(host: string, pins: readonly AddressPin[]): b
 
 /** Lower-case and drop the DNS root dot some resolvers include. */
 function normalizeHost(host: string): string {
-  return host.trim().toLowerCase().replace(/\.+$/, '');
+  return stripTrailing(host.trim().toLowerCase(), '.');
 }
 
 /**
