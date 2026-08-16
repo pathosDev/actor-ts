@@ -123,6 +123,48 @@ families contribute six series in total:
   — a peer is sending payloads this replica cannot decode, which means a
   broken or hostile node.
 
+## Projection metrics
+
+A projection is a background loop nobody watches, which is exactly
+the kind of thing that fails quietly.  These three are what tell you
+a read model has stopped tracking its journal:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `persistence_projection_stalled` | gauge | `projection` | 1 while the projection is blocked on an event whose handler failed. |
+| `persistence_projection_failures_total` | counter | `projection`, `reason` | Projection ticks that failed. |
+| `persistence_projection_events_skipped_total` | counter | `projection` | Events a `skip` strategy stepped past and published as dead letters. |
+
+`projection` is the `name` you gave it; `reason` is `handler` (your
+`handle` callback threw) or `poll` (the query layer or the offset
+store did) — those two values and no others.
+
+- `persistence_projection_stalled` is the alert.  It is published as
+  0 when a projection starts, so the series exists for every running
+  projection and `== 1` is a working alert expression.  A stall
+  clears on its own if the handler recovers or the strategy skips
+  past the event; one that stays at 1 has either exhausted its
+  retries and stopped, or is configured to retry forever.
+- Separating `reason="handler"` from `reason="poll"` separates the
+  two fixes: a handler failure is a bad event or a broken read model,
+  a poll failure is the journal underneath.  Only handler failures
+  spend the `maxRetries` budget.
+- `persistence_projection_events_skipped_total` is the **data-loss**
+  signal.  Any movement means the read model is missing something a
+  `skip` strategy chose not to block on — cross-reference the dead
+  letters for which events.
+
+`projection` is bounded by how many projections you declare, which is
+normally a handful.  The one shape that breaks that is the per-pid
+[fan-out](/persistence/projections/#fan-out-starting-one-as-each-entity-appears),
+where the name is derived from the entity id — there the label
+inherits the entity count and the same
+[cardinality cap](/observability/metrics/core-metrics/#the-cardinality-cap)
+applies as to `path`.
+
+See [Projections](/persistence/projections/) for the strategies
+these describe.
+
 ## Overhead
 
 There is **no opt-out flag** — stock metrics are always wired into

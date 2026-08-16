@@ -52,8 +52,9 @@ A short tour of what's in the box:
   — production patterns from the actor-model tradition.
 - **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
-- **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,
-  persistence-query, replicated event sourcing.  Journals for in-memory,
+- **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
+  (with a per-projection handler-failure strategy: retry with backoff, skip to
+  dead letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,

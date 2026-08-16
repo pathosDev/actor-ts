@@ -544,13 +544,24 @@ export {
 export {
   ProjectionOptions,
   ProjectionOptionsBuilder,
+  ProjectionOptionsValidator,
   ByPersistenceIdProjectionOptions,
   ByPersistenceIdProjectionOptionsBuilder,
   ByTagProjectionOptions,
   ByTagProjectionOptionsBuilder,
+  PROJECTION_RECOVERY_STRATEGIES,
+  DEFAULT_PROJECTION_RECOVERY_STRATEGY,
+  DEFAULT_PROJECTION_MAX_RETRIES,
+  DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
+  DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
+  defaultProjectionRecoveryOptions,
 } from './projection/ProjectionOptions.js';
 export type {
   ProjectionOptionsType,
+  ProjectionRecoveryStrategy,
+  ProjectionRecoveryOptionsType,
+  ProjectionFailure,
+  ProjectionFailureAction,
   ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './projection/ProjectionOptions.js';

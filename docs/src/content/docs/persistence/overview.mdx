@@ -298,6 +298,11 @@ This decouples writes (the `PersistentActor`'s journal) from
 reads (the projection's view) — the read side can be denormalized
 for the query patterns it serves.
 
+A handler that throws blocks every event behind it, because the
+cursor only advances on success.  `recoveryStrategy` bounds that:
+retry with backoff and then stop (the default), skip the event onto
+the dead-letter stream, or do either immediately.
+
 See [Projections](/persistence/projections/) for the
 full pattern.
 

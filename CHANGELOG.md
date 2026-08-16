@@ -399,6 +399,59 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   against a scratch journal, which is how it and the voice smoke test both
   run unattended; the default two-terminal invocation is unchanged.
 
+- **Projections gained a handler-failure recovery strategy, and no longer
+  retry a poison event forever (#650).**
+
+  A projection's cursor only advances after a successful `handle`, and
+  `ProjectionActor.onReceive` was a single try/catch that logged the error
+  and re-armed the poll unconditionally. A handler that kept throwing
+  therefore retried the same event once per poll interval for the life of
+  the process, every event behind it waited forever, and the only trace
+  was one error line per second naming the projection.
+
+  `ProjectionOptions` now carries `recoveryStrategy` with four values —
+  the cross product of the only two decisions available, whether to try
+  again and what to do once trying is over: `retry-and-fail` (the
+  default), `retry-and-skip`, `fail`, `skip`. `maxRetries`,
+  `retryBackoffMs` and `maxRetryBackoffMs` tune the exponential backoff,
+  and a `ProjectionOptionsValidator` checks them at spawn time. The
+  default is deliberately not `fail`: a projection is a background pull
+  loop feeding a read model, and the common failure is transient, so
+  stopping on the first blip would turn every read-model deploy into a
+  dead projection nobody notices until the view is visibly stale.
+
+  The `fail` arm stops the actor explicitly instead of letting the error
+  escape the tick. `persistence/projection` has no entry in the system
+  group policies, so it inherits the restarting default — an escaped error
+  would re-run `preStart`, reload the same cursor and fail on the same
+  event, a restart loop that is louder than the spin it replaced and no
+  more useful.
+
+  Deduplicating the log could not land on its own, because that error line
+  was the only existing signal that a projection was wedged, so the
+  structured signals land with it. `onFailure` is called on every attempt
+  with the offending `PersistentEvent`, the error, the attempt number and
+  the action taken; a skipped event is published on the system dead-letter
+  stream so nothing disappears silently; and three stock metrics appear —
+  `persistence_projection_stalled`,
+  `persistence_projection_failures_total{projection,reason}` and
+  `persistence_projection_events_skipped_total`. The log itself now emits
+  one error when a failure streak opens and one when it ends, with the
+  retries in between at `debug`.
+
+  Query and offset-store failures are counted and backed off on the same
+  curve but kept on a separate counter, so a flaky journal cannot spend
+  the retry budget of an event whose handler was never reached.
+
+  *Migration:* A projection whose handler throws permanently used to retry
+  forever; it now retries three times and stops. If you were relying on a
+  projection eventually recovering from a very long outage on its own, set
+  `recoveryStrategy` explicitly — `retry-and-skip` keeps it live at the
+  cost of a hole in the read model, and a large `maxRetries` with
+  `maxRetryBackoffMs` at your outage budget keeps the old shape while
+  still bounding it. Existing code needs no change to keep compiling:
+  every new field is optional.
+
 ### Fixed
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every

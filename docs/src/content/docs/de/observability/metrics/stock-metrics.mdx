@@ -135,6 +135,51 @@ anderen.
   ein Peer schickt Payloads, die diese Replika nicht dekodieren kann,
   also ein kaputter oder feindlicher Knoten.
 
+## Projektions-Metriken
+
+Eine Projektion ist eine Hintergrund-Schleife, der niemand zusieht —
+also genau die Sorte Sache, die still ausfällt.  Diese drei sagen
+dir, dass ein Read-Model seinem Journal nicht mehr folgt:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `persistence_projection_stalled` | gauge | `projection` | 1, solange die Projektion an einem Event hängt, dessen Handler fehlschlug. |
+| `persistence_projection_failures_total` | counter | `projection`, `reason` | Projektions-Ticks, die fehlschlugen. |
+| `persistence_projection_events_skipped_total` | counter | `projection` | Events, die eine `skip`-Strategie übersprungen und als Dead Letter veröffentlicht hat. |
+
+`projection` ist der `name`, den du vergeben hast; `reason` ist
+`handler` (dein `handle`-Callback hat geworfen) oder `poll` (die
+Query-Schicht oder der Offset-Store) — diese zwei Werte und keine
+anderen.
+
+- `persistence_projection_stalled` ist der Alarm.  Er wird beim Start
+  einer Projektion als 0 veröffentlicht, damit die Serie für jede
+  laufende Projektion existiert und `== 1` ein funktionierender
+  Alert-Ausdruck ist.  Ein Stall löst sich von selbst, wenn der
+  Handler sich fängt oder die Strategie das Event überspringt; einer,
+  der auf 1 bleibt, hat entweder seine Retries aufgebraucht und
+  gestoppt oder ist auf endloses Wiederholen konfiguriert.
+- `reason="handler"` von `reason="poll"` zu trennen trennt die beiden
+  Behebungen: ein Handler-Fehler ist ein schlechtes Event oder ein
+  kaputtes Read-Model, ein Poll-Fehler ist das Journal darunter.  Nur
+  Handler-Fehler verbrauchen das `maxRetries`-Budget.
+- `persistence_projection_events_skipped_total` ist das
+  **Datenverlust**-Signal.  Jede Bewegung heißt, dem Read-Model fehlt
+  etwas, das eine `skip`-Strategie bewusst nicht blockieren wollte —
+  welche Events es waren, sagen die Dead Letters.
+
+`projection` ist durch die Anzahl der deklarierten Projektionen
+begrenzt, normalerweise eine Handvoll.  Die eine Form, die das
+sprengt, ist der Per-pid-
+[Fan-out](/de/persistence/projections/#fan-out-eine-starten-sobald-eine-entity-auftaucht),
+bei dem der Name aus der Entity-Id abgeleitet wird — dort erbt das
+Label die Entity-Anzahl, und es gilt dieselbe
+[Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
+wie für `path`.
+
+Siehe [Projektionen](/de/persistence/projections/) für die
+Strategien, die diese Metriken beschreiben.
+
 ## Overhead
 
 Es gibt **kein Opt-out-Flag** — Stock-Metriken sind immer im
