@@ -49,8 +49,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   manager (`cluster.singleton.stop(...)` then `start(...)`, or a
   supervisor restart, which builds a fresh instance) clears it.
 
-- **Two nodes that disagree about `numShards` are no longer allowed to
-  double-home entities silently (#633).**
+- **BREAKING — Two nodes that disagree about `numShards` are no longer
+  allowed to double-home entities silently (#633).**
 
   A shard id is `hash(entityId) % numShards`, computed independently on
   every node, and nothing in the sharding handshake ever carried the
@@ -201,10 +201,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   DevTools, and advertised the harness as "about thirty lines" when it was
   286; both claims are corrected.
 
-- **`system.terminate()` now drains the actors under `/user` before it
-  stops them (#663).** `ref.tell('x'); await system.terminate()` used to
-  lose `x`, and every example, the README quickstart and both quickstart
-  pages taught the workaround: sleep twenty milliseconds and hope.
+- **BREAKING — `system.terminate()` now drains the actors under `/user`
+  before it stops them (#663).** `ref.tell('x'); await system.terminate()`
+  used to lose `x`, and every example, the README quickstart and both
+  quickstart pages taught the workaround: sleep twenty milliseconds and
+  hope.
 
   The mechanism was subtler than "system commands come first".
   `ActorCell.run()` re-evaluates its `while (mailbox.hasSystemMessages())`
@@ -254,6 +255,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `actor-ts.coordinated-shutdown.default-phase-timeout` will get the
   `actor-system-terminate` phase abandoned mid-drain, so raise both
   together if you raise either.
+
+- **A message routed to a singleton manager that is not hosting now goes
+  to `system.deadLetters` instead of being dropped (#637).**
+
+  `ClusterSingletonManager.onSingletonDeliver` logged a warning per
+  message and discarded it. Nothing reached the dead-letter stream, so the
+  loss was invisible to metrics, to DevTools, and to any assertion — while
+  the proxy already dead-lettered on both of its own undeliverable paths
+  (`bufferUntilHosted` past `bufferSize`, and `onMissingHost`), which is
+  the same event seen from the near end of the wire.
+
+  It is not a rare path. The proxy and the manager compute the host from
+  the same rule but from different nodes' views, and a one-sided
+  unreachability makes those views disagree by construction: peers of an
+  unreachable role host route to the next role member, which deliberately
+  does not promote itself, so every message from that side lands there.
+  The warning is latched — and unlatched when the manager does spawn —
+  because the condition lasts as long as the outage does while the sender
+  keeps sending, so one line per message would be a flood rather than a
+  diagnostic.
 
 ### Added
 
@@ -399,8 +420,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   against a scratch journal, which is how it and the voice smoke test both
   run unattended; the default two-terminal invocation is unchanged.
 
-- **Projections gained a handler-failure recovery strategy, and no longer
-  retry a poison event forever (#650).**
+- **BREAKING — Projections gained a handler-failure recovery strategy, and
+  no longer retry a poison event forever (#650).**
 
   A projection's cursor only advances after a successful `handle`, and
   `ProjectionActor.onReceive` was a single try/catch that logged the error
@@ -624,15 +645,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   children cluster-wide — the one thing a singleton exists to prevent —
   and it persisted until some unrelated event happened to move the leader.
 
-  The same hole covered unreachability, which the report only mentioned in
-  passing: an up member going `unreachable` drops out of `upMembers()`
+  Unreachability looks like the same hole and is deliberately **not**
+  covered.  An up member going `unreachable` drops out of `upMembers()`
   without being removed, so a role host falling silent under a stationary
-  role-less leader left the singleton hosted nowhere at all until it was
-  finally downed.
+  role-less leader leaves the singleton hosted nowhere until it is downed
+  — and that stays true.  Reacting to it is worse than living with it: the
+  peer that lost contact would promote itself while the incumbent, which
+  never learns it is considered unreachable, keeps its child, and the
+  leader never moves to resolve it.  That is a sustained two-host state,
+  the exact condition this entry's headline is about.  On the no-lease
+  path the two properties cannot both be had, because reaching the
+  incumbent to ask it to stand down is precisely what failed.  Configure a
+  `lease` where "at most one" has to survive a partition; that is what it
+  is for.
 
-  Both sides now reconcile on the full set of events that can move the
-  host — `LeaderChanged`, `SelfUp`, `MemberUp`, `MemberUnreachable`,
-  `MemberReachable`, `MemberDown`, `MemberLeft`, `MemberRemoved` — matched
+  Both sides now reconcile on the events that can move the host —
+  `LeaderChanged`, `SelfUp`, `MemberUp`, `MemberDown`, `MemberLeft`,
+  `MemberRemoved` — matched
   through one shared predicate rather than two lists, because the manager
   deciding whether *this* node hosts and the proxy deciding where to send
   have to agree on when to look again, not only on what they see when they
@@ -645,9 +674,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   change never drained the buffer at all — those messages sat there
   indefinitely while every later send routed normally.
 
-- **A `persistAll` of differently-tagged events now tags each event on its
-  own, instead of stamping the whole batch with the first event's tags
-  (#631).**
+- **BREAKING — A `persistAll` of differently-tagged events now tags each
+  event on its own, instead of stamping the whole batch with the first
+  event's tags (#631).**
 
   `PersistentActor.persistAll` called `tagsFor` once, on `events[0]`, and
   passed the result to `Journal.append` as a single batch-wide argument
@@ -796,8 +825,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Large` the other two backends already sent. Raise `maxBodyBytes` on the
   backend options where an endpoint genuinely takes more.
 
-- **`entity()` answers 415 for a Content-Type it cannot decode, and
-  decodes `application/x-www-form-urlencoded` form bodies (#669).**
+- **BREAKING — `entity()` answers 415 for a Content-Type it cannot decode,
+  and decodes `application/x-www-form-urlencoded` form bodies (#669).**
 
   Every content type the request-side table did not recognise was handed
   to a `JsonSerializer`. For `text/xml` that surfaced as a misleading `400
@@ -1068,6 +1097,141 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   divergence between the two forms is called out where a reader setting a
   bound will hit it.
 
+- **A chunked body over the cap is refused as documented, but the 413 may
+  not reach the client (#357).**
+
+  The #357 entry above promises that an application relying on Hono
+  accepting an over-cap chunked upload "will now get the same `413 Payload
+  Too Large` the other two backends already sent". The refusal is real and
+  the handler never runs; receiving the 413 is not something the framework
+  can promise for a *chunked* body, and the change makes no difference to
+  that.
+
+  Refusing a body mid-flight means cancelling the read and closing while
+  the client is still writing. A close over unread inbound data goes out
+  as a reset rather than a graceful FIN, and the platform then discards
+  the receive queue - the 413 with it. Instrumented against the built
+  backend, a cold Node process lost a genuinely-sent answer on every one
+  of 15 attempts, with the handler call count still 0 each time; warm runs
+  read the same 413 back cleanly after three 8 KiB chunks. A client that
+  stops writing once it is past the cap gets the response reliably; one
+  that keeps streaming until it sees an answer may only ever see the
+  reset.
+
+  So the guarantee is: the bytes past the cap are never received, the
+  handler never runs, and the request is refused before the body
+  completes. Clients streaming an upload should treat a mid-body hangup as
+  a refusal in its own right rather than waiting for a status line that
+  may have been dropped in transit. The declared-`Content-Length` path is
+  unaffected - nothing is written after the request head, so there is no
+  reset to lose the answer to.
+
+  The cross-runtime smoke case and the `BodyStreamingCap` suite asserted
+  on reading that status back, which made them fail on the platform's
+  teardown timing and report it as a framework defect; they now assert
+  that the exchange was settled without a terminating chunk and that the
+  handler never ran.
+
+- **The repeat-run flake harness survives a run that never exits** (#290).
+  `scripts/stress-test.mjs` listened for the child's `error` and `close`
+  events and had no timer, so the one failure it exists to measure was the
+  one it could not survive: the quarantined multi-node suites' documented
+  symptom on hosted runners is not a red test but a `bun test` that never
+  exits — workers spawn, handshake and then never run. `runOnce` never
+  settled, the loop never advanced, and the nightly job sat until its
+  `timeout-minutes` and was killed with no per-run report and no
+  aggregate.
+
+  A per-run watchdog — `--run-timeout`, or
+  `ACTOR_TS_STRESS_RUN_TIMEOUT_MS`, 20 minutes by default against a ~4.5
+  minute local suite — now terminates such a run (SIGTERM, then SIGKILL,
+  then settling regardless, because an unkillable child must not become an
+  unkillable harness) and records it as a *hang*. A hang is kept apart
+  from a failure and from a truncated JUnit report, since those three
+  point at different causes and would send a reader after the wrong one.
+  It surfaces on the console as `run N: HUNG`, in the GitHub step summary,
+  in `summary.json` as `runsTimedOut`, and in the exit status — and then
+  the loop continues, because whether the next run hangs too is the
+  measurement. `nightly-flakes.yml` states the timeout explicitly in both
+  jobs so it can be read against `timeout-minutes` (3 x 8 min inside 30, 5
+  x 20 min inside 120); a watchdog that fires after GitHub has already
+  killed the job would be decorative.
+
+- **An `awaitCondition` budget larger than the per-test timeout no longer
+  swallows its own diagnostic** (#418). Bun kills a test after 5 000 ms
+  unless the test declares otherwise, and nothing in this repository
+  raises that globally — so `timeoutMs: 10_000` was not a generous failure
+  budget, it was an unreachable one. The run reported the runner's bare
+  `this test timed out after 5000ms` instead of the label naming the state
+  that never became true, which is the entire reason `awaitCondition`
+  exists. Worse, the budget's own rejection still landed five seconds
+  later as an *unhandled* error belonging to no test, inflating the run's
+  error count and accusing whichever test was running by then.
+
+  Seven tests across `Cluster`, `Router`, `MailboxVariants`,
+  `DistributedPubSubAnycast`, `PersistenceIdEnforcement` and
+  `PersistentActorRecoveryFailure` now declare the cap their budgets need;
+  `ClusterBootstrap` gets one too, where a 4 000 ms budget fit the default
+  with exactly 1 s of slack behind two `Cluster.bootstrap` calls — a coin
+  toss rather than a decision.
+  `tests/unit/ci/AwaitConditionBudgets.test.ts` gates this across the
+  whole test tree (largest reachable budget plus 1 s must fit the cap),
+  follows budgets reached through module-level helpers, and re-measures
+  bun's behaviour in a child process rather than assuming it, so the day
+  bun changes the gate says so instead of quietly meaning nothing.
+  `docs/.../testing/diagnosing-flakes` gains the family, the hang verdict,
+  and four re-measured conversion counts, in both languages.
+
+- **The DevTools chapter now states the dividing line the example sweep
+  actually applied, and its walkthrough runs again (#552).**
+
+  The sweep was documented as "long-running versus finishes on its own".
+  The line it applied was "calls `holdOpen()`", and those are not the same
+  set. Seven examples kept the wiring and still finish on their own --
+  `cluster/singleton-hello.ts`, `cluster/singleton-cron.ts`,
+  `cluster/sharded-daemon-hello.ts`,
+  `cluster/sharded-daemon-fixed-workers.ts`,
+  `discovery/service-locator-cluster.ts`,
+  `pubsub/event-bus-across-nodes.ts` and
+  `management/opentelemetry-tracing.ts` -- because none of them had ever
+  parked itself; they only attached. So the stated rule was false for
+  seven of the twenty-five it kept, and the German mirror went further and
+  said the examples that finish on their own "carry no DevTools wiring at
+  all", which is false for exactly those seven.
+
+  The damage was concrete rather than pedantic. The actor-visualizer
+  walkthrough's only code fence told the reader to run
+  `examples/cluster/singleton-hello.ts --devtools` and watch the actor
+  tree; that process binds 9333/9334/9335, logs three URLs and exits after
+  about 1.3 seconds, so the reader opened the UI and found nothing. The
+  overview repeated the same command as its multi-port illustration.
+
+  Both now point at `examples/cluster/counter-node.ts`, which the example
+  gate already classifies as long-running, and the walkthrough is written
+  from a run rather than from intent: one node fills the tree with a
+  `ShardCoordinator`, a `ShardRegion`, seven `Shard`s and eight
+  `CounterEntity` under `/system/cluster/sharding/region-counter`, while
+  `/user` stays empty -- sharded entities hang off the sharding subsystem,
+  not off the user guardian, which is worth saying on a page whose aside
+  tells the reader `/user` is the whole story. Three terminals give 9333,
+  9334 and 9335; killing the middle node moves the shard map from `9001=4,
+  9002=1, 9003=2` to `9001=1, 9003=6` with the entities restarting on the
+  survivors.
+
+  `counter-node.ts` attached DevTools without passing its `Cluster`, so
+  the cluster panel reported itself unavailable and half of that page was
+  unreachable from the walkthrough. It passes it now. A sharding demo
+  whose shard distribution cannot be seen is the wrong example to send
+  anyone to.
+
+  The harness's own header in `examples/devtools.ts` carried the same
+  false line and now records the real one, including that the wiring left
+  in those seven is inert rather than wrong.
+  `tests/unit/devtools/ExampleWiringClaims.test.ts` holds the prose to the
+  tree from here: no page may send a reader to watch an example the
+  example gate has watched exit, and the overview must name the wired ones
+  that do.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
@@ -1114,8 +1278,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   certificates any party that can reach the port can become a member and
   then the leader. Run mTLS if the network is not fully trusted.
 
-- **Object-storage bodies are now bound to the storage key they live at,
-  and a durable-state revision cannot silently go backwards (#612).**
+- **BREAKING — Object-storage bodies are now bound to the storage key they
+  live at, and a durable-state revision cannot silently go backwards
+  (#612).**
 
   Neither authenticator said anything about *where* a body lived.
   AES-GCM's tag proves the holder of the subkey produced this ciphertext;
@@ -1184,8 +1349,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   key including `prefix`, so changing a store's `prefix` after the fact
   breaks verification exactly the way changing the HKDF `info` does.
 
-- **A WebSocket route's transport frame cap is now the cap you configured,
-  in both directions (#373).**
+- **BREAKING — A WebSocket route's transport frame cap is now the cap you
+  configured, in both directions (#373).**
 
   Every backend has installed a transport-level payload limit since the
   WS-3 fix — `maxPayload` on the `ws` server for Express and Fastify,
@@ -1346,6 +1511,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   it previously saw an unbounded request succeed. That previous behaviour
   was the defect rather than a supported mode, so nothing is being taken
   away that could have been relied on deliberately.
+
+- **The WebSocket transport frame cap is not enforced on Bun with the
+  Express or Fastify backend (#373).**
+
+  The #373 entry above says every backend installs a transport-level
+  payload limit - `maxPayload` on the `ws` server for Express and Fastify,
+  `maxPayloadLength` or `@hono/node-ws` for Hono. On Bun that is true of
+  the call and not of the effect. Both backends hand `maxPayload` to a
+  `ws` `WebSocketServer`, and on Bun the `ws` specifier resolves to the
+  runtime's built-in shim rather than the npm package: the shim accepts
+  the option, reads it back unchanged, and enforces nothing. Measured
+  against a 1 MiB cap, a 2 MiB frame reached the handler intact on Bun
+  where the identical script on Node refused it at the socket and closed
+  1006 server-side, 1009 to the client.
+
+  What still holds everywhere is the guarantee that matters: the
+  connection actor refuses an oversize frame on the fully received body,
+  before the codec decodes it, with a clean 1009 - so no frame over
+  `maxFrameBytes` ever reaches an application actor. What is missing on
+  these two pairs is the allocation defence, the reason the transport
+  layer was added at all: the frame is buffered in full before it is
+  rejected. Hono on Deno was already documented as an exception for the
+  same reason; Bun with Express or Fastify is a second one, and a quieter
+  one, because setting the cap and reading it back both appear to succeed.
+
+  Bun with the Hono backend is unaffected - it goes through `Bun.serve`'s
+  own `maxPayloadLength` and never touches `ws`. For an internet-facing
+  endpoint on an affected pair, put a proxy with its own frame limit in
+  front of it. Both languages of `http/websocket.mdx` and
+  `http/security.mdx` now say so, and state the two layers as a guarantee
+  plus an optimisation on top of it rather than two equal checks.
 
 ## [0.16.0] — 2026-08-15
 

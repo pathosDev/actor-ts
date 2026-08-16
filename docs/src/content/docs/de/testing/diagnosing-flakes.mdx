@@ -28,18 +28,33 @@ ankommt:
 | **flaky** — in einigen Läufen umgefallen | Das Ergebnis hängt an Timing, Reihenfolge oder Maschine. | Gegen den Katalog unten halten. |
 | **durchgehend rot** — in jedem Lauf umgefallen | Kaputt.  Wiederholung sagt dir nichts Neues. | Reparieren oder ein Issue aufmachen.  Das ist kein Flake. |
 
-Zwei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
-**gar keinen JUnit-Report** erzeugt hat (Bun starb, bevor der Reporter
-geflusht hat — die Fehlschläge fehlen in den Summen, statt nicht zu
-existieren), und einen Lauf, der **mit Exit-Code ≠ 0 endete, ohne dass ein
-Test umgefallen ist** (ein Absturz im Teardown, ein nicht freigegebenes
-Handle).  Beides liest sich für eine naive Schleife als „grün“.
+Drei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
+**nie beendet wurde** (siehe unten), einen Lauf, der **gar keinen
+JUnit-Report** erzeugt hat (Bun starb, bevor der Reporter geflusht hat — die
+Fehlschläge fehlen in den Summen, statt nicht zu existieren), und einen Lauf,
+der **mit Exit-Code ≠ 0 endete, ohne dass ein Test umgefallen ist** (ein
+Absturz im Teardown, ein nicht freigegebenes Handle).  Alle drei lesen sich
+für eine naive Schleife als „grün“.
 
 ```sh
 bun run test:stress                      # 10 repeats of the whole suite
 bun run test:stress -- --runs=3          # 3 repeats
 bun run test:stress -- --concurrency=4   # 4 at once, for real CPU contention
+bun run test:stress -- --run-timeout=300000   # call a run hung after 5 minutes
 ```
+
+**Ein Hänger ist ein Messwert, kein Abbruch.**  Der Fehler, den die
+quarantänisierten Suites auf Hosted Runnern zeigen, ist kein roter Test —
+Worker starten, machen den Handshake und laufen dann nie los, `bun test`
+beendet sich also gar nicht.  `--run-timeout` (standardmäßig 20 Minuten)
+tötet so einen Lauf, verbucht ihn als `HUNG` — getrennt von einem Fehlschlag
+und von einem abgeschnittenen Report, weil jedes auf eine andere Ursache
+zeigt — und macht mit der nächsten Wiederholung weiter.  Ohne das blieb die
+Schleife beim ersten Hänger stehen, und der Job wurde von seinen eigenen
+`timeout-minutes` getötet, ohne irgendetwas vorzuweisen: Die eine Messung,
+für die es das Harness gibt, war genau die, die es nicht überlebte.  Hängende
+Läufe stehen im `summary.json` unter `runsTimedOut`; eine Nacht mit auch nur
+einem davon ist rot.
 
 Reports, Logs und ein maschinenlesbares `summary.json` landen in `.stress/`.
 
@@ -89,6 +104,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Familie | Stand | Signatur |
 | --- | --- | --- |
 | Fester Sleep vor einer Assertion | Wird umgestellt | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
+| Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
 | Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
@@ -121,14 +137,43 @@ nur ein Zeitfenster geben kann, eine Dauer, die *selbst* die Assertion ist,
 eine Verschränkung, die ein Test braucht.
 
 **Diese Umstellung ist nicht abgeschlossen.**  Unter `tests/` stehen weiterhin
-~470 `await sleep(`-Stellen gegen ~620 `awaitCondition(`-Aufrufe — und die
+466 `await sleep(`-Stellen gegen 643 `awaitCondition(`-Stellen — und die
 Sleep-Zahl ist während der Umstellung *gestiegen*, weil neue Tests weiter in
 der alten Form geschrieben werden.  Ein zweiter Helper trübt das Bild
-zusätzlich: `waitFor` wird an ~330 Stellen benutzt und in über dreißig
-einzelnen Dateien als lokales `async function waitFor(` neu deklariert, jedes
-Mal mit eigenem Timeout und Poll-Intervall.  Behandle ein
-`sleep`-dann-`expect`-Paar in einem umgefallenen Test als Verdächtigen,
-bevor du nach etwas Raffinierterem suchst.
+zusätzlich: `waitFor` taucht 332-mal auf und wird in 32 einzelnen Dateien als
+lokales `function waitFor(` neu deklariert, jedes Mal mit eigenem Timeout und
+Poll-Intervall.  Behandle ein `sleep`-dann-`expect`-Paar in einem umgefallenen
+Test als Verdächtigen, bevor du nach etwas Raffinierterem suchst.
+
+Diese vier Zahlen sind `grep -ro '<pattern>' tests/ --include=*.ts | wc -l`
+(die letzte `grep -rl`), also nachmessbar statt zu glauben; zuletzt erhoben am
+16.08.2026.  Sie stehen aus demselben Grund exakt da: eine gerundete Zahl
+driftet unbemerkt, eine exakte ist sichtbar veraltet, sobald sie nicht mehr
+stimmt.
+
+### Ein Budget, das der Test-Timeout nie erreicht
+
+Bun bricht einen Test nach **5 000 ms** ab, sofern der Test nichts anderes
+angibt, und nichts in diesem Repository hebt das global an.  Ein
+`awaitCondition`-Budget ab 5 s ist also nicht großzügig, sondern
+unerreichbar: Der Lauf meldet `this test timed out after 5000ms` statt des
+Labels — genau das eine, wofür es den Helper gibt.  Schlimmer noch, die
+Ablehnung des Budgets landet später trotzdem, als *unbehandelter* Fehler ohne
+zugehörigen Test.
+
+Gib dem Test stattdessen den Platz:
+
+```ts
+test('shards rebalance when a node leaves', async () => {
+  await awaitCondition(/* … */, { timeoutMs: 10_000, label: '…' });
+}, 30_000);          // the cap is a backstop; the budget is what reports
+```
+
+`tests/unit/ci/AwaitConditionBudgets.test.ts` prüft das über den ganzen Baum —
+größtes erreichbares Budget plus 1 s muss in den Cap passen — und verfolgt
+auch Budgets, die über einen modulweiten Helper erreicht werden.  Buns
+Verhalten misst der Test in einem Kindprozess nach, statt es anzunehmen: Ändert
+Bun das, sagt die Prüfung es, statt still bedeutungslos zu werden.
 
 ### Buns Timer-Quantum
 
@@ -229,7 +274,21 @@ kleineren Zahl, weil der Fehler eine Eigenschaft des Runner-Pools ist und
 nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools sowie
 mehrere `bun-version: latest`-Rollen ab, und genau davon muss gezeigt werden,
 dass es aufgehört hat.  Eine einzige rote Nacht setzt den Zähler zurück; das
-`summary.json` jeder Nacht ist der Beleg (`greenRuns == runs`).
+`summary.json` jeder Nacht ist der Beleg (`greenRuns == runs` und ein leeres
+`runsTimedOut` — ein hängender Lauf ist rot, egal wie wenige Tests darin
+umgefallen sind).
+
+**Diesen Zähler führt nichts mit.**  Er wird von Menschen aus den
+Lauf-Annotationen abgelesen — genau das, was die Quarantäne überhaupt erst
+dauerhaft gemacht hat.  Automatisiert ist er noch nicht, weil kein Weg billig
+ist: Beide Jobs sind `continue-on-error`, was die Job-Conclusion auf `success`
+umschreibt — der einzige dauerhafte Beleg ist also das Artefakt, und dessen
+Auslesen über frühere Nächte braucht `actions: read` plus Cross-Run-API-Paging;
+eine eingecheckte Zählerdatei bräuchte `contents: write` in einem Job, der den
+gesamten devDependency-Baum installiert, was `tests/unit/ci/WorkflowHygiene.test.ts`
+bewusst verbietet.  Bis eines davon gebaut ist: Der Stand ist etwas, das du
+aus der Lauf-Liste rekonstruieren musst, nicht etwas, das das Repository sich
+merkt.
 
 Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
 

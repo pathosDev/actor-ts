@@ -174,15 +174,19 @@ the [Route DSL](/http/route-dsl/).
   before a byte of it is read; a chunked body declares no length, so all three
   backends count it as it arrives and abandon the read at the cap — the bytes
   past it are never received.
-- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default), and the
-  resolved cap is also handed to the runtime's own socket so an oversize frame
-  is refused *while it arrives* rather than after the process has buffered it —
-  otherwise a peer could force 16 MiB (Bun) or 100 MiB (`ws`) of buffering per
-  frame that the framework would then discard. Lowering the cap — per route or
-  via `actor-ts.http.websocket.maxFrameBytes` — narrows that buffering window
-  with it. The one exception is Hono on **Deno**, whose `upgradeWebSocket`
-  exposes no payload limit: there the frame is buffered first and rejected
-  second. See [WebSocket](/http/websocket/).
+- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
+  framework always refuses an oversize frame before it reaches your actor; on
+  most runtime/backend pairs the resolved cap is *also* handed to the runtime's
+  own socket, so the frame is refused *while it arrives* rather than after the
+  process has buffered it — otherwise a peer could force 16 MiB (Bun) or
+  100 MiB (`ws`) of buffering per frame that the framework would then discard.
+  Lowering the cap — per route or via `actor-ts.http.websocket.maxFrameBytes` —
+  narrows that buffering window with it. **Two combinations have no transport
+  cap** and buffer the frame before rejecting it: Hono on **Deno**, whose
+  `upgradeWebSocket` exposes no payload limit at all, and **Bun** with the
+  Express or Fastify backend, where `ws` resolves to Bun's built-in shim, which
+  accepts `maxPayload` and reports it back but does not enforce it. See
+  [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
 - **Responses you fetch** are untrusted input too, and the direction this list

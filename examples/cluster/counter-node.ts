@@ -86,7 +86,11 @@ async function main(): Promise<void> {
       .withShutdownOnSignals(false)
       .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
       .withGossipIntervalMs(500));
-  await attachDevTools(system);
+  // `Cluster.bootstrap` has already joined, so the cluster panel gets a
+  // live one — a system cannot hand out its own.  Without it the panel
+  // reports itself unavailable, and topology and shard distribution are
+  // the two things worth watching in a sharding demo.
+  await attachDevTools(system, { cluster });
 
   cluster.subscribe(evt => {
     if (evt instanceof MemberUp) system.log.info(`[+] ${evt.member.address} is UP`);

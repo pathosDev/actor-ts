@@ -26,17 +26,29 @@ identity.  Its output splits the two cases that matter:
 | **flaky** — failed in some runs | The outcome depends on timing, ordering or the machine. | Match it against the catalog below. |
 | **consistently failing** — failed in every run | Broken.  Repetition tells you nothing more. | Fix it, or open an issue.  It is not a flake. |
 
-Other things it names rather than swallows: a run that produced **no JUnit
-report at all** (Bun died before the reporter flushed, so those failures are
-missing from the totals rather than absent), and a run that **exited
-non-zero with no failing test** (a crash in teardown, an unreleased handle).
-Both read as "green" to a naive loop.
+Other things it names rather than swallows: a run that **never exited** (see
+below), a run that produced **no JUnit report at all** (Bun died before the
+reporter flushed, so those failures are missing from the totals rather than
+absent), and a run that **exited non-zero with no failing test** (a crash in
+teardown, an unreleased handle).  All three read as "green" to a naive loop.
 
 ```sh
 bun run test:stress                      # 10 repeats of the whole suite
 bun run test:stress -- --runs=3          # 3 repeats
 bun run test:stress -- --concurrency=4   # 4 at once, for real CPU contention
+bun run test:stress -- --run-timeout=300000   # call a run hung after 5 minutes
 ```
+
+**A hang is data, not an abort.**  The failure the quarantined suites show on
+hosted runners is not a red test — workers spawn, handshake and then never
+run, so `bun test` does not exit at all.  `--run-timeout` (20 minutes by
+default) kills such a run, records it as `HUNG` — kept apart from a failure
+and from a truncated report, because each points at a different cause — and
+carries on with the next repeat.  Without it the loop stalled on the first
+hang and the job was killed by its own `timeout-minutes` with nothing to
+show: the one measurement the harness exists to make was the one it could not
+survive.  Hung runs appear in `summary.json` as `runsTimedOut`, and a night
+with any of them is red.
 
 Reports, logs and a machine-readable `summary.json` land in `.stress/`.
 
@@ -82,6 +94,7 @@ Causes this suite has actually had, with how each was settled.
 | Family | Status | Signature |
 | --- | --- | --- |
 | Fixed sleep before an assertion | Being converted | `await sleep(N)` then `expect(...)` on state a background step produces |
+| A budget the per-test timeout cannot reach | Gated | `this test timed out after 5000ms` where an `awaitCondition` label was expected |
 | Bun's timer quantum | Settled | An elapsed-time assertion fails by ~15 ms, on an idle machine |
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
@@ -111,14 +124,43 @@ expect(stopped).toBe(true);
 covers when a sleep is still the right call — an absence you can only give a
 window to, a duration that *is* the assertion, an interleaving a test needs.
 
-**This conversion is unfinished.**  There are still ~470 `await sleep(`
-sites under `tests/`, against ~620 `awaitCondition(` call sites — and the
-sleep count has gone *up* during the conversion, because new tests keep being
-written in the old shape.  A second helper muddies the picture further:
-`waitFor` is used at ~330 sites and is re-declared as a local
-`async function waitFor(` in more than thirty separate files, each with its
-own timeout and poll interval.  Treat a `sleep`-then-`expect` pair in a
-failing test as a suspect before looking for anything cleverer.
+**This conversion is unfinished.**  There are still 466 `await sleep(`
+sites under `tests/`, against 643 `awaitCondition(` ones — and the sleep count
+has gone *up* during the conversion, because new tests keep being written in
+the old shape.  A second helper muddies the picture further: `waitFor` appears
+332 times and is re-declared as a local `function waitFor(` in 32 separate
+files, each with its own timeout and poll interval.  Treat a
+`sleep`-then-`expect` pair in a failing test as a suspect before looking for
+anything cleverer.
+
+Those four numbers are `grep -ro '<pattern>' tests/ --include=*.ts | wc -l`
+(the last one `grep -rl`), so anyone can re-measure them rather than trust
+them; they were last taken on 2026-08-16.  They are stated exactly for the
+same reason: a rounded figure drifts silently, an exact one is visibly stale
+the moment it stops matching.
+
+### A budget the per-test timeout cannot reach
+
+Bun kills a test after **5 000 ms** unless the test declares otherwise, and
+nothing in this repository raises that globally.  So an `awaitCondition`
+budget at or above 5 s is not generous — it is unreachable, and the run
+reports `this test timed out after 5000ms` instead of the label, which is the
+one thing the helper exists to give you.  Worse, the budget's own rejection
+still lands later, as an *unhandled* error attributed to no test at all.
+
+Give the test the room instead:
+
+```ts
+test('shards rebalance when a node leaves', async () => {
+  await awaitCondition(/* … */, { timeoutMs: 10_000, label: '…' });
+}, 30_000);          // the cap is a backstop; the budget is what reports
+```
+
+`tests/unit/ci/AwaitConditionBudgets.test.ts` gates this across the whole tree
+— largest reachable budget plus 1 s must fit the cap — and follows budgets
+reached through a module-level helper too.  It re-measures bun's behaviour in
+a child process rather than assuming it, so the day bun changes, the gate says
+so instead of quietly meaning nothing.
 
 ### Bun's timer quantum
 
@@ -211,7 +253,19 @@ Two calendar weeks rather than a smaller number because the failure is a
 property of the runner pool, not of the code: a fortnight spans weekday and
 weekend pools and several `bun-version: latest` rolls, which is what has to
 be shown to have stopped happening.  A single red night resets the count, and
-each night's `summary.json` is the evidence (`greenRuns == runs`).
+each night's `summary.json` is the evidence (`greenRuns == runs`, and an empty
+`runsTimedOut` — a hung run is red however few tests failed in it).
+
+**Nothing accumulates that streak.**  It is counted by a human reading run
+annotations, which is the same thing that made the quarantine permanent in the
+first place.  It is not automated yet because neither route is cheap: both
+jobs are `continue-on-error`, which rewrites the job conclusion to `success`,
+so the artifact is the only durable evidence — and reading previous nights'
+artifacts needs `actions: read` plus cross-run API paging, while a committed
+counter file would need `contents: write` in a job that installs the whole
+devDependency tree, which `tests/unit/ci/WorkflowHygiene.test.ts` forbids on
+purpose.  Until one is built, treat the count as something you have to
+reconstruct from the run list rather than something the repository remembers.
 
 On reaching it, un-quarantine in one commit:
 

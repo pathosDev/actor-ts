@@ -9,6 +9,7 @@ import { ClusterSingletonProxy, StartSingletonOptions } from '../../../../../src
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
@@ -27,6 +28,14 @@ import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
  * These tests all hold the leader fixed on purpose.  That is the premise, not
  * an incidental detail: if the leader changed, the old trigger set would have
  * covered the case and the tests would prove nothing.
+ *
+ * The widening went one event too far, and the last two tests are where the
+ * line ended up.  `MemberUnreachable` also moves `singletonHost`, so it looked
+ * like it belonged; but it is one node's opinion about a member that cannot
+ * hear the opinion, so acting on it produced two live singletons rather than
+ * one moved one — the same headline defect, from the other direction.  It is
+ * out of the set, and the cost of leaving it out is a routing hole that is now
+ * observable on the dead-letter stream instead of a log line.
  */
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -115,8 +124,8 @@ class SingletonCensus {
 /** The singleton under test — reports its own lifecycle to a census. */
 class CensusMarker extends Actor<string> {
   constructor(
-    private readonly census: SingletonCensus,
-    private readonly where: string,
+    protected readonly census: SingletonCensus,
+    protected readonly where: string,
   ) { super(); }
 
   override preStart(): void { this.census._started(this.where); }
@@ -124,6 +133,32 @@ class CensusMarker extends Actor<string> {
   override onReceive(message: string): void {
     this.census.received.push(`${this.where}:${message}`);
   }
+}
+
+/**
+ * A census marker that treats `'die'` as a terminal stop — paired with
+ * `restartOnTermination: false` it leaves the manager elected but hosting
+ * nothing, which is the state the dead-letter test needs to hold still.
+ */
+class QuittingCensusMarker extends CensusMarker {
+  override onReceive(message: string): void {
+    if (message === 'die') { this.context.stopSelf(); return; }
+    super.onReceive(message);
+  }
+}
+
+/** Collects the payloads that reach `system.deadLetters`. */
+class DeadLetterCollector extends Actor<DeadLetter> {
+  constructor(private readonly seen: unknown[]) { super(); }
+
+  override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
+  override onReceive(message: DeadLetter): void { this.seen.push(message.message); }
+}
+
+/** Whether `node` currently considers the member at `port` unreachable. */
+function isUnreachableOn(node: Node, port: number): boolean {
+  return node.cluster.getMembers()
+    .some((member) => member.address.port === port && member.status === 'unreachable');
 }
 
 /**
@@ -219,11 +254,10 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     //
     // What is asserted is the drain, not the arrival.  A drained message is
     // handed to whichever node is now the host, and that node's manager can
-    // still be a gossip round away from having spawned its child — where it is
-    // dropped (`onSingletonDeliver`).  Closing *that* is a separate change to
-    // the manager's drop path; see the note on #637.  The buffer never
-    // draining at all is what this covers, and it is the half that never
-    // recovered on its own.
+    // still be a gossip round away from having spawned its child — where it
+    // now dead-letters rather than being dropped, which the last test in this
+    // file covers.  The buffer never draining at all is what this covers, and
+    // it is the half that never recovered on its own.
     const systemName = 'sng-host-drain';
     const seeds = [`${systemName}@h:52501`];
     const nodeA = await startNode({ systemName, port: 52501, seeds: [], roles: [] });
@@ -274,13 +308,23 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     await stopNode(nodeB); await stopNode(nodeA);
   }, 30_000);
 
-  test('the role host going unreachable hands over to the next role member', async () => {
-    // Wider than the issue filed it.  An unreachable member drops out of
-    // `upMembers()` without being removed, so the host moves — and neither
-    // `MemberUnreachable` nor `MemberReachable` was subscribed on either side.
-    // With a role-less leader sitting still, the singleton was hosted nowhere
-    // until the member was finally downed, which `downAfterMs` here puts a
-    // minute away.
+  test('a role host that is only unreachable keeps its singleton, and no peer spawns a second', async () => {
+    // The regression #637 introduced into its own fix, and the trade that
+    // replaced it.
+    //
+    // An unreachable member drops out of `upMembers()` without being removed,
+    // so `singletonHost` genuinely moves — which is why the fix put
+    // `MemberUnreachable` in the trigger set, to cure "hosted nowhere until
+    // `downAfterMs`".  But unreachability is one node's opinion *about*
+    // another, and the member it is about cannot hear the peers that formed it
+    // — reaching it is the thing that failed.  So B keeps its child, because
+    // nothing is able to tell it to stop.  Reconciling on the event does not
+    // move the singleton, it duplicates it, and no leader change follows to
+    // resolve it.  Measured with the assertion below: `total=2 b=1 c=1`.
+    //
+    // Peers therefore no longer promote themselves on it.  What is asserted is
+    // the invariant *and where it lives* — "nobody spawned anything" would
+    // satisfy a count of one just as well, and that is a different bug.
     const systemName = 'sng-host-unreachable';
     const seeds = [`${systemName}@h:52511`];
     const nodeA = await startNode({ systemName, port: 52511, seeds: [], roles: [] });
@@ -307,14 +351,74 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     // to `unreachable`, which is a status change with no membership change.
     await nodeB.transport.shutdown();
 
-    await waitFor(() => census.liveOn('c') === 1, 10_000);
-    expect(census.liveOn('c')).toBe(1);
+    // Wait for the thing under test to have actually happened on C — the
+    // detector fires at 300 ms — and then give a promotion a full second more
+    // to show up.  Without that second the assertion could pass by being early
+    // rather than by being right.
+    await waitFor(() => isUnreachableOn(nodeC, 52512), 10_000);
+    await sleep(1_000);
+    expect(census.total()).toBe(1);
+    expect(census.liveOn('b')).toBe(1);
+    expect(census.liveOn('c')).toBe(0);
+    expect(census.liveOn('a')).toBe(0);
 
-    // It really was the unreachability that moved it — B is still a member on
-    // C's books, and C never saw a leader change.
+    // The premise held: B is unreachable on C's books but still a member — not
+    // downed, `downAfterMs` is a minute away — and C never saw a leader change,
+    // so nothing else could have been the reason nothing moved.
     expect(nodeC.cluster.getMembers().length).toBe(3);
     expect(leaderChangesOnC).toEqual([]);
 
     await stopNode(nodeC); await stopNode(nodeB); await stopNode(nodeA);
   }, 30_000);
+
+  test('a message routed to a node that is not hosting goes to dead letters', async () => {
+    // The other half of the trade above.  Peers of an unreachable role host
+    // route to the next role member, which is deliberately not hosting, so the
+    // manager's undeliverable path stops being an edge case and becomes the
+    // path every message from that side takes.  It logged a warning and
+    // dropped the message on the floor — nothing on the dead-letter stream, so
+    // no metric, no DevTools entry, nothing to assert.  Both of the proxy's
+    // undeliverable paths already dead-letter; this is the same event seen
+    // from the far end of the wire.
+    //
+    // Reached here without a partition: `restartOnTermination: false` leaves
+    // this node the elected host with a manager that will never spawn again,
+    // which is exactly the "routed here, not hosting" state and is the only
+    // form of it a single node can hold still.
+    const systemName = 'sng-not-hosted';
+    const nodeA = await startNode({ systemName, port: 52514, seeds: [], roles: [] });
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
+
+    const dead: unknown[] = [];
+    nodeA.system.spawn(() => new DeadLetterCollector(dead), 'dead-letter-collector');
+
+    const census = new SingletonCensus();
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('quitting-worker')
+      .withActor(() => new QuittingCensusMarker(census, 'a'))
+      .withRestartOnTermination(false);
+    const proxy = nodeA.cluster.singleton.start(singletonOptions);
+    await waitFor(() => census.liveOn('a') === 1);
+
+    proxy.tell('die');
+    // `postStop` has run, and the `Terminated` that follows it clears the
+    // manager's `child` — so from here the manager, not a dead child ref, is
+    // what the message meets.
+    await waitFor(() => census.liveOn('a') === 0);
+    await sleep(300);
+
+    census.received.length = 0;
+    dead.length = 0;
+    proxy.tell('nobody-is-hosting-this');
+
+    await waitFor(() => dead.length > 0);
+    expect(dead).toEqual(['nobody-is-hosting-this']);
+    expect(census.received).toEqual([]);
+    // Still the elected host, which is what makes this the manager's path and
+    // not the proxy's `onMissingHost`.
+    expect(nodeA.cluster.isLeader()).toBe(true);
+
+    nodeA.cluster.singleton.stop('quitting-worker');
+    await stopNode(nodeA);
+  }, 20_000);
 });

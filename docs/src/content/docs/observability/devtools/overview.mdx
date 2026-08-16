@@ -234,8 +234,8 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## Try it on the examples
 
-The long-running examples — the HTTP and cache services, the cluster
-demos, the chat and voice backends — are wired for DevTools, and none of
+Some of the examples are wired for DevTools — the HTTP and cache
+services, the cluster demos, the chat and voice backends — and none of
 them pay for it unless you ask:
 
 ```bash
@@ -250,27 +250,42 @@ PowerShell — there, set it separately:
 $env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-The examples that finish on their own — hello-world, the `patterns/` and
-`persistence/` walkthroughs, and the rest of the short scripts — carry no
-DevTools wiring at all, so you can copy one into a project and run it
-unchanged.  There was nothing to watch in them anyway: a script that is
-over in a few hundred milliseconds cannot be opened in a browser.
+Which examples carry it is a historical line rather than a tidy one.
+The sweep that removed the wiring (#552) went by which examples had
+explicitly parked themselves before shutdown so DevTools could be opened
+at all — hello-world, the `patterns/` and `persistence/` walkthroughs,
+and the rest of the short scripts.  Those now carry no reference to
+DevTools, so you can copy one into a project and run it unchanged.
 
-Multi-system examples give each system its own port, counting up from
-`--devtools-port` / `DEVTOOLS_PORT` (default `9333`) — so a three-node cluster demo is
-`9333`, `9334`, `9335`:
+That is **not** the same set as "the examples that finish on their own",
+and seven fall in the gap: `cluster/singleton-hello.ts`,
+`cluster/singleton-cron.ts`, `cluster/sharded-daemon-hello.ts`,
+`cluster/sharded-daemon-fixed-workers.ts`,
+`discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
+and `management/opentelemetry-tracing.ts` still import the harness and
+still end in a second or two.  `--devtools` binds a port in them and logs
+the URL, and then the process is gone before a browser can open it —
+`singleton-hello` prints three such URLs and exits after about 1.3 s.
+For something to actually look at, reach for one of the services above or
+for a cluster node below.
+
+Each attachment takes its own port, counting up from `--devtools-port` /
+`DEVTOOLS_PORT` (default `9333`).  That counter is per process, so a
+cluster built from *separate terminals* — where every node would start at
+`9333` — takes the first free port in the range instead, the same way the
+cluster transport scans for its own:
 
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
 ```
 
-A cluster built from *separate terminals* works the same way, even
-though each process has its own copy of that counter: the first free
-port in the range is taken, so three `bun run examples/voice/backend/main.ts
---devtools` give you `9333`, `9334` and `9335` without any flags. If
-none is free — or anything else about DevTools fails — the example logs
-a warning and starts anyway. A debugger that cannot bind is not a reason
-for the program under debug to die.
+Three terminals, one three-node cluster, and DevTools on `9333`, `9334`
+and `9335` without a single DevTools port flag — `--port` there is the
+node's *cluster* port.  If none is free — or anything else about DevTools
+fails — the example logs a warning and starts anyway. A debugger that
+cannot bind is not a reason for the program under debug to die.
 
 The bind interface is `127.0.0.1`.  `--devtools-host` / `DEVTOOLS_HOST`
 changes it — the flag for when the browser is not on the machine running

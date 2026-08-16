@@ -410,7 +410,10 @@ describe('Router.smallestMailbox (integration, #154)', () => {
     expect(handled.has('routee-2')).toBe(false);
 
     await sys.terminate();
-  });
+    // The 8 s delivery budget was unreachable under bun's 5 s default cap, and
+    // it is the wait that distinguishes "the burst is still draining" from the
+    // dead-routee regression — exactly the distinction a bare timeout erases.
+  }, 20_000);
 });
 
 describe('Router.roundRobin (integration)', () => {

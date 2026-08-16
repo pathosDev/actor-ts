@@ -216,7 +216,10 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   }
 
   private onOtherClusterEvent(): void {
-    /* nothing else can move the host — see `changesSingletonHost` */
+    /* Not "nothing else can move the host": `MemberUnreachable` can, and is
+       deliberately not acted on — draining to a host the managers have not
+       promoted would hand every buffered message to a node that will
+       dead-letter it.  See `changesSingletonHost`. */
   }
 
   private drainBuffer(): void {

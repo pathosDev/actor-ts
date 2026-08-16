@@ -80,6 +80,12 @@ whenever the elected leader lacked it.  Both forms read the same
 address-ordered member list, so every node independently picks the same
 node, and the proxy resolves the host exactly the way the managers do.
 
+Same rule, but each node applies it to *its own* view of the cluster.
+Those views agree once gossip has converged, which is why this works;
+where they can stay apart is unreachability, and that is
+[deliberately excluded from what moves the
+host](#unreachability-is-deliberately-not-a-trigger).
+
 ## The naming convention
 
 The manager **must** be spawned at a path matching:
@@ -117,21 +123,49 @@ out of `up`, not only on a change of leader:
 | `LeaderChanged` | The unrestricted host **is** the leader. |
 | `SelfUp` | This node just became eligible to host. |
 | `MemberUp` | A member joined the up-set — possibly below the current host. |
-| `MemberUnreachable` | An up member dropped out of the up-set without being removed. |
-| `MemberReachable` | …and rejoined it. |
 | `MemberDown` / `MemberLeft` / `MemberRemoved` | The host is on its way out. |
 
 `MemberJoined` and `MemberWeaklyUp` are deliberately not in the set:
 neither `joining` nor `weakly-up` members appear in `upMembers()`, so
 neither can host.
 
+### Unreachability is deliberately not a trigger
+
+`MemberUnreachable` and `MemberReachable` **do** move the host —
+an unreachable member drops out of `upMembers()` without being removed
+— and they are still not in the set.
+
+Every event that *is* in the set states a membership fact the whole
+cluster converges on, so every node computes the same host.
+Unreachability is not that.  It is one node's failure detector saying
+*"I cannot reach that member"*, and the member it is about cannot hear
+the peers that formed the opinion — reaching it is the thing that
+failed.  A manager that reconciled on it would promote itself while the
+incumbent, told nothing, kept its child.  No leader moves, so nothing
+resolves it: the cluster runs **two live singletons** for the length of
+the outage.
+
+The cost of leaving them out is real and is the smaller one.  While a
+role host is unreachable to its peers, those peers consider the
+singleton hosted nowhere, and messages they send
+[go to dead letters](#messages-sent-while-no-node-is-hosting) until the
+member is downed (`downAfterMs`) or comes back.  Availability is
+recoverable and bounded by downing; a second live singleton is neither.
+On the no-lease path you cannot have both — an unreachable node cannot
+be asked to stand down.  If you need both, that is what
+[the lease path](#with-lease) is for: it is arbitrated by a third party
+both sides *can* reach, so exactly one of them holds it.
+
+Nothing is lost at the edges.  The resolution of an unreachability
+arrives as an event that is in the set either way: downing emits
+`MemberDown`, and recovery emits `MemberUp` alongside `MemberReachable`.
+
 **Before v0.17.0 the trigger was `LeaderChanged` alone.**  A
 role-carrying member joining *below* a role-less leader moves the role
 host and changes no leader — so nothing fired.  The joining node spawned
 anyway (off its own `SelfUp`), the incumbent was never told to stop, and
-the cluster settled on **two live singletons**.  The same gap left a role
-host that went `unreachable` hosted nowhere at all until it was finally
-downed.  If you are on an older version, that is the shape to look for.
+the cluster settled on **two live singletons**.  If you are on an older
+version, that is the shape to look for.
 
 ## The two operational paths
 
@@ -258,6 +292,36 @@ having started, and *any* later membership change would reconcile
 straight back into a spawn.  Other nodes are unaffected — releasing
 the lease is what leaves them free to host.
 
+## Messages sent while no node is hosting
+
+A proxy resolves the host from *its own* node's view of the cluster and
+forwards there; the manager on the far side decides from *its* view
+whether it is hosting.  Those two views agree whenever membership does,
+which is almost always — and not while a member is unreachable to one
+side and not the other.
+
+A message that arrives at a manager which is not hosting goes to
+`system.deadLetters`, with a single latched warning naming the
+singleton.  It is not dropped silently, so it shows up wherever you
+already watch dead letters — metrics, DevTools, an `eventStream`
+subscription on `DeadLetter`:
+
+```ts
+import { DeadLetter } from 'actor-ts';
+
+system.eventStream.subscribe(auditRef, DeadLetter);
+```
+
+Two neighbouring cases end the same way, deliberately.  The proxy
+buffers while *no* node hosts the singleton at all and dead-letters
+past `bufferSize`; and it dead-letters immediately when this node is
+the elected host but never called `start(...)`, which is a deployment
+mistake that will not heal on its own.
+
+**Before v0.17.0 the manager logged a warning per message and dropped
+it.** Nothing reached the dead-letter stream, so the loss was invisible
+to everything except the log.
+
 ## Restart semantics
 
 When the manager itself fails (which is rare), its supervisor
@@ -305,8 +369,16 @@ The manager's behavior is driven entirely by these events.  If you
 suspect the manager is misbehaving, log the whole trigger set from
 [What the manager reacts to](#what-the-manager-reacts-to) — not just
 `LeaderChanged`.  A role-restricted singleton in particular changes
-host on `MemberUp` / `MemberUnreachable` while the leader sits still,
-so watching leadership alone shows you nothing happening.
+host on `MemberUp` / `MemberDown` while the leader sits still, so
+watching leadership alone shows you nothing happening.
+
+If the symptom is *messages disappearing* rather than the wrong node
+hosting, watch `MemberUnreachable` too — not because the manager
+reacts to it ([it deliberately does
+not](#unreachability-is-deliberately-not-a-trigger)) but because it is
+the condition under which senders and hosts disagree about who hosts.
+Pair it with a `DeadLetter` subscription; that is where those messages
+go.
 
 For the lease path, also log `lease.acquire()` returns — the
 manager logs these by default at debug level.

@@ -123,8 +123,14 @@ schließen.
   puffern, nur damit das Ergebnis anschließend verworfen wird.  Weil die
   Laufzeit dabei auflegt, statt einen Policy-Close zu senden, sieht der
   Client hier einen abnormalen Close (**1006**) und keine 1009.
+  Zwei Laufzeit/Backend-Paare haben diese Ebene nicht — siehe den
+  Warnhinweis weiter unten.
 - **Im Connection-Actor**, bei demselben `maxFrameBytes` — am vollständig
   empfangenen Frame, vor dem Dekodieren, mit Close **1009**.
+
+Nur die zweite Ebene ist eine Zusage.  Sie läuft überall und hält den zu
+großen Frame von deinem Actor fern; das Transport-Limit ist eine
+Optimierung darüber, die dem Prozess die Pufferung erspart.
 
 Die Zahl ist in beide Richtungen deine: `maxFrameBytes` zu senken
 verkleinert auch das Puffer-Fenster, und es über den 1-MiB-Default
@@ -143,15 +149,28 @@ deshalb das **größte** ihrer Limits.  Was eine strengere Route annimmt,
 weiterhin mit 1009 ab —, sie bekommt nur nicht das engere Puffer-Fenster,
 das sie allein gehabt hätte.
 
-<Aside type="caution" title="Deno hat kein Transport-Limit">
-Auf Deno existiert die erste Ebene nicht.  `Deno.upgradeWebSocket` nimmt
-ein Subprotokoll und ein Idle-Timeout entgegen und kein Payload-Limit — es
-gibt also nichts, das das Framework setzen könnte: Ein zu großer Frame wird
-von der Laufzeit vollständig gepuffert und erst danach vom
-Connection-Actor abgewiesen.  Die Zusage gilt weiterhin — der Frame
-erreicht deinen Actor nie —, aber der Speicher ist ausgegeben, bevor
-abgelehnt wird.  Für einen aus dem Internet erreichbaren WebSocket-Endpunkt
-unter Deno gehört ein Proxy mit eigenem Frame-Limit davor.
+<Aside type="caution" title="Zwei Paare haben kein Transport-Limit">
+Auf **Deno** nimmt `Deno.upgradeWebSocket` ein Subprotokoll und ein
+Idle-Timeout entgegen und kein Payload-Limit — es gibt also nichts, das das
+Framework setzen könnte.
+
+Auf **Bun** mit dem **Express**- oder **Fastify**-Backend wird das Limit
+zwar gesetzt, aber nicht beachtet.  Beide reichen `maxPayload` an einen
+`ws`-`WebSocketServer` weiter, und auf Bun löst der Spezifizierer `ws` auf
+Buns eigenen eingebauten Shim auf statt auf das npm-Paket.  Der Shim nimmt
+die Option an und liefert sie unverändert zurück — von außen sieht also
+nichts falsch aus —, setzt sie aber nicht durch: Hier gemessen erreichte
+ein 2-MiB-Frame gegen ein 1-MiB-Limit den Handler unversehrt, während
+derselbe Code auf Node ihn am Socket abwies und mit 1009 schloss.  (Bun mit
+dem **Hono**-Backend ist nicht betroffen: Es geht über
+`maxPayloadLength` von `Bun.serve` statt über `ws`.)
+
+In allen drei Fällen wird der Frame von der Laufzeit vollständig gepuffert
+und erst danach vom Connection-Actor abgewiesen.  Die Zusage gilt weiterhin
+— der Frame erreicht deinen Actor nie, und der Client bekommt weiterhin
+sein 1009 —, aber der Speicher ist ausgegeben, bevor abgelehnt wird.  Für
+einen aus dem Internet erreichbaren WebSocket-Endpunkt auf einem dieser
+Paare gehört ein Proxy mit eigenem Frame-Limit davor.
 </Aside>
 
 <Aside type="note" title="Hono auf Node braucht @hono/node-ws 1.2.0 oder neuer">

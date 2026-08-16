@@ -14,9 +14,7 @@ import {
   LeaderChanged,
   MemberDown,
   MemberLeft,
-  MemberReachable,
   MemberRemoved,
-  MemberUnreachable,
   MemberUp,
   SelfUp,
 } from '../ClusterEvents.js';
@@ -41,8 +39,15 @@ export function singletonManagerPath(systemName: string, typeName: string): stri
  *
  * One function rather than two matching conditions, because the manager and the
  * proxy have to agree exactly: the manager decides whether *this* node hosts,
- * the proxy decides where to send, and a manager drops anything addressed to it
- * that it is not hosting.  Any drift between the two is silent message loss.
+ * the proxy decides where to send, and a manager dead-letters anything
+ * addressed to it that it is not hosting.  Any drift between the two is
+ * message loss.
+ *
+ * The rule is shared; the *view* it reads is not.  Each node applies it to its
+ * own member list, so the two agree exactly as far as gossip has converged.
+ * Unreachability is where that can stay apart indefinitely, which is why it is
+ * excluded from {@link changesSingletonHost} rather than reconciled on — the
+ * disagreement is bounded loss, and acting on it is a second live singleton.
  *
  * Unrestricted, the host is the cluster leader.  Restricted, it is the first
  * up-member *carrying that role* — deliberately not "the leader, but only if it
@@ -82,12 +87,43 @@ export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
  * - `MemberJoined` / `MemberWeaklyUp` — neither `joining` nor `weakly-up`
  *   members appear in `upMembers()`, so neither status can host.
  * - `ReachabilityChanged` — this node's private opinion about a peer, which
- *   does not itself move member status.  The half of it that does arrives as
- *   `MemberUnreachable` / `MemberReachable`.
+ *   does not itself move member status.
+ * - **`MemberUnreachable` / `MemberReachable`** — see below.  These *do* move
+ *   `singletonHost`, and they are still excluded.
  *
- * Over-triggering is safe and under-triggering is not, so borderline events
- * are included: `reconcile` is idempotent, and both `MemberUp` and
- * `MemberReachable` already fire together on the unreachable → up recovery.
+ * **Why unreachability is not a trigger.**  Every other event here is a
+ * membership fact the cluster agrees on: a member that is `up`, `down`,
+ * `leaving` or `removed` is that on every node once gossip converges, so every
+ * node computes the same host and reconciling is a race at worst.
+ * Unreachability is not that fact.  It is one node's failure detector saying
+ * *"I cannot reach that member"*, and the member itself — which is alive, and
+ * by definition cannot hear the peers that formed the opinion — never learns
+ * of it.  Reconciling on it therefore makes a peer promote itself while the
+ * incumbent, told nothing, keeps its child.  No leader has moved, so nothing
+ * resolves it: the cluster runs **two live singletons** for the length of the
+ * outage.  #637 included these two, and that is precisely the state its own
+ * headline exists to prevent.
+ *
+ * The cost of excluding them is real and is the lesser one: while a role host
+ * is unreachable to its peers the singleton is hosted *from their point of
+ * view* nowhere, and messages routed from that side dead-letter until the
+ * member is downed (`downAfterMs`) or comes back.  Availability is recoverable
+ * and bounded by downing; a second live singleton is neither.  On the no-lease
+ * path the two properties cannot both be had — an unreachable node cannot be
+ * asked to stand down, because reaching it is the thing that failed.  Where
+ * both are needed, that is what the lease path is for: it is arbitrated by a
+ * third party both sides *can* reach, so exactly one of them holds it.
+ *
+ * `reconcile` being idempotent does not buy the missing property, which is
+ * what the earlier version of this note claimed.  It is idempotent *per node*
+ * — "at most one cluster-wide" is not a per-node property, and no amount of
+ * re-running a local decision establishes it.
+ *
+ * Neither exclusion loses an edge the set still needs.  The resolution of an
+ * unreachability arrives as an event that *is* in the set either way: downing
+ * emits `MemberDown`, and recovery emits `MemberUp` alongside
+ * `MemberReachable` (an `unreachable → up` member is a status transition, so
+ * `statusEventsOf` announces it as `up` before the reachability event).
  */
 export function changesSingletonHost(event: ClusterEvent): boolean {
   // A match that computes a value, so its arms stay inline.  A predicate
@@ -100,8 +136,6 @@ export function changesSingletonHost(event: ClusterEvent): boolean {
         P.instanceOf(LeaderChanged),
         P.instanceOf(SelfUp),
         P.instanceOf(MemberUp),
-        P.instanceOf(MemberUnreachable),
-        P.instanceOf(MemberReachable),
         P.instanceOf(MemberDown),
         P.instanceOf(MemberLeft),
         P.instanceOf(MemberRemoved),
@@ -137,8 +171,8 @@ type Inbox = SingletonDeliver | ManagerEvent | Terminated;
  * Runs on every node.  Watches cluster events and (re)spawns the singleton
  * child when this node is the cluster leader; stops the child when it is not.
  * Remote Envelopes addressed to the singleton land here and are forwarded to
- * the child — if the manager is not on the leader node, the envelope is
- * dropped with a warning (the proxy shouldn't have forwarded there).
+ * the child — if this node is not hosting, the envelope goes to
+ * `system.deadLetters` with a latched warning (see {@link onSingletonDeliver}).
  *
  * **Two paths:**
  *
@@ -195,6 +229,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * node's own reconcile straight back where the opt-out was meant to stop it.
    */
   private terminallyStopped = false;
+
+  /** Latch for the "routed here but not hosting" warning — see {@link warnNotHostedOnce}. */
+  private warnedNotHosted = false;
 
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
@@ -415,15 +452,49 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   /* -------------------------- handlers -------------------------- */
 
+  /**
+   * A message a proxy routed here.  When this node is not hosting, it goes to
+   * `system.deadLetters` rather than being dropped on the floor.
+   *
+   * The proxy already dead-letters on both of *its* undeliverable paths
+   * (`bufferUntilHosted` past the cap, `onMissingHost`), and this one is the
+   * same event seen from the other end of the wire — a message the singleton
+   * will never receive.  Dropping it here left that fact in a log line only:
+   * nothing on the dead-letter stream, so no metric, no DevTools entry, and
+   * nothing a test could assert.
+   *
+   * It is not a rare path.  The proxy and the manager compute the host from
+   * the same `singletonHost`, but they do it from *different nodes' views*,
+   * and a one-sided unreachability makes those views disagree by construction:
+   * the peers of an unreachable role host route to the next role member, which
+   * is not hosting and — deliberately, see {@link changesSingletonHost} — will
+   * not promote itself.  Every message sent from that side lands here.
+   */
   private onSingletonDeliver(message: SingletonDeliver): void {
     if (message.kind !== 'singleton-deliver') return;
     if (!this.child) {
-      this.log.warn(
-        `singleton '${this.options.typeName}' not currently hosted on this node — dropping message`,
-      );
+      this.warnNotHostedOnce();
+      this.system.deadLetters.tell(message.body as never);
       return;
     }
     this.child.tell(message.body as never);
+  }
+
+  /**
+   * Latched like the proxy's own two warnings, and for the same reason: the
+   * condition lasts as long as the outage does while the sender keeps sending,
+   * so one line per message is a log flood, not a diagnostic.  `spawn()`
+   * unlatches it, so a second, later episode is reported too.
+   */
+  private warnNotHostedOnce(): void {
+    if (this.warnedNotHosted) return;
+    this.warnedNotHosted = true;
+    this.log.warn(
+      `singleton '${this.options.typeName}' not currently hosted on this node — `
+      + 'messages addressed to it are going to dead letters.  A proxy routed here, so '
+      + 'this node is the elected host in the view of whoever sent, and not in its own; '
+      + 'check for an unreachable member the two sides disagree about.',
+    );
   }
 
   /** Sync reconcile — no lease.  Spawn / stop the child to match cluster state. */
@@ -546,6 +617,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       this.options.singletonActorOptions,
     );
     this.context.watch(this.child);
+    // The "routed here but not hosting" condition has just cleared; unlatch so
+    // a later episode is reported rather than passing silently.
+    this.warnedNotHosted = false;
     this.log.info(`singleton '${this.options.typeName}' started on this node (now leader)`);
   }
 

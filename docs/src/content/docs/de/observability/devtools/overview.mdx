@@ -250,9 +250,9 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## An den Examples ausprobieren
 
-Die langlaufenden Examples — die HTTP- und Cache-Services, die
-Cluster-Demos, die Chat- und Voice-Backends — sind für DevTools
-verdrahtet, und keines zahlt dafür, solange du nicht fragst:
+Ein Teil der Examples ist für DevTools verdrahtet — die HTTP- und
+Cache-Services, die Cluster-Demos, die Chat- und Voice-Backends —, und
+keines zahlt dafür, solange du nicht fragst:
 
 ```bash
 bun run examples/http/rest-service.ts --devtools
@@ -266,28 +266,45 @@ ein Parser-Fehler — dort setzt du die Variable separat:
 $env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Die Examples, die von selbst fertig werden — hello-world, die
+Welche Examples sie tragen, ist eine historisch gewachsene Grenze und
+keine saubere. Der Durchlauf, der die Verdrahtung entfernt hat (#552),
+ging danach, welche Examples sich vor dem Herunterfahren ausdrücklich
+geparkt hatten, damit DevTools überhaupt zu öffnen war — hello-world, die
 `patterns/`- und `persistence/`-Durchläufe und der Rest der kurzen
-Skripte —, enthalten überhaupt keine DevTools-Verdrahtung: Du kannst
-eines unverändert in ein Projekt kopieren und laufen lassen. Zu sehen
-gab es darin ohnehin nichts — ein Skript, das nach ein paar hundert
-Millisekunden vorbei ist, lässt sich nicht im Browser öffnen.
+Skripte. Die enthalten jetzt keinerlei Bezug auf DevTools mehr, du kannst
+also eines unverändert in ein Projekt kopieren und laufen lassen.
 
-Examples mit mehreren Systemen geben jedem System einen eigenen Port,
-aufsteigend ab `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
-läuft also auf `9333`, `9334`, `9335`:
+Das ist **nicht** dieselbe Menge wie „die Examples, die von selbst fertig
+werden“, und sieben fallen in die Lücke: `cluster/singleton-hello.ts`,
+`cluster/singleton-cron.ts`, `cluster/sharded-daemon-hello.ts`,
+`cluster/sharded-daemon-fixed-workers.ts`,
+`discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
+und `management/opentelemetry-tracing.ts` importieren den Harness weiter
+und sind trotzdem nach ein bis zwei Sekunden vorbei. `--devtools` bindet
+auch dort einen Port und protokolliert die URL — und dann ist der Prozess
+weg, bevor ein Browser sie öffnen kann: `singleton-hello` gibt drei
+solcher URLs aus und beendet sich nach rund 1,3 s. Wenn es wirklich etwas
+zu sehen geben soll, nimm einen der Services oben oder einen Cluster-Knoten
+unten.
+
+Jede Anbindung nimmt sich ihren eigenen Port, aufsteigend ab
+`--devtools-port` / `DEVTOOLS_PORT` (Default `9333`). Dieser Zähler gilt
+pro Prozess — ein Cluster aus *getrennten Terminals*, in dem jeder Knoten
+bei `9333` anfinge, nimmt deshalb den ersten freien Port im Bereich,
+genauso wie der Cluster-Transport seinen eigenen sucht:
 
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
 ```
 
-Ein Cluster aus *getrennten Terminals* funktioniert genauso, obwohl jeder
-Prozess seine eigene Kopie dieses Zählers hat: Genommen wird der erste
-freie Port im Bereich. Drei Mal `bun run examples/voice/backend/main.ts
---devtools` ergeben also `9333`, `9334` und `9335`, ganz ohne Flags. Ist
-keiner frei — oder scheitert an DevTools sonst etwas —, protokolliert das
-Example eine Warnung und startet trotzdem. Ein Debugger, der nicht binden
-kann, ist kein Grund, das zu debuggende Programm sterben zu lassen.
+Drei Terminals, ein Cluster aus drei Knoten und DevTools auf `9333`,
+`9334` und `9335`, ganz ohne DevTools-Port-Flag — `--port` ist dort der
+*Cluster*-Port des Knotens. Ist keiner frei — oder scheitert an DevTools
+sonst etwas —, protokolliert das Example eine Warnung und startet
+trotzdem. Ein Debugger, der nicht binden kann, ist kein Grund, das zu
+debuggende Programm sterben zu lassen.
 
 Gebunden wird auf `127.0.0.1`. `--devtools-host` / `DEVTOOLS_HOST` ändert
 das — das Flag für den Fall, dass der Browser nicht auf der Maschine
