@@ -42,6 +42,8 @@ name: nightly-flakes
 #     tests/unit/testkit/ParallelMultiNodeSpec.test.ts);
 #   - drop the `coveragePathIgnorePatterns` block in bunfig.toml, which exists
 #     only because the worker harness cannot execute here;
+#   - drop `--exclude=worker` from benchmarks.yml's smoke step — same cause,
+#     and easy to miss because it is not a test;
 #   - revisit test.yml's pragmatic `COVERAGE_LINE_FLOOR: '80'`, which was
 #     lowered for the same reason;
 #   - keep this job — it becomes the regression guard for the un-quarantining.

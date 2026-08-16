@@ -239,9 +239,12 @@ Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
 3. Den `coveragePathIgnorePatterns`-Block in `bunfig.toml` entfernen — er
    nimmt das Worker-Harness nur deshalb aus dem Coverage-Nenner, weil dieses
    Harness auf dem Hosted Runner nicht ausgeführt werden kann.
-4. `test.yml`s pragmatischen `COVERAGE_LINE_FLOOR: '80'` neu bewerten, der
+4. `--exclude=worker` aus dem Smoke-Schritt in `benchmarks.yml` entfernen.
+   Der Worker-Benchmark ist aus exakt derselben Ursache ausgeschlossen und
+   wird leicht vergessen, weil er kein Test ist.
+5. `test.yml`s pragmatischen `COVERAGE_LINE_FLOOR: '80'` neu bewerten, der
    aus demselben Grund gesenkt wurde.
-5. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
+6. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
    Dequarantänisierung.
 
 ## Wie geht's weiter

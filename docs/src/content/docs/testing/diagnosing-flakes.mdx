@@ -221,9 +221,12 @@ On reaching it, un-quarantine in one commit:
 3. Drop the `coveragePathIgnorePatterns` block in `bunfig.toml` — it excludes
    the worker harness from the coverage denominator only because that harness
    cannot execute on the hosted runner.
-4. Revisit `test.yml`'s pragmatic `COVERAGE_LINE_FLOOR: '80'`, lowered for
+4. Drop `--exclude=worker` from `benchmarks.yml`'s smoke step.  The worker
+   benchmark is excluded for exactly the same cause, and is easy to forget
+   because it is not a test.
+5. Revisit `test.yml`'s pragmatic `COVERAGE_LINE_FLOOR: '80'`, lowered for
    the same reason.
-5. Keep the nightly job.  It becomes the regression guard for the
+6. Keep the nightly job.  It becomes the regression guard for the
    un-quarantining.
 
 ## Where to next
