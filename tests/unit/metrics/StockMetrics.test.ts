@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
@@ -51,6 +52,52 @@ describe('Stock actor metrics', () => {
         label: 'all three spawns were counted',
       });
       expect((valueFor(reg, 'actor_created_total') ?? 0) - baseline).toBe(3);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('actor_mailbox_dropped_total carries class + reason and nothing per-actor (#658)', async () => {
+    // The stock label-set guard.  `path` was removed because its values were
+    // produced by traffic and by remote parties — one anonymous path per
+    // spawn, one `entity-<id>` per addressed shard — while the registry has
+    // no per-child eviction.  Pinning the exact set here is what stops the
+    // family quietly regaining a per-instance label in a later change; the
+    // sibling `actor_mailbox_size` keeps its `path` deliberately, gated on a
+    // 10 000-message backlog, so "no dynamic labels" is not the rule.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-drop-labels', sysOptions);
+    const reg = sys.extension(MetricsExtensionId).enable();
+    try {
+      let release: () => void = () => {};
+      let running: () => void = () => {};
+      const latch = new Promise<void>((resolve) => { release = resolve; });
+      const alive = new Promise<void>((resolve) => { running = resolve; });
+
+      class Wedged extends Actor<number> {
+        override async onReceive(n: number): Promise<void> {
+          if (n === 0) { running(); await latch; }
+        }
+      }
+
+      const options = ActorOptions.create<number>()
+        .withMailboxCapacity(4)
+        .withMailboxOverflow('drop-new');
+      const ref = sys.spawnAnonymous(Wedged, options);
+      ref.tell(0);
+      await alive;             // the instance exists, so `class` has settled
+      for (let n = 1; n <= 32; n++) ref.tell(n);
+      // Unwedged before asserting: the drops are already counted (`tell`
+      // enqueues synchronously), and a latched actor would turn a failed
+      // expectation into a `terminate()` timeout on top of it.
+      release();
+
+      const samples = reg.collect().filter((s) => s.name === 'actor_mailbox_dropped_total');
+      expect(samples.length).toBe(1);
+      expect(Object.keys(samples[0]!.labels).sort()).toEqual(['class', 'reason']);
+      expect(samples[0]!.labels).toEqual({ class: 'Wedged', reason: 'drop-new' });
     } finally {
       await sys.terminate();
     }

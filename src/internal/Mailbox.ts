@@ -37,9 +37,12 @@ export type Envelope<T = unknown> = {
  *
  * Deliberately a closed set of two rather than a free-form string, even for a
  * mailbox of your own: `reason` is a metric label, and an open one is a
- * cardinality vector (#745).  Pick whichever describes what you did — you
- * dropped the oldest queued message, or you dropped the arriving one.
- * Refusing a message is not a drop; that throws instead.
+ * cardinality vector (#745).  That constraint got sharper once #658 removed
+ * `path` — `class` and `reason` are now the family's only dimensions, so a
+ * free-form `reason` would be the single thing standing between it and
+ * unbounded growth.  Pick whichever describes what you did — you dropped the
+ * oldest queued message, or you dropped the arriving one.  Refusing a message
+ * is not a drop; that throws instead.
  *
  * Lives here rather than in `BoundedMailboxOptions.ts` despite typing an
  * option field there: it is the vocabulary of {@link DropReportingMailbox},
@@ -53,9 +56,14 @@ export type MailboxDropReason = 'drop-head' | 'drop-new';
  * A mailbox that discards messages and is willing to say so.
  *
  * Implement it on a {@link Mailbox} subclass of your own and the cell counts
- * its drops in `actor_mailbox_dropped_total`, with the same
- * `{class, path, reason}` labels the built-in bound produces.  `BoundedMailbox`
- * implements it; nothing else needs to.
+ * its drops in `actor_mailbox_dropped_total`, with the same `{class, reason}`
+ * labels the built-in bound produces.  `BoundedMailbox` implements it; nothing
+ * else needs to.
+ *
+ * Those labels identify a *class*, not an actor — the stock family carries no
+ * `path` (#658).  If you need to know which instance is shedding, observe it
+ * yourself: registration is additive, so your own observer runs alongside the
+ * framework's and you choose that series' cardinality.
  *
  * The cell probes for this method rather than testing
  * `instanceof BoundedMailbox` on purpose.  Since #661 the base `Mailbox` is
