@@ -182,9 +182,17 @@ stehen sie hier ohne Urteil statt mit einer Vermutung:
 | `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
 | `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
 
-Ports und Dateisystem-Pfade sind für alle fünf ausgeschlossen.  Benennt ein
-Nightly-Lauf einen davon erneut, sagt dessen `summary.json`, wie oft — trag
-die Zahl hier nach, statt von vorn anzufangen.
+Ports und Dateisystem-Pfade sind für alle fünf ausgeschlossen.  Bei allen
+fünf wurde inzwischen der feste Sleep — bei `ClusterBootstrap` eine
+handgeschriebene Deadline-Schleife, die still durchfiel — durch ein Warten
+auf den Zustand ersetzt, den die Assertion liest.  **„Der Sleep war zu kurz"
+ist für keinen davon noch eine verfügbare Erklärung.**
+
+Genau dafür lohnt es sich, einen offenen Eintrag aufzuschreiben statt zu
+raten: Benennt ein Nightly-Lauf einen davon erneut, bleiben als Kandidaten
+ein wirklich langsamer Schritt und eine Reihenfolge-Umkehr, und das
+`summary.json` sagt, wie oft.  Trag die Zahl hier nach, statt von vorn
+anzufangen.
 
 ## Drei Suites, die CI nicht ausführt
 

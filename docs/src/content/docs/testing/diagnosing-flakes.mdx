@@ -168,9 +168,16 @@ without a verdict rather than guessed at:
 | `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
 | `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
 
-Ports and filesystem paths have been ruled out for all five.  If a nightly
-run names one of them again, its `summary.json` says how often — add the
-count here rather than starting over.
+Ports and filesystem paths have been ruled out for all five.  All five have
+since had their fixed sleep — or, in `ClusterBootstrap`'s case, a hand-rolled
+deadline loop that fell through silently — replaced by a wait on the state
+the assertion reads, so **"the sleep was too short" is no longer an available
+explanation** for any of them.
+
+That is the value of writing an open entry down instead of guessing: if a
+nightly names one of these again, the remaining candidates are a genuinely
+slow step and an ordering inversion, and the `summary.json` says how often.
+Add the count here rather than starting over.
 
 ## Three suites CI does not run
 
