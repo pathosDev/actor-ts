@@ -231,22 +231,36 @@ spezifiziert**. Nützlich für Batch-only-Systeme ohne HTTP-Traffic.
 
 ## Messen
 
-Nutze die
-[Stock-Metrik](/de/observability/metrics/stock-metrics/)
-`actor_message_duration_ms`:
+Zwei [Stock-Metriken](/de/observability/metrics/stock-metrics/) teilen
+die Latenz einer Nachricht genau dort, wo sie angenommen wird:
 
 ```
-P50 ≈ Arbeitszeit
-P99 - P50 ≈ Dispatcher-Latenz (Queueing)
+actor_mailbox_wait_seconds     — in der Queue, wartet auf ihren Zug
+actor_message_handler_seconds  — innerhalb von onReceive
 ```
 
-Wenn P99 deutlich höher als P50 mit kleiner Varianz der Arbeitszeit
-ist, **hilft Dispatcher-Tuning**.
+Lies sie zusammen; das Paar sagt dir, ob Dispatcher-Tuning überhaupt
+helfen kann:
 
-Das Gauge
-`actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
-Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder
-ein fehlkonfigurierter Dispatcher.
+- **Wait-p99 hoch, Handler-p99 niedrig** — der Actor ist in Ordnung,
+  die Nachrichten liegen in der Queue. **Dispatcher-Tuning hilft**:
+  erhöhe das Per-Actor-Throughput-Budget, damit jeder Zug mehr
+  Rückstau abbaut, oder nimm den Actor von einem Dispatcher herunter,
+  den er sich mit langsamer Arbeit teilt.
+- **Handler-p99 hoch** — der Handler selbst ist die Kosten. Keine
+  Dispatcher-Einstellung macht ihn schneller; das ist ein Code- oder
+  Downstream-Problem, und ein höheres Budget macht die Latenz für
+  alles, was sich die Runtime teilt, *schlechter*.
+
+Die Queueing-Verzögerung musste früher aus dem Abstand zwischen p50 und
+p99 des Handler-Histogramms erschlossen werden, was sie mit der Varianz
+der Arbeit selbst vermischte. Sie wird jetzt direkt gemessen.
+
+Das Gauge `actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
+Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder ein
+fehlkonfigurierter Dispatcher. Es ist das *spätere* der beiden Signale
+— eine Serie entsteht erst ab 10 000 wartenden Nachrichten, während die
+Wartezeit steigt, sobald ein Actor zurückfällt.
 
 ## Heuristiken
 

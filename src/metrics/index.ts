@@ -33,6 +33,7 @@ export { MailboxDepthSampler } from './MailboxDepthSampler.js';
 export {
   DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS,
   MAILBOX_DEPTH_REPORTING_FLOOR,
+  MAILBOX_WAIT_BUCKETS_SECONDS,
 } from './Constants.js';
 export {
   exportPrometheus,

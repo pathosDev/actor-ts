@@ -39,6 +39,7 @@ buckets; its p99 is your "how slow is a handler" signal.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Queued user messages, sampled.  Only actors at or above 10 000 are represented. |
+| `actor_mailbox_wait_seconds` | histogram | — | Time a user message spent queued before delivery, in seconds. |
 | `actor_mailbox_dropped_total` | counter | `class`, `reason` | Messages dropped by a bounded mailbox's overflow policy. |
 
 `actor_mailbox_size` is the **backlog** signal.  Mailboxes are
@@ -48,6 +49,42 @@ messages.  Its *presence* is therefore the alert: on a healthy system
 the metric is empty.  A mailbox that drains back below the floor reads
 0 rather than its last spike, and the same threshold produces a log
 warning (repeated at each doubling) whether or not metrics are on.
+
+`actor_mailbox_wait_seconds` is the **latency** signal, and the half
+`actor_message_handler_seconds` cannot give you: that histogram starts
+measuring once a message is already being handled, so an actor that is
+slow and an actor that is merely behind look identical in it.  Read the
+two together — handler p99 high and wait p99 low means the handler
+itself is the problem; wait p99 high and handler p99 low means the
+actor is fine and there is simply more work arriving than it can take.
+
+Its buckets are **not** the default seconds-scale ladder.  They run
+1 ms → 10 s, because a mailbox that is keeping up drains in well under
+the 5 ms the defaults start at, and a histogram whose first bucket
+holds everything answers nothing.  1 ms is also the finest the metric
+*could* be: the stamp is wall-clock, so anything faster is reported as
+a zero-millisecond wait and lands in the first bucket, which reads as
+"delivered within a millisecond" and is exactly true.
+
+Two kinds of message are deliberately left out, which matters when you
+compare its count against `actor_messages_delivered_total`:
+
+- **Replayed stashed messages.** A message that comes back out of the
+  stash kept the stamp from its *original* arrival, so counting it
+  would report however long your actor chose to hold it as queueing
+  delay.  One actor stashing for thirty seconds while it waits on a
+  resource would drown out every other actor's signal in a metric that
+  has no labels to separate them.  The
+  [explain plan](/observability/devtools/explain-plan/) makes the
+  opposite choice — it shows the whole arrival-to-handling span,
+  because there you can see the `stashed` entry that accounts for it.
+- **Messages queued before metrics were switched on.** They carry no
+  stamp, so their wait is omitted rather than invented.  This corrects
+  itself within one drain.
+
+Throttled messages *are* counted.  A message parked by an actor's
+throttle really is waiting in the queue for an actor that cannot keep
+up, which is the question this metric asks.
 
 `actor_mailbox_dropped_total` is the **shedding** signal, and only appears
 for actors whose mailbox discards something — which, since the default is

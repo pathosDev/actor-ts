@@ -43,6 +43,7 @@ Handler".
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Wartende User-Nachrichten, gesampelt. Nur Actors ab 10 000 sind vertreten. |
+| `actor_mailbox_wait_seconds` | histogram | — | Zeit, die eine User-Nachricht vor der Zustellung in der Queue wartete, in Sekunden. |
 | `actor_mailbox_dropped_total` | counter | `class`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
 `actor_mailbox_size` ist das **Rückstau**-Signal. Mailboxes sind per
@@ -53,6 +54,45 @@ einem gesunden System ist die Metrik leer. Eine Mailbox, die wieder
 unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
 dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
 Verdopplung), unabhängig davon ob Metriken aktiv sind.
+
+`actor_mailbox_wait_seconds` ist das **Latenz**-Signal und die Hälfte,
+die `actor_message_handler_seconds` nicht liefern kann: jenes Histogramm
+misst erst, wenn eine Nachricht bereits bearbeitet wird — ein langsamer
+Actor und ein bloß zurückhängender sehen darin identisch aus. Lies beide
+zusammen: hohes Handler-p99 bei niedrigem Wait-p99 heißt, der Handler
+selbst ist das Problem; hohes Wait-p99 bei niedrigem Handler-p99 heißt,
+der Actor ist in Ordnung und es kommt schlicht mehr Arbeit an, als er
+annehmen kann.
+
+Seine Buckets sind **nicht** die standardmäßige Sekunden-Leiter. Sie
+laufen von 1 ms bis 10 s, denn eine Mailbox, die mitkommt, leert sich
+deutlich unterhalb der 5 ms, bei denen die Defaults beginnen — und ein
+Histogramm, dessen erster Bucket alles enthält, beantwortet nichts. 1 ms
+ist zugleich das Feinste, was die Metrik überhaupt *sein könnte*: der
+Stempel ist Wall-Clock, alles Schnellere wird als Wartezeit von null
+Millisekunden gemeldet und landet im ersten Bucket — was „innerhalb
+einer Millisekunde zugestellt" bedeutet und genau so stimmt.
+
+Zwei Arten von Nachrichten bleiben bewusst außen vor, was zählt, wenn du
+seinen Count gegen `actor_messages_delivered_total` hältst:
+
+- **Wieder eingespielte gestashte Nachrichten.** Eine Nachricht, die aus
+  dem Stash zurückkommt, hat den Stempel ihrer *ursprünglichen* Ankunft
+  behalten; sie mitzuzählen würde also melden, wie lange dein Actor sie
+  festhalten wollte — als Queue-Verzögerung. Ein einzelner Actor, der
+  dreißig Sekunden auf eine Ressource wartet, würde in einer Metrik ohne
+  Labels das Signal aller anderen Actors übertönen. Der
+  [Explain Plan](/de/observability/devtools/explain-plan/) entscheidet
+  umgekehrt — er zeigt die ganze Spanne von Ankunft bis Bearbeitung, denn
+  dort siehst du den `stashed`-Eintrag, der sie erklärt.
+- **Nachrichten, die vor dem Einschalten der Metriken in der Queue
+  standen.** Sie tragen keinen Stempel, ihre Wartezeit wird also
+  weggelassen statt erfunden. Das korrigiert sich innerhalb einer
+  Leerung von selbst.
+
+Gedrosselte Nachrichten werden *mitgezählt*. Eine von der Drosselung
+eines Actors geparkte Nachricht wartet tatsächlich in der Queue auf einen
+Actor, der nicht mitkommt — und genau danach fragt diese Metrik.
 
 `actor_mailbox_dropped_total` ist das **Abwurf**-Signal und taucht nur für
 Actors auf, deren Mailbox etwas verwirft — da der Default unbounded ist,

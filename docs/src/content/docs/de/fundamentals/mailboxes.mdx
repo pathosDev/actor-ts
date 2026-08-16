@@ -462,8 +462,10 @@ Greife in drei Situationen zu einer Alternative:
    Producer gespeist wird, den du nicht kontrollierst.  Begrenze ihn auf
    eine Zahl, die zu deinem Memory-Budget passt; `drop-head`, wenn die
    neuesten Events am wertvollsten sind, `drop-new`, wenn es die schon
-   angenommenen sind.  Beobachte `actor_mailbox_size`, um das
-   herauszufinden, bevor du es brauchst.
+   angenommenen sind.  Beobachte `actor_mailbox_wait_seconds`, um das
+   herauszufinden, bevor du es brauchst — sie steigt, sobald ein Actor
+   nicht mehr mitkommt, während `actor_mailbox_size` erst meldet, wenn
+   eine Queue 10 000 Nachrichten überschreitet.
 
 ## Wie es weitergeht
 
