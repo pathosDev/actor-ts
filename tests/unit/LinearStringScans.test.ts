@@ -36,6 +36,7 @@ import { describe, expect, test } from 'bun:test';
 import { redactUrlCredentials } from '../../src/util/RedactUrlCredentials.js';
 import { addressMatchesPins, parseAddressPin } from '../../src/util/CidrMatch.js';
 import { resolveStaticPath } from '../../src/http/static/StaticPath.js';
+import { stripSurrounding, stripTrailing } from '../../src/util/StripCharacters.js';
 
 /** Input lengths, each 4× the last — the step a quadratic scan turns into ~16×. */
 const SIZES: readonly number[] = [2_000, 8_000, 32_000];
@@ -159,6 +160,25 @@ describe('scans over remote input are linear (#1198)', () => {
     expectLinearGrowth(
       'addressMatchesPins (interior dot run)',
       measureGrowth((size) => `a${'.'.repeat(size)}b`, (input) => addressMatchesPins(input, pins)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  // The rest of the sites the same pattern reached are behind these two: the
+  // four logging sinks and the D1 client strip a trailing slash from a
+  // configured endpoint, `normalizeSegment` and the static-file listing strip
+  // both ends of a path segment.  Nothing hostile reaches those, but they are
+  // where the shape gets copied from, so they are measured at the helper.
+  test('stripTrailing — a run that is not at the end', () => {
+    expectLinearGrowth(
+      'stripTrailing',
+      measureGrowth((size) => `a${'/'.repeat(size)}b`, (input) => stripTrailing(input, '/')),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  test('stripSurrounding — a run at neither end', () => {
+    expectLinearGrowth(
+      'stripSurrounding',
+      measureGrowth((size) => `a${'/'.repeat(size)}b`, (input) => stripSurrounding(input, '/')),
     );
   }, MEASUREMENT_TIMEOUT_MS);
 

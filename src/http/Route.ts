@@ -4,6 +4,7 @@ import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
 import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
+import { stripSurrounding } from '../util/StripCharacters.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
@@ -216,8 +217,7 @@ export function fallback(handler: (request: HttpRequest) => Promise<HttpResponse
 }
 
 function normalizeSegment(s: string): string {
-  const trimmed = s.replace(/^\/+|\/+$/g, '');
-  return trimmed;
+  return stripSurrounding(s, '/');
 }
 
 /* -------------------------- Method combinators ---------------------------- */

@@ -11,6 +11,7 @@ import { contentTypeFor } from '../MimeTypes.js';
 import { readDirectory, readFileBytes, realPath, statPath, type FileStat } from './FsAccess.js';
 import { resolveStaticPath } from './StaticPath.js';
 import { renderDirectoryListing, type ListingEntry } from './DirectoryListing.js';
+import { stripSurrounding } from '../../util/StripCharacters.js';
 import {
   resolveStaticOptions,
   type ResolvedStaticOptions,
@@ -215,7 +216,7 @@ async function serveFromDirectory(root: string, rawRest: string, request: HttpRe
       if (realRoot !== null && !(await isWithinRoot(indexPath, realRoot))) continue;
       return serveResolvedFile(indexPath, indexStat, request, settings, index);
     }
-    const atMountRoot = rawRest.replace(/^\/+|\/+$/g, '') === '';
+    const atMountRoot = stripSurrounding(rawRest, '/') === '';
     if (settings.browse) return renderListing(resolved.fsPath, request, atMountRoot, settings, realRoot);
     return notFound();
   }

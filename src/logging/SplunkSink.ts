@@ -13,6 +13,7 @@ import {
   type SplunkSinkOptions,
   type SplunkSinkOptionsType,
 } from './SplunkSinkOptions.js';
+import { stripTrailing } from '../util/StripCharacters.js';
 
 /**
  * Ships records to Splunk's HTTP Event Collector.
@@ -37,7 +38,7 @@ export class SplunkSink extends BatchingSink {
   constructor(options: SplunkSinkOptions = {}) {
     const settings = validated(options);
     super('splunk', settings.minLevel ?? DEFAULT_SPLUNK_MIN_LEVEL, settings.delivery);
-    this.endpoint = `${(settings.url ?? '').replace(/\/+$/, '')}/services/collector/event`;
+    this.endpoint = `${stripTrailing(settings.url ?? '', '/')}/services/collector/event`;
     this.token = settings.token ?? '';
     this.index = settings.index;
     this.source = settings.source ?? DEFAULT_SPLUNK_SOURCE;
