@@ -18,6 +18,9 @@ async function worker(name: string, runtimeMs: number, durationMs: number): Prom
     .withRenewalIntervalMs(100);
   const lease = new InMemoryLease(leaseOptions);
 
+  // Neither wait below is a drain sleep — no actor and no terminate() is
+  // involved.  The first is the simulated work the lease is guarding, the
+  // second is the retry interval between two acquire attempts.
   const deadline = Date.now() + runtimeMs;
   while (Date.now() < deadline) {
     if (await lease.acquire()) {

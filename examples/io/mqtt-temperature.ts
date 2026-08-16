@@ -96,6 +96,9 @@ async function main(): Promise<void> {
     'temperature-hub',
   );
 
+  // Not a drain sleep: nothing is told to the hub from here.  Every reading
+  // arrives from the broker over the network, so the tree is quiet the whole
+  // time and terminate() would stop the hub before a single message landed.
   await Bun.sleep(3_000);
   await system.terminate();
 }

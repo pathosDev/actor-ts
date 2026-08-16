@@ -80,6 +80,11 @@ async function main(): Promise<void> {
   let counter = system.spawnAnonymous(Counter);
   counter.tell({ kind: 'increment', amount: 10 });
   counter.tell({ kind: 'increment', amount: 32 });
+  // None of the three below is a drain sleep: they bracket the crash, not a
+  // terminate(), and the drain runs inside terminate() and nowhere else.
+  // `stop()` is fire-and-forget, so nothing orders the old actor's last
+  // journal write against the new one's replay of the same persistence id.
+  // Deleting them makes the replay report the wrong counter.
   await Bun.sleep(60);
 
   // "Crash and restart" — the new actor replays events from the journal.

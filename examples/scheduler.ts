@@ -31,6 +31,9 @@ async function main(): Promise<void> {
   // Then fire 'tick' every 50ms starting immediately.
   const periodic = system.scheduler.scheduleAtFixedRate(0, 50, actor, 'tick');
 
+  // Not a drain sleep: this waits for scheduler *ticks*.  terminate() drains
+  // the mailboxes, but a scheduled message is not in one yet, so there is
+  // nothing for the drain to wait on — the 500 ms is what produces the ticks.
   await new Promise(resolve => setTimeout(resolve, 500));
   periodic.cancel();
   await system.terminate();

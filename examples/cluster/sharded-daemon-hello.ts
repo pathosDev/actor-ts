@@ -42,12 +42,16 @@ async function main(): Promise<void> {
       .withName('workers')
       .withNumDaemons(6)
       .withActorFor((i) => () => new Worker(i)));
+  // Not a drain sleep: waits for the coordinator to place the six daemons.
   await Bun.sleep(100);
 
   handle.tell(0, 'job-A');
   handle.tell(3, 'job-B');
   handle.tell(5, 'job-C');
 
+  // Not a drain sleep either.  A sharded tell goes shard region → entity, and
+  // both of those live under `/system`, which terminate() deliberately does
+  // not drain — so there is nothing here for the drain to have waited on.
   await Bun.sleep(80);
   await shutdown();
 }

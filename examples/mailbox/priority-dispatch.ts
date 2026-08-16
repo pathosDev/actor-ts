@@ -61,8 +61,9 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'command', id: 'SHUTDOWN' });
   for (let i = 6; i < 10; i++) ref.tell({ kind: 'log', line: `bulk-${i}` });
 
-  // Wait for the actor to drain.
-  await Bun.sleep(300);
+  // No sleep: the twelve messages are queued before terminate() runs, and the
+  // drain follows the handler's own `await` — the cell counts as busy for the
+  // whole turn — so every tier is dispatched in priority order first.
   await system.terminate();
 }
 

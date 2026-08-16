@@ -36,7 +36,9 @@ async function main(): Promise<void> {
   const binding = await system.http(8558, { host: '127.0.0.1' }).bind(routes);
   console.log(`management endpoint on http://${binding.host}:${binding.port}`);
 
-  // Let the server run for a short while in the demo, then shut down.
+  // Not a drain sleep — nothing is queued for it to flush, and deleting it
+  // leaves the output unchanged.  It is the dwell that makes the curl line
+  // above true: without it the port is unbound again before anyone can hit it.
   console.log('try: curl http://127.0.0.1:8558/cluster/members');
   await Bun.sleep(200);
 

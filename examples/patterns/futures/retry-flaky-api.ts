@@ -57,6 +57,10 @@ async function main(): Promise<void> {
   // Kick off after a 50ms soft start — e.g. to let other things warm up.
   pipeTo(after(50, work), ref);
 
+  // Not a drain sleep: the retry schedule runs on timers outside any mailbox,
+  // and `pipeTo` only tells the actor once it finally settles.  terminate()
+  // would find a quiet tree and stop it mid-retry — this 500 ms covers the
+  // 50 ms start plus the 40/80/160 ms backoff chain.
   await Bun.sleep(500);
   await system.terminate();
 }

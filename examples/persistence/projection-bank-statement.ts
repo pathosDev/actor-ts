@@ -176,7 +176,11 @@ async function main(): Promise<void> {
   for (const amt of [200, 75]) await bob.ask({ kind: 'deposit', amount: amt }, 500);
   await bob.ask({ kind: 'withdraw', amount: 25 }, 500);
 
-  // Give the projection a beat to drain the last batch.
+  // "Drain" here is the projection's own polling batch, not a mailbox — do not
+  // mistake it for the wait terminate() now does.  The projection is a
+  // `/system` actor reading the journal on a timer, so neither half is
+  // something the `/user` drain covers, and it has to finish before the stop
+  // on the next line.  Without this the ledger prints empty.
   await Bun.sleep(250);
   projectionRef.stop();
   ledger.print();

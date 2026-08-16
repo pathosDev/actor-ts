@@ -22,7 +22,8 @@ async function main(): Promise<void> {
   const ref = await system.actorSelection('/user/greeter').resolveOne(500);
   ref.tell('again');
 
-  await Bun.sleep(30);
+  // No sleep: a selection resolves and tells synchronously, so both greetings
+  // are on the greeter's mailbox before terminate() starts draining it.
   await system.terminate();
 }
 
