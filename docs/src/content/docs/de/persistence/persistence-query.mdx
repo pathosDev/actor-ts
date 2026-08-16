@@ -319,6 +319,19 @@ Query-API direkt.
 - **Tag-Indexes sind wichtig** — der `events_tags`-Index ist das,
   was By-Tag-Queries schnell macht.  Das SQLite-Journal erstellt
   diesen automatisch.
+- **Ein kompaktiertes Event verlässt auch den Tag-Index.**
+  `delete` ist gegen die Read-Seite genauso spezifiziert wie gegen
+  `read`: sobald ein Präfix kompaktiert ist, gibt
+  `currentEventsByTag` es nicht mehr zurück.  Backends, deren Index
+  auf dem Event-Datensatz selbst sitzt (MongoDBs Multikey-`tags`),
+  bekommen das geschenkt; die mit einer separaten Struktur — die
+  Tags-Tabelle von SQLite und den SQL-Backends, Cassandras
+  `events_by_tag` — löschen im selben Aufruf daraus, und zwar vor
+  den Events, damit ein Crash mitten im Delete keine Zeilen
+  zurücklässt, deren Schlüssel sich nicht mehr rekonstruieren
+  lassen.  Wichtig zu wissen, wenn du ein eigenes Journal
+  schreibst: `read` und `highestSeq` sehen völlig korrekt aus,
+  während ein vergessener Index gelöschte Events weiter ausliefert.
 
 ## Wie geht's weiter
 

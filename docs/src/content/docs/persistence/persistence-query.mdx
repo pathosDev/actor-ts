@@ -304,6 +304,17 @@ API directly.
 - **Tag indexes matter** — `events_tags` index is what makes
   by-tag queries fast.  The SQLite journal creates this
   automatically.
+- **A compacted event leaves the tag index too.**  `delete` is
+  specified against the read side as well as `read`: once a prefix
+  is compacted, `currentEventsByTag` stops returning it.  Backends
+  whose index sits on the event record itself (MongoDB's multikey
+  `tags`) get that for free; the ones with a separate structure —
+  SQLite's and the SQL backends' tags table, Cassandra's
+  `events_by_tag` — delete from it as part of the same call, and
+  before the events, so a crash mid-delete cannot strand rows whose
+  keys are no longer reconstructible.  Worth knowing when you write
+  your own journal: `read` and `highestSeq` will look perfectly
+  correct while a forgotten index keeps serving deleted events.
 
 ## Where to next
 
