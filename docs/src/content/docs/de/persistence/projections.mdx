@@ -119,6 +119,82 @@ Wenn du den Handler nicht idempotent machen kannst, muss die
 Projektion an einem 2-Phase-Commit mit dem Offset-Save teilnehmen —
 viel komplexer, nicht out-of-the-box bereitgestellt.
 
+## Wenn der Handler wirft
+
+Der Cursor rückt erst vor, nachdem `handle` zurückgekehrt ist — ein
+fehlschlagender Handler blockiert also **konstruktionsbedingt den
+Kopf der Warteschlange**: jedes spätere Event wartet hinter dem, das
+fehlgeschlagen ist.  `recoveryStrategy` entscheidet, wie lange das
+so bleibt.
+
+| Strategie | Retries | Danach | Wähle sie, wenn |
+| --- | --- | --- | --- |
+| **`retry-and-fail`** *(Default)* | ja | stoppt die Projektion | Eine still veraltete View schlimmer ist als eine sichtbar gestoppte. |
+| **`retry-and-skip`** | ja | überspringt das Event | Verfügbarkeit vor Vollständigkeit geht — ein Dashboard, ein Suchindex. |
+| **`fail`** | nein | stoppt sofort | Der Handler bereits intern wiederholt. |
+| **`skip`** | nein | überspringt sofort | Manche Events schlicht erwartbar nicht zustellbar sind. |
+
+```ts
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withRecoveryStrategy('retry-and-skip')
+  .withMaxRetries(5)
+  .withRetryBackoffMs(2_000)
+  .withMaxRetryBackoffMs(60_000)
+  .withOnFailure((failure) => {
+    console.error(
+      `${failure.projection}: ${failure.event.persistenceId}#${failure.event.sequenceNr} `
+      + `→ ${failure.action} (attempt ${failure.attempt})`,
+      failure.error,
+    );
+  });
+```
+
+Retries erfolgen **nicht sofort**.  Der nächste Versuch wird um
+`retryBackoffMs` verzögert und verdoppelt sich jedes Mal, bis
+`maxRetryBackoffMs` erreicht ist.  `maxRetries` zählt die Versuche
+*nach* dem ersten — der Default von 3 bedeutet also, dass ein
+schlechtes Event den Handler viermal erreicht, bevor die Projektion
+es aufgibt.
+
+### Was ein Fehlschlag erzeugt
+
+- **`onFailure`** — wird bei jedem Versuch aufgerufen, mit dem
+  betroffenen `PersistentEvent`, dem Fehler, der Versuchsnummer und
+  der getroffenen Aktion (`retry` / `skip` / `stop`).  Das ist das
+  strukturierte Signal; häng dein Alerting daran.  Ein Hook, der
+  selbst wirft, wird geloggt und verschluckt — ein kaputter Reporter
+  darf die Projektion nicht mitreißen.
+- **Ein Dead Letter** — ein übersprungenes Event wird, in einen
+  `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht,
+  damit nichts spurlos verschwindet:
+
+  ```ts
+  import { DeadLetter } from 'actor-ts';
+
+  system.eventStream.subscribe(auditRef, DeadLetter);
+  ```
+
+- **Metriken** — `persistence_projection_stalled`,
+  `persistence_projection_failures_total` und
+  `persistence_projection_events_skipped_total`; siehe
+  [Stock-Metriken](/de/observability/metrics/stock-metrics/).
+- **Logs** — eine Error-Zeile, wenn eine Fehlerserie beginnt, und
+  eine, wenn sie endet.  Die Retries dazwischen gehen nach `debug` —
+  eine einen Tag lang festhängende Projektion kostet also zwei
+  Error-Zeilen statt einer pro Poll.
+
+`fail` **stoppt den Actor**, statt den Fehler aus dem Tick
+entkommen zu lassen.  Das ist Absicht: der Supervisor der
+Projektions-Gruppe startet seine Kinder neu, ein entkommender Fehler
+würde also denselben Cursor neu laden und am selben Event scheitern
+— eine Restart-Schleife, die lauter ist als das ersetzte Drehen und
+kein bisschen nützlicher.
+
+Eine gestoppte Projektion behält ihren Cursor: Ursache beheben und
+neu starten setzt genau bei dem Event fort, das fehlgeschlagen ist.
+
 ## OffsetStore
 
 ```ts
