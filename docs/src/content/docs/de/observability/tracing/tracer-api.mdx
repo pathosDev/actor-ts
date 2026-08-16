@@ -1,14 +1,25 @@
 ---
 title: Tracer-API
-description: Die Tracing-Abstraktion des Frameworks — `startSpan`, `withActiveSpan`, Span-Attribute, Status, Exceptions. Null Overhead, wenn deaktiviert; austauschbares Backend via Adapter (OTel, Recording-Tracer für Tests).
+description: Die Tracing-Abstraktion des Frameworks — `startSpan`, `withActiveSpan`, Span-Attribute, Status, Exceptions. Ein Feldzugriff und ein Null-Check, wenn deaktiviert; austauschbares Backend via Adapter (OTel, Recording-Tracer für Tests).
 ---
 
 Die Tracing-API des Frameworks ist eine **minimale Abstraktion
 über verteiltes Tracing**. So entworfen, dass:
 
-- **Tracing aus ist Null-Kosten** — der Default-`NoopTracer`
-  short-circuited jeden Aufruf; keine Allokationen, keine
-  Async-Storage-Lookups.
+- **Tracing aus kostet einen Feldzugriff** — der
+  Default-`NoopTracer` short-circuited jeden Aufruf, und seit
+  #411 löst der Nachrichtenpfad den Tracer über ein einfaches
+  Feld am `ActorSystem` auf statt über die Extension-Registry.
+  Eine Nachricht ohne Trace allokiert für Tracing nichts und
+  macht ihretwegen keinen Async-Storage-Lookup.
+
+  Hier stand früher *Null-Kosten*, und das stimmte nicht: Der
+  Receive-Pfad löste die Tracing-Extension zweimal pro Nachricht
+  auf, der Send-Pfad ein weiteres Mal — jedes Mal ein
+  Map-Lookup plus zwei Aufrufe, bei jeder Nachricht, egal ob
+  irgendetwas getract wurde.  Die Aussage ist jetzt zutreffend
+  statt angestrebt — aber „ein Feldzugriff und ein Null-Check“,
+  nicht „nichts“.
 - **Keine SDK-Dependency** — actor-ts zieht kein
   `@opentelemetry/sdk-*`; du bringst dein eigenes mit.
 - **W3C-kompatibles Cross-Wire** — Spans serialisieren zu W3C-

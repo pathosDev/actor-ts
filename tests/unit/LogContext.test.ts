@@ -22,6 +22,26 @@ describe('LogContext — basic scoping', () => {
     expect(Object.isFrozen(context)).toBe(true);
   });
 
+  test('isEmpty() answers for both kinds of empty (#411)', () => {
+    // The envelope builders ask this once per `tell`.  The identity fast path
+    // covers the common case — no `run` active at all — without allocating a
+    // keys array to discover that a frozen empty object is empty; the general
+    // check behind it is what keeps `run({}, …)` answering `true` as well.
+    // Collapsing the two would make an empty user scope look non-empty and
+    // cost every such message an AsyncLocalStorage frame on delivery.
+    expect(LogContext.isEmpty(LogContext.get())).toBe(true);
+
+    let insideEmptyScope = false;
+    let insidePopulatedScope = true;
+    LogContext.run({}, () => { insideEmptyScope = LogContext.isEmpty(LogContext.get()); });
+    LogContext.run({ tenant: 'acme' }, () => {
+      insidePopulatedScope = LogContext.isEmpty(LogContext.get());
+    });
+
+    expect(insideEmptyScope).toBe(true);
+    expect(insidePopulatedScope).toBe(false);
+  });
+
   test('run() makes ctx visible for the duration of the callback', () => {
     let observed: Record<string, unknown> = {};
     LogContext.run({ correlationId: 'abc-123' }, () => {

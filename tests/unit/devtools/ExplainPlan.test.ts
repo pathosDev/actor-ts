@@ -103,6 +103,54 @@ describe('explain plan — recording', () => {
     expect(plan[1]!.mailboxWaitMs!).toBeGreaterThan(30);
   });
 
+  test('a recorder switched on mid-handling still gets a real atMs (#411)', async () => {
+    // `Date.now()` used to be read for every message, on the way in, and was
+    // only ever used by this recorder.  #411 moved it behind the `_explain`
+    // null check in the `finally`, deriving the start from the end and the
+    // measured duration — and this is the case that had to survive the move.
+    //
+    // A start stamp taken at the top would have been *skipped* for a message
+    // dispatched while the recorder was still off, so a recorder enabled from
+    // inside the handler would have recorded `atMs: 0` — an entry stamped at
+    // the epoch, which is worse than no entry at all.
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('explain-midflight', options);
+    systems.push(system);
+
+    let probe: Probe | null = null;
+    class LateRecorder extends Actor<string> {
+      override async onReceive(message: string): Promise<void> {
+        if (message === 'enable-now') {
+          // Switched on *during* the handling of this very message.
+          this.context.enableExplainPlan({});
+          probe = {
+            plan: () => this.context.explainPlan(),
+            context: () => this.context,
+          };
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+    }
+
+    const before = Date.now();
+    const ref = system.spawn(LateRecorder, 'late');
+    ref.tell('enable-now');
+    await settle(120);
+
+    const plan = probe!.plan();
+    expect(plan).toHaveLength(1);
+    // A real wall-clock stamp bracketed by the test, not the epoch.
+    expect(plan[0]!.atMs).toBeGreaterThanOrEqual(before);
+    expect(plan[0]!.atMs).toBeLessThanOrEqual(Date.now());
+    // And it really is the *start*: the handler slept 20 ms, so the derived
+    // start sits that far behind the moment the entry was written.
+    expect(plan[0]!.handleTimeMs).toBeGreaterThan(15);
+    expect(Date.now() - plan[0]!.atMs).toBeGreaterThanOrEqual(15);
+    // The message was enqueued before the recorder existed, so it carries no
+    // enqueue stamp and its wait is correctly unknown rather than invented.
+    expect(plan[0]!.mailboxWaitMs).toBeNull();
+  });
+
   test('records the sender when there is one', async () => {
     const { probe, ref } = await spawnRecorded('explain-sender');
     const system = systems[systems.length - 1]!;

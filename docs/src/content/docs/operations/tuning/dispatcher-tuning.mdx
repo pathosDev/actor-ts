@@ -160,6 +160,33 @@ a throughput bottleneck.  A batch always ends early on an empty
 mailbox, a stop or suspend, and a throttle bucket that runs out —
 so the budget is a ceiling, never a commitment.
 
+## What a message costs when nothing is watching
+
+Worth knowing before you tune anything, because it sets the scale
+everything else is measured against.
+
+On the default dispatcher the **scheduling round trip dominates
+everything else on the message path** — about 2.4 µs against a raw
+mailbox operation of tens of nanoseconds.  That is why
+[per-actor throughput](#per-actor-throughput) is the setting with the
+largest effect on a `tell`-driven workload, and why a faster queue or a
+leaner handler moves the number far less than it feels like it should.
+
+Below that sits the framework's own per-message overhead with metrics
+and tracing **off**.  It used to be four extension-registry lookups,
+four metric label objects built for a registry that discards them, a
+closure, a throwaway array, and two clock reads — per message, on every
+system, whether or not anything was observing.  #411 removed all of it;
+what remains is a handful of field reads and null checks.  Both
+extensions are still free to switch on at runtime, and a message is
+either wholly instrumented or wholly not — the handles are resolved once
+per message rather than at each instrumentation point.
+
+If you are chasing allocation pressure rather than latency,
+`benchmarks/memory/receive-path.ts` is the arm that isolates this, and
+its header explains why the effect shows up as throughput rather than as
+heap.
+
 ## Per-actor dispatcher
 
 ```ts

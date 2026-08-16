@@ -11,6 +11,9 @@
  * the first.  #409 measured 64.9k -> 91.8k ask/s (1.4x) here against 2.1-2.9x
  * on `tell-throughput`, and the gap is the whole explanation — the residual
  * gain is the reply hop sharing a turn, not the request being batched.
+ * #411's per-message allocation cuts then took it to 107.7k (1.66x total),
+ * and those DO apply at depth 1 — every delivery paid them — which is why
+ * this arm moved further for the smaller of the two changes.
  *
  * A pipelined arm (N asks in flight, then `Promise.all`) would be the one that
  * responds to this knob.  It is deliberately not added here: this file's

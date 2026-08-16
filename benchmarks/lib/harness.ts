@@ -53,6 +53,28 @@ export type BenchmarkResult = {
 const smokeMode = process.env.ACTOR_TS_BENCH_SMOKE === '1';
 
 /**
+ * Force a full collection, so a memory delta measures what survived rather
+ * than what had not been swept yet.
+ *
+ * Every site used to reach only for `globalThis.gc`, which Bun exposes solely
+ * under `--expose-gc` — a flag nothing in this repo passes.  So the probe
+ * silently found nothing and every `deltaHeap` / `rssDeltaBytes` was an un-GC'd
+ * process delta, i.e. allocation noise rather than retention (#411).
+ *
+ * `Bun.gc(true)` needs no flag and is synchronous, and the suite runs on Bun
+ * (`bench` is `bun run benchmarks/run-all.ts`).  The `globalThis.gc` branch
+ * stays as the fallback for a Node run started with `--expose-gc`; when
+ * neither exists the numbers are what they always were, and the caller has no
+ * way to tell — which is the one thing worth knowing when reading a memory
+ * row, so it is stated here rather than discovered.
+ */
+function collectGarbage(): void {
+  const bunGc = (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc;
+  if (typeof bunGc === 'function') { bunGc(true); return; }
+  (globalThis as { gc?: () => void }).gc?.();
+}
+
+/**
  * Run a single benchmark.  Returns timing stats and a rough memory delta
  * (process.memoryUsage().rss before vs. after).  Runs one warmup phase,
  * then measures each iteration with `Bun.nanoseconds()` for ns resolution.
@@ -72,9 +94,7 @@ export async function runBenchmark(spec: BenchmarkSpec): Promise<BenchmarkResult
     await spec.teardown?.();
   }
 
-  // Force a fresh GC snapshot if possible (Bun exposes gc() under --expose-gc only).
-  const gc = (globalThis as { gc?: () => void }).gc;
-  gc?.();
+  collectGarbage();
   const rssBefore = process.memoryUsage().rss;
 
   const samples = new Float64Array(iterations);
@@ -87,7 +107,7 @@ export async function runBenchmark(spec: BenchmarkSpec): Promise<BenchmarkResult
   }
   const totalNs = highResNow() - totalStart;
 
-  gc?.();
+  collectGarbage();
   const rssAfter = process.memoryUsage().rss;
 
   const totalOps = iterations * opsPerIteration;
@@ -309,11 +329,10 @@ export function memoryGroup(title: string): MemoryGroup {
 
   return {
     async measure(label: string, allocate: () => Promise<void> | void): Promise<MemoryMeasurement> {
-      const gc = (globalThis as { gc?: () => void }).gc;
-      gc?.();
+      collectGarbage();
       const before = process.memoryUsage();
       await allocate();
-      gc?.();
+      collectGarbage();
       const after = process.memoryUsage();
       const deltaRss = after.rss - before.rss;
       const deltaHeap = after.heapUsed - before.heapUsed;

@@ -165,6 +165,34 @@ ist. Ein Batch endet immer vorzeitig bei leerer Mailbox, bei Stop oder
 Suspend und bei einem leerlaufenden Throttle-Bucket — das Budget ist
 also eine Obergrenze, nie eine Zusage.
 
+## Was eine Nachricht kostet, wenn niemand zusieht
+
+Wissenswert, bevor du irgendetwas tunst, weil es den Maßstab setzt, an
+dem alles andere gemessen wird.
+
+Auf dem Default-Dispatcher **dominiert der Scheduling-Roundtrip alles
+andere auf dem Nachrichtenpfad** — rund 2,4 µs gegenüber einer rohen
+Mailbox-Operation von einigen zehn Nanosekunden.  Deshalb ist
+[Per-Actor-Throughput](#per-actor-throughput) die Einstellung mit dem
+größten Effekt auf eine `tell`-getriebene Last, und deshalb bewegt eine
+schnellere Queue oder ein schlankerer Handler die Zahl weit weniger, als
+es sich anfühlt.
+
+Darunter liegt der Per-Message-Overhead des Frameworks selbst, mit
+Metriken und Tracing **aus**.  Das waren früher vier
+Extension-Registry-Lookups, vier Metrik-Label-Objekte, gebaut für eine
+Registry, die sie verwirft, ein Closure, ein Wegwerf-Array und zwei
+Clock-Reads — pro Nachricht, in jedem System, egal ob irgendetwas
+beobachtet wurde.  #411 hat all das entfernt; übrig bleiben eine Handvoll
+Feldzugriffe und Null-Checks.  Beide Extensions lassen sich weiterhin zur
+Laufzeit einschalten, und eine Nachricht ist entweder ganz oder gar nicht
+instrumentiert — die Handles werden einmal pro Nachricht aufgelöst statt
+an jedem Instrumentierungspunkt.
+
+Wenn du Allokationsdruck statt Latenz verfolgst, isoliert
+`benchmarks/memory/receive-path.ts` genau das, und sein Header erklärt,
+warum sich der Effekt als Durchsatz und nicht als Heap zeigt.
+
 ## Per-Actor-Dispatcher
 
 ```ts

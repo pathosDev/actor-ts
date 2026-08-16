@@ -31,6 +31,8 @@ import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
+import type { MetricsRegistry } from './metrics/Metrics.js';
+import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
@@ -111,6 +113,37 @@ export class ActorSystem {
    * {@link DispatchObserver}.
    */
   _dispatchObserver: DispatchObserver | null = null;
+
+  /**
+   * @internal The live metrics registry, or `null` while metrics are off.
+   *
+   * Owned by `MetricsExtension`, which is the only writer.  A field rather
+   * than a `metricsOf(system)` call because the receive path reads it once per
+   * message, and `metricsOf` is a `Map.get` plus two calls through the
+   * extension chain (#411).
+   *
+   * **`null` rather than the noop registry**, which is the half that matters:
+   * a caller that has to null-check anyway will skip building the label and
+   * help objects for a call that would discard them, and those literals were
+   * the bulk of what the uninstrumented path allocated per message.  Handing
+   * back a noop instead makes the call site look free and quietly is not.
+   *
+   * Read fresh every message, never cached per cell, because both extensions
+   * swap their backing object at runtime with live cells draining — DevTools
+   * does it whenever a panel opens or closes.
+   */
+  _metricsRegistry: MetricsRegistry | null = null;
+
+  /**
+   * @internal The installed tracer, or `null` while tracing is off.
+   *
+   * Owned by `TracingExtension`; same reasoning as {@link _metricsRegistry},
+   * except that a reader must fall back to `NOOP_TRACER` rather than skip the
+   * work: an envelope can carry a trace context from a remote peer that traces
+   * while this node does not, and the noop tracer's span is what keeps that
+   * message's explain entry shaped the way it has always been.
+   */
+  _tracer: Tracer | null = null;
 
   /**
    * @internal Open a span for every message, not only for ones that
