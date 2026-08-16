@@ -64,3 +64,8 @@ tmp/
 # `.dev/` is the unminified output served via `uiDevelopmentRoot`.
 devtools-ui/.build/
 devtools-ui/.dev/
+
+# Extracted documentation samples, written and deleted by
+# `scripts/check-doc-samples.mjs` on every run.  Present on disk only while
+# tsc is looking at them, or afterwards when it was run with `--keep`.
+.doc-samples/
