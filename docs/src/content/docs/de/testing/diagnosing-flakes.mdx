@@ -1,0 +1,248 @@
+---
+title: Test-Flakes diagnostizieren
+description: Einen flaky Test von einem kaputten unterscheiden — mit dem Repeat-Run-Harness — und ihn dann gegen den Katalog der Ursachen halten, die diese Suite tatsächlich hatte: feste Sleeps, Buns Timer-Quantum, ein Dispatcher-Hop, den kein Poll-Intervall gewinnt, und die drei Multi-Node-Suites, die CI nicht ausführt.
+---
+
+Der [Testing-Überblick](/de/testing/overview/) sagt dir, wie du einen Test
+*schreibst*, der nicht flakt.  Diese Seite ist die andere Hälfte: Du hast
+einen Test, der es bereits tut, und musst wissen, welche Sorte es ist.
+
+## Zuerst: flaky oder einfach kaputt?
+
+Ein Test, der einmal umfällt und beim erneuten Lauf grün ist, ist keine
+Kategorie — er ist eine Beobachtung mit Stichprobengröße eins.  Lass ihn
+absichtlich noch einmal laufen:
+
+```sh
+# 20 repeats of one file, naming anything that failed at least once
+bun run test:stress -- --runs=20 tests/unit/http/websocket/WebsocketServerActor.test.ts
+```
+
+`bun run test:stress` (`scripts/stress-test.mjs`) lässt die Suite N-mal
+laufen, hebt JUnit-Report und Log jedes Laufs auf und aggregiert Fehlschläge
+nach Test-Identität.  Die Ausgabe trennt die beiden Fälle, auf die es
+ankommt:
+
+| Urteil | Bedeutung | Was zu tun ist |
+| --- | --- | --- |
+| **flaky** — in einigen Läufen umgefallen | Das Ergebnis hängt an Timing, Reihenfolge oder Maschine. | Gegen den Katalog unten halten. |
+| **durchgehend rot** — in jedem Lauf umgefallen | Kaputt.  Wiederholung sagt dir nichts Neues. | Reparieren oder ein Issue aufmachen.  Das ist kein Flake. |
+
+Zwei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
+**gar keinen JUnit-Report** erzeugt hat (Bun starb, bevor der Reporter
+geflusht hat — die Fehlschläge fehlen in den Summen, statt nicht zu
+existieren), und einen Lauf, der **mit Exit-Code ≠ 0 endete, ohne dass ein
+Test umgefallen ist** (ein Absturz im Teardown, ein nicht freigegebenes
+Handle).  Beides liest sich für eine naive Schleife als „grün“.
+
+```sh
+bun run test:stress                      # 10 repeats of the whole suite
+bun run test:stress -- --runs=3          # 3 repeats
+bun run test:stress -- --concurrency=4   # 4 at once, for real CPU contention
+```
+
+Reports, Logs und ein maschinenlesbares `summary.json` landen in `.stress/`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Das Harness führt mehr aus als ein CI-Check">
+  Es **entfernt `ACTOR_TS_SKIP_FLAKY_MNS` aus der Umgebung, die es an
+  `bun test` weiterreicht** — die drei quarantänisierten Suites (siehe unten)
+  sind also enthalten, selbst wenn deine Shell oder dein Workflow das Flag
+  gesetzt hat.  Es zu erben würde eine strikt kleinere Suite messen als ein
+  lokaler Lauf und dann eine verlässliche Pass-Rate über genau die Tests
+  melden, von denen bekannt ist, dass sie nicht verlässlich sind.  Nutze
+  `--skip-quarantined`, wenn der Rest der Suite Gegenstand des Laufs ist.
+</Aside>
+
+## Was Wiederholung findet — und was nicht
+
+Eine Schleife treibt die Wahrscheinlichkeit eines **lastabhängigen** Flakes
+hoch: ein fester Sleep, der auf einer unbeschäftigten Maschine lang genug ist
+und unter Last zu kurz.  Das ist hier die dominante Familie, und die Schleife
+findet sie.
+
+Über einen **deterministischen Reihenfolge-Fehler** sagt sie nichts.  Das
+klarste Beispiel in diesem Repository ist ein Test, der auf den
+aufgezeichneten Zustand des einen Actors wartete und dann den eines anderen
+prüfte — zwei Zustände, getrennt durch einen Dispatcher-Hop.  Eine
+Wegwerf-Probe ließ die kaputte Bedingung 200-mal laufen: **0 Fehlschläge bei
+5 ms Poll-Intervall und weiterhin 0 bei 1 ms.**  Der Default-Dispatcher
+schedult über `setImmediate`, der Zug des zweiten Actors steht also *vor* dem
+nächsten Timer des Pollers in der Queue und gewinnt jedes Mal, solange
+Arbeit zügig abgearbeitet wird.  Das Rennen ist konstruktionsbedingt real und
+lokal nicht reproduzierbar.
+
+Ein grüner Stress-Lauf ist also Evidenz über eine Familie, kein Freibrief.
+Die zweite Familie findet man durch Lesen:
+
+> Liegt zwischen dem Zustand, auf den du wartest, und dem Zustand, den du
+> prüfst, ein Message-Send?
+
+Wenn ja, ist das Warten ein Stellvertreter, den ein halb fertiger Schritt
+bereits erfüllt — warte stattdessen auf den *geprüften* Zustand.
+
+## Der Katalog
+
+Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
+
+| Familie | Stand | Signatur |
+| --- | --- | --- |
+| Fester Sleep vor einer Assertion | Wird umgestellt | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
+| Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
+| Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
+| Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
+| Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
+| Worker-Respawn auf Hosted Runnern | Quarantäne | Worker starten, machen den Handshake, laufen dann nie — nur in CI |
+
+### Fester Sleep vor einer Assertion
+
+Mit Abstand die dominante Form.  `N` stammt aus einem Lauf, der grün war,
+kodiert also die Latenz einer Maschine an einem Tag; unter Last dauert der
+Schritt länger, und die Assertion liest einen Wert, der nie geschrieben
+wurde.
+
+```ts
+// ✗ the sleep is a bet on how fast the machine is
+await sleep(50);
+expect(stopped).toBe(true);
+```
+
+```ts
+// ✓ returns as soon as it holds; the timeout only bounds the broken case
+await awaitCondition(() => stopped, { label: 'the failing child was stopped' });
+expect(stopped).toBe(true);
+```
+
+`tests/util/AwaitCondition.ts` ist der gemeinsame Helper, und
+[Auf Zustand warten, nicht auf verstrichene Zeit](/de/testing/overview/#auf-zustand-warten-nicht-auf-verstrichene-zeit)
+behandelt, wann ein Sleep weiterhin richtig ist — eine Abwesenheit, der man
+nur ein Zeitfenster geben kann, eine Dauer, die *selbst* die Assertion ist,
+eine Verschränkung, die ein Test braucht.
+
+**Diese Umstellung ist nicht abgeschlossen.**  Unter `tests/` stehen weiterhin
+~470 `await sleep(`-Stellen gegen ~620 `awaitCondition(`-Aufrufe — und die
+Sleep-Zahl ist während der Umstellung *gestiegen*, weil neue Tests weiter in
+der alten Form geschrieben werden.  Ein zweiter Helper trübt das Bild
+zusätzlich: `waitFor` wird an ~330 Stellen benutzt und in über dreißig
+einzelnen Dateien als lokales `async function waitFor(` neu deklariert, jedes
+Mal mit eigenem Timeout und Poll-Intervall.  Behandle ein
+`sleep`-dann-`expect`-Paar in einem umgefallenen Test als Verdächtigen,
+bevor du nach etwas Raffinierterem suchst.
+
+### Buns Timer-Quantum
+
+Die Standard-Timer-Auflösung unter Windows ist 15,625 ms, und Buns Event-Loop
+entscheidet auf dieser Tick-Grenze, dass ein Timer fällig ist — ein
+`setTimeout`, dessen Deadline knapp *unter* einem Tick-Vielfachen liegt,
+feuert also einen ganzen Tick **zu früh**.  Ein `setTimeout(30)` wurde auf
+einer unbeschäftigten Maschine mit 18,67 ms gemessen.
+
+Die Uhr ist nicht das Problem, genauer messen hilft also nicht; die Toleranz
+war falsch.  `tests/util/TimerTolerance.ts` trägt die Messungen und
+`minimumElapsedMs()`, das eine Untergrenze ein volles Quantum unter den
+Nominalwert legt.  Eine sichere **Obergrenze** gibt es nicht — derselbe
+30-ms-Timer wurde unter CPU-Last mit 201 ms gemessen, und eine Grenze, die
+locker genug ist, das zu überleben, kann die geprüfte Verzögerung nicht mehr
+von einer längeren unterscheiden.  Prüfe stattdessen virtuelle Zeit mit dem
+[ManualScheduler](/de/testing/manual-scheduler/).
+
+### Dispatcher-Hop zwischen Warten und Prüfen
+
+Oben beschrieben.  Das Erkennungsmerkmal: er ist **isoliert nie
+reproduzierbar** — bei keinem Poll-Intervall, auch nicht unter CPU-Last — und
+fällt nur innerhalb eines großen Parallel-Laufs um, wo die Macrotask-Queue
+verstopft genug ist, dass sich die Reihenfolge umdreht.  Verbring keinen
+Nachmittag mit Reproduktionsversuchen; lies die beiden Zustände und frage,
+ob dazwischen eine Nachricht läuft.
+
+### Port-Kollisionen und Filesystem-Races
+
+Beides geklärt — und wissenswert, weil ein neuer Test beides wieder
+einschleppen kann.
+
+- **Ports.**  Binde `0`, lies den zugewiesenen Port vom Listener zurück und
+  gib *diesen* an jeden Client im Test.  Ein fest verdrahteter Port ist eine
+  Kollision, die auf eine zweite Suite wartet.
+- **Temp-Verzeichnisse.**  `mkdtemp` oder ein `randomUUID`-Suffix pro Test,
+  niemals ein geteilter Fixture-Pfad.  Rund zwei Dutzend Suites machen das
+  heute; kopiere eine der Object-Storage-Suites, wenn du ein Muster brauchst.
+
+## Offene Einträge
+
+Tests, die zeitweise umfallen und deren Ursache **noch nicht** geklärt ist.
+Ursachen auszuschließen ist nicht dasselbe wie eine zu belegen, deshalb
+stehen sie hier ohne Urteil statt mit einer Vermutung:
+
+| Test | Datei |
+| --- | --- |
+| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` |
+| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` |
+| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` |
+| `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
+| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
+
+Ports und Dateisystem-Pfade sind für alle fünf ausgeschlossen.  Benennt ein
+Nightly-Lauf einen davon erneut, sagt dessen `summary.json`, wie oft — trag
+die Zahl hier nach, statt von vorn anzufangen.
+
+## Drei Suites, die CI nicht ausführt
+
+`ACTOR_TS_SKIP_FLAKY_MNS=1` ist in `test.yml`, `multi-runtime.yml` und
+`publish.yml` gesetzt, und drei Suites überspringen sich selbst, wenn es
+gesetzt ist:
+
+- `tests/multi-node/LeaseMajority.test.ts`
+- `tests/multi-node/ParallelPubSub.test.ts`
+- `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
+
+Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test keine
+funktionsfähigen Worker-Threads mehr starten — sie spawnen, machen den
+Handshake und laufen dann nie — und dieselbe Ressourcen-Knappheit verzögert
+den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, sodass beide
+Partitionsseiten acquiren und der Test einen falschen Split-Brain sieht.
+Keines von beidem reproduziert lokal oder in Docker.
+
+**Ein grüner CI-Check sagt über diese drei also nichts aus.**  Ein lokales
+`bun test` führt sie aus; der `integration`-Workflow über echtes Netz deckt
+den entsprechenden Bereich ebenfalls ab.
+
+### Sie zurückholen
+
+`.github/workflows/nightly-flakes.yml` führt genau diese drei um 04:00 UTC
+mit **abgeschaltetem** Flag aus, drei Wiederholungen pro Nacht, und lädt die
+Reports hoch.  Der Job ist `continue-on-error`: Eine bekannt rote Messung
+darf nicht zu einem roten Pflicht-Check werden, den niemand liest — das
+Ergebnis kommt deshalb als Annotation am Lauf und als Step-Summary.
+
+Die Latte liegt bei **14 aufeinanderfolgenden grünen Nächten** — 42
+aufeinanderfolgenden grünen Ausführungen.  Zwei Kalenderwochen statt einer
+kleineren Zahl, weil der Fehler eine Eigenschaft des Runner-Pools ist und
+nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools sowie
+mehrere `bun-version: latest`-Rollen ab, und genau davon muss gezeigt werden,
+dass es aufgehört hat.  Eine einzige rote Nacht setzt den Zähler zurück; das
+`summary.json` jeder Nacht ist der Beleg (`greenRuns == runs`).
+
+Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
+
+1. `ACTOR_TS_SKIP_FLAKY_MNS` aus `test.yml`, `multi-runtime.yml` und
+   `publish.yml` entfernen.
+2. Die drei `describeMns`-Guards entfernen.
+3. Den `coveragePathIgnorePatterns`-Block in `bunfig.toml` entfernen — er
+   nimmt das Worker-Harness nur deshalb aus dem Coverage-Nenner, weil dieses
+   Harness auf dem Hosted Runner nicht ausgeführt werden kann.
+4. `test.yml`s pragmatischen `COVERAGE_LINE_FLOOR: '80'` neu bewerten, der
+   aus demselben Grund gesenkt wurde.
+5. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
+   Dequarantänisierung.
+
+## Wie geht's weiter
+
+- **[Testing-Überblick](/de/testing/overview/)** — wie man einen Test
+  schreibt, der gar nicht erst flakt.
+- **[ManualScheduler](/de/testing/manual-scheduler/)** — virtuelle Zeit
+  prüfen statt der Wanduhr.
+- **[TestProbe](/de/testing/test-probe/)** — auf eine Nachricht warten statt
+  auf eine Dauer.
+- **[ParallelMultiNodeSpec](/de/testing/parallel-multi-node/)** — das
+  Worker-Thread-Harness, das zwei der quarantänisierten Suites ausüben.

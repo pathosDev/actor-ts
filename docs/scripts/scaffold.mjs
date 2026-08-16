@@ -666,6 +666,9 @@ const PAGES = [
   ['testing/parallel-multi-node.md',
    'ParallelMultiNodeSpec',
    'Multi-process variant for tests that need real OS-level isolation.'],
+  ['testing/diagnosing-flakes.md',
+   'Diagnosing flakes',
+   'Tell a flaky test from a broken one, and match it against the causes this suite has had.'],
 
   // ---- PART 8 — Operate -----------------------------------------
   ['operations/overview.md',

@@ -237,6 +237,11 @@ wenn es überhaupt keinen Zustandsübergang gibt, auf den man warten könnte:
 Schreib in einem Kommentar dazu, welcher der Fälle es ist. Ein Sleep mit
 Begründung ist Dokumentation; ein Sleep ohne ist eine Wette.
 
+Das alles ist Vorbeugung. Wenn ein Test *bereits* zeitweise umfällt, hat
+[Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/) das
+Repeat-Run-Harness, das einen Flake von einem kaputten Test unterscheidet, und
+den Katalog der Ursachen, die diese Suite tatsächlich hatte.
+
 ## Was nicht testen
 
 import { Aside } from '@astrojs/starlight/components';

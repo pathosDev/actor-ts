@@ -193,6 +193,19 @@ import { Aside } from '@astrojs/starlight/components';
   them unique across concurrently-running specs.
 </Aside>
 
+<Aside type="caution" title="These suites do not run on CI">
+  Bun on GitHub's hosted runners cannot respawn functional worker
+  threads after the first worker test — they spawn, handshake, and
+  then never run.  So `ACTOR_TS_SKIP_FLAKY_MNS=1` skips every
+  `ParallelMultiNodeSpec` suite there, and a green CI check says
+  nothing about them.  They do run on a local `bun test` and in
+  Docker, and a nightly job re-runs them with the flag off.
+
+  Which means: **run your worker-thread test locally before
+  trusting it.**  The exit criterion for the quarantine is in
+  [Diagnosing test flakes](/testing/diagnosing-flakes/).
+</Aside>
+
 ## Where to next
 
 - **[Testing overview](/testing/overview/)** — the
@@ -201,3 +214,5 @@ import { Aside } from '@astrojs/starlight/components';
   faster in-process variant.
 - **[TestKit](/testing/testkit/)** — for single-system
   tests.
+- **[Diagnosing test flakes](/testing/diagnosing-flakes/)** — the
+  quarantine, and how it is lifted.
