@@ -1,22 +1,29 @@
 /**
- * Shared DevTools wiring for the *long-running* examples.
+ * Shared DevTools wiring for the examples that are worth watching.
  *
- * Only the examples that run until you stop them — the HTTP and cache
- * services, the cluster demos, the chat and voice backends — import this
- * file, and none of them pay for it by default:
+ * The services, the cluster demos and the chat and voice backends import
+ * this file, and none of them pay for it by default:
  *
  *     bun run examples/http/rest-service.ts              # unchanged
  *     bun run examples/http/rest-service.ts --devtools   # + http://127.0.0.1:9333
  *
- * The examples that finish on their own carry no reference to this
- * harness at all (#552).  They are the ones people copy into a project
- * to start from, and three lines of debugging scaffolding in a
- * twenty-six-line hello-world is three lines that have to be understood
- * and deleted first.  There was nothing to see in them either: a script
- * that is over in a few hundred milliseconds cannot be opened in a
- * browser, and the harness used to park it just before shutdown purely
- * so that it could be.  DevTools belongs where a system stays up long
- * enough to watch it work.
+ * #552 removed the harness from every example that called `holdOpen()` —
+ * the ones that had to park before shutdown so a browser could reach them
+ * at all.  Those are the files people copy into a project to start from,
+ * and three lines of debugging scaffolding in a twenty-six-line
+ * hello-world is three lines that have to be understood and deleted
+ * first.
+ *
+ * That sweep keyed on `holdOpen()`, which is not the same thing as "runs
+ * until you stop it", so seven importers still finish on their own:
+ * cluster/{singleton-hello, singleton-cron, sharded-daemon-hello,
+ * sharded-daemon-fixed-workers}, discovery/service-locator-cluster,
+ * pubsub/event-bus-across-nodes and management/opentelemetry-tracing.
+ * They attach, log a URL and exit a second or two later, so `--devtools`
+ * buys them nothing — the wiring is inert rather than wrong, and removing
+ * it is a separate change from correcting what was claimed about it.
+ * DevTools belongs where a system stays up long enough to watch it work;
+ * the documentation now says which examples those actually are.
  *
  * The `--devtools` argument works in every shell.  `DEVTOOLS=1` does the
  * same on a POSIX shell, but `VAR=value command` is a parser error in
