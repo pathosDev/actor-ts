@@ -187,10 +187,34 @@ anyone is watching — the same events that already drive the
 
 ## Trying it
 
+`examples/cluster/counter-node.ts` is the sharding demo, and it runs
+until you stop it — which is what both panels need:
+
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
 ```
 
-The long-running examples are wired for DevTools; a three-node cluster
-demo gives you three ports, `9333` upwards. See the
-[overview](/observability/devtools/overview/) for the details.
+Open `http://127.0.0.1:9333`. The tree fills in under
+`/system/cluster/sharding/region-counter` — a `Shard` per shard the node
+owns, a `CounterEntity` under it — one node at a time, as the example's
+own timer touches each of eight entity ids in turn. `/user` stays empty
+here: sharded entities are hosted by the sharding subsystem, not by your
+guardian. Cluster shows a one-member ring with this node as leader.
+
+Start a second and a third node to give it something to redistribute:
+
+```bash
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
+```
+
+They take the next free DevTools ports, `9334` and `9335`, so all three
+trees are open at once — and killing one is the interesting part: watch
+the shards it held reappear under the survivors. See the
+[overview](/observability/devtools/overview/) for the flags.
+
+Most of the examples are **not** wired for DevTools, and seven that are
+still exit on their own — `--devtools` on `cluster/singleton-hello.ts`
+prints three URLs and is gone before you can open any of them. The
+[overview](/observability/devtools/overview/#try-it-on-the-examples)
+lists them.
