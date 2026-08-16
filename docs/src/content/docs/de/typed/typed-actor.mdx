@@ -137,7 +137,11 @@ untyped tauchen ein paar Details auf:
   zuerst.**  Wenn der Handler in
   `Behaviors.supervise(...).onFailure(strategy)` gewickelt ist,
   behandelt diese Strategie den Fehler.  Wenn nicht, propagiert er
-  an den Supervisor des *Parents* — wie bei untyped.
+  an den Supervisor des *Parents* — wie bei untyped.  Genauso ein
+  Fehler, für den dem Wrapper die Restarts ausgegangen sind: ist
+  `maxRetries` innerhalb von `withinTimeRangeMs` aufgebraucht, hört
+  die typed-Ebene auf zu absorbieren, und der Fehler läuft weiter
+  an den Parent.
 - **`context.spawn(behavior)` gibt eine voll typisierte
   `ActorRef<U>` zurück.**  Die Runtime wickelt das Kind in einen
   weiteren `TypedActor<U>`.  Das ist das cast-freie Child-Spawning,

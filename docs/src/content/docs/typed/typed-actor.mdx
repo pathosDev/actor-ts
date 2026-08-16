@@ -132,7 +132,10 @@ untyped, a few details surface:
   first.**  If the handler is wrapped in
   `Behaviors.supervise(...).onFailure(strategy)`, that strategy
   handles the error.  If not, it propagates to the *parent's*
-  supervisor — same as untyped.
+  supervisor — same as untyped.  So does a failure the wrapper has
+  run out of restarts for: once `maxRetries` is spent within
+  `withinTimeRangeMs`, the typed level stops absorbing and the
+  error carries on to the parent.
 - **`context.spawn(behavior)` returns a fully-typed `ActorRef<U>`.**
   The runtime wraps the child in another `TypedActor<U>`.  This
   is the cast-free child spawning the typed form provides.

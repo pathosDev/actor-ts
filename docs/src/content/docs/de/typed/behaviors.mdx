@@ -211,8 +211,34 @@ Handler geworfene Fehler werden durch die Strategie geleitet —
 Restart re-initialisiert das Behavior (zurück zur initialen Form),
 Stop terminiert, Resume überspringt die fehlschlagende Nachricht.
 
+`maxRetries` und `withinTimeRangeMs` begrenzen, wie oft Restart
+feuern darf.  Das Beispiel oben gewährt **fünf** Restarts pro
+gleitender Minute; der sechste Fehler innerhalb dieser Minute
+**eskaliert** stattdessen — der Fehler wird an die Zelle des Actors
+weitergeworfen, wo die Strategie des Parents entscheidet.
+`maxRetries: -1`, der Default einer handgebauten
+`OneForOneStrategy`, ist unbegrenzt; `maxRetries: 0` restartet gar
+nicht erst.
+
+Die Zählung gehört zum `supervise`-Wrapper, nicht zur Strategie —
+ein Strategie-Wert, den du mehreren Behaviors gibst, verschafft
+also jedem sein eigenes Kontingent.  Sie summiert sich über die
+Restarts, die sie zählt; nur ein *neuer* `supervise`-Wrapper
+beginnt von vorn.
+
+Die Eskalation jenseits der Grenze schichtet die beiden
+Supervisoren, statt sie zu duplizieren.  Ein Restart, den der
+Parent gewährt, baut einen brandneuen Actor — dieses Kontingent pro
+Behavior beginnt damit von vorn, und die äußere Grenze ist die
+Strategie des Parents, standardmäßig zehn Restarts pro Minute.  Ein
+Behavior, das immer wirft, hört also nach `maxRetries` auf, an Ort
+und Stelle zu kreisen, und stoppt endgültig, sobald auch das
+Kontingent des Parents aufgebraucht ist.
+
 Siehe [Supervision](/de/fundamentals/supervision/) für die
-Direktiven-Semantik; sie gelten in der typed-Form identisch.
+Direktiven-Semantik; sie gelten in der typed-Form identisch — mit
+einem Unterschied darin, wie die Grenze gezählt wird (dort
+vermerkt).
 
 ### `intercept`
 
