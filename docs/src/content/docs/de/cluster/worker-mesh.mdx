@@ -230,8 +230,9 @@ TCP-Transport:                MessageChannelTransport:
 ```
 
 Nachrichten zwischen Worker-Systemen gehen durch **Structured
-Clone** — schneller als JSON.stringify + parse und erhalten mehr
-Typen (Map, Set, Date etc.).
+Clone** — schneller, als Text zu rahmen und neu zu parsen.  Er trägt
+dieselben reichen Typen (Map, Set, Date …) wie der getaggte
+JSON-Tree des TCP-Wire, nur ohne den Text-Round-Trip.
 
 ## Anwendungsfälle
 

@@ -225,9 +225,10 @@ TCP transport:                MessageChannelTransport:
 - Cross-host                  - Same process only
 ```
 
-Messages between worker systems go through **structured clone**
-— faster than JSON.stringify + parse, and preserves more types
-(Map, Set, Date, etc.).
+Messages between worker systems go through **structured clone** —
+faster than framing and re-parsing text.  It carries the same rich
+types (Map, Set, Date, …) the TCP wire's tagged JSON tree carries,
+without the text round-trip.
 
 ## Use cases
 

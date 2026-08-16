@@ -182,11 +182,12 @@ Per-Actor-Variante.
 
 ## Serialisierung
 
-Nachrichten, die die Leitung überqueren, müssen **JSON-sicher**
-sein. Der Cluster rahmt das Envelope mit einem nackten
-`JSON.stringify` — der einklinkbare
+Der Cluster rahmt das Envelope als **getaggten JSON-Tree** —
+dasselbe Format, das die Persistenz-Stores schreiben, sodass die
+Typen, die einfaches JSON beschädigt, unversehrt hinüberkommen
+(#450). Der einklinkbare
 [`Serializer`](/de/serialization/overview/) wird auf der Leitung
-nicht konsultiert, CBOR ist dafür also nicht wählbar.
+weiterhin nicht konsultiert, CBOR ist dafür also nicht wählbar.
 
 ```ts
 {
@@ -197,19 +198,23 @@ nicht konsultiert, CBOR ist dafür also nicht wählbar.
 ```
 
 Einfache Werte (Strings, Zahlen, Arrays, Plain Objects)
-serialisieren trivial. Dinge, die nicht überleben:
+serialisieren trivial, und ebenso `Date`, `Map`, `Set`, `bigint`,
+`Uint8Array`, `RegExp`, `URL`, `Error` und jedes Typed Array — jedes
+kommt als echte Instanz an, genau so, wie es aus einem Journal
+zurückkäme. Was weiterhin nicht überlebt:
 
 - **Funktionen / Closures** — können keine Prozessgrenze überqueren.
-- **Klasseninstanzen mit Methoden** — Methoden gehen verloren; nur
-  Datenfelder überleben.
-- **`Map` / `Set`** — JSON serialisiert sie als `{}` (keine
-  Einträge). Nutze Plain Objects oder Arrays.
-- **Symbols** — werden von `JSON.stringify` still verworfen.
-- **BigInts** — die degradieren nicht, sie *werfen*: `JSON.stringify`
-  löst einen `TypeError` aus, wenn das Envelope gerahmt wird.
+  Der Frame wird **abgelehnt**, nicht still gekappt: er wird mit
+  einer `error`-Logzeile samt Peer verworfen, sodass ein Callback in
+  einer Nachricht kein unsichtbarer Datenverlust mehr ist.
+- **Symbols** — werden genauso abgelehnt.
+- **Klassenidentität** — Methoden gehen verloren und der Wert kommt
+  als Plain Object an; nur der `tag`-String (der Konstruktor-Name)
+  reist mit.
 
-Einen eigenen Serializer zu registrieren behebt nichts davon — der
-Cluster-Wire konsultiert die Registry nie.
+Einen eigenen Serializer zu registrieren ändert nichts davon — der
+Cluster-Wire konsultiert die Registry nie
+([#450](https://github.com/pathosDev/actor-ts/issues/450)).
 
 Siehe [Nachrichten](/de/fundamentals/messages/) für die Unveränderlichkeits-
 und Wire-Format-Konventionen.

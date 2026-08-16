@@ -100,11 +100,21 @@ ext.setDefault(new CborSerializer());
 Das ändert, welchen Serializer die `SerializationExtension` als
 ihren Default behandelt — den, den `ext.encode(value)` für jeden
 Wert ohne spezifische Klassenbindung nutzt.  Es rüstet CBOR
-**nicht** auf den Cluster-Wire oder die Persistenz-Stores um:
-Cross-Node-`tell`s gehen weiterhin als `JSON.stringify` über die
-Leitung (siehe die [Übersicht](/de/serialization/overview/)), und
-Journal- / Durable-State- / Snapshot-Stores schreiben ihr eigenes
-JSON.  Um CBOR-Bytes für eine bestimmte Payload zu erhalten, nutze
+**nicht** auf den Cluster-Wire oder die Persistenz-Stores um: beide
+schreiben den getaggten JSON-Tree, und keiner zieht die Registry
+heran (siehe die [Übersicht](/de/serialization/overview/)).  Der
+unterstützte Weg in einen Persistenz-Store ist dessen eigene
+`withSerializer(...)`-Option:
+
+```ts
+const journalOptions = SqliteJournalOptions.create()
+  .withPath('./journal.db')
+  .withSerializer(new CborSerializer());
+```
+
+Für den Cluster-Wire gibt es das noch nicht — diese Hälfte trackt
+[#450](https://github.com/pathosDev/actor-ts/issues/450).  Um
+CBOR-Bytes für eine bestimmte Payload zu erhalten, nutze
 `CborSerializer` direkt (siehe *Serialisierung pro Aufruf* unten).
 
 Per-Class-Bindung funktioniert weiterhin — `register` den

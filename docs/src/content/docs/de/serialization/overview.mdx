@@ -33,29 +33,35 @@ Plus ein Extension-Point: implementiere `Serializer<T>` für
 ## Wie das funktioniert
 
 Für ein Cross-Node-`tell` verpackt der Cluster die Nachricht in
-ein Envelope und sendet sie als **`JSON.stringify`**-Frame mit
-Längenpräfix — der einklinkbare `Serializer` wird auf der Leitung
-nicht konsultiert:
+ein Envelope und sendet sie als Frame mit Längenpräfix im
+**getaggten JSON-Tree**-Format — demselben Tree-Format, das
+`JsonSerializer` und die Persistenz-Stores schreiben.  Der
+einklinkbare `Serializer` wird auf der Leitung weiterhin nicht
+konsultiert:
 
 ```
 Sender-Seite:
   remoteRef.tell(message)
     → in ein Envelope { to, from, body, tag } verpackt
     → im body eingebettete ActorRefs → wire-sichere Marker
-    → JSON.stringify(envelope) → Frame mit Längenpräfix
+    → encodeJsonTree(envelope) → JSON → Frame mit Längenpräfix
     → Cluster-Transport sendet über die Leitung
 
 Empfänger-Seite:
     Cluster-Transport setzt den Frame wieder zusammen
-    → JSON.parse(frame) → Envelope
+    → JSON.parse(frame) → decodeJsonTree → Envelope
     → ActorRef-Marker → lebende Remote-Refs
     → body an onReceive des Actors ausgeliefert
 ```
 
-Der `body` muss **JSON-sicher** sein.  Der einzige Typ-Hinweis
-auf der Leitung ist `tag` — der Konstruktor-Name der Nachricht —
-fürs Routing; es gibt kein `serializerId` / `manifest`-Framing
-auf dem Cluster-Wire.
+Der `body` darf also alles enthalten, was unter
+[Was sich serialisieren lässt](#was-sich-serialisieren-lässt) steht
+— `Date`, `Map`, `Set`, `bigint`, `Uint8Array` und der Rest
+überstehen ein Cross-Node-`tell` genau so, wie sie einen
+Journal-Round-Trip überstehen (#450).  Die Klassen**identität**
+geht weiterhin verloren: der einzige Typ-Hinweis auf der Leitung
+ist `tag`, der Konstruktor-Name der Nachricht, und es gibt kein
+`serializerId` / `manifest`-Framing auf dem Cluster-Wire.
 
 ## Das Serializer-Interface
 
@@ -162,69 +168,82 @@ sind — nur als kompaktes Binärformat statt als getaggten JSON-Text.
 Er unterscheidet sich an einer Stelle: `undefined` wird nativ
 getragen statt abgelehnt, womit er der großzügigere der beiden ist.
 
-Der **Cluster-Wire ist anders**: Cross-Node-Nachrichten laufen
-durch rohes `JSON.stringify` (nicht `JsonSerializer`), sodass auf
-der Leitung die üblichen JSON-Grenzen gelten — `Date` → ISO-String,
-`Map` / `Set` → `{}`, `bigint` wirft, `undefined` / Funktionen
-verworfen.  Konvertiere vor einem Cross-Node-`tell` in einfache,
-JSON-sichere Formen:
+Der **Cluster-Wire trägt dieselbe Liste**: Cross-Node-Nachrichten
+laufen durch denselben getaggten Tree (nicht durch `JsonSerializer`
+selbst — der Wire rahmt das ganze Envelope, nicht nur den Body),
+sodass ein `Date` als `Date` und eine `Map` als `Map` ankommt
+(#450).  Was der Tree ablehnt, lehnt er auch auf der Leitung ab,
+und zwar laut: eine Funktion oder ein Symbol im Nachrichten-Body
+wurde früher von `JSON.stringify` still verworfen und ist jetzt ein
+verworfener Frame mit einer `error`-Logzeile.
 
 ```ts
-// ✗
+// ✓ — kommt als Date an, nicht als String
 ref.tell({ when: new Date() });
 
-// ✓
-ref.tell({ when: Date.now() });
+// ✗ — abgelehnt, der Frame verlässt den Node nie
+ref.tell({ onDone: () => {} });
 ```
 
 ## Wo Serialisierung passiert
 
 ```
-1. Cluster-Wire — jedes Cross-Node-tell (rohes JSON.stringify).
+1. Cluster-Wire — jedes Cross-Node-tell (getaggter JSON-Tree).
 2. PersistentActor.persist(event) — Events ins Journal.
 3. DurableStateActor.persist(state) — State in den Store.
 4. Snapshot-Writes — Snapshots in den Snapshot-Store.
 5. DistributedData — replizierter State über den Cluster.
 ```
 
-**Die Persistenz (2-4) schreibt das getaggte JSON-Tree-Format** —
-denselben Tree, den `JsonSerializer` nutzt — sodass `Date` / `Map` /
-`Set` / `bigint` / `Uint8Array` ohne Konfiguration durch jeden
-Journal, Snapshot-Store und Durable-State-Store round-trippen.
-Jeder Store akzeptiert zusätzlich eine explizite
-`withSerializer(...)`-Option, die einen eigenen `Serializer` in
-seine Rows routet (siehe
+**Alle fünf schreiben das getaggte JSON-Tree-Format** — denselben
+Tree, den `JsonSerializer` nutzt — sodass `Date` / `Map` / `Set` /
+`bigint` / `Uint8Array` ohne Konfiguration durch jeden Journal,
+Snapshot-Store, Durable-State-Store *und* den Cluster-Wire
+round-trippen.  Persistenz-Stores akzeptieren zusätzlich eine
+explizite `withSerializer(...)`-Option, die einen eigenen
+`Serializer` in ihre Rows routet (siehe
 [eigene Serializer](/de/serialization/custom/#einen-eigenen-serializer-für-die-persistenz-nutzen));
-die **Registry-Bindings** der `SerializationExtension` werden für
-Persistenz und Wire weiterhin **nicht** konsultiert — dieses Wiring
-trackt [#450](https://github.com/pathosDev/actor-ts/issues/450).
+für den Wire gibt es das noch nicht, und die **Registry-Bindings**
+der `SerializationExtension` werden weiterhin **nirgends**
+konsultiert — dieses Wiring trackt
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
 
-Der Cluster-Wire nutzt `JSON.stringify` direkt auf dem Envelope —
-nicht den einklinkbaren `Serializer` (siehe *Wie das
-funktioniert*).  In-Process-Tells **serialisieren nicht** — der
-Empfänger bekommt die exakte In-Memory-Referenz.  Serialisierung
-passiert nur an **Prozess- / Disk- / Cluster-Grenzen**.
+In-Process-Tells **serialisieren nicht** — der Empfänger bekommt
+die exakte In-Memory-Referenz.  Serialisierung passiert nur an
+**Prozess- / Disk- / Cluster-Grenzen**.
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Teste das, was die Grenze überschreitet">
   ```ts
-  // In-Process-Tests grünen; Cross-Cluster bringt einen Serialisierungs-Bug zum Vorschein
+  const codec = new JsonSerializer();
+  const back = codec.fromBinary(codec.toBinary(message), '');
   ```
-  In-Process-Tests üben keine Serialisierung.  Teste mit
-  [MultiNodeSpec](/de/testing/multi-node-spec/) oder
-  ParallelMultiNodeSpec, um sicherzustellen, dass Nachrichten
-  korrekt serialisieren.
+  In-Process-Tells serialisieren nicht — und **keines der beiden
+  Multi-Node-Testkits deckt das ab**: `MultiNodeSpec` reicht dem
+  Peer dasselbe Objekt per Referenz weiter und
+  `ParallelMultiNodeSpec` structured-cloned es, beide akzeptieren
+  also Payloads, die der Wire ablehnen würde.  Round-trippe die
+  Nachricht stattdessen in einem gewöhnlichen Unit-Test durch
+  `JsonSerializer` — denselben Tree, den der Wire rahmt, nur
+  strenger bei `undefined`.
 </Aside>
 
-<Aside type="caution" title="JSON + CBOR mid-Cluster mischen">
+<Aside type="caution" title="Einen laufenden Cluster aktualisieren">
   ```ts
-  // node-A bindet CBOR für MyEvent; node-B nicht
+  // node-A auf 0.15, node-B auf 0.16: eine Map kreuzt A→B, nicht B→A
   ```
-  Jeder Node in einem Cluster braucht für Cross-Node-Nachrichten
-  dieselbe **Serialisierungs-Bindung**.  Sonst können die Nodes
-  einander Nachrichten nicht dekodieren.  Rolle
-  Serialisierungsänderungen vorsichtig aus.
+  Der Wire ist von rohem `JSON.stringify` auf den getaggten Tree
+  gewechselt
+  ([#450](https://github.com/pathosDev/actor-ts/issues/450)) — eine
+  **breaking Wire-Änderung**.  Ein neuerer Node liest die Frames
+  eines älteren unverändert — untaggtes JSON dekodiert als es
+  selbst —, umgekehrt aber nicht: ein älterer Node sieht den
+  Tag-Wrapper als einfache Daten.  Betroffen sind nur Payloads, die
+  ohnehin schon beschädigt wurden; ein Cluster, dessen Nachrichten
+  einfache Daten sind, kann Node für Node rollen, einer, der eine
+  `Map`, `Set`, `Date`, `bigint` oder ein Typed Array sendet,
+  sollte in einem einzigen Fenster aktualisieren.
 </Aside>
 
 ## Wohin als Nächstes
