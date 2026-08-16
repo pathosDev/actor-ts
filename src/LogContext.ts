@@ -172,6 +172,27 @@ export const LogContext = {
   },
 
   /**
+   * Does this context carry nothing?
+   *
+   * For the envelope builders, which ask once per `tell` and are the reason
+   * this exists (#411).  `Object.keys(context).length === 0` answers the same
+   * question and allocates an array to do it — on the overwhelmingly common
+   * path, where no `run` is active at all, purely to discover that a frozen
+   * empty object is empty.
+   *
+   * The identity check is therefore a fast path *in front of* the general one,
+   * not a replacement for it.  `LogContext.run({}, cb)` installs a store that
+   * is empty but is not {@link EMPTY}, and callers must keep omitting
+   * `context` for it: attaching `{}` instead would route every such message
+   * through `LogContext.run(env.context, …)` on delivery, adding an
+   * `AsyncLocalStorage` frame per message where the point was to remove work.
+   */
+  isEmpty(context: LogContextData): boolean {
+    if (context === EMPTY) return true;
+    return Object.keys(context).length === 0;
+  },
+
+  /**
    * Run `callback` with `extra` fields merged into the current context.
    * Equivalent to `run({ ...get(), ...extra }, callback)` but a touch
    * shorter at call sites that just want to add a field.

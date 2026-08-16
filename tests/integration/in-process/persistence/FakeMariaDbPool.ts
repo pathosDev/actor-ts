@@ -20,6 +20,7 @@ import type {
   MariaDbRow,
 } from '../../../../src/persistence/journals/MariaDbClient.js';
 import { pagePersistenceIds } from './PersistenceIdPaging.js';
+import { isTagJoinQuery, runTagJoinQuery } from './TagJoinQuery.js';
 
 type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
 type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
@@ -107,6 +108,17 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
         .sort((a, b) => a.sequence_nr - b.sequence_nr)
         .map((r) => ({ ...r, sequence_nr: BigInt(r.sequence_nr), timestamp: BigInt(r.timestamp) }));
       return rows;
+    }
+
+    // #391 — the indexed tag query's JOIN against the tags table.  The statement
+    // is byte-identical to the one FakePgPool answers apart from the
+    // placeholders, which is why the emulation is shared.
+    if (isTagJoinQuery(sql)) {
+      return runTagJoinQuery(
+        sql, valuesArray,
+        (table) => this.tags.get(table) ?? [],
+        (table) => this.events.get(table) ?? [],
+      ).map((r) => ({ ...r, sequence_nr: BigInt(r.sequence_nr), timestamp: BigInt(r.timestamp) }));
     }
 
     if (/^SELECT DISTINCT persistence_id FROM/i.test(sql)) {

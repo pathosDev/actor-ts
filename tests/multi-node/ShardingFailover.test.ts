@@ -421,10 +421,37 @@ describe('multi-node sharding failover', () => {
         );
       }
 
-      // Wait for all 6 to fire preStart somewhere.
+      const latestHostOf = (index: number): string | undefined => {
+        const list = startsByIndex.get(index);
+        return list?.[list.length - 1];
+      };
+      const hostsInUse = (): Set<string> => {
+        const hosts = new Set<string>();
+        for (const index of startsByIndex.keys()) {
+          const where = latestHostOf(index);
+          if (where !== undefined) hosts.add(where);
+        }
+        return hosts;
+      };
+
+      // Wait for all 6 to fire preStart AND for the rebalancer to have spread
+      // them over all three nodes.
+      //
+      // "At least 2 per node by LeastShard" is an eventual guarantee, not a
+      // property of the first allocation: the coordinator allocates against
+      // whichever regions have registered when it handles the request, and
+      // since #409 it handles a batch of requests per turn rather than one.
+      // On a cold start that legitimately puts all 6 on the node that
+      // registered first, and `rebalance-interval` then moves them out.  This
+      // case needs 'c' to actually host something before it crashes 'c', so it
+      // has to wait for the converged distribution rather than assume it.
       await awaitCondition(
-        () => startsByIndex.size === 6,
-        { timeoutMs: 10_000, intervalMs: 25, label: 'all six daemons fired preStart' },
+        () => startsByIndex.size === 6 && hostsInUse().size === 3,
+        {
+          timeoutMs: 20_000,
+          intervalMs: 25,
+          label: 'all six daemons started and spread over all three nodes',
+        },
       );
       expect(startsByIndex.size).toBe(6);
 

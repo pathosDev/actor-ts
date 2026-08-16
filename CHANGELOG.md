@@ -353,6 +353,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   options and record your own series; it runs alongside the stock counter
   rather than replacing it, so nothing else changes.
 
+- **BREAKING — `ActorCell` now handles a batch of user messages per
+  dispatcher turn, worth 2.1x-2.9x on `tell` throughput (#409).**
+
+  The run loop dequeued exactly one user message and then re-scheduled
+  from its `finally`, so every message cost a full `setImmediate` round
+  trip no matter what any dispatcher's `throughput` was set to. The cap
+  was structural: a cell may have at most one unit queued on a dispatcher,
+  and it re-queues itself a microtask after the dispatcher's synchronous
+  drain loop has already found its queue empty. A *per-actor*
+  `ThroughputDispatcher` — the shape the tuning docs recommended — was the
+  worst case, since its queue can never hold a second unit for its only
+  actor.
+
+  Measured on Bun 1.3.1 / Windows 11: 136k to 281k msg/s at batch=100,
+  246k to 681k at 1k, 254k to 745k at 10k, 255k to 735k at 100k. The `ask`
+  round-trip benchmark gains less (1.4x) because it awaits each reply, so
+  its mailbox never holds more than one message and there is nothing to
+  batch.
+
+  `ThroughputDispatcher` is unchanged but re-documented: it batches
+  *across* actors, which is not what the dispatcher-tuning and dispatchers
+  pages claimed in either language.
+
+  *Migration:* Scheduling interleaving changes: an actor now drains up to
+  16 messages before yielding, so code that relied on other work running
+  between two of one actor's messages can observe a different order. Three
+  in-repo tests depended on it — a router reading routee mailbox depths,
+  and two shard-allocation cases. Set `actor-ts.actor.throughput = 1`
+  system-wide, or `ActorOptions.withThroughput(1)` on the specific actor,
+  to restore the pre-#409 message-at-a-time loop exactly.
+
+- **The receive path no longer allocates per message when metrics and
+  tracing are off, worth a further 17-34% on `tell` throughput (#411).**
+
+  Every user message used to pay four extension-registry lookups, four
+  metric label and help objects built for a registry that discards them,
+  one closure, one throwaway keys array and two clock reads before any
+  user code ran. `ActorSystem` now mirrors the live registry and tracer
+  onto plain fields written only by the owning extension; the dispatch
+  closure became a private method taking the values it used to capture;
+  `Date.now()` moved into the explain-recorder branch that was its only
+  consumer; and `LogContext.isEmpty` replaces `Object.keys(context).length
+  > 0` at the three envelope sites, with `RemoteActorRef` also dropping
+  the conditional spreads that allocated an empty object on their false
+  branch.
+
+  Behaviour with instrumentation enabled is unchanged, including when it
+  is switched on or off while cells are already draining — which nothing
+  covered before, and which five new cases now pin. A message is wholly
+  instrumented or wholly not, since the handles are resolved once per
+  message rather than at each instrumentation point.
+
+  Two JSDoc comments that asserted the opposite of what the code did are
+  corrected in place: `ActorCell` claimed a boolean was read first to
+  avoid the extension chain (`||` short-circuits on a truthy operand, so
+  the lookup always ran), and `metricsOf` claimed it avoids the extension
+  chain while its body is that chain.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -669,6 +727,52 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   returned the newer value, so the duplicate was invisible while retention
   was unbounded — with a bound it is not, because duplicates counted
   against it and evicted genuinely older sequences.
+
+- **Postgres and MariaDB projections read the tags index instead of the
+  whole journal (#391).**
+
+  `RelationalJournal` has written an `events_tags` join table on every
+  append since it existed, and nothing in `src/` ever selected from it. A
+  by-tag projection over either backend therefore fell through to
+  `InMemoryQuery`, which lists every persistence id and replays each one
+  from sequence 1 — the whole journal, with no row cap — once per poll
+  interval.
+
+  `RelationalQuery` is the missing reader. It ports the three strategies
+  `SqliteQuery` uses (range-walk the first `all` tag; `t.tag IN (…)` with
+  `DISTINCT` for `any`; the journal scan when only `not` is given) onto
+  canonical `?` SQL expanded through the dialect, so one class serves
+  every `SqlDialect` instead of becoming a copy per backend.
+  `PostgresQuery` and `MariaDbQuery` are named subclasses adding only the
+  name an error reports — the same reasoning behind `LazyStore.storeName`.
+  All three are exported from `actor-ts/persistence`.
+
+  The seam is a new `RelationalJournal.openForQuery()`, modelled on
+  `MongoJournal.openForQuery()`. It hands back four things because that is
+  how many access barriers sit between a query and the index: the pool is
+  behind the protected `LazyStore.ensureOpen`, the table names are
+  private, and the dialect and serializer are protected on
+  `RelationalStore`.
+
+  Nothing changes for a caller who keeps using `InMemoryQuery` — the
+  results were correct before and are correct now, only slower. Pairing
+  the journal with its own query is what buys the index.
+
+- **A per-actor message batch budget: `ActorOptions.withThroughput()` and
+  `actor-ts.actor.throughput` (#409).**
+
+  How many user messages one actor handles per dispatcher turn before it
+  yields. Unset falls through to the HOCON key and then to the built-in
+  default of 16, so the usual precedence applies. Raise it for a
+  short-handler actor that is a throughput bottleneck; lower it toward `1`
+  for an actor whose handler is slow enough that a full batch would keep
+  timers and I/O waiting.
+
+  This is deliberately a separate knob from
+  `actor-ts.dispatcher.throughput`, which counts queued *turns* across
+  actors rather than messages within one. A batch always ends early on an
+  empty mailbox, a stop or suspend, and a throttle bucket that runs out,
+  so the budget is a ceiling rather than a commitment.
 
 ### Fixed
 
@@ -1415,6 +1519,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   fault-injection seam that rejects the single driver operation the prune
   uses and the write does not. Seven backends declare the seam; all seven
   fail the new scenario when the store fixes are reverted.
+
+- **The persistence-query page no longer claims every journal has a
+  matching query (#391).**
+
+  "Each journal has a matching query" stood over a three-row table listing
+  `InMemoryQuery`, `SqliteQuery` and `CassandraQuery`. That was wrong in
+  both directions: it omitted the `MongoQuery` that had already shipped,
+  and it told a Postgres or MariaDB reader to construct a class that did
+  not exist. Both language versions carried it.
+
+  The table now lists every query that ships. The more useful half is new:
+  what happens on a backend with none. `InMemoryQuery` works against any
+  journal and is correct at any volume, but its by-tag methods scan the
+  whole journal on every poll — and nothing warns you about the slower
+  pairing, which the page now states outright rather than leaving to be
+  discovered under load.
+
+  The Postgres page gains a tag-query section covering what `events_tags`
+  is for and which of the three filter shapes gets an index walk. MariaDB
+  points at it and adds the caveat that belongs on its own page: `tag` is
+  declared as a bare `VARCHAR(255)`, so a stock server compares it
+  case-insensitively (#707). Results stay correct — the query re-checks
+  every row against the event's own tag list — but the pre-filter is less
+  selective than on Postgres, and `COLLATE utf8mb4_bin` is the fix for
+  anyone pre-provisioning the schema.
 
 ### Security
 

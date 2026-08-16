@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
+import { ActorOptions } from '../../src/ActorOptions.js';
 import { ActorStopped, AskTimeoutError, DeadLetter } from '../../src/SystemMessages.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
@@ -300,7 +301,16 @@ describe('Router.smallestMailbox (integration, #154)', () => {
         refs.set(this.self.path.name, this.self as unknown as ActorRef<string>);
       }
     };
-    const pool = sys.spawn(Router.smallestMailbox(3, routee), 'pool');
+    // The routees drain one message per turn, which is what makes the depths
+    // below hold still long enough for the router to route against them.
+    // `release()` necessarily happens before the router's turn — a `tell` only
+    // queues — so with the default batch budget (#409) the deep routee empties
+    // its whole backlog in the microtask the resolving gate hands it, and the
+    // router then correctly sees three idle routees.  That is the scheduler
+    // changing, not the strategy: what this case is about is which routee
+    // `smallestMailbox` picks for a *given* set of depths.
+    const routeeOptions = ActorOptions.create<string>().withThroughput(1);
+    const pool = sys.spawn(Router.smallestMailbox(3, routee, routeeOptions), 'pool');
 
     // Three messages over an idle pool tie on depth 0 and therefore rotate,
     // one per routee — each parks on the gate, leaving all depths at 0.

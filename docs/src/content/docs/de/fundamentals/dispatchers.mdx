@@ -25,11 +25,22 @@ instanziierst und an `ActorSystem.create` übergibst:
 | --- | --- | --- |
 | `MicrotaskDispatcher` | `queueMicrotask` | Am schnellsten.  Kann I/O und Timer bei nachhaltiger Actor-Last aushungern. |
 | `ImmediateDispatcher` *(default)* | `setImmediate` oder `setTimeout(0)` | Lässt I/O + Timer zwischen Actor-Nachrichten verschränken.  Etwas höhere Per-Message-Latenz. |
-| `ThroughputDispatcher` | `setImmediate` mit konfigurierbarem run-N-then-yield-Budget | Wie `ImmediateDispatcher`, verarbeitet aber bis zu `throughput` Nachrichten Back-to-Back, bevor es nachgibt.  Balanciert Durchsatz gegen Fairness. |
+| `ThroughputDispatcher` | `setImmediate` mit konfigurierbarem run-N-then-yield-Budget | Wie `ImmediateDispatcher`, arbeitet aber bis zu `throughput` eingereihte *Actor-Turns* Back-to-Back ab, bevor es nachgibt.  Balanciert Durchsatz gegen Fairness **zwischen** Actors. |
 
 Der Default ist `ImmediateDispatcher` — Fairness mit I/O ist der
 richtige Default für HTTP-Server und broker-backed Actors, die in
 actor-ts-Anwendungen beide häufig vorkommen.
+
+:::note[Zwei verschiedene Throughput-Stellschrauben]
+Das `throughput` eines Dispatchers zählt **eingereihte Turns**, und jeder
+Turn gehört einem anderen Actor — ein Actor kann immer nur einen Turn
+gleichzeitig eingereiht haben.  Wie viele *Nachrichten* ein einzelner Actor
+in seinem Turn abarbeitet, ist eine separate Einstellung:
+`ActorOptions.withThroughput()` bzw. systemweit `actor-ts.actor.throughput`.
+Wenn ein einzelner ausgelasteter Actor dein Flaschenhals ist, ist das die
+Stellschraube, die du willst; siehe
+[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/).
+:::
 
 ## Einen Dispatcher wählen
 

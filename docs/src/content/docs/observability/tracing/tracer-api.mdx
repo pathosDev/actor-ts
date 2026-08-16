@@ -1,14 +1,24 @@
 ---
 title: Tracer API
-description: The framework's tracing abstraction — `startSpan`, `withActiveSpan`, span attributes, status, exceptions. Zero overhead when disabled; pluggable backend via adapters (OTel, recording-tracer for tests).
+description: The framework's tracing abstraction — `startSpan`, `withActiveSpan`, span attributes, status, exceptions. A field read and a null check when disabled; pluggable backend via adapters (OTel, recording-tracer for tests).
 ---
 
 The framework's tracing API is a **minimal abstraction over
 distributed tracing**.  Designed so that:
 
-- **Tracing-off is zero-cost** — the default `NoopTracer`
-  short-circuits every call; no allocations, no async-storage
-  lookups.
+- **Tracing-off costs a field read** — the default `NoopTracer`
+  short-circuits every call, and since #411 the message path
+  resolves the tracer from a plain field on the `ActorSystem`
+  rather than through the extension registry.  A message that
+  carries no trace allocates nothing for tracing and makes no
+  async-storage lookup on its account.
+
+  This bullet used to say *zero-cost*, and that was not true: the
+  receive path resolved the tracing extension twice per message
+  and the send path once more, each a map lookup plus two calls,
+  on every message whether or not anything was tracing.  The
+  claim is now accurate rather than aspirational — but "a field
+  read and a null check", not "nothing".
 - **No SDK dependency** — actor-ts doesn't pull
   `@opentelemetry/sdk-*`; you bring your own.
 - **W3C-compatible cross-wire** — spans serialize to W3C

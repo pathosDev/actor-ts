@@ -10,6 +10,7 @@
  */
 import { MariaDbJournal } from '../../../../src/persistence/journals/MariaDbJournal.js';
 import { MariaDbJournalOptions } from '../../../../src/persistence/journals/MariaDbJournalOptions.js';
+import { MariaDbQuery } from '../../../../src/persistence/query/MariaDbQuery.js';
 import { MariaDbSnapshotStore } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStore.js';
 import { MariaDbSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.js';
 import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStore.js';
@@ -49,6 +50,10 @@ async function main(): Promise<void> {
         .withPoolConfig(poolConfig);
       return new MariaDbJournal(journalOptions);
     },
+    // Where the JOIN meets a real MariaDB — including the collation the fake
+    // does not model, since a stock server compares the indexed `tag` column
+    // case-insensitively (#707) and only a live run sees that (#391).
+    makeQuery: (journal) => new MariaDbQuery(journal as MariaDbJournal),
     async makeSnapshotStore(keepN) {
       const snapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
         .withPoolConfig(poolConfig)

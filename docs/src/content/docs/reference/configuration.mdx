@@ -114,12 +114,18 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `logger.level` | `"info"` | One of `debug` / `info` / `warn` / `error` / `off`. |
 
+### `actor-ts.actor`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override per actor with `ActorOptions.withThroughput()`. |
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dispatcher.default` | `"immediate"` | `immediate` (default) / `microtask` / `throughput`. |
-| `dispatcher.throughput` | `16` | Messages a `ThroughputDispatcher` processes before yielding. |
+| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch. |
 
 ### `actor-ts.cluster`
 

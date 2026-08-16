@@ -50,7 +50,7 @@ export class MetricsExtension implements Extension {
    */
   enable(options?: MetricsRegistryOptions): MetricsRegistry {
     if (this.registry instanceof NoopMetricsRegistry) {
-      this.registry = new DefaultMetricsRegistry(options);
+      this.install(new DefaultMetricsRegistry(options));
       this.startMailboxDepthSampler();
     }
     return this.registry;
@@ -63,7 +63,7 @@ export class MetricsExtension implements Extension {
    */
   useRegistry(registry: MetricsRegistry): void {
     this.stopMailboxDepthSampler();
-    this.registry = registry;
+    this.install(registry);
     // A custom registry is still a real one, so it gets the stock gauge too
     // — the alternative is `actor_mailbox_size` silently missing for anyone
     // who plugged in their own collector.
@@ -83,7 +83,24 @@ export class MetricsExtension implements Extension {
    */
   disable(): void {
     this.stopMailboxDepthSampler();
-    this.registry = new NoopMetricsRegistry();
+    this.install(new NoopMetricsRegistry());
+  }
+
+  /**
+   * The one writer of {@link ActorSystem._metricsRegistry}, so the field and
+   * this extension's own `registry` cannot drift apart.
+   *
+   * The system field is the hot-path mirror: it is `null` exactly when
+   * {@link isEnabled} is false, which lets `ActorCell` skip building the label
+   * and help objects for a counter that would throw them away (#411).  Both
+   * are assigned here rather than at the three call sites because "enabled"
+   * has to mean the same thing to a `metricsOf(...)` caller and to the
+   * per-message check, and this method is the only place that can guarantee
+   * it.
+   */
+  private install(registry: MetricsRegistry): void {
+    this.registry = registry;
+    this._system._metricsRegistry = registry instanceof NoopMetricsRegistry ? null : registry;
   }
 
   /**
@@ -113,11 +130,15 @@ export const MetricsExtensionId: ExtensionId<MetricsExtension> =
   );
 
 /**
- * Convenience accessor — `metricsOf(system)` returns the live registry
- * (or noop) without going through the extension chain at every call
- * site.  Used by ActorCell / Cluster instrumentation hooks where the
- * `MetricsExtensionId.get(...)` boilerplate would dwarf the actual
- * `counter.inc()` call.
+ * Convenience accessor — `metricsOf(system)` returns the live registry (or the
+ * noop) without the `MetricsExtensionId.get(...)` boilerplate, which would
+ * otherwise dwarf the `counter.inc()` it wraps at every instrumentation site.
+ *
+ * **It is shorthand, not a shortcut.**  This does walk the extension chain —
+ * a `Map.get` plus two calls — and the JSDoc here used to claim the opposite,
+ * which is how four such lookups per message survived review (#411).  Anywhere
+ * that runs once per message reads `system._metricsRegistry` directly instead;
+ * this accessor is for the once-per-event sites.
  */
 export function metricsOf(system: ActorSystem): MetricsRegistry {
   return system.extension(MetricsExtensionId).get();

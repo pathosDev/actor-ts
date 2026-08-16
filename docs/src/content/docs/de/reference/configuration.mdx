@@ -116,12 +116,18 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `logger.level` | `"info"` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
 
+### `actor-ts.actor`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Actor überschreibbar mit `ActorOptions.withThroughput()`. |
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `dispatcher.default` | `"immediate"` | `immediate` (Default) / `microtask` / `throughput`. |
-| `dispatcher.throughput` | `16` | Nachrichten, die ein `ThroughputDispatcher` verarbeitet, bevor er nachgibt. |
+| `dispatcher.throughput` | `16` | Eingereihte Actor-**Turns**, die ein `ThroughputDispatcher` pro Tick abarbeitet, über Actors hinweg — keine Nachrichten und nicht pro Actor.  Siehe `actor.throughput` oben für den Per-Actor-Batch. |
 
 ### `actor-ts.cluster`
 

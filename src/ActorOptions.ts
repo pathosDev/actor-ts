@@ -52,6 +52,24 @@ export type ActorOptionsType<TMessage = unknown> = {
   /** Run this actor on a different dispatcher than the system's. */
   readonly dispatcher?: Dispatcher;
   /**
+   * User messages this actor handles per dispatcher turn before it yields
+   * (#409).  Unset falls through to `actor-ts.actor.throughput`, then to the
+   * built-in default — so this is the highest-precedence layer, not a
+   * replacement for the system-wide setting.
+   *
+   * Raise it for an actor that is a throughput bottleneck and whose handler is
+   * short; the scheduling round trip it amortises costs more than such a
+   * handler does. Lower it toward `1` for an actor whose handler is slow
+   * enough that a full batch would keep timers and I/O waiting — the batch
+   * runs to its budget without yielding, so the budget *is* the latency other
+   * work can see.
+   *
+   * A batch always ends early on anything that changes the actor's situation:
+   * an empty mailbox, a suspend or stop, and a throttle bucket that runs out
+   * mid-batch.
+   */
+  readonly throughput?: number;
+  /**
    * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
    * Unset means unbounded, which is the default — so setting this is the
    * act that introduces message loss, and {@link mailboxOverflow} decides
@@ -135,6 +153,11 @@ export class ActorOptionsBuilder<TMessage = unknown>
     return this.set('dispatcher', dispatcher);
   }
 
+  /** Messages per dispatcher turn — see {@link ActorOptionsType.throughput}. */
+  withThroughput(throughput: number): this {
+    return this.set('throughput', throughput);
+  }
+
   /** Lower (or raise) the default bounded mailbox's ceiling. */
   withMailboxCapacity(mailboxCapacity: number): this {
     return this.set('mailboxCapacity', mailboxCapacity);
@@ -167,9 +190,10 @@ export class ActorOptionsBuilder<TMessage = unknown>
 }
 
 /**
- * The two mailbox fields are the only ones with constraints the type system
- * does not already carry.  `BoundedMailbox` checks them too, but from inside
- * the cell constructor — here they fail at the `spawn` call that got it wrong.
+ * The mailbox fields and `throughput` are the only ones with constraints the
+ * type system does not already carry.  `BoundedMailbox` checks the first two
+ * too, but from inside the cell constructor — here they fail at the `spawn`
+ * call that got it wrong.
  */
 export class ActorOptionsValidator<TMessage = unknown>
   extends OptionsValidator<ActorOptionsType<TMessage>> {
@@ -180,6 +204,10 @@ export class ActorOptionsValidator<TMessage = unknown>
   protected rules(s: Partial<ActorOptionsType<TMessage>>): void {
     this.positiveInt('mailboxCapacity');
     this.oneOf('mailboxOverflow', ['drop-head', 'drop-new', 'reject']);
+    // A batch of zero would never dequeue a user message, so the actor would
+    // accept mail and silently never read it — the failure mode is an actor
+    // that looks alive and is not.
+    this.positiveInt('throughput');
     // An overflow policy without a bound is a no-op, and a silent no-op in
     // an options object is the shape that makes someone believe they
     // configured something.
