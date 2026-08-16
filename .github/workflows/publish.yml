@@ -53,7 +53,8 @@ jobs:
     # Bun there can't respawn worker threads after the first test.  Set at JOB
     # level so the `bun test` inside `npm publish`'s `prepublishOnly` inherits
     # it.  Those suites run locally + in Docker; the `integration` workflow is
-    # the real multi-node gate.
+    # the real multi-node gate, and `nightly-flakes.yml` is what decides when
+    # the quarantine may be lifted — #538.
     env:
       ACTOR_TS_SKIP_FLAKY_MNS: '1'
 

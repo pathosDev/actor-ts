@@ -110,7 +110,8 @@ jobs:
         # functional worker threads after the first test, which also
         # starves the lease arbitration into a false split-brain.  They
         # run locally + in Docker; the real-network `integration` workflow
-        # is the multi-node CI gate.  See the [CI] tracking issue.
+        # is the multi-node CI gate.  `nightly-flakes.yml` runs these three
+        # with the flag OFF and carries the exit criterion — #538.
         env:
           ACTOR_TS_SKIP_FLAKY_MNS: '1'
           # Machine-readable counts and the run log, both in the runner temp
@@ -250,12 +251,13 @@ jobs:
           # 80 — pragmatic floor.  The worker-thread multi-node suites are
           # quarantined on GitHub's hosted runners (Bun can't respawn
           # functional workers after the first test — see the coverage step
-          # + #325), which removes coverage of the worker-thread machinery
+          # + #538), which removes coverage of the worker-thread machinery
           # and drops hosted-CI line coverage to ~86%.  Rather than gate
           # tightly against code that physically can't execute on the
           # hosted runner, we use a pragmatic 80% floor; product code
           # (cluster, persistence, LeaseMajority @100%, …) stays well above
-          # it.  Raise this if the worker-thread suites ever run on CI again.
+          # it.  Raising it again is part of un-quarantining, which
+          # `nightly-flakes.yml` is the evidence for.
           COVERAGE_LINE_FLOOR: '80'
           PARSED_LINES: ${{ steps.stats.outputs.lines }}
         run: |
