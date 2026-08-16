@@ -165,12 +165,16 @@ lassen.
 
 Der Puffer wird beim ersten Cluster-Event geleert, das einen Host
 hervorgebracht haben kann — bei einem Leader-Wechsel, genauso aber,
-wenn ein Mitglied hochkommt, unerreichbar wird oder geht.  Diese
+wenn ein Mitglied hochkommt, gedownt wird oder geht.  Diese
 vollständige Menge ist für ein rollenbeschränktes Singleton
 entscheidend: Das erste Mitglied, das die Rolle trägt, kann beitreten,
 ohne dass sich der Leader überhaupt ändert — und vor v0.17.0 blieb der
 Puffer dadurch unbegrenzt ungeleert, während jeder spätere Versand
 normal geroutet wurde.
+
+Dass ein Mitglied *unerreichbar* wird, steht bewusst nicht in dieser
+Menge — auf keiner der beiden Seiten; siehe
+[Unerreichbarkeit ist bewusst kein Trigger](/de/cluster/singleton/manager/#unerreichbarkeit-ist-bewusst-kein-trigger).
 
 :::note[Es gibt bewusst kein `SingletonActor`-Interface]
 TypeScripts `implements`-Klausel prüft ausschließlich die
