@@ -811,10 +811,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * an options family — a structural change to the framework's most
    * fundamental primitive, made in passing.  The cell already owns a logger,
    * a path and the enqueue funnel, so it is the cheaper place by every
-   * measure.
+   * measure.  Being the one door is also what makes it the right home for
+   * the arrival stamp, for the reasons the body gives.
    *
-   * Cost is one field read, one getter and one compare — less than the
-   * `BoundedMailbox.enqueue` bound check that used to run here by default.
+   * Cost on the uninstrumented path is two field reads, one getter and two
+   * compares — still less than the `BoundedMailbox.enqueue` bound check that
+   * used to run here by default.
    */
   private _enqueueUser(env: Envelope<TMessage>): void {
     // Attach the arrival stamp here rather than at the two `post*` doors, so
