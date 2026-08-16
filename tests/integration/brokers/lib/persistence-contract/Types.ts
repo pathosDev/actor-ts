@@ -58,9 +58,19 @@ export type SnapshotCapabilities = {
   /**
    * `'configurable'` — the store honours a `keepN` prune bound, so the
    * prune and keep-all scenarios run.  `'none'` — the store keeps every
-   * snapshot (the in-memory reference store), and they are skipped.
+   * snapshot regardless, and they are skipped.
    */
   readonly keepN?: 'configurable' | 'none';
+  /**
+   * `'injectable'` — the harness can build a store whose retention pass
+   * always fails, so the best-effort-prune scenario runs.  `'none'` (the
+   * default) — no such seam, and it is skipped.
+   *
+   * A live database is the usual reason for `'none'`: breaking only the
+   * prune statement against a real server is not something a scenario can
+   * arrange from the outside.
+   */
+  readonly pruneFailure?: 'injectable' | 'none';
 };
 
 export interface SnapshotHarness extends HarnessBase {
@@ -70,6 +80,12 @@ export interface SnapshotHarness extends HarnessBase {
    * own default applies.
    */
   make(keepN?: number): Promise<SnapshotStore>;
+  /**
+   * Build a store bounded by `keepN` whose retention pass always fails,
+   * leaving the write path intact.  Required when capabilities declare
+   * `pruneFailure: 'injectable'`.
+   */
+  makeWithFailingPrune?(keepN: number): Promise<SnapshotStore>;
   readonly capabilities?: SnapshotCapabilities;
 }
 
