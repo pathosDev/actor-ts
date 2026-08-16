@@ -135,6 +135,61 @@ async function awaitResponse(exchange: RawSocketExchange, timeoutMs: number): Pr
   return exchange.read().includes('\r\n\r\n') ? exchange.read() : null;
 }
 
+/**
+ * How the server ended a chunked exchange it was never given a last chunk for.
+ *
+ * `response` and `hangup` are both refusals — the server decided without the
+ * body being complete, which is the whole point of these tests.  Only `never`
+ * says the backend is still waiting for a body that will not come.
+ */
+type ChunkedExchangeOutcome = {
+  readonly settled: 'response' | 'hangup' | 'never';
+  readonly status: number | null;
+  readonly chunksWritten: number;
+  readonly bytesWritten: number;
+};
+
+/**
+ * Post a chunked body that never terminates and report how the server ended it.
+ *
+ * Owns its socket so every caller releases it on every path.
+ */
+async function streamChunkedBody(port: number): Promise<ChunkedExchangeOutcome> {
+  const exchange = await connectRaw(port);
+  let chunksWritten = 0;
+  let bytesWritten = 0;
+  try {
+    exchange.write(
+      'POST /up HTTP/1.1\r\n'
+      + `Host: 127.0.0.1:${port}\r\n`
+      + 'Content-Type: application/octet-stream\r\n'
+      + 'Transfer-Encoding: chunked\r\n'
+      + 'Connection: close\r\n\r\n',
+    );
+
+    // Feed chunks until the server answers.  The terminating `0\r\n\r\n` is
+    // never written: only a backend counting bytes as they land can decide
+    // anything here, and it must decide long before MAX_CHUNKS.
+    const frame = `${CHUNK_BYTES.toString(16)}\r\n${'x'.repeat(CHUNK_BYTES)}\r\n`;
+    while (chunksWritten < MAX_CHUNKS && exchange.read() === '') {
+      exchange.write(frame);
+      chunksWritten += 1;
+      bytesWritten += frame.length;
+      await sleep(5);
+    }
+
+    const response = await awaitResponse(exchange, 3000);
+    return {
+      settled: response === null ? 'never' : 'response',
+      status: response === null ? null : statusOf(response),
+      chunksWritten,
+      bytesWritten,
+    };
+  } finally {
+    exchange.close();
+  }
+}
+
 describe.each([...backends])('body cap is applied before the body is complete — %s backend', (_name, makeBackend) => {
   test('an over-long declared Content-Length is refused without a body byte being sent', async () => {
     const seen = { called: false };
@@ -164,37 +219,64 @@ describe.each([...backends])('body cap is applied before the body is complete �
   test('a chunked body over the cap is refused before its terminating chunk', async () => {
     const seen = { called: false };
     const port = await start(makeBackend(), echoLength(seen));
-    const exchange = await connectRaw(port);
-    try {
-      exchange.write(
-        'POST /up HTTP/1.1\r\n'
-        + `Host: 127.0.0.1:${port}\r\n`
-        + 'Content-Type: application/octet-stream\r\n'
-        + 'Transfer-Encoding: chunked\r\n'
-        + 'Connection: close\r\n\r\n',
-      );
 
-      // Feed chunks until the server answers.  The terminating `0\r\n\r\n` is
-      // never written: only a backend counting bytes as they land can decide
-      // anything here, and it must decide long before MAX_CHUNKS.
-      const frame = `${CHUNK_BYTES.toString(16)}\r\n${'x'.repeat(CHUNK_BYTES)}\r\n`;
-      let chunksWritten = 0;
-      while (chunksWritten < MAX_CHUNKS && exchange.read() === '') {
-        exchange.write(frame);
-        chunksWritten += 1;
-        await sleep(5);
-      }
+    const outcome = await streamChunkedBody(port);
 
-      const response = await awaitResponse(exchange, 3000);
+    expect(outcome.settled).toBe('response');
+    expect(outcome.status).toBe(413);
+    // Refused while it arrived: the client never got anywhere near writing
+    // MAX_CHUNKS, and the handler never saw the body.
+    expect(outcome.chunksWritten).toBeLessThan(MAX_CHUNKS);
+    expect(seen.called).toBe(false);
+  });
+});
 
-      expect(response).not.toBeNull();
-      expect(statusOf(response!)).toBe(413);
-      // Refused while it arrived: the client never got anywhere near writing
-      // MAX_CHUNKS, and the handler never saw the body.
-      expect(chunksWritten).toBeLessThan(MAX_CHUNKS);
-      expect(seen.called).toBe(false);
-    } finally {
-      exchange.close();
+/**
+ * The client above, against a server whose answer the platform throws away.
+ *
+ * A backend that refuses a body mid-flight stops reading and closes while the
+ * client is still writing, and a close with unread data in the receive queue
+ * is a reset, not a graceful FIN — on which the platform discards whatever it
+ * had buffered for the client, including a 413 that really was sent.  So
+ * "no response arrived" does not mean "the server never answered", and a test
+ * that reads the refusal off the socket is reading a coin flip.
+ *
+ * The stub reproduces exactly that, deterministically and on every runtime:
+ * it never reads the body (`pause`), then destroys the connection, which is
+ * the same unread-data-then-close the real backends perform.  Measured on this
+ * machine the real Hono backend loses the answer 15 times out of 15 on a cold
+ * Node process, and the suite below flaked 2 times in 80 contended Bun runs.
+ */
+describe('the raw-socket client the cases above share', () => {
+  const stubs: net.Server[] = [];
+
+  afterEach(async () => {
+    while (stubs.length) {
+      const stub = stubs.shift()!;
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
     }
+  });
+
+  async function startHangUpServer(): Promise<number> {
+    const stub = net.createServer((socket) => {
+      // Never consume the body, then close: unread inbound data is what makes
+      // the stack emit a reset and drop what it had queued for the client.
+      socket.pause();
+      setTimeout(() => socket.destroy(), 60);
+    });
+    stubs.push(stub);
+    await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', () => resolve()));
+    return (stub.address() as net.AddressInfo).port;
+  }
+
+  test('reads a server that hangs up mid-body as a refusal, not as silence', async () => {
+    const port = await startHangUpServer();
+
+    const outcome = await streamChunkedBody(port);
+
+    // The server decided without ever seeing a terminating chunk.  That the
+    // decision was unreadable is the platform's doing, not the backend's.
+    expect(outcome.settled).toBe('hangup');
+    expect(outcome.chunksWritten).toBeLessThan(MAX_CHUNKS);
   });
 });
