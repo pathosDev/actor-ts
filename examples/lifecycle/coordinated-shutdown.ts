@@ -49,6 +49,9 @@ async function main(): Promise<void> {
   });
 
   system.spawn(Worker, 'worker');
+  // Not a drain sleep: the worker is never told anything.  Its heartbeats come
+  // from the fixed-delay timer it arms in preStart, and the drain does not
+  // wait for work that is not enqueued yet — this is what produces them.
   await new Promise(r => setTimeout(r, 150));
 
   console.log('--- cs.run() ---');

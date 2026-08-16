@@ -30,6 +30,10 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-hello');
   const ref = system.spawn(TrafficLight, 'light');
 
+  // Not a drain sleep: it sits between two tells to one mailbox, whose FIFO
+  // already orders them, and terminate() drains whatever is left.  Deleting it
+  // leaves the output identical — it is kept only because a traffic light that
+  // runs its whole cycle in one tick stops demonstrating a cycle.
   for (let i = 0; i < 6; i++) {
     ref.tell('tick');
     await Bun.sleep(80);

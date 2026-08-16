@@ -64,6 +64,9 @@ async function main(): Promise<void> {
   );
   const ref = system.spawnTyped(supervised, 'poller');
 
+  // Neither of these is a drain sleep.  Every tick comes from the fixed-delay
+  // timer `withTimers` arms, so between ticks the mailbox is empty and the
+  // drain sees a quiet tree — it does not wait for work not yet enqueued.
   // Let a few ticks go by, then cause a crash.
   await Bun.sleep(200);
   ref.tell({ kind: 'fail-next' });

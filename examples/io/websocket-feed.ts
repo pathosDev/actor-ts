@@ -49,6 +49,10 @@ async function main(): Promise<void> {
 
   const client = system.spawn(() => new Feed(`ws://127.0.0.1:${binding.port}/ws`), 'feed');
 
+  // None of these three is a drain sleep — they wait on a real socket, not a
+  // mailbox.  The connect handshake, then each round-trip, then the last ack
+  // coming back: every one of those arrives from outside the actor system, so
+  // the tree is quiet while it is in flight and the drain would not wait.
   await sleep(200);
   for (let i = 0; i < 5; i++) {
     client.tell(websocketSend({ kind: 'tick', n: i }));

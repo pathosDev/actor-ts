@@ -42,6 +42,9 @@ async function main(): Promise<void> {
   mediator.tell(new Publish('chat', { from: 'bob', text: 'morning!' }));
   mediator.tell(new Publish('chat', { from: 'carol', text: 'ready for standup?' }));
 
+  // Not a drain sleep, and load-bearing: the mediator is a `/system` actor and
+  // terminate() drains only `/user`, so the three Publishes sit in a mailbox
+  // the drain never looks at.  Without this only the first one is delivered.
   await Bun.sleep(50);
   await cluster.leave();
   await system.terminate();

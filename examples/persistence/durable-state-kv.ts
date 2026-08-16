@@ -61,6 +61,10 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'set', key: 'env', value: 'production' });
   ref.tell({ kind: 'set', key: 'version', value: '1.2.3' });
   ref.tell({ kind: 'get', key: 'env' });
+  // Not drain sleeps: both bracket the crash below, not a terminate().
+  // `stop()` is fire-and-forget, so nothing orders the old actor's last write
+  // against the new one's recovery read of the same store.  The drain runs
+  // inside terminate() and nowhere else, so this race needs its own wait.
   await Bun.sleep(50);
 
   // "Crash" — stop the actor, respawn it with the same store.
@@ -75,7 +79,8 @@ async function main(): Promise<void> {
   ) as unknown as Actor<Command>);
 
   ref.tell({ kind: 'dump' });
-  await Bun.sleep(50);
+  // No sleep: `dump` is queued behind the recovery the respawn triggers, and
+  // terminate() drains both.
   await system.terminate();
 }
 

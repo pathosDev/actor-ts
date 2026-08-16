@@ -23,6 +23,10 @@ async function main(): Promise<void> {
     });
   }
 
+  // Not a drain sleep, and load-bearing twice over: the producer and consumer
+  // are `/system` actors, which terminate() does not drain, and the stop below
+  // is what actually races the acks.  Without this all three report
+  // "delivery error: producer stopped" instead of an ack.
   await Bun.sleep(100);
   producer.stop(); consumer.stop();
   await system.terminate();

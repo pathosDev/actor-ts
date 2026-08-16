@@ -61,6 +61,12 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-conn');
   const ref = system.spawn(ConnectionFsm, 'conn');
 
+  // The two long waits are load-bearing and the two short ones are not.
+  // `onEnter('reconnecting')` arms a *retry timer* (100 ms, then 200 ms), and
+  // the drain does not follow work that is not enqueued yet — so 200 and 500
+  // are what let each retry fire.  The 30 and 50 only pace one mailbox, whose
+  // FIFO already orders these tells; they are kept for a readable transcript,
+  // not because anything depends on them.
   ref.tell({ kind: 'connect' });
   await Bun.sleep(30);
   ref.tell({ kind: 'failed', reason: 'handshake timeout' });
@@ -71,7 +77,7 @@ async function main(): Promise<void> {
   await Bun.sleep(50);
   ref.tell({ kind: 'disconnect' });
 
-  await Bun.sleep(100);
+  // No sleep: the last transition is already queued, and terminate() drains it.
   await system.terminate();
 }
 
