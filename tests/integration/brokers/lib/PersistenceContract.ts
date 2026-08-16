@@ -75,6 +75,12 @@ export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceContext>
       label: context.label,
       pid: namespacer(context, 'journal'),
       make: () => context.makeJournal(),
+      // No `makeQuery`: every backend reaching this adapter is a relational
+      // one, and the relational family has no `PersistenceQuery`
+      // implementation yet (#532).  Its journals do maintain the tag table
+      // through `delete` correctly — that is just not observable from here
+      // until there is a query class to observe it with, so the query-side
+      // scenarios skip rather than pass vacuously.
     }))),
     ...snapshotContractScenarios().map((scenario) => adapt('snapshot', scenario, (context): SnapshotHarness => ({
       label: context.label,

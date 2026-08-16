@@ -2,6 +2,7 @@ import { describe, test } from 'bun:test';
 import {
   CassandraJournal,
   CassandraJournalOptions,
+  CassandraQuery,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
   D1DurableStateStore,
@@ -18,6 +19,7 @@ import {
   DynamoDbSnapshotStoreOptions,
   InMemoryDurableStateStore,
   InMemoryJournal,
+  InMemoryQuery,
   InMemorySnapshotStore,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
@@ -31,6 +33,7 @@ import {
   MongoDurableStateStoreOptions,
   MongoJournal,
   MongoJournalOptions,
+  MongoQuery,
   MongoSnapshotStore,
   MongoSnapshotStoreOptions,
   MsSqlDurableStateStore,
@@ -52,6 +55,7 @@ import {
   PostgresSnapshotStore,
   PostgresSnapshotStoreOptions,
   SqliteJournal,
+  SqliteQuery,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
 } from '../../../../src/persistence/index.js';
@@ -95,11 +99,16 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     label: 'InMemoryJournal',
     pid: namespacer('inmem'),
     make: async () => new InMemoryJournal(),
+    // The reference query walks the journal itself, so it has no index that
+    // could go stale — which is exactly what makes it the oracle for the
+    // scenarios the indexed backends have to match.
+    makeQuery: (journal) => new InMemoryQuery(journal),
   },
   {
     label: 'SqliteJournal',
     pid: namespacer('sqlite'),
     make: async () => new SqliteJournal(),
+    makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
   },
   {
     label: 'CassandraJournal',
@@ -112,6 +121,31 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withAutoCreateKeyspace(true);
       return new CassandraJournal(journalOptions);
     },
+    // Default config: no side table, so `CassandraQuery` falls back to the
+    // journal-walking scan.  Kept as its own harness because it is the shape
+    // most deployments run, and the one below is the shape that broke.
+    makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
+  },
+  {
+    // Second Cassandra harness rather than flipping the flag on the one
+    // above: `useTagIndex` selects a genuinely different storage layout —
+    // a separate `events_by_tag` table that `delete` has to compact (#654) —
+    // and both layouts owe the full journal contract.  With only the default
+    // harness the tag-index delete path had no coverage at all, and the new
+    // query-side scenario would have passed vacuously against the fallback
+    // scan.
+    label: 'CassandraJournal (tag index)',
+    pid: namespacer('cassandra-tag-index'),
+    make: async () => {
+      const journalOptions = CassandraJournalOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(new FakeCassandraClient())
+        .withAutoCreateKeyspace(true)
+        .withUseTagIndex(true);
+      return new CassandraJournal(journalOptions);
+    },
+    makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
   },
   {
     label: 'PostgresJournal',
@@ -157,6 +191,11 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withClient(new FakeMongoClient());
       return new MongoJournal(journalOptions);
     },
+    // Multikey index over the event document itself — no second collection,
+    // so a deleted event leaves the tag index by construction.  Worth running
+    // the query-side scenarios against anyway: that is the property being
+    // asserted, not an assumption the contract gets to make.
+    makeQuery: (journal) => new MongoQuery(journal as MongoJournal),
   },
   {
     label: 'MsSqlJournal',

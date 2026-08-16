@@ -16,6 +16,7 @@
  */
 import type { DurableStateStore } from '../../../../../src/persistence/DurableStateStore.js';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
+import type { PersistenceQuery } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
 
 /** A single contract scenario, parameterized over its harness type. */
@@ -51,6 +52,18 @@ export type JournalCapabilities = {
 export interface JournalHarness extends HarnessBase {
   /** Build a fresh journal.  The scenario closes it. */
   make(): Promise<Journal>;
+  /**
+   * Build the read-side query over a journal this harness made — the seam
+   * that lets a scenario assert what a *by-tag* query sees, which is the only
+   * way to observe a tag index that `delete` forgot to compact (#654).
+   *
+   * Optional because a query class is a separate thing from a journal and not
+   * every backend has one: the relational family maintains its tag table
+   * correctly but has no `PersistenceQuery` implementation yet (#532).  A
+   * harness that leaves this unset skips the query-side scenarios rather than
+   * passing them vacuously.
+   */
+  makeQuery?(journal: Journal): PersistenceQuery;
   readonly capabilities?: JournalCapabilities;
 }
 
