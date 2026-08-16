@@ -47,12 +47,14 @@ import {
   MariaDbDurableStateStoreOptions,
   MariaDbJournal,
   MariaDbJournalOptions,
+  MariaDbQuery,
   MariaDbSnapshotStore,
   MariaDbSnapshotStoreOptions,
   PostgresDurableStateStore,
   PostgresDurableStateStoreOptions,
   PostgresJournal,
   PostgresJournalOptions,
+  PostgresQuery,
   PostgresSnapshotStore,
   PostgresSnapshotStoreOptions,
   SqliteJournal,
@@ -163,6 +165,9 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withPool(new FakePgPool());
       return new PostgresJournal(journalOptions);
     },
+    // A second table that `delete` has to compact in step with the events —
+    // exactly the shape #654 is about, and now observable (#391).
+    makeQuery: (journal) => new PostgresQuery(journal as PostgresJournal),
   },
   {
     label: 'LibSqlJournal',
@@ -222,6 +227,7 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withPool(new FakeMariaDbPool());
       return new MariaDbJournal(journalOptions);
     },
+    makeQuery: (journal) => new MariaDbQuery(journal as MariaDbJournal),
   },
 ];
 
