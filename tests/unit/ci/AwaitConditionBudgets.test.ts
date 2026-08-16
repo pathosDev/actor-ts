@@ -224,9 +224,24 @@ function scanFile(absolutePath: string): TestBlock[] {
   const blocks: { start: number; end: number; head: number }[] = [];
   for (const call of blanked.matchAll(TEST_CALL)) {
     const open = call.index + call[0].length - 1;
-    const close = matchDelimiter(blanked, open, '(', ')');
+    let close = matchDelimiter(blanked, open, '(', ')');
     if (close < 0) continue;
-    blocks.push({ start: open + 1, end: close, head: call.index });
+    let start = open + 1;
+    // `test.each(table)(name, fn, timeout)` — the first paren group is the
+    // table, so reading it as the argument list would both miss the body's
+    // budgets and mistake a trailing number in the table for a per-test cap.
+    // Step onto the second group when there is one.
+    if (call[0].includes('.each')) {
+      const second = blanked.indexOf('(', close + 1);
+      const between = blanked.slice(close + 1, second < 0 ? undefined : second);
+      if (second >= 0 && between.trim() === '') {
+        const secondClose = matchDelimiter(blanked, second, '(', ')');
+        if (secondClose < 0) continue;
+        start = second + 1;
+        close = secondClose;
+      }
+    }
+    blocks.push({ start, end: close, head: call.index });
   }
   const insideATest = (index: number): boolean =>
     blocks.some((block) => index >= block.start && index < block.end);
@@ -348,6 +363,9 @@ describe('awaitCondition budgets fit inside the per-test timeout', () => {
     expect(blocks.length).toBeGreaterThan(400);
     expect(blocks.some((block) => block.declaredTimeoutMs !== undefined)).toBe(true);
     expect(blocks.some((block) => block.largest.helper !== '')).toBe(true);
+    // No test may reach a budget of zero or a negative one: that would mean the
+    // parser produced a number from something that is not a `timeoutMs`.
+    expect(blocks.every((block) => block.largest.milliseconds > 0)).toBe(true);
   });
 
   test.each([
@@ -382,6 +400,16 @@ describe('awaitCondition budgets fit inside the per-test timeout', () => {
         + '{ await awaitCondition(f, { timeoutMs: 7_000 }); });',
       cap: 5_000,
       largest: 7_000,
+    },
+    {
+      // The table is the first paren group, the test is the second.  Read the
+      // wrong one and the body's budgets vanish while a number at the end of
+      // the table is mistaken for the cap — a false pass in both halves.
+      what: 'a test.each table, whose arguments live in the second call',
+      source: 'test.each([{ n: 1 }, { n: 9_000 }])(\n'
+        + "  'case $n', async () => { await awaitCondition(f, { timeoutMs: 6_000 }); }, 25_000);",
+      cap: 25_000,
+      largest: 6_000,
     },
   ])('the scanner reads $what', ({ source, cap, largest }) => {
     const directory = mkdtempSync(join(tmpdir(), 'actor-ts-budget-scan-'));

@@ -109,7 +109,9 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     expect(await worker.expectMessage('task', 1_000));
 
     await stopNode(nodeA); await stopNode(nodeB);
-  });
+    // `awaitAnycastReaches` waits up to 8 s, which bun's 5 s default cap could
+    // never reach — the republish loop's label was unreportable by construction.
+  }, 20_000);
 
   test('local subscribers and a remote node share one rotation', async () => {
     const nodeA = await startNode('ps-anycast-share', 51611);
@@ -145,5 +147,6 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     await remoteWorker.expectNoMessage(120);
 
     await stopNode(nodeA); await stopNode(nodeB);
-  });
+    // Same 8 s `awaitAnycastReaches` budget as above, same reason.
+  }, 20_000);
 });

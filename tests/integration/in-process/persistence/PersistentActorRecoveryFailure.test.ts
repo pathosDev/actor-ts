@@ -282,5 +282,7 @@ describe('PersistentActor — the default onRecoveryFailure', () => {
     );
     expect(observations.recovered).toEqual([]);
     await system.terminate();
-  });
+    // The 5 s restart-budget wait exactly equals bun's default cap; without a
+    // declared cap the runner won the race and the label never printed.
+  }, 15_000);
 });

@@ -31,6 +31,15 @@
  * family is found by reading, not by repeating.  See
  * `docs/src/content/docs/testing/diagnosing-flakes.mdx`.
  *
+ * **A run that hangs is data, not an abort.**  `--run-timeout` (see
+ * `DEFAULT_RUN_TIMEOUT_MS`) kills a `bun test` that has stopped making
+ * progress, records the run as a *hang* — distinct from a failure and from a
+ * truncated report — and carries on with the next one.  That is the whole
+ * reason the harness exists in the quarantine's case: the documented
+ * hosted-runner symptom of the three gated suites is that workers spawn,
+ * handshake and then never run, which is not a red test but a `bun test` that
+ * never exits.
+ *
  * Output: a per-run line, then a table of every test that failed at least
  * once, split into *flaky* (failed in some runs) and *consistent* (failed in
  * all of them — a broken test, which repetition cannot tell you anything new
@@ -39,13 +48,29 @@
  * later run can compare identities across nights.
  */
 import { spawn } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const DEFAULT_RUNS = 10;
 const DEFAULT_REPORT_DIRECTORY = '.stress';
 /** A flake budget of zero: any test that failed at least once is reported and fails the gate. */
 const DEFAULT_MAXIMUM_FLAKY_TESTS = 0;
+/**
+ * How long one `bun test` may take before the run is called a hang.
+ *
+ * 20 minutes against a full local suite of about 4.5 minutes — deliberately
+ * loose, because the watchdog exists to catch a run that has stopped making
+ * progress at all, not a slow runner.  A hosted runner under contention can be
+ * several times slower than a laptop and must not be declared hung for it.
+ */
+const DEFAULT_RUN_TIMEOUT_MS = 20 * 60 * 1_000;
+/**
+ * Between `SIGTERM` and `SIGKILL`, and again between `SIGKILL` and giving up on
+ * the child entirely.  A wedged worker pool will not tidy up in 5 s, but a bun
+ * that is merely slow to exit will — and an unkillable child must not become an
+ * unkillable harness, which is the failure this whole watchdog removes.
+ */
+const KILL_GRACE_MS = 5_000;
 
 /* ------------------------------------------------------------------ */
 /* Arguments                                                           */
@@ -63,6 +88,9 @@ function parseArguments(argv) {
     maximumFlakyTests: Number(
       process.env.ACTOR_TS_STRESS_MAX_FLAKY ?? DEFAULT_MAXIMUM_FLAKY_TESTS,
     ),
+    runTimeoutMs: Number(
+      process.env.ACTOR_TS_STRESS_RUN_TIMEOUT_MS ?? DEFAULT_RUN_TIMEOUT_MS,
+    ),
     reportDirectory: process.env.ACTOR_TS_STRESS_REPORT_DIR ?? DEFAULT_REPORT_DIRECTORY,
     skipQuarantined: false,
     filters: [],
@@ -78,6 +106,7 @@ function parseArguments(argv) {
       case 'runs': options.runs = Number(value); break;
       case 'concurrency': options.concurrency = Number(value); break;
       case 'max-flaky': options.maximumFlakyTests = Number(value); break;
+      case 'run-timeout': options.runTimeoutMs = Number(value); break;
       case 'report-dir': options.reportDirectory = value ?? DEFAULT_REPORT_DIRECTORY; break;
       case 'skip-quarantined': options.skipQuarantined = true; break;
       case 'help': printUsage(); process.exit(0); break;
@@ -95,12 +124,17 @@ function printUsage() {
   --runs=N              how many times to run the suite      (default ${DEFAULT_RUNS})
   --concurrency=N       runs executed at once                (default 1)
   --max-flaky=N         tests allowed to fail at least once  (default ${DEFAULT_MAXIMUM_FLAKY_TESTS})
+  --run-timeout=MS      one run's watchdog, then it is a HANG (default ${DEFAULT_RUN_TIMEOUT_MS})
   --report-dir=DIR      where reports and logs are written   (default ${DEFAULT_REPORT_DIRECTORY})
   --skip-quarantined    keep ACTOR_TS_SKIP_FLAKY_MNS=1 instead of dropping it
   --help                this text
 
 Every option also reads an env var: ACTOR_TS_STRESS_RUNS, _CONCURRENCY,
-_MAX_FLAKY, _REPORT_DIR.`);
+_MAX_FLAKY, _RUN_TIMEOUT_MS, _REPORT_DIR.
+
+Keep --run-timeout x --runs (divided by --concurrency) safely under the CI
+job's timeout-minutes: the point of the watchdog is that a hang produces a
+report, and it cannot if the job is killed first.`);
 }
 
 function validate(options) {
@@ -111,6 +145,7 @@ function validate(options) {
   const problems = [
     positiveInteger(options.runs, '--runs'),
     positiveInteger(options.concurrency, '--concurrency'),
+    positiveInteger(options.runTimeoutMs, '--run-timeout'),
     Number.isInteger(options.maximumFlakyTests) && options.maximumFlakyTests >= 0
       ? undefined
       : `stress-test: --max-flaky must be a non-negative integer, got ${options.maximumFlakyTests}`,
@@ -240,8 +275,18 @@ function parseSummary(xml) {
  * bun came to die mid-flush with `WriteFailed`, truncating the run and taking
  * the JUnit report with it (#1194).  A regular file cannot short-write that
  * way, and the log is what the nightly uploads anyway.
+ *
+ * **A run that never exits is the third outcome, and the one that matters.**
+ * The quarantined multi-node suites' documented failure on hosted runners is
+ * not a failure at all: workers spawn, handshake and then never run, so
+ * `bun test` does not exit.  Listening only for `error` and `close` meant this
+ * promise never settled, the loop never advanced, and the nightly job sat
+ * until its `timeout-minutes` and was killed — no per-run report, no
+ * aggregate.  The one measurement the harness exists to make was the one it
+ * could not survive.  `timeoutMs` bounds it; the run is then recorded as a
+ * hang and the loop goes on, because whether run 2 hangs as well is data.
  */
-function runOnce({ index, reportPath, logPath, filters, environment }) {
+function runOnce({ index, reportPath, logPath, filters, environment, timeoutMs }) {
   return new Promise((resolveRun) => {
     const logDescriptor = openSync(logPath, 'w');
     const startedAt = Date.now();
@@ -255,12 +300,38 @@ function runOnce({ index, reportPath, logPath, filters, environment }) {
     // inside an event handler and takes the whole harness down — turning "one
     // run could not start" into "no results at all".
     let settled = false;
+    let timedOut = false;
+    const timers = [];
     const finish = (status, spawnError) => {
       if (settled) return;
       settled = true;
+      for (const timer of timers) clearTimeout(timer);
       closeSync(logDescriptor);
-      resolveRun({ index, status, spawnError, durationMs: Date.now() - startedAt });
+      resolveRun({ index, status, spawnError, timedOut, durationMs: Date.now() - startedAt });
     };
+    timers.push(setTimeout(() => {
+      timedOut = true;
+      // Into the run's own log, so the artifact says why it stops mid-suite
+      // instead of just ending — the log is the only place the wedged test's
+      // name still exists.  Guarded because it is a nicety: a write that fails
+      // here must not skip the kill below and leave the harness stuck, which
+      // is the exact failure this watchdog exists to remove.
+      try {
+        writeSync(
+          logDescriptor,
+          `\n[stress-test] run ${index} exceeded --run-timeout=${timeoutMs}ms `
+          + 'and never exited; terminating.  The last test named above is where it wedged.\n',
+        );
+      } catch { /* the log is best-effort; the kill is not */ }
+      child.kill('SIGTERM');
+      timers.push(setTimeout(() => {
+        child.kill('SIGKILL');
+        // Even SIGKILL can leave us waiting on a `close` that never comes if
+        // the child is stuck in an uninterruptible state.  Settle anyway: the
+        // whole point is that no single run can stall the loop.
+        timers.push(setTimeout(() => { finish(null, undefined); }, KILL_GRACE_MS));
+      }, KILL_GRACE_MS));
+    }, timeoutMs));
     child.on('error', (error) => { finish(null, error); });
     child.on('close', (status) => { finish(status, undefined); });
   });
@@ -274,6 +345,10 @@ function runOnce({ index, reportPath, logPath, filters, environment }) {
  */
 function collectRun(result, reportPath) {
   const base = { ...result, executed: 0, skipped: 0, failures: [], reportMissing: false };
+  // A hang has its own diagnosis, so it must not also be filed as "bun died
+  // before the reporter flushed": the report is missing *because* the run was
+  // killed, and reporting both would send a reader after the wrong cause.
+  if (result.timedOut) return base;
   if (!existsSync(reportPath)) return { ...base, reportMissing: true };
   const xml = readFileSync(reportPath, 'utf8');
   if (xml.trim() === '') return { ...base, reportMissing: true };
@@ -297,6 +372,7 @@ async function runAll(options, environment, reportDirectory) {
         logPath,
         filters: options.filters,
         environment,
+        timeoutMs: options.runTimeoutMs,
       });
       const collected = collectRun(result, reportPath);
       results[index] = collected;
@@ -311,6 +387,13 @@ async function runAll(options, environment, reportDirectory) {
 
 function reportRun(run, logPath) {
   const seconds = (run.durationMs / 1_000).toFixed(1);
+  if (run.timedOut) {
+    console.log(
+      `  run ${run.index}: HUNG — still running after ${seconds}s, killed. `
+      + `Nothing can be said about the tests in it; see ${logPath} for where it stopped.`,
+    );
+    return;
+  }
   if (run.reportMissing) {
     console.log(
       `  run ${run.index}: NO REPORT after ${seconds}s `
@@ -342,12 +425,16 @@ function aggregate(results, runs) {
   const offenders = [...byIdentity.values()].sort(
     (a, b) => b.failedRuns.length - a.failedRuns.length || a.identity.localeCompare(b.identity),
   );
-  const reportedRuns = results.filter((run) => !run.reportMissing);
+  const reportedRuns = results.filter((run) => !run.reportMissing && !run.timedOut);
   const totalExecuted = reportedRuns.reduce((sum, run) => sum + run.executed, 0);
   const totalFailures = reportedRuns.reduce((sum, run) => sum + run.failures.length, 0);
   return {
     runs,
     greenRuns: reportedRuns.filter((run) => run.failures.length === 0 && run.status === 0).length,
+    // The outcome the quarantined suites are expected to produce, kept apart
+    // from every other kind of red: a hang says the suite stopped making
+    // progress, which is a different fact from a test failing.
+    runsTimedOut: results.filter((run) => run.timedOut).map((run) => run.index),
     runsWithoutReport: results.filter((run) => run.reportMissing).map((run) => run.index),
     // A non-zero exit with no recorded failure is its own signal: an
     // unreleased handle, a crash in teardown, a bun-level error.  Naming it
@@ -383,6 +470,16 @@ function render(aggregated, options) {
     : `${((aggregated.totalFailures / aggregated.totalExecuted) * 100).toFixed(4)}%`;
   lines.push(`failure rate:    ${aggregated.totalFailures} / ${aggregated.totalExecuted} = ${rate}`);
   lines.push(`quarantined suites: ${options.skipQuarantined ? 'SKIPPED (--skip-quarantined)' : 'included'}`);
+  if (aggregated.runsTimedOut.length > 0) {
+    lines.push('');
+    lines.push(
+      `!! ${aggregated.runsTimedOut.length} run(s) never exited `
+      + `(${aggregated.runsTimedOut.join(', ')}) — killed after --run-timeout=${options.runTimeoutMs}ms. `
+      + 'A hang, not a failure: the suite stopped making progress, so nothing '
+      + 'can be said about the tests in those runs. Read the matching .log for '
+      + 'the last test it reached.',
+    );
+  }
   if (aggregated.runsWithoutReport.length > 0) {
     lines.push('');
     lines.push(
@@ -413,9 +510,11 @@ function render(aggregated, options) {
   if (aggregated.flaky.length === 0 && aggregated.consistent.length === 0) {
     lines.push('');
     // Qualified when a run went missing: "no test failed" over zero observed
-    // runs is a true sentence and a false reassurance.
+    // runs is a true sentence and a false reassurance.  A hang silences a run
+    // exactly as thoroughly as a truncated report does, so it counts here too.
+    const silentRuns = new Set([...aggregated.runsWithoutReport, ...aggregated.runsTimedOut]);
     lines.push(
-      aggregated.runsWithoutReport.length === aggregated.runs
+      silentRuns.size === aggregated.runs
         ? 'No run reported anything, so nothing can be said about any test.'
         : 'No test failed in any run that reported.',
     );
@@ -441,6 +540,13 @@ function writeStepSummary(aggregated, options) {
     `- **${aggregated.greenRuns}/${aggregated.runs}** runs green`,
     `- **${aggregated.totalFailures}** failures across **${aggregated.totalExecuted}** test executions`,
     `- quarantined suites: ${options.skipQuarantined ? 'skipped' : 'included'}`,
+    // A hang is the outcome the quarantined suites are most likely to produce,
+    // so it belongs in the summary a human reads from the run list rather than
+    // only in a log they would have to download to find it.
+    ...(aggregated.runsTimedOut.length > 0
+      ? [`- ⛔ runs that never exited (killed after ${options.runTimeoutMs}ms): `
+        + `${aggregated.runsTimedOut.join(', ')}`]
+      : []),
     ...(aggregated.runsWithoutReport.length > 0
       ? [`- ⚠️ runs without a JUnit report: ${aggregated.runsWithoutReport.join(', ')}`]
       : []),
@@ -498,6 +604,8 @@ writeFileSync(
       quarantinedSuitesIncluded: !options.skipQuarantined,
       totalExecuted: aggregated.totalExecuted,
       totalFailures: aggregated.totalFailures,
+      runTimeoutMs: options.runTimeoutMs,
+      runsTimedOut: aggregated.runsTimedOut,
       runsWithoutReport: aggregated.runsWithoutReport,
       runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
       offenders: [...aggregated.flaky, ...aggregated.consistent].map((entry) => ({
@@ -515,6 +623,17 @@ writeFileSync(
 writeStepSummary(aggregated, options);
 
 const offenderCount = aggregated.flaky.length + aggregated.consistent.length;
+// Named separately from "did not report", because the two point at different
+// things: a hang means the suite stopped, a missing report means bun died
+// while writing.  Both are red — a run whose result is unknown can never be
+// counted towards a green night — but they are not the same finding.
+if (aggregated.runsTimedOut.length > 0) {
+  console.error(
+    `\nstress-test: FAIL — ${aggregated.runsTimedOut.length} run(s) never exited `
+    + `(${aggregated.runsTimedOut.join(', ')}).`,
+  );
+  process.exit(1);
+}
 if (aggregated.runsWithoutReport.length > 0 || aggregated.runsRedWithoutFailures.length > 0) {
   console.error('\nstress-test: FAIL — a run did not report its result.');
   process.exit(1);

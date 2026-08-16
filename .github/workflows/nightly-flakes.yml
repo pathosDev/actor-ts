@@ -49,7 +49,19 @@ name: nightly-flakes
 #   - keep this job — it becomes the regression guard for the un-quarantining.
 #
 # A single red night resets the count.  The evidence is the `summary.json` in
-# each night's artifact; `greenRuns == runs` is the green condition.
+# each night's artifact; `greenRuns == runs` is the green condition, and a
+# non-empty `runsTimedOut` is a red night regardless of what else it says —
+# the suite stopped making progress, so nothing can be said about its tests.
+#
+# **Nothing accumulates the streak.**  It is counted by a human reading these
+# annotations, which is the same failure that made the quarantine permanent in
+# the first place.  Automating it is not cheap here: both jobs are
+# `continue-on-error`, which rewrites the job conclusion to `success`, so the
+# only durable evidence is the artifact — and reading previous nights' artifacts
+# needs `actions: read` plus cross-run API paging, while a committed counter
+# file would need `contents: write` in a job that installs the whole
+# devDependency tree, which `tests/unit/ci/WorkflowHygiene.test.ts` forbids on
+# purpose.  Until one of those is built, this comment is the criterion.
 #
 # Docs: docs/src/content/docs/testing/diagnosing-flakes.mdx (EN) and its DE
 # mirror carry the same decision path for contributors who never read CI YAML.
@@ -110,9 +122,19 @@ jobs:
         # The harness writes its own `$GITHUB_STEP_SUMMARY` table, so the
         # workflow stays thin and a local run shows the same output — the
         # same reason integration.yml delegates to an npm script.
+        #
+        # `--run-timeout` is stated rather than left to the harness default,
+        # because it has to be read against this job's `timeout-minutes: 30`:
+        # 3 runs x 8 min = 24 min, leaving room for checkout and install. The
+        # documented symptom of these three suites is a *hang* — workers spawn,
+        # handshake and never run — so the watchdog is what turns tonight into
+        # a recorded result instead of a job GitHub killed with nothing to show.
+        # A `quarantined-runs` input above 3 needs `timeout-minutes` raised with
+        # it, or the job dies before the last run's watchdog can fire.
         run: |
           bun run test:stress -- \
             --runs="$RUNS" \
+            --run-timeout=480000 \
             --report-dir=.stress \
             tests/multi-node/LeaseMajority.test.ts \
             tests/multi-node/ParallelPubSub.test.ts \
@@ -141,7 +163,7 @@ jobs:
           if [[ "$OUTCOME" == "success" ]]; then
             echo "::notice title=Quarantined suites were green::All three suites passed every repeat with ACTOR_TS_SKIP_FLAKY_MNS unset. Count this night towards the 14 needed to un-quarantine (see the header of .github/workflows/nightly-flakes.yml)."
           else
-            echo "::warning title=Quarantined suites still failing::Expected while the quarantine stands — the un-quarantine counter resets to zero. Details in the step summary; per-run logs in the uploaded artifact."
+            echo "::warning title=Quarantined suites still failing::Expected while the quarantine stands — the un-quarantine counter resets to zero. Details in the step summary; per-run logs in the uploaded artifact. A run marked HUNG is the documented symptom (workers spawn, handshake, never run), not a harness bug."
           fi
 
   # The flake catalog's data source.  Loops the whole suite — quarantined
@@ -169,7 +191,10 @@ jobs:
         id: stress
         env:
           RUNS: ${{ inputs.stress-runs || '5' }}
-        run: bun run test:stress -- --runs="$RUNS" --report-dir=.stress
+        # 5 runs x 20 min = 100 min against `timeout-minutes: 120`. A full local
+        # suite is about 4.5 min, so 20 min is loose on purpose: the watchdog is
+        # for a run that has stopped progressing, not for a slow runner.
+        run: bun run test:stress -- --runs="$RUNS" --run-timeout=1200000 --report-dir=.stress
 
       - name: Upload reports
         if: always()

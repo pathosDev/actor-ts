@@ -207,7 +207,11 @@ test('shards rebalance when a node leaves', async () => {
   expect(afterHits).toBe(2);
 
   await stopNode(n1); await stopNode(n3);
-});
+  // 30 s, because the four budgets above add up to 25 s and bun's default cap
+  // is 5 s — every one of them was nominal, and whichever wait stalled the run
+  // said "this test timed out after 5000ms" instead of naming it.  The cap is a
+  // backstop that must never be the thing that reports; the budgets are.
+}, 30_000);
 
 test('rendezvousAllocator keeps most shards stable when one node leaves', async () => {
   const n1 = new NodeAddress('s', 'h', 1);
