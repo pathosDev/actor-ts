@@ -73,11 +73,15 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
           ts: numberAttribute(now),
         },
       });
-      if (this.keepN > 0) await this.prune(operations, persistenceId);
-      return { persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       this.fail('save', e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { await this.prune(operations, persistenceId); } catch { /* swallow */ }
+    }
+    return { persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

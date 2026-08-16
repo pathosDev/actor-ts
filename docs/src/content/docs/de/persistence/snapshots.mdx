@@ -148,6 +148,31 @@ gespeichert, sodass `Date` / `Map` / `Set` / `bigint` /
 siehe
 [was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
 
+## Aufbewahrung ist Best-Effort, der Schreibvorgang nicht
+
+Stores, die die Aufbewahrung begrenzen (`keepN`), räumen bei jedem
+Speichern auf.  Dieser Aufräumdurchlauf ist **auf jedem Backend
+Best-Effort**: Sobald der Snapshot selbst dauerhaft ist, ist `save`
+erfolgreich, und ein danach fehlschlagendes Aufräumen wird
+geschluckt statt nach oben gereicht.
+
+Die beiden Hälften bedeuten im Fehlerfall Gegensätzliches, weshalb
+sie nicht gleich gemeldet werden:
+
+- Ein fehlgeschlagener **Schreibvorgang** heißt, dass dein Snapshot
+  nicht existiert.  Ein erneuter Versuch ist die richtige Reaktion,
+  und `save` schlägt fehl, damit du das tun kannst.
+- Ein fehlgeschlagenes **Aufräumen** heißt, dass eine Zeile zu viel
+  existiert.  Das ist harmlos, `loadLatest` sieht sie nicht, und
+  das nächste Speichern versucht es erneut.
+
+Das Zweite wie das Erste zu melden würde einem Aufrufer sagen, er
+solle einen bereits erfolgreichen Schreibvorgang wiederholen — und
+ein Actor, der einen Snapshot-Fehler als fatal behandelt, würde an
+einem Aufräumfehler sterben.  Wenn du einen eigenen `SnapshotStore`
+implementierst, führe das Aufräumen außerhalb der Fehlerbehandlung
+des Schreibvorgangs aus.
+
 ## Recovery-Flow mit Snapshots
 
 ```mermaid

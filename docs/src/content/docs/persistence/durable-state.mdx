@@ -232,22 +232,35 @@ on load, the adapter's `fromJournal` runs to migrate older versions.
 See [Migration overview](/persistence/migration/overview/)
 for the full story.
 
-## Encryption + compression
+## Encryption + compression + integrity
 
-Per-actor overrides are available:
+Three per-actor overrides are available:
 
 ```ts
-class Sensitive extends DurableStateActor<...> {
-  protected encryption() { return { algorithm: 'aes-gcm', keyId: 'k1' }; }
-  protected compression() { return { algorithm: 'gzip' }; }
+class Sensitive extends DurableStateActor<Command, State> {
+  protected encryption() {
+    return { mode: 'client-aes256-gcm' as const, masterKey, info: 'acme/prod/durable-state/v1' };
+  }
+  protected compression() { return { algorithm: 'gzip' as const }; }
+  protected integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey };
+  }
 }
 ```
 
-Honored by stores that implement them (object-storage with
-encryption, etc.); ignored by stores that don't (in-memory,
-SQLite).  See
+**Only the object-storage durable-state store reads these.**  Nine
+of the ten durable-state stores accept the options and never look
+at them ([#960](https://github.com/mknorr/actor-ts/issues/960)):
+on in-memory, SQLite, Postgres, Mongo and DynamoDB, an override
+here is dropped silently — no encryption, no tamper detection, and
+no error telling you so.  Check the override against the store you
+actually run before treating it as a control that holds.
+
+See
 [Object storage encryption](/persistence/object-storage/encryption/)
-for the durable-state encryption story.
+for the durable-state encryption story and
+[per-actor policies](/persistence/object-storage/per-actor-policies/)
+for all three hooks.
 
 ## Common pitfalls
 

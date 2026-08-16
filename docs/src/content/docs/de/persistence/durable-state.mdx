@@ -239,22 +239,37 @@ Versionen zu migrieren.  Siehe
 [Migration im Überblick](/de/persistence/migration/overview/) für
 die vollständige Story.
 
-## Verschlüsselung + Kompression
+## Verschlüsselung + Kompression + Integrität
 
-Per-Actor-Overrides sind verfügbar:
+Drei Per-Actor-Overrides sind verfügbar:
 
 ```ts
-class Sensitive extends DurableStateActor<...> {
-  protected encryption() { return { algorithm: 'aes-gcm', keyId: 'k1' }; }
-  protected compression() { return { algorithm: 'gzip' }; }
+class Sensitive extends DurableStateActor<Command, State> {
+  protected encryption() {
+    return { mode: 'client-aes256-gcm' as const, masterKey, info: 'acme/prod/durable-state/v1' };
+  }
+  protected compression() { return { algorithm: 'gzip' as const }; }
+  protected integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey };
+  }
 }
 ```
 
-Werden von Stores berücksichtigt, die sie implementieren
-(Object-Storage mit Verschlüsselung, etc.); ignoriert von Stores,
-die das nicht tun (In-Memory, SQLite).  Siehe
+**Nur der Object-Storage-Durable-State-Store liest diese.**  Neun
+der zehn Durable-State-Stores nehmen die Optionen entgegen und
+sehen sie nie an
+([#960](https://github.com/mknorr/actor-ts/issues/960)): Auf
+In-Memory, SQLite, Postgres, Mongo und DynamoDB wird ein Override
+hier stillschweigend fallen gelassen — keine Verschlüsselung,
+keine Manipulationserkennung und kein Fehler, der dich darauf
+hinweist.  Prüfe den Override gegen den Store, den du tatsächlich
+betreibst, bevor du ihn als greifende Kontrolle behandelst.
+
+Siehe
 [Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)
-für die Durable-State-Verschlüsselungs-Story.
+für die Durable-State-Verschlüsselungs-Story und
+[Policies pro Actor](/de/persistence/object-storage/per-actor-policies/)
+für alle drei Hooks.
 
 ## Häufige Stolperfallen
 

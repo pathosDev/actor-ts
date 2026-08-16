@@ -84,11 +84,15 @@ export class CassandraSnapshotStore implements SnapshotStore {
         [persistenceId, seq, now, payload],
         this.readOptions(),
       );
-      if (this.keepN > 0) await this.pruneKeepN(persistenceId);
-      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { await this.pruneKeepN(persistenceId); } catch { /* swallow */ }
+    }
+    return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

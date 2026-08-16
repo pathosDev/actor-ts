@@ -186,6 +186,38 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
       },
     },
     {
+      /**
+       * Retention is housekeeping; the write is the contract.  A store that
+       * prunes inside the save's error handling reports a snapshot that is
+       * already durable as a failed save, so the caller retries a write that
+       * succeeded — and an actor treating a snapshot failure as fatal dies
+       * over a delete.  Object storage has always got this right; this
+       * scenario is what holds the rest of the family to it (#393).
+       */
+      name: 'a failing prune does not fail the save',
+      skip: (harness) =>
+        harness.capabilities?.pruneFailure === 'injectable'
+          ? null
+          : 'no prune-failure injection seam for this store',
+      async run(harness) {
+        const store = await harness.makeWithFailingPrune!(1);
+        const persistenceId = harness.pid('prune-failure');
+        try {
+          // keepN = 1, so the second save has something to prune — and the
+          // prune is rigged to throw.  Neither save may reject.
+          await store.save(persistenceId, 1, { seq: 1 });
+          const saved = await store.save(persistenceId, 2, { seq: 2 });
+          assertEqual(saved.sequenceNr, 2, 'save resolves even though the prune threw');
+
+          const latest = (await store.loadLatest<{ seq: number }>(persistenceId)).toNullable();
+          assertEqual(latest?.sequenceNr, 2, 'the snapshot really is durable');
+          assertEqual(latest?.state.seq, 2, 'and carries the state that was written');
+        } finally {
+          await closeQuietly(store);
+        }
+      },
+    },
+    {
       name: 'close is idempotent',
       async run(harness) {
         const store = await harness.make();

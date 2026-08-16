@@ -19,6 +19,7 @@ import {
   InMemoryDurableStateStore,
   InMemoryJournal,
   InMemorySnapshotStore,
+  InMemorySnapshotStoreOptions,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
   SqliteDurableStateStore,
@@ -72,6 +73,13 @@ import { FakeMariaDbPool } from './FakeMariaDbPool.js';
 import { FakeMongoClient } from './FakeMongoClient.js';
 import { FakeMsSqlPool } from './FakeMsSqlPool.js';
 import { FakePgPool } from './FakePgPool.js';
+import {
+  cassandraClientWithFailingPrune,
+  dynamoDbWithFailingPrune,
+  mongoClientWithFailingPrune,
+  relationalClientWithFailingPrune,
+  sqliteDriverWithFailingPrune,
+} from './FailingPrune.js';
 
 /**
  * The parameterized persistence contract (#390), bound to `bun test`.
@@ -182,23 +190,34 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'InMemorySnapshotStore',
     pid: namespacer('inmem'),
-    // The reference store deliberately keeps every snapshot.
-    capabilities: { keepN: 'none' },
-    make: async () => new InMemorySnapshotStore(),
+    // Unset `keepN` keeps every snapshot — the reference store's default
+    // stays unbounded (#493) — but the bound is honoured when asked for,
+    // so both keepN scenarios apply.
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = InMemorySnapshotStoreOptions.create();
+      return new InMemorySnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
   },
   {
     label: 'SqliteSnapshotStore',
     pid: namespacer('sqlite'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = SqliteSnapshotStoreOptions.create();
       return new SqliteSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = SqliteSnapshotStoreOptions.create()
+        .withKeepN(keepN)
+        .withDriver(await sqliteDriverWithFailingPrune());
+      return new SqliteSnapshotStore(storeOptions);
     },
   },
   {
     label: 'CassandraSnapshotStore',
     pid: namespacer('cassandra'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = CassandraSnapshotStoreOptions.create()
         .withContactPoints(['fake'])
@@ -207,15 +226,30 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withAutoCreateKeyspace(true);
       return new CassandraSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(cassandraClientWithFailingPrune(new FakeCassandraClient()))
+        .withAutoCreateKeyspace(true)
+        .withKeepN(keepN);
+      return new CassandraSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'PostgresSnapshotStore',
     pid: namespacer('pg'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = PostgresSnapshotStoreOptions.create()
         .withPool(new FakePgPool());
       return new PostgresSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = PostgresSnapshotStoreOptions.create()
+        .withPool(relationalClientWithFailingPrune(new FakePgPool()))
+        .withKeepN(keepN);
+      return new PostgresSnapshotStore(storeOptions);
     },
   },
   {
@@ -231,31 +265,49 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'D1SnapshotStore',
     pid: namespacer('d1'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = D1SnapshotStoreOptions.create()
         .withClient(new FakeD1Client());
       return new D1SnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = D1SnapshotStoreOptions.create()
+        .withClient(relationalClientWithFailingPrune(new FakeD1Client()))
+        .withKeepN(keepN);
+      return new D1SnapshotStore(storeOptions);
+    },
   },
   {
     label: 'DynamoDbSnapshotStore',
     pid: namespacer('dynamodb'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = DynamoDbSnapshotStoreOptions.create()
         .withOperations(new FakeDynamoDb());
       return new DynamoDbSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = DynamoDbSnapshotStoreOptions.create()
+        .withOperations(dynamoDbWithFailingPrune(new FakeDynamoDb()))
+        .withKeepN(keepN);
+      return new DynamoDbSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'MongoSnapshotStore',
     pid: namespacer('mongo'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = MongoSnapshotStoreOptions.create()
         .withClient(new FakeMongoClient());
       return new MongoSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = MongoSnapshotStoreOptions.create()
+        .withClient(mongoClientWithFailingPrune(new FakeMongoClient()))
+        .withKeepN(keepN);
+      return new MongoSnapshotStore(storeOptions);
     },
   },
   {
@@ -271,11 +323,17 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'MariaDbSnapshotStore',
     pid: namespacer('mariadb'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = MariaDbSnapshotStoreOptions.create()
         .withPool(new FakeMariaDbPool());
       return new MariaDbSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = MariaDbSnapshotStoreOptions.create()
+        .withPool(relationalClientWithFailingPrune(new FakeMariaDbPool()))
+        .withKeepN(keepN);
+      return new MariaDbSnapshotStore(storeOptions);
     },
   },
 ];

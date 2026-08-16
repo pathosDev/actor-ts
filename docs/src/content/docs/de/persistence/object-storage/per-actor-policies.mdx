@@ -194,7 +194,53 @@ Gleiche Methoden gelten, wenn der Snapshot-Store durch Object
 Storage gestützt wird.  Persistent Actors und Durable State
 Actors honorieren beide.
 
+## Integrität pro Actor
+
+`integrity()` ist der dritte Hook, neben `compression()` und
+`encryption()`.  Er signiert den gespeicherten Body mit
+HMAC-SHA256, sodass Manipulation an Ort und Stelle beim Lesen
+erkannt wird — lohnend auch für Daten, die nicht geheim sind:
+
+```ts
+class LedgerActor extends DurableStateActor<Command, State> {
+  protected integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey: ledgerIntegrityKey };
+  }
+}
+
+class Account extends PersistentActor<Command, Event, State> {
+  override integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey: accountIntegrityKey };
+  }
+}
+```
+
+`hmac-sha256` zu konfigurieren macht das Tag **beim Lesen
+verpflichtend**: Ein Body ohne Tag wird abgelehnt statt
+durchgewunken.  Für einen Bestand, der vor Aktivierung der
+Integrität geschrieben wurde, öffnest du das Migrationsfenster
+mit dem Store-seitigen `allowUntaggedBodies` und entfernst es,
+sobald der Read-then-Write-Sweep abgeschlossen ist.
+
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="Nur die Object-Storage-Stores lesen diesen Hook">
+  Zehn der elf Snapshot-Stores und neun der zehn
+  Durable-State-Stores nehmen `PersistenceOptions` entgegen und
+  sehen es nie an
+  ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Auf
+  SQLite, Postgres, Cassandra, Mongo, DynamoDB und dem
+  In-Memory-Referenz-Store bringt ein `integrity()`-Override
+  **keine Manipulationserkennung und wirft keinen Fehler** — die
+  Direktive wird fallen gelassen.  Dasselbe gilt für
+  `encryption()` und `compression()`.
+
+  Lies diese Seite nicht als Zusage, dass das Framework die
+  Kontrolle überall durchsetzt.  Prüfe sie gegen den Store, den du
+  tatsächlich betreibst: Heute sind das der
+  Object-Storage-Snapshot- und der Durable-State-Store, die alle
+  drei Hooks auf Schreib- und Lesepfad honorieren.
+</Aside>
 
 <Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">
   ```ts
