@@ -49,8 +49,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   manager (`cluster.singleton.stop(...)` then `start(...)`, or a
   supervisor restart, which builds a fresh instance) clears it.
 
-- **Two nodes that disagree about `numShards` are no longer allowed to
-  double-home entities silently (#633).**
+- **BREAKING — Two nodes that disagree about `numShards` are no longer
+  allowed to double-home entities silently (#633).**
 
   A shard id is `hash(entityId) % numShards`, computed independently on
   every node, and nothing in the sharding handshake ever carried the
@@ -201,10 +201,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   DevTools, and advertised the harness as "about thirty lines" when it was
   286; both claims are corrected.
 
-- **`system.terminate()` now drains the actors under `/user` before it
-  stops them (#663).** `ref.tell('x'); await system.terminate()` used to
-  lose `x`, and every example, the README quickstart and both quickstart
-  pages taught the workaround: sleep twenty milliseconds and hope.
+- **BREAKING — `system.terminate()` now drains the actors under `/user`
+  before it stops them (#663).** `ref.tell('x'); await system.terminate()`
+  used to lose `x`, and every example, the README quickstart and both
+  quickstart pages taught the workaround: sleep twenty milliseconds and
+  hope.
 
   The mechanism was subtler than "system commands come first".
   `ActorCell.run()` re-evaluates its `while (mailbox.hasSystemMessages())`
@@ -399,8 +400,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   against a scratch journal, which is how it and the voice smoke test both
   run unattended; the default two-terminal invocation is unchanged.
 
-- **Projections gained a handler-failure recovery strategy, and no longer
-  retry a poison event forever (#650).**
+- **BREAKING — Projections gained a handler-failure recovery strategy, and
+  no longer retry a poison event forever (#650).**
 
   A projection's cursor only advances after a successful `handle`, and
   `ProjectionActor.onReceive` was a single try/catch that logged the error
@@ -645,9 +646,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   change never drained the buffer at all — those messages sat there
   indefinitely while every later send routed normally.
 
-- **A `persistAll` of differently-tagged events now tags each event on its
-  own, instead of stamping the whole batch with the first event's tags
-  (#631).**
+- **BREAKING — A `persistAll` of differently-tagged events now tags each
+  event on its own, instead of stamping the whole batch with the first
+  event's tags (#631).**
 
   `PersistentActor.persistAll` called `tagsFor` once, on `events[0]`, and
   passed the result to `Journal.append` as a single batch-wide argument
@@ -796,8 +797,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Large` the other two backends already sent. Raise `maxBodyBytes` on the
   backend options where an endpoint genuinely takes more.
 
-- **`entity()` answers 415 for a Content-Type it cannot decode, and
-  decodes `application/x-www-form-urlencoded` form bodies (#669).**
+- **BREAKING — `entity()` answers 415 for a Content-Type it cannot decode,
+  and decodes `application/x-www-form-urlencoded` form bodies (#669).**
 
   Every content type the request-side table did not recognise was handed
   to a `JsonSerializer`. For `text/xml` that surfaced as a misleading `400
@@ -1114,8 +1115,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   certificates any party that can reach the port can become a member and
   then the leader. Run mTLS if the network is not fully trusted.
 
-- **Object-storage bodies are now bound to the storage key they live at,
-  and a durable-state revision cannot silently go backwards (#612).**
+- **BREAKING — Object-storage bodies are now bound to the storage key they
+  live at, and a durable-state revision cannot silently go backwards
+  (#612).**
 
   Neither authenticator said anything about *where* a body lived.
   AES-GCM's tag proves the holder of the subkey produced this ciphertext;
@@ -1184,8 +1186,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   key including `prefix`, so changing a store's `prefix` after the fact
   breaks verification exactly the way changing the HKDF `info` does.
 
-- **A WebSocket route's transport frame cap is now the cap you configured,
-  in both directions (#373).**
+- **BREAKING — A WebSocket route's transport frame cap is now the cap you
+  configured, in both directions (#373).**
 
   Every backend has installed a transport-level payload limit since the
   WS-3 fix — `maxPayload` on the `ws` server for Express and Fastify,
