@@ -11,6 +11,7 @@ import {
   type ParseableSinkOptions,
   type ParseableSinkOptionsType,
 } from './ParseableSinkOptions.js';
+import { stripTrailing } from '../util/StripCharacters.js';
 
 /**
  * Ships records to Parseable over its REST ingestion API.
@@ -45,7 +46,7 @@ export class ParseableSink extends BatchingSink {
   constructor(options: ParseableSinkOptions = {}) {
     const settings = validated(options);
     super('parseable', settings.minLevel ?? DEFAULT_PARSEABLE_MIN_LEVEL, settings.delivery);
-    this.endpoint = `${(settings.url ?? '').replace(/\/+$/, '')}/api/v1/ingest`;
+    this.endpoint = `${stripTrailing(settings.url ?? '', '/')}/api/v1/ingest`;
     this.stream = settings.stream ?? 'actor-ts';
     this.authorization = settings.apiKey !== undefined
       ? { 'x-api-key': settings.apiKey }

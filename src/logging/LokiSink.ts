@@ -13,6 +13,7 @@ import {
   type LokiSinkOptionsType,
 } from './LokiSinkOptions.js';
 import { nanosecondsOf } from './Timestamps.js';
+import { stripTrailing } from '../util/StripCharacters.js';
 
 /**
  * Pushes records to Grafana Loki's native ingestion API.
@@ -50,7 +51,7 @@ export class LokiSink extends BatchingSink {
   constructor(options: LokiSinkOptions = {}) {
     const settings = validated(options);
     super('loki', settings.minLevel ?? DEFAULT_LOKI_MIN_LEVEL, settings.delivery);
-    this.endpoint = `${(settings.url ?? '').replace(/\/+$/, '')}/loki/api/v1/push`;
+    this.endpoint = `${stripTrailing(settings.url ?? '', '/')}/loki/api/v1/push`;
     this.configuredLabels = settings.labels ?? {};
     this.labels = { ...this.configuredLabels };
     this.tenantId = settings.tenantId;

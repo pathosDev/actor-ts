@@ -7,6 +7,7 @@
  * src/http → src/persistence layering dependency).
  */
 import { join, resolve, sep } from 'node:path';
+import { stripTrailing } from '../../util/StripCharacters.js';
 
 export type StaticPathResult = { readonly ok: true; readonly fsPath: string } | { readonly ok: false };
 
@@ -47,7 +48,7 @@ export function resolveStaticPath(
   // Absolute forms (POSIX root, Windows drive) never come from a rest-path.
   if (decoded.startsWith('/') || decoded.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(decoded)) return REJECT;
 
-  const trimmed = decoded.replace(/\/+$/, ''); // tolerate one trailing slash (directory marker)
+  const trimmed = stripTrailing(decoded, '/'); // tolerate one trailing slash (directory marker)
   const segments = trimmed.length === 0 ? [] : trimmed.split(/[/\\]/);
   const allowDotfiles = options.dotfiles === 'allow';
   for (const segment of segments) {

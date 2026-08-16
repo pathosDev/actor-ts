@@ -1,6 +1,7 @@
 import { HttpClient } from '../../http/HttpClient.js';
 import { DEFAULT_D1_MAX_RESPONSE_BYTES } from '../Constants.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
+import { stripTrailing } from '../../util/StripCharacters.js';
 
 /**
  * Cloudflare D1 over its REST API — **no SDK, no new dependency.**
@@ -92,7 +93,7 @@ export function buildD1Client(connection: D1Connection): D1ClientLike {
       + 'or a pre-built `client`.',
     );
   }
-  const baseUrl = (connection.baseUrl ?? DEFAULT_D1_BASE_URL).replace(/\/+$/, '');
+  const baseUrl = stripTrailing(connection.baseUrl ?? DEFAULT_D1_BASE_URL, '/');
   const endpoint = `${baseUrl}/accounts/${accountId}/d1/database/${databaseId}/query`;
   // The ceiling is a property of the transport, not of one call, so it is set
   // on the client rather than repeated per request.  Naming it explicitly is
