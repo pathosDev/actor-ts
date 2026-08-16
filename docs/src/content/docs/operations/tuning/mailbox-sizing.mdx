@@ -147,6 +147,7 @@ expose mailbox depth:
 
 ```
 actor_mailbox_size{class="Worker", path="..."}
+actor_mailbox_wait_seconds_bucket
 actor_mailbox_dropped_total{class="Worker", reason="drop-head"}
 ```
 
@@ -157,6 +158,13 @@ Watch:
   that mark, so its *presence* is the signal; on a healthy system the
   metric is empty.  A drained mailbox reads 0 rather than its last
   spike.
+- **`actor_mailbox_wait_seconds`** — how long messages actually waited
+  before delivery.  This is the **earlier** of the two backlog
+  signals, and the one to alert on: depth has a 10 000-message floor
+  before it reports anything, while wait starts climbing as soon as
+  an actor stops keeping up.  It has no labels, so it tells you *that*
+  the system is falling behind, not which actor — pair it with depth,
+  which has the `path`, once it fires.
 - **`actor_mailbox_dropped_total`** — non-zero with `drop-head` /
   `drop-new` is by design for the actors you bounded; on any other
   actor it should not appear at all.  Aggregated **per class**, not

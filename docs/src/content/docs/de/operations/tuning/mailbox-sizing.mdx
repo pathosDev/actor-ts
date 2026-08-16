@@ -148,6 +148,7 @@ exponieren die Mailbox-Tiefe:
 
 ```
 actor_mailbox_size{class="Worker", path="..."}
+actor_mailbox_wait_seconds_bucket
 actor_mailbox_dropped_total{class="Worker", reason="drop-head"}
 ```
 
@@ -158,6 +159,14 @@ Beobachte:
   Marke überschreitet — ihr *Vorhandensein* ist also das Signal; auf
   einem gesunden System ist die Metrik leer. Eine geleerte Mailbox
   liest 0 statt ihres letzten Ausschlags.
+- **`actor_mailbox_wait_seconds`** — wie lange Nachrichten tatsächlich
+  auf ihre Zustellung gewartet haben. Das ist das **frühere** der
+  beiden Rückstau-Signale und das, auf das du alarmieren solltest: die
+  Tiefe hat eine Schwelle von 10 000 Nachrichten, bevor sie überhaupt
+  etwas meldet, während die Wartezeit zu steigen beginnt, sobald ein
+  Actor nicht mehr mitkommt. Sie hat keine Labels, sagt dir also
+  *dass* das System zurückfällt, nicht welcher Actor — kombiniere sie,
+  sobald sie anschlägt, mit der Tiefe, die den `path` trägt.
 - **`actor_mailbox_dropped_total`** — ungleich Null mit `drop-head` /
   `drop-new` ist bei den Actors beabsichtigt, die du begrenzt hast; bei
   jedem anderen sollte sie gar nicht auftauchen. Aggregiert **pro
