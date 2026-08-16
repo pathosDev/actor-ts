@@ -25,7 +25,7 @@ GET /health
 {
   "status": "UP",
   "checks": [
-    { "name": "event-loop", "status": true }
+    { "name": "actor-system", "status": true }
   ]
 }
 ```
@@ -44,14 +44,20 @@ GET /ready
   "status": "UP",
   "clusterReady": true,
   "checks": [
-    { "name": "database", "status": true }
+    { "name": "cluster-membership", "status": true },
+    { "name": "cluster-transport",  "status": true },
+    { "name": "database",           "status": true }
   ]
 }
 ```
 
-`clusterReady` is `false` until the local node reaches `Up`; the
-readiness checks you register contribute the `checks` array.  503
-if the cluster isn't ready or any check fails.
+The `checks` array holds every readiness check on the system's
+registry — the framework's `cluster-membership` and
+`cluster-transport` plus whatever you registered.  `clusterReady` is
+`cluster-membership`'s own result, read back out of that array
+rather than computed separately, so it is `false` until the local
+node reaches `Up` and `true` when there is no cluster at all.  503
+if any check fails.
 
 ## Cluster info
 
@@ -204,7 +210,7 @@ Use for:
 import { path, get, concat, completeJson } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const baseRoutes = managementRoutes(system, cluster).routes;
+const baseRoutes = managementRoutes(system, cluster);
 
 const customRoutes = concat(
   baseRoutes,
@@ -285,7 +291,7 @@ import {
   managementRoutes,
 } from 'actor-ts/management';
 
-const { routes } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableLeaveEndpoint: true,
   enableDownEndpoint: true,
   enableMetricsEndpoint: true,

@@ -52,7 +52,7 @@ Der einfachste Weg führt über die
 import { managementRoutes } from 'actor-ts/management';
 
 // cluster can be null when you only need the metrics endpoint
-const { routes } = managementRoutes(system, null, {
+const routes = managementRoutes(system, null, {
   enableMetricsEndpoint: true,   // ← exposes GET /metrics
 });
 await system.http(8558).bind(routes);

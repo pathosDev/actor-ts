@@ -214,7 +214,7 @@ async function main(): Promise<void> {
   // network's CIDR is covered by the standard RFC1918 ranges.
   // ::ffff: prefixes from dual-stack listeners are handled by
   // IpAllowlist's IPv4-mapped IPv6 normalisation.
-  const { routes: mgmtRoutes } = managementRoutes(system, cluster, {
+  const mgmtRoutes = managementRoutes(system, cluster, {
     enableLeaveEndpoint: true,
     enableDownEndpoint: true,
     enableMetricsEndpoint: true,

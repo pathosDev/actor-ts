@@ -188,7 +188,7 @@ import { managementRoutes } from 'actor-ts/management';
 const system = ActorSystem.create('my-app');
 
 // cluster is optional — pass null to skip the /cluster/* endpoints
-const { routes, health } = managementRoutes(system, cluster);
+const routes = managementRoutes(system, cluster);
 await system.http(8558).bind(routes);
 ```
 
@@ -198,7 +198,7 @@ deiner App), der Endpunkte für den Betrieb bereitstellt:
 | Endpunkt | Was |
 | --- | --- |
 | `GET /health` | Liveness — läuft der Prozess? |
-| `GET /ready` | Readiness — bereit für Traffic (Cluster up + Checks)? |
+| `GET /ready` | Readiness — bereit für Traffic (Framework- + eigene Checks)? |
 | `GET /cluster/members` | Liste der Cluster-Mitglieder (wenn ein Cluster übergeben wird). |
 | `GET /cluster/shards?type=<name>` | Shard-Verteilung für einen sharded Typ. |
 | `GET /metrics` | Prometheus-Exposition (Opt-in via `enableMetricsEndpoint`). |

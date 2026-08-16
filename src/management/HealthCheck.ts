@@ -8,9 +8,32 @@ export type HealthCheckResult = {
 export type HealthCheckFunction = () => Promise<HealthCheckResult> | HealthCheckResult;
 
 /**
- * Thin registry for liveness / readiness style checks.  Components
- * (persistence journal, sharding coordinator, …) register their own checks;
- * the management endpoints aggregate them and surface the overall status.
+ * The checks behind `GET /health` (liveness), `GET /ready` (readiness) and
+ * the gRPC `grpc.health.v1.Health` service.
+ *
+ * **The two lists answer different questions, and the difference decides
+ * what may go in each.**
+ *
+ * *Liveness* answers "would restarting this process help?".  A failing
+ * liveness check tells an orchestrator to kill the pod, so it must depend
+ * on nothing outside this process: a check that goes red when a shared
+ * database blinks turns one dependency's outage into a fleet-wide restart
+ * storm, and the restarts cannot fix what broke.  Only local,
+ * self-inflicted failure belongs here.
+ *
+ * *Readiness* answers "should a load balancer send this node traffic?".
+ * It takes the node out of rotation and leaves it running, so it is the
+ * right home for exactly what liveness must not touch — the dependencies
+ * a request needs.  A readiness probe that answers 200 while the node
+ * cannot reach the rest of its cluster is worse than no probe at all: it
+ * keeps taking traffic it cannot serve.
+ *
+ * Framework checks are registered by whichever component owns the signal
+ * — `registerClusterHealthChecks` contributes the cluster's two when
+ * `Cluster.join` starts — into the per-system registry reached with
+ * `healthChecksOf(system)`.  Application checks go into that same
+ * registry, which is what keeps `/ready` and the gRPC health service from
+ * ever disagreeing about what "ready" means.
  */
 export class HealthCheckRegistry {
   private readonly liveness: HealthCheckFunction[] = [];

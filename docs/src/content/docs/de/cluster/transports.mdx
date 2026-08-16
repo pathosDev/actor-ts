@@ -206,6 +206,17 @@ Cluster erwartet.
 const peers = transport.peers();   // aktuell verbundene Adressen
 ```
 
+`peers()` ist auch das, was der Readiness-Check
+`cluster-transport` des Frameworks liest: ein Knoten, der noch
+Member erwartet und zu keinem davon eine Verbindung hat, ist
+abgeschnitten — `/ready` antwortet dann mit 503, damit ein Load
+Balancer nicht mehr dorthin routet.  Siehe
+[Health Checks](/de/observability/management/health-checks/).
+Beachte: `InMemoryTransport.peers()` meldet jeden im Prozess
+registrierten Transport unabhängig vom Verbindungszustand — ein
+dagegen geschriebener Test kann dieses Fehlschlagen nicht
+beobachten.
+
 Der Transport legt keine Metriken pro Verbindung direkt offen —
 nutze die Metrik-Extension des Clusters, um Verbindungszahlen und
 gesendete/empfangene Bytes pro Peer zu bekommen.

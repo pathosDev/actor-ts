@@ -18,6 +18,7 @@ import {
   NodeAddress,
 } from '../../src/cluster/index.js';
 import {
+  healthChecksOf,
   managementRoutes,
 } from '../../src/management/index.js';
 
@@ -29,9 +30,11 @@ async function main(): Promise<void> {
     .withTransport(new InMemoryTransport(new NodeAddress('mgmt-hello', 'local', 1)));
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const { routes, health } = managementRoutes(system, cluster);
-  // Register a trivial readiness check.
-  health.addReadiness(() => ({ name: 'config-loaded', status: true }));
+  const routes = managementRoutes(system, cluster);
+  // Register a trivial readiness check on the system-wide registry — the
+  // same one `Cluster.join` put its own two checks in, and the same one a
+  // gRPC health service would read.
+  healthChecksOf(system).addReadiness(() => ({ name: 'config-loaded', status: true }));
 
   const binding = await system.http(8558, { host: '127.0.0.1' }).bind(routes);
   console.log(`management endpoint on http://${binding.host}:${binding.port}`);

@@ -17,7 +17,7 @@ import { managementRoutes } from 'actor-ts/management';
 
 // Build the routes (cluster is optional — pass null to skip /cluster/*),
 // then bind them on a dedicated port.
-const { routes, health } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableMetricsEndpoint: true,
 });
 
@@ -25,10 +25,13 @@ const binding = await system.http(8558, { host: '0.0.0.0' }).bind(routes);
 // management endpoints now serve on http://0.0.0.0:8558
 ```
 
-`managementRoutes` returns `{ routes, health }`: `routes` is the
-[Route](/http/route-dsl/) tree you bind, and `health` is the
-[HealthCheckRegistry](/observability/management/health-checks/)
-you register liveness / readiness checks on.
+`managementRoutes` returns the [Route](/http/route-dsl/) tree you
+bind — nothing else.  The checks behind `/health` and `/ready` live
+on the ActorSystem's
+[HealthCheckRegistry](/observability/management/health-checks/),
+reached with `healthChecksOf(system)`: the components that own a
+health signal register there as they start, long before anything
+builds a route tree, and your own checks go on the same object.
 
 ## Configuration
 
@@ -51,7 +54,7 @@ type ManagementRoutesOptionsType = {
 A typical production wiring:
 
 ```ts
-const { routes, health } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableMetricsEndpoint: true,    // for Prometheus
   enableLeaveEndpoint:   false,   // admin-only; gate behind auth
   enableDownEndpoint:    false,
@@ -64,7 +67,7 @@ await system.http(8558).bind(routes);
 | Endpoint | Always on? | Purpose |
 | --- | --- | --- |
 | `GET /health` | ✓ | Liveness — 200 iff every liveness check passes. |
-| `GET /ready` | ✓ | Readiness — 200 iff cluster up + every readiness check passes. |
+| `GET /ready` | ✓ | Readiness — 200 iff every readiness check passes (the framework registers cluster membership + connectivity). |
 | `GET /cluster/members` | When `cluster` is set | Membership JSON. |
 | `GET /cluster/leader` | When `cluster` is set | Leader address. |
 | `GET /cluster/shards?type=<name>` | When `cluster` is set | Shard placement for a sharded type. |
@@ -77,16 +80,20 @@ for the full surface + response shapes.
 
 ## Health checks
 
+The framework already registers three of its own — an `actor-system`
+liveness check, plus `cluster-membership` and `cluster-transport`
+readiness checks that `Cluster.join` installs.  Yours join them:
+
 ```ts
-const { routes, health } = managementRoutes(system, cluster);
+import { healthChecksOf, managementRoutes } from 'actor-ts/management';
 
 // Readiness — gates traffic; return { name, status, detail? }.
-health.addReadiness(async () => {
-  const ok = await db.ping();
-  return { name: 'database', status: ok, detail: ok ? undefined : 'db unreachable' };
+healthChecksOf(system).addReadiness(async () => {
+  const ok = await database.ping();
+  return { name: 'database', status: ok, detail: ok ? undefined : 'database unreachable' };
 });
 
-await system.http(8558).bind(routes);
+await system.http(8558).bind(managementRoutes(system, cluster));
 ```
 
 Checks plug into `/health` (liveness) and `/ready` (readiness).
@@ -157,7 +164,7 @@ dedicated port at all — `concat` them into your app's existing
 import { concat } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const { routes: mgmt } = managementRoutes(system, cluster);
+const mgmt = managementRoutes(system, cluster);
 await system.http(8080).bind(concat(appRoutes, mgmt));
 ```
 

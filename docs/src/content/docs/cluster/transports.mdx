@@ -197,6 +197,15 @@ heartbeat semantics the cluster expects.
 const peers = transport.peers();   // currently-connected addresses
 ```
 
+`peers()` is also what the framework's `cluster-transport` readiness
+check reads: a node with members it still expects and no connection
+to any of them is cut off, and `/ready` answers 503 so a load
+balancer stops routing to it.  See
+[Health checks](/observability/management/health-checks/).  Note
+that `InMemoryTransport.peers()` reports every transport registered
+in the process regardless of connection state — a test written
+against it cannot observe that check failing.
+
 The transport doesn't expose per-connection metrics directly —
 use the cluster's metrics extension to get connection counts and
 bytes sent/received per peer.
