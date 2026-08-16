@@ -78,7 +78,7 @@ Infrastruktur.
 import { FastifyBackend } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const { routes } = managementRoutes(system, cluster);
+const routes = managementRoutes(system, cluster);
 
 // TLS is a property of the HTTP backend — Fastify's `https` option.
 const tlsBackend = new FastifyBackend({
