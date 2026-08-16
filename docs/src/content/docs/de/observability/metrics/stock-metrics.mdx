@@ -43,7 +43,7 @@ Handler".
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Wartende User-Nachrichten, gesampelt. Nur Actors ab 10 000 sind vertreten. |
-| `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
+| `actor_mailbox_dropped_total` | counter | `class`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
 `actor_mailbox_size` ist das **Rückstau**-Signal. Mailboxes sind per
 Default unbounded, ein zurückfallender Actor sammelt also an, statt
@@ -60,6 +60,34 @@ also für Actors, die jemand bewusst begrenzt hat. Das `reason`-Label hält
 die ausgelöste Policy fest (`drop-head` / `drop-new`). Beide Wege, zu
 begrenzen, sind abgedeckt: `withMailboxCapacity` und eine selbst gebaute
 Mailbox aus `withMailbox`.
+
+Gezählt wird **pro Klasse, nicht pro Actor**. Es gibt kein
+`path`-Label: eine beschränkte Mailbox wirft im bestimmungsgemäßen
+Normalbetrieb ab, nicht als Anomalie — ein Label pro Actor hätte also
+für jeden Actor, der genau wie vorgesehen arbeitet, eine dauerhafte
+Serie erzeugt, und unter Sharding stammt der Wert von dem, der die
+Shard-Region adressiert hat. Wenn du wissen musst, welche *Instanz*
+abwirft, gib ein eigenes `onDrop` mit; es feuert neben dem
+Stock-Counter statt an seiner Stelle, die Serie gehört also dir — zum
+Labeln und zum Dimensionieren:
+
+```ts
+import { ActorOptions, BoundedMailbox } from 'actor-ts';
+
+// `onDrop` läuft neben dem Stock-Counter, nie an seiner Stelle.
+const workerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({
+    capacity: 1_000,
+    overflow: 'drop-head',
+    onDrop: (reason) => metrics.counter('jobs_shed_total', { entityId, reason }).inc(),
+  }));
+
+system.spawn(Worker, entityId, workerOptions);
+```
+
+Die Kardinalität von `jobs_shed_total` musst du dann selbst
+einplanen — genau das ist der Punkt. Das Framework gibt sie nicht für
+dich aus.
 
 ## Cluster-Metriken
 
@@ -175,7 +203,9 @@ sprengt, ist der Per-pid-
 bei dem der Name aus der Entity-Id abgeleitet wird — dort erbt das
 Label die Entity-Anzahl, und es gilt dieselbe
 [Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
-wie für `path`.
+wie für `actor_mailbox_size{path}`.  Diese Kardinalität hast du selbst
+gewählt, indem du eine Projektion pro Entity deklarierst — deshalb
+bleibt das Label; siehe die Stock-Label-Regel am Ende dieser Seite.
 
 Siehe [Projektionen](/de/persistence/projections/) für die
 Strategien, die diese Metriken beschreiben.
@@ -194,13 +224,19 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Hoch-kardinales `path`-Label">
   ```ts
   // Per-sharded-Entity-Actor: Tausende verschiedene Pfade
-  actor_mailbox_dropped_total{path="actor-ts://.../entity-1"}
-  actor_mailbox_dropped_total{path="actor-ts://.../entity-2"}
+  actor_mailbox_size{class="Order", path="actor-ts://.../entity-1"}
+  actor_mailbox_size{class="Order", path="actor-ts://.../entity-2"}
   ...
   ```
-  `actor_mailbox_dropped_total` trägt ein `path`-Label, das für
-  sharded Entities hoch-kardinal sein kann (ein Pfad pro Actor).
-  Die Serien-Anzahl ist **beschränkt, aber nicht klein**: die
+  `actor_mailbox_size` trägt ein `path`-Label, das für sharded
+  Entities hoch-kardinal sein kann (ein Pfad pro Actor). In Schach
+  hält es die Meldeschwelle von 10 000 Nachrichten: eine Serie
+  existiert nur für einen Actor, der *bereits* tief im Rückstand ist
+  — die Breite der Familie zählt also gleichzeitige Störungen und
+  nicht Entities, und auf einem gesunden System ist sie leer. Bei
+  einer breiten Störung kann sie trotzdem Tausende erreichen.
+
+  Die Serien-Anzahl ist dann **beschränkt, aber nicht klein**: die
   [Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
   der Registry stoppt die Familie bei 10 000 Serien und faltet den
   Rest in `path="__overflow__"` — der Prozess lässt sich über dieses
@@ -209,6 +245,31 @@ import { Aside } from '@astrojs/starlight/components';
   oder strippe das Label downstream, wenn du genug Entities
   betreibst, um dort hinzukommen, und werte das Auftauchen einer
   `__overflow__`-Serie als genau dieses Signal.
+</Aside>
+
+<Aside type="note" title="Was ein Stock-Label werden darf">
+  Eine Regel deckt alles oben ab: **die Werte eines Stock-Labels
+  müssen durch das begrenzt sein, was das Deployment deklariert — nie
+  durch das Verkehrsaufkommen, durch die Anzahl gespawnter Actors
+  oder durch einen Wert, den eine entfernte Partei liefert.** `class`
+  ist eine Konstante im Quelltext, `reason` und `frame` sind
+  geschlossene Mengen, `projection` ist ein Name, den du schreibst.
+
+  Zwei Labels sind pro Instanz und bleiben es aus genannten Gründen.
+  `actor_mailbox_size{path}` hängt an der Meldeschwelle oben, und das
+  Label ist konstitutiv statt beschreibend — ohne es würde in einem
+  Tiefen-Gauge jeder Actor einer Klasse innerhalb eines Sampling-Laufs
+  seine Geschwister überschreiben. `persistence_projection_*{projection}`
+  ist durch die Projektionen begrenzt, die du deklarierst; der
+  Per-pid-Fan-out oben ist deine Entscheidung, eine pro Entity zu
+  deklarieren — eine Kardinalität, die das Deployment verwaltet, keine,
+  die das Framework auferlegt hat.
+
+  `actor_mailbox_dropped_total` trug früher `path` und tut es nicht
+  mehr, weil es keinen der beiden Tests bestand: Abwerfen ist der
+  Normalbetrieb einer beschränkten Mailbox, gesunde Actors erzeugten
+  also dauerhafte Serien, und unter Sharding stammte der Wert von dem,
+  der die Shard-Region adressiert hat.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">

@@ -82,9 +82,11 @@ describe('mailbox drop reporting (#1149)', () => {
     const samples = dropSamples(system);
     expect(samples.length).toBe(1);
     expect(samples[0]!.value).toBeGreaterThan(0);
-    expect(samples[0]!.labels.reason).toBe('drop-head');
-    expect(samples[0]!.labels.class).toBe('Sink');
-    expect(samples[0]!.labels.path).toContain('$anonymous');
+    // The exact set, not just its members: until #658 there was a third
+    // label, `path`, and this asserted it contained `$anonymous`.  That was
+    // the defect stated as an expectation — one permanent series per
+    // dropping actor — so the assertion was deleted rather than repaired.
+    expect(samples[0]!.labels).toEqual({ class: 'Sink', reason: 'drop-head' });
     release();
   });
 
@@ -212,5 +214,79 @@ describe('mailbox drop reporting (#1149)', () => {
 
     expect(shared.droppedCount).toBe(3);
     expect(reasons.length).toBe(6);       // three drops, two observers each
+  });
+});
+
+/**
+ * Spawns `actorCount` bounded, deliberately-overflowing actors of one class,
+ * leaving each wedged mid-flood.  Returns their releases.
+ *
+ * Awaits a real round-trip per actor rather than reusing `floodBehindLatch`'s
+ * sleep: the number of series is the thing under assertion here, and an actor
+ * whose `create` has not been handled yet drops under `class="unknown"` and
+ * mints a second one.  That would make the test flaky in precisely the
+ * direction that looks like the defect.
+ */
+async function floodBoundedSinks(
+  system: ActorSystem,
+  actorCount: number,
+  burst: number,
+): Promise<Array<() => void>> {
+  const options = ActorOptions.create<number>()
+    .withMailboxCapacity(4)
+    .withMailboxOverflow('drop-head');
+  const releases: Array<() => void> = [];
+
+  for (let i = 0; i < actorCount; i++) {
+    let release: () => void = () => {};
+    let running: () => void = () => {};
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+    const alive = new Promise<void>((resolve) => { running = resolve; });
+
+    class Sink extends Actor<number> {
+      override async onReceive(n: number): Promise<void> {
+        if (n === 0) { running(); await latch; }
+      }
+    }
+    const ref = system.spawnAnonymous(Sink, options);
+    ref.tell(0);
+    await alive;                 // the instance exists, so `class` has settled
+    for (let n = 1; n <= burst; n++) ref.tell(n);
+    releases.push(release);
+  }
+  return releases;
+}
+
+describe('drop-counter cardinality (#658)', () => {
+  test('the series count does not grow with the number of dropping actors', async () => {
+    // #658's acceptance criterion — "spawning 10 000 anonymous actors that
+    // overflow produces O(1) series" — at a size a unit test can afford.
+    // Asserted by comparing two populations rather than by pinning a number
+    // at one N: the property is the shape of the growth, and with `path` this
+    // read 4 and 16, which satisfies any single-N expectation you care to
+    // write.  Each of those series was permanent — the registry has no
+    // per-child eviction — and a bounded mailbox sheds as its designed steady
+    // state, so a healthy system paid the cardinality.
+    const few = startSystem('drop-cardinality-few');
+    const many = startSystem('drop-cardinality-many');
+
+    const releases = [
+      ...await floodBoundedSinks(few, 4, 32),
+      ...await floodBoundedSinks(many, 16, 32),
+    ];
+    // Unwedged before the assertions, not after: every drop has already been
+    // counted (`tell` enqueues synchronously, so the overflow fires there),
+    // and a failed expectation must not leave 20 actors latched for the
+    // afterEach to time out on — that turns one red assertion into a red
+    // assertion plus a hook timeout.
+    for (const release of releases) release();
+
+    expect(dropSamples(many).length).toBe(dropSamples(few).length);
+    expect(dropSamples(many).length).toBe(1);
+    // `class` is a source-code constant and `reason` a closed two-value set,
+    // which is what leaves the family bounded by the program rather than by
+    // its traffic or by whoever chose the entity ids.
+    expect(dropSamples(many)[0]!.labels).toEqual({ class: 'Sink', reason: 'drop-head' });
+    expect(dropSamples(many)[0]!.value).toBeGreaterThan(0);
   });
 });

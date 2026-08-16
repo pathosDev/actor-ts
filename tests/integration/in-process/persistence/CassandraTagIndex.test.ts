@@ -114,6 +114,62 @@ describe('CassandraJournal — useTagIndex dual-write', () => {
     await journal.close();
   });
 
+  test('delete compacts the side table, not just the events table (#654)', async () => {
+    const { journal, client } = makeJournal(true);
+    await seedCorpus(journal);
+    expect(client.countRows('ks.events_by_tag')).toBe(14);
+
+    // Compact three of the six streams away entirely.
+    await journal.delete('order-1', 1);   // 2 tags
+    await journal.delete('order-3', 1);   // 3 tags
+    await journal.delete('inv-2', 1);     // 3 tags
+
+    // The side table carries the FULL payload of every (event, tag) pair, so
+    // a row left behind is retained data and not merely a stale index entry —
+    // which is why this asserts the physical row count rather than only what
+    // the query returns.  14 - (2 + 3 + 3) = 6.
+    expect(client.countRows('ks.events_by_tag')).toBe(6);
+    expect(client.countRows('ks.events')).toBe(3);
+
+    // The untouched streams keep every one of their rows.
+    const query = new CassandraQuery(journal);
+    const remaining = await query.currentEventsByTag<CorpusEvent>({ all: ['type:Order'] }, offsetStart);
+    expect(ids(remaining)).toEqual([2]);
+    const stillTagged = await query.currentEventsByTag<CorpusEvent>({ all: ['tenant:t1'] }, offsetStart);
+    expect(ids(stillTagged)).toEqual([4, 6]);
+    await journal.close();
+  });
+
+  test('a partial delete leaves the surviving events\' tag rows alone', async () => {
+    const { journal, client } = makeJournal(true);
+    await journal.append('multi', [
+      { event: { id: 1 }, tags: ['keep', 'drop'] },
+      { event: { id: 2 }, tags: ['keep'] },
+    ], 0);
+    expect(client.countRows('ks.events_by_tag')).toBe(3);
+
+    // Only the first event is compacted — the delete must reach exactly its
+    // two rows and stop, which a range delete on `tag` alone could not do.
+    await journal.delete('multi', 1);
+    expect(client.countRows('ks.events_by_tag')).toBe(1);
+
+    const query = new CassandraQuery(journal);
+    expect(ids(await query.currentEventsByTag<CorpusEvent>('keep', offsetStart))).toEqual([2]);
+    expect(await query.currentEventsByTag<CorpusEvent>('drop', offsetStart)).toEqual([]);
+    await journal.close();
+  });
+
+  test('with the index off, delete touches only the events table', async () => {
+    // The read-back the tag cleanup needs costs a SELECT per partition, so it
+    // must not run for a journal that never dual-wrote anything.
+    const { journal, client } = makeJournal(false);
+    await seedCorpus(journal);
+    await journal.delete('order-1', 1);
+    expect(client.countRows('ks.events')).toBe(5);
+    expect(client.countRows('ks.events_by_tag')).toBe(0);
+    await journal.close();
+  });
+
   test('tagIndexDdl returns a runnable CREATE TABLE statement', () => {
     const ddl = tagIndexDdl({ keyspace: 'app' });
     expect(ddl).toMatch(/^CREATE TABLE IF NOT EXISTS app\.events_by_tag/);

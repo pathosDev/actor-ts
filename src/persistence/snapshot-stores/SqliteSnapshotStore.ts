@@ -49,13 +49,15 @@ export class SqliteSnapshotStore implements SnapshotStore {
     const now = Date.now();
     try {
       stmts.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
-      if (this.keepN > 0) {
-        stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN);
-      }
-      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`SqliteSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN); } catch { /* swallow */ }
+    }
+    return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

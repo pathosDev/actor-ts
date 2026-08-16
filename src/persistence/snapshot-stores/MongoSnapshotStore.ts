@@ -69,11 +69,15 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
         { $set: { payload: encodePayload(state, this.serializer), timestamp: now } },
         { upsert: true },
       );
-      if (this.keepN > 0) await this.prune(database, persistenceId);
-      return { persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       this.fail('save', e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { await this.prune(database, persistenceId); } catch { /* swallow */ }
+    }
+    return { persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

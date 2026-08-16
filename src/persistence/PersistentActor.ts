@@ -7,6 +7,7 @@ import { PersistenceExtensionId } from './PersistenceExtension.js';
 import type {
   CompressionConfig,
   EncryptionConfig,
+  IntegrityConfig,
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
@@ -142,6 +143,22 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * the read path (derive subkey from master to decrypt).
    */
   encryption(): EncryptionConfig | undefined { return undefined; }
+
+  /**
+   * Per-actor body integrity — overrides the plugin default for THIS
+   * actor's snapshots.  Returning `undefined` (the default) defers to the
+   * plugin's resolver / configured default.
+   *
+   * **Only the object-storage snapshot store honours this today.**  Ten of
+   * the eleven snapshot stores accept `PersistenceOptions` and never read
+   * it (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
+   * in-memory reference store, configuring `hmac-sha256` here buys no
+   * tamper detection and raises no error — the value is simply dropped.
+   * Treat it as a control you must verify against the store you actually
+   * run, not as one the framework enforces everywhere.  #960 decides
+   * whether an unhonoured directive starts throwing instead.
+   */
+  integrity(): IntegrityConfig | undefined { return undefined; }
 
   /* ----------------------------- Internal state ---------------------------- */
 
@@ -517,8 +534,9 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   private persistenceOptions(): PersistenceOptions | undefined {
     const compression = this.compression();
     const encryption = this.encryption();
-    if (!compression && !encryption) return undefined;
-    return { compression, encryption };
+    const integrity = this.integrity();
+    if (!compression && !encryption && !integrity) return undefined;
+    return { compression, encryption, integrity };
   }
 
   /**

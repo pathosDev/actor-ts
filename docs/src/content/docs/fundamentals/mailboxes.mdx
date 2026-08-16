@@ -82,8 +82,12 @@ The three policies and how to choose between them are covered under
 the *sender* rather than the slow actor.
 
 Drops from a capacity you set are counted by
-`actor_mailbox_dropped_total`, labelled with the actor's class, path and
-the policy that fired.
+`actor_mailbox_dropped_total`, labelled with the actor's class and the
+policy that fired.  Per class, not per actor: shedding is what a bounded
+mailbox is *for*, so a per-actor label would mint a permanent metric
+series for every actor behaving exactly as designed.  To see which
+instance is shedding, add an `onDrop` of your own — it runs alongside the
+stock counter rather than replacing it.
 
 ### Bringing your own mailbox
 

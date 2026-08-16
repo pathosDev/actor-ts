@@ -87,8 +87,13 @@ Die drei Policies und wie du zwischen ihnen wählst, stehen unten unter
 `reject` den *Sender* scheitern lässt und nicht den langsamen Actor.
 
 Drops aus einer Kapazität, die du gesetzt hast, zählt
-`actor_mailbox_dropped_total`, gelabelt mit Klasse, Pfad und der Policy,
-die gegriffen hat.
+`actor_mailbox_dropped_total`, gelabelt mit Klasse und der Policy, die
+gegriffen hat. Pro Klasse, nicht pro Actor: Abwerfen ist das, wofür
+eine beschränkte Mailbox *da* ist — ein Label pro Actor würde also für
+jeden Actor, der sich exakt wie vorgesehen verhält, eine dauerhafte
+Metrik-Serie erzeugen. Um zu sehen, welche Instanz abwirft, ergänze ein
+eigenes `onDrop`; es läuft neben dem Stock-Counter statt an seiner
+Stelle.
 
 ### Eine eigene Mailbox mitbringen
 

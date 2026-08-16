@@ -57,6 +57,20 @@ export interface Journal {
    * a snapshot.  Only ever a prefix, so what survives is a suffix that
    * `read` still returns contiguously, and sequence numbers never rewind:
    * `highestSeq` keeps reporting the high-water mark afterwards.
+   *
+   * **A deleted event must leave the read side too** (#654).  Whatever a
+   * backend maintains so that `currentEventsByTag` can answer without
+   * scanning the journal — a join table, a side table, a secondary index —
+   * is part of what `delete` compacts.  This is easy to miss precisely
+   * because it is invisible to `read` and `highestSeq`: the two things a
+   * delete test naturally asserts still pass while a by-tag query keeps
+   * serving the event, and where that structure carries its own copy of the
+   * payload (Cassandra's `events_by_tag`) the bytes are retained as well, so
+   * the miss is a data-retention defect and not only a stale read.  Backends
+   * whose index is over the event record itself (Mongo's multikey `tags`)
+   * satisfy this for free; ones with a separate physical structure must
+   * delete from it explicitly, and before the events, so a crash mid-delete
+   * cannot strand rows whose key can no longer be reconstructed.
    */
   delete(persistenceId: string, toSeq: number): Promise<void>;
 
@@ -93,7 +107,29 @@ export interface Journal {
    */
   raiseCompactionMark?(persistenceId: string, throughSeq: number): Promise<void>;
 
-  /** Persistence IDs currently known to the journal (useful for projections). */
+  /**
+   * Persistence IDs currently known to the journal (useful for projections).
+   * Distinct — one entry per id, not one per event.
+   *
+   * **Whether a fully compacted stream still enumerates is deliberately not
+   * specified** (#654), and the two in-tree answers are both intentional.
+   * `InMemoryJournal` and `CassandraJournal` keep the id: a stream whose
+   * events are all gone but whose high-water mark stands is *known to the
+   * journal*, just without surviving history, and `raiseCompactionMark`
+   * materialises exactly that shape.  The backends that enumerate by reading
+   * their events table — SQLite, the relational family, Mongo, DynamoDB —
+   * drop it, because for them "known" and "holds an event" are the same
+   * query.
+   *
+   * The difference is observable, and one caller cares:
+   * `migrateBetweenJournals` walks the source with this method, so on a
+   * journal of the first kind a fully compacted stream carries its mark
+   * across the copy and on one of the second kind it is not visited at all.
+   * Do not build on either answer without passing an explicit
+   * `persistenceIds` list. Converging them means teaching the second group
+   * to enumerate a mark-only stream — a separate change, not something to
+   * settle by dropping the row on the first group.
+   */
   persistenceIds(): Promise<string[]>;
 
   /**

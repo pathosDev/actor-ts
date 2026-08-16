@@ -2,6 +2,7 @@ import { describe, test } from 'bun:test';
 import {
   CassandraJournal,
   CassandraJournalOptions,
+  CassandraQuery,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
   D1DurableStateStore,
@@ -18,7 +19,9 @@ import {
   DynamoDbSnapshotStoreOptions,
   InMemoryDurableStateStore,
   InMemoryJournal,
+  InMemoryQuery,
   InMemorySnapshotStore,
+  InMemorySnapshotStoreOptions,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
   SqliteDurableStateStore,
@@ -31,6 +34,7 @@ import {
   MongoDurableStateStoreOptions,
   MongoJournal,
   MongoJournalOptions,
+  MongoQuery,
   MongoSnapshotStore,
   MongoSnapshotStoreOptions,
   MsSqlDurableStateStore,
@@ -52,6 +56,7 @@ import {
   PostgresSnapshotStore,
   PostgresSnapshotStoreOptions,
   SqliteJournal,
+  SqliteQuery,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
 } from '../../../../src/persistence/index.js';
@@ -72,6 +77,13 @@ import { FakeMariaDbPool } from './FakeMariaDbPool.js';
 import { FakeMongoClient } from './FakeMongoClient.js';
 import { FakeMsSqlPool } from './FakeMsSqlPool.js';
 import { FakePgPool } from './FakePgPool.js';
+import {
+  cassandraClientWithFailingPrune,
+  dynamoDbWithFailingPrune,
+  mongoClientWithFailingPrune,
+  relationalClientWithFailingPrune,
+  sqliteDriverWithFailingPrune,
+} from './FailingPrune.js';
 
 /**
  * The parameterized persistence contract (#390), bound to `bun test`.
@@ -95,11 +107,16 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     label: 'InMemoryJournal',
     pid: namespacer('inmem'),
     make: async () => new InMemoryJournal(),
+    // The reference query walks the journal itself, so it has no index that
+    // could go stale — which is exactly what makes it the oracle for the
+    // scenarios the indexed backends have to match.
+    makeQuery: (journal) => new InMemoryQuery(journal),
   },
   {
     label: 'SqliteJournal',
     pid: namespacer('sqlite'),
     make: async () => new SqliteJournal(),
+    makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
   },
   {
     label: 'CassandraJournal',
@@ -112,6 +129,31 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withAutoCreateKeyspace(true);
       return new CassandraJournal(journalOptions);
     },
+    // Default config: no side table, so `CassandraQuery` falls back to the
+    // journal-walking scan.  Kept as its own harness because it is the shape
+    // most deployments run, and the one below is the shape that broke.
+    makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
+  },
+  {
+    // Second Cassandra harness rather than flipping the flag on the one
+    // above: `useTagIndex` selects a genuinely different storage layout —
+    // a separate `events_by_tag` table that `delete` has to compact (#654) —
+    // and both layouts owe the full journal contract.  With only the default
+    // harness the tag-index delete path had no coverage at all, and the new
+    // query-side scenario would have passed vacuously against the fallback
+    // scan.
+    label: 'CassandraJournal (tag index)',
+    pid: namespacer('cassandra-tag-index'),
+    make: async () => {
+      const journalOptions = CassandraJournalOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(new FakeCassandraClient())
+        .withAutoCreateKeyspace(true)
+        .withUseTagIndex(true);
+      return new CassandraJournal(journalOptions);
+    },
+    makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
   },
   {
     label: 'PostgresJournal',
@@ -157,6 +199,11 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withClient(new FakeMongoClient());
       return new MongoJournal(journalOptions);
     },
+    // Multikey index over the event document itself — no second collection,
+    // so a deleted event leaves the tag index by construction.  Worth running
+    // the query-side scenarios against anyway: that is the property being
+    // asserted, not an assumption the contract gets to make.
+    makeQuery: (journal) => new MongoQuery(journal as MongoJournal),
   },
   {
     label: 'MsSqlJournal',
@@ -182,23 +229,34 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'InMemorySnapshotStore',
     pid: namespacer('inmem'),
-    // The reference store deliberately keeps every snapshot.
-    capabilities: { keepN: 'none' },
-    make: async () => new InMemorySnapshotStore(),
+    // Unset `keepN` keeps every snapshot — the reference store's default
+    // stays unbounded (#493) — but the bound is honoured when asked for,
+    // so both keepN scenarios apply.
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = InMemorySnapshotStoreOptions.create();
+      return new InMemorySnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
   },
   {
     label: 'SqliteSnapshotStore',
     pid: namespacer('sqlite'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = SqliteSnapshotStoreOptions.create();
       return new SqliteSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = SqliteSnapshotStoreOptions.create()
+        .withKeepN(keepN)
+        .withDriver(await sqliteDriverWithFailingPrune());
+      return new SqliteSnapshotStore(storeOptions);
     },
   },
   {
     label: 'CassandraSnapshotStore',
     pid: namespacer('cassandra'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = CassandraSnapshotStoreOptions.create()
         .withContactPoints(['fake'])
@@ -207,15 +265,30 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withAutoCreateKeyspace(true);
       return new CassandraSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(cassandraClientWithFailingPrune(new FakeCassandraClient()))
+        .withAutoCreateKeyspace(true)
+        .withKeepN(keepN);
+      return new CassandraSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'PostgresSnapshotStore',
     pid: namespacer('pg'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = PostgresSnapshotStoreOptions.create()
         .withPool(new FakePgPool());
       return new PostgresSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = PostgresSnapshotStoreOptions.create()
+        .withPool(relationalClientWithFailingPrune(new FakePgPool()))
+        .withKeepN(keepN);
+      return new PostgresSnapshotStore(storeOptions);
     },
   },
   {
@@ -231,31 +304,49 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'D1SnapshotStore',
     pid: namespacer('d1'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = D1SnapshotStoreOptions.create()
         .withClient(new FakeD1Client());
       return new D1SnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = D1SnapshotStoreOptions.create()
+        .withClient(relationalClientWithFailingPrune(new FakeD1Client()))
+        .withKeepN(keepN);
+      return new D1SnapshotStore(storeOptions);
+    },
   },
   {
     label: 'DynamoDbSnapshotStore',
     pid: namespacer('dynamodb'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = DynamoDbSnapshotStoreOptions.create()
         .withOperations(new FakeDynamoDb());
       return new DynamoDbSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = DynamoDbSnapshotStoreOptions.create()
+        .withOperations(dynamoDbWithFailingPrune(new FakeDynamoDb()))
+        .withKeepN(keepN);
+      return new DynamoDbSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'MongoSnapshotStore',
     pid: namespacer('mongo'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = MongoSnapshotStoreOptions.create()
         .withClient(new FakeMongoClient());
       return new MongoSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = MongoSnapshotStoreOptions.create()
+        .withClient(mongoClientWithFailingPrune(new FakeMongoClient()))
+        .withKeepN(keepN);
+      return new MongoSnapshotStore(storeOptions);
     },
   },
   {
@@ -271,11 +362,17 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
   {
     label: 'MariaDbSnapshotStore',
     pid: namespacer('mariadb'),
-    capabilities: { keepN: 'configurable' },
+    capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
       const storeOptions = MariaDbSnapshotStoreOptions.create()
         .withPool(new FakeMariaDbPool());
       return new MariaDbSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeWithFailingPrune: async (keepN) => {
+      const storeOptions = MariaDbSnapshotStoreOptions.create()
+        .withPool(relationalClientWithFailingPrune(new FakeMariaDbPool()))
+        .withKeepN(keepN);
+      return new MariaDbSnapshotStore(storeOptions);
     },
   },
 ];

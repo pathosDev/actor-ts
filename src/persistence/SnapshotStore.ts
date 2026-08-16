@@ -13,6 +13,26 @@ export interface SnapshotStore {
    * applied.  Optional `options` carry per-call preferences from the
    * caller (e.g. compression/encryption set on the actor).  Stores that
    * cannot honour them silently ignore the field.
+   *
+   * ### Retention is best-effort; the write is not
+   *
+   * A store that prunes on save (`keepN` and friends) MUST NOT let a
+   * failing prune fail the save.  Once the snapshot itself is durable,
+   * `save` resolves — the retention pass runs afterwards and its errors
+   * are swallowed.
+   *
+   * The two operations have opposite failure semantics, which is why
+   * they cannot share a `try`.  A failed write means the caller's
+   * snapshot does not exist and retrying is correct.  A failed prune
+   * means one row too many exists — harmless, self-correcting on the
+   * next save, and invisible to `loadLatest`.  Reporting the second as
+   * the first tells the caller to retry a write that already succeeded,
+   * and an actor that treats a snapshot failure as fatal then dies over
+   * a housekeeping error.
+   *
+   * Implementations must therefore run the prune *outside* the write's
+   * error handling.  `save` is still permitted to reject for a genuine
+   * write failure, and only for that.
    */
   save<S = unknown>(
     persistenceId: string,

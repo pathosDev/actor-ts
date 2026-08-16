@@ -1271,15 +1271,32 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Observer registered on any mailbox that reports its drops — fires once
    * per discarded message.  Increments `actor_mailbox_dropped_total` with
-   * labels {class, path, reason} so operators can spot slow-consumer
-   * signals on the standard observability stack.  Cheap when metrics
-   * are disabled (the noop registry's counter is a single object lookup).
+   * labels {class, reason} so operators can spot slow-consumer signals on
+   * the standard observability stack.  Cheap when metrics are disabled (the
+   * noop registry's counter is a single object lookup).
+   *
+   * **There is deliberately no `path` label** (#658, #745).  It answered a
+   * question operators genuinely ask — *which* actor is shedding — but it
+   * was the one stock label whose values the framework derived per instance
+   * instead of the deployment declaring them: under sharding a path is
+   * `entity-<entityId>`, i.e. chosen by whoever addresses the shard region,
+   * and `spawnAnonymous` mints a fresh one per spawn forever.  Shedding is
+   * a bounded mailbox's *designed* behaviour rather than an anomaly, so
+   * every such actor minted a permanent series — the registry has no
+   * per-child eviction — in a system doing nothing wrong.  `class` is a
+   * source-code constant and `reason` a closed pair, so the family is now
+   * bounded by the program instead of by its traffic.
+   *
+   * Per-actor drop counts did not disappear, they moved to where the
+   * cardinality budget belongs: `observeDrops` appends rather than assigns,
+   * so a caller's own `onDrop` still fires alongside this observer and can
+   * mint a path-labelled series they have sized their own monitoring for.
    */
   private _onMailboxDrop(reason: MailboxDropReason): void {
-    const cls = this.actor?.constructor.name ?? 'unknown';
+    const className = this.actor?.constructor.name ?? 'unknown';
     metricsOf(this.system).counter(
       'actor_mailbox_dropped_total',
-      { class: cls, path: this.path.toString(), reason },
+      { class: className, reason },
       { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
     ).inc();
   }

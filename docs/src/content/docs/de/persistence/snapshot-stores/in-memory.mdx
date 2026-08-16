@@ -27,8 +27,9 @@ Implementiert das `SnapshotStore`-Interface — `save`,
 `loadLatest`, `loadBefore`, `delete`.  Jede `persistenceId` mappt auf
 ein Array von Snapshots, geordnet nach Sequenznummer.
 
-- **`save(persistenceId, seq, state, options?)`** — an das Array der pid
-  anhängen.
+- **`save(persistenceId, seq, state, options?)`** — in das Array der pid
+  einfügen und einen vorhandenen Eintrag mit derselben Sequenznummer
+  ersetzen.
 - **`loadLatest(persistenceId, options?)`** — den Snapshot mit der
   höchsten seq zurückgeben oder `None`.
 - **`loadBefore(persistenceId, seq, options?)`** — den neuesten Snapshot
@@ -39,6 +40,31 @@ ein Array von Snapshots, geordnet nach Sequenznummer.
 Die Implementierung ist **Referenz-Semantik** — jeder andere
 Snapshot-Store muss dieses Verhalten erfüllen (modulo
 Persistenz- / Verschlüsselungs- / Kompressions-Spezifika).
+
+## Aufbewahrung
+
+`keepN` begrenzt, wie viele Snapshots pro `persistenceId` behalten
+werden; ältere werden beim Speichern entfernt.  `<= 0` behält alle.
+
+```ts
+import { InMemorySnapshotStore, InMemorySnapshotStoreOptions } from 'actor-ts/persistence';
+
+const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3);
+const snapshotStore = new InMemorySnapshotStore(inMemorySnapshotStoreOptions);
+```
+
+**Ohne Angabe behält er jeden Snapshot** — und das ist die eine
+Stelle, an der dieser Store bewusst von der Familie abweicht, in
+der jeder persistente Store `keepN: 3` als Default hat.  Dies ist
+der Store, den du bekommst, wenn nichts konfiguriert ist; ein
+Default-Limit würde also ändern, was jede unkonfigurierte
+Anwendung aufbewahrt, ohne dass jemand danach gefragt hat.
+Entscheide dich stattdessen explizit dafür.
+
+Erneutes Speichern unter einer bereits vorhandenen Sequenznummer
+**ersetzt** diesen Snapshot, statt einen zweiten anzuhängen —
+passend zum Primärschlüssel `(persistence_id, sequence_nr)` der
+relationalen Stores.
 
 ## Wann verwenden
 
@@ -60,10 +86,10 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Lange laufende Tests">
-  Snapshots akkumulieren im Speicher.  Ein Benchmark, der über
-  einen Run 1M Snapshots macht, lässt die Map linear wachsen.  Für
-  lange Tests konfiguriere `delete`-Cleanup oder verwende den
-  SQLite-Store mit `:memory:`.
+  Snapshots akkumulieren standardmäßig im Speicher.  Ein
+  Benchmark, der über einen Run 1M Snapshots macht, lässt die Map
+  linear wachsen.  Für lange Tests setze `keepN`, rufe `delete`
+  selbst auf oder verwende den SQLite-Store mit `:memory:`.
 </Aside>
 
 ## Wie geht's weiter

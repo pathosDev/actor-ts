@@ -16,6 +16,7 @@
  */
 import type { DurableStateStore } from '../../../../../src/persistence/DurableStateStore.js';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
+import type { PersistenceQuery } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
 
 /** A single contract scenario, parameterized over its harness type. */
@@ -51,6 +52,18 @@ export type JournalCapabilities = {
 export interface JournalHarness extends HarnessBase {
   /** Build a fresh journal.  The scenario closes it. */
   make(): Promise<Journal>;
+  /**
+   * Build the read-side query over a journal this harness made — the seam
+   * that lets a scenario assert what a *by-tag* query sees, which is the only
+   * way to observe a tag index that `delete` forgot to compact (#654).
+   *
+   * Optional because a query class is a separate thing from a journal and not
+   * every backend has one: the relational family maintains its tag table
+   * correctly but has no `PersistenceQuery` implementation yet (#532).  A
+   * harness that leaves this unset skips the query-side scenarios rather than
+   * passing them vacuously.
+   */
+  makeQuery?(journal: Journal): PersistenceQuery;
   readonly capabilities?: JournalCapabilities;
 }
 
@@ -58,9 +71,19 @@ export type SnapshotCapabilities = {
   /**
    * `'configurable'` — the store honours a `keepN` prune bound, so the
    * prune and keep-all scenarios run.  `'none'` — the store keeps every
-   * snapshot (the in-memory reference store), and they are skipped.
+   * snapshot regardless, and they are skipped.
    */
   readonly keepN?: 'configurable' | 'none';
+  /**
+   * `'injectable'` — the harness can build a store whose retention pass
+   * always fails, so the best-effort-prune scenario runs.  `'none'` (the
+   * default) — no such seam, and it is skipped.
+   *
+   * A live database is the usual reason for `'none'`: breaking only the
+   * prune statement against a real server is not something a scenario can
+   * arrange from the outside.
+   */
+  readonly pruneFailure?: 'injectable' | 'none';
 };
 
 export interface SnapshotHarness extends HarnessBase {
@@ -70,6 +93,12 @@ export interface SnapshotHarness extends HarnessBase {
    * own default applies.
    */
   make(keepN?: number): Promise<SnapshotStore>;
+  /**
+   * Build a store bounded by `keepN` whose retention pass always fails,
+   * leaving the write path intact.  Required when capabilities declare
+   * `pruneFailure: 'injectable'`.
+   */
+  makeWithFailingPrune?(keepN: number): Promise<SnapshotStore>;
   readonly capabilities?: SnapshotCapabilities;
 }
 

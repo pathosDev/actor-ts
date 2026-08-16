@@ -164,7 +164,8 @@ class ExtraWorker extends Actor<unknown> {
  * Scenario 14 spawns two of these and bombards both.  One is given an
  * explicit `withMailboxCapacity(SLOW_SINK_CAPACITY)` and must still drop,
  * proving the `onDrop` -> `actor_mailbox_dropped_total` -> `/metrics` chain
- * works end to end with its labels intact.  The other takes the default
+ * works end to end with its `{class, reason}` labels intact (`path` was
+ * removed from the stock set in #658).  The other takes the default
  * mailbox and must drop nothing at all, which is the property #1148
  * introduced and the reason this scenario was rewritten rather than
  * deleted: before #1148 the default was `BoundedMailbox(10_000,

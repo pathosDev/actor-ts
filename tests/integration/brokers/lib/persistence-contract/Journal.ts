@@ -9,6 +9,7 @@
  * backend's hand-written suite happened to prompt it (#390).
  */
 import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
+import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
 import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
@@ -312,6 +313,48 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           const written = await journal.append(persistenceId, [{ event: 'e4' }], 3);
           assertEqual(written.map((e) => e.sequenceNr), [4], 'the recovered actor can append at the old head');
           assertEqual(await journal.highestSeq(persistenceId), 4, 'head advances from the preserved mark');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      name: 'a deleted event is invisible to currentEventsByTag',
+      skip: (harness) => {
+        if (harness.capabilities?.tags === false) return 'store does not support tags';
+        if (harness.makeQuery === undefined) return 'backend has no query implementation';
+        return null;
+      },
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('delete-tag-index');
+        // Namespaced like the ids: a tag query is global across persistence
+        // ids, so against a live database a fixed tag string would pick up
+        // rows from every other backend and every earlier run.
+        const tag = harness.pid('delete-tag-index-tag');
+        // The read side is where a compacted event goes on living (#654).
+        // `read` and `highestSeq` — the two things the other delete scenarios
+        // assert — are served by the events table alone, so a backend that
+        // keeps a *separate* tag index and forgets to compact it passes all
+        // of them while `currentEventsByTag` still hands out the deleted
+        // event, payload and all.
+        try {
+          const query = harness.makeQuery!(journal);
+          await journal.append(persistenceId, [
+            { event: 'compacted', tags: [tag] },
+            { event: 'surviving', tags: [tag] },
+          ], 0);
+          const before = await query.currentEventsByTag<string>(tag, offsetStart);
+          assertEqual(before.map((e) => e.event.sequenceNr), [1, 2], 'both events answer the tag query before the delete');
+
+          await journal.delete(persistenceId, 1);
+
+          const after = await query.currentEventsByTag<string>(tag, offsetStart);
+          assertEqual(after.map((e) => e.event.sequenceNr), [2], 'the compacted event no longer answers the tag query');
+          assertEqual(after.map((e) => e.event.event), ['surviving'], 'the surviving event still does');
+          // Guard against the trivial way to pass this — dropping the index
+          // wholesale — by checking the survivor kept its tag.
+          assertEqual(after[0]?.event.tags, [tag], 'the surviving event keeps its tag');
         } finally {
           await closeQuietly(journal);
         }
