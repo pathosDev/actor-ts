@@ -1,0 +1,190 @@
+name: nightly-flakes
+
+# The two questions a single `bun test` cannot answer (#290, #538).
+#
+# 1. **Are the quarantined suites still broken on hosted runners?**  Three
+#    suites are removed from every CI run by `ACTOR_TS_SKIP_FLAKY_MNS=1`
+#    (test.yml, multi-runtime.yml, publish.yml) because Bun on GitHub's
+#    hosted runners cannot respawn functional worker threads after the first
+#    worker test, which also starves LeaseMajority's in-process lease
+#    arbitration into a false split-brain.  Nothing re-checks that, so the
+#    quarantine has no exit: it is permanent by default rather than by
+#    decision.  The `quarantined` job below runs exactly those three suites
+#    with the flag OFF and records the result.
+#
+# 2. **Which tests are flaky, as opposed to which build was red?**  A red
+#    build names one run's failures and then the log ages out.  The `stress`
+#    job loops the whole suite and aggregates failures by test identity, so
+#    "this test failed 2 of 5 times" is a fact you can act on instead of two
+#    unrelated red builds a week apart.
+#
+# **Both jobs are `continue-on-error` on purpose.**  The quarantined suites
+# are expected to be red — that is why they are quarantined — and the suite
+# still carries fixed sleeps that a stress loop is designed to surface
+# (#418).  A red required check for a known-red measurement trains people to
+# ignore it; the signal lives in the step summary, the `::warning::`
+# annotation on the run, and the uploaded reports.
+#
+# ## Decision path: when may a quarantined suite come back?
+#
+# **14 consecutive green nights** of the `quarantined` job, then un-quarantine
+# in one change.  Fourteen rather than a smaller number because the failure is
+# a property of the runner pool, not of the code: two calendar weeks spans
+# weekday and weekend pools and several `bun-version: latest` rolls, which is
+# what has to be shown to have stopped happening.  Each night is 3 repeats of
+# all three suites, so the bar is 42 consecutive green executions.
+#
+# Un-quarantining is then, in one commit:
+#   - drop `ACTOR_TS_SKIP_FLAKY_MNS` from test.yml, multi-runtime.yml and
+#     publish.yml;
+#   - drop the three `describeMns` guards (tests/multi-node/LeaseMajority.test.ts,
+#     tests/multi-node/ParallelPubSub.test.ts,
+#     tests/unit/testkit/ParallelMultiNodeSpec.test.ts);
+#   - drop the `coveragePathIgnorePatterns` block in bunfig.toml, which exists
+#     only because the worker harness cannot execute here;
+#   - revisit test.yml's pragmatic `COVERAGE_LINE_FLOOR: '80'`, which was
+#     lowered for the same reason;
+#   - keep this job — it becomes the regression guard for the un-quarantining.
+#
+# A single red night resets the count.  The evidence is the `summary.json` in
+# each night's artifact; `greenRuns == runs` is the green condition.
+#
+# Docs: docs/src/content/docs/testing/diagnosing-flakes.mdx (EN) and its DE
+# mirror carry the same decision path for contributors who never read CI YAML.
+
+on:
+  # 04:00 UTC — after integration.yml (03:00) and integration-brokers.yml
+  # (03:30), so the three nightlies do not contend for the same runner pool
+  # minute.  Cron fires only on the default branch (`develop`).
+  schedule:
+    - cron: '0 4 * * *'
+  # On demand for any branch: the point of a manual run is usually to check
+  # whether a specific change moved the numbers, which cannot wait for 04:00.
+  workflow_dispatch:
+    inputs:
+      quarantined-runs:
+        description: 'Repeats of the three quarantined suites'
+        required: false
+        default: '3'
+      stress-runs:
+        description: 'Repeats of the whole suite'
+        required: false
+        default: '5'
+
+# Read-only floor, stated rather than inherited (#621).  Neither job writes
+# anything: the results leave as an artifact and a step summary.
+permissions:
+  contents: read
+
+jobs:
+  # The quarantine's exit criterion, measured.  Runs the three gated suites
+  # with the flag deliberately absent — `scripts/stress-test.mjs` drops
+  # `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default, so this
+  # cannot silently degrade into "3 repeats of 6 skipped tests".
+  quarantined:
+    name: quarantined multi-node suites (flag off)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here talks to the remote, and the step after this one
+          # installs and executes the whole devDependency tree (#622).
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Run the quarantined suites
+        id: stress
+        env:
+          RUNS: ${{ inputs.quarantined-runs || '3' }}
+        # The harness writes its own `$GITHUB_STEP_SUMMARY` table, so the
+        # workflow stays thin and a local run shows the same output — the
+        # same reason integration.yml delegates to an npm script.
+        run: |
+          bun run test:stress -- \
+            --runs="$RUNS" \
+            --report-dir=.stress \
+            tests/multi-node/LeaseMajority.test.ts \
+            tests/multi-node/ParallelPubSub.test.ts \
+            tests/unit/testkit/ParallelMultiNodeSpec.test.ts
+
+      - name: Upload reports
+        # `always()`: the run that failed is the one whose log is worth
+        # keeping.  Nothing in the repository uploaded an artifact before
+        # this, so a nightly failure used to be readable only from the job
+        # log, which ages out — and per-run failure identity with it.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quarantined-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .stress/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Annotate
+        if: always()
+        env:
+          # Through `env:`, never `${{ }}` inside the script — a workflow
+          # expression is pasted into the shell before it runs.
+          OUTCOME: ${{ steps.stress.outcome }}
+        run: |
+          if [[ "$OUTCOME" == "success" ]]; then
+            echo "::notice title=Quarantined suites were green::All three suites passed every repeat with ACTOR_TS_SKIP_FLAKY_MNS unset. Count this night towards the 14 needed to un-quarantine (see the header of .github/workflows/nightly-flakes.yml)."
+          else
+            echo "::warning title=Quarantined suites still failing::Expected while the quarantine stands — the un-quarantine counter resets to zero. Details in the step summary; per-run logs in the uploaded artifact."
+          fi
+
+  # The flake catalog's data source.  Loops the whole suite — quarantined
+  # suites included, which is the point: excluding them would report a
+  # reliable pass rate over exactly the tests known not to be reliable.
+  stress:
+    name: whole suite, repeated
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Repeat the suite
+        id: stress
+        env:
+          RUNS: ${{ inputs.stress-runs || '5' }}
+        run: bun run test:stress -- --runs="$RUNS" --report-dir=.stress
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .stress/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Annotate
+        if: always()
+        env:
+          OUTCOME: ${{ steps.stress.outcome }}
+        run: |
+          if [[ "$OUTCOME" == "success" ]]; then
+            echo "::notice title=No test failed in any repeat::Nothing to add to the flake catalog tonight."
+          else
+            echo "::warning title=At least one test failed in some repeats::Add the named tests to the catalog in docs/src/content/docs/testing/diagnosing-flakes.mdx, or fix them. A test that failed in EVERY repeat is broken rather than flaky and belongs in an issue, not the catalog."
+          fi
