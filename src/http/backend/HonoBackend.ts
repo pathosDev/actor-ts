@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import {
   getHonoRunner,
+  type FetchHandler,
   type HonoServerHandle,
   type HonoWebsocketBridge,
   type WSContextLike,
@@ -143,7 +144,41 @@ export interface HonoAppLike {
   on(method: string, path: string, handler: HonoHandler): unknown;
   onError(handler: HonoErrorHandler): unknown;
   notFound(handler: HonoNotFoundHandler): unknown;
-  fetch(request: Request): Promise<Response> | Response;
+  /**
+   * Hono's real signature is `(request, ...rest)` and the tail is meaningful —
+   * `rest[0]` becomes the app's `Env` (Bun's `server`, which the WebSocket
+   * upgrade calls `server.upgrade()` on) and `rest[1]` its `ExecutionContext`.
+   * Declaring only `request` here made every forwarder cast its way past the
+   * type; an app that takes just the request stays assignable, so widening it
+   * costs nothing.
+   */
+  fetch(request: Request, ...runtimeExtras: unknown[]): Promise<Response> | Response;
+}
+
+/**
+ * The fetch handler a Hono app is served through.  Two properties are
+ * load-bearing, and both are the kind a tidy-up silently drops:
+ *
+ * 1. **Every argument is forwarded.**  Bun invokes `fetch(request, server)`,
+ *    and Hono's WebSocket upgrade needs that second `server` to call
+ *    `server.upgrade()`.  A single-argument wrapper leaves plain HTTP working
+ *    while WebSocket upgrades never open.
+ * 2. **`request` is declared, not swept into the rest tail.**  A rest
+ *    parameter contributes 0 to `Function.prototype.length`, and since Deno
+ *    2.9 `Deno.serve` reads that number: an arity-0 handler is taken to not
+ *    want the request and is invoked with *no arguments at all*, so
+ *    `app.fetch` threw on `undefined.method` and every request answered 500
+ *    (#1197).  See `DenoHonoRunner`'s `denoArityHandler` for the mechanism and
+ *    the version evidence.
+ *
+ * Calling `app.fetch(...)` as a method rather than lifting it to a local also
+ * keeps `this` intact for a user-injected app whose `fetch` lives on a
+ * prototype — Hono's own is a bound class field, but nothing here requires it.
+ *
+ * @internal — exported for testing.
+ */
+export function honoFetchHandler(app: HonoAppLike): FetchHandler {
+  return (request: Request, ...runtimeExtras: unknown[]) => app.fetch(request, ...runtimeExtras);
 }
 
 /**
@@ -281,15 +316,10 @@ export class HonoBackend implements HttpServerBackend {
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
-    // Forward ALL args to app.fetch — Bun invokes fetch(request, server)
-    // and Hono's WebSocket upgrade needs that second `server` argument to
-    // call server.upgrade().  A single-arg wrapper would silently break
-    // upgrades (HTTP still works, WS never opens).
-    const appFetch = app.fetch as (...args: unknown[]) => Promise<Response> | Response;
     const server = await runner.serve({
       host,
       port,
-      fetch: ((...args: unknown[]) => appFetch(...args)) as (request: Request) => Promise<Response> | Response,
+      fetch: honoFetchHandler(app),
       serveOptions: bridge?.serveOptions,
     });
     this.server = server;
