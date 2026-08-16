@@ -171,10 +171,11 @@ per-actor variant.
 
 ## Serialization
 
-Messages crossing the cluster wire need to be **JSON-safe**.  The
-cluster frames the envelope with a bare `JSON.stringify` — the
-pluggable [`Serializer`](/serialization/overview/) is not consulted
-on the wire, so CBOR cannot be selected for it.
+The cluster frames the envelope as a **tagged JSON tree** — the same
+format the persistence stores write, so the types plain JSON corrupts
+cross intact (#450).  The pluggable
+[`Serializer`](/serialization/overview/) is still not consulted on the
+wire, so CBOR cannot be selected for it.
 
 ```ts
 {
@@ -185,19 +186,22 @@ on the wire, so CBOR cannot be selected for it.
 ```
 
 Plain values (strings, numbers, arrays, plain objects) serialize
-trivially.  Things that don't survive:
+trivially, and so do `Date`, `Map`, `Set`, `bigint`, `Uint8Array`,
+`RegExp`, `URL`, `Error` and every typed array — each arrives as a
+real instance, exactly as it would come back out of a journal.  What
+still does not survive:
 
-- **Functions / closures** — can't cross a process boundary.
-- **Class instances with methods** — methods are lost; only data
-  fields survive.
-- **`Map` / `Set`** — JSON serializes them as `{}` (no entries).
-  Use plain objects or arrays.
-- **Symbols** — silently dropped by `JSON.stringify`.
-- **BigInts** — these don't degrade, they *throw*: `JSON.stringify`
-  raises a `TypeError` when the envelope is framed.
+- **Functions / closures** — can't cross a process boundary.  The
+  frame is **refused**, not silently stripped: it is dropped with an
+  `error` log line naming the peer, so a callback in a message stops
+  being an invisible data loss.
+- **Symbols** — refused the same way.
+- **Class identity** — methods are lost and the value arrives as a
+  plain object; only the `tag` string (the constructor name) travels.
 
-Registering a custom serializer fixes none of the above — the
-cluster wire never consults the registry.
+Registering a custom serializer changes none of this — the cluster
+wire never consults the registry
+([#450](https://github.com/pathosDev/actor-ts/issues/450)).
 
 See [Messages](/fundamentals/messages/) for the immutability
 + wire-format conventions.

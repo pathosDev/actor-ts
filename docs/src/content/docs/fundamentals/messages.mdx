@@ -112,14 +112,15 @@ Practical rules of thumb:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't put functions / classes with methods in messages">
-  No process boundary carries function pointers.  The cluster wire and
-  the HTTP-over-WebSocket bridge both frame with `JSON.stringify`,
-  which drops a function; a worker thread uses `postMessage`, whose
-  structured-clone algorithm *throws* `DataCloneError` on one.  Putting
-  a callback in a message works in-process and breaks — silently under
-  JSON, loudly under structured clone — once the actor moves to a
-  different node.  Use `replyTo: ActorRef<...>` for callback-like
-  behavior; refs serialize correctly across nodes.
+  No process boundary carries function pointers.  The cluster wire
+  frames with the tagged JSON tree, which **refuses** a function and
+  drops the frame with an `error` log line; the HTTP-over-WebSocket
+  bridge frames with `JSON.stringify`, which drops it silently; a
+  worker thread uses `postMessage`, whose structured-clone algorithm
+  *throws* `DataCloneError`.  Putting a callback in a message works
+  in-process and breaks the moment the actor moves to a different
+  node.  Use `replyTo: ActorRef<...>` for callback-like behavior;
+  refs serialize correctly across nodes.
 </Aside>
 
 ## Request/response: the reply-to ref

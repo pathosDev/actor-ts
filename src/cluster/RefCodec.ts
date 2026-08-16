@@ -1,5 +1,7 @@
 import { parsePathSegments } from '../ActorPath.js';
 import { ActorRef, AskResponseRef, Nobody, NobodyRef } from '../ActorRef.js';
+import { BidirectionalMap } from '../util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { NodeAddress } from './NodeAddress.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
 import type { Cluster } from './Cluster.js';
@@ -131,13 +133,38 @@ function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
 
 type RefEncoder = (ref: ActorRef) => WireActorRef;
 
+/**
+ * Values both walkers must hand back **by reference** instead of rebuilding.
+ *
+ * Neither walker exists to transform data — they exist to swap `ActorRef`s for
+ * markers and back — but both rebuild every container they pass through, and
+ * the generic `Object.entries` tail at the bottom of each is destructive for
+ * anything whose data is not own-enumerable.  A `RegExp`, a `URL` and an
+ * `Error` all come out of it as `{}`; an `Int32Array` comes out as an
+ * index-keyed plain object.  That happened *before* the frame codec ever saw
+ * the value, so tagging these types on the wire would have faithfully carried
+ * an empty object.
+ *
+ * None of them can hold an `ActorRef` in a position a walker could reach, so
+ * skipping them costs nothing.  The list is deliberately the tagged-as-a-unit
+ * half of `JsonTree`'s vocabulary; its container half (`Map`, `Set`,
+ * `BidirectionalMap`, `BidirectionalMultiMap`) is walked below instead,
+ * because a ref inside one of those is entirely ordinary.
+ */
+function carriesNoRef(value: object): boolean {
+  return value instanceof Date
+    || value instanceof RegExp
+    || value instanceof URL
+    || value instanceof Error
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value);
+}
+
 function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value !== 'object') return value;
   if (value instanceof ActorRef) return encodeRef(value);
-  // Types JSON already handles (or silently lossy): leave alone.
-  if (value instanceof Date) return value;
-  if (value instanceof Uint8Array) return value;
+  if (carriesNoRef(value)) return value;
 
   if (seen.has(value as object)) return null;  // break cycles
   seen.add(value as object);
@@ -146,8 +173,21 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
     return value.map((v) => walk(v, encodeRef, seen));
   }
 
+  if (value instanceof BidirectionalMap) {
+    return new BidirectionalMap(
+      Array.from(value.entries(), ([k, v]) => [k, walk(v, encodeRef, seen)] as [unknown, unknown]),
+    );
+  }
+  if (value instanceof BidirectionalMultiMap) {
+    const out = new BidirectionalMultiMap<unknown, unknown>();
+    for (const left of value.lefts()) {
+      for (const right of value.get(left)) out.add(left, walk(right, encodeRef, seen));
+    }
+    return out;
+  }
   if (value instanceof Map) {
-    // Best-effort: walk values (JSON.stringify flattens Maps to {} anyway).
+    // Values only: a ref used as a Map *key* would have to be rewritten
+    // without changing the key's identity, which no rebuild can promise.
     const out = new Map();
     for (const [k, v] of value.entries()) out.set(k, walk(v, encodeRef, seen));
     return out;
@@ -168,13 +208,38 @@ function walkDecode(value: unknown, cluster: Cluster, seen: WeakSet<object>): un
   if (typeof value !== 'object') return value;
 
   if (isWireActorRef(value)) return decodeSingleRef(value, cluster);
-  if (value instanceof Date || value instanceof Uint8Array) return value;
+  if (carriesNoRef(value)) return value;
 
   if (seen.has(value as object)) return null;
   seen.add(value as object);
 
   if (Array.isArray(value)) {
     return value.map((v) => walkDecode(v, cluster, seen));
+  }
+
+  // The container branches mirror `walk` exactly.  They were missing here,
+  // which made the decode direction the lossier of the two: a `Map` that
+  // survived encode, the transport and the frame codec fell through to the
+  // `Object.entries` tail on arrival and was delivered as `{}`.
+  if (value instanceof BidirectionalMap) {
+    return new BidirectionalMap(
+      Array.from(value.entries(), ([k, v]) => [k, walkDecode(v, cluster, seen)] as [unknown, unknown]),
+    );
+  }
+  if (value instanceof BidirectionalMultiMap) {
+    const out = new BidirectionalMultiMap<unknown, unknown>();
+    for (const left of value.lefts()) {
+      for (const right of value.get(left)) out.add(left, walkDecode(right, cluster, seen));
+    }
+    return out;
+  }
+  if (value instanceof Map) {
+    const out = new Map();
+    for (const [k, v] of value.entries()) out.set(k, walkDecode(v, cluster, seen));
+    return out;
+  }
+  if (value instanceof Set) {
+    return new Set(Array.from(value).map((v) => walkDecode(v, cluster, seen)));
   }
 
   const out: Record<string, unknown> = {};

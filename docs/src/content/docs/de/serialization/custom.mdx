@@ -212,7 +212,7 @@ import { Order } from './generated/order.js';          // generierter statischer
 
 <Aside type="note" title="Cluster-Wire">
   Diese Serializer decken die **Persistenz** ab.  Der Cluster-Wire
-  rahmt Remote-Nachrichten weiterhin als JSON und zieht die
+  rahmt Remote-Nachrichten als getaggten JSON-Tree und zieht die
   `SerializationExtension` nicht heran — siehe
   [Serialization im Überblick](/de/serialization/overview/).
 </Aside>
@@ -346,6 +346,11 @@ Registry an.
 ext.register(s); ext.bind(Class, s.id)  → nur diese Klasse über s routen
 ext.setDefault(s)                        → der Default, den die Extension für ungebundene Werte nutzt
 ```
+
+Beides wirkt nur auf `ext.encode(value)` — nichts im Framework ruft
+das bisher auf, also erreicht keines davon den Wire oder einen
+Store; siehe den Cluster-Wire-Hinweis oben und
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
 
 Pro Klasse ist **sicherer** — behält den Default-Fallback für
 Dinge, die du nicht zu binden gedacht hast.  Systemweit ist

@@ -202,8 +202,8 @@ import { Order } from './generated/order.js';          // generated static code
 ```
 
 <Aside type="note" title="Cluster wire">
-  These serializers cover **persistence**.  The cluster wire still
-  frames remote messages as JSON and does not consult the
+  These serializers cover **persistence**.  The cluster wire frames
+  remote messages as the tagged JSON tree and does not consult the
   `SerializationExtension` — see the
   [serialization overview](/serialization/overview/).
 </Aside>
@@ -331,6 +331,11 @@ slot.
 ext.register(s); ext.bind(Class, s.id)  → route only that class through s
 ext.setDefault(s)                        → the default the extension uses for unbound values
 ```
+
+Both only affect `ext.encode(value)` — nothing in the framework
+calls it yet, so neither reaches the wire or a store; see the
+cluster-wire note above and
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
 
 Per-class is **safer** — keeps the default fallback for things
 you didn't think to bind.  System-wide is **uniform** — every

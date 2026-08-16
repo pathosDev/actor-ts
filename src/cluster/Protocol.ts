@@ -1,3 +1,4 @@
+import { decodeJsonTree, encodeJsonTree } from '../serialization/JsonTree.js';
 import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -74,8 +75,14 @@ export type MemberData = {
 };
 
 /**
- * Every wire message carries a discriminator `kind`.  Payload types that contain
- * user messages use `body` which is assumed to be JSON-safe.
+ * Every wire message carries a discriminator `kind`.  Payload types that
+ * contain user messages use `body`, which {@link encodeFrame} carries as a
+ * tagged JSON tree — the same vocabulary the persistence stores write, so a
+ * `Map` / `Set` / `Date` / `bigint` / `Uint8Array` survives a cross-node
+ * `tell` (#450).  What that walker refuses — functions, symbols, `Promise`,
+ * `WeakMap` / `WeakSet`, cycles — is refused loudly rather than silently
+ * dropped, and class identity is still not preserved: only the `tag` string
+ * travels.
  */
 export type WireMessage =
   | HelloMessage
@@ -138,7 +145,7 @@ export type EnvelopeMessage = {
   to: string;
   /** Full actor path string of the sender, or null. */
   from: string | null;
-  /** JSON-safe payload. */
+  /** User payload — carried as a tagged JSON tree, see {@link encodeFrame}. */
   body: unknown;
   /** Optional: name of a class/type for richer routing. */
   tag?: string;
@@ -174,9 +181,41 @@ export type LeaveMessage = {
 
 const HEADER_SIZE = 4;
 
-/** Encode a WireMessage as a length-prefixed JSON frame. */
+/**
+ * Encode a WireMessage as a length-prefixed **tagged-JSON** frame — the same
+ * tree format `JsonSerializer` marshals HTTP bodies with and the persistence
+ * `PayloadCodec` writes every journal / snapshot / durable-state row in.
+ *
+ * It used to be a bare `JSON.stringify`, and the framework contradicted itself
+ * across its own boundaries: a `Map` an actor could persist and recover
+ * verbatim arrived at a peer as `{}`, a `Date` arrived as a string whose
+ * `.getTime()` throws, a `Uint8Array` arrived as an index-keyed object, `NaN`
+ * and `-0` arrived as `null` and `0`, and a `bigint` threw out of
+ * `TcpTransport.send` — which is to say, out of the user's `ref.tell` (#450).
+ * One walker for all three boundaries is the point: there is no per-transport
+ * list of what a message may contain to keep in sync.
+ *
+ * Applied to the whole frame rather than just an envelope's `body` because the
+ * frame kinds that carry user data are not all declared here — `ClusterClient`,
+ * pub-sub, sharding and DistributedData all register their own through
+ * `Cluster._onWire`, and every one of them was lossy in the same way.  The
+ * header fields of the built-in kinds are plain JSON either way, so the walk
+ * passes them through unchanged.
+ *
+ * `undefinedValues: 'omit'` matches what `JSON.stringify` did for object
+ * properties, so a payload made of plain data still encodes to byte-identical
+ * output; `undefined` in a value position (array slot, `Set` member, `Map` key
+ * or value) is now preserved instead of becoming `null`.
+ *
+ * **Rolling upgrade:** decode is backward-compatible by construction — a frame
+ * from an older node is untagged JSON, and `decodeJsonTree` only interprets a
+ * tag that is an object's sole own key.  The other direction is not: an older
+ * node reading a newer node's frame sees the tag wrapper as plain data.  Only
+ * payloads that were already corrupted by `JSON.stringify` are affected, but a
+ * mixed-version cluster does get different garbage than before.
+ */
 export function encodeFrame(message: WireMessage): Uint8Array {
-  const json = JSON.stringify(message);
+  const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));
   const payload = new TextEncoder().encode(json);
   const frame = new Uint8Array(HEADER_SIZE + payload.byteLength);
   const view = new DataView(frame.buffer);
@@ -276,10 +315,22 @@ export class FrameDecoder {
       const payloadStart = this.readOffset + HEADER_SIZE;
       const json = decoder.decode(this.slab.subarray(payloadStart, payloadStart + length));
       this.readOffset = payloadStart + length;
+      let parsed: unknown;
       try {
-        out.push(JSON.parse(json) as WireMessage);
+        parsed = JSON.parse(json);
       } catch (e) {
         throw new Error(`Invalid wire frame JSON: ${(e as Error).message}`);
+      }
+      // Reported separately from the parse failure: "the bytes were not JSON"
+      // and "a tag in well-formed JSON was malformed" are different peers doing
+      // different things, and the transport logs this reason to an operator.
+      // A hostile peer can reach it — a forged `__regexp__` or `__bytes__` is
+      // the cheapest way to try — and it lands in the same `push` throw the
+      // transport already answers by closing the connection.
+      try {
+        out.push(decodeJsonTree(parsed) as WireMessage);
+      } catch (e) {
+        throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
       }
     }
     this.reclaim();

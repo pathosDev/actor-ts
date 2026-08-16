@@ -312,11 +312,14 @@ remote.tell({ kind: 'whatever' });
 // → serialisiert, über den Transport gesendet, in die Mailbox des fremden Actors zugestellt
 ```
 
-Der Cluster-Transport serialisiert die Nachricht (standardmäßig
-JSON), nimmt den Routing-Pfad mit, und der Transport des
-Empfängers stellt sie zu. `replyTo`-Refs serialisieren sauber — der
-empfangende Node hängt einen remote-routbaren Handle an, sodass
-Antworten über denselben Transport zurückfließen.
+Der Cluster-Transport rahmt die Nachricht als **getaggten
+JSON-Tree** — dasselbe Format, das die Persistenz-Stores schreiben,
+sodass ein `Date`, eine `Map`, ein `Set`, ein `bigint` oder ein
+`Uint8Array` im Body als es selbst ankommt (#450) —, nimmt den
+Routing-Pfad mit, und der Transport des Empfängers stellt sie zu.
+`replyTo`-Refs serialisieren sauber — der empfangende Node hängt
+einen remote-routbaren Handle an, sodass Antworten über denselben
+Transport zurückfließen.
 
 Siehe [Refs über Nodes hinweg](/de/cluster/refs-across-nodes/) für
 die Details des Wire-Formats.

@@ -163,7 +163,7 @@ export class TcpTransport implements Transport {
     if (this.stopped) return;
     const connection = this.byPeer.get(to.toString()) ?? this.openOutbound(to);
     if (connection.peer && connection.socket) {
-      connection.socket.write(encodeFrame(message));
+      this.writeFrame(connection, message);
     } else {
       // Wait for hello / hello-ack, but never without a bound.
       if (connection.pending.length >= MAX_PENDING_FRAMES) {
@@ -196,6 +196,37 @@ export class TcpTransport implements Transport {
   }
 
   /* --------------------------- internals -------------------------------- */
+
+  /**
+   * Encode and write one frame, dropping it if it cannot be encoded.
+   *
+   * `send` is reached from `RemoteActorRef.tell`, which is reached from user
+   * code, and `tell` is fire-and-forget — it must not throw the way a failed
+   * `ask` rejects.  Before the frame codec carried tagged values a `bigint`
+   * anywhere in the body raised a bare `TypeError` from `JSON.stringify` that
+   * travelled all the way back into the sending actor's `onReceive` (#450);
+   * the codec refuses a narrower set now (functions, symbols, `Promise`,
+   * `WeakMap` / `WeakSet`, cycles) but it still refuses, and the same route out
+   * would still be there.  It is also reached from the gossip and heartbeat
+   * timers, where a throw has no caller at all to catch it.
+   *
+   * Dropping is the only honest outcome — there is no dead-letter queue at this
+   * layer — so it is logged at `error`, naming the frame kind and the peer.
+   */
+  private writeFrame(connection: Connection, message: WireMessage): void {
+    let frame: Uint8Array;
+    try {
+      frame = encodeFrame(message);
+    } catch (err) {
+      this.log.error(
+        `dropping a '${message.kind}' frame for ${connection.peer ?? connection.targetKey ?? '<unknown peer>'}: `
+        + `its payload cannot be serialised`,
+        err as Error,
+      );
+      return;
+    }
+    connection.socket?.write(frame);
+  }
 
   /**
    * Register an inbound socket, unless {@link MAX_INBOUND_CONNECTIONS} is
@@ -414,7 +445,7 @@ export class TcpTransport implements Transport {
       this.clearHandshakeTimer(connection);
       this.byPeer.set(peerKey, connection);
       const buffered = connection.pending.splice(0, connection.pending.length);
-      for (const bufferedMessage of buffered) connection.socket?.write(encodeFrame(bufferedMessage));
+      for (const bufferedMessage of buffered) this.writeFrame(connection, bufferedMessage);
       return;
     }
     if (!connection.peer) {

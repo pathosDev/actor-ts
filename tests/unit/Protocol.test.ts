@@ -22,6 +22,61 @@ describe('encodeFrame', () => {
     const json = new TextDecoder().decode(payload);
     expect(JSON.parse(json)).toEqual(sampleHello);
   });
+
+  /**
+   * #450 — the frame is a *tagged* JSON tree now, the same format the
+   * persistence stores write.  The two properties that matter are that a
+   * payload made of plain data is untouched (so a mixed-version cluster sees
+   * identical bytes for everything that was not already broken) and that a
+   * payload made of the types plain JSON corrupts survives instead.
+   */
+  describe('tagged-tree framing', () => {
+    test('a plain payload encodes to the same bytes JSON.stringify produced', () => {
+      const frames: WireMessage[] = [
+        sampleHello,
+        { kind: 'heartbeat', from: new NodeAddress('s', 'h', 1).toJSON(), seq: 3, ts: 1_700_000_000 },
+        { kind: 'envelope', to: '/user/x', from: null, body: { n: 1, list: [1, 'two', true, null] } },
+      ];
+      for (const frame of frames) {
+        const encoded = new TextDecoder().decode(encodeFrame(frame).subarray(4));
+        expect(encoded).toBe(JSON.stringify(frame));
+      }
+    });
+
+    test('the types plain JSON corrupts round-trip through the frame codec', () => {
+      const body = {
+        byName: new Map<string, number>([['a', 1]]),
+        seen: new Set<number>([1, 2]),
+        when: new Date('2026-08-15T10:20:30.400Z'),
+        bytes: new Uint8Array([1, 2, 3]),
+        balance: 42n,
+        nan: Number.NaN,
+      };
+      const decoder = new FrameDecoder();
+      const out = decoder.push(encodeFrame({ kind: 'envelope', to: 'x', from: null, body }));
+      expect(out).toHaveLength(1);
+      const arrived = (out[0] as { body: typeof body }).body;
+      expect([...arrived.byName]).toEqual([['a', 1]]);
+      expect([...arrived.seen]).toEqual([1, 2]);
+      expect(arrived.when.getTime()).toBe(body.when.getTime());
+      expect([...arrived.bytes]).toEqual([1, 2, 3]);
+      expect(arrived.balance).toBe(42n);
+      expect(Number.isNaN(arrived.nan)).toBe(true);
+    });
+
+    test('a malformed tag is reported as a payload problem, not a JSON one', () => {
+      // Well-formed JSON that a hostile peer could send; the decoder has to
+      // answer it the way it answers any other unusable frame — by throwing,
+      // which the transport turns into a closed connection.
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ kind: 'envelope', to: 'x', from: null, body: { __date__: 42 } }),
+      );
+      const frame = new Uint8Array(4 + payload.byteLength);
+      new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+      frame.set(payload, 4);
+      expect(() => new FrameDecoder().push(frame)).toThrow(/Invalid wire frame payload/);
+    });
+  });
 });
 
 describe('FrameDecoder', () => {
