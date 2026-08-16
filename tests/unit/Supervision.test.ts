@@ -10,6 +10,7 @@ import {
   Directive,
   escalatingStrategy,
   OneForOneStrategy,
+  RestartBudget,
   stoppingStrategy,
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
@@ -381,5 +382,113 @@ describe('resume after a failure', () => {
       { label: 'the grandchild processed a message after the resume' },
     );
     expect(events).toContain('child:after');
+  });
+});
+
+/**
+ * The budget is the half of a strategy nothing used to enforce outside
+ * `ActorCell` (#638).  Testing it here rather than only through an actor is
+ * what the injectable clock is for: the sliding window is otherwise only
+ * observable by sleeping `withinTimeRangeMs`, which is slow and is exactly how
+ * a suite acquires timing flakes.
+ */
+describe('RestartBudget', () => {
+  /** A clock the test moves by hand, so no assertion ever waits on real time. */
+  const manualClock = (): { now: () => number; advance: (ms: number) => void } => {
+    let current = 1_000_000;
+    return { now: () => current, advance: (ms: number) => { current += ms; } };
+  };
+
+  test('grants exactly maxRetries restarts and refuses the next one', () => {
+    const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3 });
+    const budget = new RestartBudget(strategy);
+    expect([budget.registerRestart(), budget.registerRestart(), budget.registerRestart()])
+      .toEqual([true, true, true]);
+    // The fourth attempt is the one `maxRetries: 3` does not cover — the OO
+    // `registerRestart` would still grant it (`<= maxRetries + 1`).
+    expect(budget.registerRestart()).toBe(false);
+    expect(budget.registerRestart()).toBe(false);
+  });
+
+  test('maxRetries: 0 refuses the very first restart', () => {
+    const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 0 });
+    const budget = new RestartBudget(strategy);
+    expect(budget.registerRestart()).toBe(false);
+    // A refusal is not recorded, so "zero restarts granted" cannot drift into
+    // "one restart granted" via a spent slot.
+    expect(budget.recordedRestarts).toBe(0);
+  });
+
+  test('maxRetries: -1 is unlimited and records nothing', () => {
+    // The default for a hand-built strategy, and the one every pre-existing
+    // typed supervise test relies on — so it has to stay free of both a bound
+    // and the array that would otherwise grow for the process lifetime.
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const budget = new RestartBudget(strategy);
+    for (let i = 0; i < 1_000; i++) expect(budget.registerRestart()).toBe(true);
+    expect(budget.recordedRestarts).toBe(0);
+  });
+
+  test('the window slides — restarts older than withinTimeRangeMs stop counting', () => {
+    const clock = manualClock();
+    const strategy = new OneForOneStrategy(
+      () => Directive.Restart,
+      { maxRetries: 2, withinTimeRangeMs: 1_000 },
+    );
+    const budget = new RestartBudget(strategy, clock.now);
+
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(false);
+
+    // Both recorded failures fall out of the window, so the allowance is whole
+    // again — a crash every ten minutes must never exhaust a per-minute budget.
+    clock.advance(1_001);
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(false);
+  });
+
+  test('a partially-aged window frees exactly the entries that expired', () => {
+    const clock = manualClock();
+    const strategy = new OneForOneStrategy(
+      () => Directive.Restart,
+      { maxRetries: 2, withinTimeRangeMs: 1_000 },
+    );
+    const budget = new RestartBudget(strategy, clock.now);
+
+    expect(budget.registerRestart()).toBe(true);   // at t
+    clock.advance(600);
+    expect(budget.registerRestart()).toBe(true);   // at t+600
+    expect(budget.registerRestart()).toBe(false);
+
+    // t+1001 drops only the first entry; the second is still 401ms old.
+    clock.advance(401);
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(false);
+  });
+
+  test('withinTimeRangeMs: 0 is a process-lifetime cap that never resets', () => {
+    const clock = manualClock();
+    const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2 });
+    const budget = new RestartBudget(strategy, clock.now);
+
+    expect(budget.registerRestart()).toBe(true);
+    expect(budget.registerRestart()).toBe(true);
+    clock.advance(365 * 24 * 60 * 60 * 1_000);
+    expect(budget.registerRestart()).toBe(false);
+    // Capped rather than unbounded: the refused attempts add nothing, so the
+    // array cannot grow past `maxRetries` even with no window to prune it.
+    expect(budget.recordedRestarts).toBe(2);
+  });
+
+  test('two supervisors reading one shared strategy keep separate allowances', () => {
+    // `defaultStrategy` is a module-level singleton, so a tally living on the
+    // strategy would be shared by every actor in the process.
+    const first = new RestartBudget(defaultStrategy);
+    const second = new RestartBudget(defaultStrategy);
+    for (let i = 0; i < 10; i++) expect(first.registerRestart()).toBe(true);
+    expect(first.registerRestart()).toBe(false);
+    expect(second.registerRestart()).toBe(true);
   });
 });

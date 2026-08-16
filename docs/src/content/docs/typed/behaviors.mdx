@@ -208,8 +208,31 @@ the inner handler are routed through the strategy — Restart
 re-initializes the behavior (resets to its initial form), Stop
 terminates, Resume skips the failing message.
 
+`maxRetries` and `withinTimeRangeMs` bound how often Restart may
+fire.  The example above grants **five** restarts per sliding
+minute; the sixth failure inside that minute **escalates** instead
+— the error is rethrown to the actor's cell, where the parent's
+strategy decides.  `maxRetries: -1`, what a hand-built
+`OneForOneStrategy` defaults to, is unlimited; `maxRetries: 0`
+never restarts at all.
+
+The tally belongs to the `supervise` wrapper rather than to the
+strategy, so one strategy value handed to several behaviors gives
+each of them its own allowance.  It accumulates across the restarts
+it counts; only installing a *new* `supervise` wrapper starts a
+fresh one.
+
+Escalating past the bound layers the two supervisors instead of
+duplicating them.  A restart the parent grants builds a brand-new
+actor, so this per-behavior allowance starts over and the outer
+bound becomes the parent's own strategy — ten restarts per minute
+by default.  A behavior that always throws therefore stops looping
+in place after `maxRetries`, and stops for good once the parent's
+budget is spent too.
+
 See [Supervision](/fundamentals/supervision/) for the
-directive semantics; they apply identically in the typed form.
+directive semantics; they apply identically in the typed form, with
+one difference in how the bound is counted (noted there).
 
 ### `intercept`
 

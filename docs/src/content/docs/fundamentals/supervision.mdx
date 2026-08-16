@@ -224,7 +224,7 @@ trusts the recovery path more than the per-message guard.
 Every strategy has two numeric knobs that control "give up" behavior:
 
 - **`maxRetries`** — how many restart attempts the supervisor will
-  tolerate before escalating.  `-1` = unlimited.
+  tolerate before it gives up.  `-1` = unlimited.
 - **`withinTimeRangeMs`** — a sliding time window in milliseconds
   for counting retries.  `0` = no window (counts are never reset,
   so `maxRetries` is a process-lifetime cap).
@@ -236,10 +236,25 @@ new OneForOneStrategy(
 );
 ```
 
-If a child restarts 11 times in one minute, the 11th failure
-escalates instead — the supervisor itself throws the error at its
-parent.  This protects against infinite restart loops (a child that
-keeps crashing on a permanently-broken state).
+Past the bound the supervisor gives up on restarting and the
+affected children are **stopped** instead.  That is what breaks an
+infinite restart loop — a child that keeps crashing on
+permanently-broken state.  Note the parent-side counter is
+inclusive of the failure that trips it, so `maxRetries: 10`
+tolerates eleven restarts before the twelfth failure stops the
+child.
+
+<Aside type="caution" title="The typed wrapper counts differently">
+  [`Behaviors.supervise(...).onFailure(strategy)`](/typed/behaviors/)
+  honours the same two knobs, but reads `maxRetries` literally —
+  `maxRetries: 10` grants ten restarts — and **escalates** past the
+  bound rather than stopping.  It has to: the typed wrapper lives
+  *inside* the failing actor, not in a parent that stays around to
+  observe the death, so stopping there would discard the error with
+  nobody upstream any the wiser.  Escalating hands the failure to
+  the actor's own parent, whose strategy then applies — and whose
+  restart builds a fresh actor with a fresh typed allowance.
+</Aside>
 
 For exponential-backoff retries, use the
 [BackoffSupervisor pattern](/patterns/backoff-supervisor/) —
