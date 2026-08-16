@@ -56,8 +56,63 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Done since the last roadmap update
 
-- **`[Unreleased]` — the 50-oldest bug/security wave:** the 50 oldest open
-  `bug` / `security` issues worked as one unit, in seven batches grouped by
+- **`[Unreleased]` — the 50-oldest `production-goal` wave:** the 50 oldest
+  open `production-goal` issues — the label that answers "what is still
+  between us and running this for real" — worked as one unit, in nine batches
+  cut by which files they touch rather than by module label.  **14 closed,
+  11 carried forward with the remainder written down, 12 needed a comment
+  and no code, 14 deferred to a second wave with the reason recorded.**
+  - **Triage before code, and it was the expensive half.** Every issue was
+    read against today's tree by an independent pass asking "are the
+    acceptance criteria met" rather than "does the defect still exist" —
+    **277 claims in the issue bodies did not survive it**, a little over five
+    per issue.  Two issues were already fixed and open only because a commit
+    said `Refs` where it meant `Closes`; #461 was already specified in #849;
+    #121's remaining criteria would have *reverted* the stronger fix that
+    closed it in v0.14.0.  Two recorded blockers dissolved on inspection —
+    #290's helper was already on disk, and #638's second half **is** #928
+  - **`typecheck:dev` is green and gated (#540)**, from 320 errors.  The
+    burn-down is not the point: it was hiding five exported declarations that
+    no caller could use.  `NoopLogger`, `NoopMetricsRegistry` and
+    `HashAllocationStrategy` each declared fewer parameters than the
+    interface they implement — `implements` accepts that — so
+    `new NoopLogger().info('hello')` did not compile for a user.
+    `OtelContextLike` had only optional properties, which trips the weak-type
+    check, so *nothing* satisfied it, the real OTel `Context` included.  Each
+    compiled for the library and broke only for a caller, which is exactly
+    what a configuration that never runs cannot catch
+  - **Independent verification found two regressions the wave put into its
+    own work**, both repaired with the failing test written first.  #637's
+    widened trigger set included `MemberUnreachable`, which makes the peer
+    that lost contact promote itself while the incumbent — never told it is
+    considered unreachable — keeps its child: a sustained two-host state,
+    the exact condition that issue exists to prevent.  It reproduced with the
+    implementer's *own* test, which asserted the handover and not the
+    invariant its sibling four lines above asserts.  And `bun run smoke` was
+    left red on Node by a new case that fails four runs in five — a single
+    green run had been taken as evidence
+  - **Unreachability is now deliberately *not* reconciled**, and that is the
+    fix rather than a gap.  On the no-lease path "hosted somewhere" and "at
+    most one" cannot both be had, because reaching the incumbent to ask it to
+    stand down is precisely what failed.  A quorum gate was designed and
+    rejected: it is a split-brain resolver at a layer with no downing state,
+    and the two failure detectors fire independently, so a window remains in
+    which both host.  Configure a `lease` where the invariant must survive a
+    partition
+  - **What the wave narrowed rather than closed**, so it is not re-derived:
+    #545's POSIX process-group teardown has never executed (the development
+    machine is Windows) and its proof is the first CI run; #539's workflows
+    and #538's nightly cannot be green before a push; #612's rollback floor
+    is in-process and does not survive a restart; #631 fixes the code and
+    leaves existing journals holding the collapsed tags
+  - **Three counts were wrong in the direction that flatters, and got
+    measured.** #663's report claimed four sleeps remained under `examples/`
+    and none was a drain sleep; the real figures are 108 delay sites of which
+    **7** were drain sleeps — and the boundary a grep cannot see is that
+    `terminate()` drains `/user` while eleven framework actors live under
+    `/system`, so a sleep crossing that hop is load-bearing.  One candidate
+    removal passed on the first run and survived only **2 of 12** repeats,
+    which is how it would have reached CI
   which files they touch rather than by module label.  **42 resolved** — 38
   closing on this window's push plus four closed by hand — and 12 left open on
   purpose, each with a comment saying why.  The bulk is the 2026-08-01 audit
