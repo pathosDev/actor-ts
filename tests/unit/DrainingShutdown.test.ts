@@ -15,9 +15,15 @@
  * depth.  A test that tells once and terminates can therefore pass against
  * unfixed code.  Every case here either tells immediately after `spawn` or
  * queues at least three.
+ *
+ * Since #409 a hop delivers a whole *batch* rather than one message, so the
+ * count that gets through without a drain is `2 x actor-ts.actor.throughput`.
+ * The one case that asserts on that number pins its actor's budget to 1 rather
+ * than tracking the default.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
+import { ActorOptions } from '../../src/ActorOptions.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -148,7 +154,14 @@ describe('terminate drains the user tree', () => {
   test('a drain budget of 0 restores the undrained teardown', async () => {
     const system = newSystem('drain-disabled', 0);
     const seen: string[] = [];
-    const ref = system.spawn(() => new Recorder(seen), 'recorder');
+    // Batch budget pinned to 1 so the "one message per cascade hop" arithmetic
+    // below stays literal (#409).  What this case is about is the drain budget,
+    // and leaving the default in place would silently make it about
+    // `actor-ts.actor.throughput` instead: two hops deliver two *batches*, so
+    // at the default of 16 all 25 arrive and the case passes for a reason that
+    // has nothing to do with #663.
+    const recorderOptions = ActorOptions.create<string>().withThroughput(1);
+    const ref = system.spawn(() => new Recorder(seen), 'recorder', recorderOptions);
     await Bun.sleep(20);
 
     for (let index = 0; index < 25; index++) ref.tell(`m${index}`);

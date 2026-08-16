@@ -32,6 +32,37 @@
 export const DEFAULT_DISPATCHER_THROUGHPUT = 16;
 
 /**
+ * User messages one actor handles per dispatcher turn before it yields.
+ *
+ * **Not the same knob as {@link DEFAULT_DISPATCHER_THROUGHPUT}**, and the two
+ * living one config block apart is deliberate.  A dispatcher's throughput
+ * bounds how many queued *units* it drains per tick, and those units belong to
+ * different actors; this one bounds how many *messages* a single actor takes
+ * in the one unit it is allowed to have queued at a time.  Before #409 only
+ * the first existed, which is why the tuning docs' promise that a
+ * `ThroughputDispatcher` lets "the heavy actor process 100 messages, yield,
+ * process 100 more" was never true of any actor: a cell re-queues itself only
+ * from the `finally` of an `async` turn, a microtask after the synchronous
+ * drain loop that would have picked it up has already found the queue empty.
+ * A per-actor `ThroughputDispatcher` was the worst case — its queue can never
+ * hold a second unit for its only actor, so its batch was provably always 1.
+ *
+ * 16 for the same reason the dispatcher's default is: the `setImmediate` round
+ * trip it amortises is ~2.4 µs against a handler that is typically far
+ * cheaper, so the first few messages buy most of the win — measured here as
+ * ~246k -> ~604k msg/s at batch=1k — while the tail of a large batch buys
+ * little and costs fairness, since nothing else on the event loop runs until
+ * the actor yields.  Raise it for a throughput-bound pipeline, lower it toward
+ * 1 to restore pre-#409 interleaving.
+ *
+ * Not an options default in the `XOptions.ts` sense: `ActorOptions.throughput`
+ * unset means "not set" and falls through to `actor-ts.actor.throughput`, so
+ * this is the value `ActorSystem` resolves when the HOCON key is absent, not
+ * one the builder writes.
+ */
+export const DEFAULT_ACTOR_THROUGHPUT = 16;
+
+/**
  * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
  * A phase that overruns it is abandoned so the next one still gets
  * to run — 5 s balances letting a slow task finish against blocking

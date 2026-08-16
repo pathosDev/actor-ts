@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 import {
+  DEFAULT_ACTOR_THROUGHPUT,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
   QUIESCENCE_POLL_INTERVAL_MS,
@@ -74,6 +75,18 @@ export class ActorSystem {
    * stop cascade starts.  0 skips the drain — see {@link terminate}.
    */
   private readonly shutdownDrainTimeoutMs: number;
+  /**
+   * @internal Default batch budget for every cell that does not set its own
+   * `ActorOptions.throughput` (#409).
+   *
+   * Resolved here and not in `ActorCell` because a cell reads no config at
+   * all — it has never needed to, and giving the framework's most-created
+   * object a `Config` lookup per construction to answer one integer would be
+   * the expensive way round.  Public-but-`@internal` for the same reason
+   * {@link _dispatchObserver} is: the cell is the only reader, and it is not
+   * in this file.
+   */
+  readonly _actorThroughput: number;
   readonly deadLetters: ActorRef;
   /** Full merged configuration in effect for this system. */
   readonly config: Config;
@@ -141,6 +154,7 @@ export class ActorSystem {
     this.eventStream = new EventStream();
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
     this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
+    this._actorThroughput = actorThroughputFromConfig(this.config);
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends
@@ -742,6 +756,20 @@ async function withinBudget(operation: () => Promise<void>, budgetMs: number): P
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * Resolve the system-wide per-actor batch budget (#409).
+ *
+ * A non-positive value is clamped rather than rejected: `0` would leave every
+ * actor accepting mail and never reading it, and a config file is exactly the
+ * place that mistake is made far from the code that suffers it.  Clamping to
+ * `1` reproduces the pre-#409 message-at-a-time loop, which is the honest
+ * reading of "as little batching as possible".
+ */
+function actorThroughputFromConfig(config: Config): number {
+  if (!config.hasPath(ConfigKeys.actor.throughput)) return DEFAULT_ACTOR_THROUGHPUT;
+  return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
 }
 
 function dispatcherFromConfig(config: Config): Dispatcher {

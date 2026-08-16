@@ -11,6 +11,23 @@
  * the drain path (#1027).  Every batch now completes in full, which is why
  * the rows finally agree with each other.
  *
+ * Measured for #409 (Bun 1.3.1, Windows 11), one message per op:
+ *
+ * | batch | one message per turn | batched (throughput=16) | ratio |
+ * | ----- | -------------------- | ----------------------- | ----- |
+ * | 100   |          136k msg/s  |              281k msg/s | 2.1x  |
+ * | 1k    |          246k msg/s  |              681k msg/s | 2.8x  |
+ * | 10k   |          254k msg/s  |              745k msg/s | 2.9x  |
+ * | 100k  |          255k msg/s  |              735k msg/s | 2.9x  |
+ *
+ * The "before" column is the tree at #408 — re-measured rather than taken
+ * from this header's old ~245k, which predated the ring buffer.  The ratio
+ * is bounded by what a round trip costs relative to the handler: batching
+ * removes 15 of every 16 `setImmediate` hops, and what remains is the
+ * per-message microtask that awaiting an async handler costs either way.
+ * `batch=100` gains least because the batch is amortised over fewer
+ * messages before the mailbox runs dry.
+ *
  *   bun run benchmarks/single-node/tell-throughput.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';

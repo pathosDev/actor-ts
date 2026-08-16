@@ -200,6 +200,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** Cursor into {@link _terminationOrder} while terminating. */
   private _terminationGroupIndex = 0;
 
+  /**
+   * User messages {@link run} handles per dispatcher turn (#409).
+   *
+   * Resolved once, in the constructor, rather than read per turn: the two
+   * layers behind it — the spawn options and the system's HOCON-resolved
+   * default — are both fixed for the cell's lifetime, and this is read on the
+   * hot path.  The blueprint outlives every restart, so a per-actor budget
+   * survives one for free.
+   */
+  private readonly throughput: number;
+
   constructor(
     readonly system: ActorSystem,
     readonly blueprint: ActorBlueprint<TMessage>,
@@ -210,6 +221,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._internal = blueprint.internal === true || parent?._internal === true;
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
+    this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
@@ -909,35 +921,63 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     );
   }
 
+  /**
+   * One dispatcher turn: up to {@link throughput} user messages, with the
+   * system queue drained before each of them.
+   *
+   * The batch is what makes the budget mean anything (#409).  A cell may have
+   * at most one unit queued on a dispatcher at a time — {@link schedule}
+   * returns early while `processing` is set, and `processing` is cleared from
+   * this method's `finally`, a microtask after the synchronous drain loop that
+   * would have picked the cell up again has already found its queue empty.  So
+   * before batching, every message cost a full scheduling round trip no matter
+   * what any dispatcher's throughput was set to, and a *per-actor*
+   * `ThroughputDispatcher` — the shape the tuning docs recommended — was the
+   * one configuration where the batch was provably always exactly 1.
+   *
+   * Every loop condition below is a way the actor's situation can change
+   * underneath a batch, and each one ends it rather than skipping an entry:
+   *
+   * - **system commands first, every iteration.**  They can suspend, restart
+   *   or stop the actor, so re-draining between user messages is what keeps a
+   *   long batch as responsive to lifecycle as an unbatched turn was.
+   * - **`state !== 'running'`** covers a `PoisonPill` handled mid-batch, and
+   *   `failToParent` flipping running -> suspended from inside a handler that
+   *   threw.  Continuing would deliver messages to an actor its supervisor is
+   *   still deciding about.
+   * - **no envelope** means stop, not skip: `dequeueUser` also returns
+   *   `undefined` for a *suspended* mailbox, which is full but parked.
+   * - **an empty throttle bucket** breaks rather than continues, because
+   *   `handleThrottleExcess` puts the envelope back at the head and arms the
+   *   resume timer; looping would re-dequeue the message it just parked and
+   *   spin the rest of the budget against a bucket that cannot refill until a
+   *   later tick (#1167).
+   */
   private async run(): Promise<void> {
     try {
-      // System messages always come first, and they can change the state.
-      while (this.mailbox.hasSystemMessages()) {
-        const env = this.mailbox.dequeueSystem()!;
-        await this.handleSystemCommand(env.message as SystemCommand);
-        if (this.state === 'terminated') return;
-      }
-
-      if (this.state === 'running') {
-        const env = this.mailbox.dequeueUser();
-        if (env) {
-          // Throttle gate (#83) — applies only to user messages, never
-          // to system commands (those ran above and must stay
-          // responsive for lifecycle / supervision / Terminated).
-          if (this._throttleBucket && !this._throttleBucket.tryConsume(1)) {
-            const handled = this.handleThrottleExcess(env);
-            // 'pause' returns the message to the head of the mailbox
-            // and reschedules; 'drop' silently consumes it.  Either
-            // way we don't run the user handler this turn.
-            if (!handled) {
-              // Defensive: 'drop' returned but we still want to
-              // re-schedule if there's more queued.
-              return;
-            }
-          } else {
-            await this.handleUserMessage(env);
-          }
+      for (let handled = 0; handled < this.throughput; handled++) {
+        // System messages always come first, and they can change the state.
+        while (this.mailbox.hasSystemMessages()) {
+          const systemEnvelope = this.mailbox.dequeueSystem()!;
+          await this.handleSystemCommand(systemEnvelope.message as SystemCommand);
+          if (this.state === 'terminated') return;
         }
+
+        if (this.state !== 'running') break;
+        const env = this.mailbox.dequeueUser();
+        if (env === undefined) break;
+
+        // Throttle gate (#83) — applies only to user messages, never
+        // to system commands (those ran above and must stay
+        // responsive for lifecycle / supervision / Terminated).
+        if (this._throttleBucket && !this._throttleBucket.tryConsume(1)) {
+          // 'pause' returns the message to the head of the mailbox and arms a
+          // resume timer; 'drop' silently consumes it.  Either way this turn
+          // runs no user handler and the batch is over.
+          this.handleThrottleExcess(env);
+          break;
+        }
+        await this.handleUserMessage(env);
       }
     } finally {
       this.processing = false;

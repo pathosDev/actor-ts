@@ -108,9 +108,21 @@ export class ImmediateDispatcher implements Dispatcher {
 
 /**
  * Processes up to `throughput` queued units synchronously before yielding.
- * Useful when actors exchange many small messages and you want less
- * scheduling overhead.  Be aware that you can starve the event loop if
- * throughput is set high.
+ *
+ * **A unit is one actor's turn, not one message, and the queue holds units
+ * from many actors** — so this batches *across* actors.  The distinction is
+ * not pedantry: a cell may have at most one unit queued at a time
+ * (`ActorCell.schedule` returns early while it is already processing), so
+ * pointing a `ThroughputDispatcher` at a single actor via
+ * `ActorOptions.withDispatcher` gives a drain of exactly one unit per tick and
+ * no batching whatsoever.  The per-actor batch is a separate knob —
+ * `ActorOptions.withThroughput` / `actor-ts.actor.throughput` (#409) — and it
+ * is the one that amortises the scheduling round trip for a single busy actor.
+ *
+ * Reach for this one when *many* actors exchange small messages and the
+ * per-tick scheduling overhead across them is what costs; reach for the
+ * per-actor budget when one actor is the bottleneck.  Either way a high value
+ * starves the event loop, since nothing else runs until the drain yields.
  */
 export class ThroughputDispatcher implements Dispatcher {
   readonly id: string;
