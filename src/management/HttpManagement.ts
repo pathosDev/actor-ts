@@ -42,6 +42,13 @@ import { healthChecksOf } from './HealthCheckExtension.js';
  * does not own one.  Register application checks on it whenever you like —
  * before this call or long after — and the framework's own are already in
  * it, put there by the components that can observe them (#655).
+ *
+ * Which means the `cluster` argument selects which endpoints exist, not
+ * what readiness means: passing `null` on a system that *did* join a
+ * cluster still leaves `/ready` gated on that cluster's checks.  Deliberate
+ * — readiness is a property of the node, and a second answer that differs
+ * from the one the gRPC health service gives is the failure mode this
+ * whole seam exists to prevent.
  */
 export function managementRoutes(
   system: ActorSystem,
