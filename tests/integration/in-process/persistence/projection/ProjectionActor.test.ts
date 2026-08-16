@@ -124,7 +124,7 @@ describe('ProjectionActor — by persistence id', () => {
     await sys2.terminate();
   });
 
-  test('idempotency: at-least-once delivery survives a handler that intentionally fails the first time', async () => {
+  test('default recovery strategy: a transient handler failure is retried and the projection carries on', async () => {
     const journal = new InMemoryJournal();
     const offsetStore = new InMemoryOffsetStore();
     await journal.append('flaky', [{ event: { n: 1 } }, { event: { n: 2 } }, { event: { n: 3 } }], 0);
@@ -137,6 +137,7 @@ describe('ProjectionActor — by persistence id', () => {
       .withQuery(new InMemoryQuery(journal))
       .withOffsetStore(offsetStore)
       .withPersistenceId('flaky')
+      .withRetryBackoffMs(30)
       .withHandle((ev) => {
         if (ev.event.n === 2 && firstAttemptThrowOnce) {
           firstAttemptThrowOnce = false;
@@ -147,8 +148,18 @@ describe('ProjectionActor — by persistence id', () => {
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys, projectionOptions);
 
-    // n=1 lands; n=2 throws → cursor stays at 1; n=2 retried; n=3 lands.
-    // Handler is called twice for n=2 — that's the at-least-once contract.
+    // No `withRecoveryStrategy`, so this is the built-in `retry-and-fail`
+    // with three retries — NOT the retry-forever loop this test used to
+    // assert (#650).  n=1 lands; n=2 throws → the cursor stays at 1 and the
+    // next tick is deferred by `retryBackoffMs` rather than by the poll
+    // interval; n=2 is retried and succeeds; n=3 lands.  The handler is
+    // called twice for n=2 — still the at-least-once contract, and still why
+    // handlers have to be idempotent.
+    //
+    // What changed is the tail: a handler that kept throwing would now be
+    // retried three times and the projection stopped, instead of blocking
+    // n=3 for the life of the process.  Every strategy's behaviour is
+    // covered in tests/unit/persistence/ProjectionFailureStrategy.test.ts.
     await waitFor(() => seen.length === 3);
     expect(seen).toEqual([1, 2, 3]);
 
