@@ -13,7 +13,23 @@
  * open connections closed.
  */
 
-export type FetchHandler = (request: Request) => Promise<Response> | Response;
+/**
+ * The handler a runner installs on its runtime's HTTP server.
+ *
+ * The rest tail is part of the contract rather than decoration: no runtime
+ * calls this with the request alone.  Bun passes `(request, server)` — and
+ * Hono's WebSocket upgrade reads that second argument to call
+ * `server.upgrade()` — Deno passes `(request, info)`, `@hono/node-server`
+ * passes `(request, { incoming, outgoing })`.
+ *
+ * An implementation must **declare its leading `request` parameter literally**
+ * rather than sweep everything into a rest parameter, because a rest parameter
+ * contributes 0 to `Function.prototype.length` and `Deno.serve` reads that
+ * number — see `DenoHonoRunner`'s `denoArityHandler` (#1197).  TypeScript
+ * cannot express "arity ≥ 1" (a narrower function stays assignable to a wider
+ * signature), so the runners normalise and a unit test asserts it.
+ */
+export type FetchHandler = (request: Request, ...runtimeExtras: unknown[]) => Promise<Response> | Response;
 
 export interface HonoServerHandle {
   readonly host: string;

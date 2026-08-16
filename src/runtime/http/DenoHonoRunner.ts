@@ -20,7 +20,10 @@ export class DenoHonoRunner implements HonoServerRunner {
       throw new Error('DenoHonoRunner requires Deno runtime (globalThis.Deno.serve).');
     }
     const ac = new AbortController();
-    const server = deno.serve({ hostname: options.host, port: options.port, signal: ac.signal, ...(options.serveOptions ?? {}) }, options.fetch);
+    const server = deno.serve(
+      { hostname: options.host, port: options.port, signal: ac.signal, ...(options.serveOptions ?? {}) },
+      denoArityHandler(options.fetch),
+    );
     return {
       host: options.host,
       port: options.port,
@@ -62,6 +65,40 @@ export class DenoHonoRunner implements HonoServerRunner {
       serveOptions: {},
     };
   }
+}
+
+/**
+ * Re-declare a fetch handler with both parameters spelled out, because
+ * `Deno.serve` dispatches on the handler's `Function.prototype.length`.
+ *
+ * Since **Deno 2.9** — the release that landed "a new Deno-owned HTTP/1.1
+ * serving path" — an arity-0 handler is read as one that does not want the
+ * request, and Deno then skips building the `Request` and calls it with *no
+ * arguments at all* (`ext/http/00_serve.ts`):
+ *
+ * ```js
+ * const rawNoRequest = handler.length === 0 && nativeFastPath;
+ * const zeroArgCallback = callback.length === 0 && !otelState.TRACING_ENABLED;
+ * if (zeroArgCallback && op_http_is_raw_request(req)) response = await callback();
+ * ```
+ *
+ * A rest parameter contributes 0 to that length, so a perfectly ordinary
+ * `(...args) => app.fetch(...args)` forwarder — which is what `HonoBackend`
+ * used, to keep Bun's second `server` argument reachable — was classified as
+ * wanting nothing and handed nothing, and Hono's `app.fetch` then threw on
+ * `undefined.method`.  Every request through the Hono backend answered 500
+ * (#1197).  The identifiers above are absent from Deno 2.6.8 and 2.8.0 and
+ * present from 2.9.0, and Deno had already fixed the same defect once
+ * (denoland/deno#20054 → #20796, 2023) before the rewritten path reintroduced
+ * it — so this is Deno's regression, not ours, and it is worked around here
+ * rather than waited out.
+ *
+ * Nothing is lost by normalising: Deno never passes more than these two
+ * arguments, and the callers all want the request.  Doing it in the runner
+ * means any `FetchHandler` is safe on Deno however the caller wrote it.
+ */
+function denoArityHandler(fetch: FetchHandler): FetchHandler {
+  return (request: Request, info: unknown) => fetch(request, info);
 }
 
 interface DenoHttpServer {
