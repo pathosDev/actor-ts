@@ -201,6 +201,45 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   DevTools, and advertised the harness as "about thirty lines" when it was
   286; both claims are corrected.
 
+- **The last seven examples that finish on their own lose the DevTools
+  harness too, so the documented dividing line is the applied one
+  (#552).**
+
+  The sweep above keyed on `holdOpen()` — the examples that had parked
+  themselves before shutdown — which is not the same set as "finishes on
+  its own". Seven had only ever attached, so the sweep passed them by:
+  `cluster/singleton-hello.ts`, `cluster/singleton-cron.ts`,
+  `cluster/sharded-daemon-hello.ts`,
+  `cluster/sharded-daemon-fixed-workers.ts`,
+  `discovery/service-locator-cluster.ts`,
+  `pubsub/event-bus-across-nodes.ts` and
+  `management/opentelemetry-tracing.ts`. Each bound a DevTools port,
+  logged a URL and exited between 0.7 and 2.9 seconds later —
+  `singleton-hello` printed three URLs and was gone after about 1.3 s.
+  The previous entry documented that wiring as inert rather than wrong
+  and deliberately left it in place; it is removed now, which is what the
+  documentation had claimed all along.
+
+  The alternative was to give them a way to stay up under `--devtools`,
+  resurrecting something like the `holdOpen()` the sweep deleted. Each of
+  the seven ends by leaving the cluster and terminating its systems, so
+  parking after that would tap a system that no longer exists — and
+  parking *instead* of it would delete the demonstration, which in three
+  of them is exactly the teardown: `singleton-cron` kills the leader to
+  show failover, `service-locator-cluster` and `event-bus-across-nodes`
+  drop a node to show a listing and a subscription set shrink. The
+  scripted scenario is over within three seconds either way, so a browser
+  would arrive at a finished system rather than a working one.
+  `examples/cluster/counter-node.ts` is the cluster demo that runs until
+  stopped, and both pages already send readers there.
+
+  `tests/unit/devtools/ExampleWiringClaims.test.ts` guarded the old state
+  by requiring the overview to *name* the seven. With the gap closed there
+  is nothing to name, so it asserts the gap itself is empty instead: no
+  example the example gate has watched run to completion may import the
+  harness. Both overview pages, both actor-visualizer pages and the
+  harness's own header record the closed gap rather than the open one.
+
 - **BREAKING — `system.terminate()` now drains the actors under `/user`
   before it stops them (#663).** `ref.tell('x'); await system.terminate()`
   used to lose `x`, and every example, the README quickstart and both

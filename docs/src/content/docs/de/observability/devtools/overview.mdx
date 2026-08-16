@@ -250,9 +250,9 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## An den Examples ausprobieren
 
-Ein Teil der Examples ist für DevTools verdrahtet — die HTTP- und
-Cache-Services, die Cluster-Demos, die Chat- und Voice-Backends —, und
-keines zahlt dafür, solange du nicht fragst:
+Für DevTools verdrahtet sind die Examples, die laufen, bis du sie
+stoppst — die HTTP- und Cache-Services, die Sharding-Demo, die Chat- und
+Voice-Backends —, und keines zahlt dafür, solange du nicht fragst:
 
 ```bash
 bun run examples/http/rest-service.ts --devtools
@@ -266,26 +266,33 @@ ein Parser-Fehler — dort setzt du die Variable separat:
 $env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Welche Examples sie tragen, ist eine historisch gewachsene Grenze und
-keine saubere. Der Durchlauf, der die Verdrahtung entfernt hat (#552),
-ging danach, welche Examples sich vor dem Herunterfahren ausdrücklich
-geparkt hatten, damit DevTools überhaupt zu öffnen war — hello-world, die
+Diese Grenze ist die ganze Regel: Ein Example, das von selbst fertig
+wird, enthält keinerlei Bezug auf DevTools mehr, du kannst also eines
+unverändert in ein Projekt kopieren und laufen lassen. Bis dahin waren es
+zwei Durchläufe — wissenswert, falls dir die ältere Formulierung noch im
+Kopf ist. Der Durchlauf, der die Verdrahtung entfernt hat (#552), ging
+danach, welche Examples sich vor dem Herunterfahren ausdrücklich geparkt
+hatten, damit DevTools überhaupt zu öffnen war — hello-world, die
 `patterns/`- und `persistence/`-Durchläufe und der Rest der kurzen
-Skripte. Die enthalten jetzt keinerlei Bezug auf DevTools mehr, du kannst
-also eines unverändert in ein Projekt kopieren und laufen lassen.
-
-Das ist **nicht** dieselbe Menge wie „die Examples, die von selbst fertig
-werden“, und sieben fallen in die Lücke: `cluster/singleton-hello.ts`,
-`cluster/singleton-cron.ts`, `cluster/sharded-daemon-hello.ts`,
+Skripte. Sieben blieben dabei zurück, die sich nie geparkt, sondern nur
+angebunden hatten:
+`cluster/singleton-hello.ts`, `cluster/singleton-cron.ts`,
+`cluster/sharded-daemon-hello.ts`,
 `cluster/sharded-daemon-fixed-workers.ts`,
 `discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
-und `management/opentelemetry-tracing.ts` importieren den Harness weiter
-und sind trotzdem nach ein bis zwei Sekunden vorbei. `--devtools` bindet
-auch dort einen Port und protokolliert die URL — und dann ist der Prozess
-weg, bevor ein Browser sie öffnen kann: `singleton-hello` gibt drei
-solcher URLs aus und beendet sich nach rund 1,3 s. Wenn es wirklich etwas
-zu sehen geben soll, nimm einen der Services oben oder einen Cluster-Knoten
-unten.
+und `management/opentelemetry-tracing.ts`. Sie banden einen Port und
+protokollierten eine URL, die tot war, bevor ein Browser sie öffnen
+konnte — `singleton-hello` gab drei solcher URLs aus und beendete sich
+nach rund 1,3 s. Auch sie sind jetzt entkoppelt.
+
+Diesen sieben beizubringen, oben zu bleiben, wäre der andere Weg gewesen,
+die Lücke zu schließen — und er ist es nicht geworden: Jedes von ihnen
+endet damit, den Cluster zu verlassen und seine Systeme zu terminieren.
+Danach zu parken hieße, dem Browser ein bereits verschwundenes System
+hinzuhalten — und *statt* des Teardowns zu parken hieße, die Demonstration
+zu löschen, die in dreien von ihnen genau dieser Teardown ist. Wenn es
+wirklich etwas zu sehen geben soll, nimm einen der Services oben oder
+einen Cluster-Knoten unten.
 
 Jede Anbindung nimmt sich ihren eigenen Port, aufsteigend ab
 `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`). Dieser Zähler gilt

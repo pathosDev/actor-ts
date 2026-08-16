@@ -15,7 +15,6 @@
 import { Actor, ActorSystem } from '../../src/index.js';
 import { Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/cluster/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type DomainEvent = { readonly kind: string; readonly payload: unknown; };
 
@@ -32,7 +31,6 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
   mediator: import('../../src/ActorRef.js').ActorRef<Subscribe | Publish>;
 }> {
   const system = ActorSystem.create('events');
-  await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)

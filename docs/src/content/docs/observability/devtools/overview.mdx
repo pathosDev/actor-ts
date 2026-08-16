@@ -234,9 +234,9 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## Try it on the examples
 
-Some of the examples are wired for DevTools — the HTTP and cache
-services, the cluster demos, the chat and voice backends — and none of
-them pay for it unless you ask:
+The examples wired for DevTools are the ones that run until you stop
+them — the HTTP and cache services, the sharding demo, the chat and voice
+backends — and none of them pay for it unless you ask:
 
 ```bash
 bun run examples/http/rest-service.ts --devtools
@@ -250,24 +250,31 @@ PowerShell — there, set it separately:
 $env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Which examples carry it is a historical line rather than a tidy one.
-The sweep that removed the wiring (#552) went by which examples had
-explicitly parked themselves before shutdown so DevTools could be opened
-at all — hello-world, the `patterns/` and `persistence/` walkthroughs,
-and the rest of the short scripts.  Those now carry no reference to
-DevTools, so you can copy one into a project and run it unchanged.
-
-That is **not** the same set as "the examples that finish on their own",
-and seven fall in the gap: `cluster/singleton-hello.ts`,
-`cluster/singleton-cron.ts`, `cluster/sharded-daemon-hello.ts`,
+That dividing line is the whole rule: an example that finishes on its own
+carries no reference to DevTools at all, so you can copy one into a
+project and run it unchanged.  It took two passes to get there, which is
+worth knowing if you remember the older wording.  The sweep that removed
+the wiring (#552) keyed on which examples had explicitly parked
+themselves before shutdown so DevTools could be opened at all —
+hello-world, the `patterns/` and `persistence/` walkthroughs, and the
+rest of the short scripts.  That left seven behind that had never parked
+themselves and only ever attached: `cluster/singleton-hello.ts`,
+`cluster/singleton-cron.ts`,
+`cluster/sharded-daemon-hello.ts`,
 `cluster/sharded-daemon-fixed-workers.ts`,
 `discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
-and `management/opentelemetry-tracing.ts` still import the harness and
-still end in a second or two.  `--devtools` binds a port in them and logs
-the URL, and then the process is gone before a browser can open it —
-`singleton-hello` prints three such URLs and exits after about 1.3 s.
-For something to actually look at, reach for one of the services above or
-for a cluster node below.
+and `management/opentelemetry-tracing.ts`.  They bound a port and logged a
+URL that was dead before a browser could open it — `singleton-hello`
+printed three such URLs and exited after about 1.3 s.  They are unwired
+now too.
+
+Teaching those seven to stay up was the other way to close that gap, and
+it is not what happened: each one ends by leaving the cluster and
+terminating its systems, so parking afterwards would hand the browser a
+system that is already gone — and parking *instead* of the teardown would
+delete the demonstration, which in three of them is exactly that
+teardown.  For something to actually look at, reach for one of the
+services above or for a cluster node below.
 
 Each attachment takes its own port, counting up from `--devtools-port` /
 `DEVTOOLS_PORT` (default `9333`).  That counter is per process, so a
