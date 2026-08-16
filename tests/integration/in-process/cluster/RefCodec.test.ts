@@ -15,6 +15,8 @@ import {
   type WireActorRef,
 } from '../../../../src/cluster/RefCodec.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { BidirectionalMap } from '../../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../../src/util/BidirectionalMultiMap.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
@@ -116,6 +118,37 @@ describe('RefCodec — encodeRefs', () => {
     const encoded = encodeRefs({ decoder, bytes }, cluster) as Record<string, unknown>;
     expect(encoded.decoder).toBe(decoder);
     expect(encoded.bytes).toBe(bytes);
+  });
+
+  // #450 — the walker used to end in a generic `Object.entries` rebuild, which
+  // is destructive for every value whose data is not own-enumerable.  It ran
+  // *before* the frame codec, so tagging these on the wire would have carried
+  // a faithful copy of `{}`.
+  test('values whose data is not own-enumerable pass through by reference', () => {
+    const pattern = /^ab+c$/giu;
+    const url = new URL('https://example.test/a?b=1');
+    const failure = new Error('boom');
+    const counters = new Int32Array([7, 8, 9]);
+    const encoded = encodeRefs({ pattern, url, failure, counters }, cluster) as Record<string, unknown>;
+    expect(encoded.pattern).toBe(pattern);
+    expect(encoded.url).toBe(url);
+    expect(encoded.failure).toBe(failure);
+    expect(encoded.counters).toBe(counters);
+  });
+
+  test('the framework collections keep their class and their embedded refs', () => {
+    const ref = system.spawn(Noop, 'collection-target');
+    const oneToOne = new BidirectionalMap<string, unknown>([['a', ref]]);
+    const manyToMany = new BidirectionalMultiMap<string, unknown>([['left', ref]]);
+    const encoded = encodeRefs({ oneToOne, manyToMany }, cluster) as Record<string, unknown>;
+
+    const encodedOneToOne = encoded.oneToOne as BidirectionalMap<string, unknown>;
+    expect(encodedOneToOne).toBeInstanceOf(BidirectionalMap);
+    expect(isWireActorRef(encodedOneToOne.get('a'))).toBe(true);
+
+    const encodedManyToMany = encoded.manyToMany as BidirectionalMultiMap<string, unknown>;
+    expect(encodedManyToMany).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...encodedManyToMany.get('left')].every((entry) => isWireActorRef(entry))).toBe(true);
   });
 
   test('cyclic structures do not infinite-loop (cycle replaced with null)', () => {
@@ -251,6 +284,55 @@ describe('RefCodec — decodeRefs', () => {
     expect(peers[0]).toBe(local);
     expect(peers[1]).toBe(Nobody);
     expect((decoded.meta as Record<string, unknown>).primary).toBe(local);
+  });
+
+  // #450 — the decode direction was the lossier of the two: `walk` rebuilt a
+  // `Map` as a `Map`, but `walkDecode` had no container branch at all, so
+  // every collection that survived encode, the transport and the frame codec
+  // was flattened to `{}` on arrival.
+  test('containers survive the decode walk instead of flattening to {}', () => {
+    const local = system.spawn(Noop, 'container-target');
+    const self = cluster.selfAddress;
+    const wire: WireActorRef = {
+      $ref: 'actor',
+      path: local.path.toString(),
+      host: self.host,
+      port: self.port,
+      system: self.systemName,
+    };
+    const wireMessage = {
+      byName: new Map<string, unknown>([['primary', wire]]),
+      seen: new Set<unknown>([wire]),
+      oneToOne: new BidirectionalMap<string, unknown>([['a', wire]]),
+      manyToMany: new BidirectionalMultiMap<string, unknown>([['left', wire]]),
+    };
+    const decoded = decodeRefs(wireMessage, cluster) as Record<string, unknown>;
+
+    const byName = decoded.byName as Map<string, unknown>;
+    expect(byName).toBeInstanceOf(Map);
+    expect(byName.get('primary')).toBe(local);
+
+    const seen = decoded.seen as Set<unknown>;
+    expect(seen).toBeInstanceOf(Set);
+    expect([...seen]).toEqual([local]);
+
+    const oneToOne = decoded.oneToOne as BidirectionalMap<string, unknown>;
+    expect(oneToOne).toBeInstanceOf(BidirectionalMap);
+    expect(oneToOne.get('a')).toBe(local);
+
+    const manyToMany = decoded.manyToMany as BidirectionalMultiMap<string, unknown>;
+    expect(manyToMany).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...manyToMany.get('left')]).toEqual([local]);
+  });
+
+  test('values whose data is not own-enumerable arrive intact', () => {
+    const pattern = /^ab+c$/giu;
+    const url = new URL('https://example.test/a?b=1');
+    const counters = new Int32Array([7, 8, 9]);
+    const decoded = decodeRefs({ pattern, url, counters }, cluster) as Record<string, unknown>;
+    expect(decoded.pattern).toBe(pattern);
+    expect(decoded.url).toBe(url);
+    expect(decoded.counters).toBe(counters);
   });
 });
 
