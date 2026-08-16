@@ -18,6 +18,15 @@
  *
  * A backend that measures the body afterwards waits forever in both, which is
  * the whole difference these tests exist to pin.
+ *
+ * What they do *not* pin is the client's luck.  Refusing a body mid-flight
+ * means closing a connection the client is still writing to, and a close over
+ * unread inbound data goes out as a reset — which discards the receive queue,
+ * answer included.  So the chunked case asserts that the backend *settled* the
+ * exchange (answered, or hung up) and that the handler never ran, and only
+ * checks for 413 when the answer actually survived.  Reading the status back
+ * unconditionally is what made this suite flake; see the reset case at the
+ * bottom of the file.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import net from 'node:net';
@@ -38,8 +47,15 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 const CAP_BYTES = 16 * 1024;
 /** One chunk of the streamed body — three of them already cross the cap. */
 const CHUNK_BYTES = 8 * 1024;
-/** Ceiling on how much a streaming client writes before it gives up waiting. */
-const MAX_CHUNKS = 64;
+/**
+ * Everything the streaming client ever writes, and deliberately not one frame
+ * more.  Enough to put the backend past the cap, so it has to decide; short
+ * enough that the client is done writing before it does, so the server's close
+ * finds an empty receive queue and goes out as a FIN rather than a reset.
+ */
+const CHUNKS_TO_EXCEED_CAP = Math.ceil(CAP_BYTES / CHUNK_BYTES) + 1;
+/** How long to wait for the backend to end an exchange it will never see the end of. */
+const SETTLE_TIMEOUT_MS = 3000;
 
 const backends: Array<[string, () => HttpServerBackend]> = [
   ['fastify', () => new FastifyBackend({ logger: false, bodyLimit: CAP_BYTES })],
@@ -95,6 +111,10 @@ type RawSocketExchange = {
   readonly socket: net.Socket;
   /** Everything the server has written back so far. */
   read(): string;
+  /** True once a complete response head is readable. */
+  answered(): boolean;
+  /** True once the connection is gone — reset or graceful FIN alike. */
+  hungUp(): boolean;
   /** Best-effort write; a server that already hung up is not an error here. */
   write(data: string): void;
   close(): void;
@@ -107,12 +127,19 @@ type RawSocketExchange = {
  * destroys the socket, and the next write lands on a closed peer — an
  * unhandled `ECONNRESET`/`EPIPE` would take the test process down rather than
  * report the refusal these tests are looking for.
+ *
+ * `close` and `error` both feed `hungUp`, because the two runtimes disagree
+ * about which one a reset is: Node raises `ECONNRESET` and closes with
+ * `hadError`, Bun reports a plain close.  What they agree on is that the
+ * connection ended, which is the signal these tests actually need.
  */
 async function connectRaw(port: number): Promise<RawSocketExchange> {
   const socket = net.connect({ host: '127.0.0.1', port });
   let received = '';
+  let gone = false;
   socket.on('data', (data: Buffer) => { received += data.toString('latin1'); });
-  socket.on('error', () => { /* the peer hung up — that is a valid outcome */ });
+  socket.on('error', () => { gone = true; /* the peer hung up — a valid outcome */ });
+  socket.on('close', () => { gone = true; });
   await new Promise<void>((resolve, reject) => {
     socket.once('connect', resolve);
     socket.once('error', reject);
@@ -120,6 +147,8 @@ async function connectRaw(port: number): Promise<RawSocketExchange> {
   return {
     socket,
     read: () => received,
+    answered: () => received.includes('\r\n\r\n'),
+    hungUp: () => gone,
     write: (data) => { if (!socket.destroyed && socket.writable) socket.write(data); },
     close: () => socket.destroy(),
   };
@@ -167,21 +196,26 @@ async function streamChunkedBody(port: number): Promise<ChunkedExchangeOutcome> 
       + 'Connection: close\r\n\r\n',
     );
 
-    // Feed chunks until the server answers.  The terminating `0\r\n\r\n` is
-    // never written: only a backend counting bytes as they land can decide
-    // anything here, and it must decide long before MAX_CHUNKS.
+    // Put the backend past the cap and then stop.  The terminating `0\r\n\r\n`
+    // is never written, so only a backend counting bytes as they land can
+    // decide anything here at all — while a client that kept writing past the
+    // decision would turn the server's close into a reset and lose the answer.
     const frame = `${CHUNK_BYTES.toString(16)}\r\n${'x'.repeat(CHUNK_BYTES)}\r\n`;
-    while (chunksWritten < MAX_CHUNKS && exchange.read() === '') {
+    while (chunksWritten < CHUNKS_TO_EXCEED_CAP && !exchange.answered() && !exchange.hungUp()) {
       exchange.write(frame);
       chunksWritten += 1;
       bytesWritten += frame.length;
       await sleep(5);
     }
 
-    const response = await awaitResponse(exchange, 3000);
+    const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    while (Date.now() < deadline && !exchange.answered() && !exchange.hungUp()) await sleep(10);
+
+    // A readable answer beats a bare hangup, but both are the server deciding.
+    const settled = exchange.answered() ? 'response' : exchange.hungUp() ? 'hangup' : 'never';
     return {
-      settled: response === null ? 'never' : 'response',
-      status: response === null ? null : statusOf(response),
+      settled,
+      status: exchange.answered() ? statusOf(exchange.read()) : null,
       chunksWritten,
       bytesWritten,
     };
@@ -206,7 +240,9 @@ describe.each([...backends])('body cap is applied before the body is complete �
         + 'Connection: close\r\n\r\n',
       );
 
-      const response = await awaitResponse(exchange, 3000);
+      // Nothing is written after the head, so the backend's close finds an
+      // empty receive queue and the answer survives — no reset to race here.
+      const response = await awaitResponse(exchange, SETTLE_TIMEOUT_MS);
 
       expect(response).not.toBeNull();
       expect(statusOf(response!)).toBe(413);
@@ -222,12 +258,15 @@ describe.each([...backends])('body cap is applied before the body is complete �
 
     const outcome = await streamChunkedBody(port);
 
-    expect(outcome.settled).toBe('response');
-    expect(outcome.status).toBe(413);
-    // Refused while it arrived: the client never got anywhere near writing
-    // MAX_CHUNKS, and the handler never saw the body.
-    expect(outcome.chunksWritten).toBeLessThan(MAX_CHUNKS);
+    // Refused while it arrived.  What is determinable is that the backend
+    // ended the exchange without ever seeing a terminating chunk, and that the
+    // body never became the handler's problem; *reading* the 413 back is not,
+    // because the refusal closes a connection the client is still writing to
+    // and the platform may drop the answer with it.
+    expect(outcome.settled).not.toBe('never');
     expect(seen.called).toBe(false);
+    // When the answer did survive the teardown, it says what it should.
+    if (outcome.settled === 'response') expect(outcome.status).toBe(413);
   });
 });
 
@@ -277,6 +316,6 @@ describe('the raw-socket client the cases above share', () => {
     // The server decided without ever seeing a terminating chunk.  That the
     // decision was unreadable is the platform's doing, not the backend's.
     expect(outcome.settled).toBe('hangup');
-    expect(outcome.chunksWritten).toBeLessThan(MAX_CHUNKS);
+    expect(outcome.chunksWritten).toBeLessThanOrEqual(CHUNKS_TO_EXCEED_CAP);
   });
 });
