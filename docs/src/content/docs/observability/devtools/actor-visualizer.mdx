@@ -213,8 +213,10 @@ trees are open at once — and killing one is the interesting part: watch
 the shards it held reappear under the survivors. See the
 [overview](/observability/devtools/overview/) for the flags.
 
-Most of the examples are **not** wired for DevTools, and seven that are
-still exit on their own — `--devtools` on `cluster/singleton-hello.ts`
-prints three URLs and is gone before you can open any of them. The
-[overview](/observability/devtools/overview/#try-it-on-the-examples)
-lists them.
+Most of the examples are **not** wired for DevTools: the harness lives
+only in the ones that run until you stop them, so `--devtools` on a
+snippet that finishes on its own is simply not read — it no longer binds
+a port you have no time to reach. `cluster/singleton-hello.ts` and six
+others were the exception until recently; the
+[overview](/observability/devtools/overview/#try-it-on-the-examples) has
+that history and the full set.

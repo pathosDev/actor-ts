@@ -9,11 +9,18 @@ import { describe, expect, test } from 'bun:test';
  * #552 removed the harness from the examples that called `holdOpen()`, and
  * the pages described the result as "the long-running examples are wired /
  * the ones that finish on their own carry none".  That is not the line that
- * was applied: seven of the examples that kept the wiring finish on their
+ * was applied: seven of the examples that kept the wiring finished on their
  * own in a second or two.  The consequence was concrete rather than
  * pedantic — the actor-visualizer walkthrough's only code fence told the
  * reader to run `examples/cluster/singleton-hello.ts --devtools` and watch
- * the tree, and that process is gone before a browser can open.
+ * the tree, and that process was gone before a browser could open.
+ *
+ * Those seven carry no wiring either now, so the documented line and the
+ * applied one are the same line.  Keeping them the same line is the job
+ * here: the alternative — teaching a short example to stay up for a
+ * browser — was considered and rejected, because each of the seven ends by
+ * terminating its own systems and in three of them that teardown *is* the
+ * demonstration.
  *
  * Prose cannot be typechecked, so the two assertions below anchor it to
  * things that can be:
@@ -27,9 +34,10 @@ import { describe, expect, test } from 'bun:test';
  *     every case as a real program, so it is a checked fact rather than a
  *     second unverified claim.
  *
- * Static on purpose: spawning twenty-five examples belongs in the example
- * gate, not in `bun test`.  What this guards is the *documentation*, which
- * no other gate reads at all.
+ * Static on purpose: spawning examples belongs in the example gate, not in
+ * `bun test`.  What this guards is the seam between the two — the chapter's
+ * claims about the tree, which no other gate reads at all, and the rule the
+ * tree itself now has to keep.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -43,12 +51,6 @@ const HARNESS = 'examples/devtools.ts';
 const DOCUMENTATION_PAGES: readonly string[] = [
   'docs/src/content/docs/observability/devtools',
   'docs/src/content/docs/de/observability/devtools',
-];
-
-/** The two pages that describe which examples carry the wiring. */
-const WIRING_PAGES: readonly string[] = [
-  'docs/src/content/docs/observability/devtools/overview.mdx',
-  'docs/src/content/docs/de/observability/devtools/overview.mdx',
 ];
 
 type ManifestCase = {
@@ -95,7 +97,7 @@ const wired: readonly string[] = exampleFiles()
   .filter((file) => file !== HARNESS)
   .filter((file) => readUtf8(file).includes('attachDevTools'));
 
-/** The seven the documentation used to deny the existence of. */
+/** The gap the two sets used to leave.  Empty, and kept empty below. */
 const wiredButSelfTerminating: readonly string[] = wired.filter((file) => selfTerminating.has(file));
 
 /**
@@ -140,19 +142,17 @@ describe('the DevTools chapter describes the examples that exist', () => {
     ).toEqual([]);
   });
 
-  test('the overview names every wired example that finishes on its own', () => {
-    for (const page of WIRING_PAGES) {
-      const text = readUtf8(page);
-      const unmentioned = wiredButSelfTerminating.filter(
-        (file) => !text.includes(file.slice('examples/'.length)),
-      );
-      expect(
-        unmentioned,
-        `${page} describes which examples carry the DevTools wiring without `
-        + 'mentioning these, which carry it and still finish on their own.  '
-        + 'That is the false dividing line #552 documented: a reader who runs '
-        + 'one of these with --devtools gets nothing to look at.',
-      ).toEqual([]);
-    }
+  test('no example that finishes on its own carries the wiring', () => {
+    expect(
+      wiredButSelfTerminating,
+      'These examples import the DevTools harness and the example gate has '
+      + 'watched them run to completion on their own, so `--devtools` binds a '
+      + 'port and logs a URL that is dead before a browser can open it.  That '
+      + 'is the gap #552 left behind and then closed, and it is what the '
+      + 'chapter now promises does not exist.  Drop the import — or, if the '
+      + 'example is genuinely worth watching, give it a reason to stay up and '
+      + 'reclassify it "serve" in the manifest, which makes the example gate '
+      + 'hold you to it.',
+    ).toEqual([]);
   });
 });

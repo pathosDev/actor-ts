@@ -236,9 +236,11 @@ davon zu killen: Beobachte, wie seine Shards unter den Überlebenden
 wieder auftauchen. Die Flags stehen im
 [Überblick](/de/observability/devtools/overview/).
 
-Die meisten Examples sind **nicht** für DevTools verdrahtet, und sieben,
-die es sind, beenden sich trotzdem von selbst — `--devtools` auf
-`cluster/singleton-hello.ts` gibt drei URLs aus und ist weg, bevor du
-eine davon öffnen kannst. Der
+Die meisten Examples sind **nicht** für DevTools verdrahtet: Der Harness
+steckt nur in denen, die laufen, bis du sie stoppst. `--devtools` wird in
+einem Snippet, das von selbst fertig wird, deshalb gar nicht gelesen — es
+bindet keinen Port mehr, den du ohnehin nicht rechtzeitig erreichst.
+`cluster/singleton-hello.ts` und sechs weitere waren bis vor Kurzem die
+Ausnahme; der
 [Überblick](/de/observability/devtools/overview/#an-den-examples-ausprobieren)
-zählt sie auf.
+hat diese Vorgeschichte und die vollständige Menge.

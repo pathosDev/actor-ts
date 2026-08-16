@@ -24,7 +24,6 @@ import {
   Register,
   ServiceKey,
 } from '../../src/discovery/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<string> {
   constructor(private readonly host: string) { super(); }
@@ -40,7 +39,6 @@ class StreamClient extends Actor<Listing<string>> {
 
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; name: string }> {
   const sys = ActorSystem.create('service-locator');
-  await attachDevTools(sys);
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)

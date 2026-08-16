@@ -15,15 +15,25 @@
  * first.
  *
  * That sweep keyed on `holdOpen()`, which is not the same thing as "runs
- * until you stop it", so seven importers still finish on their own:
- * cluster/{singleton-hello, singleton-cron, sharded-daemon-hello,
- * sharded-daemon-fixed-workers}, discovery/service-locator-cluster,
- * pubsub/event-bus-across-nodes and management/opentelemetry-tracing.
- * They attach, log a URL and exit a second or two later, so `--devtools`
- * buys them nothing — the wiring is inert rather than wrong, and removing
- * it is a separate change from correcting what was claimed about it.
- * DevTools belongs where a system stays up long enough to watch it work;
- * the documentation now says which examples those actually are.
+ * until you stop it", so it left seven importers binding a port they were
+ * gone before anyone could open: cluster/{singleton-hello, singleton-cron,
+ * sharded-daemon-hello, sharded-daemon-fixed-workers},
+ * discovery/service-locator-cluster, pubsub/event-bus-across-nodes and
+ * management/opentelemetry-tracing.  Those are unwired too now, so the
+ * dividing line is finally the one that was always documented: the
+ * harness lives where a system stays up long enough to watch it work.
+ *
+ * Giving those seven a way to stay up was the other way to close the gap,
+ * and it is the wrong one.  Each ends by leaving the cluster and
+ * terminating its systems, so parking after that would tap a dead system
+ * — and parking *instead* of it deletes the demonstration, which in three
+ * of them is precisely the teardown: singleton-cron kills the leader to
+ * show failover, service-locator-cluster and event-bus-across-nodes drop
+ * a node to show a listing and a subscription set shrink.  The scripted
+ * scenario is also over within three seconds, so a browser arrives after
+ * the interesting part either way.  `cluster/counter-node.ts` is the
+ * cluster demo that runs until stopped, and it is where the DevTools
+ * chapter sends people.
  *
  * The `--devtools` argument works in every shell.  `DEVTOOLS=1` does the
  * same on a POSIX shell, but `VAR=value command` is a parser error in
