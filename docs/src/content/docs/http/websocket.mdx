@@ -121,8 +121,13 @@ The frame-size cap is enforced on the **raw frame before decode**.
   16 MiB (Bun) or 100 MiB (`ws`) frame just to have it thrown away
   afterwards.  Because the runtime hangs up rather than sending a policy
   close, the client sees an abnormal close (**1006**) here, not 1009.
+  Two runtime/backend pairs have no such layer — see the caution below.
 - **In the connection actor**, at the same `maxFrameBytes` — on the fully
   received frame, before the codec decodes it, closing with **1009**.
+
+Only the second layer is a guarantee.  It runs everywhere and it is what
+keeps an oversize frame away from your actor; the transport cap is an
+optimisation on top of it that spares the process the buffering.
 
 The number is yours in both directions: lowering `maxFrameBytes` narrows
 the buffering window too, and raising it above the 1 MiB default really
@@ -139,14 +144,25 @@ A stricter route is unaffected in what it accepts — the connection actor
 still refuses its oversize frames with 1009 — it just does not get the
 narrower buffering window it would have had on its own.
 
-<Aside type="caution" title="Deno has no transport cap">
-On Deno the first layer does not exist.  `Deno.upgradeWebSocket` accepts a
-subprotocol and an idle timeout and no payload limit, so there is nothing
-for the framework to set: an oversize frame is fully buffered by the
-runtime and only then rejected by the connection actor.  The guarantee
-holds — the frame never reaches your actor — but the memory is spent
-before it is refused.  For an internet-facing WebSocket endpoint under
-Deno, put a proxy with its own frame limit in front of it.
+<Aside type="caution" title="Two pairs have no transport cap">
+On **Deno**, `Deno.upgradeWebSocket` accepts a subprotocol and an idle
+timeout and no payload limit, so there is nothing for the framework to set.
+
+On **Bun** with the **Express** or **Fastify** backend, the cap is set but
+not honoured.  Both hand `maxPayload` to a `ws` `WebSocketServer`, and on
+Bun the `ws` specifier resolves to Bun's own built-in shim rather than the
+npm package.  The shim accepts the option and reads it back unchanged — so
+nothing looks wrong from the outside — while enforcing nothing: measured
+here, a 2 MiB frame against a 1 MiB cap reached the handler intact, where
+the same code on Node refused it at the socket and closed with 1009.
+(Bun with the **Hono** backend is unaffected: it goes through
+`Bun.serve`'s own `maxPayloadLength` instead of `ws`.)
+
+In all three cases the frame is fully buffered by the runtime and only then
+rejected by the connection actor.  The guarantee holds — the frame never
+reaches your actor, and the client still gets its 1009 — but the memory is
+spent before it is refused.  For an internet-facing WebSocket endpoint on
+one of these pairs, put a proxy with its own frame limit in front of it.
 </Aside>
 
 <Aside type="note" title="Hono on Node needs @hono/node-ws 1.2.0 or newer">

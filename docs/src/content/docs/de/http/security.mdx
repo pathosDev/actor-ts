@@ -181,16 +181,21 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   wird; ein gechunkter Body deklariert keine Länge, also zählen ihn alle drei
   Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
   dahinter werden nie entgegengenommen.
-- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default),
-  und das aufgelöste Limit geht zusätzlich an den Socket der Laufzeit selbst:
-  Ein zu großer Frame wird abgewiesen, *während er eintrifft*, statt erst
-  nachdem der Prozess ihn gepuffert hat — sonst könnte ein Peer pro Frame
-  16 MiB (Bun) oder 100 MiB (`ws`) Pufferung erzwingen, die das Framework
-  anschließend verwirft. Das Limit zu senken — pro Route oder über
+- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
+  Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
+  erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit
+  *zusätzlich* an den Socket der Laufzeit selbst, sodass der Frame schon
+  abgewiesen wird, *während er eintrifft*, statt erst nachdem der Prozess ihn
+  gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder 100 MiB
+  (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft. Das
+  Limit zu senken — pro Route oder über
   `actor-ts.http.websocket.maxFrameBytes` — verkleinert dieses Puffer-Fenster
-  mit. Die einzige Ausnahme ist Hono auf **Deno**, dessen `upgradeWebSocket`
-  kein Payload-Limit anbietet: Dort wird zuerst gepuffert und danach
-  abgewiesen. Siehe [WebSocket](/de/http/websocket/).
+  mit. **Zwei Kombinationen haben kein Transport-Limit** und puffern den Frame,
+  bevor sie ihn abweisen: Hono auf **Deno**, dessen `upgradeWebSocket`
+  überhaupt kein Payload-Limit anbietet, und **Bun** mit dem Express- oder
+  Fastify-Backend, wo `ws` auf Buns eingebauten Shim auflöst, der `maxPayload`
+  zwar annimmt und zurückliefert, aber nicht durchsetzt. Siehe
+  [WebSocket](/de/http/websocket/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.
