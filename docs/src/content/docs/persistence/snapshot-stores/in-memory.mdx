@@ -48,7 +48,7 @@ older ones are pruned on save.  `<= 0` keeps everything.
 ```ts
 import { InMemorySnapshotStore, InMemorySnapshotStoreOptions } from 'actor-ts/persistence';
 
-const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3)
+const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3);
 const snapshotStore = new InMemorySnapshotStore(inMemorySnapshotStoreOptions);
 ```
 

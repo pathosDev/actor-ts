@@ -49,7 +49,7 @@ werden; ältere werden beim Speichern entfernt.  `<= 0` behält alle.
 ```ts
 import { InMemorySnapshotStore, InMemorySnapshotStoreOptions } from 'actor-ts/persistence';
 
-const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3)
+const inMemorySnapshotStoreOptions = InMemorySnapshotStoreOptions.create().withKeepN(3);
 const snapshotStore = new InMemorySnapshotStore(inMemorySnapshotStoreOptions);
 ```
 

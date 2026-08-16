@@ -77,7 +77,7 @@ import {
   cassandraClientWithFailingPrune,
   dynamoDbWithFailingPrune,
   mongoClientWithFailingPrune,
-  poolWithFailingPrune,
+  relationalClientWithFailingPrune,
   sqliteDriverWithFailingPrune,
 } from './FailingPrune.js';
 
@@ -247,7 +247,7 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
     makeWithFailingPrune: async (keepN) => {
       const storeOptions = PostgresSnapshotStoreOptions.create()
-        .withPool(poolWithFailingPrune(new FakePgPool()))
+        .withPool(relationalClientWithFailingPrune(new FakePgPool()))
         .withKeepN(keepN);
       return new PostgresSnapshotStore(storeOptions);
     },
@@ -273,7 +273,7 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
     makeWithFailingPrune: async (keepN) => {
       const storeOptions = D1SnapshotStoreOptions.create()
-        .withClient(poolWithFailingPrune(new FakeD1Client()))
+        .withClient(relationalClientWithFailingPrune(new FakeD1Client()))
         .withKeepN(keepN);
       return new D1SnapshotStore(storeOptions);
     },
@@ -331,7 +331,7 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
     makeWithFailingPrune: async (keepN) => {
       const storeOptions = MariaDbSnapshotStoreOptions.create()
-        .withPool(poolWithFailingPrune(new FakeMariaDbPool()))
+        .withPool(relationalClientWithFailingPrune(new FakeMariaDbPool()))
         .withKeepN(keepN);
       return new MariaDbSnapshotStore(storeOptions);
     },

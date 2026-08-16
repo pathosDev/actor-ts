@@ -41,29 +41,29 @@ export const INJECTED_PRUNE_FAILURE = 'injected prune failure';
 export function rejectMethod<T extends object>(
   target: T,
   method: string,
-  matches: (args: readonly unknown[]) => boolean = () => true,
+  matches: (callArguments: readonly unknown[]) => boolean = () => true,
 ): T {
   return new Proxy(target, {
     get(object, property) {
       const value = Reflect.get(object, property);
       if (typeof value !== 'function') return value;
-      const inner = value as (...a: unknown[]) => unknown;
+      const inner = value as (...callArguments: unknown[]) => unknown;
       if (property !== method) return inner.bind(object);
-      return (...args: unknown[]): unknown => {
-        if (matches(args)) throw new Error(`${INJECTED_PRUNE_FAILURE}: ${method}`);
-        return inner.apply(object, args);
+      return (...callArguments: unknown[]): unknown => {
+        if (matches(callArguments)) throw new Error(`${INJECTED_PRUNE_FAILURE}: ${method}`);
+        return inner.apply(object, callArguments);
       };
     },
   });
 }
 
 /** True for the relational retention statement — the only one using `NOT IN`. */
-const isPruneSql = (args: readonly unknown[]): boolean =>
-  typeof args[0] === 'string' && /NOT IN/i.test(args[0]);
+const isPruneSql = (callArguments: readonly unknown[]): boolean =>
+  typeof callArguments[0] === 'string' && /NOT IN/i.test(callArguments[0]);
 
 /** Relational pools / clients: the prune is the `NOT IN` delete. */
-export function poolWithFailingPrune<T extends object>(pool: T): T {
-  return rejectMethod(pool, 'query', isPruneSql);
+export function relationalClientWithFailingPrune<T extends object>(client: T): T {
+  return rejectMethod(client, 'query', isPruneSql);
 }
 
 /** Cassandra: the write is an INSERT, the prune the ranged DELETE. */
@@ -71,7 +71,9 @@ export function cassandraClientWithFailingPrune<T extends object>(client: T): T 
   return rejectMethod(
     client,
     'execute',
-    (args) => typeof args[0] === 'string' && /^\s*DELETE/i.test(args[0]) && /sequence_nr </i.test(args[0]),
+    (callArguments) => typeof callArguments[0] === 'string'
+      && /^\s*DELETE/i.test(callArguments[0])
+      && /sequence_nr </i.test(callArguments[0]),
   );
 }
 
@@ -91,16 +93,16 @@ export function mongoClientWithFailingPrune<T extends object>(client: T): T {
       if (typeof value !== 'function') return value;
       const inner = value as (...a: unknown[]) => unknown;
       if (property !== 'db') return inner.bind(object);
-      return (...args: unknown[]): unknown => {
-        const database = inner.apply(object, args) as object;
+      return (...callArguments: unknown[]): unknown => {
+        const database = inner.apply(object, callArguments) as object;
         return new Proxy(database, {
-          get(db, dbProperty) {
-            const dbValue = Reflect.get(db, dbProperty);
-            if (typeof dbValue !== 'function') return dbValue;
-            const dbInner = dbValue as (...a: unknown[]) => unknown;
-            if (dbProperty !== 'collection') return dbInner.bind(db);
-            return (...collectionArgs: unknown[]): unknown =>
-              rejectMethod(dbInner.apply(db, collectionArgs) as object, 'deleteMany');
+          get(databaseObject, databaseProperty) {
+            const databaseValue = Reflect.get(databaseObject, databaseProperty);
+            if (typeof databaseValue !== 'function') return databaseValue;
+            const databaseInner = databaseValue as (...callArguments: unknown[]) => unknown;
+            if (databaseProperty !== 'collection') return databaseInner.bind(databaseObject);
+            return (...collectionArguments: unknown[]): unknown =>
+              rejectMethod(databaseInner.apply(databaseObject, collectionArguments) as object, 'deleteMany');
           },
         });
       };
@@ -121,16 +123,16 @@ export async function sqliteDriverWithFailingPrune(): Promise<SqliteDriver> {
       if (typeof value !== 'function') return value;
       const inner = value as (...a: unknown[]) => unknown;
       if (property !== 'open') return inner.bind(object);
-      return (...args: unknown[]): SqliteDb => {
-        const database = inner.apply(object, args) as SqliteDb;
+      return (...callArguments: unknown[]): SqliteDb => {
+        const database = inner.apply(object, callArguments) as SqliteDb;
         return new Proxy(database, {
-          get(db, dbProperty) {
-            const dbValue = Reflect.get(db, dbProperty);
-            if (typeof dbValue !== 'function') return dbValue;
-            const dbInner = dbValue as (...a: unknown[]) => unknown;
-            if (dbProperty !== 'prepare') return dbInner.bind(db);
+          get(databaseObject, databaseProperty) {
+            const databaseValue = Reflect.get(databaseObject, databaseProperty);
+            if (typeof databaseValue !== 'function') return databaseValue;
+            const databaseInner = databaseValue as (...callArguments: unknown[]) => unknown;
+            if (databaseProperty !== 'prepare') return databaseInner.bind(databaseObject);
             return (sql: string): SqliteStatement => {
-              const statement = dbInner.call(db, sql) as SqliteStatement;
+              const statement = databaseInner.call(databaseObject, sql) as SqliteStatement;
               return /NOT IN/i.test(sql) ? rejectMethod(statement, 'run') : statement;
             };
           },
