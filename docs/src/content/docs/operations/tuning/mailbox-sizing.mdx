@@ -147,7 +147,7 @@ expose mailbox depth:
 
 ```
 actor_mailbox_size{class="Worker", path="..."}
-actor_mailbox_dropped_total{class="Worker", path="...", reason="drop-head"}
+actor_mailbox_dropped_total{class="Worker", reason="drop-head"}
 ```
 
 Watch:
@@ -159,7 +159,11 @@ Watch:
   spike.
 - **`actor_mailbox_dropped_total`** — non-zero with `drop-head` /
   `drop-new` is by design for the actors you bounded; on any other
-  actor it should not appear at all.
+  actor it should not appear at all.  Aggregated **per class**, not
+  per actor — the two metrics deliberately differ here, because a
+  depth series only exists for an actor already in trouble while a
+  drop series would exist for every actor doing its job.  Use an
+  `onDrop` of your own if you need per-instance drop counts.
 - **`MailboxFullError` rate** at the sender — usually surfaces
   as supervisor restarts of the sending actor.
 
