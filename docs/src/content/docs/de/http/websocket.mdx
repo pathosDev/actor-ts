@@ -363,8 +363,7 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 `TOut`-Antworten.  Der Default ist `jsonCodec()`:
 
 ```ts
-import { WebsocketRouteOptions } from 'actor-ts/http';
-import { jsonCodec } from 'actor-ts/persistence';
+import { WebsocketRouteOptions, jsonCodec } from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
