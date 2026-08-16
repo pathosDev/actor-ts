@@ -84,8 +84,10 @@ describe('InMemoryTransport', () => {
     await transportB.start();
     transportA.send(transportB.self, helloFrom(40401));
     // Immediately after send, delivery has not happened yet — it's a microtask.
+    // That half is an absence, so it stays a synchronous read; the delivery
+    // half waits on the array the assertion reads.
     expect(seen.length).toBe(0);
-    await sleep(10);
+    await awaitCondition(() => seen.length === 1, { label: 'the microtask delivered the message' });
     expect(seen.length).toBe(1);
     await transportA.shutdown(); await transportB.shutdown();
   });

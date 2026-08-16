@@ -5,8 +5,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { SseActor, type SseEvent } from '../../../../../src/io/broker/SseActor.js';
 import { SseOptions } from '../../../../../src/io/broker/SseOptions.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 class CollectActor extends Actor<SseEvent> {
   received: SseEvent[] = [];
@@ -46,7 +45,12 @@ describe('SseActor — round-trip via Bun.serve', () => {
       .withTarget(target)
       .withReconnect(false);  // disable so the test ends predictably
     sys.spawnAnonymous(() => new SseActor(sseOptions));
-    await sleep(150);
+    // The stream closes after its fourth event and the actor emits no
+    // completion signal, so the arrival of the fourth event is the strongest
+    // thing this test can observe — and it is the state the assertion reads.
+    await awaitCondition(() => collector.received.length === 4, {
+      label: 'all four SSE events were parsed and forwarded',
+    });
 
     expect(collector.received.length).toBe(4);
     expect(collector.received[0]).toEqual({ event: 'message', data: 'hello', id: undefined });
