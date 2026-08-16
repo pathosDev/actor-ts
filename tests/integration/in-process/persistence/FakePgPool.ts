@@ -20,6 +20,7 @@
  */
 import type { PgClientLike, PgPoolLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
 import { pagePersistenceIds } from './PersistenceIdPaging.js';
+import { isTagJoinQuery, runTagJoinQuery } from './TagJoinQuery.js';
 
 type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
 type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
@@ -108,6 +109,18 @@ export class FakePgPool implements PgPoolLike {
         .filter((r) => r.persistence_id === persistenceId && r.sequence_nr >= from && (!hasUpper || r.sequence_nr <= (to as number)))
         .sort((a, b) => a.sequence_nr - b.sequence_nr)
         .map((r) => ({ ...r, sequence_nr: String(r.sequence_nr), timestamp: String(r.timestamp) }));
+      return { rows, rowCount: rows.length };
+    }
+
+    // #391 — the indexed tag query's JOIN against the tags table.  Must be
+    // tested before the unqualified reads above would ever be reached: this one
+    // is the only statement with an `e.`-qualified select list.
+    if (isTagJoinQuery(sql)) {
+      const rows = runTagJoinQuery(
+        sql, valuesArray,
+        (table) => this.tags.get(table) ?? [],
+        (table) => this.events.get(table) ?? [],
+      ).map((r) => ({ ...r, sequence_nr: String(r.sequence_nr), timestamp: String(r.timestamp) }));
       return { rows, rowCount: rows.length };
     }
 

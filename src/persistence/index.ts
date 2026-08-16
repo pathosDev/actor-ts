@@ -119,6 +119,9 @@ export type { LazyStoreConfig } from './LazyStore.js';
 // durable-state trio comes with it, instead of a third copy of three stores.
 export { RelationalJournal } from './relational/RelationalJournal.js';
 export type { RelationalJournalConfig } from './relational/RelationalJournal.js';
+// #391 — the seam `RelationalQuery` reads the tags index through, exported so an
+// out-of-tree `SqlDialect` can be queried by the same class the in-repo backends use.
+export type { RelationalQueryAccess } from './relational/RelationalJournal.js';
 export { RelationalSnapshotStore } from './relational/RelationalSnapshotStore.js';
 export type { RelationalSnapshotStoreConfig } from './relational/RelationalSnapshotStore.js';
 export { RelationalDurableStateStore } from './relational/RelationalDurableStateStore.js';
@@ -527,6 +530,12 @@ export { persistenceIdPage } from './Journal.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';
+// #391 — indexed tag queries over the relational tags join table.  `RelationalQuery`
+// is dialect-neutral and serves any `RelationalJournal`; the two named subclasses
+// exist so an error names the backend the caller actually constructed.
+export { RelationalQuery } from './query/RelationalQuery.js';
+export { PostgresQuery } from './query/PostgresQuery.js';
+export { MariaDbQuery } from './query/MariaDbQuery.js';
 
 // Replicated Event Sourcing — multi-master event-sourced actors.
 export { ReplicatedEventSourcedActor } from './ReplicatedEventSourcedActor.js';
