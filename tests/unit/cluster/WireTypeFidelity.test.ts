@@ -29,11 +29,11 @@ import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
-type MockSocket = {
+interface MockSocket {
   writes: Uint8Array[];
   write(data: Uint8Array): void;
   end(): void;
-};
+}
 
 function mockSocket(): MockSocket {
   return {
@@ -68,7 +68,7 @@ const addressB = new NodeAddress('fidelity', '127.0.0.1', 21_002);
  * Two transports that have completed a handshake with each other over mock
  * sockets, plus everything `sendAndReceive` needs to move one frame across.
  */
-type Link = {
+interface Link {
   readonly sender: TcpTransport;
   readonly receiver: TcpTransport;
   readonly senderSocket: MockSocket;
@@ -76,7 +76,7 @@ type Link = {
   readonly received: WireMessage[];
   readonly senderLog: RecordingLogger;
   close(): Promise<void>;
-};
+}
 
 function connect(): Link {
   const senderLog = new RecordingLogger();
