@@ -308,6 +308,12 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     await nodeB.transport.shutdown();
 
     await waitFor(() => census.liveOn('c') === 1, 10_000);
+    // The invariant, not just the handover: the sibling above asserts it and
+    // this one did not.  B is alive and was never told it is considered
+    // unreachable, so nothing has asked it to stop — if C promoting itself is
+    // all that happened, the cluster now runs two.
+    await sleep(1_000);
+    expect(census.total()).toBe(1);
     expect(census.liveOn('c')).toBe(1);
 
     // It really was the unreachability that moved it — B is still a member on
