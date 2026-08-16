@@ -15,6 +15,7 @@ import type { Cluster } from '../cluster/Cluster.js';
 import type { EntityContext } from '../EntityContext.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
+import { MAILBOX_WAIT_BUCKETS_SECONDS } from '../metrics/Constants.js';
 import type { MetricsRegistry } from '../metrics/Metrics.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { NOOP_TRACER } from '../tracing/NoopTracer.js';
@@ -652,7 +653,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._stashBuffer = [];
     // Prepend so stashed messages come out before anything currently queued,
     // preserving the original stash order.
-    this.mailbox.prependUser(drained);
+    //
+    // Marked as replayed on the way back in.  The stamp stays untouched — the
+    // explain plan wants the whole arrival-to-handling span — but
+    // `actor_mailbox_wait_seconds` has to be able to tell this population
+    // apart, because that span includes stash residency the actor chose and
+    // the aggregate has no outcome column to explain it with (see
+    // `Envelope.replayed`).  Copying here rather than at `stash()` keeps the
+    // marker at the moment it becomes true; either way it is a cold batch
+    // path, not the per-message one.
+    this.mailbox.prependUser(drained.map((env) => ({ ...env, replayed: true })));
     this.schedule();
   }
 
@@ -801,13 +811,39 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * an options family — a structural change to the framework's most
    * fundamental primitive, made in passing.  The cell already owns a logger,
    * a path and the enqueue funnel, so it is the cheaper place by every
-   * measure.
+   * measure.  Being the one door is also what makes it the right home for
+   * the arrival stamp, for the reasons the body gives.
    *
-   * Cost is one field read, one getter and one compare — less than the
-   * `BoundedMailbox.enqueue` bound check that used to run here by default.
+   * Cost on the uninstrumented path is two field reads, one getter and two
+   * compares — still less than the `BoundedMailbox.enqueue` bound check that
+   * used to run here by default.
    */
   private _enqueueUser(env: Envelope<TMessage>): void {
-    this.mailbox.enqueue(env);
+    // Attach the arrival stamp here rather than at the two `post*` doors, so
+    // there is exactly one answer to "when did this message arrive" — and so
+    // the replay paths keep getting it right by construction: `unstashAll`
+    // and `prependUserMessages` reach the queue through `mailbox.prependUser`
+    // and never pass this way, which is what lets a replayed message keep
+    // (or lack) the stamp it already has.
+    //
+    // Gated on a reader existing rather than unconditional, and the gate is
+    // written so the uninstrumented path touches as little as possible: two
+    // loads that both fail, and no clock read, no copy.  #411 measured
+    // exactly these off the receive path for systems that instrument
+    // nothing, which is the default, and an unconditional `Date.now()` here
+    // cost ~7 % of ask throughput when it was tried.  The `enqueuedAtMs`
+    // check sits *inside* the gate rather than in front of it for the same
+    // reason — it only matters once something is reading stamps.
+    //
+    // A message already queued when metrics are switched on keeps its
+    // missing stamp and is simply left out of the histogram: the same
+    // transient the explain plan has always had, self-correcting within one
+    // drain, and honest where inventing a wait would not be.
+    let stamped = env;
+    if (this._explain !== null || this.system._metricsRegistry !== null) {
+      if (env.enqueuedAtMs === undefined) stamped = { ...env, enqueuedAtMs: Date.now() };
+    }
+    this.mailbox.enqueue(stamped);
     if (this.mailbox.size >= this._mailboxWarnAt) this._onMailboxHighWaterMark();
     this.schedule();
   }
@@ -818,9 +854,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this._enqueueUser(this._explain === null
-      ? { message, sender }
-      : { message, sender, enqueuedAtMs: Date.now() });
+    this._enqueueUser({ message, sender });
   }
 
   /**
@@ -834,9 +868,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this._enqueueUser(this._explain === null || env.enqueuedAtMs !== undefined
-      ? env
-      : { ...env, enqueuedAtMs: Date.now() });
+    this._enqueueUser(env);
   }
 
   /** @internal */
@@ -1369,6 +1401,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         'actor_messages_delivered_total', {},
         { help: 'Cumulative count of user messages delivered to actor onReceive.' },
       ).inc();
+      // How long this message sat in the queue before its turn — the
+      // companion to `actor_message_handler_seconds`, which measures only
+      // what happens after.  A slow actor and a busy one look identical in
+      // the handler histogram; they differ here.
+      //
+      // Two populations are skipped rather than mismeasured.  An envelope
+      // with no stamp was queued before anything was reading stamps (metrics
+      // switched on mid-flight, or a `prependUserMessages` replay), and a
+      // replayed one carries the stamp of an arrival that predates its
+      // current residency — see `Envelope.replayed`.  `Math.max` guards the
+      // clock going backwards under an NTP step, which would otherwise put a
+      // negative number into the histogram's sum and make the derived
+      // average nonsense long after the correction.
+      if (env.enqueuedAtMs !== undefined && env.replayed !== true) {
+        metrics.histogram(
+          'actor_mailbox_wait_seconds', {},
+          {
+            help: 'Time user messages spent queued in a mailbox before delivery, seconds.',
+            buckets: MAILBOX_WAIT_BUCKETS_SECONDS,
+          },
+        ).observe(Math.max(0, Date.now() - env.enqueuedAtMs) / 1000);
+      }
     }
 
     // The tracer DOES fall back to the noop rather than being skipped: an

@@ -411,6 +411,54 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the lookup always ran), and `metricsOf` claimed it avoids the extension
   chain while its body is that chain.
 
+- **BREAKING — The cluster wire frames the tagged JSON tree instead of a
+  bare `JSON.stringify` (#450).**
+
+  `encodeFrame` was plain `JSON.stringify`, so the framework contradicted
+  itself across its own boundaries. A `Map` a `PersistentActor` could
+  persist and recover verbatim arrived at a peer as `{}`; a `Date` arrived
+  as a string whose `.getTime()` throws; a `Uint8Array` arrived as an
+  index-keyed object; `NaN` / `Infinity` / `-0` arrived as `null` / `null`
+  / `0`; and a `bigint` threw a bare `TypeError` out of
+  `TcpTransport.send`, which is to say out of `RemoteActorRef.tell` and
+  into the sending actor's `onReceive`. Persistence settled this in #888
+  and HTTP marshalling in `JsonSerializer`; the wire kept its own answer.
+
+  The frame is now the same tree those two write, applied to the whole
+  frame rather than to an envelope's `body` alone: the frame kinds
+  carrying user data are not all declared in `Protocol.ts` —
+  `ClusterClient`, pub-sub, sharding and DistributedData register their
+  own through `Cluster._onWire` — and every one of them was lossy in the
+  same way. `undefinedValues: 'omit'` keeps a payload made of plain data
+  byte-identical to what `JSON.stringify` produced, and a test asserts
+  that byte identity; `undefined` in a value position (array slot, `Set`
+  member, `Map` key or value) is now preserved rather than becoming
+  `null`.
+
+  Verification had to be built from nothing, because nothing in `bun test`
+  exercised an outbound `TcpTransport` encode: `MultiNodeSpec` delivers by
+  reference, `ParallelMultiNodeSpec` structured-clones, all five cluster
+  benchmarks and smoke case 02 use `InMemoryTransport`, and the two suites
+  that do construct a `TcpTransport` only drive inbound mock sockets.
+  `tests/unit/cluster/WireTypeFidelity.test.ts` drives two real transports
+  through their public `send` / `setHandler` with real frames between
+  them, and `tests/smoke/cases/27-cluster-wire-rich-types.mjs` runs the
+  same thing over an actual socket on Bun, Node and Deno.
+
+  *Migration:* This is a wire-format change and there is no protocol
+  negotiation for it yet (#823). Decode is backward-compatible by
+  construction — an older node's frame is untagged JSON and
+  `decodeJsonTree` only interprets a tag that is an object's sole own key
+  — but the other direction is not: an older node reading a newer node's
+  frame sees the tag wrapper as plain data. Only payloads that
+  `JSON.stringify` already corrupted are affected, so a cluster whose
+  message bodies are plain data can still roll node by node; a cluster
+  that sends a `Map`, `Set`, `Date`, `bigint` or typed array in any
+  message body must be upgraded in a single window. Separately, a body the
+  codec refuses (a function, a symbol) now costs the frame instead of
+  being silently stripped — grep your logs for `dropping a '<kind>' frame`
+  after the upgrade.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -773,6 +821,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   actors rather than messages within one. A batch always ends early on an
   empty mailbox, a stop or suspend, and a throttle bucket that runs out,
   so the budget is a ceiling rather than a commitment.
+
+- **`actor_mailbox_wait_seconds` — how long a user message waited in the
+  mailbox before it was delivered (#196).**
+
+  The half `actor_message_handler_seconds` could not give you: that
+  histogram starts measuring once a message is already being handled, so
+  an actor that is slow and an actor that is merely behind look identical
+  in it. Read together, the pair separates the two — and mailbox wait is
+  the earlier backlog signal, since `actor_mailbox_size` only mints a
+  series once a queue passes 10 000 messages.
+
+  The family carries no labels, so it adds no cardinality and stays clear
+  of the stock-label policy set in #658. Its buckets are explicit rather
+  than the client-library defaults, running 1 ms to 10 s: the defaults
+  start at 5 ms, where a mailbox that is keeping up drains in well under a
+  millisecond, so reusing them would have reproduced #998 verbatim in a
+  new family. 1 ms is also the finest the metric could be, since the stamp
+  is wall-clock.
+
+  Two populations are deliberately excluded, so the count does not match
+  `actor_messages_delivered_total`. A message replayed out of the stash
+  kept the stamp of its original arrival, and counting it would report
+  however long the actor chose to hold it as queueing delay — enough for
+  one stashing actor to drown every other actor's signal in a metric with
+  no labels to separate them. The explain plan makes the opposite choice
+  on the same field, because there the `stashed` entry that accounts for
+  the span is visible beside it. Messages queued before metrics were
+  switched on carry no stamp and are omitted rather than invented, which
+  corrects itself within one drain. Throttled messages are counted: a
+  parked message really is waiting for an actor that cannot keep up.
+
+  The arrival stamp is gated on a reader existing — an explain plan, or
+  metrics enabled — rather than being taken unconditionally, preserving
+  the property #411 established that a system instrumenting nothing pays
+  no clock read on the receive path. Measured on this machine, ask
+  round-trip runs 104-108k/s against a 106-108k/s baseline and tell is
+  equal or better at every batch size. `Envelope` gains an optional
+  `replayed` field; it is additive and public.
 
 ### Fixed
 
@@ -1544,6 +1630,88 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   every row against the event's own tag list — but the pre-filter is less
   selective than on Postgres, and `COLLATE utf8mb4_bin` is the fix for
   anyone pre-provisioning the schema.
+
+- **The dispatcher-tuning guide told you to measure queueing with a metric
+  that does not exist (#196).**
+
+  Its "Measuring" section, in both languages, named
+  `actor_message_duration_ms` and had the reader infer dispatcher latency
+  from the spread between its p50 and p99. That metric appears nowhere in
+  `src/` or the tests — only in those two pages — and the inference
+  conflated queueing delay with variance in the handler itself. Both
+  halves are now named metrics that do exist, `actor_mailbox_wait_seconds`
+  and `actor_message_handler_seconds`, with the split between them spelled
+  out as the thing that decides whether tuning the dispatcher can help at
+  all.
+
+- **The cluster's `ActorRef` walkers no longer flatten the values they
+  walk through (#450).**
+
+  `encodeRefs` / `decodeRefs` exist to swap `ActorRef`s for wire markers
+  and back, but both rebuilt every container they passed through and both
+  ended in a generic `Object.entries` tail. For any value whose data is
+  not own-enumerable that tail is destructive: a `RegExp`, a `URL` and an
+  `Error` all came out as `{}`, and an `Int32Array` came out as an
+  index-keyed plain object — before the frame codec ever saw them, so no
+  wire format could have rescued them.
+
+  The decode direction was the lossier of the two. `walk` at least rebuilt
+  a `Map` as a `Map`, but `walkDecode` had no container branch at all, so
+  a collection that survived encode, the transport and the frame codec was
+  still delivered to the actor as `{}`. That was visible on
+  `InMemoryTransport` and `MessageChannelTransport` too, where nothing
+  else in the path is lossy.
+
+  Both walkers now hand back by reference everything that cannot hold a
+  ref in a position they could reach (`Date`, `RegExp`, `URL`, `Error`,
+  `ArrayBuffer` and its views) and share the container vocabulary
+  `JsonTree` has — `Map`, `Set`, `BidirectionalMap`,
+  `BidirectionalMultiMap` — so a ref inside one of those is rewritten in
+  both directions.
+
+- **A message body the wire codec cannot serialise no longer throws out of
+  `tell` (#450).**
+
+  `TcpTransport.send` wrote `encodeFrame(message)` with no guard, so an
+  encode failure propagated out of `RemoteActorRef.tell` and into the
+  calling actor's `onReceive` — and `tell` is fire-and-forget, which is
+  exactly the contract that says it must not throw the way a failed `ask`
+  rejects. The same `send` is also reached from the gossip and heartbeat
+  timers, where a throw has no caller at all to catch it.
+
+  The encode now sits behind a private `writeFrame` that drops the frame
+  and logs at `error` with the frame kind and the peer. The
+  buffered-handshake flush path goes through it too, so a frame that could
+  not be encoded when it was queued fails the same way when the
+  `hello-ack` releases it.
+
+- **Documentation that misstated where serialization happens, in both
+  languages (#450).**
+
+  Three corrections are independent of the wire change and were wrong
+  before it. `serialization/overview.mdx` and
+  `testing/multi-node-spec.mdx` both sent readers to `MultiNodeSpec` /
+  `ParallelMultiNodeSpec` "to ensure messages serialize correctly";
+  neither serializes anything — the first delivers by reference, the
+  second structured-clones — so both accept payloads the wire refuses, and
+  they now point at a `JsonSerializer` round-trip instead.
+  `serialization/cbor.mdx` said the journal / durable-state / snapshot
+  stores "write their own JSON", false since #888, and steered readers to
+  using `CborSerializer` directly when the supported route is that store's
+  own `withSerializer(...)`, which the page now shows.
+  `serialization/custom.mdx`'s per-class-vs-system-wide table implied
+  `ext.bind(Class, id)` routes a class somewhere; it only affects
+  `ext.encode`, which nothing in the framework calls.
+
+  The rest follow the wire change: the "How it works" diagram and "Where
+  serialization fires" list in the serialization overview, the four
+  now-false "doesn't survive" bullets in `cluster/refs-across-nodes.mdx`,
+  and one line each in `cluster/overview.mdx`, `cluster/worker-mesh.mdx`
+  and `fundamentals/messages.mdx`. `routing/scatter-gather.mdx` and the
+  `ScatterGatherRouter` JSDoc that generated its prose flip the other way:
+  `AggregateError` now does survive the wire with its `errors` array,
+  though its members arrive as plain `Error`s carrying the original
+  `name`, so the page gives the name comparison that works across nodes.
 
 ### Security
 

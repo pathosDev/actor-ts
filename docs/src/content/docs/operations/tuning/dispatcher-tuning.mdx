@@ -225,22 +225,35 @@ traffic.
 
 ## Measuring
 
-Use the
-[stock metric](/observability/metrics/stock-metrics/)
-`actor_message_duration_ms`:
+Two [stock metrics](/observability/metrics/stock-metrics/) split a
+message's latency at the moment it is picked up:
 
 ```
-P50 ≈ work time
-P99 - P50 ≈ dispatcher latency (queueing)
+actor_mailbox_wait_seconds     — queued, waiting its turn
+actor_message_handler_seconds  — inside onReceive
 ```
 
-If P99 is far higher than P50 with little work-time variance,
-**dispatcher tuning helps**.
+Read them together; the pair is what tells you whether tuning the
+dispatcher can help at all:
 
-The
-`actor_mailbox_size` gauge under load shows whether actors are
-keeping up.  Persistently growing depth = either a slow handler
-or a misconfigured dispatcher.
+- **Wait p99 high, handler p99 low** — the actor is fine and messages
+  are sitting in the queue.  **Dispatcher tuning helps**: raise the
+  per-actor throughput budget so each turn drains more of the backlog,
+  or move the actor off a dispatcher it is sharing with slow work.
+- **Handler p99 high** — the handler itself is the cost.  No dispatcher
+  setting makes it faster; that is a code or downstream problem, and
+  raising the budget makes latency *worse* for everything sharing the
+  runtime.
+
+Queueing delay used to have to be inferred from the spread between p50
+and p99 of the handler histogram, which conflated it with variance in
+the work itself.  It is now measured directly.
+
+The `actor_mailbox_size` gauge under load shows whether actors are
+keeping up.  Persistently growing depth = either a slow handler or a
+misconfigured dispatcher.  It is the *later* signal of the two — a
+series only exists above 10 000 queued messages, where wait starts
+climbing as soon as an actor falls behind.
 
 ## Heuristics
 

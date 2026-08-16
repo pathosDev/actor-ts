@@ -198,6 +198,12 @@ Diagnostics:
 ```promql
 actor_mailbox_size{class=...}
 # Find actors with persistently large queues
+
+histogram_quantile(0.99, rate(actor_mailbox_wait_seconds_bucket[5m]))
+# …and how long messages are waiting before anyone gets to them.
+# A series only exists above 10 000 queued messages, so this is the
+# signal that moves first — a backlog shows up as wait long before
+# it shows up as size.
 ```
 
 ```bash

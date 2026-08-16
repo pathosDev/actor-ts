@@ -22,13 +22,45 @@ export type Envelope<T = unknown> = {
    */
   readonly trace?: SpanContext;
   /**
-   * Wall clock at first enqueue, stamped only while the receiving
-   * actor has an explain plan enabled — see `ActorContext.
-   * enableExplainPlan`.  A stashed message keeps its original stamp
-   * when replayed (`prependUser` does not restamp), so mailbox wait
-   * measures the whole time from arrival to handling.
+   * Wall clock at first enqueue, stamped while the receiving actor has an
+   * explain plan enabled **or** the system has metrics enabled — the two
+   * consumers of it (`ActorContext.enableExplainPlan` and
+   * `actor_mailbox_wait_seconds`).  Absent otherwise, because a stamp is a
+   * clock read on the framework's hottest path and #411 removed exactly
+   * these when nothing reads them.
+   *
+   * A stashed message keeps its original stamp when replayed (`prependUser`
+   * does not restamp), so the explain plan's mailbox wait measures the whole
+   * time from arrival to handling — stash residency included, which is what
+   * a per-actor debugging view wants beside the `stashed` outcome that
+   * explains it.  The metric deliberately reads it differently; see
+   * {@link replayed}.
+   *
+   * Resolution is one millisecond (`Date.now()`), which is why the wait
+   * histogram's finest bucket is 1 ms rather than something sub-millisecond
+   * that the clock could never distinguish.
    */
   readonly enqueuedAtMs?: number;
+  /**
+   * Set when this envelope re-entered the queue from the stash rather than
+   * arriving fresh, so {@link enqueuedAtMs} no longer marks the start of its
+   * current queue residency.
+   *
+   * `actor_mailbox_wait_seconds` skips these.  The aggregate has no labels
+   * and no outcome column, so one actor stashing for thirty seconds while it
+   * waits on a resource would land a thirty-second observation in the top
+   * bucket and drown the queueing signal every other actor contributes —
+   * where the explain plan shows the same message beside the `stashed`
+   * entry that accounts for it.  Stash residency is application semantics;
+   * mailbox wait is meant to be backlog.
+   *
+   * The other replay path, `ActorCell.prependUserMessages`, needs no marker:
+   * it builds envelopes with no stamp at all, so it is already excluded.
+   * Throttle re-parking is deliberately *not* marked — a throttled message
+   * really is waiting in the queue for an actor that cannot keep up, which
+   * is precisely what the metric is asking about.
+   */
+  readonly replayed?: boolean;
 };
 
 /**

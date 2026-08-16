@@ -194,6 +194,17 @@ describe('explain plan — recording', () => {
     // Three handlings: stash-me (stashed), unstash (ok), stash-me again
     // (ok, replayed).  The replay carries the ORIGINAL enqueue stamp, so
     // its wait spans the whole stash residency rather than restarting.
+    //
+    // Since #196 this is also the guard that the enqueue funnel does not
+    // *restamp* a replay.  The stamp is now taken whenever metrics are on
+    // as well as under a plan, and `_enqueueUser` is the one place that
+    // takes it — so a future change routing `unstashAll` through the funnel
+    // would silently reset this wait to ~0 and nothing else would notice.
+    // The metric reads the same field and deliberately draws the opposite
+    // conclusion from it: `actor_mailbox_wait_seconds` skips replays,
+    // because an aggregate with no outcome column cannot show the reader
+    // the `stashed` entry that explains a 50 ms wait.  Both behaviours are
+    // intended; see `Envelope.replayed`.
     expect(plan.map((entry) => entry.outcome)).toEqual(['stashed', 'ok', 'ok']);
     expect(plan[2]!.mailboxWaitMs).not.toBeNull();
     expect(plan[2]!.mailboxWaitMs!).toBeGreaterThan(50);

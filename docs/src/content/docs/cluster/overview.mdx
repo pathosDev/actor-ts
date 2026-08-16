@@ -295,8 +295,10 @@ remote.tell({ kind: 'whatever' });
 // → serialized, sent over the transport, delivered to the foreign actor's mailbox
 ```
 
-The cluster transport serializes the message (JSON by default),
-includes the routing path, and the destination's transport
+The cluster transport frames the message as a **tagged JSON tree** —
+the same format the persistence stores write, so a `Date`, `Map`,
+`Set`, `bigint` or `Uint8Array` in the body arrives as itself
+(#450) — includes the routing path, and the destination's transport
 delivers it.  Reply-to refs serialize cleanly — the receiving node
 re-attaches a remote-routable handle so replies flow back over
 the same transport.

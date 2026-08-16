@@ -122,6 +122,33 @@ describe('Stock actor metrics', () => {
     }
   });
 
+  test('actor_mailbox_wait_seconds ships beside the handler histogram (#196)', async () => {
+    // The two halves of a message's latency: this one ends where
+    // `actor_message_handler_seconds` begins.  Only the family's presence
+    // and shape are pinned here, next to its siblings — which messages it
+    // counts, and the stash population it deliberately omits, live in
+    // `MailboxWaitHistogram.test.ts`.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-wait', sysOptions);
+    const reg = sys.extension(MetricsExtensionId).enable();
+    try {
+      const actorRef = sys.spawn(Echo, 'a');
+      actorRef.tell('1'); actorRef.tell('2');
+      const countOf = (): number =>
+        reg.collect().find((s) => s.name === 'actor_mailbox_wait_seconds'
+          && s.count !== undefined)?.count ?? 0;
+      await awaitCondition(() => countOf() >= 2, {
+        timeoutMs: 4_000,
+        label: 'both waits were observed',
+      });
+      expect(countOf()).toBe(2);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('enabling metrics mid-drain starts counting from that point (#411)', async () => {
     // Every other case here enables metrics BEFORE it spawns, so none of them
     // would notice a cell that resolved its registry once and held it.  Since
