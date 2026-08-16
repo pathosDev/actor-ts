@@ -109,6 +109,7 @@ export {
   Directive,
   OneForOneStrategy,
   AllForOneStrategy,
+  RestartBudget,
   defaultStrategy,
   stoppingStrategy,
   escalatingStrategy,

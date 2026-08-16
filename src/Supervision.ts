@@ -49,6 +49,60 @@ export class AllForOneStrategy implements SupervisorStrategy {
   }
 }
 
+/**
+ * Sliding-window restart tally for one supervision scope.
+ *
+ * Kept apart from {@link SupervisorStrategy} on purpose: a strategy is a
+ * *description* — immutable, and shared by design, since `defaultStrategy` is
+ * a module-level singleton handed to every actor that does not override it.
+ * A counter living on the strategy would therefore make the whole process
+ * share one allowance.  The tally belongs to whoever is doing the supervising,
+ * so each supervisor owns its own budget over a strategy it merely reads.
+ *
+ * `maxRetries` is read literally: **`maxRetries` restarts are granted**, and
+ * the attempt that would be number `maxRetries + 1` is refused.  Only granted
+ * restarts are recorded, which is what makes `maxRetries: 0` mean "never
+ * restart" rather than "restart once".
+ *
+ * The array is bounded by `maxRetries` for the same reason — once the budget
+ * is full nothing more is pushed — so it cannot grow for the lifetime of the
+ * process even with `withinTimeRangeMs: 0`, where no pruning ever happens.
+ *
+ * `now` is injectable so the window can be exercised without sleeping: the
+ * only alternative is a real `withinTimeRangeMs` wait per assertion, which is
+ * both slow and the classic source of a timing-flaky suite.
+ */
+export class RestartBudget {
+  private failureTimes: number[] = [];
+
+  constructor(
+    private readonly strategy: SupervisorStrategy,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /**
+   * Ask for one restart: `true` when it is granted and recorded, `false` when
+   * the budget is spent and the caller has to do something other than restart.
+   *
+   * An unlimited strategy (`maxRetries < 0`) answers before touching the
+   * array, so the common case costs nothing and records nothing.
+   */
+  registerRestart(): boolean {
+    if (this.strategy.maxRetries < 0) return true;
+    const now = this.now();
+    if (this.strategy.withinTimeRangeMs > 0) {
+      const threshold = now - this.strategy.withinTimeRangeMs;
+      this.failureTimes = this.failureTimes.filter((timestamp) => timestamp >= threshold);
+    }
+    if (this.failureTimes.length >= this.strategy.maxRetries) return false;
+    this.failureTimes.push(now);
+    return true;
+  }
+
+  /** How many restarts are currently on record — for diagnostics and tests. */
+  get recordedRestarts(): number { return this.failureTimes.length; }
+}
+
 /** Default: restart failing child, up to 10 times per minute. */
 export const defaultStrategy: SupervisorStrategy = new OneForOneStrategy(
   () => Directive.Restart,

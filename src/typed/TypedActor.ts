@@ -1,7 +1,7 @@
 import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
-import { Directive } from '../Supervision.js';
+import { Directive, RestartBudget } from '../Supervision.js';
 import { DeadLetter, Terminated } from '../SystemMessages.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
 import {
@@ -67,6 +67,16 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
   private activeSupervise: SuperviseBehavior<T> | null = null;
+  /**
+   * Restart allowance for {@link activeSupervise}'s strategy.
+   *
+   * Written in lockstep with that field and meaningful only while it is
+   * non-null.  It has to be a sibling field rather than something derived per
+   * failure, because the whole point of a budget is that it *accumulates*
+   * across the restarts it is counting — and a typed restart never leaves this
+   * instance, so nothing else would carry the tally.
+   */
+  private restartBudget: RestartBudget | null = null;
   /**
    * How many interceptor layers of `current` sit *outside* `activeSupervise`.
    *
@@ -286,33 +296,64 @@ export class TypedActor<T> extends Actor<T> {
     const directive = supervise.strategy.decider(err);
     return match(directive)
       .with(Directive.Resume, () => true)
-      .with(Directive.Restart, () => {
-        // Read the depth before resolving: a nested `supervise` inside the
-        // child would overwrite the field on the way through.
-        const outerLayers = this.superviseInterceptorDepth;
-        // A typed restart re-resolves `supervise.child` in place — the cell
-        // never sees it, so `onRecreate`'s drain does not run.  The stash
-        // still cannot carry over (the re-resolved behavior has none of the
-        // state that made those messages un-handleable), so it goes to dead
-        // letters here for exactly the reason it does there.
-        this.deadLetterStashBuffers();
-        const resolved = this.resolve(supervise.child, outerLayers);
-        const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
-        // Interceptors installed *outside* the supervise wrapper are not part
-        // of what restarts — they keep observing the fresh behavior.  The ones
-        // *inside* it are, and `restarted` already carries them, so only the
-        // outer layers go back on; re-installing the whole stack would add a
-        // second copy of every inner interceptor on every restart.
-        this.current = this.reinstallInterceptors(this.current, restarted, outerLayers);
-        this.maybeHandleTerminalSentinel();
-        return true;
-      })
+      .with(Directive.Restart, () => this.onRestart(supervise))
       .with(Directive.Stop, () => {
         this.context.stopSelf();
         return true;
       })
       .with(Directive.Escalate, () => false)
       .exhaustive();
+  }
+
+  /**
+   * Restart the supervised behavior in place — unless the strategy's restart
+   * budget is spent, in which case the failure escalates.
+   *
+   * Escalating rather than stopping is the deliberate half of this: a typed
+   * `supervise` is not a separate supervisor actor, it is a wrapper *inside*
+   * the failing actor, so `stopSelf()` here would kill the actor silently and
+   * throw the error away — nobody upstream would ever learn why it went.
+   * Answering `false` is the same answer `Directive.Escalate` gives, so
+   * `onReceive` rethrows and the failure travels the ordinary supervision
+   * hierarchy: the cell's parent applies *its* strategy, logs, and gets to
+   * decide.  (`ActorCell.registerRestart` stops instead, but there the
+   * decision is made by a live parent that stays around to observe the
+   * `Terminated`; here there would be no such observer.)
+   *
+   * The two budgets then compose rather than compete: a restart the cell
+   * grants builds a *fresh* `TypedActor` via the factory, so this per-instance
+   * allowance starts over and the outer bound is the parent's strategy
+   * (10 restarts/minute by default).  A behavior that always throws therefore
+   * stops looping in place after `maxRetries`, and stops entirely once the
+   * parent's own budget runs out.
+   */
+  private onRestart(supervise: SuperviseBehavior<T>): boolean {
+    if (this.restartBudget && !this.restartBudget.registerRestart()) {
+      const { maxRetries, withinTimeRangeMs } = supervise.strategy;
+      this.log.warn(
+        `Typed supervise restart budget exhausted (${maxRetries} in ${withinTimeRangeMs}ms) — escalating`,
+      );
+      return false;
+    }
+    // Read the depth before resolving: a nested `supervise` inside the
+    // child would overwrite the field on the way through.
+    const outerLayers = this.superviseInterceptorDepth;
+    // A typed restart re-resolves `supervise.child` in place — the cell
+    // never sees it, so `onRecreate`'s drain does not run.  The stash
+    // still cannot carry over (the re-resolved behavior has none of the
+    // state that made those messages un-handleable), so it goes to dead
+    // letters here for exactly the reason it does there.
+    this.deadLetterStashBuffers();
+    const resolved = this.resolve(supervise.child, outerLayers);
+    const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
+    // Interceptors installed *outside* the supervise wrapper are not part
+    // of what restarts — they keep observing the fresh behavior.  The ones
+    // *inside* it are, and `restarted` already carries them, so only the
+    // outer layers go back on; re-installing the whole stack would add a
+    // second copy of every inner interceptor on every restart.
+    this.current = this.reinstallInterceptors(this.current, restarted, outerLayers);
+    this.maybeHandleTerminalSentinel();
+    return true;
   }
 
   /**
@@ -345,6 +386,14 @@ export class TypedActor<T> extends Actor<T> {
           return { step: 'continue', next: n.factory(buffer) };
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
+          // Keyed on node identity, not on the strategy: a *different*
+          // `supervise` node is a different supervision scope and starts with
+          // a full allowance, while the same node keeps the tally it has built
+          // up.  That distinction is what makes the budget bite at all — a
+          // restart re-resolves `supervise.child`, never the wrapper, so the
+          // node reaching here twice means user code really did install a new
+          // scope rather than the supervisor merely doing its job.
+          if (this.activeSupervise !== n) this.restartBudget = new RestartBudget(n.strategy);
           this.activeSupervise = n;
           this.superviseInterceptorDepth = interceptorDepth;
           return { step: 'continue', next: n.child };
