@@ -61,3 +61,31 @@ export const DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS = 2_000;
  * worth telling a human" and "when is this worth a metric series".
  */
 export const MAILBOX_DEPTH_REPORTING_FLOOR = 10_000;
+
+/**
+ * Bucket boundaries for `actor_mailbox_wait_seconds`, in seconds.
+ *
+ * **Explicitly not `DEFAULT_HISTOGRAM_BUCKETS`.**  Those are the Prometheus
+ * client-library defaults and start at 5 ms, which is a reasonable floor for
+ * a request latency and a useless one here: a healthy actor dequeues its
+ * mail in well under a millisecond, so the default ladder answers every
+ * question with "all of it is in the first bucket" and the metric cannot
+ * distinguish a system that is keeping up from one that is 5 ms behind.
+ * #998 is open about that floor on the handler histogram; reusing the same
+ * array here would reproduce it verbatim in a new family.
+ *
+ * A 1-2-5 ladder from 1 ms to 10 s.  Every boundary is an exact whole number
+ * of milliseconds because the observation is `Date.now()` arithmetic and
+ * cannot be finer — a 0.5 ms boundary would sort observations by nothing but
+ * which side of a rounding step the clock happened to land on.  1 ms is
+ * therefore the honest floor rather than a chosen one: everything below it
+ * is reported as a zero-millisecond wait and lands in the first bucket,
+ * which reads as "dequeued within a millisecond" and is exactly true.
+ *
+ * The top boundary is 10 s, matching the handler histogram, so the two can
+ * be read on one axis; anything slower is a backlog nobody needs a bucket
+ * edge to recognise.
+ */
+export const MAILBOX_WAIT_BUCKETS_SECONDS: ReadonlyArray<number> = Object.freeze([
+  0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10,
+]);
