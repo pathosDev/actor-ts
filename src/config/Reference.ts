@@ -227,8 +227,22 @@ actor-ts {
     }
   }
 
+  actor {
+    # User messages ONE actor handles per dispatcher turn before it yields.
+    # Distinct from dispatcher.throughput below, which bounds how many queued
+    # units — each belonging to a different actor — a ThroughputDispatcher
+    # drains per tick.  This is the knob that amortises the scheduling round
+    # trip, because a cell may only ever have one unit queued at a time.
+    # 1 restores the pre-#409 message-at-a-time interleaving; raising it trades
+    # fairness for throughput, since nothing else on the event loop runs until
+    # the actor yields.  Override per actor with ActorOptions.withThroughput().
+    throughput = 16
+  }
+
   dispatcher {
     default = "immediate"   # immediate | microtask | throughput
+    # Queued units a ThroughputDispatcher drains per tick, ACROSS actors —
+    # see actor.throughput above for the per-actor batch.
     throughput = 16
   }
 

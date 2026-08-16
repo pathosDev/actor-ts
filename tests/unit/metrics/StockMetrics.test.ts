@@ -122,6 +122,107 @@ describe('Stock actor metrics', () => {
     }
   });
 
+  test('enabling metrics mid-drain starts counting from that point (#411)', async () => {
+    // Every other case here enables metrics BEFORE it spawns, so none of them
+    // would notice a cell that resolved its registry once and held it.  Since
+    // #411 the receive path reads `system._metricsRegistry` per message rather
+    // than walking the extension chain, and this is the case that pins the
+    // "per message" half — DevTools flips both extensions at runtime, with
+    // cells already draining, whenever a panel opens.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-midflight', sysOptions);
+    try {
+      let handled = 0;
+      let release: () => void = () => {};
+      let parked: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const firstParked = new Promise<void>((resolve) => { parked = resolve; });
+
+      // The gate makes the window deterministic: the actor is provably mid-way
+      // through its backlog when metrics come on, rather than the test racing a
+      // drain that finishes inside one poll interval.
+      class Counting extends Actor<string> {
+        override async onReceive(message: string): Promise<void> {
+          handled += 1;
+          if (message === 'm0') { parked(); await gate; }
+        }
+      }
+      const actorRef = sys.spawn(Counting, 'a');
+      for (let index = 0; index < 21; index++) actorRef.tell(`m${index}`);
+
+      await firstParked;
+      expect(handled).toBe(1);
+      const reg = sys.extension(MetricsExtensionId).enable();
+      release();
+
+      await awaitCondition(() => handled === 21, {
+        timeoutMs: 4_000,
+        label: 'the whole backlog drained',
+      });
+      // The counter is incremented before the handler runs, so `m0` — already
+      // past that point when the switch flipped — is not counted and the other
+      // twenty are.  A per-cell handle resolved at construction would leave
+      // this at zero.
+      expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(20);
+      // 20 here too, and that agreement is worth pinning.  `m0`'s histogram
+      // observation happens in the `finally`, which runs *after* the gate
+      // released and metrics were already on — yet it is still not recorded,
+      // because the registry is resolved once per message and handed down
+      // rather than re-read at each instrumentation point.  So a message is
+      // either wholly instrumented or wholly not; a switch thrown mid-handler
+      // cannot produce one that was counted but not timed.
+      const handlerSample = reg.collect().find(
+        (s) => s.name === 'actor_message_handler_seconds' && s.sum !== undefined,
+      );
+      expect(handlerSample?.count).toBe(20);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('disabling metrics mid-drain stops counting (#411)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-middisable', sysOptions);
+    try {
+      let handled = 0;
+      let release: () => void = () => {};
+      let parked: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const firstParked = new Promise<void>((resolve) => { parked = resolve; });
+
+      class Counting extends Actor<string> {
+        override async onReceive(message: string): Promise<void> {
+          handled += 1;
+          if (message === 'm0') { parked(); await gate; }
+        }
+      }
+      const extension = sys.extension(MetricsExtensionId);
+      const reg = extension.enable();
+      const actorRef = sys.spawn(Counting, 'a');
+      for (let index = 0; index < 21; index++) actorRef.tell(`m${index}`);
+
+      await firstParked;
+      expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(1);
+      extension.disable();
+      release();
+
+      await awaitCondition(() => handled === 21, {
+        timeoutMs: 4_000,
+        label: 'the whole backlog drained',
+      });
+      // The detached registry must not have moved: the hot path has to see the
+      // swap on the very next message, not at the next cell construction.
+      expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(1);
+      expect(extension.isEnabled()).toBe(false);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('actor_terminated_total ticks on stop', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())

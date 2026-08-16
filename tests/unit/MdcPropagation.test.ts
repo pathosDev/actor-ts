@@ -120,6 +120,43 @@ describe('LogContext — actor-to-actor propagation', () => {
     }
   });
 
+  test('an empty-but-not-EMPTY scope still attaches no context (#411)', async () => {
+    // `LogContext.run({}, …)` installs a store that is empty yet is not the
+    // module's frozen `EMPTY` singleton, and the envelope must keep omitting
+    // `context` for it — as it always has, via an `Object.keys` length test.
+    //
+    // #411 put an identity check in front of that test to avoid allocating a
+    // keys array on the overwhelmingly common no-MDC path.  Written as a
+    // *replacement* rather than a fast path it would have started attaching
+    // `{}` here, which then routes the delivery through
+    // `LogContext.run(env.context, …)` — an extra AsyncLocalStorage frame per
+    // message, in a change whose whole purpose was to remove per-message work.
+    //
+    // Frozen-ness is the observable that tells the two apart: a receiver that
+    // got no context reads the frozen `EMPTY`, while one wrapped in a
+    // user-supplied `{}` reads a plain, extensible object.  Both are `{}` to
+    // `toEqual`, which is why the earlier case cannot catch this.
+    const frozenness: boolean[] = [];
+    class R extends Actor<string> {
+      override onReceive(): void { frozenness.push(Object.isFrozen(LogContext.get())); }
+    }
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('mdc-empty-scope', sysOptions);
+    try {
+      const actorRef = sys.spawn(R, 'r');
+      LogContext.run({}, () => { actorRef.tell('from-empty-scope'); });
+      await awaitCondition(() => frozenness.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the receiver handled the message sent from an empty scope',
+      });
+      expect(frozenness).toEqual([true]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('two parallel tells in different contexts don\'t cross-contaminate', async () => {
     const observed = new Map<string, Record<string, unknown>>();
     class R extends Actor<{ id: string }> {

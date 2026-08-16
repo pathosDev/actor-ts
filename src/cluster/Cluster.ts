@@ -1088,7 +1088,13 @@ export class Cluster {
     // spreads the context last — and put a newline in any value, which forges
     // whole extra lines in ConsoleLogger's one-line-per-record output (#573).
     const context = message.context ? sanitizeWireLogContext(message.context) : undefined;
-    if (context && Object.keys(context).length > 0) {
+    // The same emptiness question the two `tell` paths ask, through the same
+    // helper.  Its identity fast path cannot fire here — the sanitiser hands
+    // back a fresh object every time — but a peer that sends `context: {}`, or
+    // one whose every key the sanitiser rejected, must still take the
+    // no-wrapper branch rather than pay an `AsyncLocalStorage` frame for a
+    // context with nothing in it.
+    if (context && !LogContext.isEmpty(context)) {
       LogContext.run(context, dispatch);
     } else {
       dispatch();

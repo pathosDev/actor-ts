@@ -120,14 +120,33 @@ describe('ShardedDaemonProcess — multi-node', () => {
     for (const shardId of [hostedByA, hostedByB, hostedByC]) for (const i of shardId) all.add(i);
     expect(all.size).toBe(9);
 
-    // LeastShardAllocationStrategy should give every node at least one daemon.
+    // LeastShardAllocationStrategy should give every node at least one daemon —
+    // but that is an *eventual* guarantee, delivered by the rebalancer, not a
+    // property of the first allocation.
+    //
+    // The coordinator allocates against the regions that have registered by
+    // the time it handles the request, and since #409 it handles a batch of
+    // requests per turn rather than one.  So on a cold start the node whose
+    // region registers first can legitimately take every shard — measured
+    // here as 9/0/0 immediately, converging to 3/3/3 once
+    // `rebalance-interval` (2s) has fired twice, since
+    // `maxSimultaneousRebalance` moves 3 at a time.  Asserting on the
+    // immediate split only ever passed because one message per turn left
+    // enough room for the other two registrations to interleave.
+    //
+    // These sets are cumulative — a worker adds its index in `preStart` and
+    // nothing removes it — so the condition is monotone and safe to poll.
+    await waitFor(
+      () => hostedByA.size >= 1 && hostedByB.size >= 1 && hostedByC.size >= 1,
+      20_000,
+    );
     const counts = [hostedByA.size, hostedByB.size, hostedByC.size].sort();
     expect(counts[0]).toBeGreaterThanOrEqual(1);
 
     await nodeA.cluster.leave(); await nodeA.system.terminate();
     await nodeB.cluster.leave(); await nodeB.system.terminate();
     await nodeC.cluster.leave(); await nodeC.system.terminate();
-  });
+  }, 30_000);
 });
 
 describe('ShardedDaemonProcess — liveness heartbeat', () => {

@@ -165,6 +165,116 @@ describe('Actor tracing — auto-instrumentation', () => {
   });
 });
 
+describe('Actor tracing — switched on and off under load (#411)', () => {
+  /**
+   * Every other case in this file installs the tracer before it tells, so
+   * none of them would notice a cell that resolved its tracer once and kept
+   * it.  Since #411 the receive path reads `system._tracer` per message
+   * instead of walking the extension chain twice, and these two cases are what
+   * pin the "per message" half — DevTools' `SpanTap` installs and removes a
+   * tracer at runtime whenever a panel opens or closes, with cells draining.
+   *
+   * The gate makes the window deterministic rather than racing a drain that
+   * would otherwise finish inside a single poll interval.
+   */
+  function gatedDrain(): {
+    gate: Promise<void>;
+    release: () => void;
+    firstParked: Promise<void>;
+    parked: () => void;
+  } {
+    let release: () => void = () => {};
+    let parked: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const firstParked = new Promise<void>((resolve) => { parked = resolve; });
+    return { gate, release, firstParked, parked };
+  }
+
+  test('a tracer installed mid-drain traces from that message on', async () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tr-midflight', options);
+    const tracer = new RecordingTracer();
+    const extension = sys.extension(TracingExtensionId);
+    const { gate, release, firstParked, parked } = gatedDrain();
+    let handled = 0;
+
+    class Drainer extends Actor<string> {
+      override async onReceive(message: string): Promise<void> {
+        handled += 1;
+        if (message === 'm0') { parked(); await gate; }
+      }
+    }
+
+    try {
+      const actorRef = sys.spawn(Drainer, 'd');
+      for (let index = 0; index < 6; index++) actorRef.tell(`m${index}`);
+
+      await firstParked;
+      expect(tracer.recorded()).toEqual([]);
+      extension.enable(tracer);
+      // Root spans, so every message is traced rather than only ones that
+      // already belong to a trace — otherwise this drain produces nothing to
+      // count either way.
+      extension.recordRootSpans(true);
+      release();
+
+      await awaitCondition(() => handled === 6, {
+        timeoutMs: 4_000,
+        label: 'the whole backlog drained',
+      });
+      await awaitCondition(() => tracer.recorded().length === 5, {
+        timeoutMs: 4_000,
+        label: 'the five messages behind the switch were traced',
+      });
+      // `m0` had already passed the span decision when the tracer arrived, so
+      // it is not traced; the five behind it are.  A tracer resolved once per
+      // cell would have left this empty.
+      const names = new Set(tracer.recorded().map((span) => span.name));
+      expect(names).toEqual(new Set(['actor.receive']));
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('disabling mid-drain stops tracing on the very next message', async () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tr-middisable', options);
+    const tracer = new RecordingTracer();
+    const extension = sys.extension(TracingExtensionId);
+    extension.enable(tracer);
+    extension.recordRootSpans(true);
+    const { gate, release, firstParked, parked } = gatedDrain();
+    let handled = 0;
+
+    class Drainer extends Actor<string> {
+      override async onReceive(message: string): Promise<void> {
+        handled += 1;
+        if (message === 'm0') { parked(); await gate; }
+      }
+    }
+
+    try {
+      const actorRef = sys.spawn(Drainer, 'd');
+      for (let index = 0; index < 6; index++) actorRef.tell(`m${index}`);
+
+      await firstParked;
+      extension.disable();
+      release();
+
+      await awaitCondition(() => handled === 6, {
+        timeoutMs: 4_000,
+        label: 'the whole backlog drained',
+      });
+      await sleep(30);
+      // Only `m0`, whose span was opened before the switch — nothing behind it.
+      expect(tracer.recorded().length).toBe(1);
+      expect(extension.isEnabled()).toBe(false);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
 describe('Actor tracing — tooling actors', () => {
   test('an internal actor produces no span, even inside an active trace', async () => {
     const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);

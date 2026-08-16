@@ -24,11 +24,20 @@ pass to `ActorSystem.create`:
 | --- | --- | --- |
 | `MicrotaskDispatcher` | `queueMicrotask` | Fastest.  Can starve I/O and timers under sustained actor load. |
 | `ImmediateDispatcher` *(default)* | `setImmediate` or `setTimeout(0)` | Lets I/O + timers interleave between actor messages.  Slightly higher per-message latency. |
-| `ThroughputDispatcher` | `setImmediate` with a configurable run-N-then-yield budget | Like `ImmediateDispatcher` but processes up to `throughput` messages back-to-back before yielding.  Balances throughput against fairness. |
+| `ThroughputDispatcher` | `setImmediate` with a configurable run-N-then-yield budget | Like `ImmediateDispatcher` but drains up to `throughput` queued *actor turns* back-to-back before yielding.  Balances throughput against fairness **across** actors. |
 
 The default is `ImmediateDispatcher` — fairness with I/O is the right
 default for HTTP servers and broker-backed actors, both of which are
 common in actor-ts applications.
+
+:::note[Two different throughput knobs]
+A dispatcher's `throughput` counts **queued turns**, and each turn belongs
+to a different actor — an actor may only have one turn queued at a time.
+How many *messages* a single actor handles in its turn is a separate
+setting: `ActorOptions.withThroughput()`, or `actor-ts.actor.throughput`
+system-wide.  If one busy actor is your bottleneck, that is the knob you
+want; see [Dispatcher tuning](/operations/tuning/dispatcher-tuning/).
+:::
 
 ## Picking a dispatcher
 

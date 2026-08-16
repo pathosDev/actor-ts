@@ -54,6 +54,11 @@ export const ConfigKeys = {
     },
   },
 
+  /** Per-actor message-loop tuning — `actor-ts.actor.*`. */
+  actor: {
+    throughput: 'actor-ts.actor.throughput',
+  },
+
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
   dispatcher: {
     default: 'actor-ts.dispatcher.default',
