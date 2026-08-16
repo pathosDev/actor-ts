@@ -55,6 +55,7 @@ async function main(): Promise<void> {
   const nodeB = await startNode('b', 11_002, ['service-locator@a:11001']);
   const nodeC = await startNode('c', 11_003, ['service-locator@a:11001']);
 
+  // Not a drain sleep: waits for the three nodes to see each other.
   await Bun.sleep(300);
 
   const key = ServiceKey.of<string>('workers');
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
   const client = nodeA.sys.spawn(StreamClient, 'client');
   aReceptionist.tell(new Subscribe(key, client));
 
+  // Not a drain sleep: the receptionist gossips its registry every 80 ms, and
+  // that is a `/system` actor on three separate systems — nothing terminate()
+  // drains.  This is the several rounds it takes for A to see all three.
   await Bun.sleep(500);
   console.log('--- node C leaves ---');
   await nodeC.cluster.leave();

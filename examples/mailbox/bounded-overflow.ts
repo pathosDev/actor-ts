@@ -26,7 +26,8 @@ async function main(): Promise<void> {
   const ref = system.spawnAnonymous(SlowPrinter, printerOptions);
 
   for (let i = 0; i < 10; i++) ref.tell(i);
-  await Bun.sleep(200);
+  // No sleep: the drops happen synchronously as the loop overflows the
+  // capacity-2 mailbox, and terminate() drains whatever survived.
   await system.terminate();
 }
 

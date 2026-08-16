@@ -54,7 +54,8 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'increment' });
   ref.tell({ kind: 'increment' }); // reaches limit, actor stops
 
-  await Bun.sleep(60);
+  // No sleep: terminate() drains the four queued commands before it stops
+  // anything, including the `Behaviors.stopped` the last one returns.
   await system.terminate();
 }
 

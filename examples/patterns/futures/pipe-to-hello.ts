@@ -27,6 +27,9 @@ async function main(): Promise<void> {
   // "after" delays the creation of the promise itself.
   pipeTo(after(30, () => Promise.resolve(99)), ref);
 
+  // Not a drain sleep: `pipeTo` tells the actor from a promise nobody awaits,
+  // so at terminate() time the handler's mailbox is empty and the tree looks
+  // quiet.  The drain has nothing to follow here — this 80 ms does the waiting.
   await Bun.sleep(80);
   await system.terminate();
 }
