@@ -276,4 +276,120 @@ describe('CoordinatedShutdown process hooks', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before);
     void system.terminate();
   });
+
+  // The hooks now go through `src/runtime/signals/`, which skips a signal
+  // the platform cannot deliver instead of registering it.  Nothing on Bun
+  // or Node is skipped; the assertion is that the filter did not start
+  // silently dropping ordinary ones.
+  test('a signal no process can catch is skipped, not registered', () => {
+    const system = newSystem('hooks-uncatchable');
+    system.extension(CoordinatedShutdownId).installProcessHooks(['SIGKILL', 'SIGTERM']);
+    expect(process.listenerCount('SIGKILL')).toBe(0);
+    system.extension(CoordinatedShutdownId).removeProcessHooks();
+    void system.terminate();
+  });
+});
+
+// #549 — the one-liner that replaces a hand-rolled `process.on('SIGTERM', …)`
+// in every service's `main`.
+describe('ActorSystem.runUntilTerminated', () => {
+  test('resolves once the system is down and detaches its handlers', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const system = newSystem('run-until-terminated');
+
+    const running = system.runUntilTerminated(['SIGTERM']);
+    // Installed while it is waiting…
+    expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+
+    await system.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+    await running;
+
+    expect(system.isTerminated).toBe(true);
+    // …and gone once it returns.  Not housekeeping: on Deno a signal
+    // listener holds the event loop open with no `unref`, so leaving one
+    // behind means the process never exits.
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+
+  test('a plain terminate() also releases it', async () => {
+    const before = process.listenerCount('SIGINT');
+    const system = newSystem('run-until-terminated-direct');
+
+    const running = system.runUntilTerminated(['SIGINT']);
+    expect(process.listenerCount('SIGINT')).toBe(before + 1);
+
+    await system.terminate();
+    await running;
+
+    expect(process.listenerCount('SIGINT')).toBe(before);
+  });
+
+  test('waits for tasks that share the final phase with the terminator', async () => {
+    const system = newSystem('run-until-terminated-final-phase');
+    let sibling = false;
+    system.extension(CoordinatedShutdownId).addTask(
+      Phases.ActorSystemTerminate,
+      'slow-sibling',
+      async () => { await sleep(30); sibling = true; },
+    );
+
+    const running = system.runUntilTerminated(['SIGTERM']);
+    void system.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+    await running;
+
+    // `whenTerminated()` alone would have resolved while this was still in
+    // flight — the phase runs its tasks in parallel.
+    expect(sibling).toBe(true);
+  });
+
+  test('returns immediately for a system that is already down', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const system = newSystem('run-until-terminated-late');
+    await system.terminate();
+
+    await system.runUntilTerminated(['SIGTERM']);
+
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+describe('framework task auto-registration', () => {
+  const withAutoRegister = (value: boolean): ActorSystem => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': { 'auto-register-tasks': value } } });
+    return ActorSystem.create('auto-register', sysOptions);
+  };
+
+  test('defaults to on', async () => {
+    const system = newSystem('auto-register-default');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    expect(shutdown.autoRegisterTasks).toBe(true);
+    expect(shutdown.addFrameworkTask(Phases.ServiceStop, 'framework', () => {})).toBe(true);
+    await system.terminate();
+  });
+
+  test('off drops the framework task and keeps the explicit one', async () => {
+    const system = withAutoRegister(false);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+
+    expect(shutdown.addFrameworkTask(Phases.ServiceStop, 'framework', () => {
+      ran.push('framework');
+    })).toBe(false);
+    shutdown.addTask(Phases.ServiceStop, 'mine', () => { ran.push('mine'); });
+
+    await shutdown.run(UnknownReason.instance);
+    expect(ran).toEqual(['mine']);
+  });
+
+  test('off does not disable the phases themselves', async () => {
+    const system = withAutoRegister(false);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    await shutdown.run(UnknownReason.instance);
+    // The built-in terminator is not a framework task — opting out of
+    // auto-registration is not opting out of shutting down.
+    expect(system.isTerminated).toBe(true);
+  });
 });
