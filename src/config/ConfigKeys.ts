@@ -303,6 +303,7 @@ export const ConfigKeys = {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+    autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
   },
 
   /**

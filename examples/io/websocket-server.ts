@@ -86,9 +86,10 @@ async function main(): Promise<void> {
   console.log(`websocket demo: http://${binding.host}:${binding.port}/  (ws path: /ws)`);
   console.log('press Ctrl+C to exit');
 
-  await new Promise<void>((resolve) => process.on('SIGINT', () => resolve()));
-  await binding.unbind();
-  await system.terminate();
+  // Unbinding closes every live WebSocket with a 1001 "going away" first —
+  // one more thing `bind()`'s own `service-unbind` task already knows how to
+  // do, and one more reason not to re-implement it in a signal handler.
+  await system.runUntilTerminated();
 }
 
 void main();

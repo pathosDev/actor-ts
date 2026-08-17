@@ -11,6 +11,7 @@ import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
 import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOptions.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
+import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
 import { ClusterOptions } from './ClusterOptions.js';
 import type { SelfElectionPolicy } from './ClusterOptions.js';
@@ -34,9 +35,15 @@ export type BootstrappedCluster = {
   /** `null` when `receptionist: false` was passed. */
   readonly receptionist: ActorRef<unknown> | null;
   /**
-   * Graceful shutdown — leaves the cluster, then terminates the
-   * system.  Idempotent; safe to call multiple times.  Bound to
-   * SIGTERM/SIGINT by default (see {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
+   * Graceful shutdown — runs the {@link CoordinatedShutdown} pipeline, which
+   * unbinds HTTP servers, closes brokers, leaves the cluster and terminates
+   * the system, in that order.  Idempotent; safe to call multiple times.
+   * Bound to SIGTERM/SIGINT by default (see
+   * {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
+   *
+   * It used to leave and terminate directly, which skipped every other
+   * registered task; anything a bootstrapped node had registered — an HTTP
+   * unbind, a DevTools detach — simply never ran on SIGTERM (#549).
    */
   readonly shutdown: () => Promise<void>;
 };
@@ -117,18 +124,17 @@ export async function bootstrapCluster(
 
   await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? defaultAwaitReady(joinPlan));
 
-  // Wire shutdown.
-  let shuttingDown: Promise<void> | null = null;
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return shuttingDown;
-    shuttingDown = (async () => {
-      try { await cluster.leave(); } catch { /* best-effort */ }
-      await system.terminate();
-    })();
-    return shuttingDown;
-  };
+  // Wire shutdown.  The pipeline is the whole implementation now: `leave()`
+  // is a `cluster-leave` task registered by `Cluster.join`, and terminating
+  // the system is the built-in `actor-system-terminate` task.  Doing it by
+  // hand here is what made a SIGTERM on a bootstrapped node skip every other
+  // registered task — the HTTP unbind above all, which is registered
+  // correctly and never fired (#549).  `run()` hands back the same in-flight
+  // promise on every call, so this stays idempotent without a latch.
+  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+  const shutdown = (): Promise<void> => coordinatedShutdown.run(ClusterLeavingReason.instance);
 
-  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, shutdown);
+  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, coordinatedShutdown);
 
   return { system, cluster, receptionist, shutdown };
 }
@@ -343,15 +349,18 @@ async function awaitSelfUp(cluster: Cluster, mode: boolean | number): Promise<vo
   });
 }
 
+/**
+ * Hand the signal wiring to {@link CoordinatedShutdown}, which installs it
+ * through the `src/runtime/signals/` backend.
+ *
+ * The raw `process.once` this replaces registered nothing at all on Deno —
+ * its `process` shim carries no signal events — and could not be detached,
+ * so a bootstrapped system was un-embeddable: nothing gave the handlers back.
+ */
 function installSignalHandlers(
   mode: boolean | ReadonlyArray<ProcessSignal>,
-  shutdown: () => Promise<void>,
+  coordinatedShutdown: CoordinatedShutdown,
 ): void {
   if (mode === false) return;
-  const signals: ReadonlyArray<ProcessSignal> = Array.isArray(mode)
-    ? mode
-    : (['SIGTERM', 'SIGINT'] as const);
-  for (const sig of signals) {
-    process.once(sig, () => { void shutdown(); });
-  }
+  coordinatedShutdown.installProcessHooks(Array.isArray(mode) ? mode : undefined);
 }

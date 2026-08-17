@@ -301,7 +301,8 @@ export class HttpExtension implements Extension {
         // Auto-register with CoordinatedShutdown's ServiceUnbind phase so
         // operator-triggered shutdown (SIGTERM, cluster-leave, etc.) closes
         // the server before the rest of the pipeline tears down the system.
-        system.extension(CoordinatedShutdownId).addTask(
+        // Opt out with `actor-ts.coordinated-shutdown.auto-register-tasks`.
+        system.extension(CoordinatedShutdownId).addFrameworkTask(
           Phases.ServiceUnbind,
           shutdownTaskName,
           () => binding.unbind(),

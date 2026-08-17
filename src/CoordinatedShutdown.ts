@@ -2,6 +2,7 @@ import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
 import { DEFAULT_PHASE_TIMEOUT_MS } from './Constants.js';
+import { getProcessSignals } from './runtime/signals/index.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 
 /**
@@ -112,6 +113,12 @@ export class CoordinatedShutdown implements Extension {
   /** Call `process.exit(0)` once the pipeline completes.  Off by default. */
   private readonly exitProcess: boolean;
 
+  /**
+   * Whether framework components register their own teardown — see
+   * {@link addFrameworkTask}.
+   */
+  readonly autoRegisterTasks: boolean;
+
   constructor(private readonly system: ActorSystem) {
     const config = system.config;
     const keys = ConfigKeys.coordinatedShutdown;
@@ -123,6 +130,9 @@ export class CoordinatedShutdown implements Extension {
       : false;
     const terminateActorSystem = config.hasPath(keys.terminateActorSystem)
       ? config.getBoolean(keys.terminateActorSystem)
+      : true;
+    this.autoRegisterTasks = config.hasPath(keys.autoRegisterTasks)
+      ? config.getBoolean(keys.autoRegisterTasks)
       : true;
 
     // Seed the 12 canonical phases linearly — each depends on the previous.
@@ -172,6 +182,30 @@ export class CoordinatedShutdown implements Extension {
     }
     list.push({ name, task });
     this.tasks.set(phase, list);
+  }
+
+  /**
+   * Register a task the *framework* owns — an HTTP unbind, a broker
+   * teardown, the cluster leave, the DevTools detach — and report whether it
+   * was taken.
+   *
+   * Identical to {@link addTask} except that it is a no-op when
+   * `actor-ts.coordinated-shutdown.auto-register-tasks` is `false`.  That
+   * flag is the opt-out for an embedder who wants the pipeline's phases but
+   * not its opinions about when its own resources go: a host process that
+   * hands the same HTTP server to two subsystems, a test harness that binds
+   * and unbinds inside one system, or anyone who would rather order the
+   * teardown by hand.  It is deliberately one switch rather than one per
+   * subsystem — the reason to reach for it is never "unbind the HTTP server
+   * but leave the brokers to me", it is "I own the lifecycle".
+   *
+   * The boolean return exists so a caller can skip the matching
+   * {@link removeTask} bookkeeping instead of guessing.
+   */
+  addFrameworkTask(phase: string, name: string, task: ShutdownTask): boolean {
+    if (!this.autoRegisterTasks) return false;
+    this.addTask(phase, name, task);
+    return true;
   }
 
   /**
@@ -230,27 +264,44 @@ export class CoordinatedShutdown implements Extension {
   /**
    * Install SIGTERM / SIGINT handlers that call `run(ProcessTerminateReason)`.
    * Calling twice is harmless.  Uninstall via `removeProcessHooks`.
+   *
+   * Delivery goes through the `src/runtime/signals/` backend rather than
+   * `process.on` directly, because Deno's `process` shim carries no signal
+   * events — the old call site registered nothing at all there and reported
+   * success (#549).  A signal the runtime cannot deliver is skipped rather
+   * than registered: on Deno that would throw, and on Windows there is no
+   * SIGTERM to catch under any runtime.
    */
-  installProcessHooks(signals: ProcessSignal[] = ['SIGTERM', 'SIGINT']): void {
+  installProcessHooks(
+    signals: ReadonlyArray<ProcessSignal> = ['SIGTERM', 'SIGINT'],
+  ): void {
     if (this._processHooksInstalled) return;
-    if (typeof process === 'undefined' || typeof process.on !== 'function') return;
-    for (const sig of signals) {
+    const backend = getProcessSignals();
+    for (const signal of signals) {
+      if (!backend.supports(signal)) continue;
       const handler = (): void => {
-        void this.run(new ProcessTerminateReason(sig));
+        void this.run(new ProcessTerminateReason(signal));
       };
-      process.on(sig, handler);
-      this._processHooks.push({ signal: sig, handler });
+      backend.add(signal, handler);
+      this._processHooks.push({ signal, handler });
     }
     this._processHooksInstalled = true;
   }
 
+  /**
+   * Detach the handlers this instance installed.
+   *
+   * Not optional housekeeping on Deno: a signal listener there holds the
+   * event loop open with no `unref` to soften it, so a program that installs
+   * one and never removes it stops exiting by itself.
+   */
   removeProcessHooks(): void {
     if (!this._processHooksInstalled) return;
-    if (typeof process === 'undefined') return;
+    const backend = getProcessSignals();
     // Remove exactly what was installed.  A shutdown hook has no business
     // deciding that nobody else may listen for SIGTERM.
     for (const { signal, handler } of this._processHooks) {
-      process.off(signal, handler);
+      backend.remove(signal, handler);
     }
     this._processHooksInstalled = false;
     this._processHooks = [];
@@ -278,7 +329,11 @@ export class CoordinatedShutdown implements Extension {
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {
     const def = this.phases.get(phase)!;
-    const tasks = this.tasks.get(phase) ?? [];
+    // Snapshot, because a task is allowed to unregister itself: the HTTP
+    // unbind and the cluster leave both drop their task once the resource
+    // they name is gone, so re-binding the same address in one process is
+    // possible.  Splicing the live array mid-`map` would skip its neighbour.
+    const tasks = [...(this.tasks.get(phase) ?? [])];
     if (tasks.length === 0) return;
 
     const promises = tasks.map(t => this.runOneTask(t, def, reason));

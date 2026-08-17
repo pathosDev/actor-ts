@@ -114,12 +114,10 @@ async function main(): Promise<void> {
   );
 
   console.log('listening for orders on `orders` topic — press Ctrl+C to stop');
-  // Keep the process alive.  Real apps would integrate with their
-  // existing shutdown path; here we just block.
-  await new Promise<void>((resolve) => {
-    process.on('SIGINT', () => resolve());
-  });
-  await system.terminate();
+  // This *is* the shutdown path a real app wants: the Kafka actor closes its
+  // consumer and producer in the `service-stop` phase, before anything else
+  // is torn down, because it registered itself there when it started.
+  await system.runUntilTerminated();
 }
 
 void main();

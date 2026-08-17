@@ -33,6 +33,8 @@
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   TracingExtensionId,
@@ -70,12 +72,20 @@ const tick = setInterval(() => {
 console.log('actor-ts → OTel → OTLP-HTTP exporter (default endpoint http://localhost:4318/v1/traces)');
 console.log('press Ctrl+C to flush + exit');
 
-process.on('SIGINT', async () => {
-  clearInterval(tick);
-  await system.terminate();
-  await shutdown();   // flush spans before exit
-  process.exit(0);
-});
+// Stop producing spans first — before anything is torn down, so the last
+// batch is complete.  Stated as a phase task rather than the first line of a
+// signal handler, which is the difference the pipeline buys: the ordering is
+// declared next to the resource it belongs to.
+system.extension(CoordinatedShutdownId).addTask(
+  Phases.BeforeServiceUnbind,
+  'stop-tick',
+  () => { clearInterval(tick); },
+);
+
+await system.runUntilTerminated();
+// After, not inside: flushing the exporter before the actors have finished
+// drawing their spans is how the interesting ones get lost.
+await shutdown();
 
 /**
  * Lazy-init the OTel SDK.  The framework adapter takes the API

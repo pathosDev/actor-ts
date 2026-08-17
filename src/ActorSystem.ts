@@ -10,6 +10,8 @@ import {
 } from './Constants.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
+import { CoordinatedShutdownId } from './CoordinatedShutdown.js';
+import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
@@ -602,6 +604,60 @@ export class ActorSystem {
   }
 
   get isTerminated(): boolean { return this._terminated; }
+
+  /**
+   * Run until the process is asked to stop, then shut down gracefully —
+   * the whole of a service's `main` after the actors are wired:
+   *
+   * ```ts
+   * const system = ActorSystem.create('orders');
+   * await system.http.bind(routes);
+   * await system.runUntilTerminated();
+   * ```
+   *
+   * Installs SIGTERM/SIGINT handlers that start
+   * {@link CoordinatedShutdown}, resolves once the system is fully down,
+   * and detaches the handlers on the way out.  That last step is why this
+   * exists as a method rather than a documented three-liner: the handlers
+   * have to come off in a `finally`, or a Deno program that shuts down for
+   * any *other* reason — a `terminate()` from inside, an operator command —
+   * never exits, because a `Deno.addSignalListener` listener holds the event
+   * loop open and has no `unref`.
+   *
+   * What replaces the hand-rolled `process.on('SIGTERM', () => { … })` is
+   * not just the signal plumbing but the **ordering**.  A handler that
+   * calls `terminate()` stops the actors first and only then, if ever,
+   * releases the port and leaves the cluster; the pipeline unbinds in
+   * `service-unbind`, closes brokers in `service-stop` and leaves the
+   * cluster in `cluster-leave`, all before `actor-system-terminate` — so a
+   * rolling deploy takes the node out of rotation while its actors can
+   * still finish what they are holding.
+   *
+   * Resolves when the pipeline is finished, not merely when the system is
+   * down: a task registered alongside the built-in terminator in the final
+   * phase runs in parallel with it, and returning while one of those is
+   * still going would hand back a "shutdown complete" that is not.
+   *
+   * @param signals Which signals to listen for.  Defaults to SIGTERM and
+   *   SIGINT.  One the runtime cannot deliver is skipped — Windows has no
+   *   SIGTERM under any runtime — so this never fails to start over a
+   *   platform difference.
+   */
+  async runUntilTerminated(
+    signals?: ReadonlyArray<ProcessSignal>,
+  ): Promise<void> {
+    const coordinatedShutdown = this.extension(CoordinatedShutdownId);
+    coordinatedShutdown.installProcessHooks(signals);
+    try {
+      await this.whenTerminated();
+      // Only when one is already in flight: `run()` on an idle pipeline
+      // would *start* it, which would be a second shutdown of a system that
+      // has just finished its first.
+      if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
+    } finally {
+      coordinatedShutdown.removeProcessHooks();
+    }
+  }
 
   /**
    * @internal Surface a work unit that threw on a dispatcher — through the

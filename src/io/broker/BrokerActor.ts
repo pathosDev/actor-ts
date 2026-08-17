@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
+import { CoordinatedShutdownId, Phases } from '../../CoordinatedShutdown.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { OptionsValidator } from '../../util/OptionsValidator.js';
@@ -129,6 +130,8 @@ export abstract class BrokerActor<
    * the state machine already reads `disconnected`.
    */
   private _transportOpened = false;
+  /** Name of this actor's `service-stop` task; `null` when none is registered. */
+  private _shutdownTaskName: string | null = null;
 
   /** Reconnect bookkeeping for the current cycle (since the last successful connect). */
   private _reconnectAttempt = 0;
@@ -480,10 +483,16 @@ export abstract class BrokerActor<
     // Value validation runs after the required-field check so a missing
     // field still surfaces as BrokerSettingsError, not a rule failure.
     this.optionsValidator()?.validate(this._options!);
+    this._registerShutdownTask();
     await this._beginConnect();
   }
 
   override async postStop(): Promise<void> {
+    if (this._shutdownTaskName !== null) {
+      this.system.extension(CoordinatedShutdownId)
+        .removeTask(Phases.ServiceStop, this._shutdownTaskName);
+      this._shutdownTaskName = null;
+    }
     this._scheduledReconnectCancel?.();
     this._scheduledReconnectCancel = null;
     // Gate on transport state, not on `_state`: after a dropped
@@ -503,6 +512,41 @@ export abstract class BrokerActor<
   }
 
   /* ----------------------------- Internal flow ---------------------------- */
+
+  /**
+   * Close the connection in `service-stop`, alongside everything else that
+   * talks to the outside world.
+   *
+   * `postStop` already tears the transport down, and the `/user` stop cascade
+   * in `actor-system-terminate` already reaches it — so this is about
+   * **ordering**, not absence (#549).  Last-phase teardown meant a broker
+   * kept publishing while the HTTP server was unbinding and while the node
+   * was leaving the cluster; the whole point of the phase list is that
+   * outbound connections go before the membership does, so a message is
+   * never emitted by a node its peers have already written off.
+   *
+   * The task is idempotent by way of `_closeTransport`, which returns
+   * immediately once the transport is closed, so the `postStop` that follows
+   * costs nothing.  It is named after the actor's path because one system can
+   * hold many brokers and phase-task names must be unique.
+   */
+  private _registerShutdownTask(): void {
+    const name = `broker-stop-${this.self.path.toString()}`;
+    const registered = this.system.extension(CoordinatedShutdownId).addFrameworkTask(
+      Phases.ServiceStop,
+      name,
+      async () => {
+        // Stop the reconnect loop first: reconnecting mid-shutdown would
+        // re-open the very transport this task exists to close.
+        this._scheduledReconnectCancel?.();
+        this._scheduledReconnectCancel = null;
+        if (this._transportOpened) this._state = 'disconnecting';
+        await this._closeTransport();
+        this._state = 'disconnected';
+      },
+    );
+    this._shutdownTaskName = registered ? name : null;
+  }
 
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();

@@ -24,6 +24,8 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   CacheExtensionId,
@@ -178,13 +180,19 @@ async function main(): Promise<void> {
   system.log.info(`REST+cache service listening on http://${binding.host}:${binding.port}`);
   system.log.info(`Cache backend: ${process.env.ACTOR_TS_CACHE === 'redis' ? 'Redis' : 'InMemory'}`);
 
-  process.on('SIGINT', async () => {
-    await binding.unbind();
-    await cluster.leave();
-    await Promise.all([limiterCache, responseStore, idempotencyStore].map((c) => c.close?.()));
-    await system.terminate();
-    process.exit(0);
-  });
+  // The three caches are the only thing the framework does not already know
+  // about, so they are the only thing left to register — in `service-stop`,
+  // with the other outbound connections, after the HTTP server has stopped
+  // accepting requests that would use them.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.ServiceStop,
+    'close-caches',
+    async () => {
+      await Promise.all([limiterCache, responseStore, idempotencyStore].map((c) => c.close?.()));
+    },
+  );
+
+  await system.runUntilTerminated();
 }
 
 void main();

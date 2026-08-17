@@ -73,17 +73,12 @@ async function main(): Promise<void> {
     console.log('-- database now ready — readiness probe will return 200 --');
   }, 2_000);
 
-  // Graceful shutdown hook (SIGINT).
-  process.on('SIGINT', async () => {
-    console.log('\nSIGINT — leaving cluster and unbinding HTTP');
-    await binding.unbind();
-    await cluster.leave();
-    await system.terminate();
-    process.exit(0);
-  });
-
-  // Keep the process alive indefinitely for demo purposes.
-  await new Promise(() => { /* park */ });
+  // Graceful shutdown.  Nothing to hand-roll: `system.http(...).bind(...)`
+  // registered the unbind in the `service-unbind` phase and `Cluster.join`
+  // registered the leave in `cluster-leave`, so a SIGTERM from the kubelet
+  // takes the pod out of the Service endpoints and out of the cluster before
+  // the actors stop — which is exactly the order a rolling update needs.
+  await system.runUntilTerminated();
 }
 
 void main();
