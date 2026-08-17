@@ -198,6 +198,7 @@ It implements `Map<K, V>` in full, so it drops into anything that takes one —
 | `reverseEntries()` | `[value, key]` pairs. |
 | `getOrInsertKey(value, defaultKey)` | Like `getOrInsert`, from the value side; returns a **key**. |
 | `getOrInsertComputedKey(value, callback)` | The same, minting the key on demand. `callback` runs at most once. |
+| `keySize` / `valueSize` | Distinct keys and distinct values. Both always equal `size`, because the relation is 1:1 — they exist so this type and `BidirectionalMultiMap`, where the counts genuinely differ, read alike. |
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -264,6 +265,8 @@ subscriptions.add('sport', 'ada');
 subscriptions.get('news');        // Set { 'ada', 'grace' }
 subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← the reverse direction
 subscriptions.size;               // 3 — pairs, not participants
+subscriptions.leftSize;           // 2 — distinct topics
+subscriptions.rightSize;          // 2 — distinct subscribers
 
 subscriptions.deleteRight('ada'); // ada leaves every topic at once
 subscriptions.hasLeft('sport');   // false — sport held only ada, so it is gone too
@@ -282,6 +285,7 @@ would let `inverse()` hand back something related to nothing.
 | `deleteLeft(left)` / `deleteRight(right)` | Drop one participant entirely — the `Terminated` case. |
 | `hasLeft(left)` / `hasRight(right)` | Whether that participant has at least one partner. |
 | `lefts()` / `rights()` | The participants, each listed once. |
+| `size` / `leftSize` / `rightSize` | Pairs, distinct lefts, distinct rights. All three O(1) — reach for one of the participant counts rather than measuring `[...lefts()]`. |
 | `inverse()` | The relation read the other way round — a view, not a copy. `size` stays true on both. |
 
 Equality is **SameValueZero**, as with `BidirectionalMap`, and for the same

@@ -206,6 +206,7 @@ wo eine `Map` erwartet wird — `new Map(bidirectionalMap)`, Spread, `for…of`,
 | `reverseEntries()` | `[value, key]`-Paare. |
 | `getOrInsertKey(value, defaultKey)` | Wie `getOrInsert`, von der Wertseite aus; liefert einen **Key**. |
 | `getOrInsertComputedKey(value, callback)` | Dasselbe, der Key wird bei Bedarf erzeugt. `callback` läuft höchstens einmal. |
+| `keySize` / `valueSize` | Verschiedene Keys und verschiedene Werte. Beide sind immer gleich `size`, weil die Relation 1:1 ist — sie existieren, damit dieser Typ und die `BidirectionalMultiMap`, wo sich die Zahlen wirklich unterscheiden, sich gleich lesen. |
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -274,6 +275,8 @@ subscriptions.add('sport', 'ada');
 subscriptions.get('news');        // Set { 'ada', 'grace' }
 subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← die Rückrichtung
 subscriptions.size;               // 3 — Paare, nicht Teilnehmer
+subscriptions.leftSize;           // 2 — verschiedene Topics
+subscriptions.rightSize;          // 2 — verschiedene Subscriber
 
 subscriptions.deleteRight('ada'); // ada verlässt alle Topics auf einmal
 subscriptions.hasLeft('sport');   // false — sport hielt nur ada und ist mit weg
@@ -293,6 +296,7 @@ steht.
 | `deleteLeft(left)` / `deleteRight(right)` | Einen Teilnehmer vollständig entfernen — der `Terminated`-Fall. |
 | `hasLeft(left)` / `hasRight(right)` | Ob dieser Teilnehmer mindestens einen Partner hat. |
 | `lefts()` / `rights()` | Die Teilnehmer, jeder genau einmal. |
+| `size` / `leftSize` / `rightSize` | Paare, verschiedene Linke, verschiedene Rechte. Alle drei O(1) — nimm eine der Teilnehmerzahlen, statt `[...lefts()]` auszumessen. |
 | `inverse()` | Die Relation andersherum gelesen — eine Sicht, keine Kopie. `size` stimmt auf beiden Seiten. |
 
 Verglichen wird per **SameValueZero**, wie bei `BidirectionalMap` und aus
