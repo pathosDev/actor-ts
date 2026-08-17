@@ -257,6 +257,19 @@ statt registriert.  Windows hat unter keiner Runtime ein SIGTERM, und
 Deno *wirft* bei einem Signal, das es nicht zustellen kann, statt es
 zu ignorieren — danach zu fragen ist also nie ein Startfehler.
 
+**Der Prozess bleibt am Leben, solange das Promise offen ist** — und das
+ist eine Zusage, die der Aufruf selbst macht, nicht eine, die er von den
+installierten Handlern erbt.  Ein Signal-Handler ist für sich genommen
+kein Grund für eine Runtime, weiterzulaufen: Node `unref`t seine
+Signal-Handles, ein Service ohne irgendetwas anderes in der Event-Loop —
+kein gebundener Port, kein offener Socket, kein referenzierter Timer —
+würde sie also in dem Moment leerlaufen lassen, in dem er zu warten
+beginnt, und sich beenden, *bevor* das SIGTERM eintreffen kann, für das
+er sich gerade selbst gerüstet hat.  Deshalb hält der Aufruf die Loop
+selbst offen und lässt in demselben Schritt los, in dem er die Handler
+abhängt.  Ein Node ohne offene Ressourcen braucht kein eigenes
+`setInterval`, um oben zu bleiben.
+
 Die beiden Hälften bleiben einzeln verfügbar, wenn du das System in
 einen Host einbettest, dem die Prozess-Lebenszeit gehört:
 

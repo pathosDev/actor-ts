@@ -5,6 +5,7 @@ import {
   DEFAULT_ACTOR_THROUGHPUT,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  EVENT_LOOP_KEEPALIVE_INTERVAL_MS,
   QUIESCENCE_POLL_INTERVAL_MS,
   QUIESCENCE_POLL_MAX_INTERVAL_MS,
 } from './Constants.js';
@@ -670,16 +671,31 @@ export class ActorSystem {
    * phase runs in parallel with it, and returning while one of those is
    * still going would hand back a "shutdown complete" that is not.
    *
+   * **The process stays alive for as long as this promise is pending**, and
+   * that is a guarantee this method makes rather than one it inherits.  A
+   * signal handler is not a reason for a runtime to keep running: Node's
+   * signal handles are unref'd, so a system with nothing else on the event
+   * loop — no bound port, no open socket, every timer unref'd — used to
+   * drain its loop the moment it started waiting and exit instead of ever
+   * receiving the SIGTERM it had just armed itself for.  Bun refs its
+   * handles and Deno's `Deno.addSignalListener` cannot be unref'd at all, so
+   * the same program waited correctly on two runtimes out of three (#549).
+   * A keep-alive timer, released in the same `finally` as the handlers,
+   * makes the three agree.
+   *
    * @param signals Which signals to listen for.  Defaults to SIGTERM and
    *   SIGINT.  One the runtime cannot deliver is skipped — Windows has no
    *   SIGTERM under any runtime — so this never fails to start over a
-   *   platform difference.
+   *   platform difference.  Note that skipping them *all* does not turn this
+   *   into a no-op: the promise still waits, and the process still stays
+   *   alive, until something shuts the system down from inside.
    */
   async runUntilTerminated(
     signals?: ReadonlyArray<ProcessSignal>,
   ): Promise<void> {
     const coordinatedShutdown = this.extension(CoordinatedShutdownId);
     coordinatedShutdown.installProcessHooks(signals);
+    const releaseEventLoop = holdEventLoopOpen();
     try {
       await this.whenTerminated();
       // Only when one is already in flight: `run()` on an idle pipeline
@@ -688,6 +704,7 @@ export class ActorSystem {
       if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
     } finally {
       coordinatedShutdown.removeProcessHooks();
+      releaseEventLoop();
     }
   }
 
@@ -835,6 +852,29 @@ function shutdownDrainTimeoutFromConfig(config: Config): number {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+}
+
+/**
+ * Keep the process running until the returned release is called.
+ *
+ * The one thing every runtime agrees on is that a referenced timer holds the
+ * event loop open; almost nothing else about idle-process lifetime is
+ * portable.  Signal handlers in particular are not: Node unrefs its signal
+ * handles, so `process.on('SIGTERM', …)` buys a Node process no lifetime at
+ * all, while Bun refs its and Deno offers no way to unref a
+ * `Deno.addSignalListener` listener even if you wanted one.
+ * {@link ActorSystem.runUntilTerminated} needs the strongest of those three
+ * behaviours on all three, so it takes a hold of its own rather than relying
+ * on the handlers it installed (#549).
+ *
+ * The callback is empty on purpose — the *reference* is the whole mechanism,
+ * and the tick is only how a timer expresses one.  Deliberately not the
+ * system {@link Scheduler}: this has to outlive the scheduler's own shutdown,
+ * which happens inside the pipeline this is waiting for.
+ */
+function holdEventLoopOpen(): () => void {
+  const keepAlive = setInterval(() => {}, EVENT_LOOP_KEEPALIVE_INTERVAL_MS);
+  return () => { clearInterval(keepAlive); };
 }
 
 /* ----------------------------- Logger helpers ----------------------------- */

@@ -244,6 +244,17 @@ registered.  Windows has no SIGTERM under any runtime, and Deno
 *throws* on a signal it cannot deliver instead of ignoring it, so
 asking for one is never a startup failure.
 
+**The process stays alive for as long as the promise is pending**, and
+that is a guarantee the call makes rather than one it inherits from the
+handlers it installed.  A signal handler is not by itself a reason for a
+runtime to keep running: Node unrefs its signal handles, so a service
+with nothing else on the event loop — no bound port, no open socket, no
+referenced timer — would otherwise drain its loop the moment it started
+waiting, and exit *before* the SIGTERM it had just armed itself for
+could arrive.  So the call holds the loop open itself and lets go in the
+same step that detaches the handlers.  A headless node needs no
+`setInterval` of your own to stay up.
+
 The two halves are still available separately when you are embedding
 the system in a host that owns the process lifetime:
 

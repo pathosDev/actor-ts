@@ -115,3 +115,26 @@ export const QUIESCENCE_POLL_INTERVAL_MS = 1;
  * case cost tens of walks rather than thousands.
  */
 export const QUIESCENCE_POLL_MAX_INTERVAL_MS = 25;
+
+/**
+ * How often the keep-alive timer inside `ActorSystem.runUntilTerminated()`
+ * fires while it waits to be signalled.
+ *
+ * Nothing observes the tick — the timer exists for its *reference* on the
+ * event loop, not for its callback — so the interval is arbitrary in every
+ * respect but two.
+ *
+ * It must not be absent.  Node's signal handles are unref'd, so
+ * `process.on('SIGTERM', …)` does not keep a Node process alive: a service
+ * whose only remaining reason to run was that handler drains its loop and
+ * exits instead of waiting for the signal (with a top-level `await`, Node
+ * says so and exits 13).  Bun refs its handles and Deno's
+ * `Deno.addSignalListener` has no `unref` at all, which is why those two
+ * waited correctly and only Node's smoke arm ever failed (#549).
+ *
+ * And it must stay under 2^31-1 ms: a larger delay silently wraps to 1 ms on
+ * Node, turning the keep-alive into a timer that fires a thousand times a
+ * second — a worse failure than the one it fixes.  An hour is far below that
+ * ceiling and still costs 24 wakeups a day.
+ */
+export const EVENT_LOOP_KEEPALIVE_INTERVAL_MS = 3_600_000;
