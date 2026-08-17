@@ -123,6 +123,72 @@ describe('DeadLetterQueue — persistent store across a restart', () => {
     }
   });
 
+  test('a letter captured before anything inspected the queue still persists', async () => {
+    // `append` enforces optimistic concurrency, so a write issued before the
+    // previous run's log has been read would collide with it and be dropped.
+    // The second run below never calls `list()` — it only produces a letter
+    // and shuts down, which is precisely the shape a crash-and-restart loop
+    // has, and the shape that lost letters silently.
+    const journal = new InMemoryJournal();
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'one', 'first');
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first letter reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    await deadLetterTo(second, 'two', 'second');
+    await Bun.sleep(30);
+    await second.terminate();
+
+    const third = newSystem(journal, {});
+    try {
+      const messages = (await third.deadLetterQueue.list())
+        .map((e) => (e.payload as { message: unknown }).message);
+      expect(messages.sort()).toEqual(['first', 'second']);
+    } finally {
+      await third.terminate();
+    }
+  });
+
+  test('the first append after a restart does not compact the restored letters', async () => {
+    // The durable log is trimmed by a prefix delete bounded on the oldest
+    // sequence still held.  A restored entry whose sequence was forgotten is
+    // invisible to that bound, so the next append would compact the whole
+    // restored prefix away — losing, on the restart after that, everything
+    // the previous run had kept.
+    const journal = new InMemoryJournal();
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'one', 'first');
+    await deadLetterTo(first, 'two', 'second');
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 2, {
+      timeoutMs: 4_000,
+      label: 'both letters reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    await deadLetterTo(second, 'three', 'third');
+    await awaitCondition(async () => (await second.deadLetterQueue.list()).length === 3, {
+      timeoutMs: 4_000,
+      label: 'the third letter joined the two restored ones',
+    });
+    await second.terminate();
+
+    const third = newSystem(journal, {});
+    try {
+      const messages = (await third.deadLetterQueue.list())
+        .map((e) => (e.payload as { message: unknown }).message);
+      expect(messages.sort()).toEqual(['first', 'second', 'third']);
+    } finally {
+      await third.terminate();
+    }
+  });
+
   test('a queue with a different system name does not adopt the letters', async () => {
     const journal = new InMemoryJournal();
     const first = newSystem(journal, {});

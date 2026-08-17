@@ -750,24 +750,45 @@ export class ActorSystem {
     // `terminate()`, so a task registered in a phase would miss every
     // program that terminates directly.  It also runs *after* every
     // `postStop`, so a last message from a stopping actor is still in the
-    // queue being drained.
+    // queue being drained.  Structural, so any logger with a `close()` is
+    // flushed — not just the framework's own.
     //
     // Ordering matters for the queue and not only for tidiness: the bulk of
     // a shutdown's dead letters — stashes discarded, mailboxes emptied past
     // their cell — are produced by this very teardown, which is *after* the
     // last shutdown phase ran.  The phase task settles what a running system
     // produced; this settles what stopping it produced.  Both are needed.
+    // The queue goes first so a failure it reports still reaches a sink.
+    //
+    // The queue borrows the logger's close budget rather than owning one.
+    // Both answer the same question — how long may a flush hold the
+    // shutdown open — and inventing a second knob for the second flush
+    // would ask an operator to tune a number they have no separate
+    // information about.
     const closeLogger = closeOf(this.log);
-    const closeSinks = closeLogger === undefined
+    const closeSinks = (): Promise<void> => closeLogger === undefined
       ? Promise.resolve()
       : withinBudget(closeLogger, this.loggerCloseTimeoutMs, 'logger close');
+
+    if (this.deadLetterQueue.store === 'off') {
+      // The overwhelmingly common path, and deliberately kept free of the
+      // extra timer `withinBudget` would arm for a flush with nothing to do.
+      if (closeLogger === undefined) { finish(); return; }
+      void closeSinks().then(finish, finish);
+      return;
+    }
     void withinBudget(
       () => this.deadLetterQueue.flush(),
       this.loggerCloseTimeoutMs,
       'dead-letter flush',
     )
-      .then(() => { this.deadLetterQueue._close(); })
-      .then(() => closeSinks)
+      .then(() => {
+        // After the flush, so a letter produced by the teardown itself is
+        // still captured; before the sinks close, so nothing starts a write
+        // nobody will await.
+        this.deadLetterQueue._close();
+        return closeSinks();
+      })
       .then(finish, finish);
   }
 }

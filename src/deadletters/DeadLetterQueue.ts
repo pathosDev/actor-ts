@@ -390,6 +390,12 @@ export class DeadLetterQueue {
   private async write(record: DeadLetterRecord, stored: StoredEntry | null): Promise<void> {
     if (this.closed) return;
     try {
+      // Before the first append and not merely before the first `list()`.
+      // `append` enforces optimistic concurrency against `highestSequenceNr`,
+      // which is 0 until the previous run's log has been read — so a letter
+      // produced before anyone inspected the queue would collide with the
+      // stream that is already there and be dropped by the catch below.
+      await this._restore();
       const journal = await this.journal();
       const encodable = await this.encodable(record);
       const [written] = await journal.append(
@@ -457,17 +463,16 @@ export class DeadLetterQueue {
       const journal = await this.journal();
       this.highestSequenceNr = await journal.highestSeq(this.settings.persistenceId);
       const events = await journal.read<DeadLetterRecord>(this.settings.persistenceId, 1);
-      const byId = new Map<string, DeadLetterEntry>();
+      const byId = new Map<string, StoredEntry>();
       for (const event of events) {
         match(event.event)
-          .with({ kind: 'captured' }, (record) => this.onCapturedRecord(record, byId))
+          .with({ kind: 'captured' }, (record) => this.onCapturedRecord(record, event.sequenceNr, byId))
           .with({ kind: 'removed' }, (record) => this.onRemovedRecord(record, byId))
           .otherwise(() => this.onUnknownRecord());
       }
       // In front of whatever this run already captured: those letters are
       // newer, and the array is ordered oldest-first.
-      const restored = [...byId.values()].map((entry): StoredEntry => ({ entry, sequenceNr: null }));
-      this.entries.unshift(...restored);
+      this.entries.unshift(...byId.values());
       this.expire();
       while (this.entries.length > this.settings.maxEntries) this.entries.shift();
     } catch (error) {
@@ -478,11 +483,22 @@ export class DeadLetterQueue {
     }
   }
 
-  private onCapturedRecord(record: CapturedRecord, byId: Map<string, DeadLetterEntry>): void {
-    byId.set(record.entry.id, record.entry);
+  /**
+   * `sequenceNr` is carried over, not reset to `null`.  A restored entry
+   * whose sequence were unknown would be invisible to {@link trim}'s
+   * oldest-live bound, and the first append after a restart would then
+   * compact the whole restored prefix away — deleting letters the queue is
+   * still holding, and losing them for good on the restart after that.
+   */
+  private onCapturedRecord(
+    record: CapturedRecord,
+    sequenceNr: number,
+    byId: Map<string, StoredEntry>,
+  ): void {
+    byId.set(record.entry.id, { entry: record.entry, sequenceNr });
   }
 
-  private onRemovedRecord(record: RemovedRecord, byId: Map<string, DeadLetterEntry>): void {
+  private onRemovedRecord(record: RemovedRecord, byId: Map<string, StoredEntry>): void {
     // A tombstone whose `captured` was already trimmed away names nothing —
     // deleting a missing key is the right no-op, not an inconsistency.
     byId.delete(record.id);
