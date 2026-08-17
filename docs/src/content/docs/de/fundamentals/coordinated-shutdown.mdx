@@ -3,6 +3,8 @@ title: Coordinated Shutdown
 description: Ein phasenweises Shutdown-DSL — registriere Tasks gegen benannte Phasen (HTTP drainen, Cluster verlassen, Journals flushen, System terminieren), das Framework führt sie in Abhängigkeitsreihenfolge mit Per-Phase-Timeouts, Recovery und eingebauten SIGTERM-Hooks aus.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `system.terminate()` stoppt das Actor-System, aber eine
 Produktions-App hat normalerweise vor dem Stopp noch Arbeit:
 laufende HTTP-Requests drainen, dem Cluster sagen, dass du gehst,
@@ -39,7 +41,7 @@ coordinatedShutdown.addTask(Phases.ServiceRequestsDone, 'drain-in-flight', async
   await waitForInFlightRequests(/* bis zu 10s */);
 });
 
-coordinatedShutdown.installProcessHooks();   // SIGTERM/SIGINT → coordinatedShutdown.run(ProcessTerminateReason)
+await system.runUntilTerminated();   // SIGTERM/SIGINT → die Pipeline → löst auf, wenn sie fertig ist
 ```
 
 Drei Dinge passieren, wenn SIGTERM ankommt:
@@ -52,31 +54,54 @@ Drei Dinge passieren, wenn SIGTERM ankommt:
    `actor-system-terminate`-Task, der `system.terminate()` für dich
    aufruft.
 
-Alles dazwischen — HTTP-Unbinding, Cluster-Leave, Journal-Flush —
-ist das, was du hinzugefügt hast.
+Ein Teil dessen, was dazwischen passiert, ist bereits verdrahtet; der
+Rest ist das, was du hinzugefügt hast.
 
 ## Die 12 kanonischen Phasen
 
-In Ausführungsreihenfolge gelistet:
+In Ausführungsreihenfolge gelistet.  **Verdrahtet** markiert die
+Phasen, die das Framework selbst füllt — alles andere ist leer, bis
+du etwas registrierst.
 
-| # | Phasen-Name | Typische Tasks |
-| --- | --- | --- |
-| 1 | `before-service-unbind` | Letzte Ankündigungen, bevor der Server keine Verbindungen mehr akzeptiert. |
-| 2 | `service-unbind` | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
-| 3 | `service-requests-done` | Auf das Ende laufender Requests warten; den Rest abbrechen. |
-| 4 | `service-stop` | Client-Verbindungen schließen, Sockets freigeben. |
-| 5 | `before-cluster-shutdown` | Optionale Pre-Cluster-Leave-Hooks. |
-| 6 | `cluster-sharding-shutdown-region` | Der Sharding-Region sagen, Entitäten zu übergeben. |
-| 7 | `cluster-leave` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
-| 8 | `cluster-exiting` | Warten, bis der Cluster den Leave bestätigt. |
-| 9 | `cluster-exiting-done` | Cluster-Übergang als abgeschlossen bestätigen. |
-| 10 | `cluster-shutdown` | Cluster-Transports abbauen. |
-| 11 | `before-actor-system-terminate` | Letzte Chance für App-Level-Cleanup (Journals flushen, Broker schließen). |
-| 12 | `actor-system-terminate` | Der eingebaute `system.terminate()`-Task. |
+| # | Phasen-Name | Verdrahtet | Typische Tasks |
+| --- | --- | --- | --- |
+| 1 | `before-service-unbind` | — | Letzte Ankündigungen, bevor der Server keine Verbindungen mehr akzeptiert. |
+| 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | HTTP-Server / gRPC-Server / WebSocket-Listener stoppen, neue Verbindungen anzunehmen. |
+| 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
+| 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
+| 5 | `before-cluster-shutdown` | — | Optionale Pre-Cluster-Leave-Hooks. |
+| 6 | `cluster-sharding-shutdown-region` | — | Der Sharding-Region sagen, Entitäten zu übergeben. |
+| 7 | `cluster-leave` | `Cluster.join(...)` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
+| 8 | `cluster-exiting` | — | Warten, bis der Cluster den Leave bestätigt. |
+| 9 | `cluster-exiting-done` | — | Cluster-Übergang als abgeschlossen bestätigen. |
+| 10 | `cluster-shutdown` | — | Cluster-Transports abbauen. |
+| 11 | `before-actor-system-terminate` | — | Letzte Chance für App-Level-Cleanup (Journals flushen, Broker schließen). |
+| 12 | `actor-system-terminate` | der eingebaute Terminator | Der eingebaute `system.terminate()`-Task. |
 
 Du musst nicht jede Phase verwenden.  Leere Phasen sind No-Ops; nur
-Phasen mit registrierten Tasks tun etwas.  In einer Single-Node-App
-ohne Cluster sehen nur die Phasen 1-4 und 11-12 Tasks.
+Phasen mit registrierten Tasks tun etwas.
+
+<Aside type="note" title="Phase 8 wartet auf keine Bestätigung">
+  `cluster.leave()` ist ein einzelner Best-Effort-Broadcast: er setzt
+  diesen Knoten auf `leaving`, informiert jeden erreichbaren Peer und
+  stoppt den Transport.  Es gibt keine vom Leader sequenzierte
+  Entfernung, auf die zu warten wäre — ein Task, den du in
+  `cluster-exiting` registrierst, hat also nichts abzuwarten, und die
+  Phase ist ein reiner App-Level-Hook.  Bemiss deine
+  Kubernetes-Grace-Period danach, nicht nach einer Bestätigung, die
+  nicht kommt.
+</Aside>
+
+### Die verdrahteten Tasks abwählen
+
+Setze `actor-ts.coordinated-shutdown.auto-register-tasks = false`, und
+das Framework registriert keinen davon.  Die Phasen bleiben, der
+eingebaute Terminator bleibt, und jede Ressource oben liegt in deiner
+Hand — gedacht für einen Einbettenden, dem der Lebenszyklus dessen
+gehört, was er dem System übergeben hat.  Es ist ein einzelner
+Schalter statt einer pro Subsystem, denn der Grund, danach zu greifen,
+lautet immer „mir gehört der Lebenszyklus" und nie „binde den
+HTTP-Server ab, aber überlass mir die Broker".
 
 Die `Phases`-Konstante exportiert die kanonischen Namen — bevorzuge
 sie gegenüber String-Literalen für Autocomplete:
@@ -130,12 +155,12 @@ Der `reason` lässt einen Task auf den **Grund** des
 Shutdown-Triggers branchen:
 
 ```ts
-coordinatedShutdown.addTask(Phases.ClusterLeave, 'gossip-leave', async (reason) => {
+coordinatedShutdown.addTask(Phases.BeforeClusterShutdown, 'deregister', async (reason) => {
   if (reason instanceof ClusterDowningReason) {
-    // Wir wurden gedownt — kein Leave gossipen.
+    // Wir wurden gedownt — die Registry hat uns bereits abgeschrieben.
     return;
   }
-  await cluster.leave();
+  await serviceRegistry.deregister(cluster.selfAddress.toString());
 });
 ```
 
@@ -143,11 +168,11 @@ Eingebaute `Reason`-Klassen:
 
 | Klasse | Wann |
 | --- | --- |
-| `ProcessTerminateReason(signal)` | SIGTERM/SIGINT via `installProcessHooks`. |
-| `ActorSystemTerminateReason` | User hat `system.terminate()` direkt aufgerufen. |
-| `ClusterLeavingReason` | Cluster hat einen Graceful-Leave initiiert. |
-| `ClusterDowningReason` | Cluster hat diesen Node herausgezwungen. |
-| `UnknownReason` | Trigger nicht spezifiziert. |
+| `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
+| `ActorSystemTerminateReason` | Übergib sie selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
+| `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt. |
+| `ClusterDowningReason` | Übergib sie, wenn du die Pipeline startest, weil der Cluster diesen Knoten herausgezwungen hat. |
+| `UnknownReason` | Der Default, wenn `run()` ohne Argument aufgerufen wird. |
 
 Du kannst `Reason` für app-spezifische Trigger subklassen
 (`AdminEndpointReason`, `HotReloadReason`, etc.).
@@ -209,18 +234,41 @@ das Phasen-Timeout.
 
 ## SIGTERM / SIGINT-Hooks
 
+Fast jeder Service will dasselbe — Handler installieren, warten,
+herunterfahren, beenden — also ist genau diese Form ein einziger
+Aufruf:
+
 ```ts
-coordinatedShutdown.installProcessHooks();
-// Oder: coordinatedShutdown.installProcessHooks(['SIGTERM', 'SIGINT', 'SIGUSR2']);
+await system.runUntilTerminated();
+// Oder, um zusätzlich auf etwas anderes zu hören:
+await system.runUntilTerminated(['SIGTERM', 'SIGINT', 'SIGUSR2']);
 ```
 
-Das hängt Handler an, die `coordinatedShutdown.run(new ProcessTerminateReason(signal))`
-aufrufen.  Zweimal aufzurufen ist harmlos (idempotent).  Tests
-überspringen die Hooks meist; Produktion verdrahtet sie immer.
+Er installiert die Handler, löst auf, sobald das System unten **und**
+die Pipeline fertig ist, und hängt die Handler auf dem Weg hinaus
+wieder ab.  Dieser letzte Schritt ist keine Kosmetik: unter Deno hält
+ein Signal-Listener die Event-Loop offen und hat kein `unref` — ein
+Programm, das aus irgendeinem anderen Grund herunterfährt (ein
+`terminate()` von innen, ein Admin-Endpoint), würde sich also nie
+beenden.
 
-`removeProcessHooks()` macht sie rückgängig — nützlich für Tests,
-die ein System instanziieren, laufen lassen und in einem einzelnen
-Prozess wieder abbauen.
+Ein Signal, das die Plattform nicht zustellen kann, wird übersprungen
+statt registriert.  Windows hat unter keiner Runtime ein SIGTERM, und
+Deno *wirft* bei einem Signal, das es nicht zustellen kann, statt es
+zu ignorieren — danach zu fragen ist also nie ein Startfehler.
+
+Die beiden Hälften bleiben einzeln verfügbar, wenn du das System in
+einen Host einbettest, dem die Prozess-Lebenszeit gehört:
+
+```ts
+coordinatedShutdown.installProcessHooks();   // → run(new ProcessTerminateReason(signal))
+coordinatedShutdown.removeProcessHooks();    // hängt exakt das ab, was es installiert hat
+```
+
+Beides zweimal aufzurufen ist harmlos.  `removeProcessHooks()` fasst
+nie einen Listener an, den es nicht selbst installiert hat — ein
+zweites `ActorSystem` im selben Prozess, oder das eigene
+SIGTERM-Handling der Anwendung, bleibt unberührt.
 
 ## K8s-PreStop-Integration
 
@@ -236,7 +284,7 @@ Das Standard-Rezept:
 
 ```ts
 // Bei SIGTERM Coordinated Shutdown laufen lassen:
-coordinatedShutdown.installProcessHooks();
+await system.runUntilTerminated();
 
 // PreStop-Hook-Script (in deinem Container-Image):
 //   #!/bin/sh
@@ -255,8 +303,7 @@ für das vollständige Deployment-Manifest.
 ## Multi-Trigger-Sicherheit
 
 `coordinatedShutdown.run()` ist **idempotent** — es mehrmals aufzurufen, gibt
-dasselbe laufende Promise zurück.  Drei unabhängige Trigger
-(SIGTERM, ein Admin-Endpoint und ein Cluster-Downing), die alle
+dasselbe laufende Promise zurück.  Unabhängige Trigger, die alle
 `run` aufrufen, lassen die Pipeline nicht erneut laufen.  Der erste
 Aufruf startet sie; folgende Aufrufe warten auf dieselbe
 Vollendung.
@@ -266,7 +313,7 @@ hast:
 
 ```ts
 // SIGTERM-Pfad:
-coordinatedShutdown.installProcessHooks();
+await system.runUntilTerminated();
 
 // Admin-Endpoint-Pfad:
 app.post('/shutdown', async (req, res) => {
@@ -274,10 +321,24 @@ app.post('/shutdown', async (req, res) => {
   res.send('ok');
 });
 
-// Cluster-Downing-Pfad wird automatisch von der Cluster-Extension verdrahtet.
+// Ein Cluster-Downing ist keiner davon — siehe unten.
 ```
 
-Alle drei führen am Ende dieselbe Shutdown-Sequenz einmal aus.
+Beide führen am Ende dieselbe Shutdown-Sequenz einmal aus.
+
+Vom Cluster *gedownt zu werden* startet die Pipeline nicht: keine
+Reason-Klasse führt sie für dich aus, und `ClusterDowningReason`
+existiert für ein `run()`, das du selbst auslöst.  Wenn ein
+gedownter Knoten sich selbst herunterfahren soll, abonniere das und
+sag es:
+
+```ts
+cluster.subscribe((event) => {
+  if (event instanceof MemberDown && event.member.address.equals(cluster.selfAddress)) {
+    void coordinatedShutdown.run(ClusterDowningReason.instance);
+  }
+});
+```
 
 ## Was nach `coordinatedShutdown.run()`-Abschluss läuft
 
@@ -298,19 +359,16 @@ Bis das Promise resolved:
 - Der Prozess ist frei zu beenden (`process.exit(0)`).  Nichts mehr
   zu tun.
 
-Eine übliche Hülle einer Produktions-Main:
+Eine vollständige Produktions-Main:
 
 ```ts
 async function main() {
   const system = ActorSystem.create('my-app');
-  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
 
-  // Tasks registrieren...
+  await system.http(8080).bind(routes);   // registriert sein eigenes Unbind
+  // Registriere, was dem Framework nicht gehört...
 
-  coordinatedShutdown.installProcessHooks();
-
-  // Blockieren, bis Shutdown vollendet (z.B. via SIGTERM).
-  await new Promise(() => {});   // resolved nie; die Hooks treiben den Shutdown
+  await system.runUntilTerminated();
 }
 
 main().catch((err) => {
@@ -319,13 +377,11 @@ main().catch((err) => {
 });
 ```
 
-Wenn SIGTERM ankommt, feuert der Hook `coordinatedShutdown.run(...)`, die Pipeline
-läuft, das System terminiert, und Node beendet sauber, weil keine
-Handles mehr die Loop am Leben halten.
+Wenn SIGTERM ankommt, läuft die Pipeline, das System terminiert,
+`runUntilTerminated()` löst auf, seine Handler gehen ab, und der
+Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 
 ## Häufige Fallstricke
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Task-Ordering innerhalb einer Phase">
   ```ts
@@ -381,9 +437,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Actor-System](/de/fundamentals/actor-system/)** —
   das `terminate()`, das am Ende der Pipeline läuft.
-- **[Cluster-Überblick](/de/cluster/overview/)** — die
-  Cluster-Phasen (`cluster-leave`, `cluster-exiting`, …) verdrahten
-  sich automatisch, wenn die Cluster-Extension aktiv ist.
+- **[Cluster-Überblick](/de/cluster/overview/)** — `Cluster.join()`
+  registriert den `cluster-leave`-Task; die übrigen Cluster-Phasen
+  füllst du selbst.
 - **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
   das vollständige PreStop + SIGTERM + Grace-Period-Rezept.
 - **[Persistenz — Migration](/de/persistence/migration/overview/)** —
