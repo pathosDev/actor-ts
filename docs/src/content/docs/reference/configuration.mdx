@@ -61,7 +61,7 @@ actor-ts {
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
-      max-subscribers-total   = 10000
+      max-subscriptions-total   = 10000
     }
   }
 
@@ -203,7 +203,7 @@ name on every receiver, with no local `Subscribe` involved.  See
 | --- | --- | --- |
 | `cluster.receptionist.gossip-interval` | `1s` | How often the receptionist gossips its local registrations. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Cap on subscribers for one service key.  A `Subscribe` past it is answered with `ReceptionistSubscribeRejected`. |
-| `cluster.receptionist.max-subscribers-total` | `10000` | Cap on subscribers across every key on this node. |
+| `cluster.receptionist.max-subscriptions-total` | `10000` | Cap on key/subscriber pairs across every key on this node — one subscriber on three keys counts as three. |
 
 Both blocks layer under whatever the extension's `start(...)` was passed,
 so an explicit `withMaxTopics(…)` still wins.  Stopped subscribers are

@@ -332,10 +332,12 @@ actor-ts {
 
     # Cluster-wide service registry (Receptionist).  Subscribers are watched,
     # so a stopped one is dropped; the caps bound the ones that are still alive.
+    # The total counts key/subscriber pairs, not distinct subscribers — one
+    # subscriber on three keys spends three of it.
     receptionist {
       gossip-interval = 1s
       max-subscribers-per-key = 1000
-      max-subscribers-total = 10000
+      max-subscriptions-total = 10000
     }
   }
 

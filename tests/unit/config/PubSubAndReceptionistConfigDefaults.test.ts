@@ -58,14 +58,14 @@ describe('readReceptionistOptionsFromConfig', () => {
       actor-ts.cluster.receptionist {
         gossip-interval          = 2s
         max-subscribers-per-key  = 16
-        max-subscribers-total    = 64
+        max-subscriptions-total    = 64
       }
     `);
 
     expect(readReceptionistOptionsFromConfig(config)).toEqual({
       gossipIntervalMs: 2_000,
       maxSubscribersPerKey: 16,
-      maxSubscribersTotal: 64,
+      maxSubscriptionsTotal: 64,
     });
   });
 
@@ -78,7 +78,7 @@ describe('readReceptionistOptionsFromConfig', () => {
     expect(readReceptionistOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
       gossipIntervalMs: 1_000,
       maxSubscribersPerKey: 1_000,
-      maxSubscribersTotal: 10_000,
+      maxSubscriptionsTotal: 10_000,
     });
   });
 });

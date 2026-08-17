@@ -163,14 +163,20 @@ soon as the `Terminated` lands. You do not have to unsubscribe in
 | Option | HOCON leaf | Default |
 | --- | --- | --- |
 | `maxSubscribersPerKey` | `cluster.receptionist.max-subscribers-per-key` | `1000` |
-| `maxSubscribersTotal` | `cluster.receptionist.max-subscribers-total` | `10000` |
+| `maxSubscriptionsTotal` | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
 ```ts
 const receptionistOptions = ReceptionistOptions.create()
   .withMaxSubscribersPerKey(200)
-  .withMaxSubscribersTotal(2_000);
+  .withMaxSubscriptionsTotal(2_000);
 const receptionist = system.extension(ReceptionistId).start(cluster, receptionistOptions);
 ```
+
+The two count different things, and the names say which. `maxSubscribersPerKey`
+counts subscribers on one key. `maxSubscriptionsTotal` counts
+**key/subscriber pairs** across every key, so one subscriber watching three
+keys spends three of it — pairs are what bounds the memory, because nothing
+limits how many keys a single subscriber may hold.
 
 A `Subscribe` over either cap is **refused, not dropped**: the
 `replyTo` receives a `ReceptionistSubscribeRejected` instead of the
@@ -182,7 +188,7 @@ import { SubscribeRejected as ReceptionistSubscribeRejected } from 'actor-ts/dis
 class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
   override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {
     if (message instanceof ReceptionistSubscribeRejected) {
-      // message.reason: 'maxSubscribersPerKey' | 'maxSubscribersTotal'
+      // message.reason: 'maxSubscribersPerKey' | 'maxSubscriptionsTotal'
       // message.limit:  the value that cap is set to
       this.log.warn(`discovery refused: ${message.reason} (${message.limit})`);
       return;

@@ -431,7 +431,7 @@ path as much as to local calls:
 | Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
-| Receptionist subscribers total | `cluster.receptionist.max-subscribers-total` | `10000` |
+| Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
 A claim over a cap is dropped and logged rather than refused on
 the wire — the frame is well-formed, and dropping the connection
