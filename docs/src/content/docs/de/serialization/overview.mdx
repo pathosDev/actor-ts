@@ -236,14 +236,21 @@ import { Aside } from '@astrojs/starlight/components';
   Der Wire ist von rohem `JSON.stringify` auf den getaggten Tree
   gewechselt
   ([#450](https://github.com/pathosDev/actor-ts/issues/450)) — eine
-  **breaking Wire-Änderung**.  Ein neuerer Node liest die Frames
-  eines älteren unverändert — untaggtes JSON dekodiert als es
-  selbst —, umgekehrt aber nicht: ein älterer Node sieht den
-  Tag-Wrapper als einfache Daten.  Betroffen sind nur Payloads, die
-  ohnehin schon beschädigt wurden; ein Cluster, dessen Nachrichten
-  einfache Daten sind, kann Node für Node rollen, einer, der eine
-  `Map`, `Set`, `Date`, `bigint` oder ein Typed Array sendet,
-  sollte in einem einzigen Fenster aktualisieren.
+  **breaking Wire-Änderung**, und **keine der beiden Richtungen ist
+  sicher**.  Ein älterer Node sieht im Frame eines neueren den
+  Tag-Wrapper als einfache Daten.  Umgekehrt gilt es *fast* —
+  untaggtes JSON dekodiert als es selbst, weil ein Tag nur gelesen
+  wird, wenn er der einzige eigene Schlüssel eines Objekts ist —,
+  aber ein Legacy-Body, der genau diese Form schon hatte, kommt
+  nicht durch: `{__bytes__: 'not base64!!!'}` wird stillschweigend
+  zu einem `Uint8Array` und `{__date__: 'whenever'}` zu einer
+  Invalid Date, während `__map__`, `__set__`, `__regexp__`,
+  `__bigint__`, `__url__`, `__number__` und `__error__` werfen und
+  die ganze TCP-Verbindung kosten.  Ein Cluster, dessen Nachrichten
+  einfache Daten sind *und* kein Objekt mit einem einzelnen
+  `__tag__`-Schlüssel enthalten, kann also Node für Node rollen;
+  alles andere — eine `Map`, `Set`, `Date`, `bigint` oder ein Typed
+  Array — sollte in einem einzigen Fenster aktualisieren.
 </Aside>
 
 ## Wohin als Nächstes
