@@ -476,6 +476,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   means: passing `null` on a system that did join a cluster still leaves
   `/ready` gated on that cluster's checks.
 
+- **BREAKING — `Cluster.bootstrap`'s `shutdown()` now runs the
+  CoordinatedShutdown pipeline instead of leaving and terminating directly
+  (#549).** It is `coordinatedShutdown.run(ClusterLeavingReason)`, and it
+  remains idempotent — `run()` hands back the same in-flight promise.
+
+  For the default configuration this is a strict superset: everything that
+  used to happen still happens, in the same relative order, and everything
+  else that had registered a task now happens too. Two cases differ. An
+  embedder that set `actor-ts.coordinated-shutdown.terminate-actor-system
+  = false` will find that `shutdown()` no longer terminates the system —
+  the old code bypassed that flag, which is the flag's entire purpose. And
+  a caller that relied on `shutdown()` touching *only* the cluster and the
+  system will now also see its HTTP servers unbound, its brokers closed
+  and its DevTools detached.
+
+  The signal handlers the bootstrap installs are `process.on` rather than
+  `process.once` now, and can be removed — `removeProcessHooks()` detaches
+  exactly what it installed, which the old raw handler could not do at
+  all.
+
+  *Migration:* If you set `terminate-actor-system = false` and still want
+  `shutdown()` to terminate the system, call `system.terminate()` yourself
+  after awaiting it. If you want the old narrow behaviour for the other
+  resources, set `actor-ts.coordinated-shutdown.auto-register-tasks =
+  false` and register what you want by hand.
+
+- **Every example uses `runUntilTerminated()`, and the docs stopped
+  describing wiring that did not exist (#549).** Seventeen examples each
+  spelled out their own teardown and no two agreed; all of them ended in
+  `process.exit(0)`, which is what turns "graceful shutdown" into
+  "whatever finished first".
+
+  Resources the framework does not own are registered as phase tasks
+  instead, which is the part worth copying: `counter-node.ts` stops its
+  traffic generator in `before-service-unbind`, `prometheus-endpoint.ts`
+  stops its own `Bun.serve` in `service-unbind`, `redis-rest-service.ts`
+  closes its caches in `service-stop`, `k8s-lease-singleton.ts` releases
+  its lease in `before-cluster-shutdown`.
+
+  On the docs side, `coordinated-shutdown.mdx` claimed the cluster phases
+  "wire themselves up automatically when the cluster extension is active"
+  and that the "cluster downing path is auto-wired". The first is now true
+  for `cluster-leave` and stated that narrowly; the second is still not
+  true and is documented as what it is, with the `cluster.subscribe(...)`
+  you write if you want it. The phase table gains a **Wired** column,
+  `cluster-exiting` gets an aside saying it has no acknowledgment to wait
+  for (#1189), the Kubernetes rollout sequence loses its "wait for cluster
+  to acknowledge leave" step, and `actor-system.mdx` stops teaching the
+  hand-rolled `process.on('SIGTERM', …)` this issue exists to delete. Both
+  language mirrors.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -950,6 +1001,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   health service now read one instance rather than two that can disagree.
   `/ready`'s `clusterReady` field is read back out of the aggregate by
   name rather than recomputed in the handler, for the same reason.
+
+- **`ActorSystem.runUntilTerminated()` — the whole of a service's shutdown
+  in one call (#549).** It installs SIGTERM/SIGINT handlers, resolves once
+  the system is down *and* the CoordinatedShutdown pipeline has finished,
+  and detaches the handlers on the way out.
+
+  The detach is why it is a method rather than a documented three-liner: a
+  `Deno.addSignalListener` listener holds the event loop open and has no
+  `unref`, so a program that shuts down for any other reason — a
+  `terminate()` from inside, an admin endpoint — would never exit. It
+  resolves on the pipeline rather than on `whenTerminated()` alone because
+  a task registered alongside the built-in terminator in the final phase
+  runs in parallel with it.
+
+  Signal delivery now goes through a new `src/runtime/signals/` backend,
+  beside the existing `tcp/`, `http/`, `sqlite/` and `worker/` ones. Bun
+  and Node share Node's `process` events; Deno needs
+  `Deno.addSignalListener`, because its `process` shim carries no signal
+  events at all — so the old `process.on(signal, …)` inside
+  `installProcessHooks` registered nothing there and reported success. A
+  signal the platform cannot deliver is skipped rather than registered, so
+  Windows degrades to SIGINT/SIGBREAK instead of throwing.
+
+- **The framework now registers its own teardown in the shutdown phases
+  (#549).** `Cluster.join()` registers `cluster.leave()` in
+  `cluster-leave`, and every `BrokerActor` closes its connection in
+  `service-stop` — joining the HTTP unbind and the DevTools detach, which
+  were already there.
+
+  Ten of the twelve phases were empty in every deployment before this, and
+  `src/cluster/` contained no reference to CoordinatedShutdown at all. The
+  broker half is an ordering fix rather than a missing teardown:
+  `postStop` always closed the connection and the `/user` stop cascade
+  always reached it, but *last* — so a broker kept publishing while the
+  HTTP server was unbinding and while the node was leaving the cluster.
+
+  Those registrations get an opt-out with a home:
+  `actor-ts.coordinated-shutdown.auto-register-tasks`, default `true`.
+  Setting it `false` keeps the phases and the built-in terminator and
+  hands every resource back to the caller. It is one switch rather than
+  one per subsystem, because the reason to reach for it is "I own the
+  lifecycle", never "unbind the HTTP server but leave the brokers to me".
 
 ### Fixed
 
@@ -1824,6 +1917,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   parameter precisely so `(v1: DepositedV1): DepositedV2 => …` compiles, a
   form the same pages use five times, so each page contradicted itself.
   Both now publish the three-parameter form.
+
+- **A SIGTERM on a `Cluster.bootstrap` node ran no registered shutdown
+  task at all (#549).** The bootstrap bound a raw `process.once` to a
+  hand-rolled `leave(); terminate()`, and `terminate()` only enqueues a
+  root system message — so the HTTP unbind task, registered correctly
+  since `ac0124e8`, simply never fired on the one path operators actually
+  use.
+
+  On Deno nothing was wired at all, in any configuration: both
+  `installProcessHooks` and the bootstrap's own handler called
+  `process.on`, which on Deno registers on a shim that never delivers a
+  signal. Smoke case 28 spawns a child, signals it, and asserts both that
+  the phases ran in order and that the child exited by itself with status
+  0 — the second being the only way to catch a handler left armed.
+
+  A phase also no longer skips a task when one of its siblings unregisters
+  itself mid-run: `runPhase` snapshots its task list before invoking
+  anything. Two tasks now do exactly that — the HTTP unbind and the
+  cluster leave, each dropping the task named after the resource it just
+  released — which is what turned a latent hazard into a reachable one.
 
 ### Security
 
