@@ -167,14 +167,22 @@ es aufgibt.
   selbst wirft, wird geloggt und verschluckt — ein kaputter Reporter
   darf die Projektion nicht mitreißen.
 - **Ein Dead Letter** — ein übersprungenes Event wird, in einen
-  `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht,
-  damit nichts spurlos verschwindet:
+  `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht
+  und nennt die Projektion als seinen Empfänger, damit nichts spurlos
+  verschwindet:
 
   ```ts
   import { DeadLetter } from 'actor-ts';
 
   system.eventStream.subscribe(auditRef, DeadLetter);
   ```
+
+  Publishen ist standardmäßig alles, was passiert — ohne Abonnent ist
+  das Event weg.  Schaltet man die
+  [Dead-Letter-Queue](/de/operations/dead-letters/) ein, werden
+  übersprungene Events stattdessen aufbewahrt, filterbar nach der
+  Projektion, die sie übersprungen hat, und erneut zustellbar, sobald
+  der Handler repariert ist.
 
 - **Metriken** — `persistence_projection_stalled`,
   `persistence_projection_failures_total` und

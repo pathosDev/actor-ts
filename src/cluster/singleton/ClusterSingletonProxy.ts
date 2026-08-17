@@ -3,6 +3,7 @@ import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cluster } from '../Cluster.js';
 import { NodeAddress } from '../NodeAddress.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { singletonProxyName } from '../../internal/SystemPaths.js';
 import {
   changesSingletonHost,
@@ -71,14 +72,14 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     queueMicrotask(() => this.drainBuffer());
   }
 
-  override tell(message: TCommand, _sender: ActorRef | null = null): void {
+  override tell(message: TCommand, sender: ActorRef | null = null): void {
     if (!this.forwarding) return;
     const hostOpt = singletonHost(this.cluster, this.role);
     if (hostOpt.isNone()) {
-      this.bufferUntilHosted(message);
+      this.bufferUntilHosted(message, sender);
       return;
     }
-    this.deliver(message, hostOpt.value.address);
+    this.deliver(message, hostOpt.value.address, sender);
   }
 
   /**
@@ -94,8 +95,13 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
    * Drops the *newest* rather than evicting the oldest: the buffer exists to
    * preserve the order a caller sent in, and dropping from the front would
    * hand the singleton a torn prefix of it.
+   *
+   * `sender` is threaded in only to attribute the drop.  Nothing is done with
+   * it on the *buffered* path, because the proxy does not forward a sender in
+   * the first place — a `deliver` puts the body on the wire and the manager
+   * hands it on unattributed.  What is repairable here is the letter.
    */
-  private bufferUntilHosted(message: TCommand): void {
+  private bufferUntilHosted(message: TCommand, sender: ActorRef | null): void {
     if (this.buffer.length >= this.bufferSize) {
       this.droppedCount++;
       if (!this.warnedBufferFull) {
@@ -107,7 +113,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
           + 'why the cluster has no host.',
         );
       }
-      this.cluster.system.deadLetters.tell(message as never);
+      this.cluster.system.deadLetters.tell(new DeadLetter(message, sender, this));
       return;
     }
     this.buffer.push(message);
@@ -158,7 +164,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   /** True if at least one message is currently buffered. */
   hasPending(): boolean { return this.buffer.length > 0; }
 
-  private deliver(message: TCommand, hostAddress: NodeAddress): void {
+  private deliver(message: TCommand, hostAddress: NodeAddress, sender: ActorRef | null): void {
     if (!hostAddress.equals(this.cluster.selfAddress)) {
       this.cluster._sendEnvelope(hostAddress, {
         kind: 'envelope',
@@ -175,7 +181,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
       manager.tell(payload as never);
       return;
     }
-    this.onMissingHost(message);
+    this.onMissingHost(message, sender);
   }
 
   /**
@@ -186,7 +192,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
    * deployment, so a buffer would just grow.  The warning is latched so a hot
    * path cannot flood the log.
    */
-  private onMissingHost(message: TCommand): void {
+  private onMissingHost(message: TCommand, sender: ActorRef | null): void {
     if (!this.warnedMissingHost) {
       this.warnedMissingHost = true;
       const scope = this.role === undefined
@@ -198,7 +204,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
         + `dead-lettering — a ref() proxy cannot host.  Call start() on ${scope}.`,
       );
     }
-    this.cluster.system.deadLetters.tell(message as never);
+    this.cluster.system.deadLetters.tell(new DeadLetter(message, sender, this));
   }
 
   /**
@@ -231,6 +237,10 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     // condition it reports genuinely recovers — unlatch it here so a second,
     // later outage is reported too rather than passing silently.
     this.warnedBufferFull = false;
-    for (const message of drained) this.deliver(message, hostAddress);
+    // `null` sender, because the buffer never held one: the proxy stores bare
+    // messages, since a `deliver` puts the body on the wire unattributed
+    // anyway.  A drained message that dead-letters therefore names no sender —
+    // truthfully, rather than by naming the wrong one.
+    for (const message of drained) this.deliver(message, hostAddress, null);
   }
 }

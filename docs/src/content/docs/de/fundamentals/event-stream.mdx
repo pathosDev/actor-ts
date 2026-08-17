@@ -263,7 +263,7 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 
 | Event | Woher es kommt |
 | --- | --- |
-| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird auch publisht.  Nützlich für "Alarme auf verlorene Nachrichten". |
+| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird hier publisht — und Publishen ist *alles*, was mit ihr passiert: nichts loggt sie, nichts bewahrt sie auf, ohne Abonnent ist sie also weg.  Jede trägt den `recipient`, den sie nicht erreicht hat.  Für eine begrenzte, optional dauerhafte Aufzeichnung mit erneutem Zustellen siehe [Dead Letters](/de/operations/dead-letters/). |
 | `DispatcherError` | Eine auf einem Dispatcher geplante Arbeitseinheit hat geworfen, wo kein Supervisor es sehen konnte.  Trägt die `id` des Dispatchers, die `cause` und die `ActorRef`, deren Zug es war (`null` für Arbeit, die zu keinem Actor gehört).  Von Natur aus ruhig — siehe [Dispatcher](/de/fundamentals/dispatchers/#wenn-eine-arbeitseinheit-wirft). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Konkrete Cluster-Mitgliedschaftsevents, publisht von der Cluster-Extension.  Abonniere jede Klasse direkt — `ClusterEvent` ist ein Union-Typ, keine abonnierbare Basisklasse.  Siehe [Cluster](/de/cluster/overview/). |
 | `ReachabilityChanged` | Der Failure Detector der publishenden Node hat einen Peer aus den Augen verloren oder wiedergesehen — eine lokale Beobachtung, anders als `MemberUnreachable`, das auch per Gossip angekommen sein kann.  Siehe [Failure Detector](/de/cluster/failure-detector/). |

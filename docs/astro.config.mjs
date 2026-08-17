@@ -875,6 +875,7 @@ export default defineConfig({
                 { label: 'Upgrade strategies', slug: 'operations/upgrades/upgrade-strategies', translations: { de: 'Upgrade-Strategien', es: 'Estrategias de actualización', fr: 'Stratégies de mise à niveau', ja: 'アップグレード戦略', ko: '업그레이드 전략', 'pt-BR': 'Estratégias de atualização', ru: 'Стратегии обновления', 'zh-CN': '升级策略' } },
               ],
             },
+            { label: 'Dead letters', slug: 'operations/dead-letters', translations: { de: 'Dead Letters', es: 'Dead letters', fr: 'Dead letters', ja: 'デッドレター', ko: '데드 레터', 'pt-BR': 'Dead letters', ru: 'Dead letters', 'zh-CN': '死信' } },
             { label: 'Troubleshooting', slug: 'operations/troubleshooting', translations: { de: 'Troubleshooting', es: 'Solución de problemas', fr: 'Dépannage', ja: 'トラブルシューティング', ko: '트러블슈팅', 'pt-BR': 'Solução de problemas', ru: 'Устранение неполадок', 'zh-CN': '故障排查' } },
             {
               label: 'Runtime',

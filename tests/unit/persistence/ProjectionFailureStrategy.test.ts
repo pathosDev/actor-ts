@@ -281,9 +281,16 @@ describe('projection recovery strategy — skip', () => {
     const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
 
     await waitFor(() => fixture.deadLetters.length === 1);
-    const skipped = fixture.deadLetters[0]!.message as { persistenceId: string; event: CountedEvent };
+    const letter = fixture.deadLetters[0]!;
+    const skipped = letter.message as { persistenceId: string; event: CountedEvent };
     expect(skipped.persistenceId).toBe('poison');
     expect(skipped.event.n).toBe(2);
+    // The projection is the RECIPIENT of what it could not apply — it used to
+    // sit in the sender slot, which read as "the projection sent this to the
+    // dead-letter office" and left the letter attributed to `/deadLetters`
+    // (#433).  Nothing sent the event anywhere; a read model is missing it.
+    expect(letter.recipient.path.toString()).toContain('deadletter-proj');
+    expect(letter.sender).toBeNull();
 
     ref.stop();
     await fixture.system.terminate();

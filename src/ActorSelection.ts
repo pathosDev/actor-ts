@@ -1,6 +1,8 @@
 import type { ActorPath } from './ActorPath.js';
 import type { ActorRef } from './ActorRef.js';
 import type { ActorSystem } from './ActorSystem.js';
+import { UnresolvedPathRef } from './internal/UnresolvedPathRef.js';
+import { DeadLetter } from './SystemMessages.js';
 
 /**
  * A lookup handle for a logical actor path.  Unlike `ActorRef`, which is a
@@ -48,8 +50,15 @@ export class ActorSelection {
    */
   tell(message: unknown, sender: ActorRef | null = null): void {
     const refOpt = this.system._resolvePath(this.pathSegments);
-    if (refOpt.isSome()) refOpt.value.tell(message as never, sender);
-    else this.system.deadLetters.tell(message as never, sender);
+    if (refOpt.isSome()) { refOpt.value.tell(message as never, sender); return; }
+    // Wrap here rather than letting `DeadLetterRef` do it: the ref has no
+    // idea what path was looked up, so its wrap names `/deadLetters` as the
+    // recipient — which is true of every dead letter and therefore says
+    // nothing.  The selection is the only thing that knows the address, and
+    // that address is what makes the letter diagnosable at all.
+    this.system.deadLetters.tell(
+      new DeadLetter(message, sender, new UnresolvedPathRef(this.system.name, this.pathSegments)),
+    );
   }
 
   toString(): string {

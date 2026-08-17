@@ -106,6 +106,12 @@ A short tour of what's in the box:
   (a `JSON.stringify` for log and error paths that cannot throw),
   `lazyImportModule` (import an optional peer dependency, or fail with a
   message naming the install command).
+- **Dead letters** — every undeliverable message is published on the event
+  stream naming the actor it failed to reach.  Opt in to
+  `system.deadLetterQueue` and they are also *kept*: a bounded ring, or a
+  journal-backed one that survives a restart, filterable by recipient and
+  time and replayable by id — with a replay cap so a poison message cannot
+  be retried into an ever-growing queue.
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.

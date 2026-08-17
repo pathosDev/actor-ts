@@ -1044,6 +1044,73 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one per subsystem, because the reason to reach for it is "I own the
   lifecycle", never "unbind the HTTP server but leave the brokers to me".
 
+- **A bounded, optionally durable dead-letter queue with inspection and
+  replay (#433).**
+
+  Until now `DeadLetterRef` published each undeliverable message on the
+  event stream and returned. With no subscriber — the default, and the
+  only in-framework one is the DevTools sampler — the letter was simply
+  gone, so "what did we drop during that incident?" was a question the
+  framework could not answer after the fact.
+
+  `system.deadLetterQueue` is the subscriber that is always there. It
+  hangs on a single sink slot inside `DeadLetterRef.tell`, the one choke
+  point every dead letter already passes through, so nothing has to be
+  routed to it and no emitter has to know it exists.
+  `actor-ts.dead-letters.store` picks between `off` (the default —
+  behaviour is byte-for-byte what it was, nothing is constructed beyond
+  one empty object and no shutdown task is registered), `memory` (a
+  bounded ring, `max-entries` and `retention`) and `persistent`
+  (additionally an append-only log in the configured journal, read back on
+  the next start).
+
+  Capture runs before publication, deliberately: the sink is the durable
+  record and publishing is an observation with no guaranteed audience, so
+  any future rate limiter or sampler over the dead-letter stream belongs
+  on the publish side of that line rather than in front of it.
+
+  `list({ recipient, sinceMs, untilMs, limit })` returns entries newest
+  first, `recipient` matching a path or its subtree. `replay(id)` resolves
+  the recipient path afresh — the point is that the actor has come back at
+  the same address as a new instance — and every refusal is a named result
+  (`unknown-entry`, `unresolved-recipient`, `degraded-payload`,
+  `quarantined`) rather than a silent no-op. A replayed message that
+  dead-letters again returns as the *same* entry with a higher
+  `replayCount`, so an operator retrying a poison message cannot grow the
+  queue one entry per attempt; past `max-replays` the letter is
+  quarantined.
+
+  Entry identity is a new `DeadLetterEntry` record rather than a fourth
+  field on `DeadLetter`: the event answers what was undeliverable and from
+  and to whom, while the id, the timestamp and the paths belong to the
+  queue. Nothing about `SystemMessages.DeadLetter` changed. A payload the
+  tagged-JSON encoder refuses — a function, a symbol, a `Promise`, a weak
+  collection, a cycle — is kept as `{ kind: 'degraded', className, reason
+  }` in the durable copy rather than lost, and `replay` refuses it because
+  there is nothing left to send; the in-memory entry still holds the live
+  object.
+
+  Durable writes are settled twice, and neither is redundant: a framework
+  task in `before-actor-system-terminate` settles what a running system
+  produced, and a drain once the actor tree is down settles what stopping
+  it produced — stashes discarded, mailboxes emptied past their cell —
+  which is emitted after the last shutdown phase has run and, for a
+  shutting-down system, is most of them. The second also covers a direct
+  `terminate()` with no pipeline at all. A hard kill can still lose
+  in-flight writes; the queue is a diagnostic record, not a transactional
+  outbox.
+
+  The new counter is `actor_dead_letters_total{outcome, recipient}`, with
+  `outcome` one of `captured`, `replayed`, `replay-failed`. Persistence
+  and the codec are reached through dynamic imports, so a queue left `off`
+  costs a consumer's bundle nothing.
+
+  One class of loss is explicitly out of scope: a message discarded by a
+  bounded or priority mailbox never becomes a dead letter at all, because
+  the drop-reporting seam carries a `MailboxDropReason` and never the
+  envelope. That overflow shows up in `actor_mailbox_dropped_total` and
+  nowhere else.
+
 ### Fixed
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
@@ -1937,6 +2004,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   anything. Two tasks now do exactly that — the HTTP unbind and the
   cluster leave, each dropping the task named after the resource it just
   released — which is what turned a latent hazard into a reachable one.
+
+- **Dead letters now name the actor the message failed to reach, on every
+  path (#433).**
+
+  Six sites handed a bare message to `system.deadLetters.tell(...)` and
+  let `DeadLetterRef` do the wrapping. The ref only knows itself, so its
+  wrap set `recipient` to `actor-ts://<system>/deadLetters` — the one
+  address every dead letter in the system shares, and therefore no
+  information at all. A subscriber could see *what* was lost but never
+  *where*, which is the half that makes a dead letter actionable, and it
+  made `list({ recipient })` and replay-to-original unimplementable.
+
+  Repaired at the call sites, because the call site is the only place that
+  knows the answer. `ActorSelection.tell` reports the path it looked up,
+  through a new internal `UnresolvedPathRef` stand-in that carries the
+  path and drops sends, like `Nobody` but addressed.
+  `ClusterSingletonProxy` reports itself, which is what its synthetic path
+  exists for, and both of its drop sites now carry the sender too.
+  `ClusterSingletonManager` reports its own `self` for a wire delivery
+  that reached a node that turned out not to be hosting, unwrapping the
+  frame so the letter carries what the application sent.
+  `TypedActor.forwardToDeadLetters` reports the actor whose behavior
+  answered `unhandled`, plus the turn's sender.
+  `ProjectionActor.reportSkipped` had `self` in the *sender* slot, which
+  read as "the projection sent this to the dead-letter office"; nothing
+  sent it anywhere and a read model is missing it, so `self` moves to
+  `recipient` and the sender becomes `null`.
+
+  The eight sites that already wrapped correctly — `ActorCell` in five
+  places, the pub-sub mediator in two, `TypedActor.deadLetterStashBuffers`
+  — are untouched.
+
+  Visible consequence worth knowing: anything that filtered the event
+  stream on the old uniform `/deadLetters` recipient stops matching, and
+  anyone who had started reading `.sender` to identify a skipped
+  projection now gets `null` and must read `.recipient`.
+
+- **The docs no longer claim dead letters are logged (#1000).**
+
+  `fundamentals/actor-system.mdx` stated that "by default the system logs
+  dead letters at `debug` level". It never did: `DeadLetterRef` holds no
+  logger reference, the whole path is one `eventStream.publish`, and the
+  only in-framework subscriber is the DevTools sampler, which is active
+  only while DevTools is attached. With nothing subscribed the message is
+  simply gone — so a reader who believed the sentence would go looking for
+  log lines that do not exist, at exactly the moment they were trying to
+  find out what had been dropped.
+
+  `fundamentals/event-stream.mdx` said the same thing more mildly ("useful
+  for alarms on lost messages") without mentioning that such an alarm
+  needs a subscriber in place beforehand. Both pages now say that
+  publication is all that happens, name the `recipient` each letter
+  carries, and point at the queue for a record that outlives the moment.
+  `operations/troubleshooting.mdx` gains the same correction where it
+  tells you to subscribe before shutting down.
+
+  Corrected in English and German. This addresses the claims in the two
+  pages the re-triage of #433 named; anything else #1000 catalogues is
+  untouched.
 
 ### Security
 

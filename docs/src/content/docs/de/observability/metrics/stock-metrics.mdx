@@ -129,6 +129,39 @@ Die Kardinalität von `jobs_shed_total` musst du dann selbst
 einplanen — genau das ist der Punkt. Das Framework gibt sie nicht für
 dich aus.
 
+## Dead-Letter-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_dead_letters_total` | counter | `outcome`, `recipient` | Von der Dead-Letter-Queue erfasste unzustellbare Nachrichten, nach Ausgang. |
+
+Nur vorhanden, sobald
+[`actor-ts.dead-letters.store`](/de/operations/dead-letters/) etwas
+anderes als `off` ist — der Counter wird von der Queue erzeugt, ein System,
+das nichts aufbewahrt, zählt also nichts. `outcome` ist eines von:
+
+- `captured` — ein neues Letter kam in die Queue.
+- `replayed` — ein Letter wurde an seinen ursprünglichen Empfänger
+  zurückgegeben.
+- `replay-failed` — ein erneut zugestelltes Letter kam zurück, der
+  Empfänger kann es also weiterhin nicht annehmen. Ein steigendes
+  `replay-failed` bei flachem `captured` ist eine giftige Nachricht, die
+  erneut versucht wird, keine neue Störung.
+
+`recipient` ist der vollständige Pfad des Actors, den die Nachricht nicht
+erreicht hat — das macht ein Letter von einem anderen unterscheidbar.
+Dieser Counter ist eine *Diagnose* auf einem Pfad, der nur feuert, wenn
+ohnehin schon etwas kaputt ist, das Label zahlt sich also aus. Es ist im
+Prinzip unbegrenzt und in der Praxis durch die Serien-Obergrenze pro
+Familie in der Registry begrenzt, die den Überlauf in eine einzelne Serie
+faltet, statt einen Vorfall unbegrenzt Serien erzeugen zu lassen.
+
+`actor_dead_letters_total` ist ein **Verlust**-Signal, kein Backlog-Signal.
+Jede anhaltend von null verschiedene Rate bedeutet, dass Nachrichten an
+Actors gehen, die nicht da sind — eine über einen Neustart hinaus
+gehaltene veraltete Ref, eine Selection aus einem geänderten Pfad, ein
+Singleton ohne Host.
+
 ## Cluster-Metriken
 
 | Metrik | Typ | Labels | Bedeutung |
