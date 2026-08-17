@@ -9,6 +9,7 @@ import {
   ProcessTerminateReason,
   UnknownReason,
 } from '../../src/CoordinatedShutdown.js';
+import { EVENT_LOOP_KEEPALIVE_INTERVAL_MS } from '../../src/Constants.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -309,6 +310,53 @@ describe('ActorSystem.runUntilTerminated', () => {
     // listener holds the event loop open with no `unref`, so leaving one
     // behind means the process never exits.
     expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+
+  test('holds the event loop open while it waits, and lets go on the way out', async () => {
+    // The failure this pins cannot be observed from inside a process: Node
+    // unrefs its signal handles, so an idle service that had installed
+    // SIGTERM and nothing else drained its event loop and exited *instead of*
+    // waiting for the signal it had just armed itself for.  Bun — which runs
+    // this suite — refs its handles, so the suite could never have shown it;
+    // only Node's smoke arm did, with `code=13`, an unsettled top-level await
+    // and no shutdown at all.
+    //
+    // What is assertable here is the wiring, and it is the half that can
+    // regress silently: a hold is taken for exactly as long as the promise is
+    // pending.  That a *referenced timer* is what keeps all three runtimes
+    // alive is the claim `tests/smoke/cases/28-graceful-shutdown-signals.mjs`
+    // exists to prove, in a real process, per runtime.
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    const held = new Set<unknown>();
+    globalThis.setInterval = ((handler: () => void, delayMs?: number): unknown => {
+      const timer = realSetInterval(handler, delayMs);
+      // Only the keep-alive, identified by its interval: the system under
+      // test is free to run timers of its own while this is patched.
+      if (delayMs === EVENT_LOOP_KEEPALIVE_INTERVAL_MS) held.add(timer);
+      return timer;
+    }) as unknown as typeof globalThis.setInterval;
+    globalThis.clearInterval = ((timer?: unknown): void => {
+      held.delete(timer);
+      realClearInterval(timer as Parameters<typeof globalThis.clearInterval>[0]);
+    }) as unknown as typeof globalThis.clearInterval;
+
+    try {
+      const system = newSystem('run-until-terminated-keepalive');
+      const running = system.runUntilTerminated(['SIGTERM']);
+      expect(held.size).toBe(1);
+
+      await system.terminate();
+      await running;
+
+      // Released in the same `finally` as the handlers.  A keep-alive that
+      // outlived the wait would be the mirror image of the bug it fixes: a
+      // process that can no longer exit.
+      expect(held.size).toBe(0);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
   });
 
   test('a plain terminate() also releases it', async () => {
