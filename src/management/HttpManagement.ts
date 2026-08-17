@@ -18,7 +18,7 @@ import {
 import { exportPrometheus } from '../metrics/PrometheusExporter.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
-import type { HealthCheckResult } from './HealthCheck.js';
+import { isHealthy } from './HealthCheck.js';
 import { healthChecksOf } from './HealthCheckExtension.js';
 
 
@@ -82,7 +82,7 @@ export function managementRoutes(
 
   const liveness = get(async () => {
     const results = await health.checkLiveness();
-    const ok = results.every((r) => r.status);
+    const ok = isHealthy(results);
     return completeJson(ok ? Status.OK : Status.ServiceUnavailable, {
       status: ok ? 'UP' : 'DOWN',
       checks: results,
@@ -94,15 +94,22 @@ export function managementRoutes(
    * recomputed here.  `Cluster._start` registers the membership check
    * itself (#655), so evaluating the same predicate a second time in this
    * handler would give the endpoint a private answer that the gRPC health
-   * service — which sees only the registry — could contradict.  A system
-   * with no cluster has no such check, and the field stays `true`, exactly
-   * as when this handler owned the test.
+   * service — which sees only the registry — could contradict.
+   *
+   * The check is absent only on a system that never joined a cluster, and
+   * there cluster membership is not a constraint on readiness at all —
+   * hence `true`.  It is *not* absent on a node that has left: leaving
+   * leaves both cluster checks registered and failing, which is what stops
+   * a drained node reporting itself ready (#655).
+   *
+   * `ok` comes from {@link isHealthy}, the same rule the gRPC health
+   * service applies, so the two probes cannot diverge.
    */
   const readiness = get(async () => {
     const results = await health.checkReadiness();
-    const clusterReady = results
-      .find((r) => r.name === CLUSTER_MEMBERSHIP_CHECK_NAME)?.status ?? true;
-    const ok = results.every((r) => r.status);
+    const membership = results.find((r) => r.name === CLUSTER_MEMBERSHIP_CHECK_NAME);
+    const clusterReady = membership === undefined ? true : membership.status;
+    const ok = isHealthy(results);
     return completeJson(ok ? Status.OK : Status.ServiceUnavailable, {
       status: ok ? 'UP' : 'DOWN',
       clusterReady,
@@ -247,8 +254,4 @@ export function managementRoutes(
   }
 
   return all;
-}
-
-export function isHealthy(results: HealthCheckResult[]): boolean {
-  return results.every((r) => r.status);
 }

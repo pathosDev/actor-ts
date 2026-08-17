@@ -1,13 +1,19 @@
 /**
  * Scenario 16 — a framework readiness check gates `/ready` (#655).
  *
- * Isolates one node from *every* peer with iptables drops, so its cluster
- * transport ends up with no handshaked connection while its membership view
- * still lists four peers it expects to reach.  The framework's
- * `cluster-transport` readiness check goes red and `/ready` answers 503 —
- * a load balancer takes the pod out of rotation, which is the whole point:
- * before #655 the endpoint aggregated an empty list and answered 200
- * unconditionally.
+ * Isolates one node from *every* peer with iptables drops.  `-j DROP` is a
+ * **silent** partition: the packets vanish, and no FIN or RST is produced,
+ * so the isolated node's handshaked sockets stay in the transport's peer map
+ * for as long as the kernel keeps retrying — minutes.  What goes red is not
+ * "the connections are gone" but "every peer this node expects has been
+ * written off by the failure detector while it still holds a socket to it",
+ * which is what the `cluster-transport` check actually asks.  `/ready` then
+ * answers 503 and a load balancer takes the pod out of rotation, which is
+ * the whole point: before #655 the endpoint aggregated an empty list and
+ * answered 200 unconditionally.
+ *
+ * So the check inherits the failure detector's latency — the `waitFor`
+ * budgets below are sized for that, not for a socket close.
  *
  * Three things are asserted, and the second is what makes the first mean
  * anything:

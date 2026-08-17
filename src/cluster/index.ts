@@ -4,6 +4,8 @@ export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtens
 export {
   CLUSTER_MEMBERSHIP_CHECK_NAME,
   CLUSTER_TRANSPORT_CHECK_NAME,
+  clusterMembershipResult,
+  clusterTransportResult,
   registerClusterHealthChecks,
   selfIsFullMember,
   transportReachesCluster,

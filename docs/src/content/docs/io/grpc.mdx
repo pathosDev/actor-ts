@@ -388,12 +388,19 @@ const grpcServerOptions = GrpcServerOptions.create()
 ```
 
 `Check` answers `SERVING` only while **every** readiness check
-passes, and `NOT_SERVING` as soon as one fails — the same rule
-`/ready` applies.  It is re-evaluated per call, so nothing is
-cached.  Because both read `healthChecksOf(system)`, the gRPC
-service and `/ready` stay in lockstep by construction; a bare
-`new HealthCheckRegistry()` here would fork them, and only one of
-the two would be the answer a load balancer acts on.
+passes, and `NOT_SERVING` as soon as one fails — literally the same
+rule `/ready` applies, the exported
+[`isHealthy`](/observability/management/health-checks/#an-empty-check-list-is-up).
+It is re-evaluated per call, so nothing is cached.  Because both read
+`healthChecksOf(system)`, the gRPC service and `/ready` stay in
+lockstep by construction; a bare `new HealthCheckRegistry()` here
+would fork them, and only one of the two would be the answer a load
+balancer acts on.
+
+That includes going out of service: after `cluster.leave()` the
+cluster's readiness checks stay registered and fail, so `Check`
+answers `NOT_SERVING` for a drained node rather than `SERVING` on an
+empty registry.
 
 The `HealthCheckRequest.service` field selects what is being asked
 about:
