@@ -213,6 +213,80 @@ describe('explain plan — recording', () => {
   });
 });
 
+describe('explain plan — the start stamp is a clock reading', () => {
+  /**
+   * `atMs` and `mailboxWaitMs` both hang off one number: the wall clock at
+   * handler start.  These three tests pin what that number has to be, because
+   * #411 replaced the reading with an arithmetic reconstruction —
+   * `Date.now() - elapsedMs` — and the reconstruction is systematically wrong
+   * in a way a single-message test cannot see.
+   *
+   * `Date.now()` floors to whole milliseconds; `elapsedMs` comes off
+   * `performance.now()` and is fractional.  Subtracting the second from the
+   * first therefore lands up to 1 ms BEFORE the handling really started, and
+   * always in that direction — the truncation is one-sided.  Sub-millisecond
+   * error is invisible in `atMs` on its own and fatal one field over.
+   */
+  const settleFor = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  test('an idle actor never reports a negative mailbox wait', async () => {
+    // The defect this file exists to catch.  `mailboxWaitMs` is
+    // `atMs - env.enqueuedAtMs`, and `enqueuedAtMs` is an honest integral
+    // `Date.now()`.  Give the actor one message at a time so the mailbox is
+    // empty when each arrives — the true wait is microseconds, which is
+    // exactly where a start stamp pushed up to 1 ms into the past turns the
+    // subtraction negative.  Measured on the derived stamp: 388/400 entries.
+    const { probe, ref } = await spawnRecorded('explain-idle-wait', 500);
+    for (let i = 0; i < 200; i++) {
+      ref.tell(`m${i}`);
+      await settleFor(0);
+    }
+    await settle();
+
+    const plan = probe.plan();
+    expect(plan.length).toBeGreaterThan(150);
+    const stamped = plan.filter((entry) => entry.mailboxWaitMs !== null);
+    expect(stamped.length).toBeGreaterThan(150);
+    const negative = stamped.filter((entry) => entry.mailboxWaitMs! < 0);
+    expect(negative).toEqual([]);
+  });
+
+  test('atMs is a whole-millisecond wall-clock reading, not a derived fraction', async () => {
+    // Every other wall clock in the system is an integral `Date.now()` —
+    // `Envelope.enqueuedAtMs` above all, which `mailboxWaitMs` subtracts this
+    // from.  A fractional `atMs` is the visible tell that the value was
+    // reconstructed after the fact rather than read at the start.
+    const { probe, ref } = await spawnRecorded('explain-integral', 500);
+    for (let i = 0; i < 60; i++) ref.tell(`m${i}`);
+    await settle();
+
+    const plan = probe.plan();
+    expect(plan.length).toBeGreaterThan(50);
+    const fractional = plan.filter((entry) => !Number.isInteger(entry.atMs));
+    expect(fractional).toEqual([]);
+  });
+
+  test('the ring reads oldest-first by atMs as well as by sequence number', async () => {
+    // A ring whose stamps run backwards is worse than one with coarse
+    // stamps: the panel sorts and groups by them.  Two messages handled in
+    // order cannot start out of order, so this holds by construction for a
+    // real reading — and fails for a derived one, because each entry carries
+    // its OWN end-read truncation and they differ.  Measured on the derived
+    // stamp: 528/2000 entries preceded their predecessor.
+    const { probe, ref } = await spawnRecorded('explain-monotonic', 1000);
+    for (let i = 0; i < 400; i++) ref.tell(`m${i}`);
+    await settle(200);
+
+    const plan = probe.plan();
+    expect(plan.length).toBeGreaterThan(300);
+    const backwards = plan.filter(
+      (entry, index) => index > 0 && entry.atMs < plan[index - 1]!.atMs,
+    );
+    expect(backwards).toEqual([]);
+  });
+});
+
 describe('explain plan — lifecycle', () => {
   test('evicts the oldest once the ring is full', async () => {
     const { probe, ref } = await spawnRecorded('explain-ring', 3);
