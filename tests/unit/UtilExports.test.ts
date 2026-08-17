@@ -140,6 +140,9 @@ describe('BidirectionalMap is reachable from the barrel (#1035)', () => {
     const map = new BidirectionalMap([['a', 1]]);
     expect(map).toBeInstanceOf(BidirectionalMap);
     expect(map.getKey(1)).toBe('a');
+    // The 1:1 counts reach the barrel too (#1199) — always equal to `size`.
+    expect(map.keySize).toBe(1);
+    expect(map.valueSize).toBe(1);
   });
 
   test('the JSON type is exported alongside it', () => {
@@ -153,6 +156,11 @@ describe('BidirectionalMultiMap is reachable from the barrel (#1037)', () => {
     const map = new BidirectionalMultiMap([['news', 'ada'], ['sport', 'ada']]);
     expect(map).toBeInstanceOf(BidirectionalMultiMap);
     expect([...map.getKeys('ada')]).toEqual(['news', 'sport']);
+    // The participant counts reach the barrel too (#1199), and here they differ
+    // from the pair count and from each other: two pairs, two lefts, one right.
+    expect(map.size).toBe(2);
+    expect(map.leftSize).toBe(2);
+    expect(map.rightSize).toBe(1);
   });
 
   test('the JSON type is exported alongside it', () => {

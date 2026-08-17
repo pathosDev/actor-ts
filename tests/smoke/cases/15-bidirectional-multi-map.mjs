@@ -47,6 +47,18 @@ export async function run({ actorTs, loadEntry }) {
     const holders = [...restored.getKeys('ada')].join(',');
     if (holders !== 'news,sport') throw new Error(`${label}: inverse not rebuilt: ${holders}`);
 
+    // Participant counts (#1199).  These are prototype getters, so a decode that
+    // handed back a plain object rather than an instance reads `undefined` here
+    // — the same cross-module identity failure this case exists for, caught one
+    // step further in: `rightSize` in particular reads the reverse map, which is
+    // never written to the wire at all.
+    if (restored.leftSize !== 2 || restored.rightSize !== 2) {
+      throw new Error(
+        `${label}: participant counts came back as `
+        + `leftSize=${restored.leftSize} rightSize=${restored.rightSize}, expected 2 and 2`,
+      );
+    }
+
     if (Object.prototype.toString.call(restored) !== '[object BidirectionalMultiMap]') {
       throw new Error(`${label}: toStringTag: ${Object.prototype.toString.call(restored)}`);
     }
@@ -59,6 +71,13 @@ export async function run({ actorTs, loadEntry }) {
     }
     if (restored.size !== 1 || [...restored.rights()].join(',') !== 'grace') {
       throw new Error(`${label}: pruning left the relation inconsistent: size=${restored.size}`);
+    }
+    // …and the counts followed the pruning rather than going stale with it.
+    if (restored.leftSize !== 1 || restored.rightSize !== 1) {
+      throw new Error(
+        `${label}: pruning left the counts stale: `
+        + `leftSize=${restored.leftSize} rightSize=${restored.rightSize}, expected 1 and 1`,
+      );
     }
   }
 }

@@ -557,6 +557,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The bidirectional collections count participants, not only pairs**
+  (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
+  number of distinct participants on each side, both O(1), reading the two
+  backing maps directly.  `size` still counts pairs, which is what a cap is
+  usually written against; the two questions are now both askable without
+  spreading an iterator to measure the answer (`[...map.lefts()].length` was an
+  O(n) allocation to read a number the object already held).  They are correct
+  on an `inverse()` view for free, because the view's forward map *is* the
+  original's reverse one — unlike the pair counter, which needs a shared box
+  for exactly that reason.
+
+  `BidirectionalMap` gained `keySize` and `valueSize` for symmetry.  The
+  relation there is 1:1, so both always equal `size`; they exist so that moving
+  between the two types needs no memory of which one has the accessor.
+  `valueSize` reads the reverse map rather than aliasing the forward one, so it
+  still tells the truth if the invariant it corroborates ever breaks.
+
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
   two live instances of one persistence-id.  After a partition plus a
   rebalance — or any orchestration mistake that spawns an entity twice — both

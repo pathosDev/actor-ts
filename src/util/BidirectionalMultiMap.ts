@@ -17,7 +17,10 @@
  * prevent.
  *
  * **`size` counts pairs**, not participants — the two rarely agree, and
- * pairs are what a cap is usually written against.
+ * pairs are what a cap is usually written against.  When it is the
+ * participants you want, {@link BidirectionalMultiMap.leftSize} and
+ * {@link BidirectionalMultiMap.rightSize} answer that, and in O(1) too, so
+ * neither question ever costs a walk.
  *
  * **Equality.**  Both directions are backed by `Map` and `Set`, so both use
  * SameValueZero.  `NaN` works as a participant, `0` and `-0` are the same,
@@ -106,6 +109,23 @@ export class BidirectionalMultiMap<L, R> {
   /** Number of pairs — not participants.  Both directions always agree on it. */
   get size(): number {
     return this.counter.pairs;
+  }
+
+  /**
+   * How many distinct left participants there are — every one of them holding
+   * at least one partner, since an empty participant cannot exist here.
+   *
+   * O(1): the size of the forward map, not a walk over it.  Correct on an
+   * {@link inverse} view for free, because the view's forward map *is* this
+   * reverse one — so unlike {@link PairCounter} there is nothing to share.
+   */
+  get leftSize(): number {
+    return this.forward.size;
+  }
+
+  /** How many distinct right participants there are — the mirror of {@link leftSize}. */
+  get rightSize(): number {
+    return this.reverse.size;
   }
 
   /** Relates `left` and `right`.  Adding a pair that already exists is a no-op. */

@@ -84,6 +84,32 @@ export class BidirectionalMap<K, V> implements Map<K, V> {
   }
 
   /**
+   * Number of distinct keys — always the same number as {@link size}, because
+   * the relation is 1:1.
+   *
+   * It carries no information {@link size} does not, and exists for symmetry
+   * with `BidirectionalMultiMap.leftSize`, where the two counts genuinely
+   * differ: moving between the two types should not require remembering which
+   * one has the accessor.
+   */
+  get keySize(): number {
+    return this.forward.size;
+  }
+
+  /**
+   * Number of distinct values — the mirror of {@link keySize}, and again the
+   * same number as {@link size}.
+   *
+   * Reads `reverse` rather than `forward` deliberately.  An accessor that
+   * reads the direction it names still tells the truth if the invariant ever
+   * breaks, where an alias for `forward.size` would hide the break behind the
+   * count it is supposed to corroborate.
+   */
+  get valueSize(): number {
+    return this.reverse.size;
+  }
+
+  /**
    * Binds `key` to `value`, **evicting whatever held either side before** —
    * see the note on displacement in the class docs.  Use
    * {@link BidirectionalMap.trySet} to refuse instead of evicting.
