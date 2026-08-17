@@ -534,11 +534,22 @@ async function main(): Promise<void> {
   a9.close();
   await new Promise((r) => setTimeout(r, 200));
 
-  // 7d. tampered token (HMAC mismatch) is rejected.  Flip the last
-  // base64 char of the signature half — invalidates the MAC.
+  // 7d. tampered token (HMAC mismatch) is rejected.
+  //
+  // Flip a BYTE of the decoded signature, not a character of its base64.
+  // The signature is 32 bytes, so its base64url is 43 characters = 258 bits
+  // for 256 bits of payload: the final character carries two bits that decode
+  // discards, and `A`/`B`/`C`/`D` all decode to the same trailing byte.  The
+  // previous version flipped exactly that character, so on the 4-in-64 runs
+  // whose token happened to end in one of those four it produced a byte-
+  // identical token, the MAC verified correctly, and the assertion reported
+  // "HMAC verify not running" — the opposite of what had happened.
   const dot = goodToken.indexOf('.');
-  const tampered = goodToken.slice(0, -1) + (goodToken.endsWith('A') ? 'B' : 'A');
-  if (dot < 0 || tampered === goodToken) fail(`couldn't construct tampered token`);
+  if (dot < 0) fail(`couldn't construct tampered token: no '.' in token`);
+  const signature = Buffer.from(goodToken.slice(dot + 1), 'base64url');
+  signature[0] ^= 0xff;
+  const tampered = `${goodToken.slice(0, dot)}.${signature.toString('base64url')}`;
+  if (tampered === goodToken) fail(`couldn't construct tampered token`);
   const a10 = new ChatClient(URL_ARG);
   await a10.open();
   a10.send({ kind: 'resume', token: tampered });
