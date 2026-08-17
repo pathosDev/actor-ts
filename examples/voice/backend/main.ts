@@ -146,21 +146,10 @@ async function main(): Promise<void> {
   cluster.singleton.start(singletonOptions);
 
   // -------- 7. Graceful shutdown --------
-  let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    system.log.info(`received ${signal} — shutting down`);
-    try {
-      await cluster.leave();
-      await system.terminate();
-    } catch (e) {
-      system.log.warn(`shutdown error: ${(e as Error).message}`);
-    }
-    process.exit(0);
-  };
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  // Nothing left to write: `Cluster.join` registered the leave and the HTTP
+  // bind registered the unbind, both in phases that run before the actors
+  // stop.  This waits for SIGTERM/SIGINT and then runs them in order.
+  await system.runUntilTerminated();
 }
 
 main().catch((err) => {

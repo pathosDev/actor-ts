@@ -23,6 +23,8 @@ import * as path from 'node:path';
 import {
   ActorSystem,
   ActorSystemOptions,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../../src/index.js';
 import {
   Cluster,
@@ -262,26 +264,21 @@ async function main(): Promise<void> {
   cluster.singleton.start(singletonOptions);
 
   // -------- 10. Graceful shutdown --------
-  let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    system.log.info(`received ${signal} — shutting down`);
-    try {
-      // `cluster.leave()` triggers the singleton manager's hand-off;
-      // if this node was the holder, postStop runs (port released)
-      // before terminate.
-      await cluster.leave();
+  // Only the persistence handles need registering: the WebSocket binding and
+  // `cluster.leave()` — which triggers the singleton manager's hand-off — are
+  // already phase tasks.  `before-actor-system-terminate` is the phase that
+  // reproduces what this example did by hand, namely close the stores after
+  // the node has left the cluster and before the system is terminated.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.BeforeActorSystemTerminate,
+    'close-persistence',
+    async () => {
       await journal.close();
       await snapshotStore.close();
-      await system.terminate();
-    } catch (e) {
-      system.log.warn(`shutdown error: ${(e as Error).message}`);
-    }
-    process.exit(0);
-  };
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    },
+  );
+
+  await system.runUntilTerminated();
 }
 
 main().catch((err) => {

@@ -12,7 +12,9 @@
 import { match } from 'ts-pattern';
 import {
   Actor,
+  CoordinatedShutdownId,
   LogLevel,
+  Phases,
 } from '../../src/index.js';
 import {
   Cluster,
@@ -73,17 +75,16 @@ function parseArgs(argv: string[]): { port: number; seeds: string[]; host: strin
 async function main(): Promise<void> {
   const { port, seeds, host } = parseArgs(process.argv.slice(2));
   // `Cluster.bootstrap` rolls ActorSystem.create + Cluster.join +
-  // SIGTERM/SIGINT-driven shutdown into one call.  We disable the
-  // built-in signal wiring here because the example installs its
-  // own shutdown handler (with `clearInterval` cleanup).
-  const { system, cluster, shutdown: clusterShutdown } = await Cluster.bootstrap(
+  // SIGTERM/SIGINT-driven shutdown into one call.  The signal wiring stays
+  // on: this node's own cleanup joins the shutdown pipeline below rather
+  // than competing with it from a hand-rolled handler.
+  const { system, cluster } = await Cluster.bootstrap(
     ClusterBootstrapOptions.create('counter-cluster')
       .withLogLevel(LogLevel.Info)
       .withHost(host)
       .withPort(port)
       .withSeeds(seeds)
       .withReceptionist(false)
-      .withShutdownOnSignals(false)
       .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
       .withGossipIntervalMs(500));
   // `Cluster.bootstrap` has already joined, so the cluster panel gets a
@@ -130,15 +131,20 @@ async function main(): Promise<void> {
     tick++;
   }, 400);
 
-  const shutdown = async (): Promise<void> => {
-    clearInterval(interval);
-    await clusterShutdown();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Stop generating traffic first — before the node leaves the cluster, so
+  // the last messages still route to a member the peers agree exists.  That
+  // ordering is what the phases are for; a signal handler cannot express it.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.BeforeServiceUnbind,
+    'stop-self-traffic',
+    () => { clearInterval(interval); },
+  );
 
   system.log.info(`node listening on ${host}:${port}, seeds=[${seeds.join(', ')}]`);
+
+  // Blocks until SIGTERM/SIGINT, then runs the pipeline: leave the cluster,
+  // terminate the system, resolve.
+  await system.runUntilTerminated();
 }
 
 void main();
