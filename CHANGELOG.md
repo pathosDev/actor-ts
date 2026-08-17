@@ -2251,6 +2251,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   case #411 added was failing 15 times in 30 by 0.42 ms; the file is now
   450/450 over the same loop.
 
+- **`runUntilTerminated()` now keeps the process alive while it waits,
+  instead of letting a Node service exit before the signal it armed itself
+  for could arrive (#549).**
+
+  A signal handler is not by itself a reason for a runtime to keep
+  running: Node unrefs its signal handles, Bun refs its, and a
+  `Deno.addSignalListener` listener cannot be unref'd at all. The call
+  relied on the handlers it had just installed to hold the event loop,
+  which is true on two runtimes out of three. On Node a system with
+  nothing else on the loop — no bound port, no open socket, every timer
+  unref'd — drained it the moment it started waiting, and the process
+  exited with not one shutdown phase having run; under a top-level `await`
+  Node reported `Detected unsettled top-level await` and exited 13. A
+  service that binds HTTP survived only by accident, because the listener
+  refs the loop.
+
+  The call now takes a keep-alive hold of its own and releases it in the
+  same step that detaches the handlers, so a system that shuts down for
+  any other reason still exits promptly. `installProcessHooks()`
+  deliberately does not get the same treatment: it only promises to
+  install handlers, and a permanent hold there would stop a Node program
+  that bootstraps a cluster from ever exiting.
+
+  The cross-runtime smoke case that covers this was passing locally only
+  because its Windows branch started the shutdown pipeline the instant it
+  printed READY, leaving no window in which the process had to survive on
+  its own. It now idles first, and reproduces the failure on Windows
+  verbatim — same exit code, same warning — so the case that missed this
+  defect would now catch it.
+
 ### Security
 
 - **A `ShardRegion` now honours a coordinator directive only when the
