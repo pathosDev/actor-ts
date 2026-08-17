@@ -414,6 +414,14 @@ actor-ts {
     default-phase-timeout = 5s
     terminate-actor-system = true
     exit-process = false   # call process.exit(0) once the pipeline completes
+
+    # Framework components register their own teardown in the pipeline: the
+    # HTTP server unbinds in service-unbind, broker actors close their
+    # connections in service-stop, a joined cluster leaves in cluster-leave,
+    # DevTools detaches with the rest of the service layer.  Set false to keep
+    # the phases and register everything yourself -- for an embedder that owns
+    # the lifecycle of the resources it handed the system.
+    auto-register-tasks = true
   }
 }
 `.trim();
