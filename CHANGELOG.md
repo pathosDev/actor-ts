@@ -527,6 +527,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   hand-rolled `process.on('SIGTERM', …)` this issue exists to delete. Both
   language mirrors.
 
+- **CORRECTION - replaces two clauses in the existing unreleased #411
+  entry rather than adding a bullet (#411).**
+
+  This is not new copy for the changelog; it is the wording the existing
+  '**The receive path no longer allocates per message when metrics and
+  tracing are off**' bullet needs, because two of its statements stopped
+  being true.
+
+  Replace '`Date.now()` moved into the explain-recorder branch that was
+  its only consumer' with: '`Date.now()` is read only when the explain
+  recorder that consumes it already exists, rather than for every
+  message'. The original wording described deriving the stamp after the
+  fact, which is the defect fixed above.
+
+  Replace 'Behaviour with instrumentation enabled is unchanged, including
+  when it is switched on or off while cells are already draining' with:
+  'Behaviour with metrics or tracing enabled is unchanged, including when
+  either is switched on or off while cells are already draining'. As
+  shipped the claim was false for the third instrument: the explain
+  recorder's `atMs` became fractional and its `mailboxWaitMs` negative.
+
+  The throughput figures in that entry stand and if anything understate
+  the result - an independent measurement put the #409 + #411 pair at
+  2.32x at batch=100 rising to 4.92x at 100k. What the pair's benchmark
+  cannot do is attribute the gain between the two commits, which is why
+  the per-message work #411 removed is now bound by counting the calls
+  that would have done it: four extension-chain walks and one
+  `Object.keys` per message with the caching removed, flat zero with it in
+  place.
+
 ### Added
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
@@ -1110,6 +1140,60 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the drop-reporting seam carries a `MailboxDropReason` and never the
   envelope. That overflow shows up in `actor_mailbox_dropped_total` and
   nowhere else.
+
+- REPLACES the existing `[Unreleased] → Added` entry for #655 (the one
+  beginning "`/health` and `/ready` now aggregate framework-owned health
+  checks instead of an always-empty list"). It is unreleased, so it should
+  be corrected in place rather than supplemented — two of its claims are
+  wrong. Replacement text follows.
+
+  **`/health` and `/ready` now aggregate framework-owned health checks
+  instead of an always-empty list (#655).**
+
+  The `HealthCheckRegistry` became an `ActorSystem` extension, reached
+  with `healthChecksOf(system)`. That is what the feature needed: a
+  `Cluster`, a `ShardRegion` or a transport starts long before anyone
+  builds a management route tree, so a registry created inside
+  `managementRoutes` had no component able to register with it. Nothing in
+  `src/` ever called `addLiveness`/`addReadiness` — every caller was an
+  example, a test or a docs snippet — so `/health` returned `{status:'UP',
+  checks:[]}` unconditionally and `/ready` added only self-is-up.
+
+  Three checks ship with it. Liveness gets exactly one, `actor-system`
+  ("has this system shut down?"), and deliberately nothing else: a failing
+  liveness check gets the pod killed, so it may depend on nothing a
+  restart can fix — a check that goes red when a shared database blinks
+  turns one outage into a fleet-wide restart storm. Readiness gets two,
+  registered by `Cluster._start`. They are **not** removed by `leave()`: a
+  left node keeps them, reporting DOWN, because an empty aggregate reads
+  as healthy and un-registering would make a drained node report itself
+  ready. A later `join` on the same system retires the previous pair at
+  registration time.
+
+  `cluster-membership` is the self-is-`up` test the endpoint used to
+  compute inline. `cluster-transport` is new: it fails when the node can
+  reach none of the peers it still expects, where reachable means an open
+  connection to a member the failure detector has not written off. Both
+  halves are needed — an open socket alone proves nothing, because a
+  `DROP` partition produces no FIN and no RST and leaves the sockets
+  established while nothing is exchanged, so the failure detector is the
+  only thing that notices. That is a *total isolation* test, not full
+  reachability: a partial partition leaves the node able to gossip,
+  converge and route, and dropping it from the load balancer would take
+  capacity from a cluster that is coping. Members marked `unreachable`
+  still count as expected, so a partition cannot make the check green by
+  shrinking the set it asks about; a peer that was actually downed stops
+  counting, so a legitimate lone survivor stays ready. A single-node
+  cluster expects nobody and always passes. What it does not catch: the
+  failure detector's own latency, and a one-way partition in which this
+  node still receives.
+
+  The same registry is what `GrpcServerOptionsType.health` feeds
+  `grpc.health.v1.Health` from, so the management endpoint and the gRPC
+  health service read one instance rather than two that can disagree, and
+  both apply the same exported `isHealthy` rule. `/ready`'s `clusterReady`
+  field is read back out of the aggregate by name rather than recomputed
+  in the handler, for the same reason.
 
 ### Fixed
 
@@ -1820,9 +1904,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   gone (a re-run still reaches them) rather than tag rows whose keys can
   no longer be reconstructed. No schema change and no migration. Journals
   running with `useTagIndex: false` are unaffected and issue exactly the
-  statements they always did; an existing `useTagIndex` deployment keeps
-  whatever rows earlier deletes already stranded, which a re-run of
-  `delete` over the same range now clears.
+  statements they always did.
+
+  An existing `useTagIndex` deployment keeps whatever rows earlier deletes
+  already stranded, and **re-running `delete` over the same range does not
+  clear them** — measured, not assumed.  The new cleanup rebuilds each
+  side-table key by reading `(sequence_nr, timestamp, tags)` back out of the
+  `events` table, and a pre-fix `delete` has already removed exactly those
+  rows, so the read returns nothing and no `events_by_tag` row is touched.
+  Clearing a pre-existing backlog needs a manual sweep of `events_by_tag`
+  or a backfill, not a second `delete`.
 
   The `Journal` contract records the obligation, and a new shared contract
   scenario — "a deleted event is invisible to `currentEventsByTag`" — runs
@@ -2063,6 +2154,99 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Corrected in English and German. This addresses the claims in the two
   pages the re-triage of #433 named; anything else #1000 catalogues is
   untouched.
+
+- **A node that has left the cluster, or is silently cut off from it, no
+  longer reports READY (#655).**
+
+  `Cluster.leave()` un-registered the cluster's two readiness checks at
+  the top of the method, before self had even been moved to `leaving`.
+  Those are the only readiness checks an ordinary cluster node has, so
+  `checkReadiness()` came back empty, `results.every(…)` was vacuously
+  true on `[]`, and `/ready` answered 200 with an empty check list — as
+  did the gRPC `grpc.health.v1.Health` service, which reads the same
+  registry. A pod that had deliberately gone out of service kept being
+  sent traffic until the process stopped: the exact inverse of what a
+  readiness probe is for, and worse than having no probe, because this one
+  is trusted. `leave()` now leaves both checks registered and they report
+  DOWN on their own, self staying `leaving` in its own member view. A
+  later `Cluster.join` on the same system retires the previous pair at
+  registration time — that is what the removal used to buy, and it is now
+  the only thing that does it, which is what separates "stayed left" from
+  "re-joined".
+
+  The empty-set rule behind that is now stated once instead of emerging
+  from `every`. `isHealthy` — moved to `HealthCheck.ts`, same export path
+  from `actor-ts/management` — returns `true` for an empty result set
+  through an explicit branch, and `/health`, `/ready` and the gRPC health
+  service all call it, so the probes cannot diverge. An empty set stays
+  healthy on purpose: readiness is the conjunction of the dependencies a
+  node *declares*, one that declares none has none unmet, and a plain
+  cluster-free system behind `managementRoutes` must not answer 503 for
+  its whole life because nobody registered anything. Its safety condition
+  is documented beside it — nothing may empty the registry on the way out
+  of service, or "everything passes" and "nothing is reporting any more"
+  become the same answer — and `addLiveness` / `addReadiness` now say what
+  their undo is for: replacement, or a torn-down owner, never a trouble
+  signal.
+
+  `cluster-transport` also could not see the partition it exists for. It
+  read `Transport.peers()`, which lists every handshake-completed
+  connection and empties only on a FIN, an RST or `shutdown()`: nothing in
+  `src/` calls `disconnect()`, and an established idle connection arms no
+  deadline. So `iptables -j DROP`, a black-holed route or a wedged peer
+  took the traffic away while the check went on reporting a reachable
+  cluster for as long as the kernel kept retrying — minutes. "Reachable"
+  now requires an open connection *and* a member the failure detector has
+  not marked `unreachable`, which hands the half that needs noticing
+  silence to the component that notices it; and it is asserted about an
+  expected *member* rather than a bare connection, so a `ClusterClient`'s
+  inbound socket can no longer keep an isolated node in rotation. Partial
+  partitions still pass, downed peers still stop counting as expected, a
+  single-node cluster still passes. Two limits are now documented rather
+  than discovered: the failure detector's own latency, and a one-way
+  partition in which this node still receives.
+
+  `clusterMembershipResult` and `clusterTransportResult` are exported as
+  pure functions over `(members, self, connectedPeers)`, which makes the
+  detail an operator reads off `/ready` assertable — and they now tell the
+  two transport failures apart, because "no socket at all" is a peer that
+  went away and "sockets open, nobody reachable" is a black hole.
+
+- **The explain plan's `atMs` is a clock reading again, so a mailbox wait
+  can no longer come out negative (#411).**
+
+  #411 removed the `Date.now()` at the top of the receive path on the
+  grounds that it ran for every message and only the explain recorder
+  consumed it. Both halves of that are true; deriving the start in the
+  `finally` as `Date.now() - elapsedMs` is what does not hold.
+  `Date.now()` floors to whole milliseconds and `elapsedMs` comes off
+  `performance.now()` and is fractional, so the difference carries the end
+  read's truncation and lands up to 1 ms before the handling began -
+  one-sided, never late.
+
+  `atMs` shrugs that off; `mailboxWaitMs` does not, because it is `atMs -
+  env.enqueuedAtMs` and the enqueue stamp is an honest integer. On an
+  actor idle enough that each message is handled the moment it lands, 1971
+  of 2000 entries came out negative, low-water -0.56 ms, printed as such
+  in the DevTools panel. Under load the same per-entry truncation put 662
+  of 2000 stamps behind their predecessor's, in a ring whose contract is
+  oldest-first.
+
+  The read is restored, gated on `this._explain !== null` so an
+  uninstrumented message still pays nothing for it - one field load and a
+  compare on a path that already null-checks the same field. Every
+  allocation #411 removed stays removed. The one message a start stamp
+  cannot cover, the one whose own handler switched the recorder on, keeps
+  the derivation, rounded up: the error is known to lie in [0, 1) ms and
+  to be one-directional, so `Math.ceil` lands on the millisecond the clock
+  would have shown at the start or the one after, never the one before.
+
+  Three cases pin the invariants the reading has and the reconstruction
+  did not - no negative wait on an idle actor, a whole-millisecond stamp,
+  and a ring that reads oldest-first by `atMs` as well as by sequence
+  number. All three fail 30/30 against the derived stamp. The mid-flight
+  case #411 added was failing 15 times in 30 by 0.42 ms; the file is now
+  450/450 over the same loop.
 
 ### Security
 
