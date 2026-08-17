@@ -95,6 +95,46 @@ describe('DeadLetter routing', () => {
   });
 });
 
+describe('DeadLetter recipient attribution (#433)', () => {
+  test('a typed behavior answering unhandled names itself, not the dead-letter office', async () => {
+    // The raw `deadLetters.tell(message)` this replaced let `DeadLetterRef`
+    // do the wrapping, and the ref can only name itself — so every unhandled
+    // typed message came out addressed to `/deadLetters`, which is the one
+    // recipient shared by the entire stream and therefore no information.
+    const seen: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(m: DeadLetter): void { seen.push(m); }
+    }
+
+    const sys = newSystem('dl-typed');
+    sys.spawn(Listener, 'lst');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the listener subscribed to the event stream',
+    });
+
+    const { Behaviors } = await import('../../src/typed/Behaviors.js');
+    const ref = sys.spawnTyped(
+      Behaviors.receiveMessage<string>(() => Behaviors.unhandled),
+      'picky',
+    );
+    ref.tell('nope');
+
+    await awaitCondition(() => seen.some((d) => d.message === 'nope'), {
+      timeoutMs: 4_000,
+      label: 'the unhandled message reached dead letters',
+    });
+    const letter = seen.find((d) => d.message === 'nope')!;
+    expect(letter.recipient.path.toString()).toBe(`actor-ts://${sys.name}/user/picky`);
+    await sys.terminate();
+  });
+});
+
 describe('DeadLetter delivery loop', () => {
   test('a terminated DeadLetter subscriber does not spin the dead-letter office', async () => {
     // Delivering a dead letter to a subscriber that has stopped without

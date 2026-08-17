@@ -2,7 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { Terminated } from '../../SystemMessages.js';
+import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { SystemGroups, singletonManagerName, systemActorPath } from '../../internal/SystemPaths.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import type { Cluster } from '../Cluster.js';
@@ -474,7 +474,14 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     if (message.kind !== 'singleton-deliver') return;
     if (!this.child) {
       this.warnNotHostedOnce();
-      this.system.deadLetters.tell(message.body as never);
+      // The manager, not `/deadLetters`, is the recipient: this node was
+      // addressed as the singleton's host and could not deliver, and the
+      // manager's path is what identifies *which* singleton and *which*
+      // node that was.  The body is unwrapped so the letter carries what
+      // the application sent, not the transport frame around it.
+      this.system.deadLetters.tell(
+        new DeadLetter(message.body, this.sender.toNullable(), this.self),
+      );
       return;
     }
     this.child.tell(message.body as never);

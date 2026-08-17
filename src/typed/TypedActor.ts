@@ -425,8 +425,18 @@ export class TypedActor<T> extends Actor<T> {
     if (this.current.kind === 'stopped') this.context.stopSelf();
   }
 
+  /**
+   * A behavior answered `unhandled`, so the message dies at this actor.
+   *
+   * Wrapped here rather than left to `DeadLetterRef`: the ref would name
+   * itself as the recipient, and "something, somewhere, did not handle
+   * this" is not a diagnosis.  `self` is — it is the actor whose behavior
+   * declined the message, which is the one fact worth recording.  The
+   * sender comes from the turn being processed, matching what the
+   * untyped cell records for its own unhandled paths.
+   */
   private forwardToDeadLetters(message: T): void {
-    this.system.deadLetters.tell(message as never);
+    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
   }
 }
 
