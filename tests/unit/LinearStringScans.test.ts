@@ -48,8 +48,17 @@ const SIZES: readonly number[] = [2_000, 8_000, 32_000];
  */
 const CONTROL_SIZES: readonly number[] = [500, 2_000, 8_000];
 
-/** Linear steps by 4×, quadratic by 16×. Fail in the gap, nearer the safe end. */
-const MAXIMUM_STEP_RATIO = 6;
+/**
+ * Linear steps by 4×, quadratic by 16×; the threshold sits in the gap.
+ *
+ * It was 6, which is the midpoint on a log scale and looks like the obvious
+ * choice — but a linear scan measured 6.49 on a machine running the full suite
+ * in parallel, so the margin above 4 was not the margin it appeared to be.  8
+ * still fails the defect this file exists for by a factor of two, and moves the
+ * headroom to the side where being wrong costs a false alarm rather than a
+ * missed regression.
+ */
+const MAXIMUM_STEP_RATIO = 8;
 
 /** Wall-clock per size and round; the call count follows from it. */
 const MEASUREMENT_BUDGET_MS = 10;
