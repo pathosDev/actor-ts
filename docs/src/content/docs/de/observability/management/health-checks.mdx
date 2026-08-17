@@ -43,10 +43,12 @@ Ergebnis jedes Checks auflistet.
 ## Die eingebauten Checks
 
 Diese registriert das Framework selbst — du bekommst sie, ohne
-danach zu fragen, und sie liegen in derselben Aggregation, die
-`/ready` und der gRPC-Dienst
-[`grpc.health.v1.Health`](/de/io/grpc/) lesen.  Beide können also
-nie unterschiedlicher Meinung darüber sein, was „ready" heißt.
+danach zu fragen, und sie liegen in der Aggregation, die `/ready`
+liest.  Der gRPC-Dienst [`grpc.health.v1.Health`](/de/io/grpc/)
+liest die Registry, die du ihm übergibst: reiche
+`healthChecksOf(system)` durch, und beide können nie
+unterschiedlicher Meinung darüber sein, was „ready" heißt — eine
+frische `HealthCheckRegistry` an dieser Stelle trennt sie.
 
 | Check | Art | Registriert von | Schlägt fehl, wenn |
 | --- | --- | --- | --- |
