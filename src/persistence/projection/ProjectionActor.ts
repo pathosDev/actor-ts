@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { SystemGroups } from '../../internal/SystemPaths.js';
 import { metricsOf } from '../../metrics/MetricsExtension.js';
 import type { PersistentEvent } from '../JournalTypes.js';
@@ -283,16 +284,20 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
 
   /**
    * Hand a skipped event to the system dead-letter stream, so an application
-   * can subscribe to what its read model is missing.  The in-memory stream is
-   * the sink that exists today; a durable one (#433) would slot in behind the
-   * same publication without changing this call.
+   * can subscribe to what its read model is missing.
+   *
+   * The wrap is explicit because the two-argument `tell` put `self` in the
+   * *sender* slot, which is the wrong end: nothing sent this event to the
+   * projection, the projection failed to apply it.  Recipient `self` says
+   * which projection is missing the event — the fact a reader needs, and the
+   * one a per-recipient filter or counter keys on (#433).
    */
   private reportSkipped(event: PersistentEvent<E>): void {
     metricsOf(this.system).counter(
       'persistence_projection_events_skipped_total', { projection: this.options.name },
       { help: 'Events a projection gave up on and stepped past, published as dead letters.' },
     ).inc();
-    this.system.deadLetters.tell(event, this.self);
+    this.system.deadLetters.tell(new DeadLetter(event, null, this.self));
   }
 
   private notifyFailure(failure: ProjectionFailure<E>): void {

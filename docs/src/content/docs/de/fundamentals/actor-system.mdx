@@ -158,9 +158,14 @@ Dead Letters zu rennen.
 
 Der `/deadLetters`-"Actor" ist speziell — Nachrichten an ein `tell`
 auf einer gestoppten Ref oder an eine nie existierte Ref werden
-dorthin geleitet.  Standardmäßig loggt das System Dead Letters auf
-`debug`-Level; abonniere den Event-Stream, wenn du programmatisch
-reagieren willst.
+dorthin geleitet.  Jede davon wird als `DeadLetter` auf dem
+Event-Stream veröffentlicht und benennt den Empfänger, den sie nicht
+erreicht hat — und das ist **alles**, was standardmäßig passiert:
+nichts loggt sie und nichts bewahrt sie auf, ohne Abonnent ist die
+Nachricht also weg.  Abonniere, um programmatisch zu reagieren, oder
+schalte die begrenzte — optional dauerhafte — Queue ein, die sie
+aufbewahrt und erneut zustellt; siehe
+[Dead Letters](/de/operations/dead-letters/).
 
 ## Extensions
 

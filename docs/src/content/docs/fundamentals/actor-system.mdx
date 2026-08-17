@@ -154,9 +154,13 @@ unsubscribing from the pub-sub mediator, handing a shard back — instead
 of racing them into dead letters.
 
 The `/deadLetters` "actor" is special — messages to a `tell` on a
-stopped ref, or to a ref that never existed, route there.  By
-default the system logs dead letters at `debug` level; subscribe to
-the event stream if you want to react programmatically.
+stopped ref, or to a ref that never existed, route there.  Each one is
+published on the event stream as a `DeadLetter` naming the recipient it
+failed to reach, and that is **all** that happens by default: nothing
+logs them and nothing keeps them, so with no subscriber the message is
+gone.  Subscribe to react programmatically, or turn on the bounded —
+optionally durable — queue that keeps and replays them; see
+[Dead letters](/operations/dead-letters/).
 
 ## Extensions
 

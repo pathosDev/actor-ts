@@ -4,6 +4,7 @@ import { ActorSelection } from '../../src/ActorSelection.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import type { DeadLetter } from '../../src/SystemMessages.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
@@ -74,8 +75,13 @@ describe('ActorSelection — basics', () => {
     kit.system.eventStream.subscribe(probe, DeadLetter);
 
     kit.system.actorSelection('/user/ghost').tell('boo');
-    const dl = await probe.receiveOne(500) as { message: unknown };
+    const dl = await probe.receiveOne(500) as DeadLetter;
     expect(dl.message).toBe('boo');
+    // The recipient is the address that resolved to nothing, not the
+    // dead-letter office.  Asserting only on `.message` passed before #433
+    // precisely *because* the recipient was wrong — every letter named
+    // `/deadLetters`, so nothing could tell one selection from another.
+    expect(dl.recipient.path.toString()).toBe(`actor-ts://${kit.system.name}/user/ghost`);
     await kit.system.terminate();
   });
 });

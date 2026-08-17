@@ -1,0 +1,176 @@
+---
+title: Dead letters
+description: What a dead letter is, what actor-ts does with one by default, and how to turn on the bounded — optionally durable — queue that keeps, filters and replays them.
+---
+
+A **dead letter** is a message the system could not deliver: a `tell` to a
+ref whose actor has stopped, a selection that resolved to nothing, a
+behavior that answered `unhandled`, a cluster singleton with no host.
+Nothing was lost by accident — the framework noticed, and this is how it
+says so.
+
+## What happens by default
+
+Every dead letter is wrapped in a `DeadLetter` and **published on the
+[event stream](/fundamentals/event-stream/)**. That is the whole of the
+default behaviour.
+
+In particular the framework does **not** log dead letters. `DeadLetterRef`
+holds no logger; if nothing subscribes to the stream, the letter is gone.
+That is fine for a development run and a poor answer to "what did we drop
+during last night's incident?", which is what the queue below is for.
+
+```ts
+import { DeadLetter } from 'actor-ts';
+
+class Watcher extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    this.system.log.warn(`undelivered: ${letter.message} -> ${letter.recipient.path}`);
+  }
+}
+```
+
+Every dead letter names its **recipient** — the actor the message failed to
+reach, not the dead-letter office. That is what makes one letter
+distinguishable from another, and it is what the filters and the replay
+below are built on.
+
+## Turning the queue on
+
+`system.deadLetterQueue` always exists and, by default, keeps nothing.
+Three stores:
+
+| `store` | Keeps | Survives a restart |
+| --- | --- | --- |
+| `off` (default) | nothing | — |
+| `memory` | a bounded ring | no |
+| `persistent` | the same ring, plus an append-only journal log | yes |
+
+```hocon
+actor-ts.dead-letters {
+  store       = "memory"
+  max-entries = 1000
+  retention   = 1h
+  max-replays = 3
+}
+```
+
+The same knobs are available as an options family when you build the queue
+yourself:
+
+```ts
+import { DeadLetterQueueOptions } from 'actor-ts';
+
+const deadLetterOptions = DeadLetterQueueOptions.create()
+  .withStore('persistent')
+  .withMaxEntries(5_000)
+  .withRetentionMs(6 * 60 * 60 * 1_000);
+```
+
+:::note
+`store` is a **storage** decision, not a failure strategy. What a
+projection should *do* when a handler throws is
+[`recoveryStrategy`](/persistence/projections/) — `retry-and-skip`, `skip`
+and friends. Once a projection has skipped an event it publishes a dead
+letter, and this setting decides whether anything keeps it. The two
+compose; neither replaces the other.
+:::
+
+## Inspecting
+
+`list()` returns entries **newest first**, narrowed by an optional filter.
+Everything is `await`ed, because a `persistent` queue may still be reading
+back a previous run's log.
+
+```ts
+const recent = await system.deadLetterQueue.list({
+  recipient: 'actor-ts://orders/user/checkout',
+  sinceMs: Date.now() - 15 * 60 * 1_000,
+  limit: 20,
+});
+
+for (const entry of recent) {
+  console.log(entry.id, entry.timestampMs, entry.recipientPath, entry.payload);
+}
+```
+
+`recipient` matches a path **or its subtree**, so
+`actor-ts://orders/user` selects everything the application spawned.
+
+An entry's `payload` is one of two shapes:
+
+- `{ kind: 'captured', message }` — the original message, untouched.
+- `{ kind: 'degraded', className, reason }` — the payload could not be
+  written to the journal. The tagged-JSON encoder refuses functions,
+  symbols, `Promise`, weak collections and cycles rather than corrupting
+  them silently, so a `persistent` queue keeps the provenance instead of
+  losing the letter. Such an entry cannot be replayed — there is nothing
+  left to send.
+
+## Replaying
+
+```ts
+const result = await system.deadLetterQueue.replay(entry.id);
+if (result.kind !== 'replayed') {
+  console.warn('not replayed:', result.kind);
+}
+```
+
+Replay resolves the recipient path **again** rather than reusing a ref
+captured at failure time — the whole point is that the actor has come back
+since, at the same address as a new instance.
+
+Every outcome is named, so nothing fails quietly:
+
+| `kind` | Meaning |
+| --- | --- |
+| `replayed` | Handed back; the entry left the queue. |
+| `unknown-entry` | No such id — already replayed, or aged out. |
+| `unresolved-recipient` | Still nothing at that path; the entry stays. |
+| `degraded-payload` | Provenance only; there is nothing to redeliver. |
+| `quarantined` | Already replayed `max-replays` times. |
+
+### Poison messages cannot grow the queue
+
+A replayed message that dead-letters again comes back as the **same
+entry** with a higher `replayCount` — not as a new one. Without that, an
+operator (or a script) retrying a message the recipient simply cannot
+handle would add an entry per attempt, while every individual attempt still
+looked like a first. Past `max-replays` the letter is quarantined and
+`replay` refuses it.
+
+## Durability
+
+With `store = "persistent"` the queue writes an append-only log to the
+configured [journal](/persistence/overview/) and reads it back on the next
+start, so a redeploy does not lose what the previous process captured. Two
+details worth knowing:
+
+- **The stream is derived from the system name**, so two systems sharing
+  one journal keep separate queues. Override it with
+  `actor-ts.dead-letters.persistence-id` if you want something else.
+- **Writes are issued as letters arrive and settled at shutdown** — once in
+  the `before-actor-system-terminate` phase of
+  [CoordinatedShutdown](/fundamentals/coordinated-shutdown/), and again
+  after the actor tree is down, because the teardown itself produces dead
+  letters after the last phase has run. A **hard kill** can still lose the
+  writes that were in flight; the queue is a diagnostic record, not a
+  transactional outbox.
+
+## Metrics
+
+`actor_dead_letters_total{outcome, recipient}` counts what the queue saw —
+`outcome` is `captured`, `replayed` or `replay-failed`. See
+[stock metrics](/observability/metrics/stock-metrics/).
+
+## What the queue does not see
+
+A message discarded by a **bounded or priority mailbox** never becomes a
+dead letter at all. The mailbox drop seam reports a *reason*
+(`drop-head` / `drop-new`) and never the envelope, so there is nothing to
+capture — the overflow shows up in `actor_mailbox_dropped_total` and
+nowhere else. See [mailbox sizing](/operations/tuning/mailbox-sizing/) if
+that is the loss you are chasing.
