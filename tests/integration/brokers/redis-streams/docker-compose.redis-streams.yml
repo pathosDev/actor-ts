@@ -15,7 +15,16 @@ services:
     # upstream Redis regressions as soon as they ship.  Production
     # users pin a specific version themselves.
     image: redis:latest
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # `stream-node-max-entries 10` is what makes the MAXLEN ~ scenario
+    # deterministic.  `~` trims whole macro nodes and never a partial one, and
+    # a node is sealed at whichever of stream-node-max-entries (default 100) or
+    # stream-node-max-bytes (default 4096) is reached first.  That scenario
+    # writes 50 entries of roughly 80 bytes — about 4 000 in total, sitting on
+    # the byte threshold — so whether a second node existed to trim decided the
+    # result, and the assertion flipped between runs with nothing changing.
+    # Ten entries per node puts it well clear of the boundary, in the direction
+    # the scenario means to test.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--stream-node-max-entries", "10"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
