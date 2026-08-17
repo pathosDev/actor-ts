@@ -1512,6 +1512,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._currentSender = env.sender;
     this._currentEnvelope = env;
     const startNs = performance.now();
+    // Wall clock at the start — read only when a recorder is already on, so
+    // the uninstrumented message still pays no `Date.now()` here (#411).
+    //
+    // #411 dropped the read outright and rebuilt the stamp in the `finally`
+    // as `Date.now() - elapsedMs`.  That subtraction cannot be exact: the end
+    // read floors to whole milliseconds while `elapsedMs` is fractional, so
+    // the result sits up to 1 ms BEFORE the handling really began — always in
+    // that direction, since truncation is one-sided.  Invisible in `atMs`
+    // alone and fatal one field over, because `mailboxWaitMs` subtracts an
+    // integral `enqueuedAtMs` from it: an idle actor, whose true wait is
+    // microseconds, reported a negative wait for all but a handful of its
+    // messages, and stamps ran backwards through a ring the panel sorts by
+    // them.
+    //
+    // So the read comes back, gated on its only reader rather than
+    // unconditional — which is what #411 was actually measuring.
+    //
+    // One local, not a `number` plus a `recording` boolean: this method is
+    // `async`, so everything live across the `await` is a slot in a
+    // heap-allocated frame, and `-1` says "no recorder when this started"
+    // without a second one.
+    const startedAtMs = this._explain !== null ? Date.now() : -1;
     let failure: Error | null = null;
     // What the behavior actually sees.  Differs from `message` only for a
     // `watchWith` registration, which swaps the signal for the watcher's
@@ -1573,16 +1595,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // One null check on the hot path; the recorder only exists
       // while somebody is inspecting this actor.
       //
-      // `Date.now()` is taken HERE rather than beside `startNs`, because the
-      // recorder is the only thing that ever reads it and it used to be read
-      // unconditionally for every message (#411).  Deriving the start from
-      // the end and the measured duration also keeps the case a start-stamp
-      // would have lost: a recorder switched on *during* this handling still
-      // gets a real `atMs`, where a stamp skipped on the way in would have
-      // left it at zero.  Both clocks measure the same wall interval, so the
-      // subtraction is exact to within their own resolution.
+      // The stamp taken on the way in is used whenever there was one.  It is
+      // missing for exactly one message — the one whose own handler switched
+      // the recorder on, so `_explain` was null at the top and is not here —
+      // and for that one the end read minus the duration is the only estimate
+      // available.  `Math.ceil` undoes its bias rather than leaving it: the
+      // error is known to lie in [0, 1) ms and to be one-directional, so
+      // rounding up lands on the millisecond the clock would have shown at
+      // the start, or the one after, and never on the one before.  That is
+      // what keeps `mailboxWaitMs` from going negative here too.
       if (this._explain !== null) {
-        this._recordExplain(env, Date.now() - elapsedMs, elapsedMs, failure, span);
+        this._recordExplain(
+          env,
+          startedAtMs >= 0 ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
+          elapsedMs,
+          failure,
+          span,
+        );
       }
       // A second null check, for the whole-system profiler (#226).
       // Reading the field directly avoids an extension lookup per

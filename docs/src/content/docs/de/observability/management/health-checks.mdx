@@ -52,7 +52,7 @@ nie unterschiedlicher Meinung darüber sein, was „ready" heißt.
 | --- | --- | --- | --- |
 | `actor-system` | Liveness | der Registry selbst | `system.terminate()` durchgelaufen ist |
 | `cluster-membership` | Readiness | `Cluster.join` | dieser Knoten in seiner eigenen Member-Sicht nicht `up` ist |
-| `cluster-transport` | Readiness | `Cluster.join` | der Knoten **keine** Transport-Verbindung zu **irgendeinem** noch erwarteten Peer hat |
+| `cluster-transport` | Readiness | `Cluster.join` | der Knoten **keinen** der noch erwarteten Peers erreichen kann |
 
 `cluster-transport` prüft absichtlich auf *vollständige Isolation*
 und nicht auf „jeder Peer ist erreichbar".  Eine Teilpartition
@@ -61,12 +61,42 @@ aus dem Load Balancer zu nehmen würde einem Cluster Kapazität
 entziehen, der die Lage beherrscht.  Vom ganzen Cluster abgeschnitten
 zu sein ist der Fall, in dem Weiterbedienen zur Split-Brain-Gefahr
 wird — und der Fall, den ein Knoten aus seiner Member-Sicht allein
-nicht sehen kann, weil sonst nichts den lokalen Transport überwacht
-und kein Peer den eigenen Datensatz dieses Knotens herabstufen darf.
-Ein Ein-Knoten-Cluster erwartet niemanden und besteht immer.
+nicht sehen kann, weil kein Peer den eigenen Datensatz dieses Knotens
+herabstufen darf.  Ein Ein-Knoten-Cluster erwartet niemanden und
+besteht immer.
 
-`cluster-membership` und `cluster-transport` werden von
-`cluster.leave()` wieder entfernt.
+„Erreichbar" heißt **eine offene Verbindung zu einem Peer, den der
+Failure Detector noch nicht abgeschrieben hat** — und es braucht beide
+Hälften.  Ein offener Socket allein beweist nichts: Die kanonische
+Partition — `iptables -j DROP`, eine schwarz gelochte Route, ein
+hängender Peer — nimmt den Verkehr weg, ohne ein FIN oder ein RST zu
+erzeugen.  Die Sockets bleiben also aufgebaut, solange der Kernel es
+weiter versucht, während überhaupt nichts mehr ausgetauscht wird.  Zu
+verlangen, dass der Peer auch erreichbar ist, übergibt dieses Urteil
+dem Failure Detector — der Komponente, die Stille bemerkt.
+
+Was der Check **nicht** erkennt, damit du damit planen kannst:
+
+- **die Latenz des Failure Detectors selbst** — zwischen Beginn der
+  Partition und dem Auslösen des Detectors meldet sich der Knoten
+  weiter als ready.  Das ist dasselbe Zeitfenster, in dem der Rest des
+  Clusters reagiert.
+- **eine Einweg-Partition, bei der dieser Knoten noch empfängt.**
+  Seine Peers sehen weiter `Up` aus, er sieht also weiter ready aus,
+  während nichts von dem ankommt, was er sendet.  Das zu erkennen
+  bräuchte einen quittierten Roundtrip.
+
+### `leave()` bringt die Checks nicht zum Schweigen
+
+`cluster.leave()` lässt beide Checks **registriert und fehlschlagend**
+zurück — `/ready` antwortet für den Rest der Prozesslaufzeit mit 503,
+und genau das drainiert einen Pod, bevor er stoppt.  Nichts im
+Framework entfernt einen Readiness-Check auf dem Weg aus dem Betrieb:
+Eine leere Aggregation gilt als *gesund* (siehe unten), Abmelden würde
+also „alles besteht" und „es meldet nichts mehr" zur selben Antwort
+machen.  Ein späteres `Cluster.join` auf demselben System zieht das
+alte Paar zurück und installiert sein eigenes; ein Prozess, der
+verlässt und wieder beitritt, erholt sich also normal.
 
 ## Die Check-Signatur
 
@@ -175,6 +205,29 @@ aufgerufen wird.  Die Antwort listet das Ergebnis jedes Checks:
 
 Die Aggregation ist `UP`, wenn der `status` **jedes** Checks true
 ist.
+
+### Eine leere Check-Liste ist `UP`
+
+Keine Checks zu registrieren ist die Aussage, dass nichts die Probe
+verriegelt.  Ein System mit leerer Readiness-Liste antwortet also mit
+200 — sonst wäre jeder einfache, clusterlose Dienst hinter
+`managementRoutes` sein Leben lang 503.  `/ready`, `/health` und der
+gRPC-Health-Dienst wenden diese Regel über dieselbe exportierte
+Funktion an:
+
+```ts
+import { isHealthy } from 'actor-ts/management';
+
+isHealthy([]);                                   // true
+isHealthy([{ name: 'database', status: false }]); // false
+```
+
+Sicher ist die Regel nur, weil nichts die Liste *leert*.  Könnte eine
+Komponente sich beim Herunterfahren abmelden, wären „gesund" und „es
+meldet nichts mehr" nicht mehr unterscheidbar — eine Komponente, die
+verstummt, meldet stattdessen `status: false` und bleibt registriert.
+Nutze das Undo von `addReadiness` zum Ersetzen oder wenn das
+beobachtete Objekt abgebaut wird, nie als Störungssignal.
 
 ## Checks testen
 
