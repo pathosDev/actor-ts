@@ -35,15 +35,35 @@ export const scenario: BrokerScenario<RedisContext> = {
         xlen(s: string): Promise<number>; quit(): Promise<unknown>;
       })(context.url);
       try {
-        await waitFor('stream length stays within MAXLEN ~ approximation',
-          async () => {
-            const len = await client.xlen(tag);
-            // Approximate trim — Redis may leave a few extras at radix
-            // boundaries.  Allow up to 2x the cap as the upper bound.
-            return len > 0 && len <= CAP * 2 && len < 50;
-          },
-          5_000,
-        );
+        // The observed length is kept so a failure can say WHICH way it went.
+        // The two ways this assertion can fail are opposite defects — 0 means
+        // nothing was published at all, 50 means nothing was trimmed — and the
+        // bare "did not become true" that `waitFor` prints on its own cannot
+        // tell them apart, which cost a CI investigation once.
+        let observed = -1;
+        try {
+          await waitFor('stream length stays within MAXLEN ~ approximation',
+            async () => {
+              observed = await client.xlen(tag);
+              // Approximate trim — Redis may leave a few extras at radix
+              // boundaries.  Allow up to 2x the cap as the upper bound.
+              return observed > 0 && observed <= CAP * 2 && observed < 50;
+            },
+            5_000,
+          );
+        } catch (e) {
+          const diagnosis = observed === 0
+            ? 'nothing was published — the producer never reached Redis'
+            : observed >= 50
+              ? 'nothing was trimmed — MAXLEN did not reach the XADD'
+              : observed < 0
+                ? 'XLEN never returned — the probe client could not read'
+                : 'trimmed, but outside the tolerated band';
+          throw new Error(
+            `${(e as Error).message}\n`
+            + `  published 50 entries with MAXLEN ~ ${CAP}; last XLEN was ${observed} — ${diagnosis}`,
+          );
+        }
       } finally {
         await client.quit();
       }
