@@ -18,6 +18,7 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   healthChecksOf,
+  isHealthy,
   managementRoutes,
 } from '../../../src/management/index.js';
 
@@ -163,10 +164,19 @@ describe('healthChecksOf — the per-system registry (#655)', () => {
     await cluster.leave(); await system.terminate();
   });
 
-  test('leaving takes them back out again', async () => {
+  // Leaving deliberately does *not* take them back out.  A registry that
+  // empties on the way out of service makes "everything passes" and "nothing
+  // is reporting any more" the same answer, and the second one is a node that
+  // has stopped being able to serve — see
+  // `tests/unit/management/ReadinessAfterLeave.test.ts` for the probes.
+  test('leaving leaves them registered, reporting DOWN', async () => {
     const { system, cluster } = await startNode(56_100 + Math.floor(Math.random() * 90));
     await cluster.leave();
-    expect(await healthChecksOf(system).checkReadiness()).toEqual([]);
+    const readiness = await healthChecksOf(system).checkReadiness();
+    expect(readiness.map((r) => r.name).sort())
+      .toEqual([CLUSTER_MEMBERSHIP_CHECK_NAME, CLUSTER_TRANSPORT_CHECK_NAME].sort());
+    expect(readiness.find((r) => r.name === CLUSTER_MEMBERSHIP_CHECK_NAME)?.status).toBe(false);
+    expect(isHealthy(readiness)).toBe(false);
     await system.terminate();
   });
 
