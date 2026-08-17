@@ -265,20 +265,32 @@ Um **einen** Actor nach dem Leeren seiner Mailbox zu stoppen und
 darauf zu warten, nimm `gracefulStop(ref, timeoutMs)` — siehe
 [PoisonPill & Kill](/de/fundamentals/poison-pill-and-kill/).
 
-Für Produktions-Apps wickelst du das typischerweise in einen
-SIGTERM-Handler:
+### Laufen, bis der Prozess zum Stoppen aufgefordert wird
+
+Für einen Service ist `terminate()` nichts, was du aufrufst — es ist
+das, was am Ende passiert.  Die ganze `main` nach dem Verdrahten der
+Actors lautet:
 
 ```ts
-process.on('SIGTERM', async () => {
-  await system.terminate();
-  process.exit(0);
-});
+await system.runUntilTerminated();
 ```
 
-…aber das Framework bietet ein reicheres Pattern dafür — siehe
-[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)
-für das 12-phasige Ordered-Shutdown-DSL, das K8s-PreStop-Hooks,
-laufende HTTP-Requests, das Drainen von Brokern usw. handhabt.
+Das installiert SIGTERM/SIGINT-Handler, löst auf, sobald das System
+unten ist, und hängt die Handler auf dem Weg hinaus wieder ab.  Ein
+handgeschriebenes `process.on('SIGTERM', () => system.terminate())`
+sieht gleichwertig aus und ist es nicht: es stoppt *zuerst* die
+Actors und gibt erst danach — falls du daran gedacht hast, es zu
+schreiben — den HTTP-Port frei und verlässt den Cluster.
+`runUntilTerminated()` führt die Pipeline aus
+[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/) aus,
+die Listener abbindet, Broker schließt und den Cluster verlässt,
+**bevor** die Actors stoppen — ein Rolling Deploy nimmt den Knoten
+also aus der Rotation, während seine Actors noch zu Ende bringen
+können, was sie halten.
+
+Es ist außerdem die Variante, die überall funktioniert: Deno stellt
+Signale über `Deno.addSignalListener` zu, nicht über `process.on`, und
+ein Listener hält dort die Event-Loop am Leben, bis er entfernt wird.
 
 import { Aside } from '@astrojs/starlight/components';
 

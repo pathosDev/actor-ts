@@ -37,6 +37,8 @@
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   Cluster,
@@ -120,15 +122,20 @@ async function main(): Promise<void> {
   cluster.singleton.start(singletonOptions);
   console.log(`[${POD_NAME}] running guarded workload — stop with Ctrl-C`);
 
-  const shutdown = async (): Promise<void> => {
-    console.log(`\n[${POD_NAME}] shutting down`);
-    cluster.singleton.stop('cron');   // releases the lease + stops the manager
-    await cluster.leave();
-    await system.terminate();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Release the lease before leaving the cluster, so the next holder can
+  // acquire it immediately instead of waiting out the lease TTL.  Stating
+  // that as a phase task is what guarantees the order — `cluster-leave` runs
+  // after `before-cluster-shutdown`, always.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.BeforeClusterShutdown,
+    'release-cron-lease',
+    () => {
+      console.log(`\n[${POD_NAME}] releasing the lease`);
+      cluster.singleton.stop('cron');   // releases the lease + stops the manager
+    },
+  );
+
+  await system.runUntilTerminated();
 }
 
 void main().catch((err) => {

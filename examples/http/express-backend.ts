@@ -65,12 +65,10 @@ async function main(): Promise<void> {
 
   console.log(`Express server listening on http://${binding.host}:${binding.port}`);
 
-  process.on('SIGINT', async () => {
-    console.log('\nshutting down');
-    await binding.unbind(1_000);
-    await system.terminate();
-    process.exit(0);
-  });
+  // `bind()` registered the unbind in the `service-unbind` phase, so there is
+  // no teardown left to write: this waits for SIGTERM/SIGINT, runs the
+  // pipeline, and returns once the system is down.
+  await system.runUntilTerminated();
 }
 
 void main();

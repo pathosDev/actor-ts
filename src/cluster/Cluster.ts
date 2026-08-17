@@ -10,6 +10,7 @@ import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
@@ -107,6 +108,17 @@ type GossipRefusalCounts = Record<GossipRefusalReason, number>;
  * was written against, not because it is the better choice for new code.
  */
 export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
+
+/**
+ * Name of the `cluster-leave` phase task {@link Cluster.join} registers and
+ * {@link Cluster.leave} takes back out.
+ *
+ * Module-local rather than in `Constants.ts`: it is not a cap, bound, timeout
+ * or cadence, and only this file reads it.  It is a constant at all so the
+ * two ends of that register/unregister pair cannot drift into two spellings —
+ * which would leave a task behind that a re-join then collides with.
+ */
+const CLUSTER_LEAVE_TASK_NAME = 'cluster-leave';
 
 /**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
@@ -338,6 +350,17 @@ export class Cluster {
       );
       throw e;
     }
+    // Leaving is part of shutting down, and until now nothing said so: the
+    // `cluster-leave` phase was empty in every deployment, so a SIGTERM took
+    // the node down while its peers still counted it a member and kept
+    // routing to it until the failure detector gave up (#549).  Registered
+    // after a successful `_start` on purpose — a cluster that never bound its
+    // transport has nothing to leave.
+    system.extension(CoordinatedShutdownId).addFrameworkTask(
+      Phases.ClusterLeave,
+      CLUSTER_LEAVE_TASK_NAME,
+      () => cluster.leave(),
+    );
     return cluster;
   }
 
@@ -614,6 +637,13 @@ export class Cluster {
   async leave(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    // Drop the pipeline's task with the membership it named.  A process that
+    // leaves and re-joins — a test, a reconfiguration — would otherwise hit
+    // `addTask`'s duplicate-name check on the second `Cluster.join`.  Safe to
+    // do here even though `leave()` is usually *called by* that task:
+    // `runPhase` snapshots the list before invoking anything.
+    this.system.extension(CoordinatedShutdownId)
+      .removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
     this.removeHealthChecks?.();
     this.removeHealthChecks = null;
     const me = this.members.get(this.selfAddress.toString());

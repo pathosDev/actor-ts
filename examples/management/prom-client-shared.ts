@@ -24,6 +24,8 @@
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   MetricsExtensionId,
@@ -99,12 +101,14 @@ console.log(`shared prom-client endpoint: http://localhost:${server.port}/metric
 console.log('Both `actor_ts_*` (framework) and `app_orders_total` (app) appear in the same scrape.');
 console.log('press Ctrl+C to exit');
 
-process.on('SIGINT', async () => {
-  clearInterval(tick);
-  server.stop();
-  await system.terminate();
-  process.exit(0);
-});
+// The scrape endpoint is the user's own `Bun.serve`, so it joins the
+// pipeline explicitly — the same phase the framework's own HTTP bindings
+// unbind in.
+const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+coordinatedShutdown.addTask(Phases.ServiceUnbind, 'stop-metrics-server', () => { server.stop(); });
+coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'stop-load', () => { clearInterval(tick); });
+
+await system.runUntilTerminated();
 
 /** Optional-peer-dep load.  Tells the user clearly when prom-client is missing. */
 async function loadPromClient(): Promise<typeof import('prom-client') & { register: { metrics(): Promise<string>; contentType: string } }> {

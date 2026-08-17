@@ -255,19 +255,29 @@ To stop **one** actor after its mailbox drains and wait for that, use
 `gracefulStop(ref, timeoutMs)` — see
 [PoisonPill & Kill](/fundamentals/poison-pill-and-kill/).
 
-For production apps you typically wrap this in a SIGTERM handler:
+### Running until the process is asked to stop
+
+For a service, `terminate()` is not what you call — it is what happens
+at the end.  The whole of a `main` after the actors are wired is:
 
 ```ts
-process.on('SIGTERM', async () => {
-  await system.terminate();
-  process.exit(0);
-});
+await system.runUntilTerminated();
 ```
 
-…but the framework provides a richer pattern for that — see
-[Coordinated shutdown](/fundamentals/coordinated-shutdown/)
-for the 12-phase ordered-shutdown DSL, which handles K8s PreStop
-hooks, in-flight HTTP requests, draining brokers, etc.
+That installs SIGTERM/SIGINT handlers, resolves once the system is
+down, and detaches the handlers on the way out.  A hand-rolled
+`process.on('SIGTERM', () => system.terminate())` looks equivalent and
+is not: it stops the actors *first*, and only then — if you remembered
+to write it — releases the HTTP port and leaves the cluster.
+`runUntilTerminated()` runs the [coordinated
+shutdown](/fundamentals/coordinated-shutdown/) pipeline, which unbinds
+listeners, closes brokers and leaves the cluster **before** the actors
+stop, so a rolling deploy takes the node out of rotation while its
+actors can still finish what they are holding.
+
+It is also the version that works everywhere: Deno delivers signals
+through `Deno.addSignalListener`, not `process.on`, and a listener
+there keeps the event loop alive until it is removed.
 
 import { Aside } from '@astrojs/starlight/components';
 
