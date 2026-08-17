@@ -160,14 +160,20 @@ projection gives up on it.
   wire it to your alerting.  A hook that throws is logged and
   swallowed — a broken reporter cannot take the projection with it.
 - **A dead letter** — a skipped event is published on the system
-  event stream wrapped in a `DeadLetter`, so nothing vanishes
-  without a trace:
+  event stream wrapped in a `DeadLetter` naming the projection as its
+  recipient, so nothing vanishes without a trace:
 
   ```ts
   import { DeadLetter } from 'actor-ts';
 
   system.eventStream.subscribe(auditRef, DeadLetter);
   ```
+
+  Publishing is all that happens by default — with no subscriber the
+  event is gone.  Turning on the
+  [dead-letter queue](/operations/dead-letters/) keeps skipped events
+  instead, filterable by the projection that skipped them and
+  replayable once the handler is fixed.
 
 - **Metrics** — `persistence_projection_stalled`,
   `persistence_projection_failures_total` and

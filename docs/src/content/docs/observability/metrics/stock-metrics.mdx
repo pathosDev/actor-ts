@@ -119,6 +119,36 @@ system.spawn(Worker, entityId, workerOptions);
 The cardinality of `jobs_shed_total` is then yours to budget for — which
 is the point.  The framework will not spend it on your behalf.
 
+## Dead-letter metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `actor_dead_letters_total` | counter | `outcome`, `recipient` | Undeliverable messages the dead-letter queue captured, by outcome. |
+
+Only present once
+[`actor-ts.dead-letters.store`](/operations/dead-letters/) is something
+other than `off` — the counter is minted by the queue, so a system that
+keeps nothing counts nothing.  `outcome` is one of:
+
+- `captured` — a new letter entered the queue.
+- `replayed` — a letter was handed back to its original recipient.
+- `replay-failed` — a replayed letter came back, i.e. the recipient
+  still cannot take it.  A rising `replay-failed` against a flat
+  `captured` is a poison message being retried, not a new outage.
+
+`recipient` is the full path of the actor the message failed to reach,
+which is what makes one letter distinguishable from another — this
+counter is a *diagnostic* on a path that only fires when something is
+already wrong, so the label pays for itself.  It is unbounded in
+principle and bounded in practice by the registry's per-family series
+cap, which folds the overflow into one series rather than letting an
+incident mint them without limit.
+
+`actor_dead_letters_total` is a **loss** signal, not a backlog one.  Any
+sustained non-zero rate means messages are being sent to actors that are
+not there — a stale ref held past a restart, a selection built from a
+path that changed, a singleton with no host.
+
 ## Cluster metrics
 
 | Metric | Type | Labels | Meaning |

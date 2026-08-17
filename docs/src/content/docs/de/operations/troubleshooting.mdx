@@ -283,7 +283,14 @@ Rückstau wird also verarbeitet.  Auf vier Dinge wartet es nicht:
 
 Um herauszufinden, welcher Fall vorliegt, abonniere vor dem
 Herunterfahren `DeadLetter` auf dem Event-Stream — der Dead Letter
-nennt Nachricht und Empfänger.
+nennt Nachricht und Empfänger.  Das Abonnieren muss *vorher*
+passieren, denn Publishen ist standardmäßig alles, was passiert:
+nichts bewahrt ein Dead Letter auf, es gibt also nachträglich nichts
+nachzulesen.  Setze
+`actor-ts.dead-letters.store = "persistent"`, wenn du die
+Aufzeichnung lieber hättest, ohne vorher zu wissen, dass du sie
+brauchen wirst — siehe
+[Dead Letters](/de/operations/dead-letters/).
 
 ### Symptom: Flaky timing-sensitive Tests
 

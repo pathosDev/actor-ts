@@ -275,6 +275,12 @@ backlog is handled.  Four things it will not wait for:
 
 To confirm which, subscribe to `DeadLetter` on the event stream before
 shutting down — the dead letter names the message and the recipient.
+Subscribing has to happen *before*, because publishing is all that
+happens by default: nothing keeps a dead letter, so there is nothing to
+go back and read afterwards.  Set
+`actor-ts.dead-letters.store = "persistent"` if you would rather have
+the record without knowing in advance that you will want it — see
+[Dead letters](/operations/dead-letters/).
 
 ### Symptom: flaky timing-sensitive tests
 
