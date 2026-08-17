@@ -27,13 +27,18 @@
  * This does not run clean yet.  It is landed as a working, measured harness
  * so the classification question can be settled with numbers instead of
  * guesses, because getting that question wrong misclassifies 242 pages at
- * once.  Measured over 3246 `ts` fences on 484 pages (242 English + their
- * German mirrors):
+ * once.  The counts below are a reading of the tree at a point in time and
+ * move as pages are edited, so re-derive rather than quote them: `--measure`
+ * prints the fence classification, and the split between "clean", "only
+ * cannot find name" and "real error" is this script's own `tsc` output
+ * grouped per emitted fence, with the syntax-error fences set aside first.
+ * Measured over 3260 `ts` fences on 484 pages (242 English + their German
+ * mirrors):
  *
- *   - 2310 fences are fragments by construction — no `import` at all, or a
+ *   - 2316 fences are fragments by construction — no `import` at all, or a
  *     body of class members with the enclosing `class { … }` left off.  They
  *     reference identifiers that were never in scope, so "compile them" has
- *     no meaning short of inventing 2310 preludes, each itself unchecked
+ *     no meaning short of inventing 2316 preludes, each itself unchecked
  *     prose.
  *   - 110 carry an explicit elision marker (`…` or `...`, including inside a
  *     type argument list: `class Worker extends Actor<...>`).  These do not
@@ -42,27 +47,30 @@
  *     at all, not merely tolerated.  That is why the classifiers above are
  *     load-bearing rather than cosmetic; without them this script reports
  *     only syntax errors and looks like the type checking passed.
- *   - 826 compile.  Four syntax errors survive, on two page pairs that encode
- *     an elision in a form no regex should chase: a comment as an arrow-
- *     function body (`async (req) => /* expensive lookup *\/`) and a
- *     `package.json` snippet inside a `ts` fence.  Those are what the
- *     `no-compile` marker is for.
- *   - Of the remaining 818: **248 are already fully clean**, 412 fail only
- *     with "cannot find name" — an identifier introduced by an earlier fence
- *     on the same page — and **158 have a real error**: a wrong argument
- *     type, a property that does not exist, an unresolvable module.
+ *   - 834 are emitted and compiled.  Four syntax errors survive, on two page
+ *     pairs that encode an elision in a form no regex should chase: a comment
+ *     as an arrow-function body (`async (req) => /* expensive lookup *\/`)
+ *     and a `package.json` snippet inside a `ts` fence.  Those are what the
+ *     `no-compile` marker is for — and until they carry it they suppress the
+ *     semantic pass for the whole program, which is why the split below is
+ *     measured with those four excluded from the program.
+ *   - Of the remaining 830: **254 are already fully clean**, 367 fail only
+ *     with "cannot find name" (TS2304 / TS2552) — an identifier introduced by
+ *     an earlier fence on the same page — and **209 have a real error**: a
+ *     wrong argument type, a property that does not exist, an unresolvable
+ *     module.
  *
- * The 158 are the editorial sweep, and they are the reason this is not yet a
- * gate.  Note what the 412 imply: "carries an import" does NOT mean
+ * The 209 are the editorial sweep, and they are the reason this is not yet a
+ * gate.  Note what the 367 imply: "carries an import" does NOT mean
  * "self-contained".  The fence that motivates this whole check imports twice
  * and still references five identifiers it never defines.  Compiling each
- * page's fences *together* instead was measured too, and trades those 412 for
- * 850 duplicate-declaration errors, because pages re-import and re-`const`
+ * page's fences *together* instead was measured too, and trades those for
+ * ~850 duplicate-declaration errors, because pages re-import and re-`const`
  * the same names fence after fence.  Neither strategy reaches zero
  * mechanically.
  *
- * Tolerating "cannot find name" would make 660 of 818 pass today and shrink
- * the sweep to 158 — a defensible trade, since a renamed export still fails
+ * Tolerating "cannot find name" would make 621 of 830 pass today and shrink
+ * the sweep to 209 — a defensible trade, since a renamed export still fails
  * at the *import*, which is checked.  It is a policy choice, not a technical
  * one, which is why this script reports the categories rather than picking.
  * Wiring it into `.github/workflows/docs-checks.yml` before that choice is

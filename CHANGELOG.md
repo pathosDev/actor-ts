@@ -354,7 +354,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than replacing it, so nothing else changes.
 
 - **BREAKING — `ActorCell` now handles a batch of user messages per
-  dispatcher turn, worth 2.1x-2.9x on `tell` throughput (#409).**
+  dispatcher turn, worth 2.1x-3.6x on `tell` throughput (#409).**
 
   The run loop dequeued exactly one user message and then re-scheduled
   from its `finally`, so every message cost a full `setImmediate` round
@@ -366,11 +366,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   worst case, since its queue can never hold a second unit for its only
   actor.
 
-  Measured on Bun 1.3.1 / Windows 11: 136k to 281k msg/s at batch=100,
-  246k to 681k at 1k, 254k to 745k at 10k, 255k to 735k at 100k. The `ask`
-  round-trip benchmark gains less (1.4x) because it awaits each reply, so
-  its mailbox never holds more than one message and there is nothing to
-  batch.
+  Measured on Bun 1.3.1 / Windows 11, running the two builds alternately
+  four times each rather than once apiece: 143k to 297k msg/s at
+  batch=100, 250k to 656k at 1k, 255k to 723k at 10k, 202k to 717k at
+  100k. The run-to-run spread within an arm is under 9%, which is what the
+  ends of the 2.1x-3.6x band are worth — the ratio rises with the batch
+  size, and only the largest batch separates cleanly from the smallest.
+  The `ask` round-trip benchmark gains less, 68.9k to 98.5k or 1.4x,
+  because it awaits each reply, so its mailbox never holds more than one
+  message and there is nothing to batch.
 
   `ThroughputDispatcher` is unchanged but re-documented: it batches
   *across* actors, which is not what the dispatcher-tuning and dispatchers
@@ -385,7 +389,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   to restore the pre-#409 message-at-a-time loop exactly.
 
 - **The receive path no longer allocates per message when metrics and
-  tracing are off, worth a further 17-34% on `tell` throughput (#411).**
+  tracing are off, worth a further 12-27% on `tell` throughput (#411).**
 
   Every user message used to pay four extension-registry lookups, four
   metric label and help objects built for a registry that discards them,
@@ -393,17 +397,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   user code ran. `ActorSystem` now mirrors the live registry and tracer
   onto plain fields written only by the owning extension; the dispatch
   closure became a private method taking the values it used to capture;
-  `Date.now()` moved into the explain-recorder branch that was its only
-  consumer; and `LogContext.isEmpty` replaces `Object.keys(context).length
-  > 0` at the three envelope sites, with `RemoteActorRef` also dropping
-  the conditional spreads that allocated an empty object on their false
-  branch.
+  `Date.now()` is read only when the explain recorder that consumes it
+  already exists, rather than for every message; and `LogContext.isEmpty`
+  replaces `Object.keys(context).length > 0` at the three envelope sites,
+  with `RemoteActorRef` also dropping the conditional spreads that
+  allocated an empty object on their false branch.
 
-  Behaviour with instrumentation enabled is unchanged, including when it
-  is switched on or off while cells are already draining — which nothing
-  covered before, and which five new cases now pin. A message is wholly
-  instrumented or wholly not, since the handles are resolved once per
-  message rather than at each instrumentation point.
+  Measured the same way as #409, three alternating rounds per arm: 12-14%
+  at batch=100 and at 1k, 26-27% at 10k and 100k, and 12% on the `ask`
+  round-trip (98.6k to 110.1k). Unlike #409's batching, these cuts apply
+  at mailbox depth 1 as well — every delivery paid them — which is why the
+  `ask` arm moves for this change at all. What no A/B over the pair can do
+  is attribute the total between the two commits, so the per-message work
+  this one removed is bound by counting the calls that would have done it
+  instead: four extension-chain walks and one `Object.keys` per message
+  with the caching taken out, flat zero with it in place.
+
+  Behaviour with metrics or tracing enabled is unchanged, including when
+  either is switched on or off while cells are already draining — which
+  nothing covered before, and which four new cases now pin. A message is
+  wholly instrumented or wholly not, since the handles are resolved once
+  per message rather than at each instrumentation point.
 
   Two JSDoc comments that asserted the opposite of what the code did are
   corrected in place: `ActorCell` claimed a boolean was read first to
@@ -446,18 +460,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   same thing over an actual socket on Bun, Node and Deno.
 
   *Migration:* This is a wire-format change and there is no protocol
-  negotiation for it yet (#823). Decode is backward-compatible by
-  construction — an older node's frame is untagged JSON and
-  `decodeJsonTree` only interprets a tag that is an object's sole own key
-  — but the other direction is not: an older node reading a newer node's
-  frame sees the tag wrapper as plain data. Only payloads that
-  `JSON.stringify` already corrupted are affected, so a cluster whose
-  message bodies are plain data can still roll node by node; a cluster
-  that sends a `Map`, `Set`, `Date`, `bigint` or typed array in any
-  message body must be upgraded in a single window. Separately, a body the
-  codec refuses (a function, a symbol) now costs the frame instead of
-  being silently stripped — grep your logs for `dropping a '<kind>' frame`
-  after the upgrade.
+  negotiation for it yet (#823). Neither direction of a mixed-version
+  cluster is safe, and the newer-reads-older direction is the one worth
+  spelling out, because it is easy to assume it is. An older node's frame
+  is untagged JSON, and `decodeJsonTree` interprets a tag only when it is
+  an object's sole own key — so *almost* everything an old node sends is
+  carried through unchanged. The exception is a legacy value that already
+  had that shape: `{__bytes__: 'not base64!!!'}` decodes to a 6-byte
+  `Uint8Array` and `{__date__: 'whenever'}` to an Invalid Date, silently;
+  `{__map__: …}`, `{__set__: …}`, `{__regexp__: …}`, `{__bigint__: …}`,
+  `{__url__: …}`, `{__number__: …}` and `{__error__: …}` throw `Invalid
+  wire frame payload` at any depth, and a decoder throw costs the whole
+  TCP connection plus every frame batched into the same chunk. The
+  `__literal__` escape only protects data the *new* encoder produced, so
+  it does nothing for this. The other direction is plainly lossy: an older
+  node reading a newer node's frame sees the tag wrapper as plain data.
+
+  So: a cluster whose message bodies are plain data and contain no
+  object-with-a-single-`__tag__`-key can roll node by node; anything else
+  — a `Map`, `Set`, `Date`, `bigint` or typed array in any message body,
+  or a plain object that happens to look like a tag — must be upgraded in
+  a single window. Separately, a body the codec refuses (a function, a
+  symbol) now costs the frame instead of being silently stripped — grep
+  your logs for `dropping a '<kind>' frame` after the upgrade.
 
 - **BREAKING — `managementRoutes(...)` returns the `Route` tree directly
   instead of `{ routes, health }` (#655).**
@@ -504,9 +529,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **Every example uses `runUntilTerminated()`, and the docs stopped
   describing wiring that did not exist (#549).** Seventeen examples each
-  spelled out their own teardown and no two agreed; all of them ended in
-  `process.exit(0)`, which is what turns "graceful shutdown" into
-  "whatever finished first".
+  spelled out their own teardown and no two agreed; fourteen of them ended
+  in `process.exit(0)`, which is what turns "graceful shutdown" into
+  "whatever finished first". The other three — `io/jetstream-orders.ts`,
+  `io/kafka-exactly-once.ts`, `io/websocket-server.ts` — awaited
+  `system.terminate()` and stopped there, which leaves the phases a
+  service actually needs unrun rather than cut short.
 
   Resources the framework does not own are registered as phase tasks
   instead, which is the part worth copying: `counter-node.ts` stops its
@@ -526,36 +554,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   to acknowledge leave" step, and `actor-system.mdx` stops teaching the
   hand-rolled `process.on('SIGTERM', …)` this issue exists to delete. Both
   language mirrors.
-
-- **CORRECTION - replaces two clauses in the existing unreleased #411
-  entry rather than adding a bullet (#411).**
-
-  This is not new copy for the changelog; it is the wording the existing
-  '**The receive path no longer allocates per message when metrics and
-  tracing are off**' bullet needs, because two of its statements stopped
-  being true.
-
-  Replace '`Date.now()` moved into the explain-recorder branch that was
-  its only consumer' with: '`Date.now()` is read only when the explain
-  recorder that consumes it already exists, rather than for every
-  message'. The original wording described deriving the stamp after the
-  fact, which is the defect fixed above.
-
-  Replace 'Behaviour with instrumentation enabled is unchanged, including
-  when it is switched on or off while cells are already draining' with:
-  'Behaviour with metrics or tracing enabled is unchanged, including when
-  either is switched on or off while cells are already draining'. As
-  shipped the claim was false for the third instrument: the explain
-  recorder's `atMs` became fractional and its `mailboxWaitMs` negative.
-
-  The throughput figures in that entry stand and if anything understate
-  the result - an independent measurement put the #409 + #411 pair at
-  2.32x at batch=100 rising to 4.92x at 100k. What the pair's benchmark
-  cannot do is attribute the gain between the two commits, which is why
-  the per-message work #411 removed is now bound by counting the calls
-  that would have done it: four extension-chain walks and one
-  `Object.keys` per message with the caching removed, flat zero with it in
-  place.
 
 ### Added
 
@@ -953,10 +951,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   The arrival stamp is gated on a reader existing — an explain plan, or
   metrics enabled — rather than being taken unconditionally, preserving
   the property #411 established that a system instrumenting nothing pays
-  no clock read on the receive path. Measured on this machine, ask
-  round-trip runs 104-108k/s against a 106-108k/s baseline and tell is
-  equal or better at every batch size. `Envelope` gains an optional
-  `replayed` field; it is additive and public.
+  no clock read on the receive path. An interleaved A/B on Bun 1.3.1 /
+  Windows 11 finds no cost these benchmarks can resolve: five rounds per
+  arm on `ask` give 100.8k/s before against 99.7k/s after, and three
+  rounds per arm on `tell` land within 3.3% at every batch size. Both
+  differences sit well inside the per-arm run-to-run spread, which is
+  10-14% on `ask` and up to 9% on `tell` — so "no measurable difference"
+  is the whole of what was measured, and a narrower claim than that would
+  be reporting noise.
+
+  New public surface, both additive: `Envelope` gains an optional
+  `replayed` field, and `MAILBOX_WAIT_BUCKETS_SECONDS` is exported from
+  `actor-ts/metrics`, so a dashboard or a recording rule can be built on
+  the same bucket edges the histogram uses.
 
 - **Documented default values are now pinned to the constants they are
   published from (#470).**
@@ -968,15 +975,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   hand-maintained `REFERENCE_CONF` was copied faithfully onto both
   language pages with every check still green.
 
-  The new assertion chains onto the existing byte-pin, so a documented
-  default is the shipped default transitively. 76 keys are covered, each
-  linked by importing the constant, so a rename is a compile error rather
-  than a silently dropped assertion. Values are read through `Config`, the
-  loader the runtime uses, rather than a regex — a test that re-implements
-  duration and byte parsing ends up asserting its own arithmetic. Keys
-  where `reference.conf` deliberately overrides a shared constant are
-  recorded as such rather than omitted, because it is a layer above the
-  constants and not a copy of them.
+  What the new assertion adds is the half the byte-pin could never reach.
+  `Config.load()` layers reference over application over overrides, so for
+  any key present in `REFERENCE_CONF` the HOCON literal already *is* what
+  ships, and pinning the published page to those bytes was enough to make
+  docs and runtime agree. The `DEFAULT_*` constant is the other value: it
+  is what a consumer that never loads config gets, and nothing compared it
+  to the literal. 93 keys are covered, each linked by importing the
+  constant, so a rename is a compile error rather than a silently dropped
+  assertion. Values are read through `Config`, the loader the runtime
+  uses, rather than a regex — a test that re-implements duration and byte
+  parsing ends up asserting its own arithmetic. Keys where
+  `reference.conf` deliberately overrides a shared constant are recorded
+  as such rather than omitted, because it is a layer above the constants
+  and not a copy of them.
 
 - **A compile harness for the fenced TypeScript samples, run with `bun run
   check:doc-samples` (#470).**
@@ -988,11 +1000,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that block rather than hand-written — and reports each failure at its
   real page and line.
 
-  It is deliberately not wired into CI yet: roughly 158 samples need
-  completing or an explicit exemption first, and enabling it before that
-  sweep would only add a permanently-red job. The script's header records
-  the full measurement the sweep decision needs, including the finding
-  that carrying an import does not imply a sample is self-contained.
+  It is deliberately not wired into CI yet, and the sweep it is waiting on
+  is larger than it first looked. Of the 834 fences that survive the two
+  fragment classifiers, four fail to parse, 254 are already clean, 367
+  fail *only* with "cannot find name" — an identifier a previous fence on
+  the same page introduced — and **209 have a real error**: a wrong
+  argument type, a property that does not exist, an unresolvable module.
+  Those 209 need completing or an explicit exemption before this can be a
+  gate; turning it on first would only add a permanently-red job. The
+  counts are a reading of the tree as it stands and move as pages are
+  edited — `--measure` re-derives the fence classification, and the error
+  split is the `tsc` output grouped per fence. The script's header records
+  the rest of what the sweep decision needs, including the finding that
+  carrying an import does not imply a sample is self-contained.
 
 - **`/health` and `/ready` now aggregate framework-owned health checks
   instead of an always-empty list (#655).**
@@ -1013,24 +1033,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   liveness check gets the pod killed, so it may depend on nothing a
   restart can fix — a check that goes red when a shared database blinks
   turns one outage into a fleet-wide restart storm. Readiness gets two,
-  registered by `Cluster._start` and removed by `leave()`.
-  `cluster-membership` is the self-is-`up` test the endpoint used to
-  compute inline. `cluster-transport` is new: it fails when the node has
-  no transport connection to any peer it still expects. That is a *total
-  isolation* test, not full reachability — a partial partition leaves the
-  node able to gossip, converge and route, and dropping it from the load
-  balancer would take capacity from a cluster that is coping. Members
-  marked `unreachable` still count as expected, because excluding them
-  would turn the check green a few seconds into every partition, which is
-  exactly when the answer matters; a peer that was actually downed stops
-  counting, so a legitimate lone survivor stays ready. A single-node
-  cluster expects nobody and always passes.
+  registered by `Cluster._start`. They are **not** removed by `leave()`: a
+  left node keeps them, reporting DOWN, because an empty aggregate reads
+  as healthy and un-registering would make a drained node report itself
+  ready. A later `join` on the same system retires the previous pair at
+  registration time.
 
-  The same registry is what `GrpcServerOptionsType.health` feeds
-  `grpc.health.v1.Health` from, so the management endpoint and the gRPC
-  health service now read one instance rather than two that can disagree.
-  `/ready`'s `clusterReady` field is read back out of the aggregate by
-  name rather than recomputed in the handler, for the same reason.
+  `cluster-membership` is the self-is-`up` test the endpoint used to
+  compute inline. `cluster-transport` is new: it fails when the node can
+  reach none of the peers it still expects, where reachable means an open
+  connection to a member the failure detector has not written off. Both
+  halves are needed — an open socket alone proves nothing, because a
+  `DROP` partition produces no FIN and no RST and leaves the sockets
+  established while nothing is exchanged, so the failure detector is the
+  only thing that notices. That is a *total isolation* test, not full
+  reachability: a partial partition leaves the node able to gossip,
+  converge and route, and dropping it from the load balancer would take
+  capacity from a cluster that is coping. Members marked `unreachable`
+  still count as expected, so a partition cannot make the check green by
+  shrinking the set it asks about; a peer that was actually downed stops
+  counting, so a legitimate lone survivor stays ready. A single-node
+  cluster expects nobody and always passes. What it does not catch: the
+  failure detector's own latency, and a one-way partition in which this
+  node still receives.
+
+  The gRPC `grpc.health.v1.Health` service can be made to answer from the
+  very same aggregate, and that is the point of the `health` field on
+  `GrpcServerOptionsType` taking a registry rather than a boolean — pass
+  `healthChecksOf(system)` and the management endpoint and the gRPC
+  service read one instance and apply the same exported `isHealthy` rule.
+  Nothing enforces it, though: the field is whatever the caller supplies,
+  so a bare `new HealthCheckRegistry()` there forks them and only one of
+  the two is the answer a load balancer acts on. `/ready`'s `clusterReady`
+  field is read back out of the aggregate by name rather than recomputed
+  in the handler, for the same reason.
 
 - **`ActorSystem.runUntilTerminated()` — the whole of a service's shutdown
   in one call (#549).** It installs SIGTERM/SIGINT handlers, resolves once
@@ -1087,12 +1123,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   hangs on a single sink slot inside `DeadLetterRef.tell`, the one choke
   point every dead letter already passes through, so nothing has to be
   routed to it and no emitter has to know it exists.
-  `actor-ts.dead-letters.store` picks between `off` (the default —
-  behaviour is byte-for-byte what it was, nothing is constructed beyond
-  one empty object and no shutdown task is registered), `memory` (a
-  bounded ring, `max-entries` and `retention`) and `persistent`
-  (additionally an append-only log in the configured journal, read back on
-  the next start).
+  `actor-ts.dead-letters.store` picks between `off` (the default),
+  `memory` (a bounded ring, `max-entries` and `retention`) and
+  `persistent` (additionally an append-only log in the configured journal,
+  read back on the next start). Left `off`, the dead-letter path itself is
+  byte-for-byte what it was — no sink is installed, so `DeadLetterRef.tell`
+  does what it always did — and no shutdown task is registered. Start-up
+  is not literally free, though: every `ActorSystem` reads the five
+  `actor-ts.dead-letters.*` keys, constructs the queue and runs its
+  options validator once, which is a handful of `hasPath` lookups and two
+  small objects.
 
   Capture runs before publication, deliberately: the sink is the durable
   record and publishing is an observation with no guaranteed audience, so
@@ -1140,60 +1180,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the drop-reporting seam carries a `MailboxDropReason` and never the
   envelope. That overflow shows up in `actor_mailbox_dropped_total` and
   nowhere else.
-
-- REPLACES the existing `[Unreleased] → Added` entry for #655 (the one
-  beginning "`/health` and `/ready` now aggregate framework-owned health
-  checks instead of an always-empty list"). It is unreleased, so it should
-  be corrected in place rather than supplemented — two of its claims are
-  wrong. Replacement text follows.
-
-  **`/health` and `/ready` now aggregate framework-owned health checks
-  instead of an always-empty list (#655).**
-
-  The `HealthCheckRegistry` became an `ActorSystem` extension, reached
-  with `healthChecksOf(system)`. That is what the feature needed: a
-  `Cluster`, a `ShardRegion` or a transport starts long before anyone
-  builds a management route tree, so a registry created inside
-  `managementRoutes` had no component able to register with it. Nothing in
-  `src/` ever called `addLiveness`/`addReadiness` — every caller was an
-  example, a test or a docs snippet — so `/health` returned `{status:'UP',
-  checks:[]}` unconditionally and `/ready` added only self-is-up.
-
-  Three checks ship with it. Liveness gets exactly one, `actor-system`
-  ("has this system shut down?"), and deliberately nothing else: a failing
-  liveness check gets the pod killed, so it may depend on nothing a
-  restart can fix — a check that goes red when a shared database blinks
-  turns one outage into a fleet-wide restart storm. Readiness gets two,
-  registered by `Cluster._start`. They are **not** removed by `leave()`: a
-  left node keeps them, reporting DOWN, because an empty aggregate reads
-  as healthy and un-registering would make a drained node report itself
-  ready. A later `join` on the same system retires the previous pair at
-  registration time.
-
-  `cluster-membership` is the self-is-`up` test the endpoint used to
-  compute inline. `cluster-transport` is new: it fails when the node can
-  reach none of the peers it still expects, where reachable means an open
-  connection to a member the failure detector has not written off. Both
-  halves are needed — an open socket alone proves nothing, because a
-  `DROP` partition produces no FIN and no RST and leaves the sockets
-  established while nothing is exchanged, so the failure detector is the
-  only thing that notices. That is a *total isolation* test, not full
-  reachability: a partial partition leaves the node able to gossip,
-  converge and route, and dropping it from the load balancer would take
-  capacity from a cluster that is coping. Members marked `unreachable`
-  still count as expected, so a partition cannot make the check green by
-  shrinking the set it asks about; a peer that was actually downed stops
-  counting, so a legitimate lone survivor stays ready. A single-node
-  cluster expects nobody and always passes. What it does not catch: the
-  failure detector's own latency, and a one-way partition in which this
-  node still receives.
-
-  The same registry is what `GrpcServerOptionsType.health` feeds
-  `grpc.health.v1.Health` from, so the management endpoint and the gRPC
-  health service read one instance rather than two that can disagree, and
-  both apply the same exported `isHealthy` rule. `/ready`'s `clusterReady`
-  field is read back out of the aggregate by name rather than recomputed
-  in the handler, for the same reason.
 
 ### Fixed
 
@@ -2086,18 +2072,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   On Deno nothing was wired at all, in any configuration: both
   `installProcessHooks` and the bootstrap's own handler called
   `process.on`, which on Deno registers on a shim that never delivers a
-  signal. Smoke case 28 spawns a child, signals it, and asserts both that
-  the phases ran in order and that the child exited by itself with status
-  0 — the second being the only way to catch a handler left armed.
+  signal. Smoke case 28 spawns a child and asserts both that the phases
+  ran in order and that the child exited by itself with status 0 — the
+  second because only a separate process can catch a handler left armed.
+  Read what that assertion guards on a POSIX runner, which is where CI
+  runs it: on Windows the case degrades to having the child start the
+  pipeline itself, since `child.kill('SIGTERM')` there is
+  `TerminateProcess` and no runtime can catch it — and a
+  `Deno.addSignalListener` on Windows does not hold the event loop open
+  either. With the detach taken out of `runUntilTerminated`, the case
+  still passes locally on both Bun and Deno — so a green local `bun run
+  smoke` is not evidence that the handlers came back off.
 
   A phase also no longer skips a task when one of its siblings unregisters
   itself mid-run: `runPhase` snapshots its task list before invoking
-  anything. Two tasks now do exactly that — the HTTP unbind and the
+  anything. Two tasks now unregister themselves — the HTTP unbind and the
   cluster leave, each dropping the task named after the resource it just
-  released — which is what turned a latent hazard into a reachable one.
+  released — but only the cluster leave splices before its first `await`,
+  which is what the hazard needs; the HTTP unbind drops its task after
+  awaiting the backend, by which time `runPhase`'s `map` has long since
+  returned. And `cluster-leave` carries exactly one task in a stock
+  deployment, so a second would have to be the application's. The hazard
+  stays latent; the snapshot is one array copy per phase to keep it that
+  way.
 
-- **Dead letters now name the actor the message failed to reach, on every
-  path (#433).**
+- **BREAKING — Dead letters now name the actor the message failed to
+  reach, on every path (#433).**
 
   Six sites handed a bare message to `system.deadLetters.tell(...)` and
   let `DeadLetterRef` do the wrapping. The ref only knows itself, so its
@@ -2127,10 +2127,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   places, the pub-sub mediator in two, `TypedActor.deadLetterStashBuffers`
   — are untouched.
 
-  Visible consequence worth knowing: anything that filtered the event
-  stream on the old uniform `/deadLetters` recipient stops matching, and
-  anyone who had started reading `.sender` to identify a skipped
-  projection now gets `null` and must read `.recipient`.
+  *Migration:* No signature changed, but the values on a public event did.
+  A subscriber that matched `DeadLetter.recipient` against the uniform
+  `actor-ts://<system>/deadLetters` path — the only value it could ever
+  have held for these six sites — stops matching; match on the real
+  recipient, or drop the filter, since the address is now the actor that
+  could not be reached. And a subscriber reading `.sender` to identify a
+  skipped projection now gets `null`: read `.recipient` instead.
 
 - **The docs no longer claim dead letters are logged (#1000).**
 
@@ -2592,16 +2595,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   leading run, which the anchored branch consumes whole. It is fixed
   rather than dismissed.
 
-- **The stock metrics registry no longer stores a label value chosen by a
-  remote party (#745).**
+- **The cheapest way for a remote party to mint stock metric series is
+  closed (#745).**
 
-  With `path` removed from `actor_mailbox_dropped_total`, the one stock
-  metric family whose label values an attacker could influence — by
-  addressing distinct sharded entity ids and then overflowing each
-  entity's mailbox — no longer carries them. Each such entity previously
-  contributed one permanent child series that survived the entity's own
-  passivation, costing heap for the life of the process and scrape size on
-  every collection.
+  With `path` removed from `actor_mailbox_dropped_total`, the stock family
+  whose label values an attacker could widen most cheaply — by addressing
+  distinct sharded entity ids and then overflowing each entity's mailbox —
+  no longer carries them. Each such entity previously contributed one
+  permanent child series that survived the entity's own passivation,
+  costing heap for the life of the process and scrape size on every
+  collection.
+
+  It is not the only family an entity id can reach. `actor_mailbox_size`
+  still carries `{class, path}`, and `src/metrics/Constants.ts` documents
+  that same `entity-<id>` vector against it. What separates the two is
+  price rather than reachability: the gauge mints nothing below a 10 000
+  message high-water mark, so a series there costs a sustained backlog per
+  entity instead of a single overflow, and a healthy system exports none
+  at all — which is why the removal was the right answer for the counter
+  and not for the gauge.
 
   This closes the framework-made half of the finding. The registry's lack
   of per-child eviction, and the `class="unknown"` series a cell can mint

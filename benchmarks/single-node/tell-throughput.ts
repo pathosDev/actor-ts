@@ -11,17 +11,23 @@
  * the drain path (#1027).  Every batch now completes in full, which is why
  * the rows finally agree with each other.
  *
- * Measured for #409 + #411 (Bun 1.3.1, Windows 11), one message per op:
+ * Measured for #409 + #411 (Bun 1.3.1, Windows 11), one message per op.
+ * Each column is the mean of several rounds run *alternately* with its
+ * neighbour rather than one run apiece, because a single sample here is not
+ * separable from the noise — the run-to-run spread within one arm is 5-15%,
+ * so read the ratios and treat the last digit of every figure as fiction:
  *
  * | batch | at #408 | + batching (#409) | + fewer allocations (#411) | total |
  * | ----- | ------- | ----------------- | -------------------------- | ----- |
- * | 100   |    136k |        281k (2.1x)|                       353k  | 2.6x  |
- * | 1k    |    246k |        681k (2.8x)|                       798k  | 3.2x  |
- * | 10k   |    254k |        745k (2.9x)|                     1 002k  | 3.9x  |
- * | 100k  |    255k |        735k (2.9x)|                       943k  | 3.7x  |
+ * | 100   |    143k |        297k (2.1x)|                       337k  | 2.4x  |
+ * | 1k    |    250k |        656k (2.6x)|                       740k  | 3.0x  |
+ * | 10k   |    255k |        723k (2.8x)|                       922k  | 3.6x  |
+ * | 100k  |    202k |        717k (3.6x)|                       902k  | 4.5x  |
  *
  * The "at #408" column was re-measured rather than taken from this header's
- * old ~245k, which predated the ring buffer.
+ * old ~245k, which predated the ring buffer.  The two arms at #409 were
+ * measured twice, once against each neighbour, and agreed within 1-2% — which
+ * is the check that makes the columns comparable at all.
  *
  * The two changes move different costs and the split is worth keeping.  #409
  * removes 15 of every 16 `setImmediate` round trips; what survives it is the

@@ -8,12 +8,14 @@
  * mailbox never holds more than one message and a batch of 16 has 15 slots of
  * nothing to do.  What batching removes is the *second and subsequent*
  * scheduling round trips within one turn; a depth-1 workload only ever pays
- * the first.  #409 measured 64.9k -> 91.8k ask/s (1.4x) here against 2.1-2.9x
- * on `tell-throughput`, and the gap is the whole explanation — the residual
- * gain is the reply hop sharing a turn, not the request being batched.
- * #411's per-message allocation cuts then took it to 107.7k (1.66x total),
- * and those DO apply at depth 1 — every delivery paid them — which is why
- * this arm moved further for the smaller of the two changes.
+ * the first.  #409 measured 1.4x here (68.9k -> 98.5k ask/s over four
+ * alternating rounds per arm) against 2.1-3.6x on `tell-throughput`, and the
+ * gap is the whole explanation — the residual gain is the reply hop sharing a
+ * turn, not the request being batched.  #411's per-message allocation cuts
+ * then took it to 110.1k, and those DO apply at depth 1 — every delivery paid
+ * them — which is why this arm moves for the smaller of the two changes at
+ * all.  Treat every figure here as a band: the run-to-run spread on one arm
+ * of this benchmark is 10-14%.
  *
  * A pipelined arm (N asks in flight, then `Promise.all`) would be the one that
  * responds to this knob.  It is deliberately not added here: this file's
