@@ -41,10 +41,14 @@ function actorSystemLiveness(system: ActorSystem): HealthCheckResult {
  * and `/ready` had nothing to aggregate (#655): there was no seam to
  * register into, only a return value handed back after start-up.
  *
- * Being per-system is also what makes the framework carry *one* notion of
- * "ready".  The management endpoints and the gRPC `grpc.health.v1.Health`
- * service (`GrpcServerOptionsType.health`) read the same instance, so they
- * cannot answer a load balancer differently.
+ * Being per-system is also what *lets* the framework carry one notion of
+ * "ready" — as far as the wiring goes, and no further.  The management
+ * endpoints always read this registry; the gRPC `grpc.health.v1.Health`
+ * service reads whichever registry the caller put in
+ * `GrpcServerOptionsType.health`.  The two cannot answer a load balancer
+ * differently when that field is `healthChecksOf(system)`, and can when it
+ * is a fresh `HealthCheckRegistry`.  Nothing enforces the first — the field
+ * taking a registry rather than a boolean is what makes the choice visible.
  *
  * The framework's liveness check is installed here, in the factory, rather
  * than from `ActorSystem`'s constructor: a system that never asks for the

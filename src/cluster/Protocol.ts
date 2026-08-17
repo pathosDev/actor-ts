@@ -207,12 +207,20 @@ const HEADER_SIZE = 4;
  * output; `undefined` in a value position (array slot, `Set` member, `Map` key
  * or value) is now preserved instead of becoming `null`.
  *
- * **Rolling upgrade:** decode is backward-compatible by construction — a frame
- * from an older node is untagged JSON, and `decodeJsonTree` only interprets a
- * tag that is an object's sole own key.  The other direction is not: an older
- * node reading a newer node's frame sees the tag wrapper as plain data.  Only
- * payloads that were already corrupted by `JSON.stringify` are affected, but a
- * mixed-version cluster does get different garbage than before.
+ * **Rolling upgrade — neither direction is safe, and the one that looks safe
+ * is worth spelling out.**  A frame from an older node is untagged JSON, and
+ * `decodeJsonTree` interprets a tag only when it is an object's sole own key,
+ * so nearly all legacy traffic is carried through unchanged.  The exception is
+ * a legacy value that already had that shape: `{__bytes__: 'not base64!!!'}`
+ * decodes to a `Uint8Array` and `{__date__: 'whenever'}` to an Invalid Date,
+ * silently, while `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`,
+ * `__number__` and `__error__` throw at any depth — and a decoder throw costs
+ * {@link Transport} the whole connection, along with every frame batched into
+ * the same chunk.  The `__literal__` escape only protects data *this* encoder
+ * produced, so it does nothing here.  The other direction is plainly lossy: an
+ * older node reading a newer node's frame sees the tag wrapper as plain data.
+ * There is no protocol negotiation yet (#823), so a mixed-version window is a
+ * hazard rather than a supported state.
  */
 export function encodeFrame(message: WireMessage): Uint8Array {
   const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));

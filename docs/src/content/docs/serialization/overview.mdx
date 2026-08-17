@@ -229,13 +229,19 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   The wire moved from raw `JSON.stringify` to the tagged tree
   ([#450](https://github.com/pathosDev/actor-ts/issues/450)), which
-  is a **breaking wire change**.  A newer node reads an older
-  node's frames unchanged — untagged JSON decodes as itself — but
-  not the reverse: an older node sees the tag wrapper as plain
-  data.  Only payloads that were already corrupted are affected, so
-  a cluster whose messages are plain data can roll node by node;
-  one that sends a `Map`, `Set`, `Date`, `bigint` or typed array
-  should upgrade in a single window.
+  is a **breaking wire change**, and **neither direction is safe**.
+  An older node reading a newer node's frame sees the tag wrapper
+  as plain data.  The reverse *nearly* holds — untagged JSON
+  decodes as itself, because a tag is read only when it is an
+  object's sole own key — but a legacy body that already had that
+  shape is not carried through: `{__bytes__: 'not base64!!!'}`
+  becomes a `Uint8Array` and `{__date__: 'whenever'}` an Invalid
+  Date, silently, while `__map__`, `__set__`, `__regexp__`,
+  `__bigint__`, `__url__`, `__number__` and `__error__` throw and
+  cost the whole TCP connection.  So a cluster whose messages are
+  plain data *and* hold no single-key `__tag__` object can roll
+  node by node; anything else — a `Map`, `Set`, `Date`, `bigint`
+  or typed array — should upgrade in a single window.
 </Aside>
 
 ## Where to next

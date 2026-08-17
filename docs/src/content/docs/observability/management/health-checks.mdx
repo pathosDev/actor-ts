@@ -43,9 +43,11 @@ result.
 ## The built-in checks
 
 The framework registers these itself — you get them without asking,
-and they are in the aggregate that both `/ready` and the gRPC
-[`grpc.health.v1.Health`](/io/grpc/) service read, so the two can
-never disagree about what "ready" means.
+and they are in the aggregate `/ready` reads.  The gRPC
+[`grpc.health.v1.Health`](/io/grpc/) service reads the registry you
+hand it, so pass `healthChecksOf(system)` and the two can never
+disagree about what "ready" means; a fresh `HealthCheckRegistry`
+there forks them.
 
 | Check | Kind | Registered by | Fails when |
 | --- | --- | --- | --- |
