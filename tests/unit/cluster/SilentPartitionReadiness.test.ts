@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { transportReachesCluster } from '../../../src/cluster/ClusterHealthChecks.js';
+import {
+  CLUSTER_TRANSPORT_CHECK_NAME,
+  clusterTransportResult,
+  transportReachesCluster,
+} from '../../../src/cluster/ClusterHealthChecks.js';
 import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame } from '../../../src/cluster/Protocol.js';
@@ -146,5 +150,34 @@ describe('transportReachesCluster over a silent partition', () => {
   test('a silent peer still believed up keeps the node ready — the detector\'s latency', () => {
     expect(transportReachesCluster([member(self, 'up'), member(peerA, 'up')], self, [peerA]))
       .toBe(true);
+  });
+});
+
+describe('the transport check says which failure it is', () => {
+  // Not the same operational story: "no socket at all" is a peer that went
+  // away, "sockets open, nobody reachable" is a black hole.  An operator
+  // reading `/ready` should not have to guess which one they have.
+  test('a peer that went away reports no connection', () => {
+    const result = clusterTransportResult([member(self, 'up'), member(peerA, 'up')], self, []);
+    expect(result.name).toBe(CLUSTER_TRANSPORT_CHECK_NAME);
+    expect(result.status).toBe(false);
+    expect(result.detail).toContain('no transport connection');
+    expect(result.detail).toContain('1 peer(s)');
+  });
+
+  test('a black hole reports connections that lead nowhere', () => {
+    const result = clusterTransportResult(
+      [member(self, 'up'), member(peerA, 'unreachable')], self, [peerA],
+    );
+    expect(result.status).toBe(false);
+    expect(result.detail).toContain('1 connection(s) are still open');
+    expect(result.detail).toContain('unreachable');
+  });
+
+  test('a healthy view carries no detail to explain', () => {
+    const result = clusterTransportResult(
+      [member(self, 'up'), member(peerA, 'up')], self, [peerA],
+    );
+    expect(result).toEqual({ name: CLUSTER_TRANSPORT_CHECK_NAME, status: true });
   });
 });

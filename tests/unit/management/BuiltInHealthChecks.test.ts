@@ -29,10 +29,16 @@ import {
  * unit-testable transport is `InMemoryTransport`, whose `peers()` reports
  * every transport registered in the process regardless of whether anything
  * is connected — so a connectivity assertion driven through it proves
- * nothing about the check.  `TcpTransport.peers()` counts only
- * handshake-completed connections and is the one that actually empties
- * under a partition, which is why the wiring is proved end-to-end in
- * `tests/integration/scenarios/16-readiness-gates.ts` instead.
+ * nothing about the check.
+ *
+ * `TcpTransport.peers()` does not empty under a partition either, which is
+ * the correction to what this header used to claim: it lists every
+ * handshake-completed connection until a FIN or an RST arrives, and the
+ * partitions worth worrying about produce neither.  See
+ * `tests/unit/cluster/SilentPartitionReadiness.test.ts`, which establishes
+ * that by execution and covers what the check therefore has to do instead.
+ * `tests/integration/scenarios/16-readiness-gates.ts` proves the wiring
+ * end-to-end over real sockets and real iptables rules.
  */
 
 const self = new NodeAddress('sys', 'self-host', 2551);

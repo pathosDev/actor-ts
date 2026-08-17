@@ -227,18 +227,6 @@ export class Cluster {
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
 
-  /**
-   * Undo for the readiness checks `_start` installed on the system's
-   * {@link HealthCheckRegistry} — see `registerClusterHealthChecks`.
-   *
-   * Held so `leave()` can take them back out.  A left cluster answers no
-   * gossip and has shut its transport down, so leaving the checks behind
-   * would pin `/ready` to 503 for a process that may well go on to join a
-   * new cluster (`join` is last-write-wins, and each incarnation registers
-   * its own pair).
-   */
-  private removeHealthChecks: (() => void) | null = null;
-
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
   private readonly wireHandlers = new Map<string, (message: WireMessage, from: NodeAddress) => void>();
@@ -644,8 +632,16 @@ export class Cluster {
     // `runPhase` snapshots the list before invoking anything.
     this.system.extension(CoordinatedShutdownId)
       .removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
-    this.removeHealthChecks?.();
-    this.removeHealthChecks = null;
+    // The readiness checks stay registered, and this is the whole point of
+    // them.  Leaving used to un-register the pair here — before self had even
+    // been moved to `leaving` — which left `checkReadiness()` empty on a node
+    // whose only readiness checks were the cluster's.  An empty aggregate
+    // reads as healthy at every consumer, so `/ready` answered 200 and the
+    // gRPC health service answered SERVING for a node that had deliberately
+    // gone out of service: the load balancer kept sending it traffic right up
+    // to the moment the process died (#655).  Both checks report DOWN from
+    // here on instead — self stays `leaving` in its own view — and a re-`join`
+    // retires them at its own registration point.
     const me = this.members.get(this.selfAddress.toString());
     if (me) {
       this.updateMember(me.withStatus('leaving'));
@@ -751,7 +747,12 @@ export class Cluster {
     // rollback in `join` puts the extension slot back but has no cluster to
     // take checks off, and a half-started one answering `/ready` would be
     // worse than a system with none at all (#655).
-    this.removeHealthChecks = registerClusterHealthChecks(this, healthChecksOf(this.system));
+    //
+    // The undo is deliberately dropped.  Nothing on the way out of service
+    // calls it — `leave()` leaves both checks reporting DOWN — and the one
+    // caller that must, a later `join` on this same system, retires the
+    // previous pair from inside `registerClusterHealthChecks`.
+    registerClusterHealthChecks(this, healthChecksOf(this.system));
   }
 
   private contactSeeds(): void {
