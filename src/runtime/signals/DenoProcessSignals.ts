@@ -6,11 +6,11 @@ import {
 } from './ProcessSignals.js';
 
 /** The slice of the `Deno` global this backend uses, typed structurally. */
-type SignalCapableDeno = {
+interface SignalCapableDeno {
   addSignalListener(signal: string, handler: () => void): void;
   removeSignalListener(signal: string, handler: () => void): void;
   readonly build?: { readonly os?: string };
-};
+}
 
 /**
  * Signal names in {@link ProcessSignal} that `Deno.Signal` does not have.

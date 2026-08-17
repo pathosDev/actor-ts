@@ -6,10 +6,10 @@ import { UNCATCHABLE_SIGNALS, type ProcessSignals } from './ProcessSignals.js';
  * module compiles with or without `@types/node` — the same reason
  * {@link ProcessSignal} exists at all (#1006).
  */
-type SignalCapableProcess = {
+interface SignalCapableProcess {
   on(signal: string, handler: () => void): unknown;
   off(signal: string, handler: () => void): unknown;
-};
+}
 
 /**
  * `process`-based signal delivery — Node.js's `process.on(signal, …)`.
