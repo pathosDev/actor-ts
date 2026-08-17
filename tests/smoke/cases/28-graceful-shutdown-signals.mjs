@@ -10,10 +10,17 @@
  * pipeline, and no in-process test could see it.  That is what
  * `src/runtime/signals/` exists for and what this case guards.
  *
- * Two things are asserted, and the second matters as much as the first:
+ * Three things are asserted, and the first is the one no in-process test can
+ * reach:
  *
- *  1. the phases run, in order, when the process is signalled;
- *  2. the child exits **by itself**, with status 0.  A `Deno.addSignalListener`
+ *  1. the child **survives** the wait.  A signal handler is not a reason for
+ *     a runtime to keep running — Node unrefs its signal handles — so a
+ *     `runUntilTerminated()` that holds nothing of its own drains an
+ *     otherwise-idle event loop and the process exits before the signal it
+ *     armed itself for ever arrives (Node says `Detected unsettled top-level
+ *     await` and exits 13);
+ *  2. the phases run, in order, when the process is signalled;
+ *  3. the child exits **by itself**, with status 0.  A `Deno.addSignalListener`
  *     listener holds the event loop open and has no `unref`, so a
  *     `runUntilTerminated()` that forgot to detach its handlers would print
  *     a green ORDER line and then hang forever.  Nothing but a separate
@@ -24,9 +31,16 @@
  * runtimes.  A maintainer's local `bun run smoke` is the Windows case:
  * `child.kill('SIGTERM')` there is `TerminateProcess`, which no runtime can
  * catch, and Deno accepts only SIGINT/SIGBREAK anyway.  So on Windows the
- * child starts the pipeline itself and only the OS delivery step is skipped
- * — the ordering and the clean exit are still under test.  A documented
- * weakening on one platform, not a different case.
+ * child idles for a beat and then starts the pipeline itself: only the OS
+ * delivery step is skipped, and assertions 1 and 3 — the two that are about
+ * the event loop rather than about the kernel — are exactly as sharp as they
+ * are in CI.  A documented weakening on one platform, not a different case.
+ *
+ * That idle beat is why the child does not simply start the pipeline at once
+ * (#549 shipped with it doing so).  Without a window in which the process has
+ * nothing referenced on its event loop, assertion 1 is unreachable on every
+ * platform, and the Windows run degrades from "weaker" to "vacuous" — which
+ * is how a Node-only regression reached `develop` past a green local run.
  *
  * Handle hygiene (#1196): the child is reaped in a `finally` on every path
  * and every timer is cleared, because a case that leaves either behind makes
@@ -74,7 +88,7 @@ export async function run({ runtime }) {
         + `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`,
     );
 
-    if (mode === 'signal') child.kill('SIGTERM');
+    if (mode === 'signal') signalChild(child);
 
     const outcome = await withDeadline(
       exited,
@@ -101,6 +115,39 @@ export async function run({ runtime }) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await exited;
   }
+}
+
+/**
+ * Deliver the SIGTERM this case is about.
+ *
+ * `child.kill('SIGTERM')` is the obvious call, and it is the wrong one when
+ * the *parent* is Deno.  Deno's `node:child_process` sets `signalCode` at
+ * `kill()` time rather than reading it from the wait status, and then reports
+ * a null exit code whenever `signalCode` is set:
+ *
+ * ```js
+ * this.signalCode = this.signalCode || status.signal || null;
+ * if (this.signalCode) { this.exitCode = null; } else { this.exitCode = status.code; }
+ * ```
+ *
+ * So a child that handled the signal, ran the whole pipeline and exited 0 by
+ * itself still arrives at the `exit` event as `code=null signal=SIGTERM` —
+ * indistinguishable from one the signal killed outright, and impossible to
+ * pass the "exits by itself, with status 0" half of this case with.  That is
+ * a divergence from Node, where `signalCode` comes only from the wait status,
+ * and it made the Deno arm red for a child that was behaving perfectly.
+ *
+ * `Deno.kill` goes straight to the pid and leaves the polyfill's bookkeeping
+ * untouched, so the exit status stays observable and the assertion keeps its
+ * teeth on all three runtimes.  It needs `--allow-run`, which `smoke:deno`
+ * already grants for the spawn itself.
+ */
+function signalChild(child) {
+  if (globalThis.Deno !== undefined) {
+    globalThis.Deno.kill(child.pid, 'SIGTERM');
+    return;
+  }
+  child.kill('SIGTERM');
 }
 
 /**
