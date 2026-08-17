@@ -1528,8 +1528,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     //
     // So the read comes back, gated on its only reader rather than
     // unconditional — which is what #411 was actually measuring.
-    const recording = this._explain !== null;
-    const startedAtMs = recording ? Date.now() : 0;
+    //
+    // One local, not a `number` plus a `recording` boolean: this method is
+    // `async`, so everything live across the `await` is a slot in a
+    // heap-allocated frame, and `-1` says "no recorder when this started"
+    // without a second one.
+    const startedAtMs = this._explain !== null ? Date.now() : -1;
     let failure: Error | null = null;
     // What the behavior actually sees.  Differs from `message` only for a
     // `watchWith` registration, which swaps the signal for the watcher's
@@ -1592,9 +1596,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // while somebody is inspecting this actor.
       //
       // The stamp taken on the way in is used whenever there was one.  It is
-      // missing for exactly one message — the one whose handler switched the
-      // recorder on, so `recording` was false at the top and true here — and
-      // for that one the end read minus the duration is the only estimate
+      // missing for exactly one message — the one whose own handler switched
+      // the recorder on, so `_explain` was null at the top and is not here —
+      // and for that one the end read minus the duration is the only estimate
       // available.  `Math.ceil` undoes its bias rather than leaving it: the
       // error is known to lie in [0, 1) ms and to be one-directional, so
       // rounding up lands on the millisecond the clock would have shown at
@@ -1603,7 +1607,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       if (this._explain !== null) {
         this._recordExplain(
           env,
-          recording ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
+          startedAtMs >= 0 ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
           elapsedMs,
           failure,
           span,
