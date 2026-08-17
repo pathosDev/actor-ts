@@ -32,7 +32,7 @@ import {
 } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
-  DEFAULT_MAX_SUBSCRIBERS_TOTAL,
+  DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
@@ -189,7 +189,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.max-topics', kind: 'int', constant: DEFAULT_MAX_TOPICS },
   { key: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic', kind: 'int', constant: DEFAULT_MAX_REMOTE_NODES_PER_TOPIC },
   { key: 'actor-ts.cluster.receptionist.max-subscribers-per-key', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_KEY },
-  { key: 'actor-ts.cluster.receptionist.max-subscribers-total', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_TOTAL },
+  { key: 'actor-ts.cluster.receptionist.max-subscriptions-total', kind: 'int', constant: DEFAULT_MAX_SUBSCRIPTIONS_TOTAL },
 
   /* --- sharding --- */
   { key: 'actor-ts.sharding.number-of-shards', kind: 'int', constant: DEFAULT_NUM_SHARDS },

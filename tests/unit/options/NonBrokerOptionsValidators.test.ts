@@ -508,8 +508,8 @@ describe('discovery option validators', () => {
       new ReceptionistOptionsValidator().validate(s);
     expect(() => check({ maxSubscribersPerKey: 0 })).toThrow(/maxSubscribersPerKey/);
     expect(() => check({ maxSubscribersPerKey: 1.5 })).toThrow(OptionsError);
-    expect(() => check({ maxSubscribersTotal: -1 })).toThrow(/maxSubscribersTotal/);
-    expect(() => check({ maxSubscribersPerKey: 1_000, maxSubscribersTotal: 10_000 })).not.toThrow();
+    expect(() => check({ maxSubscriptionsTotal: -1 })).toThrow(/maxSubscriptionsTotal/);
+    expect(() => check({ maxSubscribersPerKey: 1_000, maxSubscriptionsTotal: 10_000 })).not.toThrow();
     // Unset stays valid — the actor's built-in defaults apply.
     expect(() => check({})).not.toThrow();
   });

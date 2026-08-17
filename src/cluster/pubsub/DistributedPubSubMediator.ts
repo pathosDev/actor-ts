@@ -612,6 +612,13 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * The cap a fresh local subscription to `topic` would breach, or `null` when
    * there is room.  A topic with no entry yet does not exist, and there the
    * topic cap is the one at stake rather than the per-topic subscriber cap.
+   *
+   * `maxTopics` counts `topics`, not `subscriptions.leftSize`, and the two are
+   * genuinely different: a topic held only by a remote claim has an entry here
+   * and no local subscriber, so it is absent from the relation's left side while
+   * still occupying a slot — see {@link maybeDropTopic}, which is what makes
+   * that state reachable.  Swapping in the participant count would stop bounding
+   * exactly the topics nothing local subscribes to.
    */
   private capRefusal(topic: string): CapRefusal | null {
     const existing = this.topics.get(topic);

@@ -6,8 +6,8 @@ import type { Cluster } from '../cluster/Cluster.js';
 
 /** Built-in default for {@link ReceptionistOptionsType.maxSubscribersPerKey}. */
 export const DEFAULT_MAX_SUBSCRIBERS_PER_KEY = 1_000;
-/** Built-in default for {@link ReceptionistOptionsType.maxSubscribersTotal}. */
-export const DEFAULT_MAX_SUBSCRIBERS_TOTAL = 10_000;
+/** Built-in default for {@link ReceptionistOptionsType.maxSubscriptionsTotal}. */
+export const DEFAULT_MAX_SUBSCRIPTIONS_TOTAL = 10_000;
 
 /** Plain options-object shape accepted by a {@link Receptionist}. */
 export type ReceptionistOptionsType = {
@@ -18,8 +18,16 @@ export type ReceptionistOptionsType = {
    * answered with `SubscribeRejected` instead of growing the set.
    */
   readonly maxSubscribersPerKey?: number;
-  /** Most subscribers this receptionist may hold across all keys together. */
-  readonly maxSubscribersTotal?: number;
+  /**
+   * Most subscriptions this receptionist may hold across all keys together —
+   * key/subscriber pairs, not distinct subscribers, so one subscriber watching
+   * three keys counts as three.
+   *
+   * Pairs are what bounds the memory: nothing caps how many keys one subscriber
+   * may hold, so a cap on distinct subscribers would let a single one grow the
+   * relation and the key map without limit (#1200).
+   */
+  readonly maxSubscriptionsTotal?: number;
 };
 
 /**
@@ -49,9 +57,9 @@ export class ReceptionistOptionsBuilder extends OptionsBuilder<ReceptionistOptio
     return this.set('maxSubscribersPerKey', maxSubscribersPerKey);
   }
 
-  /** Cap on the subscribers this receptionist holds across every key. */
-  withMaxSubscribersTotal(maxSubscribersTotal: number): this {
-    return this.set('maxSubscribersTotal', maxSubscribersTotal);
+  /** Cap on the subscriptions this receptionist holds across every key. */
+  withMaxSubscriptionsTotal(maxSubscriptionsTotal: number): this {
+    return this.set('maxSubscriptionsTotal', maxSubscriptionsTotal);
   }
 }
 
@@ -63,7 +71,7 @@ export class ReceptionistOptionsValidator extends OptionsValidator<ReceptionistO
   protected rules(_s: Partial<ReceptionistOptionsType>): void {
     this.positiveNumber('gossipIntervalMs');
     this.positiveInt('maxSubscribersPerKey');
-    this.positiveInt('maxSubscribersTotal');
+    this.positiveInt('maxSubscriptionsTotal');
   }
 }
 
@@ -83,8 +91,8 @@ export function readReceptionistOptionsFromConfig(config: Config): Partial<Recep
   if (config.hasPath(keys.maxSubscribersPerKey)) {
     out.maxSubscribersPerKey = config.getInt(keys.maxSubscribersPerKey);
   }
-  if (config.hasPath(keys.maxSubscribersTotal)) {
-    out.maxSubscribersTotal = config.getInt(keys.maxSubscribersTotal);
+  if (config.hasPath(keys.maxSubscriptionsTotal)) {
+    out.maxSubscriptionsTotal = config.getInt(keys.maxSubscriptionsTotal);
   }
   return out;
 }

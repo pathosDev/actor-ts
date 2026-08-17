@@ -5,7 +5,7 @@ import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
-  DEFAULT_MAX_SUBSCRIBERS_TOTAL,
+  DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
   ReceptionistOptionsValidator,
   readReceptionistOptionsFromConfig,
 } from './ReceptionistOptions.js';
@@ -85,7 +85,7 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   private readonly clusterRef: Cluster | null;
   private readonly gossipIntervalMs: number;
   private readonly maxSubscribersPerKey: number;
-  private readonly maxSubscribersTotal: number;
+  private readonly maxSubscriptionsTotal: number;
 
   /**
    * Which keys each subscriber watches, and which subscribers each key has —
@@ -103,6 +103,13 @@ export class Receptionist extends Actor<ReceptionistInbox> {
    * counter of its own.  A hand-kept one is a third thing to hold in step, and
    * it was already subtly wrong: the old `forgetSubscription` decremented
    * before its own "did this subscriber exist" guard.
+   *
+   * Subscriptions — pairs — are also the right thing for the cap to bound, and
+   * `maxSubscriptionsTotal` is named for that since #1200.  `rightSize` would
+   * give the distinct-subscriber count the option used to be *called*, but
+   * nothing here caps keys per subscriber, so one already-counted subscriber
+   * could then take unboundedly many fresh keys and grow both this relation and
+   * {@link keys} without limit.
    */
   private readonly subscriptions = new BidirectionalMultiMap<string, string>(); // keyId ↔ subscriber path
   /**
@@ -124,7 +131,7 @@ export class Receptionist extends Actor<ReceptionistInbox> {
     this.clusterRef = resolvedOptions.cluster ?? null;
     this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.maxSubscribersPerKey = resolvedOptions.maxSubscribersPerKey ?? DEFAULT_MAX_SUBSCRIBERS_PER_KEY;
-    this.maxSubscribersTotal = resolvedOptions.maxSubscribersTotal ?? DEFAULT_MAX_SUBSCRIBERS_TOTAL;
+    this.maxSubscriptionsTotal = resolvedOptions.maxSubscriptionsTotal ?? DEFAULT_MAX_SUBSCRIPTIONS_TOTAL;
   }
 
   override preStart(): void {
@@ -377,8 +384,8 @@ export class Receptionist extends Actor<ReceptionistInbox> {
     if (this.subscriptions.get(keyId).size >= this.maxSubscribersPerKey) {
       return { reason: 'maxSubscribersPerKey', limit: this.maxSubscribersPerKey };
     }
-    if (this.subscriptions.size >= this.maxSubscribersTotal) {
-      return { reason: 'maxSubscribersTotal', limit: this.maxSubscribersTotal };
+    if (this.subscriptions.size >= this.maxSubscriptionsTotal) {
+      return { reason: 'maxSubscriptionsTotal', limit: this.maxSubscriptionsTotal };
     }
     return null;
   }

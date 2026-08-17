@@ -43,6 +43,16 @@ export async function run({ actorTs, loadEntry }) {
     if (restored.getKey(2) !== 'grace') throw new Error(`${label}: inverse not rebuilt: ${restored.getKey(2)}`);
     if (restored.size !== 2) throw new Error(`${label}: size ${restored.size} !== 2`);
 
+    // The 1:1 counts (#1199).  Prototype getters, so a decode that handed back a
+    // plain object rather than an instance reads `undefined` here; and
+    // `valueSize` reads the reverse map, which is never written to the wire.
+    if (restored.keySize !== 2 || restored.valueSize !== 2) {
+      throw new Error(
+        `${label}: counts came back as keySize=${restored.keySize} `
+        + `valueSize=${restored.valueSize}, expected 2 and 2`,
+      );
+    }
+
     // The Map contract it claims, on the built bundle.
     if (new Map(restored).get('grace') !== 2) throw new Error(`${label}: not consumable as a Map`);
     if (Object.prototype.toString.call(restored) !== '[object BidirectionalMap]') {
@@ -55,5 +65,12 @@ export async function run({ actorTs, loadEntry }) {
   displaced.set('b', 1);
   if (displaced.size !== 1 || displaced.has('a')) {
     throw new Error(`set did not displace: size=${displaced.size} has('a')=${displaced.has('a')}`);
+  }
+  // A displacement that forgot the reverse delete would leave valueSize at 2.
+  if (displaced.keySize !== 1 || displaced.valueSize !== 1) {
+    throw new Error(
+      `displacement left the counts disagreeing: keySize=${displaced.keySize} `
+      + `valueSize=${displaced.valueSize}, expected 1 and 1`,
+    );
   }
 }

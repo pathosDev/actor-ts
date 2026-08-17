@@ -11,6 +11,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — the receptionist's total cap is now called
+  `maxSubscriptionsTotal`** (#1200).  It was enforced as a count of
+  key/subscriber *pairs* while being documented as a count of *subscribers* —
+  "Most subscribers this receptionist may hold across all keys together" — so
+  one subscriber watching five keys quietly consumed five units of it, and a
+  deployment that sized the cap against its expected subscriber population got
+  refusals at a fraction of it.
+
+  The name moved rather than the implementation, because the pair count is the
+  correct bound.  Re-pointing the check at the distinct-subscriber count would
+  have made the name true and removed a memory bound: nothing caps keys per
+  subscriber, so a single already-counted subscriber could then take
+  unboundedly many fresh service keys and grow both the relation and the key
+  map without limit.  That was confirmed by trying it — the naive swap makes a
+  fourth subscribe from a capped-out subscriber succeed, while all three
+  pre-existing total-cap tests stay green, because each of them gives every
+  subscriber exactly one key.  A new case now pins the distinction.
+
+  `maxSubscribersPerKey` is unchanged: it counts the subscribers on one key, so
+  its name was already accurate.  Behaviour is identical end to end, and the
+  default is still `10000`.
+
+  *Migration:* `withMaxSubscribersTotal(n)` → `withMaxSubscriptionsTotal(n)`;
+  the plain-object field `maxSubscribersTotal` → `maxSubscriptionsTotal`; the
+  HOCON leaf `actor-ts.cluster.receptionist.max-subscribers-total` →
+  `…max-subscriptions-total`.  Code matching on
+  `SubscribeRejected.reason === 'maxSubscribersTotal'` now matches
+  `'maxSubscriptionsTotal'`, and `DEFAULT_MAX_SUBSCRIBERS_TOTAL` is exported as
+  `DEFAULT_MAX_SUBSCRIPTIONS_TOTAL`.
+
 - **BREAKING — `KeepMajority` downs both sides of an exact 50/50 split**
   (#1170).  `decide` returned the empty set on a tie — "remain pending" — so
   neither half downed anything and both kept running: the split-brain
@@ -556,6 +586,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **The bidirectional collections count participants, not only pairs**
+  (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
+  number of distinct participants on each side, both O(1), reading the two
+  backing maps directly.  `size` still counts pairs, which is what a cap is
+  usually written against; the two questions are now both askable without
+  spreading an iterator to measure the answer (`[...map.lefts()].length` was an
+  O(n) allocation to read a number the object already held).  They are correct
+  on an `inverse()` view for free, because the view's forward map *is* the
+  original's reverse one — unlike the pair counter, which needs a shared box
+  for exactly that reason.
+
+  `BidirectionalMap` gained `keySize` and `valueSize` for symmetry.  The
+  relation there is 1:1, so both always equal `size`; they exist so that moving
+  between the two types needs no memory of which one has the accessor.
+  `valueSize` reads the reverse map rather than aliasing the forward one, so it
+  still tells the truth if the invariant it corroborates ever breaks.
 
 - **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
   two live instances of one persistence-id.  After a partition plus a

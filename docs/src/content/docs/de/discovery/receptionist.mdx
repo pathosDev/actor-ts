@@ -173,14 +173,21 @@ Subscriber:
 | Option | HOCON-Leaf | Default |
 | --- | --- | --- |
 | `maxSubscribersPerKey` | `cluster.receptionist.max-subscribers-per-key` | `1000` |
-| `maxSubscribersTotal` | `cluster.receptionist.max-subscribers-total` | `10000` |
+| `maxSubscriptionsTotal` | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
 ```ts
 const receptionistOptions = ReceptionistOptions.create()
   .withMaxSubscribersPerKey(200)
-  .withMaxSubscribersTotal(2_000);
+  .withMaxSubscriptionsTotal(2_000);
 const receptionist = system.extension(ReceptionistId).start(cluster, receptionistOptions);
 ```
+
+Die beiden zählen Verschiedenes, und die Namen sagen was.
+`maxSubscribersPerKey` zählt Subscriber an einem Key.
+`maxSubscriptionsTotal` zählt **Key/Subscriber-Paare** über alle Keys, ein
+Subscriber mit drei Keys verbraucht davon also drei — Paare sind das, was den
+Speicher begrenzt, denn wie viele Keys ein einzelner Subscriber halten darf,
+beschränkt nichts.
 
 Ein `Subscribe` über einer der beiden Grenzen wird **abgelehnt,
 nicht verworfen**: `replyTo` erhält statt des ersten `Listing` ein
@@ -193,7 +200,7 @@ import { SubscribeRejected as ReceptionistSubscribeRejected } from 'actor-ts/dis
 class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
   override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {
     if (message instanceof ReceptionistSubscribeRejected) {
-      // message.reason: 'maxSubscribersPerKey' | 'maxSubscribersTotal'
+      // message.reason: 'maxSubscribersPerKey' | 'maxSubscriptionsTotal'
       // message.limit:  der Wert, auf den diese Grenze gesetzt ist
       this.log.warn(`discovery refused: ${message.reason} (${message.limit})`);
       return;
