@@ -232,6 +232,38 @@ export {
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
+// Dead-letter queue — capture, inspection and replay of undeliverable
+// messages.  Reached at runtime through `system.deadLetterQueue`; what the
+// barrel carries is the class, the entry/filter shapes an application names
+// when it reads them, and the options family that configures the thing.
+export {
+  DEAD_LETTER_STORES,
+  DEFAULT_DEAD_LETTER_MAX_ENTRIES,
+  DEFAULT_DEAD_LETTER_MAX_REPLAYS,
+  DEFAULT_DEAD_LETTER_RETENTION_MS,
+  DEFAULT_DEAD_LETTER_STORE,
+  DeadLetterQueue,
+  DeadLetterQueueOptions,
+  DeadLetterQueueOptionsBuilder,
+  DeadLetterQueueOptionsValidator,
+  defaultDeadLetterPersistenceId,
+} from './deadletters/index.js';
+export type {
+  CapturedPayload,
+  DeadLetterEntry,
+  DeadLetterFilter,
+  DeadLetterPayload,
+  DeadLetterQueueOptionsType,
+  DeadLetterReplayResult,
+  DeadLetterStore,
+  DegradedPayload,
+  DegradedPayloadResult,
+  QuarantinedResult,
+  ReplayedResult,
+  UnknownEntryResult,
+  UnresolvedRecipientResult,
+} from './deadletters/index.js';
+
 // ProcessSignal — the POSIX signal names `installProcessHooks` and the
 // cluster bootstrap's `shutdownOnSignals` accept.  A verbatim mirror of
 // `NodeJS.Signals`, so the published types need no `@types/node`.

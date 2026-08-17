@@ -59,6 +59,26 @@ export const ConfigKeys = {
     throughput: 'actor-ts.actor.throughput',
   },
 
+  /**
+   * Dead-letter queue — `actor-ts.dead-letters.*`.  Read once, in the
+   * `ActorSystem` constructor, before any actor exists: a queue installed
+   * later would have missed whatever died in between.
+   *
+   * A top-level block rather than a leaf under `actor-ts.diagnostics.*`
+   * because capture is not a diagnostic switch — `persistent` makes it a
+   * durability guarantee with a journal behind it.  Anything that suppresses
+   * or samples the dead-letter *stream* (#1179) belongs under `diagnostics`
+   * and must gate downstream of this capture, or the queue's completeness
+   * claim is silently false.
+   */
+  deadLetters: {
+    store: 'actor-ts.dead-letters.store',
+    maxEntries: 'actor-ts.dead-letters.max-entries',
+    retention: 'actor-ts.dead-letters.retention',
+    maxReplays: 'actor-ts.dead-letters.max-replays',
+    persistenceId: 'actor-ts.dead-letters.persistence-id',
+  },
+
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
   dispatcher: {
     default: 'actor-ts.dispatcher.default',

@@ -10,7 +10,7 @@ import {
 } from './Constants.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import { CoordinatedShutdownId } from './CoordinatedShutdown.js';
+import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
@@ -36,6 +36,8 @@ import type { CellInspection, DispatchObserver } from './internal/Instrumentatio
 import type { MetricsRegistry } from './metrics/Metrics.js';
 import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
+import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
+import { readDeadLetterQueueOptionsFromConfig } from './deadletters/DeadLetterQueueOptions.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
   Guardian,
@@ -92,6 +94,14 @@ export class ActorSystem {
    */
   readonly _actorThroughput: number;
   readonly deadLetters: ActorRef;
+  /**
+   * Bounded record of the messages this system could not deliver.
+   *
+   * Always present, and capturing nothing unless `actor-ts.dead-letters.store`
+   * says otherwise — so `list()` on a default system answers "nothing kept",
+   * which is the truth, rather than throwing or being `undefined`.
+   */
+  readonly deadLetterQueue: DeadLetterQueue;
   /** Full merged configuration in effect for this system. */
   readonly config: Config;
   /** Per-system extension registry (serialization, sharding, pubsub, …). */
@@ -209,8 +219,19 @@ export class ActorSystem {
     this.dispatcherErrorSink = (error, dispatcherId) =>
       this._reportDispatcherError(error, dispatcherId, null);
     this.dispatcher.onError ??= this.dispatcherErrorSink;
-    this.deadLetters = new DeadLetterRef(this.name, this.eventStream);
+    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream);
+    this.deadLetters = deadLetterRef;
     this.extensions = new Extensions(this);
+    // Built here, before the guardians exist, because the first dead letter
+    // can be produced by the very first `spawn` — a queue installed later
+    // would be missing exactly the letters an early failure produced.
+    this.deadLetterQueue = new DeadLetterQueue(
+      this,
+      readDeadLetterQueueOptionsFromConfig(this.config),
+    );
+    if (this.deadLetterQueue.store !== 'off') {
+      deadLetterRef._setSink((deadLetter) => this.deadLetterQueue._capture(deadLetter));
+    }
 
     // Construct the supervisor chain: /  ->  /user, /system.
     this.rootCell = new ActorCell<unknown>(
@@ -244,6 +265,17 @@ export class ActorSystem {
       const ext = this.extensions.get(PersistenceExtensionId);
       if (options.persistence.journal) ext.setJournal(options.persistence.journal);
       if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
+    }
+
+    // Only when the operator asked for a queue.  Off — the default — this
+    // would construct `CoordinatedShutdown` for every system in the process
+    // to register a task with nothing to do.
+    if (this.deadLetterQueue.store !== 'off') {
+      this.extensions.get(CoordinatedShutdownId).addFrameworkTask(
+        Phases.BeforeActorSystemTerminate,
+        'flush-dead-letter-queue',
+        () => this.deadLetterQueue.flush(),
+      );
     }
   }
 
@@ -712,19 +744,31 @@ export class ActorSystem {
     this._terminationResolvers = [];
     const finish = (): void => { for (const resolve of resolvers) resolve(); };
 
-    // Flush the log sinks before anyone learns the system is down.  This is
-    // the only seam that catches both shutdown paths: `CoordinatedShutdown`
-    // ends by calling `terminate()`, so a task registered in a phase would
-    // miss every program that terminates directly.  It also runs *after*
-    // every `postStop`, so a last message from a stopping actor is still in
-    // the queue being drained.  Structural, so any logger with a `close()`
-    // is flushed — not just the framework's own.
+    // Settle the dead-letter queue's writes, then flush the log sinks,
+    // before anyone learns the system is down.  This is the only seam that
+    // catches both shutdown paths: `CoordinatedShutdown` ends by calling
+    // `terminate()`, so a task registered in a phase would miss every
+    // program that terminates directly.  It also runs *after* every
+    // `postStop`, so a last message from a stopping actor is still in the
+    // queue being drained.
+    //
+    // Ordering matters for the queue and not only for tidiness: the bulk of
+    // a shutdown's dead letters — stashes discarded, mailboxes emptied past
+    // their cell — are produced by this very teardown, which is *after* the
+    // last shutdown phase ran.  The phase task settles what a running system
+    // produced; this settles what stopping it produced.  Both are needed.
     const closeLogger = closeOf(this.log);
-    if (closeLogger === undefined) {
-      finish();
-      return;
-    }
-    void withinBudget(closeLogger, this.loggerCloseTimeoutMs).then(finish, finish);
+    const closeSinks = closeLogger === undefined
+      ? Promise.resolve()
+      : withinBudget(closeLogger, this.loggerCloseTimeoutMs, 'logger close');
+    void withinBudget(
+      () => this.deadLetterQueue.flush(),
+      this.loggerCloseTimeoutMs,
+      'dead-letter flush',
+    )
+      .then(() => { this.deadLetterQueue._close(); })
+      .then(() => closeSinks)
+      .then(finish, finish);
   }
 }
 
@@ -827,21 +871,30 @@ function closeOf(log: Logger): (() => Promise<void>) | undefined {
  * not `unref`'d: the loop is empty at that point, and an unreferenced timer
  * in an empty loop is not guaranteed to fire — the timeout that exists to
  * break a hang would hang.  It is cleared in the `finally`.
+ *
+ * `what` names the operation in the two failure lines.  Both go to
+ * `console` rather than to `this.log`, because the one caller that is not
+ * about the logger runs beside the one that is — and a message about a
+ * flush that timed out must not depend on the sink being flushed.
  */
-async function withinBudget(operation: () => Promise<void>, budgetMs: number): Promise<void> {
+async function withinBudget(
+  operation: () => Promise<void>,
+  budgetMs: number,
+  what: string,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       Promise.resolve(operation()),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          console.error(`[actor-ts] logger close timed out after ${budgetMs} ms; some records may be lost`);
+          console.error(`[actor-ts] ${what} timed out after ${budgetMs} ms; some records may be lost`);
           resolve();
         }, budgetMs);
       }),
     ]);
   } catch (error) {
-    console.error('[actor-ts] logger close failed:', error);
+    console.error(`[actor-ts] ${what} failed:`, error);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

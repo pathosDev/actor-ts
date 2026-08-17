@@ -266,6 +266,35 @@ actor-ts {
     throughput = 16
   }
 
+  # Bounded record of the messages the system could not deliver, inspectable
+  # and replayable through system.deadLetterQueue.  Undeliverable messages are
+  # published on the event stream either way -- this decides whether anything
+  # KEEPS them, which by default nothing does.
+  dead-letters {
+    # off        = publish only, keep nothing (the behaviour before #433)
+    # memory     = keep in a bounded ring, lost with the process
+    # persistent = additionally write to the configured journal, so the queue
+    #              is still there after a restart
+    store = "off"
+
+    # Letters held before the oldest is evicted.  The queue is a diagnostic
+    # ring: an unbounded one turns a delivery outage into an out-of-memory.
+    max-entries = 1000
+
+    # Age letters out after this long.  0 disables ageing and leaves
+    # max-entries as the only bound.
+    retention = 1h
+
+    # How often one letter may be replayed before it is quarantined.  A
+    # replayed message that dead-letters again comes back as the SAME entry
+    # with a higher count, so a poison message cannot be retried forever.
+    max-replays = 3
+
+    # Journal stream the persistent store writes to.  Empty = derive it from
+    # the system name, so two systems sharing a journal keep separate queues.
+    persistence-id = ""
+  }
+
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
