@@ -37,11 +37,16 @@ Speicherdecke gewinnen", und er ging nicht auf:
   die liefen durch dieselbe Queue.  Aus jedem dieser Fälle wurde ein
   gemeldeter Defekt.
 
-  Einer davon, das `Terminated` der Death Watch, ist inzwischen für jede
-  Policy unerreichbar: es nimmt eine Spur, die keine Schranke abwerfen
-  kann (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine
-  eigene Mailbox* weiter unten).  Der Rest ist Anwendungsverkehr, und
-  nur du weißt, welcher davon verzichtbar ist.
+  Zwei Nachrichten, die das Framework in deinem Namen sendet, sind
+  inzwischen für jede Policy unerreichbar: das `Terminated` der Death
+  Watch und das Kommando, das den Actor einer
+  [WebSocket](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)-Verbindung
+  spawnt.  Beide nehmen eine Spur, die keine Schranke abwerfen kann
+  (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene
+  Mailbox* weiter unten).  Der Test, den sie bestehen: das Framework hat
+  sie gebaut, genau einmal gesendet und nichts behalten, womit es sie
+  erneut senden könnte.  Der Rest ist Anwendungsverkehr, und nur du
+  weißt, welcher davon verzichtbar ist.
 
 Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
 Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
@@ -70,7 +75,12 @@ aufnehmen**, und du sagen kannst, welche Nachrichten verzichtbar sind:
   angenommen hast, `reject` sagt dem Sender, er soll zurückstecken.
 - Jeder Actor, der einem Producer ausgesetzt ist, den du nicht
   kontrollierst — dort ist eine unbegrenzte Queue eine
-  Denial-of-Service-Fläche.
+  Denial-of-Service-Fläche.  Lies den dritten Punkt mit den ersten
+  beiden: er sagt, wo ein Bound eine *Überlegung* wert ist, nicht dass
+  der Verkehr dort verzichtbar wäre.  Ein WebSocket-Hub ist der
+  deutlichste Fall von beidem zugleich — siehe
+  [Die Mailbox des Hubs begrenzen](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)
+  dazu, was ein Bound dort kostet und was nicht.
 
 ```ts
 import { ActorOptions } from 'actor-ts';
@@ -148,11 +158,13 @@ Konfigurationsfehler, keine stille Vorrangregel.
 
 #### Eine Pflicht: `enqueueSignal`
 
-Eine Queue, die abwirft, hat eines, das sie nicht abwerfen darf.  Das
-Framework kündigt einen Tod genau einmal an — siehe
-[Death Watch](/de/fundamentals/death-watch/) — deshalb kommt ein
-`Terminated` über `enqueueSignal` statt über `enqueue`, und der Vertrag
-lautet: *reihe es ein, was deine Schranke auch sagt*:
+Eine Queue, die abwirft, hat eine kurze Liste von Dingen, die sie nicht
+abwerfen darf.  Das Framework kündigt einen Tod genau einmal an — siehe
+[Death Watch](/de/fundamentals/death-watch/) — und übergibt einem
+WebSocket-Hub das Kommando, das den Actor einer Verbindung spawnt,
+ebenfalls genau einmal; deshalb kommen beide über `enqueueSignal` statt
+über `enqueue`, und der Vertrag lautet: *reihe es ein, was deine
+Schranke auch sagt*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {

@@ -292,9 +292,12 @@ protocol design.
   board it reaches actors nobody assessed — a delivery producer, a
   WebSocket hub — and the evicted envelope is a control message.  That
   is the shape the unbounded default exists to prevent, and setting a
-  global capacity re-creates it.  A death-watch subscriber is the one
-  case the framework now covers itself: its `Terminated` survives any
-  bound.  Everything else in your protocol is still yours to assess.
+  global capacity re-creates it.  Two cases the framework now covers
+  itself: a death-watch subscriber's `Terminated`, and the command that
+  spawns a WebSocket connection's actor — both survive any bound, so a
+  bounded hub can no longer strand a socket whose handshake already
+  finished.  Everything else in your protocol, the rest of that hub's
+  traffic included, is still yours to assess.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

@@ -297,9 +297,13 @@ Protokoll-Design.
   einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
   Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
   Default verhindern, und eine globale Kapazität stellt es wieder her.
-  Ein Death-Watch-Subscriber ist der eine Fall, den das Framework
-  inzwischen selbst abdeckt: sein `Terminated` übersteht jede Schranke.
-  Alles andere in deinem Protokoll bleibt deine Beurteilung.
+  Zwei Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
+  eines Death-Watch-Subscribers und das Kommando, das den Actor einer
+  WebSocket-Verbindung spawnt — beide überstehen jede Schranke, ein
+  begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
+  Handshake schon fertig war.  Alles andere in deinem Protokoll,
+  einschließlich des restlichen Verkehrs dieses Hubs, bleibt deine
+  Beurteilung.
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">
