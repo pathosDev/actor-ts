@@ -163,6 +163,23 @@ export const MAX_CONTEXT_KEYS = 32;
 export const MAX_CONTEXT_VALUE_LENGTH = 1_024;
 
 /**
+ * How long an incarnation identifier arriving off the wire may be (#940).
+ *
+ * Same reasoning as the context cap above, one field to the left: an
+ * incarnation rides on *every* address, and an address rides on every member
+ * record of every gossip frame — so an oversized one is retained per member,
+ * for as long as that member is on file, and re-gossiped to every peer.  The
+ * frame cap bounds one delivery; this bounds what a delivery may leave behind.
+ *
+ * Deliberately a length rather than a format: what this node mints is a UUID
+ * (`NodeAddress.mintIncarnation`), but the *rule* has to admit whatever a peer
+ * of another version mints, or the identifier becomes a second thing to
+ * negotiate on a wire that has no version handshake yet (#823).  128 characters
+ * is four UUIDs' worth of room and still a bound.
+ */
+export const MAX_NODE_INCARNATION_LENGTH = 128;
+
+/**
  * How long allocation changes are gathered before one `ShardMapUpdate` goes
  * out.  Long enough to fold a whole-cluster placement into a single
  * broadcast, short enough that a panel still feels live.

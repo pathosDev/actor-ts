@@ -7,10 +7,17 @@
  *
  * - it must **refuse the whole frame**, and say so to an operator through the
  *   existing refusal counter rather than a new metric series (#131);
- * - it must not become a **new denial of service**.  A guard that adopts any
- *   number a peer sends is one frame away from being the exploit #114 closed:
- *   `Number.MAX_SAFE_INTEGER` as the mark would refuse everything the real node
- *   says from then on;
+ * - a sequence too far ahead of the receiver's clock to be plausible must be
+ *   **refused**, not merged.  It shipped the other way round — admitted, but
+ *   never adopted as the mark — on the argument that a frame numbered
+ *   `Number.MAX_SAFE_INTEGER` cannot be a recording of a real frame.  Only the
+ *   *sequence* is fabricated in that attack: the `members` array is still the
+ *   recording, so the same captured frame merged on every delivery, without
+ *   limit, against a warm receiver with a live sender (#940);
+ * - it must not become a **new denial of service** either.  Refusing an
+ *   implausible frame leaves the mark where the last plausible frame put it, so
+ *   the real node's next frame still lands — the exploit #114 closed on
+ *   `version` must not reappear one field to the left;
  * - the mark must not **outlive its member**, or the address's next
  *   incarnation — whose counter starts from its own clock — would be refused.
  */
@@ -183,13 +190,49 @@ describe('the frame a peer already sent is refused whole', () => {
   });
 });
 
-describe('the guard cannot be turned into a denial of service', () => {
-  test('exploit: a frame numbered absurdly far ahead does not become the mark', async () => {
-    // The shape of #114 one field to the left.  If any number a peer sends
-    // became the high-water mark, `Number.MAX_SAFE_INTEGER` would refuse
-    // everything the real node says afterwards — and `MAX_SAFE_INTEGER + 1`
-    // rounds back to itself, so not even a restart could escape.
-    const node = await startNode('replay-pin', 9_404);
+describe('a sequence no clock could have produced is refused, not merged', () => {
+  test('exploit: a captured frame restamped past the mark replays without limit', async () => {
+    // What shipped: `admitsGossipSequence` admitted any number above the mark,
+    // and `rememberGossipSequence` then refused to *adopt* an implausible one.
+    // So a frame stamped `Number.MAX_SAFE_INTEGER` merged and left the mark
+    // untouched — which means the identical frame merged again, and again,
+    // against a **warm** receiver with a **live** sender.  That is the one
+    // configuration #112's guard was claimed to hold in.  Only the sequence is
+    // forged; `members` is still the recording, and nothing on this wire binds
+    // the two together (#940).
+    const node = await startNode('replay-restamp', 9_404);
+    nodes.push(node);
+    node.system.extension(MetricsExtensionId).enable();
+    const peer = new NodeAddress('replay-restamp', '10.0.112.2', 9_490);
+    const subject = new NodeAddress('replay-restamp', '10.0.112.3', 9_491);
+
+    const base = Date.now();
+    gossipFrom(node.cluster, peer, base, [selfRecord(peer)]);
+    expect(markFor(node.cluster, peer)).toBe(base);
+
+    const captured: MemberData[] = [
+      { address: subject.toJSON(), status: 'up', version: base, roles: ['payments'] },
+    ];
+    for (let delivery = 0; delivery < 3; delivery++) {
+      gossipFrom(node.cluster, peer, Number.MAX_SAFE_INTEGER, captured);
+      expect(internals(node.cluster).members.has(subject.toString())).toBe(false);
+    }
+    expect(node.cluster.upMembersWithRole('payments')).toHaveLength(0);
+
+    // Refused through the existing counter, once per record per delivery — the
+    // label set stays closed at four values (#131).
+    const refused = metricsOf(node.system)
+      .counter('cluster_gossip_records_refused_total', { reason: 'replayed-frame' });
+    expect(refused.value).toBe(3);
+  });
+
+  test('refusing it does not pin the peer: the mark stays where the real node left it', async () => {
+    // The shape of #114 one field to the left, and the reason the fix is a
+    // refusal rather than a rejection of the *mark*: if an absurd number could
+    // become the high-water mark it would refuse everything the real node says
+    // afterwards, and `MAX_SAFE_INTEGER + 1` rounds back to itself, so not even
+    // a restart would escape.
+    const node = await startNode('replay-pin', 9_408);
     nodes.push(node);
     const peer = new NodeAddress('replay-pin', '10.0.112.2', 9_490);
     const subject = new NodeAddress('replay-pin', '10.0.112.3', 9_491);
@@ -200,7 +243,8 @@ describe('the guard cannot be turned into a denial of service', () => {
 
     expect(markFor(node.cluster, peer)).toBe(base);
 
-    // …so the peer's next ordinary frame is still merged.
+    // …so the peer's next ordinary frame — one above the old mark, not above
+    // the forged one — is still merged.
     gossipFrom(node.cluster, peer, base + 1, [
       { address: subject.toJSON(), status: 'up', version: base, roles: ['worker'] },
     ]);
@@ -208,20 +252,59 @@ describe('the guard cannot be turned into a denial of service', () => {
   });
 
   test('the plausibility bound is the same clock-skew budget versions get', async () => {
-    // Just inside `maxVersionSkewMs` is adopted; beyond it the frame still
-    // merges but is not recorded, so a skewed peer is never silenced by its
-    // own clock.
+    // Just inside `maxVersionSkewMs` is admitted and adopted, so a skewed peer
+    // is never silenced by its own clock.  Beyond it the frame is dropped whole
+    // — the record it carries does not land — and the mark is left alone.
     const node = await startNode('replay-budget', 9_405);
     nodes.push(node);
     const peer = new NodeAddress('replay-budget', '10.0.112.2', 9_490);
+    const skewed = new NodeAddress('replay-budget', '10.0.112.3', 9_491);
+    const beyond = new NodeAddress('replay-budget', '10.0.112.4', 9_492);
+
+    // Standing first: a third-party record needs a sender the receiver already
+    // considers active, and `senderStatus` is snapshotted before the merge, so
+    // it cannot be earned by the same frame that uses it (#562).
+    gossipFrom(node.cluster, peer, Date.now(), [selfRecord(peer)]);
 
     const withinBudget = Date.now() + 4 * MINUTE_MS;
-    gossipFrom(node.cluster, peer, withinBudget, [selfRecord(peer)]);
+    gossipFrom(node.cluster, peer, withinBudget, [
+      { address: skewed.toJSON(), status: 'up', version: Date.now(), roles: [] },
+    ]);
     expect(markFor(node.cluster, peer)).toBe(withinBudget);
+    expect(internals(node.cluster).members.has(skewed.toString())).toBe(true);
 
     const beyondBudget = Date.now() + 60 * MINUTE_MS;
-    gossipFrom(node.cluster, peer, beyondBudget, [selfRecord(peer)]);
+    gossipFrom(node.cluster, peer, beyondBudget, [
+      { address: beyond.toJSON(), status: 'up', version: Date.now(), roles: [] },
+    ]);
     expect(markFor(node.cluster, peer)).toBe(withinBudget);
+    expect(internals(node.cluster).members.has(beyond.toString())).toBe(false);
+  });
+
+  test('a NaN sequence is refused rather than adopted as an unbeatable mark', async () => {
+    // Hardening local to the decision that depends on it.  `wireFrameProblem`
+    // refuses a non-finite `sequence` at the decode boundary, so this shape does
+    // not reach a node over TCP — but `NaN` loses every `>` comparison, so an
+    // unchecked one sails past both the mark and the budget, and on a *cold*
+    // receiver it became the mark: every later frame from that peer then failed
+    // `sequence > NaN` and the real node was silenced permanently.
+    const node = await startNode('replay-nan', 9_409);
+    nodes.push(node);
+    const peer = new NodeAddress('replay-nan', '10.0.112.2', 9_490);
+    const subject = new NodeAddress('replay-nan', '10.0.112.3', 9_491);
+
+    gossipFrom(node.cluster, peer, Number.NaN, [selfRecord(peer)]);
+    expect(markFor(node.cluster, peer)).toBeUndefined();
+    expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+
+    // …and the peer is still able to speak.
+    const base = Date.now();
+    gossipFrom(node.cluster, peer, base, [selfRecord(peer)]);
+    gossipFrom(node.cluster, peer, base + 1, [
+      { address: subject.toJSON(), status: 'up', version: base, roles: [] },
+    ]);
+    expect(markFor(node.cluster, peer)).toBe(base + 1);
+    expect(internals(node.cluster).members.get(subject.toString())?.status).toBe('up');
   });
 });
 
