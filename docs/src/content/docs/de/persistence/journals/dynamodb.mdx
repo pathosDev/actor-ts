@@ -153,8 +153,20 @@ alle dahinter bekommen eine funktionierende Tabelle.
   `(pid, seq)`-Item nicht existiert". Ein konkurrierender Writer kann damit
   keinen partiellen Append gewinnen: die Transaktion ist ganz oder gar nicht, und
   ihr Abbruch wird zum `JournalConcurrencyError`. Der vorausgehende Head-Read
-  ist nur eine Optimierung, die den häufigen veralteten Append zu einer billigen
-  Query statt einer abgelehnten Transaktion macht.
+  ist nur eine Optimierung *für die Sicherheit des Writes*, die den häufigen
+  veralteten Append zu einer billigen Query statt einer abgelehnten Transaktion
+  macht — aber der **Wert**, den er zurückgibt, ist tragend, und darum ist es ein
+  starker Read (nächster Punkt).
+- **Jeder Read, von dem eine Recovery oder eine Sequenznummer-Entscheidung
+  abhängt, ist ein starker Read.** DynamoDB liefert eventually-consistent Reads,
+  solange ein Request nicht `ConsistentRead: true` setzt; das Journal setzt es beim
+  Head-Read, bei der Replay-Query und bei der Query nach den zu löschenden Keys in
+  `delete`, der Snapshot-Store bei `loadLatest` und `loadBefore`. Ein veralteter
+  Read ist hier nicht „etwas ältere Daten": ein Head von einer nachhängenden
+  Replica lässt einen intakten Stream *zurückgespult* aussehen, und eine veraltete
+  Replay-Seite kürzt die Historie so, dass es weiter unten niemand merken kann —
+  die Replay-Integritätsprüfungen erkennen ein Loch, eine falsche Reihenfolge und
+  ein Event außerhalb des Fensters, aber nichts sagt, wo der Stream enden soll.
 - **Durable-State-CAS ist ein nativer konditionaler Write** —
   `PutItem … attribute_not_exists(pid)` zum Anlegen,
   `UpdateItem … revision = :expected` zum Aktualisieren — ohne Transaktion und
@@ -176,6 +188,21 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 ## Fallstricke
+
+<Aside type="caution" title="Starke Reads kosten das Doppelte, und nicht nur bei der Recovery">
+  Ein `ConsistentRead` verbraucht doppelt so viel Read-Kapazität wie ein
+  eventually-consistent Read, und das ist **keine** Kosten pro Recovery: `read` und
+  `highestSeq` rufen auch der Catch-up-Pfad der Query-Ebene, `currentEventsByTag`,
+  Remember-Entities und Projection-Tooling auf — die zahlen also mit. Es ist der
+  richtige Default — eine Projection, die die neuesten Events still übergeht, ist
+  ein eigener Defekt, und ein veralteter Head wird dir als zweiter Writer gemeldet,
+  nicht als Nachhängen — aber plane es ein. Wenn du die günstigere Variante
+  brauchst: `persistenceIds` ist ohnehin der eine Read, der eventually consistent
+  bleibt (eine ID, die einen Poll später auftaucht, kostet nichts), und das
+  Snapshot-Pruning ebenso, weil ein veralteter Read dort nur zu wenig löschen kann.
+  Eine Konsistenz-Option pro Store gibt es nicht; zu Cassandras `withConsistency`
+  existiert noch kein DynamoDB-Gegenstück.
+</Aside>
 
 <Aside type="caution" title="Ein Append ist auf 100 Events begrenzt">
   DynamoDB erlaubt höchstens 100 Items in einem `TransactWriteItems`. Ein

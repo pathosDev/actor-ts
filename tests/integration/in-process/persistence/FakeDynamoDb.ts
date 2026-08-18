@@ -14,6 +14,12 @@
  *     `TransactionCanceledException` with the per-item `CancellationReasons` the
  *     SDK produces.  That is what makes "a losing writer writes nothing"
  *     testable rather than merely asserted.
+ *   - **Read consistency.** `ConsistentRead` is honoured, and
+ *     `freezeReadReplica()` gives the eventually-consistent view something to lag
+ *     behind (#736).  Without that a strong and a weak read return the same
+ *     bytes, so a store that forgot the flag looks correct forever — and the
+ *     Docker target cannot cover the gap either, since `dynamodb-local` is a
+ *     single in-memory process with no replicas.
  *
  * Expression support is deliberately narrow — only the forms the stores emit —
  * and anything else throws, so a new expression cannot slip in untested.
@@ -78,15 +84,61 @@ export type FakeDynamoDbOptions = {
   readonly pageSize?: number;
 };
 
+/**
+ * How a read asked to be served, as the log records it.  A store's whole
+ * read-consistency posture is one boolean per call site, so recording it lets a
+ * test assert the request shape directly instead of only its effect.
+ */
+const consistencyOf = (input: Record<string, unknown>): string =>
+  input.ConsistentRead === true ? 'strong' : 'eventual';
+
 export class FakeDynamoDb implements DynamoDbOperations {
   private readonly tables = new Map<string, FakeTable>();
   private readonly pageSize: number | undefined;
+  /**
+   * Frozen item copies per table name while a replica is lagging; `undefined`
+   * means every read sees the live tables.  Off by default on purpose — see
+   * `freezeReadReplica`.
+   */
+  private replica: Map<string, Map<string, DynamoDbItem>> | undefined;
   closed = false;
   /** Every operation, in order — lets tests assert on what the stores issued. */
   readonly log: string[] = [];
 
   constructor(options: FakeDynamoDbOptions = {}) {
     this.pageSize = options.pageSize;
+  }
+
+  /* --------------------------- read consistency --------------------------- */
+
+  /**
+   * Freeze the eventually-consistent view of every table as it stands right now.
+   *
+   * From here on a read that does **not** set `ConsistentRead: true` is served
+   * from that frozen copy, while strong reads, conditional-write checks and every
+   * write keep using the live tables — which is what a lagging DynamoDB read
+   * replica is.  Same purpose as `pageSize`: force a hazard the fake would
+   * otherwise never reach, and for the same reason it defaults off —
+   * `PersistenceContract.test.ts` builds all three stores over one instance and
+   * has to keep seeing a single coherent view.
+   *
+   * A table created after the freeze reads as empty on the replica rather than
+   * missing, since a replica that has never seen a partition has no rows for it,
+   * not a different schema.
+   */
+  freezeReadReplica(): void {
+    const frozen = new Map<string, Map<string, DynamoDbItem>>();
+    for (const [name, table] of this.tables) {
+      const items = new Map<string, DynamoDbItem>();
+      for (const [key, item] of table.items) items.set(key, clone(item));
+      frozen.set(name, items);
+    }
+    this.replica = frozen;
+  }
+
+  /** Let the replica catch up: weak reads see the live tables again. */
+  catchUpReadReplica(): void {
+    this.replica = undefined;
   }
 
   /* ------------------------------ table admin ----------------------------- */
@@ -187,16 +239,21 @@ export class FakeDynamoDb implements DynamoDbOperations {
   /* -------------------------------- reads --------------------------------- */
 
   async getItem(input: Record<string, unknown>): Promise<DynamoDbGetResult> {
-    const table = this.table(input.TableName as string);
-    const found = table.items.get(this.keyOf(table, input.Key as DynamoDbItem));
+    const name = input.TableName as string;
+    const table = this.table(name);
+    this.log.push(`getItem ${name} ${consistencyOf(input)}`);
+    const found = this.readView(name, table, input).get(this.keyOf(table, input.Key as DynamoDbItem));
     return found ? { Item: clone(found) } : {};
   }
 
   async query(input: Record<string, unknown>): Promise<DynamoDbQueryResult> {
-    const table = this.table(input.TableName as string);
+    const name = input.TableName as string;
+    const table = this.table(name);
+    this.log.push(`query ${name} ${consistencyOf(input)}`);
     const values = (input.ExpressionAttributeValues ?? {}) as Record<string, unknown>;
     const condition = input.KeyConditionExpression as string;
-    const matched = [...table.items.values()].filter((item) => matchesKeyCondition(table, item, condition, values));
+    const visible = [...this.readView(name, table, input).values()];
+    const matched = visible.filter((item) => matchesKeyCondition(table, item, condition, values));
     matched.sort((left, right) => {
       const sortKey = table.sortKey;
       if (!sortKey) return 0;
@@ -208,8 +265,23 @@ export class FakeDynamoDb implements DynamoDbOperations {
   }
 
   async scan(input: Record<string, unknown>): Promise<DynamoDbQueryResult> {
-    const table = this.table(input.TableName as string);
-    return this.page(table, [...table.items.values()], input);
+    const name = input.TableName as string;
+    const table = this.table(name);
+    this.log.push(`scan ${name} ${consistencyOf(input)}`);
+    return this.page(table, [...this.readView(name, table, input).values()], input);
+  }
+
+  /**
+   * The item view one read sees: the live table, or the frozen replica when the
+   * caller did not ask for a strong read and a replica is being held back.
+   */
+  private readView(
+    name: string,
+    table: FakeTable,
+    input: Record<string, unknown>,
+  ): ReadonlyMap<string, DynamoDbItem> {
+    if (this.replica === undefined || input.ConsistentRead === true) return table.items;
+    return this.replica.get(name) ?? new Map();
   }
 
   /**
