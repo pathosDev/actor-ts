@@ -134,6 +134,14 @@ export type GossipMessage = {
    *
    * Required, not optional: an optional field whose absence skips the check is
    * bypassed by stripping it.
+   *
+   * A receiver holds it to two bounds, both in `Cluster.admitsGossipSequence`:
+   * it must out-number the highest one that receiver has accepted from the same
+   * connection peer, **and** it must be a finite number no further ahead of the
+   * receiver's clock than `maxVersionSkewMs`.  The second is what stops a
+   * captured frame being restamped past every mark and replayed without limit —
+   * only this field is fabricated in that attack, the `members` array is still
+   * the recording (#940).
    */
   sequence: number;
   members: MemberData[];

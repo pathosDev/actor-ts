@@ -243,7 +243,17 @@ export class Cluster {
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
-    this.selfAddress = new NodeAddress(system.name, options.host, options.port);
+    // The incarnation is minted here rather than in `_start` so that it is
+    // established before anything can be sent or received: the transport is
+    // constructed with `selfAddress` two lines down and ships it in every
+    // `hello`, and a `Cluster` that changed its own identity between
+    // construction and start would have peers holding two of them (#940).
+    // One per `Cluster` instance is one per `Cluster.join`, which is the
+    // granularity the identifier is *for* — two runs on the same `host:port`
+    // are two incarnations.
+    this.selfAddress = new NodeAddress(
+      system.name, options.host, options.port, NodeAddress.mintIncarnation(),
+    );
     this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     // The frame cap only reaches a transport this constructor builds; an
@@ -1033,12 +1043,41 @@ export class Cluster {
    * only against itself, so it is skew-free, needs no knob, and refuses every
    * replay rather than those older than a window.
    *
+   * **A sequence must also be plausible, and refusing is what makes the guard
+   * hold.**  The number is stamped from the author's wall clock, so it gets the
+   * same clock-skew budget a gossiped `version` gets
+   * ({@link ClusterOptionsType.maxVersionSkewMs}) and for the same reason.  This
+   * check used to sit one step later — the frame was admitted and only *adopting*
+   * it as the mark was refused, on the argument that a frame numbered
+   * `Number.MAX_SAFE_INTEGER` "is by definition not a recording of a real frame".
+   * That argument does not survive the observation that only the **sequence** is
+   * fabricated: the `members` array is still the recording, and there is no MAC
+   * or signature anywhere on this wire to stop one field being rewritten.  So a
+   * captured frame restamped absurdly far ahead was merged, left the mark
+   * untouched, and was therefore merged **again on every delivery, without
+   * limit** — against a warm receiver with a live sender, which is the one
+   * configuration the guard was claimed to hold in (#940).
+   *
+   * Refusing it instead keeps the property the old split was reaching for and
+   * loses nothing: the mark stays where the last plausible frame left it, so the
+   * real node's next frame still out-numbers it and still merges.  What a peer
+   * can no longer do is pin the mark *or* replay through it — the pinning
+   * exploit #114 closed on `version` is not reintroduced one field to the left,
+   * it is closed on both sides.
+   *
+   * `Number.isFinite` is checked here as well as by the frame guard
+   * ({@link wireFrameProblem}) — `NaN` loses every `>` comparison, so an
+   * unchecked one would sail past both the mark and the budget.  Local to the
+   * decision that depends on it, for the reason `Member.fromData` re-checks
+   * `status`.
+   *
    * **What it does not close.**  A peer that has earned standing can still
    * *compose* a fresh frame naming a deleted address at its old version — that
-   * is not a replay, and only an incarnation identity on `NodeAddress` closes
-   * it (#940).
+   * is not a replay, and refusing it needs a required incarnation identity on
+   * `NodeAddress` and therefore a wire break (#940, #823).
    */
   private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
+    if (!Number.isFinite(sequence) || sequence > Date.now() + this.maxVersionSkewMs) return false;
     const lastAccepted = this.acceptedGossipSequences.get(from.toString());
     return lastAccepted === undefined || sequence > lastAccepted;
   }
@@ -1046,24 +1085,19 @@ export class Cluster {
   /**
    * Raise the high-water mark for a peer whose frame was just merged.
    *
-   * Two conditions, both about not turning a replay guard into a denial of
-   * service:
+   * **Only for an address the member map holds**, which is what bounds this map
+   * by the same caps as that one — the sender fallback above has already run, so
+   * an honest peer is on file by the time this is asked.
    *
-   * - **Only for an address the member map holds**, which is what bounds this
-   *   map by the same caps as that one — the sender fallback above has already
-   *   run, so an honest peer is on file by the time this is asked.
-   * - **Only for a sequence that is plausible**, held to the same budget as a
-   *   gossiped version.  A frame numbered `Number.MAX_SAFE_INTEGER` is still
-   *   *accepted* — it is by definition not a recording of a real frame, so the
-   *   guard has no business refusing it — but it must not become the mark, or
-   *   one frame would pin a member's address and refuse everything the real
-   *   node says from then on.  That is exactly the exploit #114 closed on
-   *   `version`, and it would be reintroduced one field to the left.
+   * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
+   * implausible frame outright, so nothing that reaches this point carries a
+   * number the mark should not take.  Keeping the bound in one place is the
+   * point — two copies of it is how the frame came to be admitted under a number
+   * the mark itself rejected.
    */
   private rememberGossipSequence(from: NodeAddress, sequence: number): void {
     const key = from.toString();
     if (!this.members.has(key)) return;
-    if (sequence > Date.now() + this.maxVersionSkewMs) return;
     this.acceptedGossipSequences.set(key, sequence);
   }
 
@@ -1096,7 +1130,9 @@ export class Cluster {
       .with('timestamp-skew', () =>
         `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
       .with('replayed-frame', () =>
-        'the frame does not out-number the last one accepted from that peer — a replay or a duplicate')
+        'the frame does not out-number the last one accepted from that peer, or its sequence is not '
+        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock — `
+        + 'a replay, a duplicate, or a capture with its sequence rewritten')
       .exhaustive();
   }
 
@@ -1621,7 +1657,7 @@ export class Cluster {
   }
 
   private mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void {
-    const incoming = Member.fromData(data);
+    const incoming = this.withLocalSelfIdentity(Member.fromData(data));
 
     if (!this.maySpeakFor(from, senderStatus, incoming.address, incoming.status)) return;
 
@@ -1724,6 +1760,33 @@ export class Cluster {
     }
     this.setMember(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * A gossiped record *about this node* keeps this node's own address object,
+   * incarnation included (#940).
+   *
+   * {@link maySpeakFor} already refuses every claim about `selfAddress` except
+   * an own promotion, and a promotion is merged wholesale — the incoming
+   * record's version, roles **and address** replace the local ones.  For the
+   * three fields the string form is built from that is invisible, because they
+   * had to match for the record to be about this node at all.  For the
+   * incarnation it is not: a peer running the previous version sends none, and
+   * a hostile one can send whatever it likes, so the self record's identifier
+   * would be whatever the last peer to promote us happened to say.
+   *
+   * Substituting the local address is the one incarnation comparison that needs
+   * no distributed agreement, because it only ever discards a peer's claim in
+   * favour of a fact this node owns.  It is not a refusal: the promotion still
+   * lands, which is what keeps a node joining a cluster whose leader predates
+   * the field.
+   */
+  private withLocalSelfIdentity(member: Member): Member {
+    if (!member.address.equals(this.selfAddress)) return member;
+    if (member.address.incarnation === this.selfAddress.incarnation) return member;
+    return new Member(
+      this.selfAddress, member.status, member.version, member.roles, member.removedAt,
+    );
   }
 
   /**

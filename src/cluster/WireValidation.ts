@@ -1,6 +1,6 @@
 import { MAX_CONTEXT_KEYS, MAX_CONTEXT_VALUE_LENGTH } from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
-import type { NodeAddressData } from './NodeAddress.js';
+import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
 /**
  * Runtime shape checks for frames arriving off the cluster wire.
@@ -35,13 +35,25 @@ export function isWireFrame(value: unknown): value is { kind: string } {
     && typeof (value as { kind?: unknown }).kind === 'string';
 }
 
-/** A `NodeAddressData` whose fields are actually the declared types. */
+/**
+ * A `NodeAddressData` whose fields are actually the declared types.
+ *
+ * The single gate for every address-bearing wire field — `hello.self`,
+ * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`, `gossip.from`,
+ * every `gossip.members[].address`, `shard-map.shards[*]` and `leave.node` —
+ * which is why an *optional* `incarnation` is checked here rather than
+ * required: making it required would refuse all eight at once from any peer
+ * that predates the field (#940).  The length bound it is held to is the
+ * point of checking it at all; `NodeAddress.isIncarnation` states it, so this
+ * guard and `NodeAddress.fromJSON` cannot disagree.
+ */
 export function isNodeAddressData(value: unknown): value is NodeAddressData {
   if (typeof value !== 'object' || value === null) return false;
-  const { systemName, host, port } = value as Partial<NodeAddressData>;
+  const { systemName, host, port, incarnation } = value as Partial<NodeAddressData>;
   return typeof systemName === 'string' && systemName.length > 0
     && typeof host === 'string' && host.length > 0
-    && isPort(port);
+    && isPort(port)
+    && (incarnation === undefined || NodeAddress.isIncarnation(incarnation));
 }
 
 /**
