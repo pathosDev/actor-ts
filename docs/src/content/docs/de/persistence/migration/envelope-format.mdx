@@ -89,6 +89,14 @@ Beim Lesen entpackt das Framework den Envelope in einen
 `stored.version` ist der **`_v`**-Wert; `stored.manifest` ist der
 **`_t`**-Tag.  Der Read-Pfad-Job des Adapters:
 
+- `stored.manifest` gegen das Manifest prüfen, für das dieser
+  Adapter gebaut wurde, und alles andere abweisen.  Das
+  auszulassen ist der Weg, auf dem eine Row eines Event-Typs als
+  ein anderer dekodiert wird — die Payload validiert, der statische
+  Typ behauptet, es sei das Erwartete, und nichts weiter unten kann
+  es merken.  Jeder eingebaute Adapter wirft hier einen
+  `MigrationError`; ein Journal mit mehreren Typen verzweigt
+  stattdessen auf `stored.manifest` und delegiert.
 - `stored.version` inspizieren.
 - Wenn es die aktuelle Version ist, `stored.payload` zu
   `DomainEvent` (die aktuelle Form) casten und zurückgeben.
