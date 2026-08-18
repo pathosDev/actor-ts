@@ -554,13 +554,21 @@ const SLEEP_DECLARATION =
  * The delay-promise form is matched only when `new Promise` and `setTimeout`
  * sit in one expression, which is what makes it a *delay* rather than a
  * scheduled callback: the 71 `setTimeout` calls that reject a pending promise
- * or close a socket later are not waits and are correctly not counted.
+ * or close a socket later are not waits and are correctly not counted.  The
+ * optional type argument is not cosmetic — `new Promise<void>((r) =>
+ * setTimeout(r, ms))` is the same bet and is what a strict codebase writes;
+ * one site already sat in that gap while this pattern was being written.
+ *
+ * It is a ratchet, not an adversary.  A determined evasion (a `setTimeout`
+ * assigned to a local inside a braced executor, a delay reached through an
+ * imported wrapper) is not caught, and hardening against that would cost the
+ * precision that keeps the gate from firing on correct code.
  */
 const FIXED_DELAY_WAIT = new RegExp(
   [
     '(?<![.\\w$])sleep\\s*\\(',
     '(?<![\\w$])Bun\\s*\\.\\s*sleep\\s*\\(',
-    '(?<![\\w$])new\\s+Promise\\s*\\(\\s*\\(?\\s*[A-Za-z_$][\\w$]*\\s*\\)?\\s*=>\\s*\\{?\\s*setTimeout\\s*\\(',
+    '(?<![\\w$])new\\s+Promise\\s*(?:<[^>()]*>)?\\s*\\(\\s*\\(?\\s*[A-Za-z_$][\\w$]*\\s*\\)?\\s*=>\\s*\\{?\\s*(?:void\\s+)?setTimeout\\s*\\(',
   ].join('|'),
   'g',
 );
@@ -923,6 +931,14 @@ describe('the sleep ratchet is still reading the tree', () => {
     {
       what: 'an inline delay promise',
       source: 'await new Promise((resolve) => setTimeout(resolve, 50));\n',
+      declarations: 0,
+      waits: 1,
+      unexplained: 1,
+      helpers: 0,
+    },
+    {
+      what: 'a delay promise with a braced executor and a type argument',
+      source: 'await new Promise<void>((resolve) => { setTimeout(resolve, 50); });\n',
       declarations: 0,
       waits: 1,
       unexplained: 1,
