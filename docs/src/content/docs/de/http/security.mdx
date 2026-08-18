@@ -96,8 +96,15 @@ braucht.
   trotzdem — Browser ignorieren es über reines HTTP. Gate Security-Header
   nicht an einem Scheme, das die App nicht sieht.
 - **Client-IPs vertrauen.** `req.remoteAddress` ist der Socket-Peer, kein
-  fälschbares `X-Forwarded-For`. Vertraue einem Forwarded-Header nur, wenn
-  dein Proxy ihn überschreibt (`getClientIp`-Option von `IpAllowlist`).
+  fälschbares `X-Forwarded-For` — und „überschreibt mein Proxy den Header"
+  ist die falsche Frage, denn NGINX, AWS ALB und Cloudflare **hängen** alle
+  daran an. Der eigene Text des Clients bleibt für immer links in der Kette.
+  Benenne stattdessen die Proxys
+  ([`trustedProxies` von `IpAllowlist`](/de/http/middleware/ip-allowlist/)),
+  dann wird die Client-Adresse vom Socket-Ende nach innen aufgelöst — dem
+  einzigen Ende, das die Infrastruktur kontrolliert. Traue niemals jedem
+  Hop: bei Express und Fastify löst `trust proxy: true` genau zu diesem
+  linkesten, client-gewählten Eintrag auf.
 - **Secrets aus der Umgebung**, nicht aus HOCON-Dateien — das CSRF-Secret,
   Basic-Zugangsdaten und Bearer-Tokens nehmen alle Werte, die du beim Start
   lädst.

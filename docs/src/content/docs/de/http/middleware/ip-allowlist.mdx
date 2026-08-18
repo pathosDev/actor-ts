@@ -1,6 +1,6 @@
 ---
 title: IP-Allowlist
-description: IpAllowlist() beschränkt einen Route-Teilbaum auf Clients innerhalb konfigurierter IPv4/IPv6-CIDRs — liest standardmäßig den Socket-Peer und traut x-forwarded-for nur, wenn du es aktivierst.
+description: IpAllowlist() beschränkt einen Route-Teilbaum auf Clients innerhalb konfigurierter IPv4/IPv6-CIDRs — liest standardmäßig den Socket-Peer und löst hinter einem Proxy den Client aus der Forwarded-Kette auf, sobald du die Proxys benennst.
 ---
 
 `IpAllowlist` beschränkt einen Route-Teilbaum auf Clients, deren IP in
@@ -9,9 +9,10 @@ einem der konfigurierten CIDRs liegt — Defence-in-depth zusätzlich zu
 geleaktes Token ist außerhalb eines allowgelisteten Netzes nutzlos.
 
 ```ts
-import { IpAllowlist, withMiddleware } from 'actor-ts/http';
+import { IpAllowlist, IpAllowlistOptions, withMiddleware } from 'actor-ts/http';
 
-const allowlist = IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] });
+const ipAllowlistOptions = IpAllowlistOptions.create().withAllow('10.0.0.0/8', '127.0.0.1/32');
+const allowlist = IpAllowlist(ipAllowlistOptions);
 
 const managementRoutes = withMiddleware(allowlist, clusterRoutes);
 ```
@@ -24,34 +25,93 @@ Client-IP schlägt fehl-geschlossen mit `403`.
 
 ## Konfiguration
 
-`IpAllowlist` nimmt ein einfaches Options-Objekt:
+`IpAllowlistOptions` — Builder oder einfaches Objekt:
 
 | Feld | Zweck |
 | --- | --- |
 | `allow` | Nicht-leere Liste von CIDR-Strings; mindestens eines muss die Client-IP enthalten, sonst `403`.  Ungültige CIDR-Syntax wirft bei Konstruktion. |
-| `getClientIp` | Überschreibt die IP-Extraktion.  Default liest `request.remoteAddress` (den Socket-Peer).  `null`/`undefined` lehnt die Anfrage ab (fail-closed). |
+| `trustedProxies` | CIDRs der Reverse-Proxys vor dieser App.  Ungesetzt (der Default) heißt: es wird überhaupt kein Forwarding-Header gelesen.  Siehe unten. |
+| `forwardedHeader` | Header, der die Forwarded-Kette trägt.  Default `'x-forwarded-for'`; wird nur gelesen, wenn `trustedProxies` gesetzt ist. |
+| `getClientIp` | Ersetzt die IP-Extraktion komplett — die Notluke.  Default liest `request.remoteAddress` (den Socket-Peer).  `null`/`undefined` lehnt die Anfrage ab (fail-closed).  Schließt sich mit `trustedProxies` gegenseitig aus. |
 
 ### Hinter einem Reverse-Proxy
 
-Der Default liest den **Socket-Peer** und traut `x-forwarded-for`
-bewusst **nicht** — dieser Header ist client-fälschbar, wenn kein Proxy
-davor sitzt.  Hinter einem vertrauenswürdigen Proxy (Cloudflare, AWS
-ALB, NGINX), der ihn strippt und setzt, aktiviere es explizit:
+Der Default liest den **Socket-Peer** — und der ist hinter einem Proxy
+der Proxy.  Um die eigene Adresse des Clients zu bekommen, benennst du
+die Proxys; das ist die ganze Konfiguration:
 
 ```ts
-IpAllowlist({
-  allow: ['10.0.0.0/8'],
-  getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim(),
-});
+const ipAllowlistOptions = IpAllowlistOptions.create()
+  .withAllow('10.0.0.0/8')
+  .withTrustedProxies('10.9.9.0/24');
+
+const allowlist = IpAllowlist(ipAllowlistOptions);
+```
+
+Die Middleware liest die Kette dann in Wire-Reihenfolge —
+`[...x-forwarded-for-Einträge, Socket-Peer]`, Client zuerst — und läuft
+sie **von rechts** ab; sie nimmt die erste Adresse, die keiner deiner
+Proxys ist.
+
+Diese Richtung ist der ganze Punkt, denn jeder verbreitete Proxy
+**hängt an** einen eingehenden `X-Forwarded-For` an, statt ihn zu
+ersetzen:
+
+| Proxy | Was er mit `X-Forwarded-For` macht |
+| --- | --- |
+| NGINX | `$proxy_add_x_forwarded_for` ist *der eingehende Header, per Komma um `$remote_addr` erweitert* |
+| AWS ALB | hängt den verbindenden Peer an (`xff_header_processing` steht per Default auf `append`) |
+| Cloudflare | hängt an und **setzt** zusätzlich `CF-Connecting-IP` |
+
+Der **linkeste** Eintrag ist also das, was der Client geschrieben hat,
+und nur die von rechts hinzugefügten Einträge kommen von der
+Infrastruktur.  Daraus folgen drei Dinge, und jedes schließt eine Lücke,
+die ein handgeschriebener Extractor offen lässt:
+
+- Ein Client, der die App **direkt** erreicht, ist der Socket-Peer, und
+  der Peer ist keiner deiner Proxys — der Lauf endet dort, und der Header
+  wird nie gelesen.  Ein gefälschter `x-forwarded-for` entscheidet nichts.
+- Müll, den ein Client davorschreibt, sitzt *links* von seiner echten
+  Adresse und wird nie erreicht.
+- Ein Eintrag, der keine gültige Adresse ist, matcht kein CIDR, gilt als
+  nicht vertrauenswürdig, beendet den Lauf — und scheitert dann auch an
+  `allow`.
+
+Wo dein Proxy einen Single-Value-Header **setzt** statt anzuhängen,
+richte denselben Lauf darauf aus.  Bei Cloudflare ist das
+`CF-Connecting-IP`:
+
+```ts
+const ipAllowlistOptions = IpAllowlistOptions.create()
+  .withAllow('10.0.0.0/8')
+  .withTrustedProxies('173.245.48.0/20', '103.21.244.0/22')   // …die veröffentlichten Cloudflare-Ranges
+  .withForwardedHeader('cf-connecting-ip');
 ```
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="x-forwarded-for nur hinter einem Proxy lesen, der ihn setzt">
-  Wenn Clients die App direkt erreichen können, können sie
-  `x-forwarded-for` fälschen und die Allowlist umgehen.  Überschreibe
-  `getClientIp` **nur**, wenn ein vertrauenswürdiger Proxy davor den
-  eingehenden Header strippt und seinen eigenen setzt.
+<Aside type="caution" title="Niemals jedem Hop trauen">
+  ```ts
+  .withTrustedProxies('0.0.0.0/0')   // ✗ traut der ganzen Kette
+  ```
+  Der Lauf findet dann nichts Nicht-Vertrauenswürdiges und fällt auf den
+  Socket-Peer zurück — die Option bringt also genau nichts.  Aber die
+  **Backend**-Schreibweisen derselben Idee sind schlimmer als nichts:
+  `app.set('trust proxy', true)` bei Express und `trustProxy: true` bei
+  Fastify machen `req.ip` zum *linkesten* Eintrag, dem der Client
+  kontrolliert, und dieser Wert landet für jede Middleware in
+  `remoteAddress`.  Benenne die Adressen deiner eigenen Load-Balancer und
+  nichts sonst.
+</Aside>
+
+<Aside type="tip" title="Eine Hop-Anzahl reicht auch nicht">
+  Eine numerische Hop-Anzahl — `trust proxy: 2` bei Express,
+  `trustProxy: 2` bei Fastify — vergleicht Indizes und nie Adressen,
+  glaubt dem Header also auch bei einem Request, der durch keinen Proxy
+  gelaufen ist: zwei gefälschte Einträge sind zwei geglaubte Einträge.
+  `trustedProxies` prüft zuerst den Socket-Peer, hat diese Lücke deshalb
+  nicht und braucht auch nichts vom Backend — es funktioniert auf Fastify,
+  Express und Hono identisch.
 </Aside>
 
 ## Wie weiter

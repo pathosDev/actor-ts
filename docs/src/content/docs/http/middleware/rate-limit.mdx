@@ -25,9 +25,8 @@ const routes = path('api', post(limited(apiHandler)));
 Each distinct key (here: per client IP taken from the socket peer,
 `request.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
 with a `Retry-After` header.  **Key on a value the client can't forge** —
-don't use `x-forwarded-for` unless a trusted proxy sets it (see the
-security note below), or an attacker rotates it per request to bypass the
-limit.
+never key on a raw `x-forwarded-for` (see the security note below), or an
+attacker rotates it per request to bypass the limit.
 
 ## Configuration
 
@@ -170,10 +169,12 @@ import { Aside } from '@astrojs/starlight/components';
   key: (request) => request.headers['x-forwarded-for'];   // ✗ spoofable
   ```
   Behind a load balancer / proxy, the real IP is in
-  `X-Forwarded-For` (or similar).  But clients can set this
-  header themselves if the proxy isn't configured to strip it.
-  Trust only when **your proxy is in the chain and overwrites**
-  the header.
+  `X-Forwarded-For` (or similar) — but not at a position the request can
+  be trusted to name: NGINX, AWS ALB and Cloudflare all **append** to the
+  header, so whatever the client typed stays at its left.  Key on
+  `request.remoteAddress`, or resolve the client address the way
+  [`IpAllowlist`](/http/middleware/ip-allowlist/) does — name the proxies
+  and read the chain from the socket end inwards.
 </Aside>
 
 <Aside type="caution" title="In-memory cache across pods">
