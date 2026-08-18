@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -158,9 +159,13 @@ internal static class Program
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
         if (!string.IsNullOrWhiteSpace(informational))
         {
-            // Strip any `+<commit>` build metadata: the package version is the fact.
-            var plus = informational.IndexOf('+');
-            return plus < 0 ? informational : informational[..plus];
+            // Take the leading version and drop whatever the build appended.
+            // This package's informational version is
+            // "10.2.2. Commit Hash: a5758887..." — neither the `+metadata` form
+            // nor a bare version, so a `+` split leaves the commit in the
+            // published table.
+            var match = Regex.Match(informational, @"^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?");
+            if (match.Success) return match.Value;
         }
         var version = assembly.GetName().Version;
         return version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}";
