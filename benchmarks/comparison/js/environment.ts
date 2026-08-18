@@ -51,7 +51,12 @@ function git(...args: ReadonlyArray<string>): string | null {
 function commitIdentity(): string {
   const head = git('rev-parse', '--short', 'HEAD');
   if (head === null) return 'unknown';
-  const status = git('status', '--porcelain');
+  // The run's own output is excluded from the dirtiness check. `results/` is
+  // tracked, so a re-measurement that clears it first — or simply writes into
+  // it — would otherwise mark every measurement `-dirty`, and a marker that is
+  // always on says nothing. What matters here is whether the *code* under
+  // measurement matches the commit.
+  const status = git('status', '--porcelain', '--', ':!benchmarks/comparison/results');
   return status === null || status.length === 0 ? head : `${head}-dirty`;
 }
 
