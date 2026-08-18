@@ -5,13 +5,18 @@ import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Logger } from '../../Logger.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import type { Cluster } from '../Cluster.js';
+import type { NodeAddress } from '../NodeAddress.js';
+import type { EnvelopeMessage } from '../Protocol.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import {
   ClusterSingletonManager,
   singletonManagerPath,
   type SingletonDeliver,
 } from './ClusterSingletonManager.js';
+import { AuthenticatedSingletonMessage, isSingletonMessage } from './SingletonProtocol.js';
+import type { SingletonHandOverAcknowledgment, SingletonMessage } from './SingletonProtocol.js';
 import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
 import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
@@ -51,6 +56,14 @@ export class ClusterSingleton implements Extension {
   private readonly managers = new Map<string, ActorRef>();
   /** Forwarding proxy per typeName — after {@link start} OR {@link ref}. */
   private readonly proxies = new Map<string, ClusterSingletonProxy<never>>();
+  /**
+   * Envelope-router claim on each singleton's manager path, by typeName — see
+   * {@link claimManagerPath} for why it belongs to the extension and not to the
+   * manager actor.
+   */
+  private readonly envelopeHandlers = new Map<string, () => void>();
+  /** Latch for {@link deadLetterWithoutManager}'s warning, one per typeName. */
+  private readonly warnedNoManager = new Set<string>();
   private cluster: Cluster | null = null;
   private readonly log: Logger;
 
@@ -252,20 +265,12 @@ export class ClusterSingleton implements Extension {
     }
     const cluster = this.clusterOrThrow();
 
-    // Register the envelope handler *before* spawning the manager actor so
-    // remote proxies that fire during the brief spawn window don't drop.
-    // The handler enqueues via the not-yet-existing ref — we close over the
-    // same variable and assign below.
-    let managerRef: ActorRef = null as unknown as ActorRef;
-    const envelopeUnsubscribe = cluster._registerEnvelopeHandler(
-      singletonManagerPath(this.system.name, typeName),
-      (env) => {
-        // Route inbound envelopes through the manager's own mailbox so the
-        // manager processes them on its own dispatcher thread.
-        if (managerRef) managerRef.tell({ kind: 'singleton-deliver', body: env.body } as SingletonDeliver as never);
-      },
-    );
+    // Claim the manager path *before* spawning, so a proxy that fires during
+    // the spawn window is not answered as if this node were not hosting.
+    const claimedHere = !this.envelopeHandlers.has(typeName);
+    this.claimManagerPath(typeName);
 
+    let managerRef: ActorRef = null as unknown as ActorRef;
     const managerActor = () => {
       const managerOptions = ClusterSingletonManagerOptions.create<TCommand>()
         .withCluster(cluster)
@@ -277,11 +282,15 @@ export class ClusterSingleton implements Extension {
       if (options.acquireRetryIntervalMs !== undefined) {
         managerOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
       }
+      // This copy is field-by-field and silently drops anything not listed, so
+      // a new `StartSingletonOptions` field is not wired until it appears here.
+      if (options.handOverTimeoutMs !== undefined) {
+        managerOptions.withHandOverTimeoutMs(options.handOverTimeoutMs);
+      }
       if (options.restartOnTermination !== undefined) {
         managerOptions.withRestartOnTermination(options.restartOnTermination);
       }
       const manager = new ClusterSingletonManager<TCommand>(managerOptions);
-      manager._envelopeUnsub = envelopeUnsubscribe;
       // Keep the registry derived from actor liveness: a manager that dies to
       // supervision or system shutdown never goes through `stop()`, and
       // without this the entry would outlive it and be handed to the next
@@ -300,7 +309,9 @@ export class ClusterSingleton implements Extension {
         singletonManagerName(typeName),
       );
     } catch (cause) {
-      envelopeUnsubscribe();
+      // Only give the path back if this call is what claimed it — a `ref()`
+      // that came first owns a claim this failure has no business revoking.
+      if (claimedHere) this.releaseManagerPath(typeName);
       throw this.describeSpawnFailure(typeName, cause);
     }
     // The handler above is keyed on the well-known path; a drift between it
@@ -308,6 +319,118 @@ export class ClusterSingleton implements Extension {
     // past the `singleton-deliver` wrapping instead of failing.
     assertSpawnedAt(singletonManagerPath(this.system.name, typeName), managerRef);
     this.managers.set(typeName, managerRef);
+  }
+
+  /**
+   * Claim this singleton's manager path on the envelope router, once per
+   * `typeName` — from {@link start} **or** from {@link ref}, whichever comes
+   * first.
+   *
+   * It used to belong to the manager, released in its `postStop`.  It has to
+   * outlive any single manager, and to exist on nodes that never host at all,
+   * because of what the hand-over protocol asks of a peer (#949): an incoming
+   * host waits for *every* eligible node to confirm it is not running an
+   * instance, and a node with nothing registered here cannot confirm anything —
+   * it is indistinguishable from one that is unreachable, so every host move
+   * would pay the full `handOverTimeoutMs`.  A `ref()`-only node answering
+   * "not hosting" is both true and instant.
+   *
+   * Deliberately **not** released by {@link stop}, for the same reason: a node
+   * taken out of rotation is still an `up` member, so it is still asked, and it
+   * still has a truthful answer.
+   */
+  private claimManagerPath(typeName: string): void {
+    if (this.envelopeHandlers.has(typeName)) return;
+    const cluster = this.clusterOrThrow();
+    const release = cluster._registerEnvelopeHandler(
+      singletonManagerPath(this.system.name, typeName),
+      (envelope, from) => this.onRemoteEnvelope(typeName, envelope, from),
+    );
+    this.envelopeHandlers.set(typeName, release);
+  }
+
+  private releaseManagerPath(typeName: string): void {
+    this.envelopeHandlers.get(typeName)?.();
+    this.envelopeHandlers.delete(typeName);
+  }
+
+  /**
+   * An envelope addressed to this node's manager for `typeName`, from a peer
+   * whose identity the transport authenticated.
+   *
+   * The manager is resolved per delivery rather than captured, exactly as the
+   * proxy resolves it: this handler can predate the local `start()` and can
+   * outlive it.
+   */
+  private onRemoteEnvelope(typeName: string, envelope: EnvelopeMessage, from: NodeAddress): void {
+    const manager = this.managers.get(typeName) ?? null;
+    // A hand-over frame is a directive about *who hosts*, so it must reach the
+    // manager stamped with the peer this connection authenticated — and must
+    // not be force-wrapped as a user payload, which is what this handler used
+    // to do to every body it saw, `from` included (#949).  The `singleton.`
+    // namespace is reserved for that: an application message may not use it.
+    if (isSingletonMessage(envelope.body)) {
+      if (manager) {
+        manager.tell(new AuthenticatedSingletonMessage(from, envelope.body) as never);
+        return;
+      }
+      this.answerNoManagerHere(typeName, from, envelope.body);
+      return;
+    }
+    if (manager) {
+      // Through the manager's own mailbox so it is processed on the manager's
+      // dispatcher rather than on the transport's callback.
+      manager.tell({ kind: 'singleton-deliver', body: envelope.body } as SingletonDeliver as never);
+      return;
+    }
+    this.deadLetterWithoutManager(typeName, envelope.body);
+  }
+
+  /**
+   * A peer asked this node to hand the singleton over, and this node runs no
+   * manager for it — so the answer is already true and needs no actor.
+   *
+   * Silence would be read as "unreachable" and cost the requester its whole
+   * `handOverTimeoutMs`, after which it hosts anyway with a warning about an
+   * invariant it could not prove.  Answering turns that into one round trip.
+   */
+  private answerNoManagerHere(typeName: string, peer: NodeAddress, body: SingletonMessage): void {
+    if (body.kind !== 'singleton.HandOverRequest') return;
+    const acknowledgment: SingletonHandOverAcknowledgment = {
+      kind: 'singleton.HandOverAcknowledgment',
+      typeName,
+    };
+    this.clusterOrThrow()._sendEnvelope(peer, {
+      kind: 'envelope',
+      to: singletonManagerPath(this.system.name, typeName),
+      from: null,
+      body: acknowledgment,
+      tag: 'Singleton',
+    });
+  }
+
+  /**
+   * A user message was routed to this node as the singleton's host, and this
+   * node runs no manager — the `ref()`-only misconfiguration, seen from the
+   * far end of the wire.
+   *
+   * To `deadLetters` rather than dropped in a log line, for the reason
+   * `ClusterSingletonManager.onSingletonDeliver` gives on the neighbouring
+   * path: it is the same event — a message the singleton will never receive —
+   * and only the dead-letter stream makes it a metric, a DevTools entry and
+   * something a test can assert.  The warning is latched per `typeName`,
+   * because the condition lasts as long as the deployment mistake does.
+   */
+  private deadLetterWithoutManager(typeName: string, body: unknown): void {
+    if (!this.warnedNoManager.has(typeName)) {
+      this.warnedNoManager.add(typeName);
+      this.log.warn(
+        `singleton '${typeName}': a peer routed a message here, but this node never called `
+        + '`cluster.singleton.start(...)` — a ref() proxy cannot host, so the message is going to '
+        + 'dead letters.  Call start() on every node that may become the elected host.',
+      );
+    }
+    this.system.deadLetters.tell(new DeadLetter(body, null, this.system.deadLetters));
   }
 
   /**
@@ -327,6 +450,10 @@ export class ClusterSingleton implements Extension {
      */
     bufferSize?: number,
   ): ActorRef<TCommand> {
+    // Every door into this singleton claims the manager path, `ref()` included:
+    // a node that only talks to the singleton is still asked to stand down when
+    // the host moves, and "I run no manager" is an answer it can give at once.
+    this.claimManagerPath(key.typeName);
     const existing = this.proxies.get(key.typeName);
     if (existing) {
       // The memo is keyed on typeName alone, so a proxy taken earlier from a
