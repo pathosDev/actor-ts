@@ -297,6 +297,41 @@ usual guarantee — no concurrent handler execution, no locks.
   `onMessage` and the hooks instead.
 </Aside>
 
+### Bounding the hub's mailbox
+
+One hub carries every inbound frame from every connection on the
+route, which makes it the textbook case for
+[bounding a mailbox](/fundamentals/mailboxes/#when-to-bound-a-mailbox):
+an actor exposed to a producer you do not control.  It is also where
+the framework's own connection traffic rides.  Two things follow.
+
+**The command that spawns a connection's actor cannot be shed.**  It
+travels the same lane a death-watch `Terminated` takes — queued at the
+tail like anything else, but exempt from every overflow policy, so
+`drop-head`, `drop-new`, `reject` and a `PriorityMailbox` of your own
+all leave it alone.  This matters because that command is sent exactly
+once, from the backend's upgrade callback, and it carries the only
+reference to a socket whose handshake has already completed.  Losing it
+would leave that socket upgraded with nothing attached to it: no
+listeners, inbound frames piling up unread, and its `maxConnections`
+slot held until the client gave up.
+
+**What a bound does still shed is the rest.**  Inbound frames, and the
+`onClientConnected` / `onClientDisconnected` signals the connection
+actors report — so a bounded hub under load can hand you a client that
+never appears in `this.clients`, or one that never leaves it.  Both are
+your protocol, and only you know whether losing one is acceptable.
+
+<Aside type="tip" title="Prefer the per-route caps">
+  For a hub, reach for `maxConnections` and `maxFrameBytes` before
+  `withMailboxCapacity()`.  They bound the *input* — how many peers may
+  connect and how large one frame may be — where a mailbox capacity
+  bounds the backlog and pays for it by discarding messages that have
+  already been accepted.  The unbounded default is not silent about
+  growth: a queue reaching 10 000 messages logs a warning, and again at
+  each doubling.
+</Aside>
+
 ## `WebsocketConnection`
 
 Each connection is a `WebsocketConnection<TOut>`, which extends

@@ -317,6 +317,46 @@ nebenläufige Handler-Ausführung, keine Locks.
   Hooks.
 </Aside>
 
+### Die Mailbox des Hubs begrenzen
+
+Ein Hub trägt jeden eingehenden Frame jeder Verbindung der Route und
+ist damit der Musterfall für eine
+[begrenzte Mailbox](/de/fundamentals/mailboxes/#wann-eine-mailbox-begrenzen):
+ein Actor, der einem Produzenten ausgesetzt ist, den du nicht
+kontrollierst.  Auf ihm läuft aber auch der verbindungsinterne Verkehr
+des Frameworks.  Daraus folgen zwei Dinge.
+
+**Das Kommando, das den Actor einer Verbindung spawnt, kann nicht
+verworfen werden.**  Es nimmt dieselbe Spur wie ein `Terminated` der
+Death-Watch — es wird wie alles andere am Ende der Schlange eingereiht,
+ist aber von jeder Overflow-Policy ausgenommen, sodass `drop-head`,
+`drop-new`, `reject` und auch eine eigene `PriorityMailbox` es
+unangetastet lassen.  Das ist wichtig, weil dieses Kommando genau
+einmal gesendet wird — aus dem Upgrade-Callback des Backends — und die
+einzige Referenz auf einen Socket trägt, dessen Handshake bereits
+abgeschlossen ist.  Es zu verlieren würde diesen Socket aufgewertet
+zurücklassen, ohne dass etwas daran hängt: keine Listener, eingehende
+Frames stapeln sich ungelesen, und sein `maxConnections`-Platz bleibt
+belegt, bis der Client aufgibt.
+
+**Was eine Begrenzung dagegen weiterhin verwirft, ist der Rest.**
+Eingehende Frames und die Signale `onClientConnected` /
+`onClientDisconnected`, die die Connection-Actors melden — ein
+begrenzter Hub unter Last kann dir also einen Client liefern, der nie in
+`this.clients` erscheint, oder einen, der sie nie verlässt.  Beides ist
+dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
+
+<Aside type="tip" title="Bevorzuge die Caps pro Route">
+  Greife bei einem Hub zu `maxConnections` und `maxFrameBytes`, bevor du
+  `withMailboxCapacity()` verwendest.  Sie begrenzen die *Eingabe* — wie
+  viele Peers sich verbinden dürfen und wie groß ein Frame sein darf —
+  wo eine Mailbox-Kapazität den Rückstau begrenzt und dafür mit dem
+  Verwerfen bereits angenommener Nachrichten bezahlt.  Der unbegrenzte
+  Standard schweigt über Wachstum nicht: eine Queue, die 10 000
+  Nachrichten erreicht, protokolliert eine Warnung, und erneut bei jeder
+  Verdopplung.
+</Aside>
+
 ## `WebsocketConnection`
 
 Jede Verbindung ist eine `WebsocketConnection<TOut>`, die
