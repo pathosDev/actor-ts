@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The comparison drops its no-framework arm and averages its rounds** (#27).
+  Two changes to how the benchmark is measured and read.
+
+  The floor arm — plain objects and direct method calls — is gone. A column two
+  to three orders of magnitude above everything else is read as "these
+  frameworks are wasteful" rather than as "a direct call does none of this
+  work", and no caveat printed beside it changed which of those a reader took
+  away. It was also the least trustworthy figure in the suite: a loop a JIT can
+  flatten moved 16 % between consecutive runs, more than any real arm. The FAQ's
+  "several hundred times a direct call" ratio came from that arm and is removed
+  with it.
+
+  `--rounds=N` now publishes the **mean** of every metric rather than the median
+  row: with ten rounds, reporting one discards 90 % of the evidence. Because a
+  mean carries a disturbed round where a median drops it, every throughput
+  figure now publishes the spread of the rounds behind it, rendered `± x %`.
+  That turned out to matter — several published figures move by more than 15 %
+  between rounds, which the previous three-significant-digit presentation hid.
+
+  All published tables are re-measured from a ten-round run: actor-ts sustains
+  **890k messages/second ±8 %** at a batch of 10 000, against 2.97M on the JVM,
+  1.13M on .NET and 603k for virtual actors, and 2.3x the nearest JavaScript
+  neighbour.
+
 - **An uninstrumented system is unaffected: `ActorCell.schedule` branches on
   whether a metrics registry is installed before arming a turn, so the path
   with metrics off keeps exactly the closure it had, captures no clock read,

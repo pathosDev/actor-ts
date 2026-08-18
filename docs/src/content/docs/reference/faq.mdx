@@ -129,7 +129,7 @@ bookkeeping.
 
 ### What's the per-message overhead?
 
-Measured on Bun 1.3.1, a Ryzen 9 7940HX, median of nine rounds — see
+Measured on Bun 1.3.1, a Ryzen 9 7940HX, mean of ten rounds — see
 [Benchmarks](/reference/benchmarks/) for the methodology and the
 comparison against other frameworks:
 
@@ -140,21 +140,19 @@ comparison against other frameworks:
   enqueues — so "how long does `tell` take" and "how many messages per
   second" are different questions with answers two orders of magnitude
   apart.
-- **`ask` round trip** — **9 µs** at p50, 37 µs at p99, depth 1.
+- **`ask` round trip** — **8.5 µs** at p50, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
   cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
   measured; the cluster benchmarks do not leave the process.
 
-For comparison, the same workload with no framework at all — direct
-method calls, no mailbox, no supervision, no lifecycle — runs at about
-**2 ns** per call.  So actor messaging costs several **hundred times** a
-direct call on the throughput path, and about **8×** on an ask round trip.
+What you are buying for that microsecond is a queue, a scheduler,
+supervision and location transparency — none of which a direct method
+call does.  Comparing the two as though they were alternatives is the
+reason the benchmarks no longer publish a "no framework" figure at all:
+it is not one of the options you are choosing between.
 
-That sounds worse than it is, and the two ratios are why.  You are not
-paying for a slower function call; you are paying for a queue, a
-scheduler, supervision and location transparency.  A million messages a
-second through one actor is reachable; a hundred million is not, and
-that is the line to design against.
+The number that *is* worth designing against: roughly a million messages
+a second through one actor is reachable, a hundred million is not.
 
 <Aside type="note" title="Dispatch style is not free either">
 These figures use plain conditional dispatch in the message handler.
