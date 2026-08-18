@@ -65,14 +65,26 @@ export type Envelope<T = unknown> = {
    * This envelope carries a lifecycle notification the framework generated
    * and cannot send again, so no load-shedding policy may discard it (#729).
    *
-   * Today that is exactly the `Terminated` a death-watch delivers.  It is
-   * *not* application traffic: the watch was installed through
+   * Two envelopes take it today, and the test for admitting a third is the
+   * property they share, not their subject: the framework built it, the
+   * framework sent it once, and nothing on the framework's side still holds
+   * what it would take to send it again.  Neither is application traffic, so
+   * neither is a message the caller who set the bound was choosing to lose.
+   *
+   * The `Terminated` a death-watch delivers.  The watch was installed through
    * `context.watch`, the framework promised to answer it, and the answer
    * happens once — there is no retry, no sender to back off, and the dying
    * cell has already cleared its watcher set by the time the queue decides.
    * A bounded mailbox that evicted it left the watcher believing a dead actor
    * was alive, with nothing but an `actor_mailbox_dropped_total` increment to
    * say so.
+   *
+   * The `websocket-accept` a completed HTTP upgrade hands its hub (#717).  The
+   * wiring layer closed the only reference to a freshly-upgraded socket into
+   * the per-connection actor's factory and returned; there is no timer and no
+   * second copy.  A bounded hub that evicted it kept a socket nobody would
+   * ever attach listeners to — buffering inbound frames with nothing to drain
+   * them and holding its `maxConnections` slot — for the same one increment.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
    * sets it, and read in two places: {@link Mailbox.removeOldest}, so an
