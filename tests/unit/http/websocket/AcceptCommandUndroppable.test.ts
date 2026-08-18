@@ -111,6 +111,24 @@ class GatedHub extends WebsocketServerActor<Out, In, FillerCommand> {
   }
 }
 
+/**
+ * Same hub, but rate-limited instead of bounded — the throttle gate is the
+ * second place a shedding policy sees a user envelope, and `onExcess: 'drop'`
+ * consumed whatever it metered.
+ */
+class ThrottledHub extends WebsocketServerActor<Out, In, FillerCommand> {
+  constructor(private readonly state: HubState) {
+    super();
+  }
+  override preStart(): void {
+    this.context.throttle({ qps: 1 / 60, burst: 1, onExcess: 'drop' });
+  }
+  onMessage(): void { /* no inbound frame is emitted in these tests */ }
+  protected override onSelfMessage(_command: FillerCommand): void {
+    this.state.handled += 1;
+  }
+}
+
 const systems: ActorSystem[] = [];
 function newSystem(name: string): ActorSystem {
   const systemOptions = ActorSystemOptions.create()
@@ -273,6 +291,32 @@ describe('websocket-accept survives a bounded hub (#717)', () => {
     h.openGate();
 
     await expectConnectionActorSpawned(socket, 'the connection actor attached despite drop-lowest-priority');
+  });
+
+  test("a hub's own throttle with onExcess 'drop' does not consume the accept", async () => {
+    // The other place a load-shedding policy sees a user envelope: the cell's
+    // throttle gate, one layer above the mailbox.  `onExcess: 'drop'` consumed
+    // whatever it metered, so a hub rate-limiting its inbound frames dropped
+    // the accept too — the same loss the mailbox bound produced, reached
+    // without any mailbox capacity at all.
+    const system = newSystem('ws-accept-throttle');
+    const state: HubState = { entered: false, handled: 0, gate: Promise.resolve() };
+    const hub = system.spawn(
+      () => new ThrottledHub(state), 'hub',
+    ) as WebsocketServerRef<Out, In, FillerCommand>;
+    // One token per minute with no burst: the budget is spent by the first
+    // message and cannot refill inside the test.
+    hub.tell(filler);
+    await awaitCondition(() => state.handled >= 1, {
+      timeoutMs: 4_000,
+      label: 'the hub spent its only throttle token',
+    });
+
+    const socket = new ProbeSocket();
+    wireConnection<Out, In, FillerCommand>(
+      system, hub, request, socket, jsonCodec<Out, In>(), DEFAULT_WEBSOCKET_POLICY,
+    );
+    await expectConnectionActorSpawned(socket, 'the connection actor attached despite a spent throttle budget');
   });
 });
 
