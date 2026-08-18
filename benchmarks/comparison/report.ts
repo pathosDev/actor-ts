@@ -149,6 +149,19 @@ function formatMemory(bytes: number): string {
   return `${sign}${Math.abs(megabytes).toFixed(1)} MB`;
 }
 
+/**
+ * The spread of the rounds behind a figure, as a percentage of it.
+ *
+ * A throughput number with no idea of its own variance invites being read to
+ * three significant figures; `± 12 %` says plainly that the last two of them
+ * are noise.
+ */
+function formatSpread(scenario: ScenarioResult): string {
+  const stddev = scenario.opsPerSecondStddev;
+  if (stddev === undefined || scenario.opsPerSecond === 0) return '—';
+  return `± ${((stddev / scenario.opsPerSecond) * 100).toFixed(1)} %`;
+}
+
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
 }
@@ -177,6 +190,7 @@ function scenarioRow(
   return `| ${result.content.framework.name}${marker} `
     + `| ${result.content.runtime.name} ${result.content.runtime.version} `
     + `| ${formatRate(scenario.opsPerSecond, scenario.unit)} `
+    + `| ${formatSpread(scenario)} `
     + `| ${formatNs(scenario.perOperationNs)} `
     + `| ${formatNs(scenario.p50Ns)} `
     + `| ${formatNs(scenario.p99Ns)} `
@@ -263,9 +277,9 @@ function armsSection(results: ReadonlyArray<LoadedResult>): string {
   const lines = [
     '## Arms',
     '',
-    '`rounds` is how many interleaved measurements each published row is the',
-    'median of.  A single round is not a measurement on a machine that is not',
-    'otherwise idle — see the spread note below.',
+    '`rounds` is how many interleaved measurements each published row averages.',
+    'A single round is not a measurement on a machine that is not otherwise',
+    'idle — see the spread column in the tables below.',
     '',
     '| framework | version | language | licence | runtime | rounds |',
     '| --------- | ------- | -------- | ------- | ------- | ------ |',
@@ -325,9 +339,10 @@ function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
     'How much fiction: across five consecutive rounds on an ordinary desktop, the',
     'ask rate varied by 2 % on one arm, 15 % on another and 34 % on a third — while',
     'the *ordering* of the three was identical in every round.  That is the shape of',
-    'the noise here, and it is why each row below is the median of several',
-    'interleaved rounds rather than one run, and why a 10 % gap between two arms',
-    'should be read as "about the same".',
+    'the noise here, and it is why each row below is the mean of several',
+    'interleaved rounds rather than one run — and why every throughput figure',
+    'carries the spread of the rounds it averages.  Read a gap smaller than',
+    'that spread as "about the same".',
     '',
     'Two rules govern what is in here, both from `README.md`:',
     '',

@@ -2,7 +2,7 @@
  * Drives the framework comparison — one framework per subprocess (#27).
  *
  *   bun run bench:compare                        # every arm, one round
- *   bun run bench:compare -- --rounds=5          # five interleaved rounds, median published
+ *   bun run bench:compare -- --rounds=10         # ten interleaved rounds, mean published
  *   bun run bench:compare -- --framework=nact    # one arm
  *   bun run bench:compare -- --list              # what would run
  *   bun run bench:compare -- --javascript-only   # skip the arms needing a JDK / .NET SDK
@@ -13,7 +13,8 @@
  * another and 34 % on a third, while the ordering of the three stayed
  * identical throughout.  `--rounds=N` runs the arms interleaved — round 1 of
  * every arm, then round 2 — so whatever else the machine is doing lands on
- * all of them, and publishes the per-scenario median.
+ * all of them, and publishes the per-scenario **mean** together with the
+ * spread across those rounds.
  *
  * A subprocess per arm is not tidiness.  Module-level state, JIT profiles and
  * GC pressure all carry across an arm boundary inside one process, and they
@@ -81,8 +82,14 @@ type ComparisonArm = JavaScriptArm | ExternalArm;
 /**
  * Every arm, in publication order.
  *
- * The floor comes last on purpose: read as a table, "what it costs against no
- * framework at all" is the closing line rather than the opening one.
+ * There is deliberately no "no framework" arm.  One existed — plain method
+ * calls, meant as a floor showing what the abstraction costs — and it was
+ * removed: a column running three orders of magnitude above the others
+ * invites the conclusion that the frameworks are wasteful rather than that
+ * they are doing something else entirely, and it was also the least stable
+ * number in the suite (16 % between consecutive runs, because a loop a JIT
+ * can flatten is barely a measurement).  A figure that misleads more than it
+ * informs does not earn its place in a comparison.
  */
 const ARMS: ReadonlyArray<ComparisonArm> = [
   { kind: 'javascript', name: 'actor-ts', file: 'actor-ts.ts' },
@@ -133,7 +140,6 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     args: ['run', '-c', 'Release', '--nologo', '-v', 'q'],
     toolchain: '.NET 10 SDK',
   },
-  { kind: 'javascript', name: 'vanilla', file: 'vanilla.ts' },
 ];
 
 /**
