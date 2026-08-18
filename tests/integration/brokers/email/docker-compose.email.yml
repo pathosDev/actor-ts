@@ -1,0 +1,60 @@
+# EmailBridgeActor live-integration suite (#1133).
+#
+# GreenMail (Apache-2.0) is the mail server: one container that speaks
+# both halves of the bridge — SMTP on 3025 and IMAP on 3143 — so a
+# scenario can send a message and then watch the same server hand it
+# back.  Mailpit, the other obvious candidate, is out: its maintainer
+# has explicitly declined IMAP support, and IMAP is the inbound half.
+#
+# The user is declared up front rather than left to GreenMail's
+# auto-create: the bridge authenticates, and a server that invents
+# accounts on demand would make a wrong credential look like a pass.
+# The login IS the full address (`greenmail.users=<login>:<password>@<domain>`
+# creates the mailbox `<login>@<domain>` and authenticates under that name).
+#
+# Run locally:
+#   bun run test:integration:email
+#   bun run test:integration:email:teardown
+
+name: actor-ts-integration-email
+
+services:
+  greenmail:
+    # `latest` deliberately, like every other suite here — integration
+    # tests want upstream regressions to surface as soon as they ship.
+    image: greenmail/standalone:latest
+    environment:
+      # `setup.test.all` starts SMTP/IMAP/POP3 on the documented test
+      # ports; the bridge only ever uses 3025 and 3143.
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.users=bridge:secret@example.test
+        -Dgreenmail.verbose
+    networks:
+      mailnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/email/Dockerfile.runner
+    depends_on:
+      greenmail:
+        # `service_started` rather than a healthcheck: the image is a
+        # slim JRE with no curl/nc, so compose cannot probe readiness
+        # from the inside.  The runner's own `waitForPort` gates on
+        # BOTH ports from the outside — a two-port service is only
+        # ready when both listen, and SMTP comes up before IMAP.
+        condition: service_started
+    environment:
+      EMAIL_HOST: greenmail
+      EMAIL_SMTP_PORT: '3025'
+      EMAIL_IMAP_PORT: '3143'
+      EMAIL_USER: bridge@example.test
+      EMAIL_PASSWORD: secret
+      EMAIL_ADDRESS: bridge@example.test
+    networks:
+      mailnet: {}
+
+networks:
+  mailnet: {}
