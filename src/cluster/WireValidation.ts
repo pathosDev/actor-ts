@@ -40,12 +40,12 @@ export function isWireFrame(value: unknown): value is { kind: string } {
  *
  * The single gate for every address-bearing wire field — `hello.self`,
  * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`, `gossip.from`,
- * every `gossip.members[].address`, `shard-map.shards[*]` and `leave.node` —
- * which is why an *optional* `incarnation` is checked here rather than
- * required: making it required would refuse all eight at once from any peer
- * that predates the field (#940).  The length bound it is held to is the
- * point of checking it at all; `NodeAddress.isIncarnation` states it, so this
- * guard and `NodeAddress.fromJSON` cannot disagree.
+ * every `gossip.members[].address` and `leave.node` — which is why an
+ * *optional* `incarnation` is checked here rather than required: making it
+ * required would refuse all seven at once from any peer that predates the field
+ * (#940).  The length bound it is held to is the point of checking it at all;
+ * `NodeAddress.isIncarnation` states it, so this guard and
+ * `NodeAddress.fromJSON` cannot disagree.
  */
 export function isNodeAddressData(value: unknown): value is NodeAddressData {
   if (typeof value !== 'object' || value === null) return false;
@@ -114,16 +114,6 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
       const { to, from } = frame as { to?: unknown; from?: unknown };
       if (typeof to !== 'string' || to.length === 0) return '`to` is not a non-empty path string';
       return from === null || typeof from === 'string' ? null : '`from` is neither a path string nor null';
-    }
-
-    case 'shard-map': {
-      const { type, shards, version } = frame as { type?: unknown; shards?: unknown; version?: unknown };
-      if (typeof type !== 'string' || type.length === 0) return '`type` is not a non-empty string';
-      if (typeof version !== 'number' || !Number.isFinite(version)) return '`version` is not a finite number';
-      if (typeof shards !== 'object' || shards === null) return '`shards` is not an object';
-      const badShard = Object.entries(shards as Record<string, unknown>)
-        .find(([, address]) => !isNodeAddressData(address));
-      return badShard === undefined ? null : `shard ${badShard[0]} maps to an invalid node address`;
     }
 
     case 'leave':

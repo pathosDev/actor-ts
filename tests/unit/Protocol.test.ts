@@ -366,12 +366,6 @@ describe('FrameDecoder', () => {
       { kind: 'envelope', to: 'path', from: null, body: { hello: 'world' } },
       { kind: 'envelope', to: 'path', from: 'sender', body: 'str', tag: 'Str' },
       { kind: 'leave', node: new NodeAddress('s', 'h', 1).toJSON() },
-      {
-        kind: 'shard-map',
-        type: 'counter',
-        shards: { 0: new NodeAddress('s', 'h', 1).toJSON() },
-        version: 1,
-      },
     ];
     for (const v of variants) {
       const decoder = new FrameDecoder();

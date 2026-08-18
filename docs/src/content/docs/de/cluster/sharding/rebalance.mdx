@@ -125,6 +125,26 @@ und fragt jeden gepufferten Shard erneut an — eine während eines
 Leader-Wechsels verworfene Direktive wird also erneut angefordert
 statt verloren.
 
+Eine dritte Bedingung betrifft den Shard statt den Absender: Die
+Region gibt nur einen Shard ab, den sie aktuell **besitzt**, und nur
+einmal. Ein `HandOff`, den sie schon ausführt, oder einer, der einen
+Shard nennt, der woanders liegt, wird ignoriert — vorher leerte ein
+solcher Frame trotzdem die gecachten „Shard `X` liegt auf Node
+N"-Einträge der Region, sodass eine authentische Direktive, die
+*zweimal* ankam oder verspätet, nachdem der Koordinator den Shard
+längst zwangsweise neu allokiert hatte, den Verkehr jedes anderen
+Nodes einen zusätzlichen Round-Trip zum Koordinator kostete. Besitz
+richtet sich nach der Allokation, nicht danach, ob der Shard-Actor
+gerade läuft: Ein Shard, der wegen Untätigkeit passiviert wurde,
+gehört weiterhin dazu und wird weiterhin abgegeben.
+
+Der Koordinator bleibt dabei nicht hängen. Er schickt `HandOff`
+ausschließlich an die Region, die seine eigene Allokationskarte
+nennt — eine Verweigerung heißt also, dass die beiden sich über den
+Besitz uneins sind, und genau dafür ist `handOffTimeoutMs` weiter
+unten der Rückfallpfad: Der Shard wird zwangsweise neu allokiert,
+statt endlos zu warten.
+
 :::note[Das ist Autorisierung, keine Authentifizierung]
 Die Prüfung sagt *„nur der Node des Koordinators"*, und in einem
 Cluster ohne Peer-Zertifikate kann jeder, der den Port erreicht,

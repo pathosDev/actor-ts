@@ -855,8 +855,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // *host* — and the registry has to outlive the move for `tryAllocate` to
     // hand it to the new owner.  The departing region no longer announces its
     // entities as stopped (#632), but an entity passivating on its own in the
-    // window between `BeginHandOff` and `HandOffComplete` still would, and
-    // that one would be just as wrongly forgotten.
+    // window between `HandOff` and `HandOffComplete` still would, and that one
+    // would be just as wrongly forgotten.
     if (this.rebalanceInProgress.has(message.shardId)) return;
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
@@ -1066,6 +1066,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * otherwise we'd happily route shards to dead pods.  Existing
    * pending queries get a fresh allocation pass via the regular
    * onMessage flow.
+   *
+   * Two things a snapshot may not do, both of them ways round the `numShards`
+   * refusal (#633).  It may not carry a *different* modulus than this
+   * coordinator governs — every shard id in it was produced by
+   * `hash(entityId) % numShards`, so the whole allocation map is meaningless
+   * under another count, and adopting it hands regions shards under two
+   * different hashes at once.  And it may not restore a region this coordinator
+   * has already refused: `candidates()` is built from `regions` and
+   * `tryAllocate` pushes a `ShardHome` at whoever the strategy picks, so a
+   * restored refusal is a full placement candidate again.
+   *
+   * The refusal check sits *inside* the loop rather than in front of it because
+   * the load is fire-and-forget (`void this.loadCoordinatorState()` on the
+   * promotion) — a `Register` refused while the store call is still in flight
+   * leaves `regions.has(key)` false when the loop finally runs, so a guard
+   * hoisted above the loop would read an empty refusal set and let the entry
+   * through anyway.
    */
   private async loadCoordinatorState(): Promise<void> {
     const store = this.options.coordinatorStateStore;
@@ -1081,6 +1098,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
     if (!data) return;
+    if (data.numShards !== this.options.numShards) {
+      this.log.warn(
+        `[sharding] ignoring the coordinator-state snapshot for '${this.options.typeName}' written by `
+        + `${data.leader}: it was taken with numShards=${data.numShards ?? 'unstated'} and this `
+        + `coordinator governs the type with numShards=${this.options.numShards}, so every shard id `
+        + `in it was hashed under a different modulus. Rebuilding from region registrations instead.`,
+      );
+      return;
+    }
 
     // If we already have local state (e.g. preStart already absorbed
     // some Register messages), merge — keep what we know AND what
@@ -1096,6 +1122,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         // — skip the entry; the dead region won't be re-resurrected.
         continue;
       }
+      if (this.refusedRegions.has(region.key)) continue; // refused this term; see the note above
       const node = NodeAddress.fromJSON(region.node);
       if (this.regions.has(region.key)) continue; // already known via Register
       this.regions.set(region.key, {
@@ -1199,6 +1226,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       takenAt: Date.now(),
       regions,
       shardHome,
+      // The modulus every id above was produced under, so the next leader can
+      // tell whether the map means anything to it — see `loadCoordinatorState`.
+      numShards: this.options.numShards,
     };
   }
 

@@ -331,6 +331,28 @@ Zwei Konsequenzen, die man kennen sollte:
   geteilten Konfigurationsdatei zu setzen ist der fehlerärmste Weg, sie
   im Gleichschritt zu halten.
 
+Die Verweigerung übersteht auch einen
+[`coordinatorStateStore`](/de/cluster/sharding/introspection/). Dieser
+Store erlaubt einem neuen Leader, den Reallokations-Sturm zu
+überspringen, indem er die Allokationskarte seines Vorgängers übernimmt,
+und jede Shard-ID in so einem Snapshot entstand unter dem Wert des
+*schreibenden* Koordinators — deshalb trägt ein Snapshot diesen Wert
+jetzt als Stempel, und einer, der unter einem anderen (oder, bei einem
+vor dem Stempel geschriebenen Snapshot, unter einem ungenannten) Wert
+entstand, wird als Ganzes verworfen, mit einem `WARN`, das beide Zahlen
+nennt. Eine Region, die der Koordinator bereits verweigert hat, wird
+übersprungen, auch wenn der Snapshot sie nennt. Ohne diese beiden
+Prüfungen setzte der Ladepfad die verweigerten Regionen direkt zurück in
+den Platzierungs-Pool: Ein Rolling Deploy, der den Wert ändert, hätte das
+Split-Routing über den Snapshot wiederhergestellt statt über den
+Registrierungs-Handshake — die einzige Stelle, an der die Werte
+verglichen werden.
+
+Einen Snapshot zu verwerfen kostet einen Reallokationsdurchlauf, also
+genau das, was jeder Cluster ohne Store bei einem Leader-Wechsel schon
+immer tut — und die nächste Allokationsänderung unter dem neuen Leader
+schreibt einen gestempelten Snapshot, es passiert also einmal.
+
 Denselben Typ auf einem Node zweimal zu starten — `start()` nach
 `startProxy()` oder umgekehrt — wirft. Der zweite Aufruf gab bisher die
 Region des ersten zurück, sodass ein Node, der eine hostende Region

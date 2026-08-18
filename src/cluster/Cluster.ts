@@ -875,9 +875,20 @@ export class Cluster {
     /* already bumped fd */
   }
 
+  /**
+   * A frame whose `kind` is not one of the core ones — every extension's is.
+   * `receptionist-gossip`, `pubsub-gossip`, `cluster-client-envelope` and
+   * DistributedData's kinds all arrive here and are dispatched from
+   * `wireHandlers`; falling through silently when nothing is registered is
+   * deliberate, because an extension a node has not started is exactly the case.
+   *
+   * The comment here used to name `'shard-map'` as registry-handled. Nothing
+   * ever registered it — sharding fans its allocation map out as a
+   * `sharding.ShardMapUpdate` inside an envelope, not as a wire kind of its own
+   * — so the frame was validated, arrived here, matched nothing and was dropped.
+   * The type went with the comment (#681).
+   */
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
-    // 'shard-map' and any custom extension wire-msgs handled by the
-    // registry; we intentionally fall through when no handler is set.
     const custom = this.wireHandlers.get(message.kind);
     if (custom) custom(message, from);
   }
