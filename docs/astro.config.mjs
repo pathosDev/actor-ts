@@ -924,6 +924,7 @@ export default defineConfig({
             { label: 'Full reference.conf', slug: 'reference/reference-conf', translations: { de: 'Vollständige reference.conf', es: 'reference.conf completo', fr: 'reference.conf complet', ja: '完全な reference.conf', ko: '전체 reference.conf', 'pt-BR': 'reference.conf completo', ru: 'Полный reference.conf', 'zh-CN': '完整 reference.conf' } },
             { label: 'Utilities', slug: 'reference/utility-helpers', translations: { de: 'Utilities', es: 'Utilidades', fr: 'Utilitaires', ja: 'ユーティリティ', ko: '유틸리티', 'pt-BR': 'Utilitários', ru: 'Утилиты', 'zh-CN': '实用工具' } },
             { label: 'Version policy', slug: 'reference/version-policy', translations: { de: 'Versionsrichtlinie', es: 'Política de versiones', fr: 'Politique de versions', ja: 'バージョンポリシー', ko: '버전 정책', 'pt-BR': 'Política de versionamento', ru: 'Политика версионирования', 'zh-CN': '版本策略' } },
+            { label: 'Benchmarks', slug: 'reference/benchmarks', translations: { de: 'Benchmarks', es: 'Benchmarks', fr: 'Benchmarks', ja: 'ベンチマーク', ko: '벤치마크', 'pt-BR': 'Benchmarks', ru: 'Бенчмарки', 'zh-CN': '基准测试' } },
             { label: 'FAQ',            slug: 'reference/faq',            translations: { de: 'FAQ', es: 'FAQ', fr: 'FAQ', ja: 'FAQ', ko: 'FAQ', 'pt-BR': 'FAQ', ru: 'FAQ', 'zh-CN': 'FAQ' } },
             { label: 'Glossary',       slug: 'reference/glossary',       translations: { de: 'Glossar', es: 'Glosario', fr: 'Glossaire', ja: '用語集', ko: '용어집', 'pt-BR': 'Glossário', ru: 'Глоссарий', 'zh-CN': '术语表' } },
           ],

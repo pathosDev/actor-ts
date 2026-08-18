@@ -394,6 +394,42 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 
 ---
 
+## Benchmarks
+
+How does it compare to the other options?  Measured, rather than asserted —
+same machine, same harness, same workload, nine interleaved rounds, and every
+row verified against work the system actually completed rather than work it
+was asked for.
+
+Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX, 2026-08-18:
+
+| scenario                       | actor-ts    | nact 7.6.2 | XState 5.32.5 | no framework |
+| ------------------------------ | ----------- | ---------- | ------------- | ------------ |
+| tell throughput (batch 10k)    | **900k/s**  | 404k/s     | 209k/s        | 582M/s       |
+| ask round-trip (p50)           | 7.8 µs      | **6.9 µs** | 11.7 µs *     | 1.0 µs       |
+| ping-pong (10k exchanges)      | 138k/s      | **197k/s** | 70k/s         | 341M/s       |
+| spawn → started → stopped      | 42k/s       | **157k/s** | 59k/s         | 3.5M/s       |
+
+<sub>\* XState has no request/response primitive — that row is `send` plus a
+snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
+
+A mixed result, which is the useful kind.  actor-ts leads on bulk message
+throughput by a wide margin and is level with nact on ask latency; it is
+behind on spawning and on two-actor ping-pong, both because it routes actor
+creation and each message through a dispatcher turn where nact works
+synchronously.  The last column is not a competitor — it is direct method
+calls, so it shows what the abstraction costs.
+
+These are **ratios, not absolutes**, on one machine.  Read the columns, treat
+the last digit as fiction, and note that a 10 % gap here is inside the
+run-to-run noise.
+
+**[Full tables, methodology and caveats](./benchmarks/comparison/RESULTS.md)** —
+including what is deliberately *not* measured yet (clustering, persistence)
+and why.  Reproduce with `bun run bench:compare -- --rounds=9`.
+
+---
+
 ## Roadmap & status
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The

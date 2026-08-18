@@ -11,6 +11,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The FAQ's per-message overhead figures are measured now, and two of them
+  were wrong** (#27).  `reference/faq` had asserted "~50 ns per `tell`" and
+  "actor messaging costs 50-200× a direct call" with nothing behind either.
+  The measured end-to-end cost of a `tell` is about **1.1 µs** — the ~50 ns
+  figure described the enqueue alone, not delivery and handling, so the page
+  answered "how long does `tell` take" with a number and "how many messages
+  per second" with the same one, two orders of magnitude apart.  Against a
+  no-framework floor of ~1.7 ns per call the real ratio is about **650×** on
+  the throughput path and about **8×** on an ask round trip, not 50-200×.
+
+  Both language versions now cite the benchmark run behind the numbers and
+  link the new `reference/benchmarks` page.  The cross-cluster line is marked
+  as still unmeasured rather than left to read as measured, since the cluster
+  benchmarks do not leave the process (#1177).
+
 - **BREAKING — the receptionist's total cap is now called
   `maxSubscriptionsTotal`** (#1200).  It was enforced as a count of
   key/subscriber *pairs* while being documented as a count of *subscribers* —
@@ -586,6 +601,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **Framework-comparison benchmarks, and the first numbers this project has
+  ever published** (#27).  `benchmarks/comparison/` measures actor-ts against
+  nact, XState v5 and a no-framework floor across four scenarios — spawn, tell
+  throughput, ask round-trip and ping-pong — and publishes the result in the
+  README, in a bilingual `reference/benchmarks` docs page, and in a generated
+  `RESULTS.md` carrying the hardware, versions, licences and date behind every
+  row.
+
+  The headline: actor-ts sustains ~900k messages/second at a batch of 10 000,
+  2.2× nact and 4.3× XState, and is level with nact on ask latency (7.8 µs vs
+  6.9 µs at p50).  It is behind on spawning (42k/s vs 157k/s) and on two-actor
+  ping-pong (138k/s vs 197k/s), both for the same reason: actor creation goes
+  through a `create` system message and every message through a dispatcher
+  turn, so per-message batching pays when a mailbox has depth and does nothing
+  when a volley alternates.  A mixed result, published as one.
+
+  The methodology is enforced rather than described.  Every arm runs through
+  the *same* harness — same warmup, same clock, same percentile maths — so
+  only the four operation bodies differ.  Every arm reports work the system
+  was **observed** to complete, and the report generator refuses to render a
+  row whose completed count disagrees with what was requested; that guard is
+  the mechanised form of the defect that once had this project publishing a
+  figure roughly 10× too high (#1027).  Arms are interleaved round by round
+  and each published row is the median of nine, because a single round varied
+  by up to 34 % on an ordinary desktop while the ordering of the frameworks
+  never changed.
+
+  The comparison tree carries its own manifest and lockfile, so the measured
+  frameworks never enter the shipped dependency closure, `bun audit`'s surface
+  or `bun run bench`.  `bun run typecheck:compare` is the check that owns it.
+
+- **`bun run bench:compare`, `bench:compare:report` and `typecheck:compare`**
+  (#27) — measure, validate-and-publish, and type-check the comparison tree.
+  `bench:compare -- --rounds=N` runs the arms interleaved and publishes the
+  per-scenario median; `bench:compare:report` refuses to write `RESULTS.md`
+  when any row's completed work disagrees with the workload definition.
 
 - **The bidirectional collections count participants, not only pairs**
   (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the

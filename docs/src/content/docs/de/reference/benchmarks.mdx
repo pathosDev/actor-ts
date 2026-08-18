@@ -1,0 +1,176 @@
+---
+title: Benchmarks
+description: Gemessener Vergleich von actor-ts mit benachbarten JavaScript-Actor-Frameworks — die Zahlen, die Methodik dahinter und was bewusst noch nicht gemessen wurde.
+---
+
+Wie schlägt sich actor-ts gegen die Alternativen?  Diese Seite beantwortet das
+mit Messungen statt mit Adjektiven — und sagt genauso deutlich, was **nicht**
+gemessen wurde, denn ein Vergleich, der nur seine Siege auflistet, ist Werbung.
+
+Alles hier stammt aus
+[`benchmarks/comparison/`](https://github.com/pathosDev/actor-ts/tree/main/benchmarks/comparison)
+und lässt sich selbst nachfahren.  Die generierte
+[`RESULTS.md`](https://github.com/pathosDev/actor-ts/blob/main/benchmarks/comparison/RESULTS.md)
+ist die maßgebliche Quelle; diese Seite ist ihre lesbare Fassung.
+
+## Die Zahlen
+
+Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logische Kerne) · Windows 11 · 2026-08-18 ·
+Median aus neun verschränkten Runden.
+
+| Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
+| -------- | -------- | ---------- | ------------- | -------------- |
+| tell-Durchsatz, Batch 1k  | **850k/s** | 366k/s | 192k/s | 194M/s |
+| tell-Durchsatz, Batch 10k | **900k/s** | 404k/s | 209k/s | 582M/s |
+| ask-Roundtrip, p50        | 7,8 µs | **6,9 µs** | 11,7 µs | 1,0 µs |
+| Ping-Pong, 10k Wechsel    | 138k/s | **197k/s** | 70k/s | 341M/s |
+| spawn → gestartet → gestoppt | 42k/s | **157k/s** | 59k/s | 3,5M/s |
+
+### Was die Zahlen sagen
+
+**actor-ts führt beim Massen-Nachrichtendurchsatz** — Faktor 2,2 gegenüber
+nact und 4,3 gegenüber XState bei einem Batch von 10 000 — und liegt beim
+ask-Roundtrip gleichauf mit nact; die rund 7 % Abstand liegen innerhalb des
+Rauschens zwischen zwei Läufen.
+
+**Beim Spawnen und beim Ping-Pong liegt es zurück**, und zwar aus einem
+einzigen Grund.  actor-ts leitet die Aktorerzeugung über eine
+`create`-Systemnachricht und jede Nachricht über einen Dispatcher-Durchlauf;
+nact konstruiert Aktoren synchron auf dem aufrufenden Stack.  Das Batching pro
+Nachricht zahlt sich aus, sobald eine Mailbox Tiefe hat — das ist die
+tell-Spalte — und bringt gar nichts, wenn ein Ping-Pong so abwechselt, dass
+keine Mailbox je mehr als eine Nachricht hält.  Derselbe Mechanismus erklärt
+beide Richtungen.
+
+**Die letzte Spalte ist kein Konkurrent.**  Sie besteht aus direkten
+Methodenaufrufen ohne Mailbox, ohne Supervision, ohne Lebenszyklus und ohne
+Backpressure — der Boden, damit sich die anderen Spalten als Preis der
+Abstraktion lesen lassen.  Grob Faktor 650 beim tell, grob Faktor 8 beim
+ask-Roundtrip.  Ihr Absolutwert ist zugleich die instabilste Zahl hier: eine
+Schleife, die ein JIT wegoptimieren kann, ist keine echte Messung — also als
+Größenordnung lesen und nicht feiner.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Verhältnisse, keine Absolutwerte">
+Das sind Messungen auf einer einzelnen Maschine.  Sie sagen nichts über einen
+Produktivbetrieb auf echter Hardware mit echtem Netzwerk aus.  Vergleiche die
+Spalten, betrachte die letzte Stelle jeder Zahl als Fiktion und lies einen
+Abstand von 10 % als „ungefähr gleich" — die gemessene Streuung zwischen
+Läufen erreicht bei einer einzelnen Runde 15-30 %, und genau deshalb ist jede
+Zeile oben ein Median aus neun.
+</Aside>
+
+## Methodik
+
+Die Teile, die die Tabelle lesenswert machen:
+
+- **Ein Harness, buchstäblich.**  Jeder JavaScript-Arm läuft durch denselben
+  Messcode — gleiches Warmup, gleiche Uhr, gleiche Perzentil-Rechnung.  Nur
+  die vier Operationsrümpfe unterscheiden sich.  Das ist eine stärkere Aussage
+  als „wir haben dieselbe Methodik verwendet", und es ist der Grund, warum
+  diese Seite JavaScript-Frameworks vergleicht und keine virtuellen Maschinen.
+- **Erledigte Arbeit, nie angeforderte.**  Jeder Arm meldet, was das System
+  *beobachtbar* getan hat — der zurückgelesene Zähler, die geprüfte Antwort,
+  der bestätigte Lebenszyklus — und der Report-Generator weigert sich, eine
+  Zeile zu rendern, deren erledigte Anzahl von der angeforderten abweicht.
+  Das ist nicht hypothetisch: eine früher von diesem Projekt veröffentlichte
+  Zahl war rund 10-mal zu hoch, weil die Mailbox die meisten Nachrichten
+  stillschweigend verworfen hat und der Harness die Anforderung zählte.
+- **Ein Workload, quergeprüft.**  Batch-Größen und Iterationszahlen stehen in
+  einer Datei, und der Generator schlägt fehl, wenn ein Arm andere meldet.
+- **Verschränkte Runden, Median pro Szenario.**  Runde 1 jedes Arms, dann
+  Runde 2 — so trifft Hintergrundlast alle Arme statt zufällig einen.  Jede
+  veröffentlichte Zeile ist ein echter Einzellauf, ganz übernommen: Durchsatz,
+  Perzentile und Speicher aus derselben Ausführung, nie spaltenweise zu einer
+  Zeile gemittelt, die nie so gemessen wurde.
+- **Ein Framework pro Subprozess**, damit Modulzustand, JIT-Profile und
+  GC-Druck nicht zwischen Armen überlaufen.
+- **Logging überall aus.**  Ein Arm, der Logzeilen schreibt, misst seinen
+  Logger.
+
+## Vorbehalte je Framework
+
+Diese reisen mit den Zahlen mit, statt in einer Fußnote zu stehen, die niemand
+liest.
+
+**XState v5** ist eine Statechart-Bibliothek, deren Aktoren das
+Transportmittel sind — kein Actor-Framework mit angebauten Statecharts.  Es hat
+kein Request/Response-Primitiv, deshalb ist seine ask-Zeile ein `send` mit
+anschließendem Warten auf den Snapshot: idiomatisch, aber kein natives ask.
+Die Ereignisverarbeitung ist synchron, deshalb messen seine tell-Zeilen
+überhaupt keine Mailbox.
+
+**nact** erzeugt Aktoren synchron und kennt keinen ambienten Sender: die
+Antwortadresse reist in der Nachricht mit.  Es wird zudem faktisch nicht mehr
+gepflegt, seine Zahlen sind also eine Momentaufnahme von 7.6.2 und kein
+bewegliches Ziel.
+
+**actor-ts** wird mit einfacher `if`-Verzweigung in den Handlern gemessen,
+passend zu den anderen Armen.  Stattdessen mit `ts-pattern` zu dispatchen — der
+Stil, den dieses Projekt in seinem eigenen Quellcode verwendet — kostet
+weitere 18-22 % tell-Durchsatz, was auf einem heißen Pfad zu wissen lohnt.
+
+**Der Boden-Arm** macht kein Queueing, keine Supervision, keinen Lebenszyklus
+und keine Ortstransparenz.  Er ist das, woraus ein Aktorsystem gebaut ist —
+nicht ein Aktorsystem ohne Overhead.
+
+## Was nicht gemessen wurde
+
+Ausdrücklich genannt, denn eine Benchmark-Seite, die nur auflistet, was sie
+ausgeführt hat, liest sich als Vergleich von allem:
+
+- **Kein Clustering, kein Sharding.**  Gegen das Sharding ist eine
+  Durchsatz-Regression offen; ein Sharding-Vergleich jetzt würde sie in die
+  erste Zahl einbacken, die jemand sieht.
+- **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
+  SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
+  Framework-Etikett.
+- **Noch keine sprachübergreifenden Zeilen.**  Ein Vergleich mit
+  Actor-Frameworks auf anderen virtuellen Maschinen ist eine andere und
+  schwächere Aussage als der Vergleich zweier JavaScript-Bibliotheken unter
+  einem Harness — er kommt in eine eigene Tabelle statt in diese.
+- **Eine Runtime.**  Alle Arme laufen auf Bun.  Der Mess-Harness greift in den
+  Quellcode des Frameworks, den Node ohne Build-Schritt nicht laden kann; die
+  Nachbarn auf Node zu messen hieße also, sie *nicht* durch denselben Harness
+  zu schicken.  Der identische Messpfad wurde als wertvoller bewertet; der
+  Preis: diese Bibliotheken sind für Node geschrieben und ihre Zahlen dort
+  können abweichen.
+- **Kein Regressions-Gate.**  Nichts schlägt fehl, wenn sich eine Zahl
+  zwischen Releases verschiebt.
+
+## Nachvollziehen
+
+```bash
+bun install --cwd benchmarks/comparison
+```
+
+```bash
+bun run bench:compare -- --rounds=9
+```
+
+```bash
+bun run bench:compare:report
+```
+
+Der erste Befehl installiert das eigene Manifest des Vergleichsbaums — die
+gemessenen Frameworks sind bewusst nicht Teil des Root-Installs und gelangen
+so nie in die ausgelieferte Abhängigkeitshülle.  Der zweite misst, der dritte
+validiert die Ergebnisse und generiert `RESULTS.md` neu.
+
+Für die Arbeit an einem einzelnen Arm:
+
+```bash
+bun run bench:compare -- --framework=nact
+```
+
+## Wie es weitergeht
+
+- **[Migrations-Überblick](/de/migration/overview/)** — wenn du von einem
+  anderen Actor-Framework kommst.
+- **[FAQ](/de/reference/faq/)** — inklusive des Overheads pro Nachricht, den
+  diese Zahlen jetzt belegen.
+- **[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)** — der
+  Knopf, der die Durchsatzzahlen am stärksten bewegt.
+- **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** — begrenzt
+  versus unbegrenzt und was beides kostet.

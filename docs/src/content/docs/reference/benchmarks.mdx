@@ -1,0 +1,169 @@
+---
+title: Benchmarks
+description: Measured comparison of actor-ts against neighbouring JavaScript actor frameworks — the numbers, the methodology that produced them, and what is deliberately not measured yet.
+---
+
+How does actor-ts compare to the other options?  This page answers that with
+measurements rather than adjectives — and is equally explicit about what has
+**not** been measured, because a comparison that lists only its wins is an
+advertisement.
+
+Everything here comes from
+[`benchmarks/comparison/`](https://github.com/pathosDev/actor-ts/tree/main/benchmarks/comparison),
+which you can run yourself.  The generated
+[`RESULTS.md`](https://github.com/pathosDev/actor-ts/blob/main/benchmarks/comparison/RESULTS.md)
+is the source of truth; this page is the readable version of it.
+
+## The numbers
+
+Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logical cores) · Windows 11 · 2026-08-18 ·
+median of nine interleaved rounds.
+
+| scenario | actor-ts | nact 7.6.2 | XState 5.32.5 | no framework |
+| -------- | -------- | ---------- | ------------- | ------------ |
+| tell throughput, batch 1k  | **850k/s** | 366k/s | 192k/s | 194M/s |
+| tell throughput, batch 10k | **900k/s** | 404k/s | 209k/s | 582M/s |
+| ask round-trip, p50        | 7.8 µs | **6.9 µs** | 11.7 µs | 1.0 µs |
+| ping-pong, 10k exchanges   | 138k/s | **197k/s** | 70k/s | 341M/s |
+| spawn → started → stopped  | 42k/s | **157k/s** | 59k/s | 3.5M/s |
+
+### What the numbers say
+
+**actor-ts leads on bulk message throughput** — 2.2× nact and 4.3× XState at a
+batch of 10 000 — and is level with nact on ask latency, where the ~7 % gap is
+inside the run-to-run noise.
+
+**It trails on spawning and on ping-pong**, and for one reason in both cases.
+actor-ts routes actor creation through a `create` system message and each
+message through a dispatcher turn; nact constructs actors synchronously on the
+calling stack.  Per-message batching pays for itself when a mailbox has depth
+— that is the tell-throughput column — and does nothing at all when a volley
+alternates so that no mailbox ever holds more than one message.  The same
+mechanism explains both directions.
+
+**The last column is not a competitor.**  It is direct method calls with no
+mailbox, no supervision, no lifecycle and no back-pressure — the floor, so the
+other columns can be read as what the abstraction costs.  Roughly 650× on
+tell, roughly 8× on an ask round trip.  Its absolute value is also the least
+stable number here: a loop that a JIT can flatten is not really a measurement,
+so read it as an order of magnitude and nothing finer.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Ratios, not absolutes">
+These are single-machine measurements.  They say nothing about a production
+deployment on real hardware with real networks.  Compare the columns, treat
+the last digit of every figure as fiction, and read a 10 % gap as "about the
+same" — the measured run-to-run spread on this workload reaches 15-30 % for a
+single round, which is exactly why every row above is a median of nine.
+</Aside>
+
+## Methodology
+
+The parts that make the table worth reading:
+
+- **One harness, literally.**  Every JavaScript arm runs through the same
+  measurement code — same warmup, same clock, same percentile maths.  Only the
+  four operation bodies differ.  That is a stronger claim than "we used the
+  same methodology", and it is why this page compares JavaScript frameworks
+  and not virtual machines.
+- **Completed work, never requested work.**  Each arm reports what the system
+  was *observed* to do — the counter read back, the reply checked, the
+  lifecycle confirmed — and the report generator refuses to render a row whose
+  completed count disagrees with what was asked for.  This is not
+  hypothetical: a figure this project published previously was about 10× too
+  high because the mailbox silently dropped most of the messages and the
+  harness counted the request.
+- **One workload, cross-checked.**  Batch sizes and iteration counts live in
+  one file, and the generator fails if any arm reports different ones.
+- **Interleaved rounds, per-scenario median.**  Round 1 of every arm, then
+  round 2, so background load lands on all arms rather than on whichever one
+  happened to run during it.  Each published row is one real run carried
+  across whole — throughput, percentiles and memory from the same execution,
+  never averaged column by column into a row nothing produced.
+- **One framework per subprocess**, so module state, JIT profiles and GC
+  pressure do not cross arms.
+- **Logging off everywhere.**  An arm that writes log lines measures its
+  logger.
+
+## Per-framework caveats
+
+These travel with the numbers rather than sitting in a footnote nobody reads.
+
+**XState v5** is a statechart library whose actors are the delivery mechanism,
+not an actor framework with statecharts added.  It has no request/response
+primitive, so its ask row is `send` followed by a snapshot wait — idiomatic,
+but not a native ask.  Its event processing is synchronous, so its tell rows
+do not measure a mailbox at all.
+
+**nact** creates actors synchronously and has no ambient sender: a reply
+address travels inside the message.  It is also effectively unmaintained, so
+its numbers are a snapshot of 7.6.2 rather than of a moving target.
+
+**actor-ts** is measured with plain conditional dispatch in the message
+handlers, matching the other arms.  Dispatching with `ts-pattern` instead — the
+style this project uses in its own source — costs a further 18-22 % of tell
+throughput, which is worth knowing if you follow that style in a hot path.
+
+**The floor arm** does no queueing, supervision, lifecycle or location
+transparency.  It is what an actor system is built out of, not an actor system
+with the overhead removed.
+
+## What is not measured
+
+Stated plainly, because a benchmark page that lists only what it ran reads as
+a comparison of everything:
+
+- **No clustering or sharding.**  A throughput regression is open against
+  sharding, and publishing a sharded comparison now would bake it into the
+  first number anyone sees.
+- **No persistence.**  The persistence benchmarks cover in-memory and SQLite
+  only, so a comparable arm would be a storage-engine comparison wearing a
+  framework label.
+- **No cross-language rows yet.**  Comparing against actor frameworks on other
+  virtual machines is a different and weaker claim than comparing two
+  JavaScript libraries under one harness, and it will be published in its own
+  table rather than mixed into this one.
+- **One runtime.**  Every arm runs on Bun.  The measurement harness reaches
+  into the framework's source, which Node cannot load without a build step, so
+  running the neighbours on Node would mean not running them through the same
+  harness.  An identical measurement path was judged the more valuable
+  property; the cost is that these libraries are written for Node and their
+  numbers there may differ.
+- **No regression gate.**  Nothing fails when a number moves between releases.
+
+## Reproducing
+
+```bash
+bun install --cwd benchmarks/comparison
+```
+
+```bash
+bun run bench:compare -- --rounds=9
+```
+
+```bash
+bun run bench:compare:report
+```
+
+The first command installs the comparison tree's own manifest — the frameworks
+being measured are deliberately not part of the root install, so they never
+enter the shipped dependency closure.  The second measures; the third
+validates the results and regenerates `RESULTS.md`.
+
+To work on a single arm:
+
+```bash
+bun run bench:compare -- --framework=nact
+```
+
+## Where to next
+
+- **[Migration overview](/migration/overview/)** — coming from another actor
+  framework.
+- **[FAQ](/reference/faq/)** — including the per-message overhead these
+  numbers now source.
+- **[Dispatcher tuning](/operations/tuning/dispatcher-tuning/)** — the knob
+  that moves the throughput figures most.
+- **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** — bounded versus
+  unbounded, and what each costs.
