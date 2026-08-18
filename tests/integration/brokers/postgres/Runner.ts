@@ -9,6 +9,7 @@
  */
 import { PostgresJournal } from '../../../../src/persistence/journals/PostgresJournal.js';
 import { PostgresJournalOptions } from '../../../../src/persistence/journals/PostgresJournalOptions.js';
+import { PostgresQuery } from '../../../../src/persistence/query/PostgresQuery.js';
 import { PostgresSnapshotStore } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
 import { PostgresSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
 import { PostgresDurableStateStore } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
@@ -42,6 +43,18 @@ async function main(): Promise<void> {
         .withUrl(url);
       return new PostgresJournal(journalOptions);
     },
+    // The read side of the `events_tags` join table, against the planner it was
+    // written for (#391).  `PgWireRunner` already drives the same query class,
+    // but CockroachDB and YugabyteDB *emulate* Postgres — and the constraint
+    // that shaped the any-tag statement is a genuine PostgreSQL rule: `SELECT
+    // DISTINCT` restricts `ORDER BY` to the select list, so the ordering is
+    // spelled on the `e.` columns rather than the `t.` ones
+    // (`RelationalQuery.anyTagSql`).  Only this suite proves the rule is
+    // satisfied where it originates.  Left unset — as it was until now — the
+    // scenario logs `SKIP … backend has no query implementation` and is then
+    // reported as `PASS … (0ms)`, so nothing about the green job said the check
+    // had not run.  `tests/unit/ci/LiveBrokerQueryWiring.test.ts` gates it now.
+    makeQuery: (journal) => new PostgresQuery(journal as PostgresJournal),
     async makeSnapshotStore(keepN) {
       const snapshotStoreOptions = PostgresSnapshotStoreOptions.create()
         .withUrl(url)

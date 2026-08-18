@@ -17,6 +17,7 @@ import { MongoDurableStateStore } from '../../../../src/persistence/durable-stat
 import { MongoDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MongoDurableStateStoreOptions.js';
 import { MongoJournal } from '../../../../src/persistence/journals/MongoJournal.js';
 import { MongoJournalOptions } from '../../../../src/persistence/journals/MongoJournalOptions.js';
+import { MongoQuery } from '../../../../src/persistence/query/MongoQuery.js';
 import { MongoSnapshotStore } from '../../../../src/persistence/snapshot-stores/MongoSnapshotStore.js';
 import { MongoSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/MongoSnapshotStoreOptions.js';
 import { waitForPort } from '../lib/WaitForPort.js';
@@ -49,6 +50,15 @@ async function main(): Promise<void> {
         .withDatabaseName(databaseName);
       return new MongoJournal(journalOptions);
     },
+    // `MongoQuery` reads the multikey `{ tags: 1, timestamp: 1 }` index, which
+    // the fake client does not have: it answers the same `find` by filtering an
+    // array in JS, so a live run is the only thing that shows the real driver
+    // accepts the filter *and* the compound sort the query asks for.  Unset
+    // until now, so the scenario logged `SKIP … backend has no query
+    // implementation` and was then reported as `PASS … (0ms)` — the same
+    // omission the Postgres runner carried, now gated by
+    // `tests/unit/ci/LiveBrokerQueryWiring.test.ts`.
+    makeQuery: (journal) => new MongoQuery(journal as MongoJournal),
     async makeSnapshotStore(keepN) {
       const snapshotStoreOptions = MongoSnapshotStoreOptions.create()
         .withUrl(url)
