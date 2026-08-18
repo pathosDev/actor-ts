@@ -183,6 +183,8 @@ const SLOW_SINK_CAPACITY = 10_000;
 class SlowSink extends Actor<SlowSinkMessage> {
   override async onReceive(message: SlowSinkMessage): Promise<void> {
     if (message.sleepMs > 0) {
+      // The delay is the fixture: this sink exists to be slow for exactly as
+      // long as the scenario asked, so there is no state to wait on.
       await new Promise<void>((r) => setTimeout(r, message.sleepMs));
     }
   }

@@ -305,7 +305,7 @@ export class ShardRegion<TMessage = unknown>
       node: this.config.cluster.selfAddress.toJSON(),
     };
     try {
-      coordinator.tell(terminated);
+      this.tellCoordinatorRef(coordinator, terminated);
     } catch (error) {
       // A transport that is already down on the shutdown path must not turn
       // into a failed `postStop`; the `MemberRemoved` route still covers it.
@@ -563,7 +563,17 @@ export class ShardRegion<TMessage = unknown>
     if (leaderOption.isNone()) { this.scheduleRegisterRetry(); return; }
     const leader = leaderOption.value;
     // Always re-target the coordinator on each leader change.
-    const coordinatorLocation = coordinatorPath(this.config.cluster.system.name, this.config.typeName);
+    //
+    // Built from the *leader's* system name, not ours.  An actor path carries
+    // the system it belongs to, and this one is an address for somebody else's
+    // actor — so guessing it from the local name only happens to work when every
+    // member shares one, and produces a path the leader never registered when
+    // they do not.  Generic path resolution used to paper over the difference by
+    // dropping the `actor-ts://<system>` prefix and walking the local tree; that
+    // is also the leg that arrives with no sender, so the coordinator's own
+    // per-path handler — the thing that attributes the frame — was unreachable
+    // for exactly those nodes (#712).
+    const coordinatorLocation = coordinatorPath(leader.address.systemName, this.config.typeName);
     // Recorded before the ref is resolved: it is what the origin gate compares
     // against, and a directive can legitimately arrive while the local lookup
     // below is still failing.
@@ -602,7 +612,31 @@ export class ShardRegion<TMessage = unknown>
 
   private tellCoordinator(message: ShardingMessage): void {
     if (!this.coordinatorRef) { this.ensureRegistered(); return; }
-    this.coordinatorRef.tell(message);
+    this.tellCoordinatorRef(this.coordinatorRef, message);
+  }
+
+  /**
+   * Send a frame to the coordinator, stamping this node's own identity on the
+   * local leg.
+   *
+   * The coordinator honours a region's claims only when they arrive attributed
+   * to the node making them (#712), and the remote leg gets that for free — the
+   * receiving node's per-path envelope handler stamps the connection's peer on
+   * the way in.  A bare local `tell` gets nothing, and is byte-identical to what
+   * an attacker's frame produces after the generic path walk, so the local leg
+   * has to build the wrapper itself.  Exactly the mirror of what
+   * `ShardCoordinator.replyTo` already does in the other direction (#584);
+   * without it a leader-hosted region — every region on a single-node cluster —
+   * could not register at all.
+   */
+  private tellCoordinatorRef(ref: ActorRef<ShardingMessage>, message: ShardingMessage): void {
+    const coordinator = this.coordinatorNode;
+    if (coordinator === null || !coordinator.equals(this.config.cluster.selfAddress)) {
+      ref.tell(message);
+      return;
+    }
+    (ref as ActorRef<ShardingMessage | AuthenticatedShardingMessage>)
+      .tell(new AuthenticatedShardingMessage(this.config.cluster.selfAddress, message));
   }
 
   private askCoordinator(shardId: number): void {
@@ -935,12 +969,20 @@ export class ShardRegion<TMessage = unknown>
     return new RemoteShardRef(node, regionPath, shardId, this.config.cluster);
   }
 
-  /** Send a sharding message to an arbitrary region/coordinator path. */
+  /**
+   * Send a sharding message to an arbitrary region/coordinator path — today
+   * only the statistics fan-out's answer, back to the coordinator that asked.
+   *
+   * That asker refuses a frame which reached its mailbox unattributed (#712), so
+   * the local leg carries the same wrapper `tellCoordinatorRef` builds, for the
+   * same reason.
+   */
   private replyToPath(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.config.cluster.selfAddress)) {
-      const local = this.config.localResolver(path) as ActorRef<ShardingMessage> | null;
-      local?.tell(message);
+      const local = this.config.localResolver(path) as
+        ActorRef<ShardingMessage | AuthenticatedShardingMessage> | null;
+      local?.tell(new AuthenticatedShardingMessage(this.config.cluster.selfAddress, message));
       return;
     }
     new RemoteActorRef<ShardingMessage>(node, path, this.config.cluster).tell(message);
