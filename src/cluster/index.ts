@@ -194,6 +194,25 @@ export type {
   RememberEntitiesStore,
   RememberEvent,
 } from './sharding/RememberEntitiesStore.js';
+// The coordinator-state opt-in.  Exported because the option JSDoc on
+// `StartShardingOptionsType.coordinatorStateStore` tells the user to pass
+// `new DistributedDataCoordinatorStateStore(...)`, and until now that
+// instruction was impossible to follow from outside this repository — the
+// class reached no public entry point (#682).
+export {
+  DistributedDataCoordinatorStateStore,
+} from './sharding/CoordinatorState.js';
+export type {
+  CoordinatorStateStore,
+  CoordinatorStateData,
+  RegionInfoData,
+} from './sharding/CoordinatorState.js';
+export { shardMapViewOf } from './sharding/ShardMapView.js';
+export type {
+  ShardMapView,
+  ShardMapViewRegion,
+  ShardMapViewAssignment,
+} from './sharding/ShardMapView.js';
 export {
   CassandraRememberEntitiesStore,
   rememberEntitiesDdl,
