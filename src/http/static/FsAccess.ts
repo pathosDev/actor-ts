@@ -75,10 +75,10 @@ export async function readFileBytes(path: string): Promise<Uint8Array> {
  * which two calls it depends on being uniform across the runtimes — the
  * positional `read(buffer, offset, length, position)` overload and `close`.
  */
-type FileHandleLike = {
+interface FileHandleLike {
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ readonly bytesRead: number }>;
   close(): Promise<void>;
-};
+}
 
 async function openForReading(path: string): Promise<FileHandleLike> {
   return await (await fsp()).open(path, 'r');
@@ -139,9 +139,9 @@ export function readFileStream(path: string, start: number, length: number): Rea
   // Idempotent: `cancel` can arrive while the last `pull` is still settling,
   // and closing a handle twice is an error on Node.
   const releaseHandle = async (): Promise<void> => {
-    const open = handle;
+    const openHandle = handle;
     handle = undefined;
-    if (open) await open.close();
+    if (openHandle) await openHandle.close();
   };
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
