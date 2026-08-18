@@ -19,12 +19,19 @@ type CommandMessage = { kind: 'command'; id: string };
 type LogMessage = { kind: 'log'; line: string };
 type Message = HeartbeatMessage | CommandMessage | LogMessage;
 
+// `.otherwise` rather than `.exhaustive()`, and not for tidiness: the
+// framework hands `priorityFor` messages this union does not describe.
+// `ref.stop()` and `ref.kill()` post `PoisonPill` / `Kill` as *user* messages,
+// and an exhaustive match throws on both.  Since #733 the mailbox contains that
+// throw and queues the message last, so the graceful drain-then-stop survives
+// either way — but ranking them explicitly says what should happen instead of
+// relying on the guard.
 const priorityFor = (m: Message): number =>
   match(m)
     .with({ kind: 'heartbeat' }, () => 0)
     .with({ kind: 'command' }, () => 1)
     .with({ kind: 'log' }, () => 10)
-    .exhaustive();
+    .otherwise(() => 5);
 
 class Dispatcher extends Actor<Message> {
   override async onReceive(m: Message): Promise<void> {

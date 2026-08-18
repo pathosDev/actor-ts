@@ -270,16 +270,17 @@ import { Aside } from '@astrojs/starlight/components';
   rateLimit({ cache, /* ... */ });   // ✗ same instance
   cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
   ```
-  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge), und seine
-  Eviction ist blind dafür, was ein Eintrag schützt.  Teilst du eine
-  Instanz, evictet ein Aufrufer, der den Response-Cache-Key — oder den
-  `Idempotency-Key`-Header — variiert, die Rate-Limit-Zähler und
-  Idempotency-Records *anderer* Clients: deren Limits setzen sich
-  zurück, und deren Retries führen Handler erneut aus.  Getrennte
+  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge).  Seine
+  Eviction leert zuerst die Einträge, die keine Garantie tragen — ein
+  Aufrufer, der den Response-Cache-Key variiert, erreicht die
+  Rate-Limit-Zähler und Idempotency-Records *anderer* Clients also nicht
+  mehr.  Garantien ordnet sie aber nicht gegeneinander: wer den
+  `Idempotency-Key`-Header variiert, evictet Zähler und Records
+  weiterhin, sobald nichts Billigeres mehr in der Map liegt.  Getrennte
   Instanzen (oder `ext.cache('rate-limit')` / `ext.cache('idempotency')`)
-  halten die Key-Flut der einen Middleware aus dem State der anderen
-  heraus.  Siehe
-  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+  halten die Key-Flut der einen Middleware vollständig aus dem State der
+  anderen heraus.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 
 ## HTTP an Actors anschließen

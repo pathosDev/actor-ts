@@ -10,7 +10,7 @@ be the whole story.  You could send messages *through* sharding, but
 you could not ask it anything: not "which shards exist", not "where
 does shard 7 live", not "give me a handle on entity `user-42`".
 
-Three APIs on `ClusterSharding` close that, plus one cluster event for
+Four APIs on `ClusterSharding` close that, plus one cluster event for
 the push side.
 
 ## Listing the shards
@@ -54,9 +54,10 @@ holding.
 The entry carries a **live ref**, not just placement data, so one query
 answers both "what is out there" and "how do I talk to it".  The
 trade-off is that `ShardInfo` is not JSON-serialisable — if you need a
-serialisable view, the
+serialisable view, use [`shardMap(typeName)`](#the-last-map-without-a-query)
+or the
 [`GET /cluster/shards`](/observability/management/http-endpoints/)
-management endpoint returns a plain-data shape instead.
+management endpoint, which serialises exactly that.
 
 Shards with no home yet are **absent** from the list.  Nothing has asked
 for them, so the coordinator has had no reason to place them; a 64-shard
@@ -197,6 +198,38 @@ Broadcasts are **coalesced**.  Allocation changes arrive one shard at a
 time and a fresh cluster places every shard at once, so `version` counts
 broadcasts rather than individual assignments — do not read it as "how
 many shards moved".
+
+### The last map, without a query
+
+Because the event reaches every node, `ClusterSharding` can simply
+remember the last one — which is what `shardMap(typeName)` returns, as
+plain JSON:
+
+```ts
+const map = cluster.sharding.shardMap('cart');
+if (map !== null) {
+  // map.regions   — one entry per region, with its shard ids
+  // map.shardHome — [{ shard, regionKey }], one per placed shard
+  // map.version   — the coordinator's broadcast counter
+  // map.leader, map.takenAt — who published it, and when it arrived here
+}
+```
+
+Synchronous and free: no round trip, no `DistributedData`, no
+`coordinatorStateStore`.  It is what the
+[`GET /cluster/shards`](/observability/management/http-endpoints/)
+endpoint serialises.
+
+It returns `null` until the coordinator has published once for the type
+— which includes every node that started neither a region nor a proxy
+for it, since the coordinator broadcasts only to regions that
+registered.  And `shardHome` stays empty until a shard is actually
+placed, while `regions` fills on registration: read `regions` for "who
+is participating", `shardHome` for "what is placed".
+
+Reach for [`shards()`](#listing-the-shards) instead when you need entity
+counts or live refs, and for `ShardMapChanged` when you need the changes
+rather than the latest state.
 
 ## Where to next
 

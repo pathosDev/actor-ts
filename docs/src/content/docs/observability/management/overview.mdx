@@ -70,7 +70,7 @@ await system.http(8558).bind(routes);
 | `GET /ready` | ✓ | Readiness — 200 iff every readiness check passes (the framework registers cluster membership + connectivity). |
 | `GET /cluster/members` | When `cluster` is set | Membership JSON. |
 | `GET /cluster/leader` | When `cluster` is set | Leader address. |
-| `GET /cluster/shards?type=<name>` | When `cluster` is set | Shard placement for a sharded type. |
+| `GET /cluster/shards?type=<name>` | When `cluster` is set, for a type this node participates in | Shard placement for a sharded type. |
 | `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Trigger graceful cluster-leave. |
 | `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Force-down a peer by address. |
 | `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus text format. |

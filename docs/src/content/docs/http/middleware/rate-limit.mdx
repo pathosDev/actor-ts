@@ -190,20 +190,21 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const limiterCache = new InMemoryCache();   // ✓ the limiter's own instance
   ```
-  The counter that enforces the limit is an ordinary cache entry, and
-  `InMemoryCache` evicts the least-recently-used one once `maxEntries`
-  is reached — without knowing which entries carry security state.
-  Share one instance with `cached` or `idempotent` and a caller who
-  mints distinct keys through either of those (a response-cache key
-  derived from the request, an attacker-chosen `Idempotency-Key`)
-  evicts **other** clients' counters, handing each of them a fresh
-  budget.  The flooder's own counter is safe: `incr` marks it
-  most-recently-used on every request, so it is never the victim.
+  `InMemoryCache` counts the counter as carrying a guarantee — `incr`
+  with a `windowMs` created it — and evicts entries that carry none
+  first, so a `cached` key flood no longer resets other clients'
+  windows.  It does not rank guarantees against each other, though: on
+  an instance shared with `idempotent`, a flood of attacker-chosen
+  `Idempotency-Key`s is a flood of claims, and once the map holds
+  nothing cheaper the counters go too.  The flooder's own counter is
+  safe either way: `incr` marks it most-recently-used on every request,
+  so it is never the victim.
 
   Pass a dedicated instance — or `ext.cache('rate-limit')` — and size
   its `maxEntries` above the number of distinct keys you expect inside
-  one `windowMs`.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  one `windowMs`; a client with an IPv6 `/64` mints them all day, and
+  every one is a counter the cache protects.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 
 <Aside type="caution" title="Fixed-window edge effects">

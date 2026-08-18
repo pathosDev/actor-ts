@@ -1,3 +1,4 @@
+import { match, P } from 'ts-pattern';
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
@@ -11,6 +12,7 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
+import { ShardMapChanged, type ClusterEvent } from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
@@ -20,6 +22,7 @@ import {
 import { EntityRef } from './EntityRef.js';
 import type { ShardMessage } from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
+import { shardMapViewOf, type ShardMapView } from './ShardMapView.js';
 import { DEFAULT_NUM_SHARDS } from './ShardingOptions.js';
 import {
   ShardRegion,
@@ -66,12 +69,30 @@ export class ClusterSharding {
   private readonly numShardsByType = new Map<string, number>();
   /** Whether the region started for a type is a proxy — see {@link start}. */
   private readonly proxyByType = new Map<string, boolean>();
+  /**
+   * Type name → the last shard map this node was told about.  Read by
+   * {@link shardMap}, fed by the `ShardMapChanged` subscription below.
+   *
+   * Kept here rather than derived on demand because the map has no local
+   * owner to ask: the coordinator holds it, runs only on the leader, and
+   * answers over the wire.  Every node's region already receives the
+   * broadcast and republishes it, so remembering the last one costs one
+   * assignment per publish and turns a round trip into a field read (#682).
+   */
+  private readonly shardMapsByType = new Map<string, ShardMapView>();
 
   private constructor(
     public readonly system: ActorSystem,
     public readonly cluster: Cluster,
   ) {
     cluster._setEnvelopeHandler((env: EnvelopeMessage) => this.dispatchEnvelope(env));
+    // Subscribed here, not on the first `start`, so no publish can slip past
+    // between construction and the first region: a type started later still
+    // sees its own first broadcast.  `snapshot` replay because this listener
+    // discards membership anyway — one event to ignore instead of N.  Never
+    // unsubscribed: the instance is memoised per ActorSystem and both it and
+    // the listener die with the Cluster that holds them.
+    cluster.subscribe((event) => this.onClusterEvent(event), { replayMode: 'snapshot' });
   }
 
   private static instances = new WeakMap<ActorSystem, ClusterSharding>();
@@ -410,6 +431,36 @@ export class ClusterSharding {
   }
 
   /**
+   * The last shard map this node was told about, as plain JSON — the
+   * serialisable counterpart to {@link shards} (#682).
+   *
+   * ```ts
+   * const map = cluster.sharding.shardMap('counter');
+   * if (map) console.log(map.regions.length, map.shardHome.length);
+   * ```
+   *
+   * Synchronous and free: the coordinator broadcasts the map to every
+   * registered region on each change, each region republishes it as a local
+   * `ShardMapChanged`, and this returns the last one. So it needs no round
+   * trip, no DistributedData and no `coordinatorStateStore` — which is what
+   * the `/cluster/shards` management endpoint reads it for.
+   *
+   * `null` until the coordinator has published once for the type, which
+   * includes every case where this node has started neither a region nor a
+   * proxy for it: nothing broadcasts to a node that never registered. Use
+   * {@link shards} when you need entity counts or live refs, and subscribe to
+   * `ShardMapChanged` when you need the changes rather than the latest state.
+   *
+   * `shardHome` is empty until a shard has been placed — nothing asks the
+   * coordinator to allocate one before an entity is addressed — while
+   * `regions` is populated from the first registration. Read `regions` to
+   * answer "who is participating", `shardHome` to answer "what is placed".
+   */
+  shardMap(typeName: string): ShardMapView | null {
+    return this.shardMapsByType.get(typeName) ?? null;
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -446,6 +497,35 @@ export class ClusterSharding {
   }
 
   /* ------------------------------- Internal -------------------------------- */
+
+  /**
+   * The cluster event stream, of which exactly one event is ours.  Membership
+   * belongs to whoever else subscribed; sharding only reacts to the shard map
+   * its own regions republish.
+   */
+  private onClusterEvent(event: ClusterEvent): void {
+    match(event)
+      .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  /**
+   * Stamped with the receiving node's clock and its own view of the leader,
+   * because that is what this node can honestly claim: the event carries
+   * neither, and the coordinator that produced it publishes only while it is
+   * the active one, so the leader at arrival time is the map's author.
+   */
+  private onShardMapChanged(event: ShardMapChanged): void {
+    const leader = this.cluster.leader().fold(() => '', (member) => member.address.toString());
+    this.shardMapsByType.set(event.type, shardMapViewOf(event, leader, Date.now()));
+  }
+
+  /**
+   * Membership, leadership, a replayed snapshot.  All of them can move the
+   * shard map, and none of them says how — the coordinator recomputes and
+   * publishes `ShardMapChanged`, which is the only event that can.
+   */
+  private onOtherClusterEvent(): void {}
 
   /**
    * @param numShards Resolved by the caller from the same options the region

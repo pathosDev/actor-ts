@@ -48,3 +48,21 @@ export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
  * `transportFrameCapOf`'s own fallback for a server with no WebSocket routes.
  */
 export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Bytes a streamed static response reads per `pull` — 64 KiB.
+ *
+ * Not an option: it is the memory a streamed download costs, and the point of
+ * streaming is that the number does not scale with the file.  Two chunks are
+ * live at once (the queued one plus the one being read), so this is the whole
+ * per-response cost regardless of whether the file is 1 MiB or 100 GiB.
+ *
+ * 64 KiB rather than something larger because it is already well past the
+ * point where syscall overhead matters for sequential reads, and rather than
+ * something smaller because a 4 KiB chunk turns a 1 GiB download into 262 144
+ * round trips through the stream queue.  It lives here rather than in
+ * `StaticFilesOptions.ts` because it is not the default of any options field —
+ * `streamThreshold` decides *whether* a body streams; this decides how the
+ * bytes are fetched once it does.
+ */
+export const STATIC_FILE_READ_CHUNK_BYTES = 64 * 1024;

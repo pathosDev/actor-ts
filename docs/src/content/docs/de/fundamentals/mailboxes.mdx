@@ -374,6 +374,71 @@ Häufige Formen für `priorityFor`:
   verteile über einen Router.
 </Aside>
 
+### Wenn `priorityFor` nicht antworten kann
+
+Dein Callback muss nicht total sein.  Wenn er **wirft** oder mit etwas
+antwortet, das keine brauchbare Zahl ist — `undefined`, `NaN`, ein Wert
+eines anderen Typs — landet die Nachricht mit der **niedrigsten**
+Priorität in der Queue, und mehr passiert nicht.  Sie wird nicht
+verworfen, und der Fehlschlag taucht nicht an der `tell`-Stelle auf.
+
+Beide Hälften sind wichtig:
+
+- **Niedrigste, nicht höchste.**  Eine Priorität, die nicht bestimmbar
+  war, darf keine überholen, die angegeben wurde.  Gleichstände brechen
+  weiterhin nach FIFO, unrangierbare Nachrichten bleiben also
+  zueinander in Sende-Reihenfolge.
+- **Eingefangen, nicht geworfen.**  `priorityFor` läuft synchron
+  innerhalb des `tell` des *Senders*.  Der Sender ist ein Unbeteiligter
+  der Mailbox-Konfiguration des Empfängers: er kann gegen ein defektes
+  `priorityFor` nichts tun und kann es nicht von einem eigenen Fehler
+  unterscheiden.  Ein entkommender Throw landete im `onReceive` des
+  Senders und ließ den **Sender** neu starten — dieselbe Verwirrung, die
+  die `reject`-Warnung oben beschreibt, für einen Bug, der mit dem
+  Sender überhaupt nichts zu tun hat.
+
+`±Infinity` ist eine *Rangfolge*, kein Fehlschlag: `-Infinity` bedeutet
+"vor allem anderen", `+Infinity` bedeutet "hinter allem anderen", und
+beide werden so geordnet, wie sie geschrieben sind.  Nur `NaN` und
+Nicht-Zahlen gelten als unbestimmbar.
+
+<Aside type="caution" title="Das Framework ruft `priorityFor` mit `PoisonPill` und `Kill` auf">
+  `ref.stop()` und `ref.kill()` posten `PoisonPill` / `Kill` als
+  gewöhnliche **User**-Nachrichten — genau das macht `stop()` zu einem
+  graziösen Drain-dann-Stop und nicht zu einem Queue-Sprung.  Also sieht
+  `priorityFor` sie ebenfalls, und keine der beiden hat Felder: ein
+  `match(message).…​.exhaustive()` wirft bei beiden, und die Formen
+  **Feld-abgeleitet** und **Caller-getagged** oben liefern `undefined`.
+
+  Das Einfangen macht das überlebbar statt fatal, aber rangiere sie
+  bewusst, statt sich darauf zu verlassen — ein `.otherwise(() => 5)`-Arm
+  oder ein `?? 5` auf dem Feld.  Sonst kostet jedes `stop()` dich einen
+  eingefangenen Fehlschlag und einen Mailbox-Eintrag ganz am Ende der
+  Queue.
+</Aside>
+
+Um einen eingefangenen Fehlschlag zu sehen und nicht nur seine Folgen,
+übergib `onPriorityError`.  Nichts anderes im System meldet einen — die
+Nachricht kommt weiterhin an, nur zuletzt:
+
+```ts
+import { PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withOnPriorityError((cause, message) => {
+    log.warn(`priorityFor could not rank ${JSON.stringify(message)}: ${String(cause)}`);
+  });
+
+const mailbox = new PriorityMailbox<Message>(triageOptions);
+```
+
+`cause` ist, was `priorityFor` geworfen hat, oder ein `TypeError`, der
+den zurückgegebenen Wert beschreibt.  **Aufzeichnen und zurückkehren**
+im Hook: er läuft ebenfalls auf dem Stack des Senders, ein Throw aus ihm
+heraus setzt das Entkommen also wieder ein — und kostet die Nachricht
+ihren Platz in der Queue.
+
 Die aktuelle Implementierung verwendet ein sorted-insertion-Array —
 O(log n) Locate + O(n) Splice bei jedem Enqueue.  In Ordnung für
 Mailboxes, die in den niedrigen Tausenden bleiben; wenn du einen
@@ -434,7 +499,13 @@ die eingehende war — dann lautet der Grund `drop-new`.
 Die Options werden bei der Konstruktion validiert: ein fehlendes oder
 nicht aufrufbares `priorityFor`, eine nicht-positive `capacity`, eine
 unbekannte Policy oder eine Policy ohne Capacity werfen alle
-`OptionsError`.
+`OptionsError`.  Was der Callback *zurückgibt*, ist eine Laufzeitfrage
+und wird stattdessen beim Enqueue behandelt — siehe
+[Wenn `priorityFor` nicht antworten kann](#wenn-priorityfor-nicht-antworten-kann).
+Auf einer begrenzten Mailbox treffen sich beide: eine unrangierbare
+Nachricht ist das Unwichtigste in der Queue, unter
+`drop-lowest-priority` wird also die Ankunft abgeworfen und als
+`drop-new` gemeldet.
 
 ## Per-Actor-Mailbox via ActorOptions
 

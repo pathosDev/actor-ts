@@ -34,13 +34,15 @@ mountet es darunter (z. B. `/static/...`), ohne mountet es an der Wurzel.
 | `withSymlinks('within-root' \| 'follow')` | `symlinks` | `'within-root'` |
 | `withContentTypes(map)` | `contentTypes` | — (ext → type Overrides) |
 | `withMaxFileSize(bytes)` | `maxFileSize` | 50 MiB (größer → 413) |
+| `withStreamThreshold(bytes)` | `streamThreshold` | — (nicht gesetzt: nichts streamt) |
 
 ## Verhalten
 
 - **Conditional Requests** — ein schwaches `ETag` (size + mtime) und
   `Last-Modified`; passendes `If-None-Match` / `If-Modified-Since` → `304`.
 - **Range** — ein einzelner `bytes=`-Range → `206` (oder `416`, wenn
-  unerfüllbar); `Accept-Ranges: bytes` wird angekündigt.
+  unerfüllbar); `Accept-Ranges: bytes` wird angekündigt. Es wird nur das
+  angefragte Fenster gelesen, nie die ganze Datei.
 - **Verzeichnisse** — ein Request ohne Trailing-Slash `301`-redirectet, um
   ihn zu ergänzen (Query erhalten); mit Slash werden Index-Dateien der Reihe
   nach probiert, dann ein Listing (falls Browsing) oder `404`. Unter
@@ -77,14 +79,56 @@ Policy zurückhält. Auf `withSymlinks('follow')` umschalten, wenn der Baum
 absichtlich nach außen verlinkt (ein Build-Output, eine Link-Farm eines
 Paketmanagers).
 
+## Speicher: standardmäßig gepuffert, auf Wunsch gestreamt
+
+Ein Body wird standardmäßig in den Speicher gelesen, begrenzt durch
+`maxFileSize` (50 MiB → eine größere Datei bekommt `413`). Ein `Range` liest
+nur die angefragten Bytes, ein `bytes=0-0` auf einer 50-MiB-Datei kostet also
+ein Byte und nicht 50 MiB.
+
+Setze `streamThreshold`, und ein Body ab dieser Größe wird als Stream
+ausgeliefert, in 64-KiB-Häppchen gelesen — eine Datei, die größer als der
+Speicher des Prozesses ist, kostet damit so viel wie eine kleine:
+
+```ts
+import { getFromDirectory, StaticFilesOptions } from 'actor-ts/http';
+
+const largeDownloads = StaticFilesOptions.create()
+  .withStreamThreshold(8 * 1024 * 1024)
+  .withMaxFileSize(8 * 1024 * 1024);
+
+const routes = getFromDirectory('downloads', '/srv/releases', largeDownloads);
+```
+
+Daraus folgen zwei Dinge:
+
+- **Der `413` entfällt.** `maxFileSize` begrenzt, was *gepuffert* wird, und
+  ein gestreamter Body wird es nicht. `streamThreshold` muss kleiner oder
+  gleich `maxFileSize` sein (ein größerer Wert wird als Widerspruch
+  abgelehnt) — damit kann nichts über die Schwelle hinaus gepuffert werden,
+  die Grenze wird also unerreichbar statt aufgegeben, und es geht keine
+  Schranke verloren.
+- **`Content-Length` wird für dich gesetzt.** Ein Backend hat bei einem
+  Stream nichts zu messen, deshalb setzt der Handler den Header selbst.
+  Fastify und Express schreiben ihn auf die Leitung; bei Hono hängt es am
+  Server der Runtime ab (`Bun.serve` framet einen Stream chunked, `node:http`
+  und `Deno.serve` nicht).
+
+`HEAD` liest in beiden Fällen nichts.
+
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Bodies werden gepuffert">
-  Dateien werden in den Speicher gelesen (begrenzt durch `maxFileSize`,
-  Default 50 MiB → eine größere Datei bekommt `413`). Das hält die
-  Auslieferung korrekt und identisch über Bun, Node und Deno; das Streamen
-  sehr großer Dateien ohne Puffern ist eine künftige Erweiterung.
-  Range-Requests funktionieren trotzdem — sie schneiden aus dem Puffer.
+<Aside type="caution" title="Streaming ist aus gutem Grund opt-in">
+  Ein Stream-Body ist **einmalig**, und zwei mitgelieferte Middlewares gehen
+  damit noch falsch um: `cached()` und `idempotent()` serialisieren einen Body
+  über eine `Uint8Array`-Prüfung, eine gestreamte Response wird also als
+  leeres Objekt gespeichert und der zweite Treffer liefert nichts (#674); und
+  das Express-Backend pipet einen Stream ohne Error-Handler, ein Fehler
+  mitten in der Response reißt also den Prozess oder den Request mit (#979).
+  Bis das gelandet ist: `streamThreshold` nicht mit `cached()` /
+  `idempotent()` kombinieren und für einen streamenden Mount das
+  Standard-Backend Fastify bevorzugen. Weil Streaming aus bleibt, ist die
+  Static-Route out of the box von beidem nicht betroffen.
 </Aside>
 
 <Aside type="note" title="Nur Optionen — kein HOCON">

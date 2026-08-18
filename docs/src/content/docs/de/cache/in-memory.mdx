@@ -122,16 +122,88 @@ geschrieben und nie zurückgelesen wird (ein Idempotency-Record, der noch
 auf den Retry des Clients wartet), altert ab dem Moment der Speicherung
 auf die Eviction zu.
 
+Aktualität ist allerdings nicht das *einzige* Kriterium: welche Einträge
+die Schranke zuerst greift, hängt davon ab, was sie tragen — darum geht
+es im nächsten Abschnitt.
+
 Setze `maxEntries: Infinity`, um die Eviction ganz abzuschalten.  Tu
 das nur, wenn du den Key-Raum kontrollierst — eine unbegrenzte Map
 läuft dem Prozess irgendwann in einen OOM.
 
-## Eviction ist blind dafür, was ein Eintrag schützt
+## Was Eviction schützt und was nicht
 
-Aktualität ist das *einzige* Kriterium.  Ein Rate-Limit-Zähler und ein
-Idempotency-Record werden genauso bereitwillig evictet wie ein
-gecachter Response-Body — und das Wegwerfen entwertet stillschweigend
-die Garantie, die der Eintrag getragen hat:
+Die Map wird in zwei Hälften geführt, und der Write, der einen Eintrag
+erzeugt hat, entscheidet, in welcher er landet:
+
+- **Trägt eine Garantie** — ein `setIfAbsent`-Claim (ein Lock, ein
+  Idempotency-Marker) oder ein `incr`-Zähler (ein Rate-Limit-Fenster),
+  *mit endlicher TTL*.  Für diese **ist** der Cache die Quelle der
+  Wahrheit: einen davon zu verlieren kostet keinen Round-Trip, es
+  entwertet die Garantie.
+- **Opportunistisch** — alles, was `set` / `mset` schreibt.  Dahinter
+  steht eine Quelle der Wahrheit, ein Verlust ist also ein Cache-Miss,
+  den der Aufrufer bereits behandelt.
+
+Die Eviction leert zuerst die opportunistische Hälfte, beginnend am
+zuletzt-genutzten Ende.  Eine Flut eindeutiger Response-Cache-Keys kann
+damit kein gehaltenes Lock, keinen Rate-Limit-Zähler eines anderen
+Clients und keinen gespeicherten Idempotency-Record mehr aus der Map
+drängen — vorher konnte sie das, und zwar in der Default-Konfiguration:
+
+```ts
+import { acquireLock, CacheExtensionId } from 'actor-ts/cache';
+
+const cache = system.extension(CacheExtensionId).cache();   // maxEntries 10 000
+
+const lock = await acquireLock(cache, 'lock:nightly-report', 60_000);
+// ...danach 10 000 eindeutige `cache.set(...)`-Writes über dieselbe Instanz.
+// Das Lock steht weiterhin: jeder dieser Writes ist opportunistisch,
+// und die opportunistische Hälfte wird zuerst geleert.
+```
+
+Ein `set` übernimmt eine Garantie in genau einem Fall: wenn es einen
+**lebenden Claim unter demselben Key ersetzt**.  Das ist die Form, die
+`idempotent` benutzt — den Key mit `setIfAbsent` beanspruchen, dann den
+Marker mit der fertigen Antwort überschreiben — und beide Hälften davon
+müssen geschützt sein, sonst liegt der Record das gesamte Fenster offen,
+in dem der Retry des Clients lebt.  Außerhalb dieses Falls ist ein `set`
+nie geschützt, egal welche TTL es trägt: jeder gecachte Response-Body
+ist ein `set` mit endlicher TTL, diese zu schützen würde also alles
+schützen und damit nichts.
+
+### `maxEntries` bleibt eine harte Schranke — und das ist die Grenze
+
+Eine Garantie zu tragen ordnet die Opfer neu; sie verhindert nie eine
+Eviction.  Sobald jeder Eintrag der Map eine trägt, geht der am längsten
+nicht genutzte *von diesen* — die Schranke gilt also unverändert, und
+eine Key-Flut kann die Map weiterhin nicht wachsen lassen.  Bleiben vier
+Dinge, die du einplanen musst:
+
+- **Dimensioniere `maxEntries` über die Zahl der Claims, Zähler und
+  Locks hinaus, die innerhalb einer TTL gleichzeitig leben.**  Ein Cache,
+  der nur Locks hält, evictet an der Schranke sein ältestes Lock — und
+  der nächste Aufrufer bekommt dann ein Lock, das jemand noch hält.
+- **Die Politik ordnet Garantien nicht gegeneinander.**  Zwei Consumer,
+  die je eine Garantie tragen und sich eine Instanz teilen, evictieren
+  sich weiterhin gegenseitig; ein Cache pro Consumer bleibt daher die
+  Empfehlung (unten).
+- **Eine Garantie, die du selbst mit einem einfachen `set` ablegst, wird
+  nicht erkannt** — der Cache kann sie nicht von einem Response-Body
+  unterscheiden.  Schreibe den Claim mit `setIfAbsent`, oder nimm ihn mit
+  `acquireLock`.
+- **Ein Claim ohne TTL ist nicht geschützt.**  Ein unbegrenztes Lock ist
+  genau die Verklemmung, vor der `setIfAbsent` warnt, und es zu schützen
+  würde sie dauerhaft machen — nichts würde es je ablaufen lassen.
+
+Und nichts davon folgt einem entfernten Backend.  Redis unter
+`maxmemory-policy allkeys-lru` und Memcached evictieren serverseitig, wo
+keine clientseitige Politik hinreicht — siehe die
+[Memcached-Seite](/de/cache/memcached/).
+
+### Was eine verlorene Garantie kostet
+
+Wenn die Schranke doch eine erreicht, wird nichts sichtbar.  Der Eintrag
+ist einfach weg, weit innerhalb seiner TTL:
 
 - **Rate-Limit** — der Zähler verschwindet, der nächste Request dieses
   Clients startet also ein frisches Fenster bei 1.  Das Limit setzt
@@ -140,21 +212,18 @@ die Garantie, die der Eintrag getragen hat:
   Retry des Clients findet also keinen Record, beansprucht den Key neu
   und **führt den Handler ein zweites Mal aus**.  Auf einem
   Payments-Endpoint ist das eine Doppelbelastung.
+- **Lock** — der Eintrag, den ein Halter geschrieben hat, verschwindet,
+  während der Halter noch im kritischen Abschnitt steckt; das nächste
+  `acquireLock` auf diesem Key **gelingt und vergibt dasselbe Lock ein
+  zweites Mal**.  Das `release()` des ursprünglichen Halters liefert dann
+  `false`, was sich liest wie „der Abschnitt hat seine TTL überzogen“ und
+  hier das Gegenteil bedeutet: der größte Teil der TTL war noch übrig.
+  Nichts am Rückgabewert trennt die beiden Ursachen.
 
-Beides hinterlässt keine Spur: der Eintrag ist einfach weg, weit
-innerhalb seiner TTL.
+### Ein Cache pro Consumer
 
-Die Exposition entsteht durch das **Teilen einer Cache-Instanz**
-zwischen einem Consumer, der eine Garantie trägt, und einem, dessen
-Key-Raum ein Aufrufer aufzählen kann.  Ein Response-Cache mit einem Key
-aus einem Pfadparameter und ein `idempotent`-Wrapper mit einem Key aus
-einem Client-Header fallen beide in die zweite Kategorie — wer einen
-davon variiert, wälzt die gesamte Map um.  Mit der Default-Schranke von
-10 000 Einträgen und einem großzügigen Limit von 100 Requests pro
-Sekunde dauert das rund 100 Sekunden — vollständig *innerhalb* des
-dokumentierten Rate-Limits.
-
-Die Abhilfe ist ein Cache pro Consumer:
+Die Empfehlung überlebt die Politik, denn die Politik ordnet die Opfer
+nur innerhalb einer Instanz neu:
 
 ```ts
 import { CacheExtensionId } from 'actor-ts/cache';
@@ -167,15 +236,16 @@ const responseCache    = extension.cache('response-cache');
 ```
 
 Jeder Name löst zu einer eigenen Instanz auf, eine Flut durch den einen
-erreicht die anderen also nicht.  Dimensioniere `maxEntries` jeweils
-allein für den Key-Raum dieses Consumers.
+erreicht die anderen also überhaupt nicht.  Dimensioniere `maxEntries`
+jeweils allein für den Key-Raum dieses Consumers.
 
 Das verkleinert den Explosionsradius, beseitigt ihn aber nicht: eine
 Middleware, deren eigener Key-Raum angreiferkontrolliert ist, kann
 weiterhin ihre eigenen Einträge evictieren — ein Client mit einem
-IPv6-`/64` erzeugt beliebig viele Rate-Limit-Keys.  Wo das zählt,
-hinterlege den sicherheitsrelevanten Consumer mit Redis (den du separat
-dimensionierst und überwachst) statt mit einer prozesslokalen LRU.
+IPv6-`/64` erzeugt beliebig viele Rate-Limit-Keys, und jeder davon ist
+ein Zähler, den diese Politik schützt.  Wo das zählt, hinterlege den
+sicherheitsrelevanten Consumer mit Redis (den du separat dimensionierst
+und überwachst) statt mit einer prozesslokalen LRU.
 
 ## Über das System teilen
 

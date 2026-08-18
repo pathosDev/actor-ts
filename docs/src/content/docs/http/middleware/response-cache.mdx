@@ -190,14 +190,17 @@ import { Aside } from '@astrojs/starlight/components';
   `key(request)` almost always derives from something the client
   controls — a path parameter, a tenant header — so a caller who varies
   it mints a new entry per request.  Harmless here: the LRU bound is
-  exactly what stops the response cache growing without limit.  Not
-  harmless in an instance shared with `rateLimit` or `idempotent`,
-  because eviction picks the least-recently-used entry with no idea it
-  is holding a rate-limit counter or a record that stops a payment
-  being taken twice.  Hand this middleware a dedicated instance — or
-  `ext.cache('response-cache')` — rather than the one enforcing a
-  guarantee.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  exactly what stops the response cache growing without limit.  Every
+  one of those entries is a plain `set`, so `InMemoryCache` treats them
+  as the cheap victims and drains them before it touches a rate-limit
+  counter or a record that stops a payment being taken twice — which is
+  what makes this flood survivable in a shared instance at all.  Do not
+  rely on it: the bound is still hard, this middleware's entries are
+  the only slack the shared map has, and Memcached and Redis under
+  `allkeys-lru` have no such policy.  Hand this middleware a dedicated
+  instance — or `ext.cache('response-cache')` — rather than the one
+  enforcing a guarantee.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 
 ## Where to next

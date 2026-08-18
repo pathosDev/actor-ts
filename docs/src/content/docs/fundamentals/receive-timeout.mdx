@@ -184,7 +184,7 @@ private working = (message) => {
 
 `ReceiveTimeout.instance` is delivered via the same path as any
 other user message — it's enqueued, dispatched, handed to
-`onReceive`.  Three knock-on effects:
+`onReceive`.  Four knock-on effects:
 
 - **A backed-up mailbox delays receive timeouts.**  If the actor
   has 100 user messages queued and processes them slowly, the
@@ -197,6 +197,14 @@ other user message — it's enqueued, dispatched, handed to
 - **Restart resets the timer**.  On restart, the new instance
   starts with no receive-timeout configured; call
   `setReceiveTimeout` in `preStart` (or `postRestart`) to re-arm.
+- **It carries no diagnostic context.**  A `ReceiveTimeout` handler
+  runs with the MDC **empty**, not with the context of the last real
+  message the actor handled — and a `tell` issued from that handler
+  therefore carries nothing either.  The distinction matters because
+  you never arm this timer yourself: the framework re-arms it after
+  every message, so there is no call site at which you could have
+  cleared the context.  Idleness belongs to no request.  See
+  [Logging — what the framework guarantees](/fundamentals/logging/#what-the-framework-guarantees).
 
 import { Aside } from '@astrojs/starlight/components';
 

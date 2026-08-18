@@ -115,15 +115,84 @@ So a hot key survives, but an entry that is written once and never read
 back — an idempotency record still waiting for the client's retry —
 ages towards eviction from the moment it is stored.
 
+Recency is not the *only* criterion, though: which entries the cap
+reaches for first depends on what they carry, and that is the next
+section.
+
 Set `maxEntries: Infinity` to opt out of eviction entirely.  Only do
 this when you control the key space — an unbounded map OOMs the process
 eventually.
 
-## Eviction is blind to what an entry protects
+## What eviction protects and what it does not
 
-Recency is the *only* criterion.  A rate-limit counter and an
-idempotency record are evicted exactly as readily as a cached response
-body — and dropping one silently voids the guarantee it carried:
+The map is kept in two halves, and the write that created an entry
+decides which one it lands in:
+
+- **Carries a guarantee** — a `setIfAbsent` claim (a lock, an
+  idempotency marker) or an `incr` counter (a rate-limit window), *with
+  a finite TTL*.  For these the cache **is** the source of truth, so
+  losing one does not cost a round-trip; it voids the guarantee.
+- **Opportunistic** — everything written by `set` / `mset`.  These have
+  a source of truth behind them, so losing one is a cache miss and the
+  caller already handles it.
+
+Eviction drains the opportunistic half first, least-recently-used end
+onwards.  A flood of distinct response-cache keys therefore cannot push
+a live lock, another client's rate-limit counter, or a stored
+idempotency record out of the map — which it could before, at the
+default configuration:
+
+```ts
+import { acquireLock, CacheExtensionId } from 'actor-ts/cache';
+
+const cache = system.extension(CacheExtensionId).cache();   // maxEntries 10 000
+
+const lock = await acquireLock(cache, 'lock:nightly-report', 60_000);
+// ...then 10 000 distinct `cache.set(...)` writes through the same instance.
+// The lock is still held: every one of those is an opportunistic write,
+// and the opportunistic half is drained first.
+```
+
+A `set` picks a guarantee up in exactly one case: when it **replaces a
+live claim under the same key**.  That is the shape `idempotent` uses —
+claim the key with `setIfAbsent`, then overwrite the marker with the
+finished response — and both halves of it have to be protected, or the
+record is exposed for the whole window the client's retry lives in.
+Outside that case a `set` is never protected, whatever TTL it carries:
+every cached response body is a finite-TTL `set`, so protecting those
+would protect everything and therefore nothing.
+
+### `maxEntries` is still a hard cap, and that is the limit
+
+Carrying a guarantee re-orders the victims; it never blocks an
+eviction.  Once every entry in the map carries one, the
+least-recently-used of *those* goes — so the cap holds exactly as
+before, and a key flood still cannot grow the map.  Which leaves four
+things to plan for:
+
+- **Size `maxEntries` above the number of claims, counters and locks
+  live inside one TTL.**  A cache holding nothing but locks evicts its
+  oldest lock at the cap, and the next caller then acquires a lock
+  somebody still holds.
+- **The policy does not rank guarantees against each other.**  Two
+  guarantee-carrying consumers sharing one instance still evict each
+  other, so one cache per consumer stays the advice (below).
+- **A guarantee you store yourself with a plain `set` is not
+  recognised** — the cache cannot tell it from a response body.  Write
+  the claim with `setIfAbsent`, or take it with `acquireLock`.
+- **A claim with no TTL is not protected.**  An unbounded lock is the
+  wedge `setIfAbsent` warns about, and protecting one would make it
+  permanent — nothing would ever expire it.
+
+And none of it follows a remote backend.  Redis under
+`maxmemory-policy allkeys-lru` and Memcached both evict server-side,
+where no client-side policy reaches — see the
+[Memcached page](/cache/memcached/).
+
+### What a dropped guarantee costs
+
+When the cap does reach one, nothing surfaces.  The entry is simply
+gone, well inside its TTL:
 
 - **Rate limit** — the counter disappears, so the next request from
   that client starts a fresh window at 1.  The limit resets without
@@ -132,19 +201,17 @@ body — and dropping one silently voids the guarantee it carried:
   honest retry finds no record, re-claims the key and **runs the
   handler a second time**.  That is a double charge on a payments
   endpoint.
+- **Lock** — the entry a holder wrote disappears while the holder is
+  still inside the critical section, so the next `acquireLock` on that
+  key **succeeds and hands the same lock out twice**.  The original
+  holder's `release()` then returns `false`, which reads like "the
+  section overran its TTL" and here means the opposite: most of the TTL
+  was left.  Nothing in the return value separates the two causes.
 
-Neither leaves a trace: the entry is simply gone, well inside its TTL.
+### One cache per consumer
 
-The exposure comes from **sharing one cache instance** between a
-consumer that carries a guarantee and one whose key space a caller can
-enumerate.  A response cache keyed on a path parameter and an
-`idempotent` wrapper keyed on a client-supplied header are both in the
-second category, so a caller who varies either one turns the whole map
-over.  With the default 10 000-entry bound and a permissive limit of
-100 requests per second, that takes about 100 seconds — entirely
-*inside* the documented rate limit.
-
-The fix is one cache per consumer:
+The advice survives the policy, because the policy only re-orders
+victims inside one instance:
 
 ```ts
 import { CacheExtensionId } from 'actor-ts/cache';
@@ -157,15 +224,15 @@ const responseCache    = extension.cache('response-cache');
 ```
 
 Each name resolves to its own instance, so a flood through one cannot
-reach the others.  Size each one's `maxEntries` for that consumer's key
-space alone.
+reach the others at all.  Size each one's `maxEntries` for that
+consumer's key space alone.
 
-This narrows the blast radius rather than removing it: a middleware
+That narrows the blast radius rather than removing it: a middleware
 whose own key space is attacker-controlled can still evict its own
-entries — a client with an IPv6 `/64` mints rate-limit keys all day.
-Where that matters, back the security-relevant consumer with Redis
-(which you size and monitor independently) instead of an in-process
-LRU.
+entries — a client with an IPv6 `/64` mints rate-limit keys all day, and
+every one of them is a counter this policy protects.  Where that
+matters, back the security-relevant consumer with Redis (which you size
+and monitor independently) instead of an in-process LRU.
 
 ## Sharing across the system
 

@@ -11,6 +11,69 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **`examples/mailbox/priority-dispatch.ts` ranks unknown messages with
+  `.otherwise(() => 5)` instead of `match(...).exhaustive()` (#733).**
+
+  The exhaustive form is the shape people copy and it throws on
+  `PoisonPill`, so every `ref.stop()` went through the new containment
+  path. The example's output is unchanged.
+
+- **BREAKING — The `/cluster/shards` response gains a `version` field — the
+  coordinator's broadcast counter, one bump per publish, not a count of
+  shard moves — and `takenAt` now means when the answering node recorded the
+  map rather than when the coordinator wrote its snapshot. Every field the
+  previous response carried survives under the same name. The 404 condition
+  moved with the data source: the endpoint answers only on a node that
+  started a region or a proxy for the sharded type, because the coordinator
+  broadcasts only to regions that registered. A 200 with an empty
+  `shardHome` is the normal answer for a type no entity has been addressed
+  in yet, since `regions` fills on registration while a shard gets a home
+  only once something asks for it. (#682).**
+
+  *Migration:* If you queried /cluster/shards from a node that had neither
+  started nor proxied the sharded type, it now returns 404 — query a
+  participating node instead.
+
+- **A `Range` request against a static file now reads only the bytes it
+  asked for (#465).**
+
+  It used to read the whole file and answer with a `subarray` of it, and a
+  subarray is a view — so answering `bytes=0-0` on a 50 MiB file kept 50
+  MiB resident for the life of the response, once per in-flight request.
+  No API or observable behaviour change; the memory is the whole point.
+  Refs #969.
+
+- **BREAKING — InMemoryCache eviction picks its victim by what an entry
+  carries first and by recency second (#1080).**
+
+  A setIfAbsent claim and an incr counter with a finite TTL carry a
+  guarantee, and so does a set that replaces such an entry while it is
+  still live (the idempotency marker becoming the finished response);
+  every other set and mset write is opportunistic and is drained first.
+  maxEntries is unchanged and still a hard cap: once every entry carries a
+  guarantee the least-recently-used of those goes, so a key flood still
+  cannot grow the map. No API, option or HOCON key was added.
+
+  *Migration:* Nothing to change in code; an instance shared between a
+  response cache and a guarantee-carrying consumer evicts the cached
+  responses sooner than before, so size maxEntries for both, and a test
+  that pins exact LRU order across mixed write kinds needs updating.
+
+- **LogContext.runFresh now returns the callback's value directly when no
+  store is ambient, instead of always opening one (#718).**
+
+  Observably identical - with nothing ambient, get() already returns the
+  frozen empty context - and it keeps the runtime's no-store fast path,
+  which is what makes the framework's own three clearing seams free in a
+  process that never opens an MDC scope. Measured on
+  benchmarks/single-node/tell-throughput.ts with the arms run alternately:
+  an unconditional wrapper cost 3 to 8 per cent of tell throughput and
+  lost all twelve pairs across three rounds, because an active store
+  propagates to every async resource created under it and a turn awaits up
+  to `throughput` handlers inside the wrapper; with the guard the two arms
+  are indistinguishable, within one per cent on the three larger batches
+  and split six-six.
+
 - **BREAKING — Strong DynamoDB reads consume twice the read capacity of
   eventually-consistent ones, and the cost is not confined to recovery
   (#736).**
@@ -694,6 +757,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **`PriorityMailboxOptions` gains `onPriorityError` and
+  `withOnPriorityError(cause, message)`, fired whenever `priorityFor` throws
+  or returns something unrankable (#733).**
+
+  Worth wiring, because containment is otherwise invisible: the message
+  still arrives, just last, so nothing else in the system reports that a
+  priority callback is broken. `cause` is what the callback threw, or a
+  `TypeError` describing the value it returned. Record and return from the
+  hook — it runs on the sender's stack too.
+
+- **`ClusterSharding.shardMap(typeName)` returns the last shard map this
+  node was told about as plain JSON (`ShardMapView`), synchronously and with
+  no round trip, no DistributedData extension and no coordinator-state store
+  (#682).**
+
+  It is the serialisable counterpart to `shards()`, which carries a live
+  `ActorRef` and therefore cannot cross a wire. `shardMapViewOf` projects
+  a `ShardMapChanged` event into the same shape for callers that would
+  rather subscribe than poll.
+
+- **`DistributedDataCoordinatorStateStore` and the `CoordinatorStateStore`,
+  `CoordinatorStateData` and `RegionInfoData` types are exported from
+  `actor-ts/cluster` (#682).**
+
+  The sharding options JSDoc instructs callers to pass `new
+  DistributedDataCoordinatorStateStore(...)`, and no public entry point
+  exposed the class, so the opt-in it documents was impossible to perform
+  from outside the repository.
+
+- **Static file serving can now stream instead of buffering (#465).**
+
+  Set `streamThreshold` (builder: `withStreamThreshold(bytes)`) and a body
+  at or above that size is sent as a chunked-read `ReadableStream`, so
+  serving a file larger than the process's memory costs the same as
+  serving a small one. Setting it also retires the `maxFileSize` 413 —
+  safely, not as a waiver: the validator rejects a threshold above
+  `maxFileSize`, which means nothing can buffer past the threshold and the
+  cap becomes unreachable. `Content-Length` is stated on the streamed
+  response, because a backend has nothing to measure on a stream and would
+  otherwise turn every large download chunked. Unset by default, so
+  nothing changes for an existing mount; streaming is opt-in until #674
+  and #979 land, because a one-shot body is still mishandled by the
+  caching and idempotency middleware and by the Express backend's pipe.
 
 - **Three gates for the repeat-run flake harness (scripts/stress-test.mjs),
   which decided flaky-versus-broken with nothing checking it.
@@ -1556,6 +1663,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **`GET /cluster/shards?type=<name>` no longer returns 404 on a
+  default-configured cluster (#682).**
+
+  It read the shard coordinator's DistributedData snapshot, which required
+  two things no default configuration has: nothing in the framework ever
+  starts the DistributedData extension, and the snapshot is written only
+  when the operator passes a `coordinatorStateStore`. The route now reads
+  the shard map that every node's region already receives from the
+  coordinator, so it needs no configuration at all. This also removes the
+  last two `src/crdt/` imports from `src/management/`.
+
+- **The Fastify backend silently emptied any `ReadableStream` response body
+  whose first chunk was not ready in the same tick (#465).**
+
+  Its async handlers returned nothing, so Fastify's own re-send path fired
+  while the stream was still unwritten and ended the response over the top
+  of it: the client received a `200` with `Content-Length: 0` and no
+  bytes, with nothing logged. Any body sourced from real I/O — a file, a
+  cursor, an upstream response — was affected, on the default backend.
+  Both existing stream tests missed it because they enqueue every chunk up
+  front, so the body was always already in memory.
+
+- **Documentation: four claims about locks were wrong (#1080).**
+
+  CacheLock.release() said a false return means the critical section
+  overran its TTL; acquireLock and the cache overview said expiry is the
+  only recovery path from a crashed or stalled holder; Cache.setIfAbsent
+  listed three limits of its atomicity guarantee and omitted the only one
+  that is on by default. Eviction is a second way the entry disappears, it
+  needs no crash and honours no deadline, and a false from release() now
+  documents both causes and says that nothing in the return value
+  separates them. The in-memory page's eviction section is rebuilt around
+  what is protected and what is not, the lock is named as a third victim
+  beside the counter and the record, and the Memcached page now says
+  server-side LRU is fine for caching and not for a guarantee. EN + DE.
 
 - **BREAKING — Nested `Behaviors.supervise` wrappers now layer instead of
   collapsing into the innermost one (#638).**
@@ -2797,6 +2940,81 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **A `PriorityMailbox` whose `priorityFor` cannot rank a message no longer
+  inserts it at the head of the queue (#733).**
+
+  `undefined`, `NaN`, `null` and a non-number all compared `false` against
+  every queued priority under both `<` and `===`, so the arrival landed in
+  the highest-priority slot — inverting the ordering the class documents —
+  and the `sequence` tie-break broke the same way, so FIFO was lost among
+  the unrankable messages too. Such a message is now ranked last and keeps
+  FIFO among its peers. No attacker or malformed traffic is needed to
+  reach this: `NaN` comes out of a fully type-correct `(m) =>
+  Number(m.priority)`, and `ref.stop()` posts `PoisonPill` as a user
+  message with no own fields, so the field-derived `priorityFor` the docs
+  recommend silently discarded the entire queued backlog instead of
+  draining it. The #647 bound made it worse rather than better, since the
+  arrival head-inserted and the eviction pops the tail: a full mailbox
+  lost its whole legitimate backlog to a burst of unrankable messages,
+  each eviction reported as an ordinary `drop-head`.
+
+- **A `priorityFor` that throws is now contained by the mailbox instead of
+  propagating into the stack of whichever actor called `tell` (#733).**
+
+  The sender is a bystander to the receiver's mailbox configuration, so
+  the escape restarted the wrong actor under its own supervisor — the same
+  shape that ruled `reject` out as the framework's default overflow
+  policy. The message is kept at the lowest priority rather than dropped,
+  and this covers all three routes into the priority insertion, including
+  the `enqueueSignal` path that carries a lifecycle notification the
+  framework cannot send twice.
+
+- **InMemoryCache no longer hands a live lock out twice under a cache-key
+  flood (#1080).**
+
+  At the default configuration — maxEntries 10 000 — one acquireLock lock
+  with a 60 s TTL followed by 10 000 distinct set calls through the same
+  instance let the next acquireLock succeed while the first holder still
+  believed it held the lock, and the original holder's release() returned
+  false, which the documentation read as "the critical section ran longer
+  than its TTL". Eviction now drains entries that carry no guarantee
+  before it touches one that does, so the same flood also stops resetting
+  another client's rate-limit counter and stops dropping a completed
+  idempotency record inside its TTL — the two victims the shared-cache
+  hardening documented but could not prevent (#607).
+
+- **BREAKING — A delivery that carries no MDC now runs under a cleared
+  context instead of inheriting whatever AsyncLocalStorage store happened to
+  be ambient in the timer, socket callback or dispatcher tick that woke the
+  actor (#718).**
+
+  The leak was wider than a logging annoyance: LocalActorRef.tell
+  re-snapshots the context it runs under, so a handler running under an
+  inherited context forwarded another request's identifiers to whoever it
+  messaged next, and RemoteActorRef.tell carried them across the cluster
+  wire. It needed no timer either - up to `throughput` envelopes share one
+  dispatcher turn, so a plain tell from a context-free scope landing in
+  the same batch as a correlated one was delivered under that correlation
+  id; run()'s finally re-schedules from inside the poisoned store, so one
+  correlated message followed by forty bare ones came back forty-one out
+  of forty-one poisoned; and ThroughputDispatcher arms one setImmediate
+  for a queue holding several actors' turns, so a second actor's
+  context-free delivery observed the first actor's tenant. Three seams now
+  clear: ActorCell wraps each dispatcher turn, Scheduler fires every
+  schedule cleared (covering both message forms and both bare-function
+  forms, which never reach an ActorCell at all), and Cluster dispatches a
+  context-less inbound frame cleared. ManualScheduler in the testkit does
+  the same, so the double cannot hide a regression. A ReceiveTimeout is
+  the part with no user-side remedy - the framework arms that timer after
+  every message, so there was no call site at which an application could
+  have cleared it.
+
+  *Migration:* preStart / postStop, a context.timers tick and any
+  Scheduler schedule no longer inherit the MDC of the request that spawned
+  or armed them; pass a correlation id as data (constructor argument or
+  first message), or capture LogContext.snapshot() at arm time and reopen
+  it in the handler.
 
 - **DynamoDB journal and snapshot reads that a sequence-number decision or a
   recovery depends on now set ConsistentRead: true (#736).**

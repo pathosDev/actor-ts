@@ -247,7 +247,7 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
-  test('/cluster/shards 404s when DistributedData has no shard state for the type', async () => {
+  test('/cluster/shards 404s for a type this node has no region for', async () => {
     const { sys, cluster } = await startNode();
     const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
@@ -255,8 +255,17 @@ describe('managementRoutes — cluster queries', () => {
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=Orders`);
     expect(response.status).toBe(404);
-    // Either "DistributedData not started" or "no shard-map recorded"
-    // depending on which path triggers.
+    const body = await response.text();
+    expect(body).toContain('Orders');
+    // The 404 used to be a DistributedData precondition, and it fired on every
+    // default configuration — nothing in `src/` starts that extension, so a
+    // 200 was unreachable out of the box (#682).  The route reads
+    // `ClusterSharding.shardMap()` now, and the only precondition left is
+    // participating in the type, so naming DD here would mean the old data
+    // source is back.  See
+    // `tests/integration/in-process/cluster/sharding/ShardMapEndpoint.test.ts`
+    // for the 200 this makes reachable.
+    expect(body).not.toContain('DistributedData');
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
