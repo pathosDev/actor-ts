@@ -195,6 +195,20 @@ describe('IpAllowlist — trustedProxies resolves the client from the forwarded 
     expect(await exhausted(request('203.0.113.7', { 'x-forwarded-for': '203.0.113.9' }), next)).toBe(okResponse);
   });
 
+  test('trusting the whole address space degrades to the socket peer, not to the header', async () => {
+    // The documented "never trust every hop" case.  `0.0.0.0/0` exhausts
+    // the walk, so the option buys nothing — which is a wasted option, not
+    // a bypass.  The backends' `trust proxy: true` is the dangerous
+    // spelling of the same idea; this one cannot be.
+    const trustsEverything = IpAllowlist({
+      allow: ['10.0.0.0/8'],
+      trustedProxies: ['0.0.0.0/0'],
+    });
+    await expect(
+      trustsEverything(request('198.51.100.7', { 'x-forwarded-for': '10.1.2.3' }), next),
+    ).rejects.toThrow(/IP not allowed: 198\.51\.100\.7/);
+  });
+
   test('no socket peer fails closed even with a whole chain on offer', async () => {
     await expect(
       behindEdge(request(undefined, { 'x-forwarded-for': '10.1.2.3' }), next),
@@ -268,12 +282,31 @@ describe('IpAllowlist — options surface', () => {
   test('the builder produces the same middleware as the plain object', async () => {
     const ipAllowlistOptions = IpAllowlistOptions.create()
       .withAllow('10.0.0.0/8')
-      .withTrustedProxies('203.0.113.0/24');
+      .withTrustedProxies('203.0.113.0/24')
+      .withForwardedHeader('cf-connecting-ip');
     const mw = IpAllowlist(ipAllowlistOptions);
-    expect(await mw(request('203.0.113.7', { 'x-forwarded-for': '10.1.2.3' }), next)).toBe(okResponse);
+    expect(await mw(request('203.0.113.7', { 'cf-connecting-ip': '10.1.2.3' }), next)).toBe(okResponse);
     await expect(
-      mw(request('203.0.113.7', { 'x-forwarded-for': '192.168.1.1' }), next),
+      mw(request('203.0.113.7', { 'cf-connecting-ip': '192.168.1.1' }), next),
     ).rejects.toThrow(HttpError);
+  });
+
+  test('the builder writes each field under the name the plain shape uses', () => {
+    // `withX` ⇔ field `x`, with no divergence: a builder *is* its settings,
+    // so a renamed field would silently stop being read by the middleware.
+    const ipAllowlistOptions = IpAllowlistOptions.create()
+      .withAllow('10.0.0.0/8')
+      .withTrustedProxies('10.9.9.0/24')
+      .withForwardedHeader('x-real-ip');
+    expect({ ...ipAllowlistOptions }).toEqual({
+      allow: ['10.0.0.0/8'],
+      trustedProxies: ['10.9.9.0/24'],
+      forwardedHeader: 'x-real-ip',
+    });
+    const withExtractor = IpAllowlistOptions.create()
+      .withAllow('10.0.0.0/8')
+      .withGetClientIp((r) => r.remoteAddress);
+    expect(Object.keys({ ...withExtractor }).sort()).toEqual(['allow', 'getClientIp']);
   });
 
   test('an invalid trustedProxies CIDR is rejected at construction', () => {
