@@ -75,12 +75,22 @@ for tests, KubernetesLease for production.
 
 | Setup | Singleton-uniqueness guarantee |
 | --- | --- |
-| No downing, no lease | Best-effort.  Partitions = dual singletons. |
-| Downing strategy only | Strong on stable networks. |
-| Downing + lease | **Paranoid-safe**.  Both invariants enforced. |
+| No downing, no lease | Holds while the outgoing host answers the hand-over.  A partition takes the timeout, and then both halves host. |
+| Downing strategy only | Same, plus the partition is resolved within `downAfterMs` instead of lasting. |
+| Downing + lease | The strongest available here: arbitration by a third party both sides can reach, and the lease is released only once the outgoing instance has terminated. |
 
 For singletons where dual-execution would cause **real damage**
 (double-charging customers, double-publishing events), use both.
+
+None of these rows says "impossible", deliberately.  Without a lease the
+[hand-over](/cluster/singleton/manager/#no-lease-default) makes "at most
+one" hold whenever the incumbent can be reached and answers, and a peer
+that cannot answer is a peer that cannot be asked to stand down — so the
+incoming host takes `handOverTimeoutMs` and hosts anyway, with a warning
+saying the invariant was not proven.  With a lease the arbiter is outside
+both halves, which is what changes the answer; what remains is the lease
+provider's own guarantee, so read the next section for how an outage of
+*it* behaves.
 
 ## Lease loss handling
 
@@ -93,14 +103,26 @@ lease.onLost((reason) => {
 
 When the lease is revoked (TTL expiry, another holder took it):
 
-- The manager **immediately stops the singleton** — no
-  graceful drain.
+- The manager stops the singleton **with a `PoisonPill`** — so the
+  instance finishes whatever is already in its mailbox first.  This is a
+  graceful drain, not an immediate kill: how long it takes is the size of
+  that backlog plus `postStop`.
 - The singleton's `postStop` runs.
-- The manager retries acquire periodically.
+- Only **then** does the manager retry acquire.  Re-acquiring while the old
+  instance is still draining used to leave the manager holding a lease over
+  no singleton at all, permanently.
 
 Means: if the lease backend hiccups + revokes briefly, the
 singleton **restarts** during the recovery — same effect as a
 brief actor restart.
+
+Worth knowing which way the honesty cuts: on this path promptness *is* the
+safety property, and a drain is not prompt.  A singleton with a long
+mailbox and a slow `postStop` keeps running for that long after its lease
+was revoked, which is a window in which another holder may already have
+started.  Keep `postStop` short in a leased singleton, and treat the
+revocation as the moment the instance is no longer authoritative rather
+than the moment it stops.
 
 ## Lease backend availability
 

@@ -236,19 +236,41 @@ Wenn der Host-Node den Cluster verlässt:
    `MemberRemoved` für den gehenden Node.
 2. **Wahl**: der Cluster wählt einen neuen Leader (deterministisch
    basierend auf der Mitglieder-Sortierreihenfolge).
-3. **Spawn**: der Manager des neuen Leaders spawnt den Singleton.
-4. **Routing-Verschiebung**: Proxies auf jedem Node sehen den
+3. **Hand-over**: der Manager des neuen Leaders bittet jeden Node, der
+   hosten könnte, zurückzutreten, und wartet, bis jeder bestätigt hat,
+   dass seine Instanz wirklich terminiert ist.
+4. **Spawn**: erst dann spawnt er den Singleton.
+5. **Routing-Verschiebung**: Proxies auf jedem Node sehen den
    Leader-Wechsel und aktualisieren ihr Forwarding-Ziel.
 
 In-Flight-Nachrichten während des Übergangs landen in Dead
 Letters, es sei denn, du hast Durability konfiguriert — siehe
-"State über Failover" weiter unten.
+"State über Failover" weiter unten. Nachrichten, die den
+*eintretenden* Host erreichen, während er auf Schritt 3 wartet, werden
+zurückgehalten und der neuen Instanz übergeben.
 
 Das Übergangsfenster wird vom Timeout des Failure Detectors
 begrenzt (typisch ein paar Sekunden für Unreachable-Erkennung).
 Singletons sind kein Low-Latency-Failover-Werkzeug; sie tauschen
-etwas Unverfügbarkeit beim Failover gegen die starke Invariante
-"genau eine Instanz".
+etwas Unverfügbarkeit beim Failover gegen Einzigartigkeit.
+
+**Wie stark diese Einzigartigkeit ist, hängt von deiner Konfiguration
+ab**, und es lohnt sich zu wissen, welche du hast:
+
+- **Default (ohne Lease).** Der Hand-over macht „höchstens eine
+  Instanz“ wahr, solange der abtretende Host *erreichbar ist und
+  antwortet*. Wenn er das nicht kann — er ist unerreichbar, oder eine
+  Partition hat den Cluster geteilt — wartet der eintretende Host
+  `handOverTimeoutMs` (10 s) und hostet dann trotzdem, mit einer
+  Warnung im Log: Verfügbarkeit wird einer Invariante vorgezogen, die
+  nicht bewiesen werden konnte. Für die Dauer dieses Zustands sind zwei
+  Instanzen möglich.
+- **Mit einer `lease`.** Die Arbitrierung wandert zu einer dritten
+  Instanz, die beide Seiten erreichen können, also hält sie genau eine
+  von ihnen — und die Lease wird erst freigegeben, wenn die abtretende
+  Instanz wirklich terminiert ist. Das ist die Konfiguration für den
+  Fall, dass Doppelausführung echten Schaden anrichtet. Siehe
+  [Singleton mit Lease](/de/cluster/singleton/with-lease/).
 
 ## State über Failover
 

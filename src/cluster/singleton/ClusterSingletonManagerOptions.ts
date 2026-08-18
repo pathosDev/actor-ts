@@ -20,6 +20,12 @@ export type ClusterSingletonManagerOptionsType<T> = {
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
   /**
+   * How long to wait for every eligible peer to confirm it is not hosting
+   * before spawning anyway — see
+   * {@link StartSingletonOptionsType.handOverTimeoutMs}.  Default: 10 s.
+   */
+  readonly handOverTimeoutMs?: number;
+  /**
    * Whether the manager re-spawns the singleton after its child dies
    * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
    * — as opposed to the planned teardown of a handover.  Default: `true`.
@@ -84,6 +90,11 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
     return this.set('acquireRetryIntervalMs', ms);
   }
 
+  /** How long to wait for eligible peers to stand down before spawning.  Default 10 s. */
+  withHandOverTimeoutMs(ms: number): this {
+    return this.set('handOverTimeoutMs', ms);
+  }
+
   /** Re-spawn the singleton after an unexpected child death?  Default `true`. */
   withRestartOnTermination(restartOnTermination: boolean): this {
     return this.set('restartOnTermination', restartOnTermination);
@@ -115,6 +126,7 @@ export class ClusterSingletonManagerOptionsValidator<T>
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('handOverTimeoutMs');
   }
 }
 

@@ -168,7 +168,16 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     if (!hostAddress.equals(this.cluster.selfAddress)) {
       this.cluster._sendEnvelope(hostAddress, {
         kind: 'envelope',
-        to: singletonManagerPath(this.cluster.system.name, this.key.typeName),
+        // `hostAddress.systemName`, not this node's: the manager path embeds the
+        // *hosting* system's name, and a cluster's members do not have to share
+        // one — `MultiNodeSpec` names every node's system after its role so a
+        // test can tell them apart.  Addressed with the sender's name, the frame
+        // misses the recipient's per-path handler and falls through to
+        // `Cluster.dispatchEnvelope`'s generic path resolution, which hands the
+        // manager the bare user body instead of a `singleton-deliver` — so the
+        // manager logs it as unrecognised and drops it, with nothing on the
+        // dead-letter stream to say a message was lost (#949).
+        to: singletonManagerPath(hostAddress.systemName, this.key.typeName),
         from: null,
         body: message,
         tag: 'Singleton',
