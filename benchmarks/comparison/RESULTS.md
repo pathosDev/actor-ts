@@ -37,12 +37,12 @@ exactly that rather than averaged in silently.
 
 | arm | measured | actor-ts | commit | CPU | cores | RAM | OS |
 | --- | -------- | -------- | ------ | --- | ----- | --- | -- |
-| actor-ts (bun) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
-| akka (jvm) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
-| nact (bun) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
-| pekko (jvm) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
-| vanilla (bun) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
-| xstate (bun) | 2026-08-18 | 0.16.0 | `208b32ff-dirty` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| actor-ts (bun) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| akka (jvm) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| nact (bun) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| pekko (jvm) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| vanilla (bun) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
+| xstate (bun) | 2026-08-18 | 0.16.0 | `62ea5d59` | AMD Ryzen 9 7940HX with Radeon Graphics | 32 | 15.2 GiB | win32 10.0.26200 (x64) |
 
 ## Arms
 
@@ -71,17 +71,17 @@ Create a batch of actors and take them through their full lifecycle — spawn, c
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts [^1] | bun 1.3.1 | 48,089 actor/s | 20.79 µs | 1.54 ms | 9.41 ms | +25.9 MB |
-| nact [^2] | bun 1.3.1 | 214,482 actor/s | 4.66 µs | 344.90 µs | 3.48 ms | +24.7 MB |
-| vanilla [^3] | bun 1.3.1 | 5,042,864 actor/s | 198 ns | 16.30 µs | 67.70 µs | +1.0 MB |
-| xstate [^4] | bun 1.3.1 | 67,298 actor/s | 14.86 µs | 1.07 ms | 7.35 ms | +28.1 MB |
+| actor-ts [^1] | bun 1.3.1 | 48,613 actor/s | 20.57 µs | 1.51 ms | 11.07 ms | +13.7 MB |
+| nact [^2] | bun 1.3.1 | 211,510 actor/s | 4.73 µs | 372.50 µs | 3.39 ms | +26.4 MB |
+| vanilla [^3] | bun 1.3.1 | 5,207,520 actor/s | 192 ns | 15.50 µs | 82.20 µs | +0.8 MB |
+| xstate [^4] | bun 1.3.1 | 66,716 actor/s | 14.99 µs | 1.09 ms | 8.24 ms | +29.6 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka [^5] | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 24,196 actor/s | 41.33 µs | 4.05 ms | 6.59 ms | — |
-| pekko [^6] | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 23,032 actor/s | 43.42 µs | 4.26 ms | 7.18 ms | — |
+| akka [^5] | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 23,207 actor/s | 43.09 µs | 4.25 ms | 6.70 ms | — |
+| pekko [^6] | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 21,945 actor/s | 45.57 µs | 4.32 ms | 7.87 ms | — |
 
 ## tell-throughput
 
@@ -95,17 +95,17 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.1 | 895,292 msg/s | 1.12 µs | 955.80 µs | 3.45 ms | −0.7 MB |
-| nact | bun 1.3.1 | 380,849 msg/s | 2.63 µs | 2.53 ms | 5.60 ms | −0.7 MB |
-| vanilla [^7] | bun 1.3.1 | 221,729,490 msg/s | 5 ns | 3.40 µs | 17.70 µs | +0.3 MB |
-| xstate [^8] | bun 1.3.1 | 192,955 msg/s | 5.18 µs | 4.44 ms | 14.05 ms | −75.7 MB |
+| actor-ts | bun 1.3.1 | 890,946 msg/s | 1.12 µs | 930.30 µs | 3.65 ms | −1.4 MB |
+| nact | bun 1.3.1 | 390,841 msg/s | 2.56 µs | 2.44 ms | 5.18 ms | +0.0 MB |
+| vanilla [^7] | bun 1.3.1 | 222,915,738 msg/s | 4 ns | 3.40 µs | 17.80 µs | +0.2 MB |
+| xstate [^8] | bun 1.3.1 | 196,593 msg/s | 5.09 µs | 4.25 ms | 23.05 ms | −76.1 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 2,325,430 msg/s | 430 ns | 415.70 µs | 859.00 µs | — |
-| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 1,295,951 msg/s | 772 ns | 784.20 µs | 1.54 ms | — |
+| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 2,031,963 msg/s | 492 ns | 488.30 µs | 743.30 µs | — |
+| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 1,268,458 msg/s | 788 ns | 773.40 µs | 1.52 ms | — |
 
 ### batch=10k
 
@@ -115,17 +115,17 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.1 | 994,828 msg/s | 1.01 µs | 8.89 ms | 12.26 ms | −0.1 MB |
-| nact | bun 1.3.1 | 408,643 msg/s | 2.45 µs | 23.48 ms | 27.75 ms | +0.6 MB |
-| vanilla [^7] | bun 1.3.1 | 585,023,401 msg/s | 2 ns | 13.90 µs | 67.40 µs | +0.0 MB |
-| xstate [^8] | bun 1.3.1 | 182,462 msg/s | 5.48 µs | 49.65 ms | 78.36 ms | −32.3 MB |
+| actor-ts | bun 1.3.1 | 979,351 msg/s | 1.02 µs | 9.08 ms | 12.23 ms | −32.0 MB |
+| nact | bun 1.3.1 | 410,817 msg/s | 2.43 µs | 23.37 ms | 27.65 ms | −0.3 MB |
+| vanilla [^7] | bun 1.3.1 | 517,687,662 msg/s | 2 ns | 16.40 µs | 59.70 µs | +0.0 MB |
+| xstate [^8] | bun 1.3.1 | 177,804 msg/s | 5.62 µs | 47.24 ms | 81.53 ms | −33.8 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 3,011,150 msg/s | 332 ns | 3.40 ms | 3.82 ms | — |
-| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 3,176,206 msg/s | 315 ns | 3.23 ms | 4.73 ms | — |
+| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 2,727,669 msg/s | 367 ns | 3.67 ms | 5.35 ms | — |
+| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 2,736,565 msg/s | 365 ns | 3.74 ms | 4.34 ms | — |
 
 ## ask-round-trip
 
@@ -139,17 +139,17 @@ Sequential request/response round trips, depth 1 — a latency measurement, so t
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.1 | 107,836 ask/s | 9.27 µs | 7.10 µs | 29.60 µs | +10.5 MB |
-| nact | bun 1.3.1 | 131,646 ask/s | 7.60 µs | 6.20 µs | 21.40 µs | +9.9 MB |
-| vanilla [^9] | bun 1.3.1 | 662,252 ask/s | 1.51 µs | 800 ns | 11.70 µs | +5.1 MB |
-| xstate [^10] | bun 1.3.1 | 53,172 ask/s | 18.81 µs | 14.40 µs | 55.10 µs | +6.6 MB |
+| actor-ts | bun 1.3.1 | 110,462 ask/s | 9.05 µs | 7.30 µs | 25.60 µs | +10.1 MB |
+| nact | bun 1.3.1 | 130,387 ask/s | 7.67 µs | 6.30 µs | 20.90 µs | +10.8 MB |
+| vanilla [^9] | bun 1.3.1 | 651,093 ask/s | 1.54 µs | 800 ns | 12.60 µs | +5.0 MB |
+| xstate [^10] | bun 1.3.1 | 48,581 ask/s | 20.58 µs | 15.90 µs | 58.80 µs | +6.6 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 22,380 ask/s | 44.68 µs | 40.80 µs | 89.30 µs | — |
-| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 21,030 ask/s | 47.55 µs | 45.20 µs | 89.30 µs | — |
+| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 20,228 ask/s | 49.44 µs | 44.30 µs | 117.20 µs | — |
+| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 19,613 ask/s | 50.99 µs | 47.10 µs | 107.30 µs | — |
 
 ## ping-pong
 
@@ -163,17 +163,17 @@ Two actors volleying — the scheduler with nothing else in the way.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.1 | 115,047 exchange/s | 8.69 µs | 74.20 ms | 117.34 ms | −36.7 MB |
-| nact | bun 1.3.1 | 162,339 exchange/s | 6.16 µs | 51.78 ms | 84.41 ms | −11.7 MB |
-| vanilla [^11] | bun 1.3.1 | 352,795,908 exchange/s | 3 ns | 26.60 µs | 39.00 µs | +0.2 MB |
-| xstate | bun 1.3.1 | 68,816 exchange/s | 14.53 µs | 143.77 ms | 167.04 ms | −20.1 MB |
+| actor-ts | bun 1.3.1 | 111,864 exchange/s | 8.94 µs | 76.14 ms | 118.89 ms | −33.7 MB |
+| nact | bun 1.3.1 | 159,200 exchange/s | 6.28 µs | 50.69 ms | 84.93 ms | −12.2 MB |
+| vanilla [^11] | bun 1.3.1 | 336,021,505 exchange/s | 3 ns | 26.80 µs | 42.30 µs | +0.4 MB |
+| xstate | bun 1.3.1 | 68,905 exchange/s | 14.51 µs | 145.55 ms | 166.22 ms | −14.6 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 449,822 exchange/s | 2.22 µs | 22.31 ms | 29.30 ms | — |
-| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 419,680 exchange/s | 2.38 µs | 24.04 ms | 29.63 ms | — |
+| akka | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 315,427 exchange/s | 3.17 µs | 32.08 ms | 41.96 ms | — |
+| pekko | jvm 21.0.8 (OpenJDK 64-Bit Server VM) | 354,939 exchange/s | 2.82 µs | 28.89 ms | 34.57 ms | — |
 
 ## Notes
 

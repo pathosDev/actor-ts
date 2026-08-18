@@ -405,10 +405,10 @@ Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX, 2026-08-18:
 
 | scenario                       | actor-ts    | nact 7.6.2 | XState 5.32.5 | no framework |
 | ------------------------------ | ----------- | ---------- | ------------- | ------------ |
-| tell throughput (batch 10k)    | **925k/s**  | 409k/s     | 176k/s        | 575M/s       |
-| ask round-trip (p50)           | 7.3 µs      | **6.2 µs** | 15.8 µs *     | 0.9 µs       |
-| ping-pong (10k exchanges)      | 115k/s      | **162k/s** | 71k/s         | 345M/s       |
-| spawn → started → stopped      | 48k/s       | **205k/s** | 64k/s         | 5M/s         |
+| tell throughput (batch 10k)    | **979k/s**  | 411k/s     | 178k/s        | 518M/s       |
+| ask round-trip (p50)           | 7.3 µs      | **6.3 µs** | 15.9 µs *     | 0.8 µs       |
+| ping-pong (10k exchanges)      | 112k/s      | **159k/s** | 69k/s         | 336M/s       |
+| spawn → started → stopped      | 49k/s       | **212k/s** | 67k/s         | 5.2M/s       |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
@@ -425,12 +425,13 @@ costs.
 Kept in its own table on purpose: this is another virtual machine, measured by
 a harness that mirrors the JavaScript one rather than being it.
 
-| scenario                    | actor-ts (Bun) | Akka 2.8.8 (JDK 21) |
-| --------------------------- | -------------- | ------------------- |
-| tell throughput (batch 10k) | 925k/s         | **2.85M/s**         |
-| ping-pong (10k exchanges)   | 115k/s         | **351k/s**          |
-| spawn → started → stopped   | **48k/s**      | 25k/s               |
-| ask round-trip (p50)        | **7.3 µs**     | 45.9 µs †           |
+| scenario                    | actor-ts (Bun) | Akka 2.8.8  | Pekko 1.6.0 |
+| --------------------------- | -------------- | ----------- | ----------- |
+| tell throughput (batch 10k) | 979k/s         | **2.73M/s** | **2.74M/s** |
+| ping-pong (10k exchanges)   | 112k/s         | 315k/s      | **355k/s**  |
+| spawn → started → stopped   | **49k/s**      | 23k/s       | 22k/s       |
+| ask round-trip (p50)        | **7.3 µs**     | 44.3 µs †   | 47.1 µs †   |
+| licence                     | MIT            | BUSL-1.1    | Apache-2.0  |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
 that is a microtask; on the JVM it is a thread parking on a future, which costs
@@ -438,8 +439,14 @@ tens of microseconds regardless of framework.</sub>
 
 So: roughly **three times the throughput** on the JVM, and that is the honest
 headline for anyone weighing a TypeScript actor system against a mature JVM
-one.  Akka is also BUSL-1.1 rather than open source in the OSI sense, which
-belongs in the same decision.
+one.
+
+The two JVM columns are the same framework before and after its licence
+change — the Apache-licensed fork against the BUSL-1.1 original.  They agree
+to within the noise on every row, which answers a question worth asking
+directly: **staying on an OSI-approved licence costs nothing in throughput.**
+It also makes each a control on the other, since the two arms differ only in
+which dependency they pull.
 
 These are **ratios, not absolutes**, on one machine.  Read the columns, treat
 the last digit as fiction, and note that a 10 % gap here is inside the

@@ -133,8 +133,8 @@ Measured on Bun 1.3.1, a Ryzen 9 7940HX, median of nine rounds — see
 [Benchmarks](/reference/benchmarks/) for the methodology and the
 comparison against other frameworks:
 
-- **`tell`, end to end** — about **1.1 µs** per message with a mailbox
-  that has depth (≈ 925 000 messages/second sustained).  That is the
+- **`tell`, end to end** — about **1 µs** per message with a mailbox
+  that has depth (roughly a million messages/second sustained).  That is the
   cost of the whole path: enqueue, schedule, deliver, handle.  The
   `tell()` call on its own returns far faster than that — it only
   enqueues — so "how long does `tell` take" and "how many messages per
@@ -147,8 +147,8 @@ comparison against other frameworks:
 
 For comparison, the same workload with no framework at all — direct
 method calls, no mailbox, no supervision, no lifecycle — runs at about
-**1.7 ns** per call.  So actor messaging costs roughly **620×** a direct
-call on the throughput path, and about **8×** on an ask round trip.
+**2 ns** per call.  So actor messaging costs several **hundred times** a
+direct call on the throughput path, and about **8×** on an ask round trip.
 
 That sounds worse than it is, and the two ratios are why.  You are not
 paying for a slower function call; you are paying for a queue, a

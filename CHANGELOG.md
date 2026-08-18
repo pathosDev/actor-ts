@@ -602,6 +602,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Both sides of the JVM licence split are measured, and they are the same
+  speed** (#27).  A second JVM arm (`benchmarks/comparison/pekko/`) measures
+  the Apache-licensed fork against the BUSL-1.1 original from Java sources that
+  are identical apart from the package prefix.  They agree to within the noise
+  on every scenario — 2.74M/s against 2.73M/s on tell throughput — so **staying
+  on an OSI-approved licence costs nothing in throughput**, and each arm is a
+  control on the other since they differ only in which dependency they pull.
+  Pinned to the newest *stable* release rather than the available 2.0
+  milestone.
+
 - **The comparison now reaches across the language boundary** (#27).  A JVM arm
   (`benchmarks/comparison/akka/`, Maven + the Akka Typed Java API) answers the
   question the issue was opened for: **actor-ts sustains about a third of a

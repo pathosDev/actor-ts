@@ -22,11 +22,11 @@ Median aus neun verschränkten Runden.
 
 | Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
 | -------- | -------- | ---------- | ------------- | -------------- |
-| tell-Durchsatz, Batch 1k  | **877k/s** | 391k/s | 186k/s | 220M/s |
-| tell-Durchsatz, Batch 10k | **925k/s** | 409k/s | 176k/s | 575M/s |
-| ask-Roundtrip, p50        | 7,3 µs | **6,2 µs** | 15,8 µs | 0,9 µs |
-| Ping-Pong, 10k Wechsel    | 115k/s | **162k/s** | 71k/s | 345M/s |
-| spawn → gestartet → gestoppt | 48k/s | **205k/s** | 64k/s | 5M/s |
+| tell-Durchsatz, Batch 1k  | **891k/s** | 391k/s | 197k/s | 223M/s |
+| tell-Durchsatz, Batch 10k | **979k/s** | 411k/s | 178k/s | 518M/s |
+| ask-Roundtrip, p50        | 7,3 µs | **6,3 µs** | 15,9 µs | 0,8 µs |
+| Ping-Pong, 10k Wechsel    | 112k/s | **159k/s** | 69k/s | 336M/s |
+| spawn → gestartet → gestoppt | 49k/s | **212k/s** | 67k/s | 5,2M/s |
 
 ### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
 
@@ -34,17 +34,25 @@ Bewusst in einer eigenen Tabelle.  Die JavaScript-Arme oben laufen alle durch
 *buchstäblich denselben* Messcode; dieser hier bildet das Protokoll von Hand
 nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
 
-| Szenario | actor-ts (Bun 1.3.1) | Akka 2.8.8 (JDK 21) |
-| -------- | -------------------- | ------------------- |
-| tell-Durchsatz, Batch 10k | 925k/s | **2,85M/s** |
-| Ping-Pong, 10k Wechsel    | 115k/s | **351k/s** |
-| spawn → gestartet → gestoppt | **48k/s** | 25k/s |
-| ask-Roundtrip, p50        | **7,3 µs** | 45,9 µs |
+| Szenario | actor-ts (Bun 1.3.1) | Akka 2.8.8 (JDK 21) | Pekko 1.6.0 (JDK 21) |
+| -------- | -------------------- | ------------------- | -------------------- |
+| tell-Durchsatz, Batch 10k | 979k/s | **2,73M/s** | **2,74M/s** |
+| Ping-Pong, 10k Wechsel    | 112k/s | 315k/s | **355k/s** |
+| spawn → gestartet → gestoppt | **49k/s** | 23k/s | 22k/s |
+| ask-Roundtrip, p50        | **7,3 µs** | 44,3 µs | 47,1 µs |
+| Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 |
+
+Die beiden JVM-Spalten sind dasselbe Framework beiderseits seines
+Lizenzwechsels: der Apache-lizenzierte Fork gegen das BUSL-1.1-Original.  Sie
+stimmen in jeder Zeile innerhalb des Rauschens überein — **auf einer
+OSI-konformen Lizenz zu bleiben kostet also keinen Durchsatz**.  Und weil sich
+die beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
+Kontrolle für den anderen.
 
 ### Was die Zahlen sagen
 
 **actor-ts führt im JavaScript-Feld beim Massen-Nachrichtendurchsatz** —
-Faktor 2,3 gegenüber nact und 5,3 gegenüber XState bei einem Batch von
+Faktor 2,4 gegenüber nact und 5,5 gegenüber XState bei einem Batch von
 10 000 — und liegt beim ask-Roundtrip gleichauf mit nact; der Abstand liegt
 innerhalb des Rauschens zwischen zwei Läufen.
 
@@ -139,9 +147,15 @@ Antwortadresse reist in der Nachricht mit.  Es wird zudem faktisch nicht mehr
 gepflegt, seine Zahlen sind also eine Momentaufnahme von 7.6.2 und kein
 bewegliches Ziel.
 
-**Akka** wird in 2.8.8 gemessen — der neuesten Version, die noch auf Maven
-Central liegt; ab 2.9 erscheinen die Artefakte nur noch in einem Repository,
-das anonyme Anfragen ablehnt.  Eine Version, die sonst niemand auflösen kann,
+**Akka und Pekko** sind dieselbe Linie beiderseits eines Lizenzwechsels und
+werden aus Java-Quellen gemessen, die sich nur im Paketpräfix unterscheiden —
+jede Differenz zwischen ihnen ist also der Fork und nicht der Benchmark.  Akka
+wird in 2.8.8 gemessen, der neuesten Version, die noch auf Maven Central
+liegt; ab 2.9 erscheinen die Artefakte nur noch in einem Repository, das
+anonyme Anfragen ablehnt.  Pekko steht bei 1.6.0, seiner neuesten *stabilen*
+Version; ein 2.0-Milestone existiert und wird bewusst nicht verwendet, weil
+ein released Framework gegen ein nicht-released zu stellen eine andere Aussage
+wäre.  Eine Version, die sonst niemand auflösen kann,
 machte die Zeile unreproduzierbar.  Der Harness ist von Hand dem
 JavaScript-Pendant nachgebildet statt JMH zu nutzen: JMH ist das bessere
 Microbenchmark-Werkzeug, misst aber anders — und zwei Seiten mit
@@ -167,7 +181,7 @@ ausgeführt hat, liest sich als Vergleich von allem:
 - **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
   SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
   Framework-Etikett.
-- **Bisher nur ein sprachübergreifender Arm.**  Die JVM ist gemessen,
+- **Bisher nur die JVM.**  Zwei JVM-Frameworks sind gemessen,
   .NET-Actor-Frameworks noch nicht.  Sprachübergreifende Zeilen bleiben in
   ihrer eigenen Tabelle, weil sie eine schwächere Aussage sind als
   Messungen durch denselben Harness — sie werden nie in die
