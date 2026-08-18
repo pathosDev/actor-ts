@@ -53,12 +53,13 @@ import { SingletonKey, StartSingletonOptions } from 'actor-ts/cluster';
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
   .withLease(leaseImpl)                 // optionaler Split-Brain-Schutz
-  .withAcquireRetryIntervalMs(5_000);   // Retry-Takt, wenn Lease-Acquire scheitert
+  .withAcquireRetryIntervalMs(5_000)    // Retry-Takt, wenn Lease-Acquire scheitert
+  .withHandOverTimeoutMs(10_000);       // wie lange auf das Zurücktreten der Peers gewartet wird
 cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 Die `ClusterSingletonManagerOptions` des Managers selbst — `cluster`,
-`typeName`, `singletonActor` und die drei obigen — setzt die Extension
+`typeName`, `singletonActor` und die vier obigen — setzt die Extension
 daraus zusammen. Die Felder stehen hier, weil der Manager auf sie
 reagiert, nicht weil du sie konstruierst:
 
@@ -70,6 +71,7 @@ reagiert, nicht weil du sie konstruierst:
 | `role` | Nein | Das Hosten auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
 | `lease` | Nein | Falls gesetzt, muss der Host diese Lease erwerben, bevor er den Singleton spawnt. |
 | `acquireRetryIntervalMs` | Nein (Default 5s) | Retry-Takt nach einer fehlgeschlagenen Lease-Akquisition. |
+| `handOverTimeoutMs` | Nein (Default 10s) | Wie lange gewartet wird, bis jeder berechtigte Peer bestätigt hat, dass er nicht hostet, bevor trotzdem gehostet wird. Siehe [Wenn niemand antwortet](#wenn-niemand-antwortet). |
 | `restartOnTermination` | Nein (Default `true`) | Den Singleton nach einem unerwarteten Tod der Instanz neu spawnen. Nur für Actors abschalten, die `stopSelf()` als Endzustand nutzen. |
 
 ### Welche Node hostet
@@ -187,17 +189,44 @@ solltest.
 ### Ohne Lease (Default)
 
 ```
-Host-änderndes Event → bin ich jetzt der Host? → ja → spawne Singleton
+Host-änderndes Event → bin ich jetzt der Host? → ja → bitte jeden berechtigten Peer zurückzutreten
+                                                     → alle bestätigt → spawne Singleton
                                                → nein → stoppe meinen Singleton (falls vorhanden)
 ```
 
-Synchrone Reconcile. Sobald Gossip sagt, dieser Node sei der
-Host, spawnt der Manager sein Singleton-Kind. Einfach, schnell.
+Reconcile direkt aus dem Cluster-Event-Subscriber, ein Host-Wechsel ist
+also im Moment des Events sichtbar.
 
-**Nachteil**: während einer **Partition** kann jede Hälfte einen
-eigenen Leader haben. Beide Manager spawnen ihren Singleton. Zwei
-Singletons existieren — genau der Fall, gegen den Singleton
-schützen soll.
+**Der Spawn ist aber keine lokale Entscheidung.** Bevor der Manager hostet,
+schickt er ein `singleton.HandOverRequest` an jeden Node, den seine eigene
+Sicht als berechtigt führt — jedes `up`-Mitglied, oder jedes
+`up`-Mitglied mit der Rolle — und wartet, bis jeder davon mit
+`singleton.HandOverAcknowledgment` antwortet. Ein Node antwortet erst,
+wenn er keine Instanz hält *und* keine eigene mehr am Stoppen ist — die
+Antwort handelt also von einem abgeschlossenen `postStop`, nicht davon,
+dass ein `PoisonPill` eingereiht wurde.
+
+Warum er *alle* fragt und nicht den vorherigen Host: ein Node, der gerade
+beigetreten ist, hat überhaupt keine Vorstellung von einem vorherigen Host,
+und Beitreten ist der häufige Fall (ein Node befördert sich über sein
+eigenes `SelfUp`). Jeder berechtigte Node betreibt einen Manager — genau
+das bedeutet „rufe `start()` auf jedem Node auf, der Host werden kann“ —
+und der abtretende Host ist per Definition das erste Mitglied dieser Menge,
+ein Rundruf an alle kann ihn also nicht verpassen. Ein Node, der nur
+`ref(...)` aufruft, antwortet ebenfalls, sofort und wahrheitsgemäß: er
+betreibt keinen Manager, hostet also sicher nicht.
+
+Nachrichten, die während des Wartens eintreffen, werden **zurückgehalten**
+und der Instanz übergeben, sobald sie spawnt. Das Warten ist ein Fenster,
+das das Protokoll selbst aufmacht; Einzigartigkeit mit Nachrichtenverlust
+bei jedem Host-Wechsel zu bezahlen ist nicht der Tausch, der hier gemacht
+wird.
+
+**Nachteil**: während einer **Partition** kann jede Hälfte einen eigenen
+Leader haben, und keine kann die andere bitten zurückzutreten — sie zu
+erreichen ist genau das, was fehlgeschlagen ist. Nach
+`handOverTimeoutMs` hostet jede trotzdem, es existieren also zwei
+Singletons. Genau dafür ist der Lease-Pfad da.
 
 ### Mit Lease
 
@@ -250,14 +279,98 @@ für die Konfiguration und Lease-Implementierungsoptionen.
 ### Lease verloren
 
 ```
-Lease verloren (widerrufen, Renew fehlgeschlagen) → Singleton sofort stoppen
+Lease verloren (widerrufen, Renew fehlgeschlagen) → Singleton stoppen → warten, bis er weg ist
+                                                  → dann Acquire erneut versuchen
 ```
 
-Wenn die Lease **widerrufen** wird (jemand anders hat sie
-erworben, oder das Renew des Providers ist fehlgeschlagen), stoppt
-der Manager den Singleton und wartet. Er prüft sofort erneut — und
-wieder beim nächsten host-ändernden Event: Wenn Gossip diesen Node
-weiterhin als Host nennt, versucht er `lease.acquire()` erneut.
+Wenn die Lease **widerrufen** wird (jemand anders hat sie erworben, oder
+das Renew des Providers ist fehlgeschlagen), stoppt der Manager den
+Singleton — mit einem `PoisonPill`, die Instanz drainiert also ihre Mailbox
+und führt `postStop` aus — und versucht `lease.acquire()` erst wieder,
+wenn das abgeschlossen ist.
+
+**Vor v0.17.0 hat er sofort neu erworben**, und die Folge waren nicht zwei
+Instanzen, sondern keine: das Acquire konnte fertig werden, während die
+alte Instanz noch in `postStop` war, der Spawn dahinter wurde abgelehnt,
+weil noch ein Stop unterwegs war, und die folgende Reconcile las „Lease
+gehalten“ als „läuft schon“ und tat nichts. Der Manager erneuerte dann
+dauerhaft eine Lease über gar keinen Singleton, und kein anderer Node
+konnte übernehmen.
+
+### Mit Lease zurücktreten
+
+```
+Host ist weitergewandert → Singleton stoppen → warten, bis er weg ist → Lease freigeben
+```
+
+Die Freigabe ist die Erlaubnis für einen Folger zu spawnen, sie passiert
+also erst, wenn die Instanz dieses Nodes wirklich terminiert ist. **Vor
+v0.17.0 wurde sie freigegeben, sobald das `PoisonPill` eingereiht war** —
+was nichts darüber sagt, ob die Instanz weg ist — ein Folger konnte die
+Lease also gewinnen und starten, während die vorherige noch drainierte. Das
+ist genau die Garantie, für die die Lease da ist, eine Zeile zu früh
+verschenkt.
+
+## Wenn niemand antwortet
+
+`handOverTimeoutMs` (Default **10 s**) begrenzt das Warten, und das Warten
+endet in jedem Fall mit einem Spawn:
+
+```ts
+const singletonOptions = StartSingletonOptions.create<Command>()
+  .withTypeName('job-scheduler')
+  .withActor(JobScheduler)
+  .withHandOverTimeoutMs(30_000);
+```
+
+Ein gesunder Hand-over kostet einen Netzwerk-Roundtrip und erreicht den
+Timeout nie — die Anfrage wird alle halbe Sekunde erneut gesendet, solange
+sie offen ist, denn ein Cluster-Envelope ist Fire-and-forget und ein
+einzelner Frame kann hinter einem Handshake verloren gehen. Den Timeout zu
+erreichen bedeutet, dass ein berechtigter Peer gar nicht geantwortet hat:
+er ist von hier unerreichbar, oder er hält sich weiterhin für den Host und
+hat abgelehnt.
+
+Der Manager hostet dann **trotzdem** und sagt das auf `warn`, mit den Namen
+der Peers, die stumm geblieben sind. Das ist die bewusste Wahl zwischen
+zwei Eigenschaften, die auf dem Pfad ohne Lease nicht beide zu haben sind.
+Ewig zu warten würde den Singleton für die Dauer der Störung nirgends
+gehostet lassen; zu hosten bedeutet, dass die Einzigartigkeits-Invariante
+*nicht bewiesen* wurde — was etwas anderes ist als „eingehalten“, und die
+Warnung ist genau so zu lesen.
+
+Wo die Invariante das überleben muss, nimm eine
+[Lease](/de/cluster/singleton/with-lease/). Eine dritte Instanz, die beide
+Seiten erreichen können, ist der einzige Schiedsrichter, der bleibt, wenn
+die beiden einander nicht erreichen können.
+
+Eine Konfiguration bezahlt den Timeout unnötig: ein Node, der `up`-Mitglied
+ist, Host werden könnte und den Singleton nie erwähnt — weder `start(...)`
+noch `ref(...)`. Er hat nichts registriert, womit er antworten könnte, ist
+also von einem unerreichbaren nicht zu unterscheiden. Gib dem Singleton
+eine `role` und setze die Rolle nur auf die teilnehmenden Nodes, oder rufe
+auf den anderen `ref(...)` auf.
+
+## Wer einen Hand-over verlangen darf
+
+Eine Hand-over-Anfrage stoppt den Singleton, eine unauthentifizierte wäre
+also ein Remote-Kill-Switch. Zwei Dinge sichern sie ab, und beide folgen
+aus der Wahlregel, die die Manager schon teilen:
+
+- Die Anfrage wird nur von einer Adresse befolgt, die der **Transport**
+  verifiziert hat — der Peer, auf dessen Verbindung der Frame ankam, nie
+  ein Wert aus dem Payload.
+- Ein Node, der sich für den Host hält, tritt nur für einen Peer zurück,
+  der **vor** ihm sortiert. Der Host ist das erste adress-sortierte Mitglied
+  der berechtigten Menge, ein legitimer eintretender Host sortiert also
+  immer vor dem abtretenden — mit oder ohne Rollen-Einschränkung. Ein Node,
+  der sich *nicht* für den Host hält, hat keinen Anspruch zu verteidigen
+  und tritt für jedes Mitglied zurück — das ist der Fall, in dem der
+  vorherige Host gegangen ist und der neue nach ihm sortiert.
+
+Beides ersetzt nicht, das Cluster-Protokoll selbst zu authentifizieren, das
+heute kein Credential mitführt. Was sie schließen, ist die Möglichkeit
+*jedes anderen* Mitglieds, den Singleton beliebig neu zu starten.
 
 ## Das Kind beobachten
 

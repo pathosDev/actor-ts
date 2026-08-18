@@ -352,6 +352,14 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ ...required, role: '' })).toThrow(/role/);
   });
 
+  test('rejects a non-positive handOverTimeoutMs (#949)', () => {
+    // A zero or negative wait is not "no hand-over" — it is a hand-over whose
+    // deadline has already passed, so the manager would host without ever
+    // reading an answer, which is the defect the option exists to bound.
+    expect(() => check({ ...required, handOverTimeoutMs: 0 })).toThrow(/handOverTimeoutMs/);
+    expect(() => check({ ...required, handOverTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
   test('rejects a singleton missing typeName or actor', () => {
     // Both used to pass: the check helpers no-op on `undefined`, so a
     // singleton with no actor validated cleanly and blew up at the spawn.
@@ -366,7 +374,9 @@ describe('StartSingletonOptionsValidator', () => {
   });
 
   test('accepts a valid singleton config', () => {
-    expect(() => check({ ...required, acquireRetryIntervalMs: 5_000, bufferSize: 10 })).not.toThrow();
+    expect(() => check({
+      ...required, acquireRetryIntervalMs: 5_000, handOverTimeoutMs: 10_000, bufferSize: 10,
+    })).not.toThrow();
   });
 });
 
@@ -394,8 +404,18 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
     expect(() => check({ ...required, acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
   });
 
+  test('rejects a non-positive handOverTimeoutMs (#949)', () => {
+    // The manager's own copy of the bound: `ClusterSingleton` builds these
+    // options field by field, so both surfaces have to reject the same value or
+    // the one nobody validates is the one a caller reaches.
+    expect(() => check({ ...required, handOverTimeoutMs: 0 })).toThrow(/handOverTimeoutMs/);
+    expect(() => check({ ...required, handOverTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
   test('accepts a valid manager config', () => {
-    expect(() => check({ ...required, role: 'worker', acquireRetryIntervalMs: 1_000 })).not.toThrow();
+    expect(() => check({
+      ...required, role: 'worker', acquireRetryIntervalMs: 1_000, handOverTimeoutMs: 10_000,
+    })).not.toThrow();
   });
 });
 
