@@ -47,7 +47,8 @@ tests/integration/brokers/
 ├── cockroachdb/                  # CockroachDB — pg wire (Closes #401)
 ├── yugabytedb/                   # YugabyteDB — pg wire (Closes #401)
 ├── mongodb/                      # MongoDB (Closes #397)
-└── dynamodb/                     # DynamoDB Local (Closes #398)
+├── dynamodb/                     # DynamoDB Local (Closes #398)
+└── email/                        # GreenMail — SMTP + IMAP (refs #1133)
 ```
 
 ## Why a separate `tests/integration/brokers/package.json`?
@@ -117,6 +118,7 @@ bun run test:integration:cockroachdb  # CockroachDB + the Postgres stores over p
 bun run test:integration:yugabytedb   # YugabyteDB + the Postgres stores over pg wire
 bun run test:integration:mongodb      # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
 bun run test:integration:dynamodb     # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:email        # GreenMail (SMTP + IMAP) + EmailBridgeActor
 ```
 
 All of them:
