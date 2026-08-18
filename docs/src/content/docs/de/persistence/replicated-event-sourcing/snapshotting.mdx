@@ -62,7 +62,7 @@ Ein `ReplicatedSnapshot` trägt mehr als State + Clock:
 {
   state:                State,
   vc:                   { A: 100, B: 95, C: 60 },  // aktuelle Vector-Clock-Sicht
-  seenIds:              [ ... ],  // Dedupe-Set: (replica, seqAtReplica)
+  seenIds:              [ ... ],  // Dedupe-Set, keyed by each event's `eventId`
   events:               [ ... ],  // kanonische sortierte Historie — das schwerste Feld
   localSeq:             205,  // _localSeq zur Snapshot-Zeit
   journalSeqAtSnapshot: 4096,  // Recovery setzt ab hier + 1 fort
@@ -80,6 +80,18 @@ sodass ein out-of-order eintreffendes Remote-Event neu falten
 kann, ohne das gesamte Journal erneut zu lesen.  `events` ist das
 schwerste Feld: ein Actor mit 100k Events snapshottet 100k
 Envelopes auf der Festplatte.
+
+`seenIds` enthält einen Eintrag pro jemals beobachtetem Event,
+geschlüsselt über dessen `eventId`.  Dass es gesnapshottet wird, ist
+der Grund, warum die Deduplizierung einen Restart übersteht — und war,
+bevor Event-Ids aus Entropie erzeugt wurden, auch der Grund, warum eine
+gefälschte Identität das echte Event, das sie später beansprucht hätte,
+*dauerhaft* unterdrückte (siehe
+[das Trust-Modell](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt)).
+Ein Snapshot, der vor dieser Änderung geschrieben wurde, trägt
+stattdessen `${replica}#${seqAtReplica}`-Keys; beide Formen existieren
+nach einem Upgrade in einem Set nebeneinander, was harmlos ist, weil ein
+Key immer nur auf Gleichheit verglichen wird.
 
 ## Recovery-Flow
 

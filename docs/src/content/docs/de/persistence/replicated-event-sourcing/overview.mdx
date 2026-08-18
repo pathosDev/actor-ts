@@ -121,8 +121,69 @@ z.B. ein fester Regionsname:
 override get replicaId(): string { return process.env.REPLICA_ID!; }
 ```
 
-Zwei Replicas, die sich jemals eine Id teilen, deduplizieren sich
-gegenseitig die Events weg — der Default ist also der sichere.
+Zwei Replicas, die sich jemals eine Id teilen, teilen sich eine
+Vector-Clock-Komponente — der Default ist also der sichere.
+
+## Was eine Replica ihren Peers glaubt
+
+Die Cross-Replica-Auslieferung läuft über `DistributedPubSub`, jedes
+Feld eines eintreffenden Event-Envelopes wurde also von einem anderen
+Node geschrieben.  Alles, was den Cluster-Handshake abschließen kann,
+erreicht einen replizierten Actor — über den PubSub-Mediator oder
+direkt über seinen Actor-Pfad — und Mitgliedschaft ist keine
+Voraussetzung.  Daraus folgen zwei Eigenschaften, und beide sind
+betrieblich relevant.
+
+**Ein Envelope wird vollständig validiert, bevor irgendetwas
+angewendet wird.**  `replica` und `eventId` müssen nicht-leer und
+begrenzt sein, `seqAtReplica` eine positive Ganzzahl, `timestamp`
+endlich und die Vector Clock ein einfaches Objekt aus endlichen,
+nicht-negativen Komponenten mit begrenzter Anzahl an Einträgen.  Ein
+Fehlschlag verwirft genau diesen Envelope und loggt ein `WARN`, das
+das betroffene Feld benennt; er lässt den Actor nie fehlschlagen und
+hinterlässt nie ein halb angewendetes Event in der Historie.
+
+**Die Event-Identität kommt aus Entropie, nicht aus den Zählern des
+Payloads.**  Jedes Event trägt eine zur `persist`-Zeit erzeugte
+`eventId` — die Replica-Id, ein `#` und 96 Bit Zufall — und genau die
+vergleicht die Deduplizierung.  Sie muss unerratbar sein, denn ein
+Deduplizierungs-Treffer bedeutet *stilles Verwerfen*: eine aus
+`replica` und `seqAtReplica` abgeleitete Identität ist per Arithmetik
+vorhersagbar, ein Peer könnte also Identitäten beanspruchen, die eine
+Replica noch nicht ausgegeben hat — ihre echten Events würden dann von
+allen verworfen, dauerhaft, weil das Identitäts-Set gesnapshottet
+wird.  `seqAtReplica` steht weiterhin im Envelope, aber nur noch als
+letzter Tie-Break in der kanonischen Ordnung.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Die Autorschaft ist noch nicht authentifiziert">
+  ```ts
+  // A member can publish an event attributed to another replica.
+  ```
+  Nichts bindet das `replica`-Feld eines Envelopes an den Node, der ihn
+  gesendet hat.  Ein Cluster-Mitglied kann also ein Event verfassen, das
+  jede Replica unter der Id eines Peers faltet und journalisiert.
+  *Unterdrücken* kann es die echten Events eines Peers nicht — das ist
+  der Teil, den die Entropie schließt —, aber eine replizierte Entity
+  ist nur so vertrauenswürdig wie die Zugangskontrolle des Clusters
+  selbst.  Betreibe Replicated ES hinter mTLS und behandle
+  Cluster-Mitgliedschaft als Privileg.
+</Aside>
+
+<Aside type="note" title="Die Event-Historie ist per Ablehnung begrenzt">
+  ```ts
+  protected override maxObservedEvents(): number { return 10_000; }
+  ```
+  Es gibt noch keine Compaction, die kanonische Historie wächst also nur
+  — und jedes Remote-Event kostet zusätzlich einen Journal-Write.  An
+  der Obergrenze (Default 100 000) werden weitere *Remote*-Events
+  **abgelehnt**, mit einem `WARN`, das das sagt; lokale `persist`-Aufrufe
+  werden nie abgelehnt.  Ablehnen statt Verdrängen ist Absicht: Events
+  zu verwerfen ändert die Faltung, und Identitäten zu verwerfen öffnet
+  das Doppelt-Anwenden wieder.  Senke den Hook für eine Entity, deren
+  legitime Historie klein ist.
+</Aside>
 
 ## Die Komponenten
 
@@ -136,8 +197,6 @@ gegenseitig die Events weg — der Default ist also der sichere.
 Jedes bekommt seine eigene Deep-Dive-Seite.
 
 ## Wann NICHT verwenden
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Sharded Entities sind einfacher">
   ```ts
