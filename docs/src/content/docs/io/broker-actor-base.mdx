@@ -68,6 +68,18 @@ one's handles.  That makes `disconnectImplementation` an **idempotent**
 contract — it may be called on an already-dead connection, and it must
 drop only the live handles, never the desired subscriptions below.
 
+Stopping the actor while a reconnect attempt is in flight **abandons** that
+connection rather than adopting it.  Reconnect runs on the system scheduler,
+detached from the mailbox, so an attempt already inside
+`connectImplementation` cannot be cancelled — it resumes after `postStop`
+has returned.  The base class therefore re-checks liveness on the way out of
+the handshake and, if the actor is gone, calls `disconnectImplementation`
+once more and stays `disconnected`: no `BrokerConnected`, no buffer drain,
+no further retry.  Without that check a handshake that *completed* installed
+live handles on a terminated actor, and one that *failed* re-armed the
+backoff timer and reconnected forever, since `maxAttempts` defaults to
+`Infinity` (#708).
+
 ## Subclass contract
 
 ```ts

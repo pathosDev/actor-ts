@@ -70,6 +70,23 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
    * Consumed by the connect that awaits it.
    */
   connectGate: Promise<void> | null = null;
+  /**
+   * When set, the next `disconnectImplementation` parks on it *after*
+   * counting itself.  `_tryConnect` tears the previous transport down before
+   * building the new one, so this is the seam that lets a stop land between
+   * those two halves of one reconnect attempt (#708).
+   */
+  disconnectGate: Promise<void> | null = null;
+  /**
+   * The driver handle the subclass owns, assigned only *after* `connectGate`
+   * settles — `MqttActor`'s exact shape, where `this.client` is set inside
+   * the `'connect'` callback, i.e. after the whole handshake.  Bumping a
+   * counter cannot express "the teardown closed nothing", which is the
+   * observable at the heart of #708; a handle can.
+   */
+  liveHandle: string | null = null;
+  /** Every handle `disconnectImplementation` actually closed, in order. */
+  closedHandles: string[] = [];
 
   constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
@@ -96,11 +113,21 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
       this.connectGate = null;
       await gate;
     }
+    this.liveHandle = `client-${this.connectAttempts}`;
   }
   protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
     // Live handles die with the connection; the desired set does not.
     this.appliedSubscriptions = [];
+    if (this.liveHandle !== null) {
+      this.closedHandles.push(this.liveHandle);
+      this.liveHandle = null;
+    }
+    if (this.disconnectGate) {
+      const gate = this.disconnectGate;
+      this.disconnectGate = null;
+      await gate;
+    }
   }
 
   protected override initialSubscriptions(): Iterable<readonly [string, string]> {
@@ -139,6 +166,19 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
 
   /** How many `Terminated` messages actually removed a subscriber (#1111). */
   terminatedPrunes = 0;
+
+  /**
+   * Counted *after* `super.postStop()` resolves, so a test can wait on the
+   * stop having fully completed rather than on a proxy an earlier step
+   * already satisfies — `connectionState` reads `disconnected` after a mere
+   * connect failure, long before any stop (#708).
+   */
+  postStopCalls = 0;
+
+  override async postStop(): Promise<void> {
+    await super.postStop();
+    this.postStopCalls++;
+  }
 
   override onReceive(command: FakeCommand): void {
     // Exactly the seam `subscribeRef`'s docs prescribe: the base class cannot
@@ -924,4 +964,167 @@ describe('BrokerActor — subscribers', () => {
     await sys.terminate();
   });
 
+});
+
+/* ------------------- Stop during an in-flight reconnect ----------------- */
+
+/**
+ * A reconnect attempt runs on the **system** scheduler, detached from the
+ * mailbox, and `Scheduler` settles a one-shot handle *before* invoking it —
+ * so `postStop`'s `cancel()` is a no-op against an attempt that has already
+ * begun, and that attempt then resumes on a terminated actor (#708).
+ *
+ * Every test here drives the actor into a reconnect cycle first, because the
+ * *first* connect cannot race a stop: `preStart` is awaited by the cell.
+ *
+ * The delay is pinned to exactly 20 ms (`factor: 1`, `randomFactor: 0`) so a
+ * `RecordingScheduler` can count the broker's own wake-ups by value and the
+ * "no timer was armed" assertion needs no timing window at all — the
+ * unguarded `_handleReconnect` re-arms synchronously from the catch block.
+ */
+const RECONNECT_EVERY_20_MS = {
+  initialDelayMs: 20, maxDelayMs: 20, factor: 1, randomFactor: 0,
+} as const;
+
+describe('BrokerActor — stop during an in-flight reconnect (#708)', () => {
+  test('a connect that resolves after the stop is abandoned, not adopted', async () => {
+    const sys = makeSystem('stop-race-resolve');
+    let connectedEvents = 0;
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(_: unknown): void { connectedEvents++; }
+      })()),
+      BrokerConnected,
+    );
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      // Fail attempt 1 so attempt 2 runs on the scheduler, where a stop can
+      // interleave with it.
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    // Park attempt 2 inside `connectImplementation`, after its replay pass.
+    let releaseConnect!: () => void;
+    broker.connectGate = new Promise<void>((resolve) => { releaseConnect = resolve; });
+    await awaitCondition(() => broker.connectAttempts === 2, {
+      label: 'the scheduled reconnect entered connectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the connect was parked',
+    });
+    // Both teardowns so far found no handle to close: the subclass assigns
+    // its handle only after the gate, exactly as `MqttActor` does.
+    expect(broker.closedHandles).toEqual([]);
+
+    releaseConnect();
+    // Settles either way: the guard closes the connection it just opened,
+    // the unguarded version adopts it.
+    await awaitCondition(
+      () => broker.closedHandles.length === 1 || broker.publicConnectionState() === 'connected',
+      { label: 'the resumed connect finished one way or the other' },
+    );
+
+    // The handle the subclass acquired post-mortem was released…
+    expect(broker.closedHandles).toEqual(['client-2']);
+    expect(broker.liveHandle).toBeNull();
+    // …the state machine did not go back to `connected`…
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    // …and no `BrokerConnected` was announced for an actor with no owner.
+    expect(connectedEvents).toBe(0);
+    await sys.terminate();
+  });
+
+  test('a connect that rejects after the stop arms no further attempt', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'stop-race-reject', scheduler });
+    const twentyMillisecondWakeUps = (): number =>
+      scheduler.delays.filter((delay) => delay === 20).length;
+
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    let rejectConnect!: (cause: Error) => void;
+    broker.connectGate = new Promise<void>((_, reject) => { rejectConnect = reject; });
+    await awaitCondition(() => broker.connectAttempts === 2, {
+      label: 'the scheduled reconnect entered connectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the connect was parked',
+    });
+    const attemptsAtStop = broker.connectAttempts;
+    const disconnectsAtStop = broker.disconnects;
+    const wakeUpsAtStop = twentyMillisecondWakeUps();
+
+    // Keep every later attempt failing, so a surviving cycle shows up as an
+    // unbounded loop rather than converging on one lucky success.
+    // `maxAttempts` defaults to `Number.POSITIVE_INFINITY`, so nothing else
+    // would ever stop it.
+    broker.failNextConnects = 100;
+    rejectConnect(new Error('connect failed after the stop'));
+    // ~10 backoff windows.  The scheduler assertion below does not need
+    // them — the re-arm is synchronous — but the attempt count does.
+    await sleep(200);
+
+    expect(twentyMillisecondWakeUps()).toBe(wakeUpsAtStop);
+    expect(broker.connectAttempts).toBe(attemptsAtStop);
+    // The half-built transport was closed exactly once, by the abandon path.
+    expect(broker.disconnects).toBe(disconnectsAtStop + 1);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    await sys.terminate();
+  });
+
+  test('an attempt whose teardown outlived the stop never opens a connection', async () => {
+    // The worst shape of all: the stop lands between the attempt's
+    // `_closeTransport()` and its `connectImplementation()`, so without a
+    // second liveness check the *entire* handshake happens post-mortem.
+    const sys = makeSystem('stop-race-teardown');
+    let connectedEvents = 0;
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(_: unknown): void { connectedEvents++; }
+      })()),
+      BrokerConnected,
+    );
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    // Park attempt 2 in the teardown that precedes its connect.
+    let releaseDisconnect!: () => void;
+    broker.disconnectGate = new Promise<void>((resolve) => { releaseDisconnect = resolve; });
+    await awaitCondition(() => broker.disconnects === 1, {
+      label: 'the scheduled reconnect entered disconnectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the teardown was parked',
+    });
+    expect(broker.connectAttempts).toBe(1);
+
+    releaseDisconnect();
+    // Everything the unguarded path does from here is microtasks —
+    // `connectImplementation` bumps its counter on its first line — so this
+    // window is a settling budget, not a race.
+    await sleep(120);
+
+    expect(broker.connectAttempts).toBe(1);
+    expect(broker.liveHandle).toBeNull();
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    expect(connectedEvents).toBe(0);
+    await sys.terminate();
+  });
 });

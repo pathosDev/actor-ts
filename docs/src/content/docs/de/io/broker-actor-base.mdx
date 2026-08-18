@@ -70,6 +70,19 @@ einer bereits toten Verbindung aufgerufen werden und muss ausschließlich
 die lebenden Handles verwerfen, niemals die gewünschten Subscriptions
 (siehe unten).
 
+Wird der Aktor gestoppt, während ein Reconnect-Versuch läuft, wird diese
+Verbindung **verworfen** statt übernommen.  Reconnect läuft auf dem
+System-Scheduler, entkoppelt von der Mailbox — ein Versuch, der schon in
+`connectImplementation` steckt, lässt sich nicht mehr abbrechen und läuft
+weiter, nachdem `postStop` zurückgekehrt ist.  Die Basisklasse prüft daher
+beim Verlassen des Handshakes erneut, ob der Aktor noch lebt, und ruft
+andernfalls ein weiteres Mal `disconnectImplementation` auf und bleibt
+`disconnected`: kein `BrokerConnected`, kein Leeren des Puffers, kein
+weiterer Retry.  Ohne diese Prüfung installierte ein *erfolgreicher*
+Handshake lebende Handles auf einem beendeten Aktor, und ein
+*gescheiterter* stellte den Backoff-Timer neu und verband sich endlos
+weiter, denn `maxAttempts` ist standardmäßig `Infinity` (#708).
+
 ## Subklassen-Kontrakt
 
 ```ts

@@ -133,6 +133,23 @@ export abstract class BrokerActor<
   /** Name of this actor's `service-stop` task; `null` when none is registered. */
   private _shutdownTaskName: string | null = null;
 
+  /**
+   * Whether `postStop` has begun — i.e. whether this instance is still
+   * allowed to hold a connection.
+   *
+   * A reconnect attempt runs on the *system* scheduler, detached from the
+   * mailbox (see {@link _scheduleReconnect}), so it can resume from its own
+   * `await` after the actor has terminated.  `postStop`'s cancel cannot stop
+   * one that has already begun: `Scheduler` settles a one-shot handle
+   * *before* invoking it, so `cancel()` is a no-op by then.  Without this
+   * flag the resumed attempt adopted the connection it had just opened —
+   * `_state = 'connected'` and a live driver handle on an actor whose
+   * `postStop` had returned — or, on the failure path, re-armed the backoff
+   * timer and kept reconnecting forever, since `maxAttempts` defaults to
+   * `Number.POSITIVE_INFINITY` (#708).
+   */
+  private _stopped = false;
+
   /** Reconnect bookkeeping for the current cycle (since the last successful connect). */
   private _reconnectAttempt = 0;
 
@@ -488,6 +505,11 @@ export abstract class BrokerActor<
   }
 
   override async postStop(): Promise<void> {
+    // First statement, before anything that awaits: a detached reconnect
+    // attempt reads this to decide whether it may still open — or keep — a
+    // connection, and the window this closes is exactly the one an `await`
+    // here would widen (#708).
+    this._stopped = true;
     if (this._shutdownTaskName !== null) {
       this.system.extension(CoordinatedShutdownId)
         .removeTask(Phases.ServiceStop, this._shutdownTaskName);
@@ -583,6 +605,11 @@ export abstract class BrokerActor<
   }
 
   private async _tryConnect(): Promise<void> {
+    // Nothing below may run on a terminated actor — see {@link _stopped}.
+    // This entry check is the cheap half; the two after the awaits below are
+    // the ones that catch a stop landing mid-attempt (#708).
+    if (this._stopped) return;
+
     // Honour an open circuit breaker.
     const breaker = this.options.circuitBreaker;
     if (breaker && Date.now() < this._breakerOpenUntil) {
@@ -603,12 +630,29 @@ export abstract class BrokerActor<
     // stale handles — can silently skip re-subscribing (#504).
     await this._closeTransport();
 
+    // The teardown above awaits the subclass, so a stop can land inside it.
+    // Re-check before opening anything: past this point the attempt has a
+    // connection to lose, and starting one for an actor that has already
+    // terminated is the worst case of all — the whole handshake happens
+    // post-mortem (#708).
+    if (this._stopped) return;
+
     this._state = 'connecting';
     // Set before the call, not after: a connectImplementation that
     // throws part-way through has still opened transport state.
     this._transportOpened = true;
     try {
       await this.connectImplementation();
+      // The subclass finished its handshake while the actor was being
+      // stopped, so it is now holding live handles nobody owns: `postStop`
+      // has returned and its CoordinatedShutdown task is deregistered, so
+      // no framework path will ever close them.  Abandon the connection
+      // instead of adopting it — publishing `BrokerConnected` or draining
+      // the outbound buffer here would announce a broker with no owner.
+      if (this._stopped) {
+        await this._abandonConnection();
+        return;
+      }
       this._state = 'connected';
       this._reconnectAttempt = 0;
       this._consecutiveFailures = 0;
@@ -620,6 +664,14 @@ export abstract class BrokerActor<
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this._state = 'disconnected';
+      // Same window on the failure path, with a different consequence: a
+      // half-built transport nothing will close, plus a backoff timer that
+      // would outlive the actor and retry forever.  Breaker bookkeeping is
+      // skipped deliberately — there is no next attempt to hold back.
+      if (this._stopped) {
+        await this._abandonConnection();
+        return;
+      }
       this._consecutiveFailures++;
       if (breaker && this._consecutiveFailures >= breaker.failureThreshold) {
         this._breakerOpenUntil = Date.now() + breaker.resetMs;
@@ -627,6 +679,33 @@ export abstract class BrokerActor<
       }
       this._handleReconnect(err);
     }
+  }
+
+  /**
+   * Close a connection that opened — or half-opened — after the actor was
+   * already gone, and leave the state machine reading `disconnected`.
+   *
+   * `postStop` cleared the `_transportOpened` gate on its way out, so
+   * {@link _closeTransport} on its own would return without asking the
+   * subclass to close anything, and the escaped attempt is precisely the one
+   * with handles to release.  Re-opening the gate for this one call routes
+   * the teardown back through the wrapper rather than calling
+   * `disconnectImplementation` raw: a subclass teardown that throws is then
+   * logged, instead of becoming an unhandled rejection inside a detached
+   * scheduler callback.
+   *
+   * A base-class guard can only *undo* what the subclass already did — its
+   * `connectImplementation` ran to completion before control came back here
+   * — which is why the teardown is not optional (#708).
+   */
+  private async _abandonConnection(): Promise<void> {
+    this.log.warn(
+      `${this.constructor.name}: a connect attempt completed after the actor stopped; `
+      + `abandoning the connection to ${this.endpointLabel()}`,
+    );
+    this._transportOpened = true;
+    await this._closeTransport();
+    this._state = 'disconnected';
   }
 
   /**
@@ -645,6 +724,11 @@ export abstract class BrokerActor<
 
   /** Called when the connection drops (from inside `dispatchOutgoing` or by the subclass). */
   protected handleConnectionLost(cause?: Error): void {
+    // `_stopped` is not implied by the state check below: a connection that
+    // escaped a stop leaves the actor reading `connected`, so a driver
+    // callback firing from it would pass the state guard and start a
+    // reconnect cycle on a terminated actor (#708).
+    if (this._stopped) return;
     if (this._state !== 'connected' && this._state !== 'connecting') return;
     this._state = 'disconnected';
     this.system.eventStream.publish(
@@ -654,6 +738,7 @@ export abstract class BrokerActor<
   }
 
   private _handleReconnect(cause: Error): void {
+    if (this._stopped) return;
     const policy = this.options.reconnect;
     if (policy === false) return;
     const initial = policy?.initialDelayMs ?? DEFAULT_RECONNECT.initialDelayMs;
@@ -740,6 +825,12 @@ export abstract class BrokerActor<
     // Cancel any pending reconnect timer first (e.g. when reconnect is
     // re-triggered before the previous timer fired).
     this._scheduledReconnectCancel?.();
+    this._scheduledReconnectCancel = null;
+    // Belt and braces: every caller is already guarded, but a handle armed
+    // after `postStop` would outlive the actor outright — the cancel that
+    // could have cleared it has already run, and there is no second one
+    // (#708).
+    if (this._stopped) return;
     const reconnect = (): void => { void this._tryConnect(); };
     // Use the system scheduler (not the actor TimerScheduler): reconnect
     // is detached from the message pipeline — it should not queue behind
