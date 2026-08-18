@@ -12,8 +12,36 @@ import {
  * Priority order for user messages.  Lower numeric priority values are
  * dequeued first — `0` is highest priority.  Ties are broken by FIFO
  * insertion order.
+ *
+ * Runs synchronously inside the **sender's** `tell`, and is not required to
+ * be total: a callback that throws, or that answers with something other
+ * than a usable number, costs its message the lowest priority and nothing
+ * else — see {@link PriorityMailbox.priorityOf} for why that is contained
+ * here rather than surfaced at the call site, and
+ * `PriorityMailboxOptionsType.onPriorityError` for how to see it happen.
  */
 export type PriorityFunction<T> = (message: T) => number;
+
+/**
+ * The priority given to a message `priorityFor` could not rank — the lowest
+ * priority there is, so an undeterminable priority sorts behind every ranked
+ * message rather than ahead of all of them (#733).
+ *
+ * `Number.MAX_SAFE_INTEGER` rather than `Infinity`, for two reasons.  A
+ * caller who returns `Infinity` deliberately means "absolutely last", and
+ * that intent stays distinguishable from "we could not tell".  And it stays
+ * arithmetic-safe: `Infinity - Infinity` is `NaN`, which is falsy, so the
+ * obvious comparator shape `a.priority - b.priority || a.sequence -
+ * b.sequence` would silently fall through to the tie-break for a pair of
+ * sentinels — including in the array reference model this class is checked
+ * against.
+ *
+ * Module-level rather than in `PriorityMailboxOptions.ts` because it is
+ * neither a default of an option nor a bound a validator checks, and not in
+ * a `src/mailbox/Constants.ts` because there is no second such value and no
+ * second reader — the two things that would make that file exist.
+ */
+const UNRANKABLE_PRIORITY = Number.MAX_SAFE_INTEGER;
 
 /** One queued message plus the two keys it is ordered by. */
 type PriorityEntry<T> = {
@@ -53,11 +81,23 @@ type PriorityEntry<T> = {
  * versus "the arriving one".  When the arriving message is itself the least
  * important, it is the one shed, and then the reason really is `drop-new` —
  * the eviction compares identities rather than guessing.
+ *
+ * ## When the priority function cannot answer
+ *
+ * `priorityFor` is user code on the sender's stack, and the framework itself
+ * hands it messages no application wrote: `ActorRef.stop()` and
+ * `ActorRef.kill()` send `PoisonPill` / `Kill` as **user** messages, and both
+ * serialise as `{}`.  So "it threw" and "it returned something that is not a
+ * number" are ordinary states rather than programmer error, and both are
+ * contained — the message keeps its place in the queue at
+ * {@link UNRANKABLE_PRIORITY} (#733).  {@link priorityOf} carries the
+ * reasoning.
  */
 export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
   private readonly priorityFor: PriorityFunction<T>;
   private readonly capacity: number | undefined;
   private readonly overflow: PriorityMailboxOverflow;
+  private readonly onPriorityError: ((cause: unknown, message: T) => void) | undefined;
   /** Monotonic counter — tie-breaker preserving FIFO among equal-priority messages. */
   private sequence = 0;
   private readonly ordered: Array<PriorityEntry<T>> = [];
@@ -71,6 +111,7 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     // `reject` for the same reason `BoundedMailbox` defaults to it: naming a
     // capacity says how much you will hold, not what you are willing to lose.
     this.overflow = settings.overflow ?? 'reject';
+    this.onPriorityError = settings.onPriorityError;
     // The caller's hook is just the first observer — see `DroppingMailbox`.
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
   }
@@ -127,9 +168,66 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head');
   }
 
+  /**
+   * The number to sort this message by: `priorityFor`'s answer when it gave a
+   * usable one, {@link UNRANKABLE_PRIORITY} when it could not (#733).
+   *
+   * Two failures are contained here rather than surfaced, and the reason is
+   * the same for both: this runs synchronously on the **sender's** stack,
+   * inside its `tell`, and a sender is a bystander to the receiver's mailbox
+   * configuration.  It has nothing to do about a broken `priorityFor` and no
+   * way to tell that from a failure of its own.  A throw from here landed in
+   * the sender's `onReceive` and got the *sender* restarted — the same shape
+   * that ruled `reject` out as the framework's default overflow policy
+   * (#919).
+   *
+   * - **A throw.**  `priorityFor` may see a message it was never written for,
+   *   and not because anyone sent one: `ActorRef.stop()` and `.kill()` post
+   *   `PoisonPill` / `Kill` as *user* messages, both of which serialise as
+   *   `{}`, so a `match(message)…​.exhaustive()` — the shape this project's
+   *   own example used — throws on the framework's own shutdown path.
+   * - **A value that is not a usable number.**  `undefined`, `NaN` and a
+   *   string all compare `false` against every queued priority under both `<`
+   *   and `===`, so the search in {@link insert} would drive `low` to `0` and
+   *   splice the arrival in at the **head** — the *highest*-priority slot,
+   *   inverting the order this class documents.  No cast is needed to get
+   *   there: `(message) => Number(message.priority)` is type-correct and
+   *   yields `NaN` for an absent field.
+   *
+   * The message is **kept**, at the lowest priority, rather than dropped: it
+   * is the priority that could not be determined, not the message that was
+   * unwanted.  The `sequence` tie-break then holds unrankable messages in
+   * FIFO order among themselves, which is the other half of the old
+   * behaviour — `NaN` broke the tie-break for the same reason it broke the
+   * comparison, so two unrankable arrivals came out reversed.
+   *
+   * `Number.isFinite` would be the wrong predicate: it also rejects
+   * `-Infinity`, which the comparison orders correctly and which a caller may
+   * well have meant as "ahead of everything".  The `typeof` test is needed
+   * either way, because a string return head-inserts exactly like `NaN`.
+   */
+  private priorityOf(message: T): number {
+    let raw: number;
+    try {
+      raw = this.priorityFor(message);
+    } catch (cause) {
+      this.onPriorityError?.(cause, message);
+      return UNRANKABLE_PRIORITY;
+    }
+    if (typeof raw === 'number' && !Number.isNaN(raw)) return raw;
+    // Describing the value costs an allocation, so it happens only for an
+    // observer that will read it.  This is a broken path, but it is still on
+    // the enqueue path.
+    if (this.onPriorityError !== undefined) {
+      const described = typeof raw === 'number' ? 'NaN' : `a value of type ${typeof raw}`;
+      this.onPriorityError(new TypeError(`priorityFor returned ${described}, which cannot be ranked`), message);
+    }
+    return UNRANKABLE_PRIORITY;
+  }
+
   /** Binary-search insertion by (priority, sequence): O(log n) locate + O(n) splice. */
   private insert(envelope: Envelope<T>): void {
-    const priority = this.priorityFor(envelope.message);
+    const priority = this.priorityOf(envelope.message);
     const entry: PriorityEntry<T> = { envelope, priority, sequence: this.sequence++ };
     let low = 0, high = this.ordered.length;
     while (low < high) {

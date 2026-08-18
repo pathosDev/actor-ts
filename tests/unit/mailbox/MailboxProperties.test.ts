@@ -127,6 +127,25 @@ type ModelEntry = {
 };
 
 /**
+ * The reference normalisation for a priority the callback could not produce
+ * (#733), written out here rather than shared with the implementation — a
+ * reference that imported the rule it is checking would agree by
+ * construction.
+ *
+ * `MAX_SAFE_INTEGER` and not `Infinity` for the reason the implementation
+ * gives: the sort below is `a.priority - b.priority || …`, and
+ * `Infinity - Infinity` is `NaN`, which is falsy, so a pair of sentinels
+ * would fall through to the tie-break by accident rather than by rule.
+ */
+const UNRANKABLE_PRIORITY = Number.MAX_SAFE_INTEGER;
+
+const rankOf = (priorityFor: (message: number) => number, message: number): number => {
+  let raw: number;
+  try { raw = priorityFor(message); } catch { return UNRANKABLE_PRIORITY; }
+  return typeof raw === 'number' && !Number.isNaN(raw) ? raw : UNRANKABLE_PRIORITY;
+};
+
+/**
  * The priority mailbox, modelled by re-sorting on every insert instead of
  * binary-searching an already-ordered array.  Slow and obviously correct,
  * which is what a reference is for.
@@ -188,7 +207,7 @@ class ArrayPriorityMailboxModel extends ArrayMailboxModel {
   private insert(envelope: Envelope<number>): void {
     this.entries.push({
       envelope,
-      priority: this.priorityFor(envelope.message),
+      priority: rankOf(this.priorityFor, envelope.message),
       sequence: this.sequence++,
     });
     this.entries.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence);
@@ -370,6 +389,24 @@ const operationArbitrary = fc.oneof(
 /** Ties on purpose — the FIFO tie-break is the half of the ordering a sort can get wrong. */
 const priorityFor = (value: number): number => value % 5;
 
+/**
+ * A `priorityFor` that fails the two ways real ones do (#733): it throws for
+ * one residue class and answers `undefined` for another, and ranks everything
+ * else.  Both are reachable without malice — the framework hands the callback
+ * `PoisonPill`, and `Number(message.absentField)` is `NaN`.
+ *
+ * This is the only guard on the *sort-invariant* half of #733, as opposed to
+ * the head-insertion half.  An unrankable entry used to break the ordering the
+ * binary search assumes, so where it landed depended on the order the whole
+ * batch arrived in — which a fixed sequence of enqueues can miss and a random
+ * walk against a re-sorting reference cannot.
+ */
+const unrankablePriorityFor = (value: number): number => {
+  if (value % 7 === 0) throw new Error(`cannot rank ${value}`);
+  if (value % 7 === 1) return undefined as unknown as number;
+  return value % 5;
+};
+
 type MailboxVariant = {
   readonly name: string;
   /** Fresh pair plus the drop-reason logs the two sides must agree on. */
@@ -400,18 +437,19 @@ const boundedVariant = (overflow: BoundedMailboxOverflow): MailboxVariant['creat
 const priorityVariant = (
   capacity: number | undefined,
   overflow: PriorityMailboxOverflow,
+  rank: (value: number) => number = priorityFor,
 ): MailboxVariant['create'] => () => {
   const realReasons: MailboxDropReason[] = [];
   const modelReasons: MailboxDropReason[] = [];
   return {
     pair: {
       mailbox: new ProbePriorityMailbox({
-        priorityFor,
+        priorityFor: rank,
         ...(capacity === undefined ? {} : { capacity, overflow }),
         onDrop: (reason) => realReasons.push(reason),
       }),
       reference: new ArrayPriorityMailboxModel(
-        priorityFor,
+        rank,
         capacity,
         overflow,
         (reason) => modelReasons.push(reason),
@@ -438,6 +476,14 @@ const variants: ReadonlyArray<MailboxVariant> = [
   { name: 'PriorityMailbox drop-lowest-priority', create: priorityVariant(8, 'drop-lowest-priority') },
   { name: 'PriorityMailbox drop-new', create: priorityVariant(8, 'drop-new') },
   { name: 'PriorityMailbox reject', create: priorityVariant(8, 'reject') },
+  {
+    name: 'PriorityMailbox unrankable priorities (unbounded)',
+    create: priorityVariant(undefined, 'reject', unrankablePriorityFor),
+  },
+  {
+    name: 'PriorityMailbox unrankable priorities, drop-lowest-priority',
+    create: priorityVariant(8, 'drop-lowest-priority', unrankablePriorityFor),
+  },
 ];
 
 describe('every mailbox variant matches an array reference model', () => {
@@ -538,6 +584,30 @@ describe('#407 stays fixed under a random walk', () => {
       fc.property(fc.array(operationArbitrary, { maxLength: 250 }), (operations) => {
         const mailbox = new ProbePriorityMailbox({
           priorityFor,
+          capacity: 8,
+          overflow: 'drop-lowest-priority',
+        });
+        for (const operation of operations) {
+          driveOne(mailbox, operation);
+          expect(mailbox.size).toBeLessThanOrEqual(8);
+        }
+      }),
+      { numRuns: 120 },
+    );
+  });
+
+  /**
+   * Stated absolutely rather than against the model, for the same reason as
+   * the two above: a walk whose `priorityFor` throws must not be able to
+   * reach the caller at all, and the bound must keep holding while it
+   * happens.  A containment that let one enqueue in ten escape would satisfy
+   * the model test as long as the reference escaped too.
+   */
+  test('a bounded PriorityMailbox contains an unrankable priority and stays bounded', () => {
+    fc.assert(
+      fc.property(fc.array(operationArbitrary, { maxLength: 250 }), (operations) => {
+        const mailbox = new ProbePriorityMailbox({
+          priorityFor: unrankablePriorityFor,
           capacity: 8,
           overflow: 'drop-lowest-priority',
         });

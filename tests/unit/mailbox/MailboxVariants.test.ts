@@ -336,6 +336,188 @@ describe('PriorityMailbox — capacity and overflow', () => {
   });
 });
 
+// #733 — `priorityFor` is user code running on the SENDER's stack, and the
+// framework itself hands it messages no application wrote (`PoisonPill` /
+// `Kill` go out as user messages).  Before this, a callback that could not
+// answer put its message at the HEAD — the highest-priority slot — and a
+// callback that threw took out whoever called `tell`.
+describe('PriorityMailbox — a priority the callback cannot produce', () => {
+  type Tagged = { readonly label: string; readonly priority?: number };
+  const drain = (mbox: PriorityMailbox<Tagged>): string[] =>
+    mbox.drainUser().map((envelope) => envelope.message.label);
+
+  test('an undefined priority sorts LAST, not first', () => {
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => m.priority as number });
+    for (const message of [
+      { label: 'urgent', priority: 0 },
+      { label: 'normal', priority: 5 },
+      { label: 'unrankable-a' },
+      { label: 'unrankable-b' },
+    ]) mbox.enqueue({ message, sender: null });
+    // The class documents "lower is higher priority", so a priority that
+    // could not be determined must not outrank one that was stated.
+    expect(drain(mbox)).toEqual(['urgent', 'normal', 'unrankable-a', 'unrankable-b']);
+  });
+
+  test('a NaN priority sorts last, and unrankable messages keep FIFO among themselves', () => {
+    // NaN needs no cast to get here: `Number(m.priority)` is a type-correct
+    // callback over an optional field.  It also broke the `sequence`
+    // tie-break, for the same reason it broke the comparison — so the two
+    // unrankable messages used to come out reversed.
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => Number(m.priority) });
+    for (const message of [
+      { label: 'unrankable-a' },
+      { label: 'ranked', priority: 7 },
+      { label: 'unrankable-b' },
+    ]) mbox.enqueue({ message, sender: null });
+    expect(drain(mbox)).toEqual(['ranked', 'unrankable-a', 'unrankable-b']);
+  });
+
+  test('a non-number priority sorts last — a string compares false exactly like NaN', () => {
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => (m.priority ?? ('high' as unknown as number)),
+    });
+    // The string arrives AFTER the ranked messages on purpose.  Before the
+    // guard, an already-queued unrankable entry drifted tailward as later
+    // inserts pushed past it, so enqueuing it first happened to produce the
+    // right order for the wrong reason — the head-insert only shows when the
+    // unrankable message is the arriving one.
+    for (const message of [
+      { label: 'one', priority: 1 },
+      { label: 'nine', priority: 9 },
+      { label: 'stringly' },
+    ]) mbox.enqueue({ message, sender: null });
+    expect(drain(mbox)).toEqual(['one', 'nine', 'stringly']);
+  });
+
+  test('±Infinity is a ranking and is respected — it is not treated as unrankable', () => {
+    // The recorded decision: `Number.isFinite` is the wrong predicate here.
+    // -Infinity is a caller saying "ahead of everything" and the comparison
+    // orders it correctly; only NaN and non-numbers are undeterminable.
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => m.priority as number });
+    for (const message of [
+      { label: 'last', priority: Number.POSITIVE_INFINITY },
+      { label: 'middle', priority: 0 },
+      { label: 'first', priority: Number.NEGATIVE_INFINITY },
+      { label: 'unrankable' },
+    ]) mbox.enqueue({ message, sender: null });
+    // An explicit +Infinity still sorts behind the unrankable sentinel, which
+    // is MAX_SAFE_INTEGER — "we could not tell" is not worse than a caller's
+    // deliberate "absolutely last".
+    expect(drain(mbox)).toEqual(['first', 'middle', 'unrankable', 'last']);
+  });
+
+  test('placement no longer depends on insertion order', () => {
+    // The head-insert broke the sorted-array invariant, so an unrankable
+    // entry drifted tailward as later messages arrived: the same four
+    // messages came out `neg | five | ten | nan` or `nan | neg | five | ten`
+    // depending only on the order they were enqueued in.
+    const orders: ReadonlyArray<ReadonlyArray<string>> = [
+      ['unrankable', 'minus-one', 'five', 'ten'],
+      ['minus-one', 'five', 'ten', 'unrankable'],
+      ['minus-one', 'unrankable', 'ten', 'five'],
+    ];
+    const priorities: Readonly<Record<string, number | undefined>> = {
+      'minus-one': -1, five: 5, ten: 10, unrankable: undefined,
+    };
+    for (const order of orders) {
+      const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => priorities[m.label] as number });
+      for (const label of order) mbox.enqueue({ message: { label }, sender: null });
+      expect(drain(mbox)).toEqual(['minus-one', 'five', 'ten', 'unrankable']);
+    }
+  });
+
+  test('a throwing priorityFor does not reach the enqueue caller, and the message survives', () => {
+    // The sender is a bystander to the receiver's mailbox configuration: it
+    // has nothing to do about a broken `priorityFor` and no way to tell that
+    // from a failure of its own.  Same shape that ruled `reject` out as the
+    // framework's default overflow policy (#919).
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => {
+        if (m.priority === undefined) throw new TypeError('no pattern matches value {}');
+        return m.priority;
+      },
+    });
+    expect(() => mbox.enqueue({ message: { label: 'thrower' }, sender: null })).not.toThrow();
+    mbox.enqueue({ message: { label: 'ranked', priority: 3 }, sender: null });
+    expect(drain(mbox)).toEqual(['ranked', 'thrower']);
+  });
+
+  test('onPriorityError reports the throw, with the message it could not rank', () => {
+    const failures: Array<{ cause: unknown; label: string }> = [];
+    const thrown = new Error('boom');
+    const priorityOptions = PriorityMailboxOptions.create<Tagged>()
+      .withPriorityFor(() => { throw thrown; })
+      .withOnPriorityError((cause, message) => failures.push({ cause, label: message.label }));
+    const mbox = new PriorityMailbox<Tagged>(priorityOptions);
+    mbox.enqueue({ message: { label: 'thrower' }, sender: null });
+    expect(failures).toEqual([{ cause: thrown, label: 'thrower' }]);
+    // Contained, not swallowed: the message is still there to be handled.
+    expect(drain(mbox)).toEqual(['thrower']);
+  });
+
+  test('onPriorityError reports a non-numeric return as a TypeError naming the type', () => {
+    const causes: unknown[] = [];
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => m.priority as number,
+      onPriorityError: (cause) => causes.push(cause),
+    });
+    mbox.enqueue({ message: { label: 'undefined-priority' }, sender: null });
+    mbox.enqueue({ message: { label: 'nan-priority', priority: Number.NaN }, sender: null });
+    mbox.enqueue({ message: { label: 'fine', priority: 1 }, sender: null });
+    expect(causes.length).toBe(2);
+    expect(causes[0]).toBeInstanceOf(TypeError);
+    expect((causes[0] as TypeError).message).toContain('type undefined');
+    expect((causes[1] as TypeError).message).toContain('NaN');
+  });
+
+  test('an unrankable burst no longer evicts the whole backlog under drop-lowest-priority', () => {
+    // #647's bound made the head-insert worse rather than better: the arrival
+    // went in at the head and the eviction pops the TAIL, so the arrival
+    // always survived and a genuine message always died — reported as an
+    // ordinary `drop-head`.  A full mailbox lost its entire backlog to four
+    // messages the priority function could not rank.
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => Number(m.priority),
+      capacity: 4,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => reasons.push(reason),
+    });
+    for (const message of [
+      { label: 'urgent', priority: 0 },
+      { label: 'command', priority: 1 },
+      { label: 'normal', priority: 5 },
+      { label: 'bulk', priority: 9 },
+    ]) mbox.enqueue({ message, sender: null });
+    for (let index = 0; index < 4; index++) {
+      mbox.enqueue({ message: { label: `unrankable-${index}` }, sender: null });
+    }
+    expect(drain(mbox)).toEqual(['urgent', 'command', 'normal', 'bulk']);
+    // Each arrival is now the least important thing in the queue, so the
+    // honest reason is `drop-new` and not a claim that a queued message died.
+    expect(reasons).toEqual(['drop-new', 'drop-new', 'drop-new', 'drop-new']);
+  });
+
+  test('a lifecycle notification still reaches the queue when priorityFor throws (#729)', () => {
+    // `enqueueSignal` goes straight to the insertion, past the capacity
+    // check — so it is the third path through the same unguarded call, and
+    // the framework has no second copy of a `Terminated` to send.
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: () => { throw new Error('cannot rank a Terminated'); },
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+    });
+    expect(() => mbox.enqueueSignal({
+      message: { label: 'terminated' },
+      sender: null,
+      undroppable: true,
+    })).not.toThrow();
+    expect(mbox.size).toBe(1);
+    expect(drain(mbox)).toEqual(['terminated']);
+  });
+});
+
 describe('PriorityMailbox — options validation', () => {
   test('builder form is equivalent to a plain object', () => {
     const priorityOptions = PriorityMailboxOptions.create<number>()
@@ -534,6 +716,91 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     expect(bounded.droppedCount).toBeGreaterThan(0);
 
     release();
+    await kit.system.terminate();
+  });
+
+  // #733 end to end.  `ActorRef.stop()` posts `PoisonPill` as a *user*
+  // message, and `PoisonPill` has no own enumerable properties — so the
+  // "field-derived" `priorityFor` the docs recommend sees `{}`, and before
+  // this the pill head-inserted and the actor stopped on the spot.  No
+  // attacker and no malformed traffic: the framework's own shutdown path.
+  test('ref.stop() still drains the backlog first with a field-derived priorityFor', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-pri-poison-pill', kitOptions);
+
+    let release: () => void = () => {};
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+    const handled: string[] = [];
+
+    type Work = { readonly label: string; readonly priority: number };
+    class Worker extends Actor<Work> {
+      override async onReceive(m: Work): Promise<void> {
+        if (m.label === 'w0') await latch;
+        handled.push(m.label);
+      }
+      override postStop(): void { handled.push('STOPPED'); }
+    }
+    // Field-derived is one of the three shapes the mailboxes page recommends,
+    // and it is the one that returns `undefined` for a PoisonPill.
+    const options = ActorOptions.create<Work>()
+      .withMailbox(() => new PriorityMailbox<Work>({ priorityFor: (m) => m.priority }) as never);
+    const ref = kit.system.spawnAnonymous(Worker, options);
+
+    // Wedge the actor on w0 so w1..w4 are genuinely queued when the pill
+    // arrives — otherwise the drain would be trivially in order.
+    for (let index = 0; index < 5; index++) ref.tell({ label: `w${index}`, priority: 5 });
+    ref.stop();
+    release();
+
+    await awaitCondition(() => handled.includes('STOPPED'), {
+      timeoutMs: 4_000,
+      label: 'the actor stopped after its PoisonPill was handled',
+    });
+    // The documented guarantee: a graceful drain-then-stop, not a stop that
+    // jumped a five-message queue.
+    expect(handled).toEqual(['w0', 'w1', 'w2', 'w3', 'w4', 'STOPPED']);
+    await kit.system.terminate();
+  });
+
+  test('a throwing priorityFor faults nothing in the sender — the tell returns', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-pri-throwing-callback', kitOptions);
+    const failures: unknown[] = [];
+    const handled: string[] = [];
+
+    type Work = { readonly kind: 'work'; readonly label: string };
+    class Worker extends Actor<Work> {
+      override onReceive(m: Work): void { handled.push(m.label); }
+      override postStop(): void { handled.push('STOPPED'); }
+    }
+    // The shape the repo's own example used: an exhaustive match, which throws
+    // on anything it was not written for — including the framework's own
+    // PoisonPill.
+    const priorityOptions = PriorityMailboxOptions.create<Work>()
+      .withPriorityFor((m) => {
+        if (m.kind !== 'work') throw new Error(`Pattern matching error: no pattern matches value ${JSON.stringify(m)}`);
+        return 5;
+      })
+      .withOnPriorityError((cause) => failures.push(cause));
+    const options = ActorOptions.create<Work>()
+      .withMailbox(() => new PriorityMailbox<Work>(priorityOptions) as never);
+    const ref = kit.system.spawnAnonymous(Worker, options);
+
+    ref.tell({ kind: 'work', label: 'a' });
+    // `stop()` is a `tell` of PoisonPill, so the throw would land here, in
+    // this test's own stack — which is exactly where a sender sees it.
+    expect(() => ref.stop()).not.toThrow();
+
+    await awaitCondition(() => handled.includes('STOPPED'), {
+      timeoutMs: 4_000,
+      label: 'the actor drained and then stopped',
+    });
+    expect(handled).toEqual(['a', 'STOPPED']);
+    expect(failures.length).toBe(1);
     await kit.system.terminate();
   });
 
