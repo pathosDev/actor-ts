@@ -140,12 +140,14 @@ TestKit works with all three.  The framework's own tests use
 actor-ts ships **ESM** (`type: "module"` in package.json).  In
 Node:
 
-```ts
+```json
 // In your app's package.json:
 {
   "type": "module"
 }
+```
 
+```ts
 // import actor-ts:
 import { ActorSystem } from 'actor-ts';
 ```
