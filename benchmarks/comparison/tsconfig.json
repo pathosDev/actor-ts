@@ -10,7 +10,7 @@
   // `benchmarks/comparison/node_modules`, which the root install does not
   // and must not carry.
   //
-  // So this config is the one that DOES own them, and the `comparison-smoke`
+  // So this config is the one that DOES own them, and the `comparison`
   // job in `.github/workflows/benchmarks.yml` is the one that DOES run it —
   // after installing this directory's manifest.  Without it the tree would
   // be type-checked by nothing at all, which is exactly how ten benchmark

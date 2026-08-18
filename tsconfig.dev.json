@@ -59,7 +59,7 @@
     // `benchmarks/comparison/node_modules`, which the root install does not
     // and must not carry.  The config that owns them is
     // `benchmarks/comparison/tsconfig.json`, run as `bun run typecheck:compare`
-    // by the `comparison-smoke` job in `.github/workflows/benchmarks.yml`.
+    // by the `comparison` job in `.github/workflows/benchmarks.yml`.
     "benchmarks/comparison/**",
 
     // Three examples that demonstrate an optional peer the root install does
