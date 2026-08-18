@@ -336,7 +336,10 @@ callback.
 
 Frame kinds registered by extensions (sharding, pub-sub, the
 receptionist, DistributedData, DevTools) pass this layer and
-validate their own payloads.
+validate their own payloads. So does replicated event sourcing,
+whose event envelopes ride on pub-sub rather than on a frame kind
+of their own — see
+[what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers).
 
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a

@@ -540,6 +540,14 @@ export { MariaDbQuery } from './query/MariaDbQuery.js';
 // Replicated Event Sourcing — multi-master event-sourced actors.
 export { ReplicatedEventSourcedActor } from './ReplicatedEventSourcedActor.js';
 export type { ReplicatedEventEnvelope } from './ReplicatedEventSourcedActor.js';
+// The two bounds a subclass can actually reach: one it can exceed by
+// overriding `replicaId`, one it may want to scale when overriding
+// `maxObservedEvents()`.  The decode-side bounds stay internal, the same
+// split `MAX_PERSISTENCE_ID_LENGTH` and `MAX_TAG_LENGTH` already have.
+export {
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS,
+  MAX_REPLICA_ID_LENGTH,
+} from './Constants.js';
 export { VectorClock } from './replicated/VectorClock.js';
 export type { VectorClockData, VectorClockOrder } from './replicated/VectorClock.js';
 export {

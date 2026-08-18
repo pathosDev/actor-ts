@@ -353,7 +353,10 @@ Socket-Callback des Runtimes entkommen.
 
 Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
 Receptionist, DistributedData, DevTools), passieren diese
-Schicht und prüfen ihr eigenes Payload selbst.
+Schicht und prüfen ihr eigenes Payload selbst. Replicated Event
+Sourcing ebenso, dessen Event-Envelopes über PubSub laufen statt
+über einen eigenen Frame-Kind — siehe
+[was eine Replica ihren Peers glaubt](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt).
 
 Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
