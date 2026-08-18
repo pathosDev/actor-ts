@@ -98,9 +98,22 @@ not a finding.
 4. **One framework per subprocess.**  Module-level state, JIT profiles
    and GC pressure do not cross arms.
 
-5. **Home runtime first.**  The JS neighbours are written for Node;
-   running them there is the fair measurement, and running them on Bun
-   as well is extra information, not a substitute.
+5. **One runtime, named.**  Every JavaScript arm runs on **Bun**, and every
+   published table says so.
+
+   This is a limitation, not a preference, and it is worth stating exactly.
+   The shared harness reaches `highResNow()` in `src/runtime/Detect.ts`, so
+   it pulls in `src/` — which carries the project's `.js` import suffixes
+   and two `enum` declarations, neither of which Node's strip-only
+   TypeScript mode can load without a build step.  Running the neighbours
+   on Node would therefore mean *not* running them through the same
+   harness.  An identical measurement path is the one fairness property
+   this suite can actually offer rather than merely assert, so it wins.
+
+   The cost: the JS neighbours are written for Node, and their numbers on
+   their home runtime may differ from these.  Restoring that arm needs the
+   harness's `src/` dependency resolvable from a build — future work, named
+   here rather than quietly skipped.
 
 6. **Semantic mismatches are labelled, never silently mapped.**  Where
    a framework has no equivalent of an operation, the arm records a
@@ -122,11 +135,19 @@ not a finding.
 
 ```
 benchmarks/comparison/
-  package.json      this tree's dependency manifest (+ its own bun.lock)
-  tsconfig.json     the only config that type-checks this tree
-  js/               the JavaScript arms + shared workload / environment code
-  results/          committed per-run JSON, one file per framework × runtime
-  RESULTS.md        generated from results/ — never hand-edited
+  package.json        this tree's dependency manifest (+ its own bun.lock)
+  tsconfig.json       the only config that type-checks this tree
+  run-comparison.ts   driver — one framework per subprocess
+  report.ts           validates results/ and generates RESULTS.md
+  js/
+    workload.ts       the batch sizes and iteration counts, once
+    arm.ts            shared runner + completion accounting
+    environment.ts    hardware / runtime / commit capture
+    result-file.ts    the on-disk schema
+    actor-ts.ts       the reference arm
+    vanilla.ts        the floor — no framework at all
+  results/            committed per-run JSON, one file per framework × runtime
+  RESULTS.md          generated from results/ — never hand-edited
 ```
 
 ---
@@ -140,5 +161,45 @@ install):
 bun install --cwd benchmarks/comparison
 ```
 
-The arms, the driver and the report generator arrive with the phases
-that add them; this file grows with them.
+Measure every arm, each in its own subprocess:
+
+```bash
+bun run bench:compare
+```
+
+Then regenerate the published tables from what was measured:
+
+```bash
+bun run bench:compare:report
+```
+
+One arm only, while working on it:
+
+```bash
+bun run bench:compare -- --framework=actor-ts
+```
+
+Prove the arms still execute without measuring anything (this is what CI
+runs — one unwarmed iteration per case, and **no** result files written,
+so a smoke run can never overwrite a real measurement):
+
+```bash
+bun run bench:compare:smoke
+```
+
+Type-check the tree — the only check that covers it:
+
+```bash
+bun run typecheck:compare
+```
+
+### Before publishing a measurement
+
+Run the arms **alternately over several rounds** rather than once each,
+and compare the spread before believing the gap.  The run-to-run
+variation on this kind of benchmark is percent-level, and two arms
+measured half an hour apart on a machine that was doing something else
+in between is not a comparison.  Commit `results/` and the regenerated
+`RESULTS.md` together, on a clean tree — the environment block records
+the commit and marks it `-dirty` otherwise, which is a measurement
+nobody can reproduce.
