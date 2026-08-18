@@ -112,6 +112,13 @@ export const LogContext = {
    * Starting from empty is cheaper to reason about than remembering to
    * strip individual keys, and it fails safe: a field nobody set cannot
    * leak.
+   *
+   * **The framework applies it to its own seams of that shape** (#718): a
+   * dispatcher turn (`ActorCell.runReported`), a fired schedule
+   * (`Scheduler`), and an inbound cluster frame that carries no context
+   * (`Cluster.onEnvelope`).  So the deferred work still needing this by hand
+   * is the work *you* defer — an un-awaited promise, a buffer flushed later,
+   * a raw `setTimeout` — not anything the framework hands you.
    */
   runFresh<T>(callback: () => T): T {
     return storage.run(EMPTY, callback);

@@ -1006,7 +1006,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * `run()` with its failures attributed.
+   * `run()` with its failures attributed, and with the MDC of whoever armed
+   * this turn left outside it.
    *
    * The catch belongs here rather than in the dispatcher for two reasons.
    * It is the only layer that knows *whose* turn failed, so the report can
@@ -1022,12 +1023,39 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * `.catch` rather than an `async` wrapper with a `try`, because this runs
    * once per message: `run()` is already `async` and so cannot throw
    * synchronously, and attaching a handler costs one derived promise where
-   * a second async frame would cost that plus its state machine.
+   * a second async frame would cost that plus its state machine.  It sits
+   * *inside* the `runFresh` so a report about a failed turn is logged under
+   * the same cleared context the turn itself ran under.
+   *
+   * **The `runFresh` is the fix for #718, and the turn is the right grain
+   * for it.**  A turn is armed by `schedule()`, i.e. from inside whichever
+   * async resource enqueued the message — and every dispatcher hands that
+   * callback to `queueMicrotask` / `setImmediate` / `setTimeout`, all of
+   * which propagate the arming `AsyncLocalStorage` store.  So without this,
+   * everything a turn does that does *not* carry its own context inherits
+   * the MDC of whatever happened to wake the cell: a `ReceiveTimeout`
+   * delivery, `preStart` / `postStop`, and — because up to
+   * {@link throughput} envelopes share one turn — any plain `tell` issued
+   * from a context-free scope that lands in the same batch as one carrying a
+   * correlation id.  `LocalActorRef.tell` then re-stamps that inherited
+   * context onto every envelope such a handler sends, so the wrong tenant's
+   * identifiers travel *forward* rather than merely appearing in one log
+   * line.  It compounds too: `run()`'s `finally` re-schedules from inside
+   * the already-poisoned store, so a continuously busy actor keeps the last
+   * correlation id it saw for as long as it stays busy.
+   *
+   * Per turn rather than per message on purpose.  Clearing at the delivery
+   * site instead would cost one closure plus one `AsyncLocalStorage` frame
+   * for *every* context-less message — precisely the allocation #411 took
+   * off that path — where this pays one of each per turn, amortised over the
+   * whole batch, and covers the system-command drain and third-party
+   * dispatchers for free.  An envelope that *does* carry a context still
+   * nests its own `LogContext.run` inside, so propagation is unchanged.
    */
   private runReported(dispatcherId: string): Promise<void> {
-    return this.run().catch(
+    return LogContext.runFresh(() => this.run().catch(
       (error: unknown) => this.system._reportDispatcherError(error, dispatcherId, this.self),
-    );
+    ));
   }
 
   /**
@@ -1580,6 +1608,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // skips the wrapper entirely — and skips the only closure on this path,
     // since `LogContext.run` needs a thunk and `_dispatchToBehavior` does not
     // (#411).
+    //
+    // Skipping it is only safe because the *turn* already runs under a cleared
+    // context: `runReported` opens one `LogContext.runFresh` per turn, so the
+    // `else` here means "no context", not "whatever store armed this turn"
+    // (#718).  Reverse that and this branch silently inherits again.
     if (env.context) {
       await LogContext.run(env.context, () => this._dispatchToBehavior(env, span, tracer, metrics));
     } else {

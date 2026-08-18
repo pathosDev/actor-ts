@@ -1,4 +1,5 @@
 import type { ActorRef } from '../ActorRef.js';
+import { LogContext } from '../LogContext.js';
 import { Scheduler, type Cancellable } from '../Scheduler.js';
 
 type Task = {
@@ -93,8 +94,13 @@ export class ManualScheduler extends Scheduler {
       const next = this.peekNext(target);
       if (!next) break;
       this._now = next.fireAt;
-      try { next.run(); } catch (e) {
-        // Mirror the real scheduler: log, do not propagate.
+      // Mirror the real scheduler in both respects: a fired task runs with the
+      // MDC cleared (#718 — here it would otherwise inherit whatever store
+      // `advance()` was called from, which is the same defect one layer up),
+      // and a throwing task is logged rather than propagated.  A double that
+      // diverges from the real scheduler on either is a double that lets a
+      // regression pass.
+      try { LogContext.runFresh(next.run); } catch (e) {
         console.error('[ManualScheduler] task threw:', e);
       }
       if (next.repeat) {
