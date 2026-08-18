@@ -69,3 +69,19 @@ devtools-ui/.dev/
 # `scripts/check-doc-samples.mjs` on every run.  Present on disk only while
 # tsc is looking at them, or afterwards when it was run with `--keep`.
 .doc-samples/
+
+# graphify knowledge graph, built by the `/graphify` skill.
+#
+# `graph.json`, `graph.html`, `GRAPH_REPORT.md` and `cache/` ARE committed.
+# The cache is worth carrying: its entries key on repo-relative paths and a
+# hash of the extraction prompt, contain no absolute paths, and let a fresh
+# clone skip the ~7.2M-token semantic re-extraction of `docs/`.  It is
+# invalidated on purpose when graphify or the prompt changes (the
+# `ast/<version>/` and `semantic/<prompt-hash>/` directories).
+#
+# Everything below is machine- or run-local and churns on every build:
+graphify-out/manifest.json
+graphify-out/cost.json
+graphify-out/.graphify_labels.json
+graphify-out/.graphify_python
+graphify-out/.graphify_root
