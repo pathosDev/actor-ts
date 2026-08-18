@@ -102,8 +102,14 @@ const BUN_JUNIT_REPORT = [
 const failingTestCase = (attributes: string): string =>
   `<testcase ${attributes}>\n  <failure type="AssertionError" />\n</testcase>`;
 
+/**
+ * A minimal report around one or more test cases.  Its root-element totals are
+ * deliberately not meaningful — every assertion built on this helper reads the
+ * per-testcase scan.  {@link BUN_JUNIT_REPORT} is the fixture whose totals are
+ * real, and it is the one `parseSummary` is tested against.
+ */
 const reportOf = (...testCases: readonly string[]): string =>
-  `<testsuites name="bun test" tests="${testCases.length}" failures="${testCases.length}" skipped="0">\n`
+  `<testsuites name="bun test" tests="${testCases.length}">\n`
   + `${testCases.join('\n')}\n</testsuites>`;
 
 /**

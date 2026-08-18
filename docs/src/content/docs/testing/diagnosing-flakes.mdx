@@ -126,6 +126,7 @@ Causes this suite has actually had, with how each was settled.
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
 | Filesystem races | Settled | Two suites reading each other's fixtures |
+| An assertion over process-global state | Settled | Passes in isolation, fails in a whole-suite run, and no timing is involved |
 | Hosted-runner worker respawn | Quarantined | Workers spawn, handshake, then never run — CI only |
 
 ### Fixed sleep before an assertion
@@ -233,11 +234,43 @@ Both settled, and worth knowing because a new test can reintroduce either.
   shared fixture path.  Roughly two dozen suites do this today; copy one of
   the object-storage suites if you need a pattern.
 
+### An assertion over process-global state
+
+The one family with no timing in it at all, and therefore the one a repeat run
+diagnoses least well: the test is correct about its own object and wrong about
+its scope.
+
+`bun test` runs the whole tree in one process, so a `static` collection is
+shared by every suite in it.  An assertion on the *contents* of one is an
+assertion about everything that ran first:
+
+```ts
+// ✗ InMemoryTransport.registry is a `private static Map`, and peers() returns
+//   every entry except self — so this says "no other transport is registered
+//   anywhere in this process". 75 test files construct one.
+await transportA.shutdown();
+expect(transportA.peers()).toEqual([]);
+```
+
+```ts
+// ✓ the transition this test caused, read through a live peer
+await transportA.shutdown();
+expect(transportB.peers().some((peer) => peer.port === 40501)).toBe(false);
+```
+
+The signature is unmistakable once you know it: passes in isolation, fails only
+in a full run, and no amount of waiting changes anything — because nothing is
+in flight.  Ask what the assertion's *denominator* is.  If it is a `static`
+field, a module-level registry or a process-wide counter, narrow it to the
+entry this test owns.
+
 ## Open entries
 
 Tests observed failing intermittently whose cause is **not** yet established.
 Ruling causes out is not the same as establishing one, so these are listed
-without a verdict rather than guessed at:
+without a verdict rather than guessed at.  One of the five is no longer open —
+its cause is established below — and stays in the table because it is the entry
+a whole-suite run is most likely to name again:
 
 | Test | File | Sleep ruled out? |
 | --- | --- | --- |
@@ -256,9 +289,32 @@ difference is what tells you where to look next:
   hand-rolled deadline loop that fell through silently — and now wait on the
   state the assertion reads.
 - **Two never had one.**  `peers list is empty after shutdown` is synchronous
-  end to end: every step is awaited, there is no poll and no delay, so the
-  remaining suspect is the module-level registry `InMemoryTransport` shares
-  between tests.  `ParallelMultiNodeSpec.test.ts` contains **no** fixed-delay
+  end to end: every step is awaited, there is no poll and no delay.  Its cause
+  is not timing at all — it is a **process-global assertion**, and that one is
+  settled rather than open.  `InMemoryTransport.registry` is a `private static
+  Map` and `peers()` returns every entry in it except self, so
+  `expect(transportA.peers()).toEqual([])` asserts that *no other transport
+  anywhere in the process is registered*.  75 test files construct one.  A
+  single suite that leaves one registered — or whose `shutdown()` has not run
+  yet — fails this test, and only in a whole-suite run, which is exactly the
+  observed signature.
+
+  That is a **fifth family**, and worth recognising by shape: an assertion over
+  a `static` collection is a test of the whole process, not of the unit.  The
+  test has since been narrowed to the transition it causes — that *this* address
+  left the registry, read through another live transport — and renamed to
+  `shutdown removes the transport from a live peer's view`; the old name is kept
+  in the table above because that is the identity the measurement recorded.
+
+  Worth knowing why the narrowing is not merely tidier.  Deleting the
+  `registry.delete(…)` line from `InMemoryTransport.shutdown()` leaves the old
+  assertion **green** when it runs alone: `peers()` filters self out, so A's own
+  leftover registration is invisible to it.  It only went red inside its own file,
+  and only because the tests above it leave registrations behind — so it detected
+  its siblings rather than its subject.  The narrowed form goes red on that
+  mutation either way.
+
+  `ParallelMultiNodeSpec.test.ts` contains **no** fixed-delay
   wait at all; it waits through `spec.awaitMembers` / `spec.awaitMemberStatus`
   budgets.
 
