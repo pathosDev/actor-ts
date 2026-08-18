@@ -13,10 +13,14 @@ import type { VectorClockData } from './VectorClock.js';
  *   - `state` — what `onEvent` has produced; the user-visible result.
  *   - `vc` — the actor's current vector-clock view; required so future
  *     ticks merge correctly with peer envelopes.
- *   - `seenIds` — dedupe set keyed by `(replica, seqAtReplica)`.  After
- *     loading a snapshot we still process the journal's delta, plus
- *     in-flight pubsub deliveries; without seenIds we could double-
- *     apply an event that was on disk AND in flight.
+ *   - `seenIds` — deduplication set keyed by each envelope's `eventId`
+ *     (`${replica}#${seqAtReplica}` for envelopes written before #706
+ *     added the field; both shapes coexist in one set after an upgrade,
+ *     which is harmless because a key is only ever compared for
+ *     equality).  After loading a snapshot we still process the
+ *     journal's delta, plus in-flight pubsub deliveries; without
+ *     seenIds we could double-apply an event that was on disk AND in
+ *     flight.
  *   - `events` — canonical sorted history.  Out-of-order remote arrivals
  *     trigger a refold; the refold reads `events`, so we must persist
  *     it.  This is the heaviest field — for a 100k-event actor a

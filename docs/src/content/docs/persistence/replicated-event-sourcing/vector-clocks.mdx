@@ -54,6 +54,16 @@ vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
 | `compareTo(other)` | Returns `'before'` / `'after'` / `'equal'` / `'concurrent'`. |
 | `toJSON()` | Plain-object form for serialization. |
 
+`fromData` trusts its argument: it is the deserializer, so it assumes
+the record is a record of numbers.  That is fine for a clock coming
+out of your own snapshot and *not* fine for one off the wire, which is
+why `ReplicatedEventSourcedActor` checks a peer-supplied clock before
+merging it — a plain object, no arrays, a bounded number of entries,
+every component a finite non-negative number.  A clock that fails is
+dropped with the envelope carrying it; see
+[the trust model](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers).
+Call `fromData` on untrusted input yourself and you own that check.
+
 ## How replicated ES uses them
 
 ```

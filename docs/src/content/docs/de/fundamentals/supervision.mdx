@@ -270,6 +270,14 @@ Fehler das Kind stoppt.
   Eskalation übergibt ihn dem eigenen Parent des Actors, dessen
   Strategie dann greift — und dessen Restart einen frischen Actor
   mit frischem typed-Kontingent baut.
+
+  Wrapper **verschachteln sich**, und dann ist "der Parent" einen
+  Sprung weiter weg: der innerste Wrapper entscheidet, ein `Escalate`
+  oder ein aufgebrauchtes Kontingent übergibt denselben Fehler an den
+  nächsten Wrapper nach außen, und erst wenn er hinter dem äußersten
+  herausfällt, erreicht er die Zelle.  Eine typed-Wrapper-Kette ist
+  also eine Supervisions-Hierarchie *innerhalb* eines Actors,
+  geschichtet über die Hierarchie zwischen Actors.
 </Aside>
 
 Für Exponential-Backoff-Retries verwende das

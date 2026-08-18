@@ -228,6 +228,15 @@ delivers a `{ kind: 'terminated' }` **Signal**, which
 handler even when a signal handler is registered.  Registering one
 does not quietly reroute the message you asked for.
 
+"When a signal handler is registered" is per behavior, not per actor.
+A signal handler belongs to the `receiveWithSignal` that declared it,
+so a state that is a plain `Behaviors.receive` has none — and a plain
+`watch`'s death arrives there as a `Terminated` **message**, exactly as
+it does for an actor that never registered a handler at all.  If a
+later state still wants the death as a signal, it declares its own
+`onSignal`; if it wants it as a message, `watchWith` says so
+explicitly and holds in every state.
+
 ## `unwatch`
 
 ```ts

@@ -11,6 +11,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — Strong DynamoDB reads consume twice the read capacity of
+  eventually-consistent ones, and the cost is not confined to recovery
+  (#736).**
+
+  Journal.read and Journal.highestSeq are also what the query layer's
+  catch-up path, currentEventsByTag, remember-entities, dead-letter
+  replay, journal migration and DevTools time travel call, so those pay it
+  too. There is no per-store opt-out; Cassandra's withConsistency has no
+  DynamoDB equivalent yet.
+
+  *Migration:* On PROVISIONED billing, re-check the read capacity on the
+  events and snapshots tables before upgrading -- a table sized for
+  eventually-consistent reads can now throttle. On PAY_PER_REQUEST nothing
+  to do beyond the cost increase.
+
+- **Documented in both languages that a `supervise` scope outlives the
+  subtree it wraps while a signal handler does not, across four pages that
+  previously stated the first only by implication and left the second
+  unstated: the typed `behaviors` page gains scope and nesting subsections
+  plus the signal-handler migration cases, the typed `typed-actor` page says
+  that "the framework remembers the strategy" is a stack and how a failure
+  travels it, the supervision page's typed aside says a wrapper chain is a
+  supervision hierarchy inside one actor, and the death-watch page corrects
+  "even when a signal handler is registered" from a property of the actor to
+  a property of the behavior. #928's second acceptance criterion asks for
+  the opposite scope rule ("supervise applies to its subtree and stops
+  applying when the actor transitions out of it"); it is answered by
+  documenting and testing the nesting instead, because four shipped
+  paragraphs promise the actor-lifetime scope the code has and the sibling
+  decorator `Behaviors.intercept` documents the same survive-the-transition
+  rule. (#928).**
+
+- **BREAKING — ReplicatedEventSourcedActor validates its own `replicaId` at
+  preStart against the same 255-character bound peers apply to an arriving
+  envelope, and throws naming the bound (#706).**
+
+  Without it an over-long id chosen locally showed up only as every peer
+  silently dropping this replica's events — a one-way divergence with
+  nothing in the offending node's log. `MAX_REPLICA_ID_LENGTH` and
+  `DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS` are exported from the
+  persistence barrel, since both are reachable from a subclass.
+
+  *Migration:* An actor whose `replicaId` override returns an empty or
+  longer-than-255-character string now fails at startup instead of
+  running; shorten the id.
+
+- **The flake diagnosis page, both languages, now gives per-row grounds for
+  ruling a fixed sleep out of each open entry instead of one blanket claim
+  that held for three of five, names the InMemoryTransport test that was
+  actually observed failing rather than a different one, catalogues a fifth
+  cause family (an assertion whose denominator is process-global state) with
+  its remedy, and carries a measurement of the three quarantined multi-node
+  suites: 15 local repeats, two tests flaky at 1 in 15, nothing consistently
+  failing, no hangs. The claim that neither quarantined failure reproduces
+  locally is corrected, since it holds for the hang and not for
+  LeaseMajority's false split-brain, whose local failure follows a
+  hand-rolled 25 s deadline loop falling through silently. (#290).**
+
 - **BREAKING — The exported type IpAllowlistOptions is now the
   accepted-input union IpAllowlistOptionsBuilder | IpAllowlistOptionsType,
   and also a value alias for the builder, matching every other options
@@ -622,6 +680,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **Three gates for the repeat-run flake harness (scripts/stress-test.mjs),
+  which decided flaky-versus-broken with nothing checking it.
+  tests/unit/ci/StressHarnessAggregation.test.ts drives the JUnit parser and
+  the aggregation over fixtures, including bun's real output with its
+  host-separator file attributes;
+  tests/unit/ci/StressHarnessClassification.test.ts drives the whole script
+  against a synthetic suite that fails in run 3 of 5, one that fails in
+  every run, and one that hangs in the middle of otherwise green runs;
+  tests/unit/ci/StressHarnessQuarantine.test.ts proves
+  ACTOR_TS_SKIP_FLAKY_MNS really is dropped from the child environment and
+  really is set by --skip-quarantined. The script gained exports and an
+  import.meta.main guard so a test can import it without starting a stress
+  run; invoking it as an entry point behaves exactly as before. (#290).**
 
 - **IpAllowlist gained `trustedProxies`, the CIDRs of the reverse proxies in
   front of the app (#715).**
@@ -1378,6 +1450,80 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **BREAKING — Nested `Behaviors.supervise` wrappers now layer instead of
+  collapsing into the innermost one (#638).**
+
+  `TypedActor` held a single slot per supervision scope and the resolve
+  walk overwrote it on every hop, so in
+  `supervise(supervise(inner).onFailure(strategyInner)).onFailure(strategyOuter)`
+  the outer strategy was unreachable on every path: an inner
+  `Directive.Escalate` and a spent inner restart budget both rethrew
+  straight past it to the actor's cell. The scopes are a stack now. The
+  innermost strategy decides; a scope that declines — `Escalate`, or a
+  restart budget it has spent — hands the same error one scope out; only
+  falling off the outermost wrapper reaches the cell, where the parent's
+  strategy applies. A `supervise` that a running behavior returns nests
+  inside the scopes already active instead of replacing them, and a
+  restart an outer scope decided rebuilds the wrappers below it, so the
+  inner scopes come back with a full allowance. A non-nested actor has a
+  one-entry stack and is unaffected.
+
+  *Migration:* An outer `Behaviors.supervise` that was silently inert now
+  gets consulted, so a decider (and any logging or counting inside it)
+  runs where it previously never did.
+
+- **BREAKING — A typed signal handler is scoped to the behavior that
+  declared it (#928).**
+
+  `resolve` only ever installed one and never cleared it, so a state
+  machine written as `Behaviors.receiveWithSignal` followed by a plain
+  `Behaviors.receive` per state kept the first state's handler for the
+  rest of the actor's life, and went on diverting every `Terminated` away
+  from its receive handler. Adopting a `receive` that declares no
+  `onSignal` now unregisters it. The sentinels are deliberately exempt, so
+  a behavior answering `Behaviors.stopped` still reaches the `post-stop`
+  handler it was adopted with — clearing the field at the head of every
+  resolve, which the issue proposed, would have dropped it there.
+
+  *Migration:* Re-declare `onSignal` in every state that needs `post-stop`
+  / `pre-restart` cleanup or wants a watched actor's death as a signal;
+  without it the cleanup stops firing after the first transition and the
+  death arrives at the receive handler as a `Terminated` message again.
+
+- **A WebSocket upgrade whose hub refuses the connection no longer leaks its
+  maxConnections slot or throws through the backend's upgrade callback
+  (#717).**
+
+  The admission release was chained onto the connection actor's
+  setListeners, which is exactly what does not run when that actor was
+  never spawned, so a refusal burned a slot permanently. wireConnection
+  now guards the send, releases the slot directly, closes the socket with
+  1013's quieter sibling 1011 ("connection setup failed"), and logs the
+  refusal.
+
+- **The nightly flake workflow had never uploaded a single report.
+  actions/upload-artifact defaults include-hidden-files to false since v4.4
+  and the report directory is .stress, so both jobs on both nights matched
+  zero files, while if-no-files-found: warn inside continue-on-error jobs
+  kept the run list green. The fourteen-night criterion for lifting the
+  multi-node quarantine was defined in terms of a summary.json that was
+  never kept, so nights before this cannot be counted. Both upload steps now
+  set include-hidden-files: true and if-no-files-found: error, and
+  tests/unit/ci/WorkflowHygiene.test.ts asserts both for every hidden upload
+  path in .github/workflows/, keyed on the path so a future .coverage/ is
+  covered too. (#290).**
+
+- **tests/unit/InMemoryTransport.test.ts asserted a property of the whole
+  process rather than of the transport it named: registry is a private
+  static Map, peers() returns every entry but self, and bun test runs the
+  whole tree in one process, so expecting an empty peers list after shutdown
+  asserted that none of the 75 suites which build a transport had left one
+  registered. That is why it passed alone and failed only in a whole-suite
+  run, with no timing involved. It now reads the transition it causes
+  through a live peer, which also makes it bind shutdown()'s unregistration
+  for the first time; the previous form, running alone, could not tell
+  whether shutdown unregistered at all. (#290).**
 
 - **A watcher whose mailbox used `overflow: 'reject'` could hang
   `terminate()` for the whole actor tree (#729).**
@@ -2545,6 +2691,105 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **DynamoDB journal and snapshot reads that a sequence-number decision or a
+  recovery depends on now set ConsistentRead: true (#736).**
+
+  Previously only the durable-state store and the journal's compaction
+  mark asked for strong consistency, while the head Query fourteen lines
+  above that mark in the same function did not -- so a lagging read
+  replica made an intact stream look rewound and the framework misreported
+  it. Concretely: a stale head failed the next persist's expectedSeq
+  compare, which PersistentActor routes to onSecondWriterDetected,
+  clearing the lease flag and stopping the entity while logging that
+  another live instance owns it; a stale replay page truncated history
+  undetectably, because the replay integrity checks see holes, ordering
+  and window bounds but nothing states where a stream should end, leaving
+  the actor recovering onto superseded state; delete collected its doomed
+  keys weakly and then raised the compaction mark over the whole range
+  regardless, leaving events alive below a mark that said they were gone;
+  and the snapshot store had four reads and no strong one, so once the
+  journal was compacted past the newest snapshot a stale loadLatest folded
+  from a point the surviving events no longer adjoin and recovery aborted
+  with JournalIntegrityError over a perfectly intact store. Strong now:
+  read, the head read inside readHead, delete's doomed-key query,
+  loadLatest and loadBefore. Deliberately left eventually consistent, with
+  the reasoning in the code: persistenceIds' full-table scan, and the
+  snapshot store's prune and delete key queries, where a stale read can
+  only under-delete.
+
+- **A WebSocket hub given an explicit mailbox capacity can no longer lose
+  the command that spawns a connection's actor (#717).**
+
+  The precondition matters and is not the default: since #1148 the default
+  mailbox is unbounded, so nothing is evicted from a hub nobody bounded,
+  and #570 made the pre-attach socket buffer replay close and error, so a
+  client that gives up inside the setup window unwinds its own tracker
+  entry and admission slot. The permanently orphaned socket the original
+  report describes is not reachable in a stock deployment. What was
+  reachable was the configured case, and every policy destroyed the
+  command in its own way: drop-head evicted it once roughly capacity
+  further frames pushed it back to the head, drop-new discarded it on
+  arrival, reject threw MailboxFullError out of hub.tell on the backend's
+  un-guarded upgrade stack, a caller's PriorityMailbox with
+  drop-lowest-priority shed it, and a hub's own throttle with onExcess
+  'drop' consumed it. Since the command carries the only reference to a
+  socket whose handshake already completed, and nothing retries, losing it
+  cost a socket rather than a message: no listeners attached, inbound
+  frames accumulating unread, and its maxConnections slot held until the
+  client gave up. It now travels the lane #729 opened for a death-watch
+  Terminated — queued at the tail of the user lane as before, so frame
+  ordering is unchanged, but exempt from every load-shedding policy.
+
+- **BREAKING — A cluster member could permanently suppress another replica's
+  replicated events (#706).**
+
+  ReplicatedEventSourcedActor identified an event cluster-wide by
+  `${replica}#${seqAtReplica}`, both halves taken from the broadcast
+  payload, and `seqAtReplica` is a plain counter — so a peer computed a
+  victim's future identities by arithmetic rather than search. A
+  deduplication hit means silently discard, so pre-claiming `victim#42`
+  made every other replica drop the victim's genuine 42nd event, and the
+  suppression survived a restart twice over: the forgery is appended to
+  the receiver's journal and re-absorbed on replay, and the identity set
+  is serialised into every snapshot. The envelope now carries an `eventId`
+  minted from 96 bits of entropy at persist time, and deduplication keys
+  on that. Same remedy as #722 took for the structurally identical ORSet
+  tombstone pre-claim; `seqAtReplica` remains on the envelope only as the
+  last tie-break in the canonical order.
+
+  *Migration:* ReplicatedEventEnvelope gains a required `eventId`,
+  changing both the wire and on-disk format. Envelopes already on a node's
+  own journal or snapshot still recover and still deduplicate on the old
+  key, so no history is lost — but a peer that does not send an `eventId`
+  is refused, so replicas must be upgraded together; a mixed-version
+  cluster loses cross-replica delivery (logged at WARN) until every node
+  is on the new version.
+
+- **A replicated event envelope arriving from a peer is now validated whole
+  before any state is touched, and a failure drops that one envelope with a
+  WARN naming the field instead of failing the actor (#706).**
+
+  Previously `_absorb` added the deduplication key, spliced the event into
+  the history and refolded state, and only then died inside
+  `VectorClock.fromData` — so a three-field message with no vector clock
+  was a repeatable one-message actor crash from any member that also left
+  the in-memory history holding an event no journal had. Checked now:
+  `replica` and `eventId` bounded non-empty strings, `seqAtReplica` a
+  positive safe integer, `timestamp` finite, and the vector clock a plain
+  object of bounded entry count whose components are finite and
+  non-negative.
+
+- **The canonical event history of a ReplicatedEventSourcedActor is now
+  bounded by the new `maxObservedEvents()` hook, default 100 000 (#706).**
+
+  There is no compaction yet (#535) and every accepted remote envelope
+  also costs a journal write and a deduplication entry, so one member
+  could grow another's memory, disk and refold cost without limit. At the
+  ceiling remote envelopes are refused rather than evicted — dropping
+  history changes the fold and dropping identities reopens double-apply —
+  with one WARN rather than one per envelope, so the log is not the next
+  unbounded resource. Local persist calls are never refused.
 
 - **BREAKING — An event or snapshot adapter built by
   InMemorySchemaRegistry.eventAdapter(manifest) / snapshotAdapter(manifest)

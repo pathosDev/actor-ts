@@ -53,6 +53,16 @@ name: nightly-flakes
 # non-empty `runsTimedOut` is a red night regardless of what else it says —
 # the suite stopped making progress, so nothing can be said about its tests.
 #
+# **The first two nights produced no artifact at all** (2026-08-17 and
+# 2026-08-18, both jobs: `No files were found with the provided path: .stress/`,
+# `total_count: 0`), because `.stress` is a dot-directory and upload-artifact
+# defaults `include-hidden-files` to false.  Both upload steps now set it, and
+# `if-no-files-found: error` so a silent zero-file upload fails the step instead
+# of warning into a log nobody reads;
+# `tests/unit/ci/WorkflowHygiene.test.ts` asserts the pair for every hidden
+# path in this directory.  Nothing before that fix can be counted towards the
+# fourteen: the runs happened, but their evidence was never kept.
+#
 # **Nothing accumulates the streak.**  It is counted by a human reading these
 # annotations, which is the same failure that made the quarantine permanent in
 # the first place.  Automating it is not cheap here: both jobs are
@@ -145,13 +155,24 @@ jobs:
         # keeping.  Nothing in the repository uploaded an artifact before
         # this, so a nightly failure used to be readable only from the job
         # log, which ages out — and per-run failure identity with it.
+        #
+        # `include-hidden-files` is not optional here and its absence is not
+        # cosmetic: `.stress` is a dot-directory, upload-artifact defaults the
+        # flag to false since v4.4, and so the first two nights uploaded
+        # **nothing at all** — `No files were found with the provided path`,
+        # `total_count: 0` on both runs — while the header above and the docs
+        # page both call that artifact the only durable evidence of the
+        # fourteen-night criterion.  `if-no-files-found: error` is the half
+        # that would have said so on night one; `publish.yml`'s SBOM step
+        # already uses it.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: quarantined-${{ github.run_id }}-${{ github.run_attempt }}
           path: .stress/
+          include-hidden-files: true
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Annotate
         if: always()
@@ -197,13 +218,15 @@ jobs:
         run: bun run test:stress -- --runs="$RUNS" --run-timeout=1200000 --report-dir=.stress
 
       - name: Upload reports
+        # See the quarantined job's upload step for why both flags are here.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stress-${{ github.run_id }}-${{ github.run_attempt }}
           path: .stress/
+          include-hidden-files: true
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Annotate
         if: always()

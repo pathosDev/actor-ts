@@ -254,6 +254,13 @@ child.
   nobody upstream any the wiser.  Escalating hands the failure to
   the actor's own parent, whose strategy then applies — and whose
   restart builds a fresh actor with a fresh typed allowance.
+
+  Wrappers **nest**, and then "the parent" is one hop further away:
+  the innermost wrapper decides, an `Escalate` or a spent budget
+  hands the same error to the next wrapper out, and only falling off
+  the outermost one reaches the cell.  So a typed wrapper chain is a
+  supervision hierarchy *inside* one actor, layered above the
+  hierarchy between actors.
 </Aside>
 
 For exponential-backoff retries, use the

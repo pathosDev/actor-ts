@@ -36,11 +36,14 @@ not hold up:
   those went through the same queue.  Each of those turned into a filed
   defect.
 
-  One of them, the death-watch `Terminated`, is now out of every
-  policy's reach: it takes a lane no bound can shed (see
+  Two messages the framework sends on your behalf are now out of every
+  policy's reach: the death-watch `Terminated`, and the command that
+  spawns a [WebSocket](/http/websocket/#bounding-the-hubs-mailbox)
+  connection's actor.  Both take a lane no bound can shed (see
   [Death watch](/fundamentals/death-watch/) and *A mailbox of your own*
-  below).  The rest is still application traffic, and only you know
-  which of it is safe to lose.
+  below).  The test they pass is that the framework built them, sent
+  them once, and kept nothing it could re-send.  The rest is still
+  application traffic, and only you know which of it is safe to lose.
 
 So the loss is now something you ask for, per actor, and the growth is
 something you are told about: an actor whose queue reaches 10 000
@@ -66,7 +69,12 @@ and you can say which messages are safe to lose:
   would rather refuse work than queue it.  `drop-new` keeps what you
   already accepted, `reject` tells the sender to back off.
 - Any actor exposed to a producer you do not control, where an
-  unbounded queue is a denial-of-service surface.
+  unbounded queue is a denial-of-service surface.  Read the third bullet
+  with the first two: it says where a bound is *worth* considering, not
+  that the traffic there is expendable.  A WebSocket hub is the clearest
+  case of both at once — see
+  [Bounding the hub's mailbox](/http/websocket/#bounding-the-hubs-mailbox)
+  for what a bound there does and does not cost.
 
 ```ts
 import { ActorOptions } from 'actor-ts';
@@ -142,9 +150,10 @@ rather than a silent precedence rule.
 
 #### One obligation: `enqueueSignal`
 
-A queue that sheds has one thing it must not shed.  The framework
-announces a death exactly once — see
-[Death watch](/fundamentals/death-watch/) — so a `Terminated` arrives
+A queue that sheds has a short list of things it must not shed.  The
+framework announces a death exactly once — see
+[Death watch](/fundamentals/death-watch/) — and hands a WebSocket hub the
+command that spawns a connection's actor exactly once, so both arrive
 through `enqueueSignal` rather than `enqueue`, and the contract is
 *queue it whatever your bound says*:
 

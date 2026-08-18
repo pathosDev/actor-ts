@@ -70,6 +70,36 @@ import { Aside } from '@astrojs/starlight/components';
   `--skip-quarantined`, wenn der Rest der Suite Gegenstand des Laufs ist.
 </Aside>
 
+### Warum man dem Harness glauben kann
+
+Alles oben ist ein *berechnetes* Urteil, und ein Klassifikator, der falsch
+liegt, sieht genau wie eine Messung aus, die überrascht.  Deshalb wird das
+Harness gegen Eingaben geprüft, deren Antwort vor dem Lauf feststeht:
+
+- `tests/unit/ci/StressHarnessAggregation.test.ts` treibt den JUnit-Parser und
+  die Aggregation über Fixtures — ein Pass, ein `<failure>`, ein `<error>`, ein
+  `<skipped/>`, ein maskierter Testname, und derselbe Test mit POSIX-Pfad,
+  Windows-Pfad und absolutem Pfad geschrieben, was zu **einer** Identität
+  zusammenfallen muss, sonst werden aus „ist in 3 von 5 Läufen fehlgeschlagen"
+  drei unabhängige Rot-Meldungen.
+- `tests/unit/ci/StressHarnessClassification.test.ts` führt das echte Skript
+  über eine synthetische Suite aus, deren Verhalten eine Zählerdatei bestimmt:
+  Ein Test schlägt in Lauf 3 von 5 fehl, einer in allen fünf, einer nie, einer
+  wird übersprungen.  Das erwartete Urteil ist damit eine Tatsache und keine
+  Einschätzung — die einzige Art, „als flaky gemeldet" von „falsch
+  klassifiziert" zu unterscheiden.
+- `tests/unit/ci/StressHarnessQuarantine.test.ts` beweist den Absatz im Kasten
+  darüber: Ein Fixture hinter dem echten `describeMns`-Guard läuft, wenn das
+  Flag in der Elternumgebung exportiert ist, und wird unter
+  `--skip-quarantined` übersprungen.
+- `tests/unit/ci/StressHarnessWatchdog.test.ts` treibt es gegen eine Suite, die
+  tatsächlich nie fertig wird.
+
+Die Unterscheidung, die diese vier schützen, ist die, auf der diese Seite
+aufbaut.  Ein Skip, der als Pass zählt, oder ein Hänger, der als grün zählt,
+erzeugt eine sauber aussehende Zahl für eine Nacht, in der nichts gemessen
+wurde — und genau diese Zahl würde dann hier zitiert.
+
 ## Was Wiederholung findet — und was nicht
 
 Eine Schleife treibt die Wahrscheinlichkeit eines **lastabhängigen** Flakes
@@ -109,6 +139,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
+| Eine Assertion über prozessweiten Zustand | Geklärt | Läuft isoliert durch, fällt im Lauf der ganzen Suite um, und es ist kein Timing beteiligt |
 | Worker-Respawn auf Hosted Runnern | Quarantäne | Worker starten, machen den Handshake, laufen dann nie — nur in CI |
 
 ### Fester Sleep vor einer Assertion
@@ -225,31 +256,115 @@ einschleppen kann.
   niemals ein geteilter Fixture-Pfad.  Rund zwei Dutzend Suites machen das
   heute; kopiere eine der Object-Storage-Suites, wenn du ein Muster brauchst.
 
+### Eine Assertion über prozessweiten Zustand
+
+Die einzige Familie, in der überhaupt kein Timing steckt — und damit die, die
+ein Wiederholungslauf am schlechtesten diagnostiziert: Der Test hat über sein
+eigenes Objekt recht und über seinen Geltungsbereich unrecht.
+
+`bun test` führt den ganzen Baum in einem Prozess aus, also teilen sich alle
+Suites darin jede `static`-Collection.  Eine Assertion über den *Inhalt* einer
+solchen ist eine Assertion über alles, was vorher lief:
+
+```ts
+// ✗ InMemoryTransport.registry ist eine `private static Map`, und peers() gibt
+//   jeden Eintrag außer sich selbst zurück — das sagt also „nirgends in diesem
+//   Prozess ist ein anderer Transport registriert". 75 Testdateien erzeugen einen.
+await transportA.shutdown();
+expect(transportA.peers()).toEqual([]);
+```
+
+```ts
+// ✓ der Übergang, den dieser Test ausgelöst hat, über einen lebenden Peer gelesen
+await transportA.shutdown();
+expect(transportB.peers().some((peer) => peer.port === 40501)).toBe(false);
+```
+
+Die Signatur ist unverkennbar, sobald man sie kennt: läuft isoliert durch, fällt
+nur im vollen Lauf um, und keine Menge Warten ändert etwas — weil nichts
+unterwegs ist.  Frage, was der *Nenner* der Assertion ist.  Ist es ein
+`static`-Feld, eine modulweite Registry oder ein prozessweiter Zähler, dann
+verenge sie auf den Eintrag, der diesem Test gehört.
+
 ## Offene Einträge
 
 Tests, die zeitweise umfallen und deren Ursache **noch nicht** geklärt ist.
 Ursachen auszuschließen ist nicht dasselbe wie eine zu belegen, deshalb
-stehen sie hier ohne Urteil statt mit einer Vermutung:
+stehen sie hier ohne Urteil statt mit einer Vermutung.  Einer der fünf ist
+nicht mehr offen — seine Ursache ist unten belegt — und bleibt in der Tabelle,
+weil er der Eintrag ist, den ein Lauf der ganzen Suite am ehesten wieder nennt:
 
-| Test | Datei |
-| --- | --- |
-| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` |
-| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` |
-| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` |
-| `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
-| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
+| Test | Datei | Sleep ausgeschlossen? |
+| --- | --- | --- |
+| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` | Ja — Warten umgestellt |
+| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` | Ja — Warten umgestellt |
+| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` | Ja — Deadline-Schleife umgestellt |
+| `peers list is empty after shutdown` | `tests/unit/InMemoryTransport.test.ts` | Ja — der Test ist vollständig synchron |
+| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` | Ja — die Datei hat kein Warten zum Umstellen |
 
-Ports und Dateisystem-Pfade sind für alle fünf ausgeschlossen.  Bei allen
-fünf wurde inzwischen der feste Sleep — bei `ClusterBootstrap` eine
-handgeschriebene Deadline-Schleife, die still durchfiel — durch ein Warten
-auf den Zustand ersetzt, den die Assertion liest.  **„Der Sleep war zu kurz"
-ist für keinen davon noch eine verfügbare Erklärung.**
+Ports und Dateisystem-Pfade sind für alle fünf ausgeschlossen, und „der Sleep
+war zu kurz" ebenfalls — aber nicht bei jedem mit demselben Argument, und der
+Unterschied sagt, wo als Nächstes zu suchen ist:
 
-Genau dafür lohnt es sich, einen offenen Eintrag aufzuschreiben statt zu
-raten: Benennt ein Nightly-Lauf einen davon erneut, bleiben als Kandidaten
-ein wirklich langsamer Schritt und eine Reihenfolge-Umkehr, und das
-`summary.json` sagt, wie oft.  Trag die Zahl hier nach, statt von vorn
-anzufangen.
+- **Drei hatten ein Warten, und es wurde umgestellt.**  `Actor`, `Cluster` und
+  `ClusterBootstrap` warteten je auf eine feste Verzögerung — `ClusterBootstrap`
+  über eine handgeschriebene Deadline-Schleife, die still durchfiel — und warten
+  jetzt auf den Zustand, den die Assertion liest.
+- **Zwei hatten nie eines.**  `peers list is empty after shutdown` ist von Anfang
+  bis Ende synchron: Jeder Schritt ist awaited, es gibt kein Polling und keine
+  Verzögerung.  Seine Ursache ist überhaupt nicht Timing — es ist eine
+  **prozessweite Assertion**, und die ist geklärt und nicht offen.
+  `InMemoryTransport.registry` ist eine `private static Map`, und `peers()` gibt
+  jeden Eintrag darin außer sich selbst zurück.  `expect(transportA.peers()).toEqual([])`
+  behauptet also, dass *nirgends im Prozess ein anderer Transport registriert
+  ist*.  75 Testdateien erzeugen einen.  Eine einzige Suite, die einen
+  registriert zurücklässt — oder deren `shutdown()` noch nicht gelaufen ist —
+  bringt diesen Test zu Fall, und nur in einem Lauf der ganzen Suite, was genau
+  die beobachtete Signatur ist.
+
+  Das ist eine **fünfte Familie**, und man erkennt sie an ihrer Form:
+  Eine Assertion über eine `static`-Collection prüft den ganzen Prozess und nicht
+  die Einheit.  Der Test ist inzwischen auf den Übergang verengt, den er auslöst —
+  dass *diese* Adresse die Registry verlassen hat, gelesen über einen anderen
+  lebenden Transport — und heißt jetzt
+  `shutdown removes the transport from a live peer's view`; der alte Name bleibt
+  in der Tabelle oben, weil das die Identität ist, die die Messung erfasst hat.
+
+  Wissenswert, warum die Verengung nicht bloß aufgeräumter ist.  Entfernt man die
+  Zeile `registry.delete(…)` aus `InMemoryTransport.shutdown()`, bleibt die alte
+  Assertion **grün**, wenn sie allein läuft: `peers()` filtert sich selbst heraus,
+  A's eigene übrig gebliebene Registrierung ist für sie also unsichtbar.  Rot wurde
+  sie nur innerhalb ihrer eigenen Datei, und nur weil die Tests darüber
+  Registrierungen zurücklassen — sie hat also ihre Geschwister erkannt und nicht
+  ihren Gegenstand.  Die verengte Form wird bei dieser Mutation in beiden Fällen
+  rot.
+
+  `ParallelMultiNodeSpec.test.ts` enthält **überhaupt** kein Warten auf eine
+  feste Verzögerung; es wartet über die Budgets von `spec.awaitMembers` /
+  `spec.awaitMemberStatus`.
+
+  Für den zweiten gibt es inzwischen eine Messung statt einer Vermutung.  Ein
+  lokaler Lauf der drei quarantänisierten Suites mit 15 Wiederholungen
+  (2026-08-18) hat `partition + heal` einmal erwischt, und der Fehlschlag ist
+  überhaupt keine Assertion:
+
+  ```text
+  InvalidStateError: Worker has been terminated
+      at postMessage (src/runtime/worker/WebWorkerBackend.ts:88)
+      at postMessage (src/testkit/ParallelMultiNodeSpec.ts:409)
+      at onMessage   (src/testkit/internal/MultiNodeBroker.ts:90)
+  ```
+
+  Der Broker hat eine Nachricht an einen Worker weitergereicht, der schon
+  beendet war, und die Ablehnung wurde dem Test zugeschrieben, der gerade lief.
+  Das ist ein Teardown-Race im Harness, keine Zeit-Wette im Test — also kann kein
+  Warten, welcher Form auch immer, die Ursache gewesen sein.
+
+Genau dafür lohnt es sich, einen offenen Eintrag aufzuschreiben statt zu raten:
+Ein Eintrag, dessen Sleep umgestellt wurde, und einer, der nie einen hatte,
+führen zu verschiedenen nächsten Schritten, und nur die Zahl im `summary.json`
+unterscheidet „einmal gesehen" von „oft gesehen".  Trag die Zahl hier nach,
+statt von vorn anzufangen.
 
 ## Drei Suites, die CI nicht ausführt
 
@@ -266,11 +381,53 @@ funktionsfähigen Worker-Threads mehr starten — sie spawnen, machen den
 Handshake und laufen dann nie — und dieselbe Ressourcen-Knappheit verzögert
 den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, sodass beide
 Partitionsseiten acquiren und der Test einen falschen Split-Brain sieht.
-Keines von beidem reproduziert lokal oder in Docker.
+Der *Hänger* reproduziert lokal und in Docker nicht.
 
 **Ein grüner CI-Check sagt über diese drei also nichts aus.**  Ein lokales
 `bun test` führt sie aus; der `integration`-Workflow über echtes Netz deckt
 den entsprechenden Bereich ebenfalls ab.
+
+### Was sie lokal tatsächlich tun
+
+Gemessen mit dem Harness am 2026-08-18, 15 Wiederholungen genau dieser drei
+Suites bei Concurrency 1 auf einem Windows-Laptop (`develop` @ `58fcc9fc`) —
+zwei Aufrufe, 5 Wiederholungen und dann 10 — mit 10 ausgeführten Tests pro
+Wiederholung und ohne Skips, das Flag wurde also wirklich entfernt:
+
+```sh
+bun run test:stress -- --runs=15 --run-timeout=480000 \
+  tests/multi-node/LeaseMajority.test.ts \
+  tests/multi-node/ParallelPubSub.test.ts \
+  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
+```
+
+| Test | Fehlgeschlagen | Urteil |
+| --- | --- | --- |
+| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
+| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
+| alles andere in den drei Suites, `ParallelPubSub` eingeschlossen | 0 / 15 | — |
+
+Zwei Schlüsse, und der zweite ist der nützliche:
+
+- **Nichts hier fällt durchgängig um.**  Beide Kandidaten sind mit rund 7 %
+  flaky, und kein Lauf hat gehangen.  Die lokale Geschichte und die
+  Hosted-Runner-Geschichte sind also wirklich verschiedene Fehler, und das
+  Aufheben der Quarantäne hängt am Runner-Pool und nicht an einem kaputten Test.
+- **„Reproduziert lokal nicht" war für die Fehlschläge selbst zu stark.**
+  `LeaseMajority` hat lokal denselben falschen Split-Brain erzeugt, den die
+  Hosted Runner erzeugen — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
+  kam als `true` zurück — nachdem die handgeschriebene 25-s-Deadline-Schleife des
+  Tests (`tests/multi-node/LeaseMajority.test.ts`) still durchgefallen war und
+  zwei Assertions gegen den Zustand laufen ließ, der in diesem Moment eben
+  existierte.  Diese Schleife hat dieselbe Form, die der `ClusterBootstrap`-Fix
+  entfernt hat, und sie ist der Grund, warum der fehlgeschlagene Lauf 49 s statt
+  der 24 s der Baseline brauchte.
+
+Keine der beiden Reparaturen gehört auf diese Seite, und keine hat bisher ein
+Issue: #538 ist geschlossen, nachdem es das Nightly und das schriftliche
+Ausstiegskriterium geliefert hat, und kann sie deshalb nicht tragen.  Hierher
+gehört die Zahl — nennt ein Lauf dieser drei einen der beiden oben mit etwa 1 von
+15, ist das der *bekannte* Stand und kein neuer Befund.
 
 ### Sie zurückholen
 
@@ -289,6 +446,20 @@ dass es aufgehört hat.  Eine einzige rote Nacht setzt den Zähler zurück; das
 `summary.json` jeder Nacht ist der Beleg (`greenRuns == runs` und ein leeres
 `runsTimedOut` — ein hängender Lauf ist rot, egal wie wenige Tests darin
 umgefallen sind).
+
+**Die ersten zwei Nächte haben überhaupt keinen Beleg behalten.**
+`actions/upload-artifact` hat `include-hidden-files` seit v4.4 auf false
+voreingestellt, `.stress` ist ein Punkt-Verzeichnis, und deshalb haben beide
+Jobs in beiden Nächten `No files were found with the provided path: .stress/`
+geloggt und null Dateien hochgeladen — während `if-no-files-found` auf `warn`
+stand, in Jobs, die `continue-on-error` sind und daher immer mit `success`
+abschließen.  Nichts wurde rot; der Satz darüber war einfach falsch.  Beide
+Schritte setzen jetzt `include-hidden-files: true` und
+`if-no-files-found: error`, und `tests/unit/ci/WorkflowHygiene.test.ts` prüft
+das Paar für jeden versteckten Upload-Pfad in `.github/workflows/`, sodass sich
+das beim nächsten Punkt-Verzeichnis-Artefakt nicht wiederholen kann.  **Nächte
+vor diesem Fix zählen nicht**: Die Läufe haben stattgefunden, aber ihr
+`summary.json` wurde nie behalten.
 
 **Diesen Zähler führt nichts mit.**  Er wird von Menschen aus den
 Lauf-Annotationen abgelesen — genau das, was die Quarantäne überhaupt erst
