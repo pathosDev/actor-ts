@@ -149,6 +149,42 @@ describe('Stock actor metrics', () => {
     }
   });
 
+  test('actor_mailbox_depth and actor_dispatcher_queue_delay_seconds complete the set (#196)', async () => {
+    // The other two thirds of what #196 asked for, pinned here beside their
+    // siblings so the stock inventory is one list in one place.  What each
+    // one measures — and, for the delay family, why it is a delay rather than
+    // the `dispatcher_saturation_ratio` the issue named — lives in
+    // `MailboxDepthHistogram.test.ts` and `DispatcherQueueDelay.test.ts`.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-saturation', sysOptions);
+    const reg = sys.extension(MetricsExtensionId).enable();
+    try {
+      const actorRef = sys.spawn(Echo, 'a');
+      actorRef.tell('1'); actorRef.tell('2');
+      const totalsOf = (name: string): number =>
+        reg.collect().find((s) => s.name === name && s.count !== undefined)?.count ?? 0;
+      await awaitCondition(
+        () => totalsOf('actor_mailbox_depth') >= 2
+          && totalsOf('actor_dispatcher_queue_delay_seconds') >= 1,
+        { timeoutMs: 4_000, label: 'both new families recorded observations' },
+      );
+
+      // One observation per delivery, so depth tracks
+      // `actor_messages_delivered_total` exactly — unlike the wait histogram,
+      // which deliberately skips unstamped and replayed envelopes.
+      expect(totalsOf('actor_mailbox_depth')).toBe(valueFor(reg, 'actor_messages_delivered_total'));
+      // Per *turn*, not per message: the two tells may share one turn, so the
+      // only sound relation is that turns never outnumber deliveries.
+      expect(totalsOf('actor_dispatcher_queue_delay_seconds')).toBeGreaterThanOrEqual(1);
+      expect(totalsOf('actor_dispatcher_queue_delay_seconds'))
+        .toBeLessThanOrEqual(totalsOf('actor_mailbox_depth'));
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('enabling metrics mid-drain starts counting from that point (#411)', async () => {
     // Every other case here enables metrics BEFORE it spawns, so none of them
     // would notice a cell that resolved its registry once and held it.  Since
