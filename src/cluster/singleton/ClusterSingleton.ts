@@ -167,9 +167,16 @@ export class ClusterSingleton implements Extension {
    * Take this node out of rotation: stop the local manager (and with it the
    * singleton, if this node was hosting) and drop the local proxy.
    *
-   * Stopping is asynchronous — the manager releases its lease and its envelope
-   * path in `postStop`.  Starting the same singleton again on this node has to
+   * Stopping is asynchronous — the manager stops its child and releases its
+   * lease in `postStop`.  Starting the same singleton again on this node has to
    * wait for that to settle.
+   *
+   * The claim on the manager's **envelope path** is deliberately kept: this node
+   * is still an `up` member, so it is still asked to hand the singleton over
+   * when the host moves, and after this call "I run no manager" is the truthful
+   * answer.  Dropping the claim would make it indistinguishable from an
+   * unreachable peer and cost the incoming host its whole `handOverTimeoutMs` —
+   * see {@link claimManagerPath}.
    */
   stop(reference: SingletonReference): void {
     const { typeName } = singletonKeyOf(reference);
