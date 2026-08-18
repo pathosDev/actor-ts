@@ -73,6 +73,24 @@ Das Framework merkt sich die Supervise-Strategie und den
 Timer-Scheduler über die Lebenszeit des Actors hinweg; die
 `setup`-Factory läuft nur beim ersten Mal und bei Restart.
 
+"Merkt sich" ist ein Stack, kein einzelner Slot: ein Lauf, der zwei
+`supervise`-Wrapper passiert, hält zwei Geltungsbereiche fest, den
+innersten zuletzt.  Ein Fehler wird ihnen von innen nach außen
+angeboten, und `Directive.Escalate` rückt einen Bereich nach außen —
+ein äußerer Wrapper wird also nicht stillschweigend von einem inneren
+verdrängt, siehe
+[Verschachtelung](/de/typed/behaviors/#verschachtelung-die-geltungsbereiche-schichten-sich).
+Ein Restart kürzt den Stack, und nur unterhalb des Bereichs, der ihn
+entschieden hat, denn das Neuauflösen dessen Kindes baut die Wrapper
+darunter neu auf.
+
+Das eine, was der Lauf über einen Übergang hinweg *nicht* behält, ist
+der Signal-Handler: er gehört zum `receive`-Knoten, der ihn deklariert
+hat, ein `receive` ohne `onSignal` meldet ihn also ab.  Nur die
+Sentinels lassen ihn unberührt — genau das erlaubt es einem Behavior,
+mit `Behaviors.stopped` zu antworten und sein `post-stop` dennoch zu
+sehen.
+
 Ein Wrapper-Zyklus (ein `setup`, das sich selbst zurückgibt, oder
 ein `supervise`, das rekursiert) ist auf 64 Hops gebunden — danach
 wirft der Resolver, was die Fehlkonfiguration laut surfacet, statt
@@ -128,6 +146,14 @@ Der Return-Wert funktioniert wie beim Receive-Handler — `same`, um
 das aktuelle Behavior zu behalten, ein neues Behavior, um zu
 tauschen.
 
+Der Handler ist an das Behavior gebunden, das ihn deklariert hat.  Geh
+zu einem `Behaviors.receive` ohne `onSignal` über, und die Registrierung
+ist weg: `post-stop` und `pre-restart` feuern nirgends, und der Tod
+eines beobachteten Actors erreicht den Receive-Handler wieder als
+gewöhnliche `Terminated`-Nachricht.  Deklariere `onSignal` in jedem
+Zustand neu, der es braucht — siehe
+[`receiveWithSignal`](/de/typed/behaviors/#receivewithsignal--handler--lifecycle-signale).
+
 ## Wo die Nähte sichtbar werden
 
 `TypedActor` ist die Brücke — und an der Naht zwischen typed und
@@ -140,8 +166,10 @@ untyped tauchen ein paar Details auf:
   an den Supervisor des *Parents* — wie bei untyped.  Genauso ein
   Fehler, für den dem Wrapper die Restarts ausgegangen sind: ist
   `maxRetries` innerhalb von `withinTimeRangeMs` aufgebraucht, hört
-  die typed-Ebene auf zu absorbieren, und der Fehler läuft weiter
-  an den Parent.
+  die typed-Ebene auf zu absorbieren, und der Fehler läuft weiter.
+  Sind `supervise`-Wrapper verschachtelt, heißt "läuft weiter", dass
+  erst der nächste Wrapper nach außen an die Reihe kommt; der
+  Supervisor des Parents ist das, was hinter dem äußersten liegt.
 - **`context.spawn(behavior)` gibt eine voll typisierte
   `ActorRef<U>` zurück.**  Die Runtime wickelt das Kind in einen
   weiteren `TypedActor<U>`.  Das ist das cast-freie Child-Spawning,

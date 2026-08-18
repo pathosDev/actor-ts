@@ -88,6 +88,39 @@ Das ist das typed-DSL-Äquivalent zum Überschreiben von `postStop`,
 `preRestart` und dem Behandeln von `Terminated`-Nachrichten in der
 untyped-Form.
 
+Der Handler gehört zu **diesem Behavior**, nicht zum Actor.  Ein
+Übergang zu einem `Behaviors.receive`, das kein `onSignal` deklariert,
+meldet ihn ab — eine Zustandsmaschine, die `post-stop`-Cleanup
+braucht oder den Tod eines beobachteten Actors als Signal statt als
+Nachricht will, deklariert `onSignal` also in jedem Zustand, der es
+braucht:
+
+```ts
+const draining = Behaviors.receiveWithSignal<Message>(
+  (context, message) => Behaviors.same,
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+
+// Behält das Cleanup — der nächste Zustand deklariert seinen eigenen Handler.
+const working = Behaviors.receiveWithSignal<Message>(
+  (context, message) => draining,
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+
+// Verliert es — ein einfaches `receive` deklariert keine Signale, ab hier
+// feuert `post-stop` also nirgends und ein `Terminated` erreicht den
+// Receive-Handler wieder als gewöhnliche Nachricht.
+const forgetful = Behaviors.receiveWithSignal<Message>(
+  (context, message) => Behaviors.receive((innerContext, innerMessage) => Behaviors.same),
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+```
+
+Die Sentinels sind die eine Ausnahme: `Behaviors.stopped` lässt den
+Handler installiert, denn ein `post-stop`-Handler, der genau in dem
+Moment aufhört zu funktionieren, in dem der Actor sich selbst stoppt,
+wäre nutzlos.
+
 ### `setup` — den Context einmal einfangen
 
 ```ts
@@ -234,6 +267,60 @@ Strategie des Parents, standardmäßig zehn Restarts pro Minute.  Ein
 Behavior, das immer wirft, hört also nach `maxRetries` auf, an Ort
 und Stelle zu kreisen, und stoppt endgültig, sobald auch das
 Kontingent des Parents aufgebraucht ist.
+
+#### Geltungsbereich: der Wrapper überlebt den Teilbaum
+
+`supervise` installiert einen Geltungsbereich, und der hält so lange
+wie der Actor.  Ein Behavior, zu dem das umschlossene *übergeht*, ist
+weiterhin überwacht, obwohl der Wrapper im zurückgegebenen Wert
+nirgends auftaucht:
+
+```ts
+const supervised = Behaviors
+  .supervise(Behaviors.receiveMessage<Message>((message) => nextPhase))
+  .onFailure(strategy);
+// Wirft `nextPhase`, wird das ebenfalls durch `strategy` geleitet.
+```
+
+Das ist dieselbe Regel, der [`intercept`](#intercept) folgt, und aus
+demselben Grund: der Wrapper steuert seinen Seiteneffekt einmal bei,
+und die Runtime erinnert sich an die Strategie.  `Behaviors.stopped`
+ist der Weg aus einem Supervisions-Geltungsbereich heraus; ein
+Übergang ist es nicht.
+
+#### Verschachtelung: die Geltungsbereiche schichten sich
+
+Zwei Wrapper sind zwei Geltungsbereiche, und der innere hat das erste
+Wort:
+
+```ts
+const layered = Behaviors
+  .supervise(
+    Behaviors.supervise(leaf).onFailure(retryTwice),   // innen
+  )
+  .onFailure(giveUpAndStop);                           // außen
+```
+
+Die innerste Strategie entscheidet.  `Directive.Escalate` — und ein
+Restart-Kontingent, das der Geltungsbereich aufgebraucht hat — geben
+*denselben* Fehler an den nächsten Bereich nach außen weiter, genau
+das, was `Escalate` überall sonst im Framework bedeutet.  Erst wenn es
+hinter dem äußersten Wrapper herausfällt, verlässt der Fehler den
+Actor, wo die Parent-Strategie der Zelle übernimmt.  `layered` oben
+versucht es also zweimal innerhalb des Actors und stoppt ihn dann,
+statt dass die Erschöpfung des inneren Wrappers direkt zum Parent
+geht.
+
+Ein Geltungsbereich, den ein **laufendes Behavior installiert** — ein
+Handler, der ein frisches `Behaviors.supervise(...)` zurückgibt —
+verschachtelt sich in die bereits aktiven, statt sie zu verdrängen.
+
+Ein Restart, den ein *äußerer* Bereich entscheidet, löst dessen
+eigenes Kind neu auf und baut damit die Wrapper darunter neu auf — die
+inneren Bereiche kommen also mit vollem Restart-Kontingent zurück.
+Das ist dieselbe Aufteilung, die ein Restart bereits auf Interceptoren
+anwendet: was innerhalb des Wrappers lebt, gehört zu dem, was neu
+startet.
 
 Siehe [Supervision](/de/fundamentals/supervision/) für die
 Direktiven-Semantik; sie gelten in der typed-Form identisch — mit
@@ -418,12 +505,26 @@ weiter, dann behandelt `inner`.  Jeder Wrapper entscheidet, ob der nächste
 weiter innen die Nachricht überhaupt bekommt — ein Interceptor, der ohne
 Aufruf von `next` zurückkehrt, stoppt alles darunter.
 
+`supervise` um `supervise` liest sich genauso und ist die eine
+Komposition, in der die Reihenfolge bestimmt, *wer entscheidet*: der
+innerste Wrapper wird zuerst gefragt und gibt den Fehler nach außen
+weiter.  Siehe
+[Verschachtelung](#verschachtelung-die-geltungsbereiche-schichten-sich)
+oben.
+
 Eine Asymmetrie ist wissenswert.  Die anderen Dekoratoren werden beim Start
 des Actors aufgelöst: sie steuern ihren Seiteneffekt bei (Timer einfangen,
 Strategie installieren) und kollabieren in das Behavior, das sie erzeugt
 haben.  Ein Interceptor kann das nicht, denn er muss auch bei der
 *nächsten* Nachricht da sein — er bleibt also um das gewickelt, was das
 innere Behavior wird.
+
+Kollabieren ist aber nicht dasselbe wie Ablaufen.  Ein
+`supervise`-Geltungsbereich überlebt den Wert, der ihn installiert hat,
+und deckt ab, wohin der Actor als nächstes übergeht; nur der
+*Wrapper-Knoten* ist weg.  Ein Signal-Handler ist das Gegenteil — er
+ist ein Feld des `receive`-Behaviors, das ihn deklariert hat, und
+verschwindet daher mit diesem Behavior.
 
 Dieselbe Unterscheidung entscheidet, was ein **Restart** neu aufbaut.
 `supervise` startet das neu, was es umschließt: ein Interceptor *innerhalb*
