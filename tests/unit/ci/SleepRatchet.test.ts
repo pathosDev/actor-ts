@@ -59,6 +59,14 @@ import { describe, expect, test } from 'bun:test';
  * paste-ready replacement for the growth direction, only for the shrink
  * direction, where updating the ledger is the last step of real work.
  *
+ * **One re-measurement is legitimate**, and only one: merging this guard
+ * forward onto a `develop` that moved while the branch was open.  A ratchet
+ * measured at one revision cannot know the waits that landed after it, and
+ * those are baseline debt rather than a regression the author could have
+ * avoided — they predate the rule.  `ACTOR_TS_SLEEP_RATCHET_REMEASURE=1`
+ * prints all three ledgers for exactly that step (see the bottom of this
+ * file); after the merge, they shrink and nothing else.
+ *
  * Expressed as a test rather than a lint rule on purpose: the Biome rule
  * banning raw timers in `tests/` belongs to **#417** by #417's own scope, and
  * this repository has no `biome.json` yet.  `bun test` already runs this, so
@@ -1050,3 +1058,41 @@ describe('the sleep ratchet is still reading the tree', () => {
     expect(scan.helpers).toHaveLength(expectedHelpers);
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Re-measuring, for merging this guard forward                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `ACTOR_TS_SLEEP_RATCHET_REMEASURE=1 bun test tests/unit/ci/SleepRatchet.test.ts`
+ * prints all three ledgers as they read against the current tree.
+ *
+ * It exists for one step: merging this guard forward onto a base that moved
+ * while the branch was open.  The waits that landed in between predate the
+ * rule, so they are baseline and not a regression anyone could have avoided —
+ * and rebuilding 270 lines of ledger by hand at merge time is how a guard gets
+ * deleted rather than reconciled.  It is *not* the answer to a red run on new
+ * code: there the failure message names the two one-line remedies, and both
+ * lower the debt instead of recording it.
+ *
+ * Skipped by default rather than printed always, because a gate that writes
+ * 270 lines to the reporter on every green run is a gate people learn to
+ * scroll past.
+ */
+test.skipIf(process.env.ACTOR_TS_SLEEP_RATCHET_REMEASURE !== '1')(
+  're-measures the three ledgers against the current tree',
+  () => {
+    const shims = declarations.map((declaration) => declaration.file).sort();
+    const polling = helpers.map((helper) => `${helper.file}#${helper.name}`).sort();
+    const unexplained = [...unexplainedByFile.entries()].sort();
+    console.log(
+      `\nconst LEGACY_SLEEP_DECLARATIONS: readonly string[] = [\n${ledgerLines(shims)}\n];\n\n`
+      + `const LEGACY_POLLING_HELPERS: readonly string[] = [\n${ledgerLines(polling)}\n];\n\n`
+      + 'const LEGACY_UNEXPLAINED_WAITS: Readonly<Record<string, number>> = {\n'
+      + `${unexplained.map(([file, waitsInFile]) => `    '${file}': ${waitsInFile.length},`).join('\n')}\n};\n`,
+    );
+    expect(shims.length).toBeGreaterThan(0);
+    expect(polling.length).toBeGreaterThan(0);
+    expect(unexplained.length).toBeGreaterThan(0);
+  },
+);
