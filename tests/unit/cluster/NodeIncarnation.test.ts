@@ -142,7 +142,7 @@ describe('an address says which process is answering at it', () => {
   });
 });
 
-describe('the incarnation is not part of a node identity', () => {
+describe('the incarnation is not part of a node\'s identity', () => {
   const base = new NodeAddress('identity', '10.0.94.2', 9_690);
   const sameSlot = new NodeAddress('identity', '10.0.94.2', 9_690, NodeAddress.mintIncarnation());
   const otherSlot = new NodeAddress('identity', '10.0.94.2', 9_691, NodeAddress.mintIncarnation());
@@ -257,7 +257,7 @@ describe('it rides the wire, bounded, and optional in both directions', () => {
   });
 });
 
-describe('a peer cannot restate this node own incarnation', () => {
+describe('a peer cannot restate this node\'s own incarnation', () => {
   test('a promotion carrying a forged incarnation lands, with the local one kept', async () => {
     // `maySpeakFor` lets exactly one claim about self through — the leader's
     // promotion out of `joining` — and it is merged wholesale, address included.
