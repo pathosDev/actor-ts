@@ -256,22 +256,27 @@ import { Aside } from '@astrojs/starlight/components';
   const idempotencyCache = new InMemoryCache();   // ✓ this middleware's own instance
   ```
   Every request can mint a new key here, and `InMemoryCache` is
-  LRU-bounded (10 000 entries by default) with eviction that is blind
-  to what an entry protects.  Two consequences, both silent:
+  LRU-bounded (10 000 entries by default).  Its eviction takes entries
+  that carry no guarantee first — a claim and the record that replaces
+  it both count as one — so a flood through `cached` no longer reaches
+  a stored response.  Three things still do, all silent:
 
-  - Share one instance with `rateLimit` or `cached` and a key flood
-    through **either** of them pushes stored responses out.  An honest
-    client's retry then finds no record, re-claims the key and **runs
-    the handler again** — a double charge on a payments endpoint.
+  - Share one instance with `rateLimit` and a flood of **counters**
+    evicts records anyway.  Both sides carry a guarantee, and the
+    policy does not rank guarantees against each other.
+  - This middleware's own key space is attacker-controlled, so a flood
+    of distinct `Idempotency-Key`s evicts *other* callers' records out
+    of the same instance.  `maxKeyLength` bounds how big each minted
+    key is, not how many there are.
   - A record is only marked most-recently-used when it is **read**.
     `setIfAbsent` does not count, so a claimed key that nobody has
-    retried yet ages towards eviction from the moment it is stored.
+    retried yet is the first thing dropped once the cap is reached.
 
   Pass a dedicated instance — or `ext.cache('idempotency')` — and size
   its `maxEntries` for the keys you expect within one `ttlMs`.  Where
   the guarantee has to hold under an adversary, back it with Redis
   instead of an in-process LRU.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 
 <Aside type="caution" title="In-memory cache + multiple pods">

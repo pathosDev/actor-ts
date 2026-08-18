@@ -36,18 +36,21 @@ import {
  *   route(post('/api/expensive', limited(handler)));
  *
  * **Security — give this middleware its own cache (security audit
- * HTTP-8):** the counter that enforces the limit is an ordinary cache
- * entry, and `InMemoryCache` evicts the least-recently-used entry once
- * `maxEntries` is reached without knowing which entries carry security
- * state.  Share one `Cache` with `cached` or `idempotent` and a caller
- * who can mint distinct keys through either of those — a response-cache
- * key derived from the request, an attacker-chosen `Idempotency-Key` —
- * evicts OTHER clients' counters, handing them a fresh budget.  The
- * flooder's own counter is safe from this: `incr` bumps it to
- * most-recently-used on every request, so it is never the victim.  Pass
- * a dedicated instance (`ext.cache('rate-limit')`) and size its
- * `maxEntries` above the number of distinct keys you expect to see
- * within one `windowMs`.
+ * HTTP-8):** the counter that enforces the limit lives in the cache, and
+ * `InMemoryCache` is LRU-bounded at `maxEntries`.  Since #1080 it counts
+ * a counter as carrying a guarantee — `incr` with a `windowMs` created it
+ * — and evicts entries that carry none first, so a flood of
+ * response-cache keys through a shared instance no longer resets other
+ * clients' windows.  It does not rank guarantees against each other,
+ * though: on an instance shared with `idempotent`, an attacker-chosen
+ * `Idempotency-Key` flood is a flood of claims, and once the map holds
+ * nothing cheaper the counters go with them.  The flooder's own counter
+ * is safe either way: `incr` bumps it to most-recently-used on every
+ * request, so it is never the victim.  Pass a dedicated instance
+ * (`ext.cache('rate-limit')`) and size its `maxEntries` above the number
+ * of distinct keys you expect to see within one `windowMs` — a client
+ * with an IPv6 `/64` mints them freely, and every one is a counter this
+ * cache protects.
  *
  * **Security — choosing `key` (security audit HTTP-3):** derive it from a
  * value the client can't freely forge.  `request.remoteAddress` (the socket peer)

@@ -158,12 +158,31 @@ The naive version — `cache.delete(key)` in a `finally` — is wrong
 the moment a holder overruns its TTL: its entry is already gone,
 someone else has written their own, and the unconditional delete
 evicts the new owner while they are still working.  That is what
-the `false` return reports: the lock had lapsed, so the section
-just executed may not have been exclusive after all.
+the `false` return reports: our entry is no longer the one under
+the key, so the section just executed may not have been exclusive
+after all.
 
-`ttlMs` is required, deliberately.  Expiry is the *only* recovery
-path from a holder that crashed or stalled — a lock with no TTL
-wedges forever the first time a process dies at the wrong moment.
+`ttlMs` is required, deliberately.  Expiry is the recovery path
+from a holder that crashed or stalled — a lock with no TTL wedges
+forever the first time a process dies at the wrong moment.
+
+<Aside type="caution" title="Expiry is not the only way a lock disappears">
+  **Eviction is the other one**, and unlike expiry it needs no crash
+  and honours no deadline.  A bounded cache drops entries under
+  pressure, so a lock can go with most of its TTL left — and the
+  next `acquireLock` then succeeds while somebody still holds it.
+  `InMemoryCache` (the default) evicts entries that carry no
+  guarantee before it touches a lock, but its `maxEntries` bound is
+  still hard: a cache holding nothing but locks evicts its oldest at
+  the cap.  Memcached evicts server-side with no client-side policy
+  at all, and so does Redis under `maxmemory-policy allkeys-lru`.
+  So a `false` from `release()` has two causes — the section overran
+  its TTL, or the entry was evicted early — and nothing in the
+  return value tells you which.  Size the lock's cache for the locks
+  live inside one TTL, and never point it at an instance a caller
+  can flood with keys of their own choosing.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
+</Aside>
 
 <Aside type="caution" title="Not a distributed-consensus lock">
   The compare-and-delete in `release()` is a `get` followed by a
@@ -231,13 +250,15 @@ await cache.mset(new Map([
   ```ts
   const cache = system.extension(CacheExtensionId).cache();   // ✗ one instance for everything
   ```
-  A bounded cache evicts on recency alone, so an entry carrying a
-  guarantee — a rate-limit counter, an idempotency record, a lock —
-  goes as readily as a cached response body.  Give each consumer its
-  own named instance (`cache('rate-limit')`, `cache('idempotency')`),
-  so a caller who enumerates one consumer's key space cannot reach
-  another's state.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  `InMemoryCache` evicts entries that carry no guarantee before it
+  touches a rate-limit counter, an idempotency record or a lock — so a
+  response-cache key flood no longer reaches them.  But it does not
+  rank guarantees against each other, and Memcached and Redis under
+  `allkeys-lru` evict server-side where no such policy reaches at all.
+  Give each consumer its own named instance (`cache('rate-limit')`,
+  `cache('idempotency')`), so a caller who enumerates one consumer's
+  key space cannot reach another's state.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 
 ## Where to next

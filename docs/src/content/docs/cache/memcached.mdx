@@ -94,6 +94,21 @@ client-side eviction policy.
 For a fixed-size cache, this is fine — Memcached drops old
 entries to make room.
 
+For anything carrying a **guarantee** it is not.  `InMemoryCache`
+evicts entries that carry none before it touches a lock, a
+rate-limit counter or an idempotency record; there is no
+equivalent here, because the decision is made in the server and
+the client is not consulted.  So an entry written by `setIfAbsent`
+can disappear with most of its TTL left — a lock handed out twice,
+a limit reset, a retry that re-runs its handler — and nothing in
+the API reports it.  Size the Memcached instance for the guarantees
+it holds, keep it off the same instance as a key space callers can
+enumerate, and see
+[what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not)
+for what the guarantee rests on.  This is separate from the
+topology hazard below: that one needs a server to join or leave,
+this one needs only memory pressure.
+
 ## Connection pooling
 
 `memjs` maintains its own connection pool; the framework
