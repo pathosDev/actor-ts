@@ -260,7 +260,52 @@ Das Gauge `actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
 Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder ein
 fehlkonfigurierter Dispatcher. Es ist das *spätere* der beiden Signale
 — eine Serie entsteht erst ab 10 000 wartenden Nachrichten, während die
-Wartezeit steigt, sobald ein Actor zurückfällt.
+Wartezeit steigt, sobald ein Actor zurückfällt. `actor_mailbox_depth`
+füllt diese Lücke: ein Histogramm ohne Labels, einmal pro Zustellung
+beobachtet, sodass ein Ausschlag, der nie 10 000 erreicht, seinen
+Ausläufer dennoch zeigt.
+
+### Ist der Dispatcher selbst die Queue?
+
+Beide Metriken oben betreffen die *Mailbox* eines Actors. Eine Nachricht
+kann auch eine Ebene höher warten — im Dispatcher, nachdem die Zelle
+einen Zug angefordert hat und bevor dieser Zug beginnt:
+
+```
+actor_dispatcher_queue_delay_seconds{dispatcher="..."}
+```
+
+Im Ruhezustand ist das eine einzige Scheduling-Übergabe, Mikrosekunden.
+Wenn es steigt, ist weder der Actor das Problem noch seine Mailbox: Züge
+stauen sich hinter anderen Zügen, und genau dafür ist Dispatcher-Tuning
+da.
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m]))
+# Per dispatcher. A high p99 on one and not the others tells you which
+# pool to split, and which actors to move off it.
+```
+
+Neben dem Mailbox-Paar gelesen vervollständigt es die Diagnose:
+
+- **Delay-p99 hoch** — die Züge konkurrieren. Entweder gibt etwas auf
+  diesem Dispatcher nicht ab (ein `ThroughputDispatcher` mit zu hohem
+  Budget oder ein blockierender Handler), oder zu viele Actors teilen ihn
+  sich. Teile den Dispatcher auf, oder senke sein Throughput, damit er
+  häufiger abgibt.
+- **Delay-p99 niedrig, Mailbox-Wait-p99 hoch** — die Züge starten prompt,
+  und die eigene Queue eines Actors ist der Rückstau. Erhöhe
+  `withThroughput` *dieses Actors*, damit jeder Zug mehr abbaut, statt am
+  Dispatcher zu drehen.
+
+Es gibt bewusst kein `dispatcher_saturation_ratio` — ein 0–1-Anteil
+„beschäftigt" lässt sich auf allen drei unterstützten Laufzeitumgebungen
+nicht ehrlich berechnen, und
+[Stock-Metriken](/de/observability/metrics/stock-metrics/#warum-es-keine-sättigungs-ratio-gibt)
+hält die Messungen hinter dieser Entscheidung fest. Der
+`MicrotaskDispatcher` ist der eine Fall, in dem eine niedrige
+Verzögerung kein Beleg für Luft ist — aus dem dort genannten Grund.
 
 ## Heuristiken
 

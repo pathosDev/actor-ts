@@ -48,7 +48,9 @@ not hold up:
 So the loss is now something you ask for, per actor, and the growth is
 something you are told about: an actor whose queue reaches 10 000
 messages logs a warning, and again at each doubling.  With metrics
-enabled, `actor_mailbox_size` reports the depth per actor.
+enabled, `actor_mailbox_size` reports the depth per actor above that
+mark, and `actor_mailbox_depth` reports the whole distribution below it —
+so a burst that never reaches the warning threshold is still visible.
 
 A queue with no ceiling has to stay cheap when it is deep, so both of a
 mailbox's queues are backed by a [`RingBuffer`](/reference/utility-helpers/)
@@ -557,7 +559,9 @@ alternative in three situations:
    `actor_mailbox_wait_seconds` to find out whether you need this
    before you need it — it climbs as soon as an actor stops keeping up,
    where `actor_mailbox_size` only reports once a queue passes 10 000
-   messages.
+   messages.  `actor_mailbox_depth`'s p99 is what to pick the number
+   itself from: a capacity is a bet on the worst-case burst, and that
+   histogram is the measurement of it.
 
 ## Where to next
 

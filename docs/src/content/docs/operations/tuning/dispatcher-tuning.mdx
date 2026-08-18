@@ -253,7 +253,48 @@ The `actor_mailbox_size` gauge under load shows whether actors are
 keeping up.  Persistently growing depth = either a slow handler or a
 misconfigured dispatcher.  It is the *later* signal of the two — a
 series only exists above 10 000 queued messages, where wait starts
-climbing as soon as an actor falls behind.
+climbing as soon as an actor falls behind.  `actor_mailbox_depth` fills
+that gap: a label-free histogram observed once per delivery, so a burst
+that never reaches 10 000 still shows its tail.
+
+### Is the dispatcher itself the queue?
+
+Both metrics above are about an actor's *mailbox*.  A message can also
+wait one level up — in the dispatcher, after the cell has asked for a
+turn and before that turn starts:
+
+```
+actor_dispatcher_queue_delay_seconds{dispatcher="..."}
+```
+
+At rest this is a single scheduling hand-off, microseconds.  When it
+climbs, the actor is not the problem and neither is its mailbox: turns
+are queued behind other turns, which is what dispatcher tuning is for.
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m]))
+# Per dispatcher. A high p99 on one and not the others tells you which
+# pool to split, and which actors to move off it.
+```
+
+Reading it beside the mailbox pair completes the diagnosis:
+
+- **Delay p99 high** — turns are competing.  Either something on this
+  dispatcher is not yielding (a `ThroughputDispatcher` with too high a
+  budget, or a handler that blocks), or too many actors share it.  Split
+  the dispatcher, or lower its throughput so it yields more often.
+- **Delay p99 low, mailbox wait p99 high** — the turns start promptly and
+  one actor's own queue is the backlog.  Raise *that actor's*
+  `withThroughput` so each turn drains more, rather than touching the
+  dispatcher.
+
+There is deliberately no `dispatcher_saturation_ratio` — a 0–1 busy
+fraction cannot be computed honestly on all three supported runtimes, and
+[Stock metrics](/observability/metrics/stock-metrics/#why-there-is-no-saturation-ratio)
+records the measurements behind that decision.  `MicrotaskDispatcher` is
+the one case where a low delay is not evidence of headroom, for the
+reason noted there.
 
 ## Heuristics
 

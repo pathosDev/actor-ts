@@ -43,6 +43,7 @@ Handler".
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Wartende User-Nachrichten, gesampelt. Nur Actors ab 10 000 sind vertreten. |
+| `actor_mailbox_depth` | histogram | — | Wartende User-Nachrichten im Moment einer Zustellung, sie selbst eingeschlossen. |
 | `actor_mailbox_wait_seconds` | histogram | — | Zeit, die eine User-Nachricht vor der Zustellung in der Queue wartete, in Sekunden. |
 | `actor_mailbox_dropped_total` | counter | `class`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
@@ -54,6 +55,31 @@ einem gesunden System ist die Metrik leer. Eine Mailbox, die wieder
 unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
 dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
 Verdopplung), unabhängig davon ob Metriken aktiv sind.
+
+`actor_mailbox_depth` ist die **Verteilung**, die der Gauge nicht sein
+kann — und beide sind so entworfen, dass sie sich an genau einer Zahl
+treffen. Der Gauge sagt dir, *welcher* Actor zurückhängt, und bezahlt das
+mit einem `path`-Label, das er sich erst oberhalb von 10 000 leisten
+kann; darunter meldet er überhaupt nichts, und das ist der gesamte
+Bereich 1–9 999. Ein Ausschlag zwischen zwei seiner 2-Sekunden-Samples
+wird nirgends festgehalten. Das Histogramm deckt genau diesen Bereich ab:
+Es beobachtet einmal pro Zustellung, es geht also nichts zwischen zwei
+Samples verloren, und es trägt keine Labels — die ganze Familie kostet
+eine Serie pro Bucket, egal wie viele Actors oder Entities existieren.
+Seine letzte Bucket-Grenze *ist* die Schwelle des Gauges, alles im
+`+Inf`-Überlauf ist also per Konstruktion ein Actor, den der Gauge schon
+mit Pfad meldet.
+
+Lies das Histogramm, um zu erfahren, dass ein Rückstau existiert und wie
+tief sein Ausläufer reicht; lies den Gauge, um zu erfahren, wessen er
+ist.
+
+Die Buckets laufen auf einer 1-2-5-Leiter von 1 bis 10 000 Nachrichten.
+Die Untergrenze ist 1 und nicht 0, weil die Beobachtung die gerade
+zugestellte Nachricht mitzählt: Ein ruhiger Actor liest genau 1, es gibt
+also keinen Bucket, in den nichts fallen kann. Sein Count entspricht
+`actor_messages_delivered_total` exakt — eine Beobachtung pro Zustellung,
+ohne die Ausnahmen, die das Wait-Histogramm hat.
 
 `actor_mailbox_wait_seconds` ist das **Latenz**-Signal und die Hälfte,
 die `actor_message_handler_seconds` nicht liefern kann: jenes Histogramm
@@ -128,6 +154,83 @@ system.spawn(Worker, entityId, workerOptions);
 Die Kardinalität von `jobs_shed_total` musst du dann selbst
 einplanen — genau das ist der Punkt. Das Framework gibt sie nicht für
 dich aus.
+
+## Dispatcher-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_dispatcher_queue_delay_seconds` | histogram | `dispatcher` | Zeit, die ein Actor-Turn zwischen der Übergabe an einen Dispatcher und seinem Start wartete, in Sekunden. |
+
+Das ist das **Sättigungs**-Signal: ob der Dispatcher mit den Turns
+mitkommt, die ihm übergeben werden. Eine Beobachtung pro Turn, nicht pro
+Nachricht — ein Batch von bis zu
+[`throughput`](/de/operations/tuning/dispatcher-tuning/) Nachrichten
+zählt einmal. Das Label `dispatcher` ist `Dispatcher.id`, jeder
+Dispatcher im System meldet also separat — einschließlich eines
+Dispatchers pro Actor via `ActorOptions.withDispatcher(…)`, den sonst
+nichts im Framework überhaupt aufzählen kann.
+
+Im Ruhezustand ist die Verzögerung eine einzige Übergabe: etwa 1 µs über
+den `MicrotaskDispatcher` und 3 µs über den voreingestellten
+`ImmediateDispatcher`. Unter Sättigung wächst sie unbegrenzt, weil sich
+die Turns hintereinander aufstauen. Der Alarm, den du schreiben willst,
+liegt also auf dem Quantil gegen dein eigenes Latenzbudget:
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m])) > 0.05
+# A turn is waiting 50 ms for a slot. Something on this dispatcher is
+# not yielding, or its throughput budget is too high for the load.
+```
+
+Die Buckets laufen auf einer 1-5-Leiter von 10 µs bis 10 s. Die
+Untergrenze liegt zwei Dekaden unter der 1 ms der Mailbox-Familien, weil
+eine gesunde Übergabe Mikrosekunden dauert: Der erste Bucket bedeutet
+damit „sofort eingeplant", der zweite schon „etwas stand davor in der
+Queue".
+
+Eine Lesart braucht Vorsicht. Die Verzögerung misst die Queue, die der
+Dispatcher *selbst* verwendet, und die Queue des `MicrotaskDispatcher`
+ist die Microtask-Queue, die die Laufzeitumgebung vor jedem Timer und
+jedem I/O leert. Seine Verzögerung bleibt deshalb niedrig, auch während
+Actors die Event-Loop aushungern — was genau die dokumentierte Gefahr
+dieses Dispatchers ist und kein Widerspruch. Eine niedrige Verzögerung
+dort belegt, dass Microtask-Scheduling nicht der Engpass ist, nicht dass
+Luft vorhanden wäre; nimm den `ThroughputDispatcher` oder den Default,
+wenn die Zahl den Druck auf die Loop widerspiegeln soll.
+
+### Warum es keine Sättigungs-Ratio gibt
+
+Ein 0–1-Anteil „wie beschäftigt ist der Dispatcher" wäre die vertrautere
+Zahl, und dieses Framework veröffentlicht keine — weil es keine geben
+kann, die auf allen unterstützten Laufzeitumgebungen ehrlich ist. Das
+einzige Primitiv, das eine liefern könnte, ist
+`performance.eventLoopUtilization`, und es verhält sich auf allen drei
+unterschiedlich:
+
+| Laufzeitumgebung | `performance.eventLoopUtilization` |
+| --- | --- |
+| Bun 1.3 | nicht vorhanden |
+| Node 26 | vorhanden, mit echtem Messwert |
+| Deno 2.6 | vorhanden, dauerhaft `{ idle: 0, active: 0, utilization: 0 }` |
+
+Eine Feature-Prüfung besteht damit auf zwei Laufzeitumgebungen, und eine
+dieser zwei lügt. Eine darauf gebaute Ratio läge auf Deno für immer bei
+flachen 0 %, was schlimmer ist als gar nichts zu veröffentlichen: Ein
+Alarm auf einer Metrik, die niemals auslöst, sieht genauso aus wie ein
+System, das niemals gesättigt ist. Und selbst dort, wo der Messwert echt
+ist, umfasst er die ganze Event-Loop und lässt sich deshalb nie einem von
+mehreren Dispatchern zurechnen.
+
+Scheduling-Verzögerung braucht nichts außer einer Uhr, ist also auf allen
+drei dieselbe Messung — und sie beantwortet dieselbe Frage in einer Form,
+die eine Alarmregel aussprechen kann: statt *„Utilization liegt bei
+100 %"* eben *„Turns warten länger als mein Budget"*.
+
+Wenn du eine echte Loop-Belegung pro **Knoten** willst, ist das ein
+anderes Signal aus einer anderen Quelle — Timer-Verzug, von der
+Laufzeitumgebung gesampelt — und es gehört zum Detektor für
+Event-Loop-Aushungerung, nicht hierher.
 
 ## Dead-Letter-Metriken
 

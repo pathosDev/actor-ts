@@ -39,6 +39,7 @@ buckets; its p99 is your "how slow is a handler" signal.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Queued user messages, sampled.  Only actors at or above 10 000 are represented. |
+| `actor_mailbox_depth` | histogram | — | Queued user messages at the moment one was delivered, including itself. |
 | `actor_mailbox_wait_seconds` | histogram | — | Time a user message spent queued before delivery, in seconds. |
 | `actor_mailbox_dropped_total` | counter | `class`, `reason` | Messages dropped by a bounded mailbox's overflow policy. |
 
@@ -49,6 +50,28 @@ messages.  Its *presence* is therefore the alert: on a healthy system
 the metric is empty.  A mailbox that drains back below the floor reads
 0 rather than its last spike, and the same threshold produces a log
 warning (repeated at each doubling) whether or not metrics are on.
+
+`actor_mailbox_depth` is the **distribution** the gauge cannot be, and
+the two are designed to meet at one number.  The gauge tells you *which*
+actor is behind, and pays for that with a `path` label it can only
+afford above 10 000 — below that it reports nothing at all, which is the
+entire 1–9 999 range, and a spike between two of its 2 second samples is
+recorded nowhere.  The histogram covers exactly that range: it is
+observed once per delivery, so nothing is missed between samples, and it
+carries no labels, so the whole family costs one series per bucket
+however many actors or entities exist.  Its last bucket boundary *is*
+the gauge's floor, so anything in the `+Inf` overflow is by construction
+an actor the gauge is already reporting by path.
+
+Read the histogram to learn that a backlog exists and how deep its tail
+goes; read the gauge to learn whose it is.
+
+Buckets run 1 → 10 000 messages on a 1-2-5 ladder.  The floor is 1
+rather than 0 because the observation counts the message being
+delivered: a quiet actor reads exactly 1, so there is no bucket that
+nothing can fall into. Its count matches
+`actor_messages_delivered_total` exactly — one observation per delivery,
+with none of the exclusions the wait histogram has.
 
 `actor_mailbox_wait_seconds` is the **latency** signal, and the half
 `actor_message_handler_seconds` cannot give you: that histogram starts
@@ -118,6 +141,79 @@ system.spawn(Worker, entityId, workerOptions);
 
 The cardinality of `jobs_shed_total` is then yours to budget for — which
 is the point.  The framework will not spend it on your behalf.
+
+## Dispatcher metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `actor_dispatcher_queue_delay_seconds` | histogram | `dispatcher` | Time an actor turn waited between being handed to a dispatcher and starting, in seconds. |
+
+This is the **saturation** signal: whether the dispatcher is keeping up
+with the turns being handed to it.  One observation per turn, not per
+message, so a batch of up to
+[`throughput`](/operations/tuning/dispatcher-tuning/) messages counts
+once.  The `dispatcher` label is `Dispatcher.id`, so every dispatcher in
+the system reports separately — including a per-actor
+`ActorOptions.withDispatcher(…)`, which nothing else in the framework can
+even enumerate.
+
+At rest the delay is a single hand-off: around 1 µs through
+`MicrotaskDispatcher` and 3 µs through the default `ImmediateDispatcher`.
+Under saturation it grows without bound, because the turns queue up
+behind each other.  So the alert to write is on the quantile against your
+own latency budget:
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m])) > 0.05
+# A turn is waiting 50 ms for a slot. Something on this dispatcher is
+# not yielding, or its throughput budget is too high for the load.
+```
+
+Buckets run 10 µs → 10 s on a 1-5 ladder.  The floor is two decades
+below the mailbox families' 1 ms because a healthy hand-off is
+microseconds, so the first bucket means "scheduled immediately" and the
+second already means "something was queued ahead of it".
+
+One reading needs care.  The delay measures the queue the dispatcher
+*itself* uses, and `MicrotaskDispatcher`'s queue is the microtask queue,
+which the runtime drains before any timer or I/O.  Its delay therefore
+stays low even while actors are starving the event loop — which is that
+dispatcher's documented hazard, not a contradiction.  A low delay there
+is evidence that microtask scheduling is not the bottleneck, not
+evidence of headroom; use `ThroughputDispatcher` or the default if you
+want the number to reflect loop pressure.
+
+### Why there is no saturation ratio
+
+A 0–1 "how busy is the dispatcher" fraction would be a more familiar
+number, and this framework does not publish one, because it cannot
+compute one honestly on every runtime it supports.  The only primitive
+that could is `performance.eventLoopUtilization`, and it behaves
+differently on each of the three:
+
+| Runtime | `performance.eventLoopUtilization` |
+| --- | --- |
+| Bun 1.3 | absent |
+| Node 26 | present, and a real reading |
+| Deno 2.6 | present, and permanently `{ idle: 0, active: 0, utilization: 0 }` |
+
+A feature check therefore passes on two runtimes and one of those two
+lies.  A ratio built on it would read a flat 0 % on Deno for ever, which
+is worse than publishing nothing at all: an alert on a metric that never
+fires looks identical to a system that is never saturated.  And even
+where the reading is real it covers the whole event loop, so it can
+never be attributed to one of several dispatchers.
+
+Scheduling delay needs nothing but a clock, so it is the same
+measurement on all three, and it answers the same question in a form an
+alert rule can state: instead of *"utilization is at 100 %"*, *"turns
+are waiting longer than my budget"*.
+
+If you want a true per-**node** loop-occupancy figure, that is a
+different signal from a different source — timer lag, sampled from the
+runtime — and it belongs to the event-loop starvation detector rather
+than here.
 
 ## Dead-letter metrics
 
