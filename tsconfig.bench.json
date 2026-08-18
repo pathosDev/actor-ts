@@ -36,7 +36,7 @@
     // broker runners — a file whose imports another manifest owns cannot
     // compile here however much of it is fixed.  The config that DOES own
     // it is `benchmarks/comparison/tsconfig.json`, run as
-    // `bun run typecheck:compare` by the `comparison-smoke` job in
+    // `bun run typecheck:compare` by the `comparison` job in
     // `.github/workflows/benchmarks.yml`.
     "benchmarks/comparison"
   ]

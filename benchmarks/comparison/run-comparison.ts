@@ -5,6 +5,7 @@
  *   bun run bench:compare -- --rounds=5          # five interleaved rounds, median published
  *   bun run bench:compare -- --framework=nact    # one arm
  *   bun run bench:compare -- --list              # what would run
+ *   bun run bench:compare -- --javascript-only   # skip the arms needing a JDK / .NET SDK
  *
  * **Publish from `--rounds`, never from a single round.**  One round is not a
  * measurement on a machine that is not otherwise idle, and no development
@@ -196,6 +197,10 @@ function run(): void {
   const frameworkFlag = args.find((a) => a.startsWith('--framework='))?.slice('--framework='.length);
   const roundsFlag = args.find((a) => a.startsWith('--rounds='))?.slice('--rounds='.length);
   const listOnly = args.includes('--list');
+  // CI installs Bun and nothing else, so the cross-language arms cannot run
+  // there. Without this the smoke job would fail on a missing toolchain and
+  // say nothing about the arms it *can* check.
+  const javascriptOnly = args.includes('--javascript-only');
 
   const rounds = roundsFlag === undefined ? 1 : Number.parseInt(roundsFlag, 10);
   if (!Number.isFinite(rounds) || rounds < 1) {
@@ -203,9 +208,12 @@ function run(): void {
     process.exit(1);
   }
 
+  const byToolchain = javascriptOnly
+    ? ARMS.filter((arm) => arm.kind === 'javascript')
+    : ARMS;
   const selected = frameworkFlag === undefined
-    ? ARMS
-    : ARMS.filter((arm) => arm.name === frameworkFlag);
+    ? byToolchain
+    : byToolchain.filter((arm) => arm.name === frameworkFlag);
 
   if (selected.length === 0) {
     console.error(

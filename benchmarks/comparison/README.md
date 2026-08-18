@@ -52,8 +52,15 @@ Every "no" above is deliberate and is annotated at the site that does
 the excluding.  The one "yes" is why `typecheck:compare` exists: without
 it this tree would be checked by nothing, which is precisely how ten
 benchmark suites sat broken on a removed export for months (#506).  The
-`comparison-smoke` job in `.github/workflows/benchmarks.yml` runs it
-against a frozen install of this directory.
+`comparison` job in `.github/workflows/benchmarks.yml` runs it against a
+frozen install of this directory, then smoke-runs the JavaScript arms.
+
+That job covers the JavaScript arms only (`--javascript-only`): CI installs
+Bun and nothing else, and adding a JDK and a .NET SDK would buy nothing —
+benchmark numbers from a shared runner are noise, and what the job checks is
+that the arms still *execute* against the current `src/` API.  The
+cross-language arms are therefore verified by running them, which is what
+every measurement does.
 
 The knip row is the odd one out, and deliberately so.  `knip.jsonc`
 treats `benchmarks/**/*.ts` as entry points and errors on any import it
