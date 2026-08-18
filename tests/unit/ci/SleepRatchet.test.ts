@@ -877,6 +877,28 @@ describe('the sleep ratchet is still reading the tree', () => {
     expect(scannedFiles.filter((file) => file.startsWith('tests/smoke/cases/'))).toEqual([]);
   });
 
+  /**
+   * `file:line` is the whole actionability of every message above — a count
+   * without it just says somebody, somewhere, added one — and the offset-to-
+   * line lookup is a binary search, which is exactly the kind of code that is
+   * off by one until something checks it.
+   */
+  test('the scanner reports the line each finding sits on', () => {
+    const scan = scanSource('tests/unit/Fixture.test.ts', [
+      "import { test } from 'bun:test';",
+      'const sleep = (ms: number): Promise<void> => Bun.sleep(ms);',
+      '',
+      'await sleep(30);',
+      'async function waitFor(predicate: () => boolean): Promise<void> {',
+      '  while (!predicate()) await sleep(5);',
+      '}',
+    ].join('\n'));
+    expect(scan.declarations.map((declaration) => declaration.line)).toEqual([2]);
+    expect(scan.waits.map((wait) => wait.line)).toEqual([4, 6]);
+    expect(scan.waits[0]!.source).toBe('await sleep(30);');
+    expect(scan.helpers.map((helper) => helper.line)).toEqual([5]);
+  });
+
   test.each([
     {
       what: 'a Bun.sleep shim declaration',
