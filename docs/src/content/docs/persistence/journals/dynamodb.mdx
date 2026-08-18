@@ -151,8 +151,18 @@ it gets a table that works.
   item does not exist". A racing writer therefore cannot win a partial append:
   the transaction is all-or-nothing, and its cancellation becomes
   `JournalConcurrencyError`. The head read that precedes it is only an
-  optimization, turning the common stale append into one cheap query instead of
-  a rejected transaction.
+  optimization *for the write's safety*, turning the common stale append into one
+  cheap query instead of a rejected transaction — but the **value** it returns is
+  load-bearing, which is why it is a strong read (next bullet).
+- **Every read that recovery or a sequence-number decision depends on is a strong
+  read.** DynamoDB serves eventually-consistent reads unless a request says
+  `ConsistentRead: true`, and the journal sets it on the head read, on the replay
+  query and on the doomed-key query behind `delete`; the snapshot store sets it on
+  `loadLatest` and `loadBefore`. A stale read here is not "slightly old data": a
+  head from a lagging replica makes an intact stream look *rewound*, and a stale
+  replay page truncates history in a way nothing downstream can detect — the
+  replay integrity checks catch a hole, a wrong order and an out-of-window event,
+  but nothing states where the stream should end.
 - **Durable-state CAS is a native conditional write** —
   `PutItem … attribute_not_exists(pid)` to create, `UpdateItem … revision = :expected`
   to update — needing neither a transaction nor a read-back.
@@ -172,6 +182,20 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 ## Pitfalls
+
+<Aside type="caution" title="Strong reads cost double, and not only on recovery">
+  A `ConsistentRead` consumes twice the read capacity of an eventually-consistent
+  one, and this is **not** a per-recovery cost: `read` and `highestSeq` are also
+  what the query layer's catch-up path, `currentEventsByTag`, remember-entities and
+  projection tooling call, so those pay it too. It is the right default — a
+  projection that silently misses the newest events is its own defect, and a stale
+  head is reported to you as a second writer rather than as lag — but budget for
+  it. If you need the cheaper posture, `persistenceIds` is already the one read
+  left eventually consistent (an id surfacing one poll later costs nothing), and
+  snapshot pruning likewise, because a stale read there can only under-delete.
+  There is no per-store consistency option; Cassandra's `withConsistency` has no
+  DynamoDB equivalent yet.
+</Aside>
 
 <Aside type="caution" title="An append is capped at 100 events">
   DynamoDB allows at most 100 items in one `TransactWriteItems`. An append of
