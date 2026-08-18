@@ -808,6 +808,50 @@ export class ShardRegion<TMessage = unknown>
     return false;
   }
 
+  /**
+   * Whether a `HandOff` for `shardId` has anything to hand off (#584).
+   *
+   * The origin gate answers *who* may order a handoff; this answers *what* one
+   * can be ordered for, and the arm had neither an ownership nor an idempotence
+   * precondition.  A `HandOff` for a shard this region does not own still marked
+   * it `'handing-off'`, acknowledged, and — since `shards.get(shardId)` was
+   * `undefined` — fell straight into `completeHandOff`, which deletes
+   * `shardHomes`, `shardHomeNodes` and `shardState` for the id and announces a
+   * `HandOffComplete`.  That is a routing-cache eviction for a shard the region
+   * was never handing off, reachable by replaying one authentic frame: the
+   * coordinator issues `HandOff` once per rebalance, but `Transport` flushes
+   * frames buffered before a handshake completed, so a genuine one can also
+   * land *late*, long after the coordinator's `handOffTimeoutMs` already
+   * force-reallocated the shard.
+   *
+   * `localShards`, deliberately not `shards`: a shard whose actor has passivated
+   * (#901) has no `shards` entry and is still legitimately owned, so it must
+   * still hand off.  `handingOff` covers the window in between — the shard actor
+   * is stopping and `handleShardTerminated` will complete the handoff, so a
+   * second directive has nothing left to add.
+   *
+   * The cost of refusing is bounded and self-healing: the coordinator only ever
+   * sends `HandOff` to the region its own `shardHome` names, so a refusal means
+   * the two disagree about ownership — and the `handOffTimeoutMs` fallback
+   * (`ShardCoordinator.beginHandOff`) exists for exactly that, force-reallocating
+   * the shard instead of waiting forever.
+   */
+  private ownsShardToHandOff(shardId: number): boolean {
+    if (this.handingOff.has(shardId)) {
+      this.log.debug(
+        `[sharding] shard ${shardId} of '${this.config.typeName}' is already handing off; `
+        + `ignoring the duplicate directive`,
+      );
+      return false;
+    }
+    if (this.localShards.has(shardId)) return true;
+    this.log.warn(
+      `[sharding] refusing to hand off shard ${shardId} of '${this.config.typeName}' — `
+      + `this region does not own it, so there is nothing to give up`,
+    );
+    return false;
+  }
+
   private onShardHome(message: ShardHome, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
     if (!this.isKnownShardId(message.shardId)) return;
@@ -1032,6 +1076,7 @@ export class ShardRegion<TMessage = unknown>
     // never got it, so an out-of-range id still walked into `completeHandOff`
     // and deleted cache entries under a shard that cannot exist.
     if (!this.isKnownShardId(message.shardId)) return;
+    if (!this.ownsShardToHandOff(message.shardId)) return;
     const shardId = message.shardId;
     const entityIds = Array.from(this.shardEntities.get(shardId) ?? []);
     this.log.debug(

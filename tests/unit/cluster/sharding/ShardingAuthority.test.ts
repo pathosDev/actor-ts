@@ -36,8 +36,13 @@ import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
+import {
+  AuthenticatedShardingMessage,
+  type ShardingMessage,
+} from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { SystemGroups, shardRegionName, systemActorPath } from '../../../../src/internal/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { regionSegments } from '../../../util/SystemPaths.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
@@ -154,6 +159,46 @@ function forge(from: InMemoryTransport, victim: Victim, to: string, body: unknow
   } as unknown as WireMessage);
 }
 
+/**
+ * Hand the region a directive the way its own coordinator would — wrapped, and
+ * from the node the region accepts as the coordinator's.
+ *
+ * The ownership cases below need a frame that *passes* the origin gate, because
+ * what they pin is the precondition sitting behind it: a directive can be
+ * perfectly authentic and still be a duplicate, or name a shard this region does
+ * not have.  Single node, so the coordinator's node is this one.
+ */
+function tellAsCoordinator(victim: Victim, message: ShardingMessage): void {
+  const resolved = victim.system._resolvePath(regionSegments(victim.system.name, TYPE_NAME));
+  if (resolved.isNone()) throw new Error('region actor not found');
+  (resolved.value as ActorRef<ShardingMessage | AuthenticatedShardingMessage>)
+    .tell(new AuthenticatedShardingMessage(victim.cluster.selfAddress, message));
+}
+
+/**
+ * The region's routing cache and ownership sets, read straight off the actor
+ * instance.
+ *
+ * A stray `HandOff` evicts cache entries and nothing else observable happens —
+ * the `HandOffComplete` it emits is discarded by a coordinator with no rebalance
+ * in flight — so asserting on a downstream symptom would pass for a region that
+ * threw the cache away and merely had nothing to route yet.
+ */
+type RegionState = {
+  readonly shardHomes: Map<number, string>;
+  readonly shardHomeNodes: Map<number, NodeAddress>;
+  readonly localShards: Set<number>;
+};
+
+function regionState(victim: Victim): RegionState {
+  const resolved = victim.system._resolvePath(regionSegments(victim.system.name, TYPE_NAME));
+  if (resolved.isNone()) throw new Error('region actor not found');
+  const cell = (resolved.value as unknown as { getCell?: () => { actor?: unknown } }).getCell?.();
+  const actor = cell?.actor;
+  if (!actor) throw new Error('region cell holds no actor');
+  return actor as RegionState;
+}
+
 function actorIsUp(victim: Victim, ...tail: string[]): boolean {
   return victim.system._resolvePath([
     ...regionSegments(victim.system.name, TYPE_NAME),
@@ -262,5 +307,64 @@ describe('ShardRegion coordinator authority (#584)', () => {
     // The coordinator's own broadcasts still arrive, so assert on the forgery
     // rather than on the absence of events.
     expect(victim.mapEvents.map((event) => event.type)).not.toContain('forged-type');
+  });
+});
+
+describe('ShardRegion handoff ownership (#584)', () => {
+  test('an authentic HandOff for a shard this region does not own changes nothing', async () => {
+    // The criterion the origin gate does *not* cover.  `onHandOff` had no
+    // ownership or idempotence precondition, so a duplicate or late `HandOff` —
+    // authentic, from the coordinator's own node, which is what `Transport`
+    // flushes when frames buffered before a handshake finally go out — marked the
+    // shard `'handing-off'`, acknowledged it, and, finding no shard actor to
+    // stop, fell straight into `completeHandOff`.  That deletes `shardHomes` and
+    // `shardHomeNodes` for the id: a routing-cache eviction for a shard the
+    // region was never handing off, repeatable across every id in range.
+    const victim = await startVictim('authority-handoff-unowned', 47_380);
+    const elsewhere = new NodeAddress('handoff-elsewhere', 'h', 47_381);
+    const elsewhereRegion = '/system/cluster/sharding/region-entity';
+    const remoteShardId = (victim.shardId + 1) % NUM_SHARDS;
+
+    // A genuine placement first: this shard lives on another node, so the region
+    // caches where to forward and does *not* add it to `localShards`.
+    tellAsCoordinator(victim, {
+      kind: 'sharding.ShardHome',
+      shardId: remoteShardId,
+      region: elsewhereRegion,
+      node: elsewhere.toJSON(),
+    });
+    await awaitCondition(
+      () => regionState(victim).shardHomes.get(remoteShardId) === elsewhereRegion,
+      { timeoutMs: 4_000, label: 'the region cached the remote home' },
+    );
+    expect(regionState(victim).localShards.has(remoteShardId)).toBe(false);
+
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: remoteShardId });
+    // The assertion is an absence: give the region a turn to act on the
+    // directive, then prove it did not. A poll cannot express this — the
+    // condition is already true at t=0 and must still hold later.
+    await sleep(200);
+
+    const state = regionState(victim);
+    expect(state.shardHomes.get(remoteShardId)).toBe(elsewhereRegion);
+    expect(state.shardHomeNodes.get(remoteShardId)?.toString()).toBe(elsewhere.toString());
+    // And the shard the region really does own is untouched by the refusal.
+    expect(entityIsUp(victim)).toBe(true);
+  });
+
+  test('an authentic HandOff for the shard this region owns still hands it off', async () => {
+    // The control that makes the case above a discrimination rather than a ban:
+    // the precondition reads `localShards`, so a shard this region genuinely
+    // owns still goes, entities and all.  Without this, refusing every `HandOff`
+    // would pass the case above and break rebalancing outright.
+    const victim = await startVictim('authority-handoff-owned', 47_390);
+    expect(regionState(victim).localShards.has(victim.shardId)).toBe(true);
+    expect(entityIsUp(victim)).toBe(true);
+
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    await awaitCondition(() => !entityIsUp(victim), {
+      timeoutMs: 4_000,
+      label: 'the owned shard handed off and took its entity down',
+    });
   });
 });
