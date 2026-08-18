@@ -170,6 +170,8 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
   private nextAcknowledgmentToken = 1;
   /** Resolves the current idle/poll wait early when the server announces new mail. */
   private wakeInboundLoop: (() => void) | null = null;
+  /** Timer behind the current wait, so an abandoned one can be cancelled. */
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: EmailBridgeOptions = {}) { super(options); }
 
@@ -218,6 +220,10 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
     this.inboundLoopRunning = false;
     this.wakeInboundLoop?.();
     this.wakeInboundLoop = null;
+    // Every timer goes too: one left pending holds the event loop open, so a
+    // stopped bridge would keep the process alive until it fired.
+    if (this.wakeTimer !== null) clearTimeout(this.wakeTimer);
+    this.wakeTimer = null;
 
     for (const pending of this.pendingAcknowledgments.values()) clearTimeout(pending.timer);
     this.pendingAcknowledgments.clear();
@@ -511,18 +517,27 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
   /**
    * Sleep, but wake early when the server announces new mail.  One waiter at
    * a time — the loop is the only caller.
+   *
+   * The previous waiter's timer is cancelled first.  When `idle()` wins the
+   * race the waiter it was raced against is abandoned unsettled, and a timer
+   * left running from an abandoned waiter would later fire and clear the
+   * *current* wake handle — after which an `exists` notification would find
+   * nothing to wake and the loop would sleep out the full interval.
    */
   private waitForWake(timeoutMs: number): Promise<void> {
+    if (this.wakeTimer !== null) clearTimeout(this.wakeTimer);
     return new Promise<void>((resolve) => {
       let settled = false;
       const finish = (): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.wakeInboundLoop = null;
+        if (this.wakeInboundLoop === finish) this.wakeInboundLoop = null;
+        if (this.wakeTimer === timer) this.wakeTimer = null;
         resolve();
       };
       const timer = setTimeout(finish, timeoutMs);
+      this.wakeTimer = timer;
       this.wakeInboundLoop = finish;
     });
   }
