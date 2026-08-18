@@ -11,6 +11,9 @@ import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/bro
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
 import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { EmailBridgeOptionsValidator, type EmailBridgeOptionsType } from '../../../../src/io/broker/EmailBridgeOptions.js';
+import type { EmailMessage } from '../../../../src/io/broker/EmailBridgeActor.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
 
 // Direct validator tests. The optionsValidator() hook is proven to fire in
 // preStart end-to-end by the MqttOptions integration test; here we exercise
@@ -278,5 +281,95 @@ describe('GrpcClientOptionsValidator', () => {
 
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
+  });
+});
+
+describe('EmailBridgeOptionsValidator', () => {
+  const check = (s: Partial<EmailBridgeOptionsType>): void => new EmailBridgeOptionsValidator().validate(s);
+  // The validator only ever checks the ref for presence.
+  const target = {} as ActorRef<EmailMessage>;
+  const imap = { host: 'imap.example.test' };
+  const smtp = { host: 'smtp.example.test' };
+
+  test('accepts either side alone, and both together', () => {
+    expect(() => check({ imap, target })).not.toThrow();
+    expect(() => check({ smtp })).not.toThrow();
+    expect(() => check({ imap, smtp, target })).not.toThrow();
+  });
+
+  test('rejects a bridge with neither side configured', () => {
+    expect(() => check({})).toThrow(/at least one side/);
+  });
+
+  // Both directions: each half of the inbound pair is useless alone.
+  test('rejects an imap side with no target', () => {
+    expect(() => check({ imap })).toThrow(/target/);
+  });
+
+  test('rejects a target with no imap side', () => {
+    expect(() => check({ smtp, target })).toThrow(/imap/);
+  });
+
+  test('rejects an empty or missing host on either side', () => {
+    expect(() => check({ imap: { host: '' }, target })).toThrow(/imap\.host/);
+    expect(() => check({ imap: {}, target })).toThrow(/imap\.host/);
+    expect(() => check({ smtp: { host: '' } })).toThrow(/smtp\.host/);
+  });
+
+  test('rejects out-of-range ports', () => {
+    expect(() => check({ imap: { ...imap, port: 0 }, target })).toThrow(/imap\.port/);
+    expect(() => check({ smtp: { ...smtp, port: 70_000 } })).toThrow(/smtp\.port/);
+  });
+
+  test('rejects an unknown onProcessed action', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'delete' as 'move' }, target }))
+      .toThrow(/imap\.onProcessed/);
+  });
+
+  test('rejects move mode without a destination', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'move' }, target }))
+      .toThrow(/imap\.moveToMailbox/);
+  });
+
+  // Moving mail into the mailbox it is swept from redelivers it forever —
+  // and the move itself succeeds, so nothing downstream would report it.
+  test('rejects moving into the watched mailbox', () => {
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', mailbox: 'Alerts', moveToMailbox: 'Alerts' },
+      target,
+    })).toThrow(/must differ from the watched mailbox/);
+    // Same trap via the default mailbox name.
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', moveToMailbox: 'INBOX' },
+      target,
+    })).toThrow(/must differ from the watched mailbox/);
+  });
+
+  test('accepts move mode with a different destination', () => {
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', mailbox: 'INBOX', moveToMailbox: 'Processed' },
+      target,
+    })).not.toThrow();
+  });
+
+  test('rejects non-positive timings and sizes', () => {
+    expect(() => check({ imap: { ...imap, pollIntervalMs: 0 }, target })).toThrow(/pollIntervalMs/);
+    expect(() => check({ imap: { ...imap, maxIdleTimeMs: -1 }, target })).toThrow(/maxIdleTimeMs/);
+    expect(() => check({ imap: { ...imap, maxMessageBytes: 0 }, target })).toThrow(/maxMessageBytes/);
+    expect(() => check({ imap: { ...imap, acknowledgmentTimeoutMs: 0 }, target }))
+      .toThrow(/acknowledgmentTimeoutMs/);
+  });
+
+  test('rejects non-positive pool sizing', () => {
+    expect(() => check({ smtp: { ...smtp, maxConnections: 0 } })).toThrow(/maxConnections/);
+    expect(() => check({ smtp: { ...smtp, maxMessages: 1.5 } })).toThrow(/maxMessages/);
+  });
+
+  test('rejects an empty default From', () => {
+    expect(() => check({ smtp: { ...smtp, from: '' } })).toThrow(/smtp\.from/);
+  });
+
+  test('unset optionals always pass', () => {
+    expect(() => check({ imap, smtp, target })).not.toThrow();
   });
 });

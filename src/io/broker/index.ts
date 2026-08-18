@@ -252,3 +252,53 @@ export type {
 } from './SseActor.js';
 export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';
+
+// Email bridge (#1133) — IMAP IDLE in, pooled SMTP out.
+export { EmailBridgeActor, isMessageLevelSmtpFailure, pickTextParts } from './EmailBridgeActor.js';
+export type {
+  EmailBridgeCommand,
+  // The variants too, not just the union: the target actor handles them one
+  // by one, and a handler takes the named variant type (#1095).
+  EmailSendCommand,
+  EmailAcknowledgmentCommand,
+  EmailNegativeAcknowledgmentCommand,
+  EmailMessage,
+  EmailSend,
+  EmailAddress,
+  EmailAttachment,
+  EmailTextPart,
+  // Test seams (re-exported so a fake can satisfy the driver shape).
+  ImapFlowModuleLike,
+  ImapFlowClientLike,
+  ImapFlowOptionsLike,
+  ImapEnvelopeLike,
+  ImapEnvelopeAddressLike,
+  ImapBodyStructureLike,
+  ImapFetchedMessageLike,
+  ImapSearchQueryLike,
+  NodemailerModuleLike,
+  NodemailerTransportOptionsLike,
+  NodemailerMessage,
+  NodemailerAttachment,
+  SmtpTransporterLike,
+} from './EmailBridgeActor.js';
+export {
+  DEFAULT_EMAIL_ACKNOWLEDGMENT_TIMEOUT_MS,
+  DEFAULT_EMAIL_MAX_MESSAGE_BYTES,
+  DEFAULT_IMAP_MAILBOX,
+  DEFAULT_IMAP_MAX_IDLE_TIME_MS,
+  DEFAULT_IMAP_POLL_INTERVAL_MS,
+  DEFAULT_IMAP_PORT,
+  DEFAULT_SMTP_MAX_CONNECTIONS,
+  DEFAULT_SMTP_MAX_MESSAGES,
+  DEFAULT_SMTP_PORT,
+  EmailBridgeOptions,
+  EmailBridgeOptionsBuilder,
+  EmailBridgeOptionsValidator,
+} from './EmailBridgeOptions.js';
+export type {
+  EmailBridgeOptionsType,
+  EmailImapOptionsType,
+  EmailSmtpOptionsType,
+  EmailProcessedAction,
+} from './EmailBridgeOptions.js';
