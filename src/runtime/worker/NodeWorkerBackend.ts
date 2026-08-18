@@ -2,6 +2,7 @@ import { Lazy } from '../../util/Lazy.js';
 import type {
   WorkerBackend,
   WorkerCloseEvent,
+  WorkerErrorEvent,
   WorkerEventMap,
   WorkerLike,
   WorkerMessageEvent,
@@ -48,14 +49,20 @@ export class NodeWorkerBackend implements WorkerBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
-interface NodeWorkerThread {
+/** The `worker_threads.Worker` surface the adapter uses — exported alongside {@link NodeWorkerAdapter} so a test can stand one in. */
+export interface NodeWorkerThread {
   postMessage(v: unknown, transfer?: unknown[]): void;
   on(event: 'message', listener: (data: unknown) => void): this;
   on(event: 'exit', listener: (code: number) => void): this;
+  on(event: 'error', listener: (error: Error) => void): this;
   off(event: 'message', listener: (data: unknown) => void): this;
   off(event: 'exit', listener: (code: number) => void): this;
+  off(event: 'error', listener: (error: Error) => void): this;
   terminate(): Promise<number>;
 }
+
+/** The three native event names this adapter subscribes, per `WorkerEventMap` key. */
+type NativeEventName = 'message' | 'exit' | 'error';
 
 type WorkerThreadConstructor = new (url: URL | string, options?: { name?: string }) => NodeWorkerThread;
 
@@ -68,12 +75,20 @@ const ctorLazy: Lazy<WorkerThreadConstructor> = Lazy.of<WorkerThreadConstructor>
   );
 });
 
-class NodeWorkerAdapter implements WorkerLike {
+/**
+ * Exported for the adapter-level test only — `src/runtime/` is not a package
+ * export path, so this widens nothing a consumer can see.  It is the one piece
+ * of the Node path a unit test can reach: `spawn()` needs a preloaded real
+ * `worker_threads.Worker`, and driving it would mean an actual OS thread, which
+ * no un-quarantined test does yet (#1186).  Handing the adapter a fake
+ * {@link NodeWorkerThread} instead binds the event mapping without one.
+ */
+export class NodeWorkerAdapter implements WorkerLike {
   // Map user-supplied handler → the function actually subscribed on the
   // underlying EventEmitter, so `removeEventListener` finds the right one.
   private readonly listeners: Map<
     (ev: never) => void,
-    { event: 'message' | 'exit'; listener: ((...args: unknown[]) => void) }
+    { event: NativeEventName; listener: ((...args: unknown[]) => void) }
   > = new Map();
 
   constructor(private readonly native: NodeWorkerThread) {}
@@ -90,15 +105,32 @@ class NodeWorkerAdapter implements WorkerLike {
       const listener = (code: number): void => {
         handler({ code } as WorkerCloseEvent as WorkerEventMap[K]);
       };
-      this.listeners.set(handler as (ev: never) => void, { event: 'exit', listener: listener as (...a: unknown[]) => void });
+      this.subscribe('exit', handler, listener as (...a: unknown[]) => void);
       this.native.on('exit', listener);
       return;
     }
-    // message
+    if (event === 'error') {
+      const listener = (error: Error): void => {
+        handler({ message: error?.message, error } as WorkerErrorEvent as WorkerEventMap[K]);
+      };
+      this.subscribe('error', handler, listener as (...a: unknown[]) => void);
+      this.native.on('error', listener);
+      return;
+    }
+    // Deliberately a throw and not a fall-through to `message`: this branch
+    // used to be the unguarded `else`, so `addEventListener('eror', h)` — or
+    // any name added to `WorkerEventMap` without a branch here — silently
+    // became a `message` subscription that fired on every frame and never on
+    // the event asked for (#700).
+    if (event !== 'message') {
+      throw new Error(
+        `NodeWorkerAdapter: unsupported worker event '${String(event)}' — expected 'message', 'close' or 'error'.`,
+      );
+    }
     const listener = (data: unknown): void => {
       handler({ data } as WorkerMessageEvent as WorkerEventMap[K]);
     };
-    this.listeners.set(handler as (ev: never) => void, { event: 'message', listener: listener as (...a: unknown[]) => void });
+    this.subscribe('message', handler, listener as (...a: unknown[]) => void);
     this.native.on('message', listener);
   }
 
@@ -111,12 +143,28 @@ class NodeWorkerAdapter implements WorkerLike {
     this.listeners.delete(handler as (ev: never) => void);
     if (entry.event === 'exit') {
       this.native.off('exit', entry.listener as (code: number) => void);
+    } else if (entry.event === 'error') {
+      this.native.off('error', entry.listener as (error: Error) => void);
     } else {
       this.native.off('message', entry.listener as (data: unknown) => void);
     }
   }
 
-  terminate(): Promise<number> {
-    return this.native.terminate();
+  /**
+   * `terminate()` on `worker_threads` already resolves after the thread's
+   * `exit`, so the contract's completion wait costs nothing extra here — the
+   * exit code it resolves with is dropped, because a caller who wants it
+   * subscribes `close`.
+   */
+  async terminate(): Promise<void> {
+    await this.native.terminate();
+  }
+
+  private subscribe<K extends keyof WorkerEventMap>(
+    event: NativeEventName,
+    handler: (ev: WorkerEventMap[K]) => void,
+    listener: (...args: unknown[]) => void,
+  ): void {
+    this.listeners.set(handler as (ev: never) => void, { event, listener });
   }
 }
