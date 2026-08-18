@@ -96,6 +96,22 @@ Eviction-Policy.
 Für einen Cache fester Größe ist das okay — Memcached wirft alte
 Einträge raus, um Platz zu schaffen.
 
+Für alles, was eine **Garantie** trägt, ist es das nicht.
+`InMemoryCache` evictet Einträge ohne Garantie, bevor er ein Lock,
+einen Rate-Limit-Zähler oder einen Idempotency-Record anfasst; hier
+gibt es dazu kein Gegenstück, denn die Entscheidung fällt im Server
+und der Client wird nicht gefragt.  Ein von `setIfAbsent`
+geschriebener Eintrag kann also mit dem größten Teil seiner TTL
+verschwinden — ein zweimal vergebenes Lock, ein zurückgesetztes
+Limit, ein Retry, der seinen Handler erneut ausführt — und nichts in
+der API meldet es.  Dimensioniere die Memcached-Instanz für die
+Garantien, die sie hält, halte sie von einem Key-Raum fern, den
+Aufrufer aufzählen können, und siehe
+[was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+für die Grundlage der Garantie.  Das ist unabhängig von der
+Topologie-Gefahr weiter unten: die braucht einen Server, der dazu-
+oder wegkommt, diese hier nur Speicherdruck.
+
 ## Connection-Pooling
 
 `memjs` hält seinen eigenen Connection-Pool; das Framework

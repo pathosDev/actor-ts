@@ -194,21 +194,23 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const limiterCache = new InMemoryCache();   // ✓ the limiter's own instance
   ```
-  Der Zähler, der das Limit durchsetzt, ist ein gewöhnlicher
-  Cache-Eintrag, und `InMemoryCache` evictet ab `maxEntries` den am
-  längsten nicht genutzten — ohne zu wissen, welche Einträge
-  Sicherheits-State tragen.  Teilst du eine Instanz mit `cached` oder
-  `idempotent`, evictet ein Aufrufer, der über eine der beiden
-  eindeutige Keys erzeugt (ein Response-Cache-Key aus dem Request, ein
-  angreiferseitig gewählter `Idempotency-Key`), die Zähler **anderer**
-  Clients und schenkt jedem davon ein frisches Budget.  Der eigene
-  Zähler des Fluters bleibt verschont: `incr` markiert ihn bei jedem
-  Request als zuletzt genutzt, er ist also nie das Opfer.
+  `InMemoryCache` behandelt den Zähler als Garantie-Träger — `incr` mit
+  einem `windowMs` hat ihn erzeugt — und evictet zuerst Einträge, die
+  keine tragen; eine Key-Flut über `cached` setzt die Fenster anderer
+  Clients also nicht mehr zurück.  Garantien ordnet er allerdings nicht
+  gegeneinander: in einer mit `idempotent` geteilten Instanz ist eine
+  Flut angreiferseitig gewählter `Idempotency-Key`s eine Flut von
+  Claims, und sobald die Map nichts Billigeres mehr hält, gehen die
+  Zähler mit.  Der eigene Zähler des Fluters bleibt in beiden Fällen
+  verschont: `incr` markiert ihn bei jedem Request als zuletzt genutzt,
+  er ist also nie das Opfer.
 
   Übergib eine eigene Instanz — oder `ext.cache('rate-limit')` — und
   dimensioniere deren `maxEntries` oberhalb der Zahl eindeutiger Keys,
-  die du innerhalb eines `windowMs` erwartest.  Siehe
-  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+  die du innerhalb eines `windowMs` erwartest; ein Client mit einem
+  IPv6-`/64` erzeugt sie beliebig, und jeder davon ist ein Zähler, den
+  der Cache schützt.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 
 <Aside type="caution" title="Randeffekte bei Fixed-Window">

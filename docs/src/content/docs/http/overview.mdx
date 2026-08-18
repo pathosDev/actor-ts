@@ -256,15 +256,16 @@ import { Aside } from '@astrojs/starlight/components';
   rateLimit({ cache, /* ... */ });   // ✗ same instance
   cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
   ```
-  `InMemoryCache` is LRU-bounded (10 000 entries by default) and its
-  eviction is blind to what an entry protects.  Share one instance and a
-  caller who varies the response-cache key — or the `Idempotency-Key`
-  header — evicts other clients' rate-limit counters and idempotency
-  records, resetting their limits and re-running handlers on their
-  retries.  Separate instances (or `ext.cache('rate-limit')` /
+  `InMemoryCache` is LRU-bounded (10 000 entries by default).  Its
+  eviction drains entries that carry no guarantee first, so a caller who
+  varies the response-cache key no longer reaches other clients'
+  rate-limit counters and idempotency records — but it does not rank
+  guarantees against each other, so varying the `Idempotency-Key` header
+  still evicts counters and records once nothing cheaper is left in the
+  map.  Separate instances (or `ext.cache('rate-limit')` /
   `ext.cache('idempotency')`) keep one middleware's key flood out of the
-  other's state.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  other's state entirely.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 
 ## Connecting HTTP to actors

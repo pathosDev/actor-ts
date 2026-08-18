@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { acquireLock } from '../../../src/cache/CacheLock.js';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
-import { InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_MAX_ENTRIES, InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { runCacheContractTests } from './_Contract.js';
 
 // Backend-agnostic contract — every Cache impl must pass these.
@@ -267,6 +269,185 @@ describe('InMemoryCache — bounded size / LRU eviction (HTTP-2)', () => {
     expect(cache.sizeForTest()).toBe(1);
     await sleep(80);              // several sweep cycles (every 20 ms)
     expect(cache.sizeForTest()).toBe(0);
+    await cache.close();
+  });
+});
+
+/**
+ * #1080 — eviction used to be blind to what an entry was for, and the price
+ * was a live `acquireLock` lock handed out twice at the UNTOUCHED DEFAULT
+ * configuration: `maxEntries` 10 000, a 60 s lock, then 10 000 ordinary
+ * writes.  Nothing crashed, nothing overran its TTL, and the original
+ * holder's `release()` returned `false` — which `CacheLock` documented as
+ * "the critical section ran longer than its TTL".
+ *
+ * Eviction now drains the entries that carry no guarantee first.  These tests
+ * bind both directions of that, because the useful part is where the line
+ * sits: `setIfAbsent` claims and `incr` counters with a finite TTL are
+ * protected, a plain `set` is not — protecting a `set` would protect every
+ * cached response body and therefore nothing — and the `maxEntries` bound
+ * itself is untouched, so HTTP-2's "a key flood cannot grow the map" still
+ * holds.
+ */
+describe('InMemoryCache — eviction prefers entries that carry no guarantee (#1080)', () => {
+  /** Comfortably past any cap used here, so eviction is not order-sensitive. */
+  const FLOOD_SIZE = 20;
+
+  /** The victim shape from the issue, at the configuration nobody changed. */
+  test('a live lock survives a flood at the default cap and is not handed out twice', async () => {
+    const cache = new InMemoryCache({ cleanupMs: 0 });      // maxEntries: 10 000
+    const first = await acquireLock(cache, 'lock:nightly-report', 60_000);
+    expect(first.isSome()).toBe(true);
+    if (!first.isSome()) throw new Error('unreachable — asserted above');
+
+    // A response cache sharing the instance: every request mints one entry.
+    // Note the finite TTL — a TTL alone must not buy protection.
+    for (let i = 0; i < DEFAULT_MAX_ENTRIES; i++) await cache.set(`rsp:/public/${i}`, i, 60_000);
+
+    expect((await acquireLock(cache, 'lock:nightly-report', 60_000)).isNone()).toBe(true);
+    expect(await first.value.release()).toBe(true);
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(DEFAULT_MAX_ENTRIES);
+    await cache.close();
+  });
+
+  test('a rate-limit counter created by incr survives a flood of ordinary writes', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.incr('rate:203.0.113.9', 60_000)).toBe(1);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    // The window continues from 1 instead of silently restarting at it.
+    expect(await cache.incr('rate:203.0.113.9', 60_000)).toBe(2);
+    await cache.close();
+  });
+
+  /**
+   * `idempotent` claims the key with `setIfAbsent` and then overwrites the
+   * marker with the finished response through `set`.  `Map.set` on a present
+   * key does not move it, so the record inherits the claim's already-aged
+   * slot — it is the *first* victim at the moment it becomes worth
+   * protecting.  Which is why the guarantee has to survive the overwrite.
+   */
+  test('a set that replaces a live claim inherits its protection', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.setIfAbsent('idem:pay-1', { inFlight: true }, 60_000)).toBe(true);
+    await cache.set('idem:pay-1', { charge: 1 }, 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('idem:pay-1')).toNullable()).toEqual({ charge: 1 });
+    await cache.close();
+  });
+
+  test('mset inherits a live claim the same way set does', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.setIfAbsent('idem:pay-1', { inFlight: true }, 60_000)).toBe(true);
+    await cache.mset(new Map([['idem:pay-1', { charge: 1 }]]), 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('idem:pay-1')).toNullable()).toEqual({ charge: 1 });
+    await cache.close();
+  });
+
+  /**
+   * The discriminating negative.  A cached response body is a finite-TTL
+   * `set`, so if `set` manufactured protection every entry would be protected
+   * and the policy would decide nothing.
+   */
+  test('a plain set is never protected, whatever TTL it carries', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    await cache.set('rsp:/hot', 'body', 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('rsp:/hot')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  /**
+   * An unbounded claim is the wedge {@link Cache.setIfAbsent} warns about, and
+   * protecting one would make it permanent: nothing would ever expire it, so
+   * it would hold its slot until the process ended.
+   */
+  test('a setIfAbsent with no TTL carries no protection', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.setIfAbsent('lock:forever', 'token')).toBe(true);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('lock:forever')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  /** HTTP-2 non-regression: protection re-orders victims, it never grows the map. */
+  test('a flood minted through setIfAbsent itself stays bounded by maxEntries', async () => {
+    const cache = new InMemoryCache({ maxEntries: 50, cleanupMs: 0 });
+    for (let i = 0; i < 5_000; i++) await cache.setIfAbsent(`idem:attacker-${i}`, 'claim', 60_000);
+    expect(cache.sizeForTest()).toBeLessThanOrEqual(50);
+    await cache.close();
+  });
+
+  /**
+   * The limit of the guarantee, and the reason `maxEntries` still has to be
+   * sized: once every entry in the map carries one, there is nothing cheaper
+   * left to drop.  A cache holding nothing but locks is exactly that case.
+   */
+  test('when every entry carries a guarantee the least-recently-used one still goes', async () => {
+    const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    const oldest = await acquireLock(cache, 'lock:a', 60_000);
+    if (!oldest.isSome()) throw new Error('acquire must succeed');
+    for (const key of ['lock:b', 'lock:c', 'lock:d']) {
+      expect((await acquireLock(cache, key, 60_000)).isSome()).toBe(true);
+    }
+
+    expect(cache.sizeForTest()).toBe(3);
+    expect((await cache.get('lock:a')).isNone()).toBe(true);
+    // Handed out again while the first holder still believes it is theirs —
+    // this is the residual, and `release` still cannot say which cause it hit.
+    expect((await acquireLock(cache, 'lock:a', 60_000)).isSome()).toBe(true);
+    expect(await oldest.value.release()).toBe(false);
+    await cache.close();
+  });
+
+  test('protection does not outlive the entry: a set after the claim was dropped starts unprotected', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    await cache.setIfAbsent('idem:pay-1', { inFlight: true }, 60_000);
+    await cache.delete('idem:pay-1');            // the handler threw — claim released
+    await cache.set('idem:pay-1', 'late write', 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('idem:pay-1')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  test('a lapsed claim confers nothing on a later write to the same key', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.setIfAbsent('idem:pay-1', { inFlight: true }, 1)).toBe(true);
+    // `cleanupMs: 0` leaves the lapsed claim sitting in the map, which is the
+    // only state this rule is about, and the elapsed time IS the precondition
+    // — an expired-but-unswept entry changes no observable to poll on.
+    await sleep(30);
+    await cache.set('idem:pay-1', 'late write', 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('idem:pay-1')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  /**
+   * A protected slot has to come back when its TTL passes, or an idempotency
+   * claim whose holder crashed would hold one for the whole 24 h default.
+   */
+  test('the periodic sweep reclaims expired entries from the protected half too', async () => {
+    const cache = new InMemoryCache({ maxEntries: 100, cleanupMs: 10 });
+    expect(await cache.setIfAbsent('idem:crashed', { inFlight: true }, 5)).toBe(true);
+    expect(cache.sizeForTest()).toBe(1);
+    await awaitCondition(() => cache.sizeForTest() === 0, {
+      label: 'the sweep reclaimed the lapsed claim',
+    });
     await cache.close();
   });
 });

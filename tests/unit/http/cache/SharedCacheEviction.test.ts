@@ -1,26 +1,36 @@
 /**
  * security audit HTTP-8 — attacker-controlled cache-key flood evicts
- * rate-limit counters and idempotency records (#607).
+ * rate-limit counters and idempotency records (#607), and what #1080's
+ * eviction policy did and did not fix about it.
  *
  * `rateLimit`, `cached` and `idempotent` all take a `Cache`, and the
  * obvious wiring hands all three the same instance.  `InMemoryCache` is
- * LRU-bounded and its eviction is blind to what an entry protects, so a
- * caller who can mint distinct keys through ANY of the three pushes the
- * others' state out — silently, well inside its TTL.  The rate limit
- * then resets and an honest retry re-runs the handler.
+ * LRU-bounded, and eviction used to pick purely on recency, so a caller
+ * who could mint distinct keys through ANY of the three pushed the
+ * others' state out — silently, well inside its TTL.
  *
- * These tests do two jobs.  The `shared instance` blocks are
- * CHARACTERISATION: they pin the hazard that exists today, so the
- * documentation of it (docs/cache/in-memory, the middleware pages, the
- * three JSDoc headers) cannot quietly stop matching the code.  The
- * `separate instances` blocks are the REGRESSION: they pin that the
- * documented remedy — one named cache per consumer — actually holds the
- * flood out.
+ * #1080 changed the policy: a `setIfAbsent` claim and an `incr` counter
+ * with a finite TTL carry a guarantee, a `set` does not, and eviction
+ * drains the guarantee-free entries first.  Both of this file's original
+ * headline victims are on the protected side of that line — the counter
+ * because `incr` created it, the completed idempotency record because it
+ * overwrites a live claim and inherits it — so the two `shared instance`
+ * cases below now assert that the flood no longer reaches them.  They are
+ * REGRESSION tests, and reverting the policy turns both red.
  *
- * Deliberately NOT covered here: making eviction itself aware of what an
- * entry protects (per-prefix quotas, immunity for `setIfAbsent`-written
- * entries).  That is one decision about `InMemoryCache`'s policy and it
- * belongs to #1080, not to two issues at once.
+ * What has NOT changed is the reason the middleware pages still say to
+ * give each consumer its own cache, and the last two blocks are the
+ * CHARACTERISATION of that residual:
+ *
+ *   - The policy does not rank guarantees against each other.  Two
+ *     guarantee-carrying consumers sharing one instance still evict each
+ *     other, because once the map holds nothing cheaper there is nothing
+ *     cheaper to drop.
+ *   - `idempotent`'s own key space is attacker-controlled, so a flood
+ *     through the SAME middleware still evicts another caller's record.
+ *
+ * Deliberately NOT covered here: per-prefix quotas, which would rank one
+ * consumer's guarantee above another's.  That is #607's remaining half.
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
@@ -66,8 +76,8 @@ async function flood(cache: InMemoryCache): Promise<void> {
   for (let i = 0; i < FLOOD_SIZE; i++) await handler(makeRequest({}, `/public/${i}`));
 }
 
-describe('shared cache — an idempotency record is evicted by a key flood', () => {
-  test('shared instance: the flood drops the record and the honest retry re-runs the handler', async () => {
+describe('shared cache — an idempotency record survives a response-cache key flood', () => {
+  test('shared instance: the flood no longer reaches the record and the honest retry replays', async () => {
     const shared = newCache();
     let charges = 0;
     const pay = idempotent({ cache: shared })(() => {
@@ -82,10 +92,12 @@ describe('shared cache — an idempotency record is evicted by a key flood', () 
     await flood(shared);
 
     // The client's honest retry — same key, same request in every part.
+    // Before #1080 this was a double charge: the record had been evicted
+    // by `cached()`'s minted keys, well inside its 24 h TTL.
     const retry = await pay(makeRequest({ 'idempotency-key': 'pay-1' }));
     expect(retry.status).toBe(Status.OK);
-    expect(charges).toBe(2);              // DOUBLE CHARGE — the record is gone
-    expect(retry.body).toEqual({ charge: 2 });
+    expect(charges).toBe(1);              // handler NOT re-run
+    expect(retry.body).toEqual({ charge: 1 });   // the FIRST response, replayed
 
     await shared.close();
   });
@@ -114,7 +126,7 @@ describe('shared cache — an idempotency record is evicted by a key flood', () 
   });
 });
 
-describe('shared cache — another client\'s rate-limit counter is evicted by a key flood', () => {
+describe('shared cache — another client\'s rate-limit counter survives a key flood', () => {
   /** `max: 2` → the third request in a window is the first 429. */
   function limiterOver(cache: InMemoryCache): (request: HttpRequest) => Promise<HttpResponse> {
     return rateLimit({
@@ -125,7 +137,7 @@ describe('shared cache — another client\'s rate-limit counter is evicted by a 
     })(() => complete(Status.OK, { ok: true }));
   }
 
-  test('shared instance: the victim\'s counter is dropped, so their limit silently resets', async () => {
+  test('shared instance: the victim\'s counter survives, so their limit still bites', async () => {
     const shared = newCache();
     const limited = limiterOver(shared);
     const victim = makeRequest({}, '/api', '203.0.113.9');
@@ -134,8 +146,10 @@ describe('shared cache — another client\'s rate-limit counter is evicted by a 
 
     await flood(shared);
 
-    expect((await limited(victim)).status).toBe(Status.OK);   // count 1 again, not 2
-    expect((await limited(victim)).status).toBe(Status.OK);   // count 2 — still no 429
+    // Before #1080 the counter was gone here and the window silently
+    // restarted at 1, so this pair read OK/OK and the limit never bit.
+    expect((await limited(victim)).status).toBe(Status.OK);            // count 2
+    expect((await limited(victim)).status).toBe(Status.TooManyRequests);  // count 3 → limited
     await shared.close();
   });
 
@@ -181,6 +195,50 @@ describe('shared cache — another client\'s rate-limit counter is evicted by a 
 
     expect(statuses.slice(0, 2)).toEqual([Status.OK, Status.OK]);
     expect(statuses.slice(2).every((s) => s === Status.TooManyRequests)).toBe(true);
+
+    await shared.close();
+  });
+});
+
+describe('shared cache — the policy does not rank one guarantee above another', () => {
+  /**
+   * The reason "give each middleware its own cache" survives #1080 as
+   * advice.  Preferring guarantee-free victims only helps while the map
+   * still holds some: two guarantee-carrying consumers on one instance run
+   * out of cheap victims and then evict each other on recency, exactly as
+   * before.  A caller with an IPv6 `/64` mints rate-limit counters all
+   * day, and every one of them is a counter the policy protects.
+   *
+   * Ranking one consumer's guarantee above another's is per-prefix quotas
+   * — #607's remaining half — and this test is what it would flip.
+   */
+  test('a flood of rate-limit counters still evicts an idempotency record from the same instance', async () => {
+    const shared = newCache();
+    let charges = 0;
+    const pay = idempotent({ cache: shared })(() => {
+      charges++;
+      return complete(Status.OK, { charge: charges });
+    });
+    // `max` far above the flood, so no request is ever short-circuited and
+    // every one of them mints a counter.
+    const limited = rateLimit({
+      cache: shared,
+      windowMs: 60_000,
+      max: 1_000,
+      key: (request) => request.remoteAddress ?? 'unknown',
+    })(() => complete(Status.OK, { ok: true }));
+
+    await pay(makeRequest({ 'idempotency-key': 'pay-1' }));
+    expect(charges).toBe(1);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      expect((await limited(makeRequest({}, '/api', `2001:db8::${i}`))).status).toBe(Status.OK);
+    }
+
+    const retry = await pay(makeRequest({ 'idempotency-key': 'pay-1' }));
+    expect(retry.status).toBe(Status.OK);
+    expect(charges).toBe(2);              // DOUBLE CHARGE — the record went anyway
+    expect(retry.body).toEqual({ charge: 2 });
 
     await shared.close();
   });

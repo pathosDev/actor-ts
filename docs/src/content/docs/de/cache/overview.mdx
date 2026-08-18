@@ -162,12 +162,33 @@ ist in dem Moment falsch, in dem ein Halter seine TTL überzieht:
 sein Eintrag ist längst weg, jemand anderes hat einen eigenen
 geschrieben, und das bedingungslose Löschen wirft den neuen
 Besitzer raus, während der noch arbeitet.  Genau das meldet der
-`false`-Rückgabewert: das Lock war abgelaufen, der eben
-ausgeführte Abschnitt war also womöglich gar nicht exklusiv.
+`false`-Rückgabewert: unser Eintrag ist nicht mehr der unter dem
+Key, der eben ausgeführte Abschnitt war also womöglich gar nicht
+exklusiv.
 
-`ttlMs` ist bewusst Pflicht.  Ablauf ist der *einzige* Weg zurück,
-wenn ein Halter abstürzt oder hängt — ein Lock ohne TTL verklemmt
-für immer, sobald ein Prozess im falschen Moment stirbt.
+`ttlMs` ist bewusst Pflicht.  Ablauf ist der Weg zurück, wenn ein
+Halter abstürzt oder hängt — ein Lock ohne TTL verklemmt für immer,
+sobald ein Prozess im falschen Moment stirbt.
+
+<Aside type="caution" title="Ablauf ist nicht der einzige Weg, auf dem ein Lock verschwindet">
+  **Eviction ist der andere**, und anders als der Ablauf braucht sie
+  keinen Absturz und respektiert keine Frist.  Ein begrenzter Cache
+  wirft Einträge unter Druck weg, ein Lock kann also mit dem größten
+  Teil seiner TTL gehen — und das nächste `acquireLock` gelingt dann,
+  während es noch jemand hält.  `InMemoryCache` (der Default)
+  evictet Einträge ohne Garantie, bevor er ein Lock anfasst, aber
+  seine `maxEntries`-Schranke bleibt hart: ein Cache, der nur Locks
+  hält, evictet an der Schranke sein ältestes.  Memcached evictet
+  serverseitig ohne jede clientseitige Politik, und Redis unter
+  `maxmemory-policy allkeys-lru` genauso.  Ein `false` von
+  `release()` hat damit zwei Ursachen — der Abschnitt hat seine TTL
+  überzogen, oder der Eintrag wurde vorzeitig evictet — und nichts am
+  Rückgabewert sagt dir, welche.  Dimensioniere den Cache des Locks
+  für die Locks, die innerhalb einer TTL gleichzeitig leben, und
+  richte ihn nie auf eine Instanz, die ein Aufrufer mit eigenen Keys
+  fluten kann.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
+</Aside>
 
 <Aside type="caution" title="Kein Lock mit verteiltem Konsens">
   Das Compare-and-Delete in `release()` ist ein `get` gefolgt von
@@ -236,14 +257,16 @@ await cache.mset(new Map([
   ```ts
   const cache = system.extension(CacheExtensionId).cache();   // ✗ one instance for everything
   ```
-  Ein begrenzter Cache evictet allein nach Aktualität — ein Eintrag,
-  der eine Garantie trägt (ein Rate-Limit-Zähler, ein
-  Idempotency-Record, ein Lock), geht also genauso bereitwillig wie ein
-  gecachter Response-Body.  Gib jedem Consumer eine eigene benannte
+  `InMemoryCache` evictet Einträge ohne Garantie, bevor er einen
+  Rate-Limit-Zähler, einen Idempotency-Record oder ein Lock anfasst —
+  eine Flut von Response-Cache-Keys erreicht diese also nicht mehr.  Er
+  ordnet Garantien aber nicht gegeneinander, und Memcached sowie Redis
+  unter `allkeys-lru` evictieren serverseitig, wo eine solche Politik
+  gar nicht hinreicht.  Gib jedem Consumer eine eigene benannte
   Instanz (`cache('rate-limit')`, `cache('idempotency')`), damit ein
   Aufrufer, der den Key-Raum des einen aufzählt, den State des anderen
   nicht erreicht.  Siehe
-  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 
 ## Wohin als Nächstes

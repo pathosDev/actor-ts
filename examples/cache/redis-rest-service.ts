@@ -112,13 +112,14 @@ async function main(): Promise<void> {
     .withHost('127.0.0.1')
     .withPort(2552);
   const cluster = await Cluster.join(system, clusterOptions);
-  // ONE CACHE PER MIDDLEWARE — never a single shared instance.  A bounded
-  // cache evicts on recency alone, with no idea which entries carry a
-  // guarantee, so in a shared instance a caller who varies the
-  // response-cache key or the `Idempotency-Key` header pushes OTHER
-  // clients' rate-limit counters and idempotency records out: their limits
-  // reset and their retries re-run the handler.  Registering each under a
-  // name also lets the rest of the app reach the same instance via
+  // ONE CACHE PER MIDDLEWARE — never a single shared instance.
+  // `InMemoryCache` evicts entries that carry no guarantee before it
+  // touches a rate-limit counter or an idempotency record, but it does not
+  // rank guarantees against each other: in a shared instance a caller who
+  // varies the `Idempotency-Key` header still pushes OTHER clients'
+  // counters and records out once nothing cheaper is left in the map, and
+  // Redis under `allkeys-lru` has no such policy at all.  Registering each
+  // under a name also lets the rest of the app reach the same instance via
   // `system.extension(CacheExtensionId).cache('response-cache')`.
   const limiterCache = pickCache('rate-limit');
   const responseStore = pickCache('response-cache');

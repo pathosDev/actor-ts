@@ -32,25 +32,31 @@ import {
  * **Security — give this middleware its own cache (security audit
  * HTTP-8).**  The `Idempotency-Key` header is attacker-chosen, so every
  * request can mint a new cache key.  `InMemoryCache` is LRU-bounded
- * (10 000 entries by default) and its eviction is blind to what an entry
- * protects: whichever key is least-recently-used goes, whether it holds a
- * response body or the record that stops a payment from being taken
- * twice.  A record written by {@link idempotent} is only moved to the
- * most-recently-used end when it is READ — a claimed-but-not-yet-answered
- * key is never bumped at all, because `setIfAbsent` does not count as a
- * use.
+ * (10 000 entries by default), and since #1080 its eviction takes entries
+ * that carry no guarantee first — the claim this middleware writes with
+ * `setIfAbsent` and the record that replaces it both count as one, so a
+ * flood minted through `cached` no longer reaches a stored response.
+ * Three things still do:
+ *
+ *   - The policy does not rank guarantees against each other.  On an
+ *     instance shared with `rateLimit`, a flood of counters evicts
+ *     records anyway, because once the map holds nothing cheaper there is
+ *     nothing cheaper to drop.
+ *   - This middleware's OWN key space is attacker-controlled, so a flood
+ *     of distinct `Idempotency-Key`s evicts other callers' records out of
+ *     the same instance.  {@link IdempotencyOptionsType.maxKeyLength}
+ *     bounds how big each minted key is, not how many of them there are.
+ *   - A record is only moved to the most-recently-used end when it is
+ *     READ — a claimed-but-not-yet-answered key is never bumped at all,
+ *     because `setIfAbsent` does not count as a use — so it is the first
+ *     thing dropped once the cap is reached.
  *
  * So hand this middleware a cache nothing else writes to —
  * `ext.cache('idempotency')` resolves a separate named instance — and
  * size that cache's `maxEntries` for the number of in-flight keys you
- * expect times the TTL.  Sharing one `Cache` with `rateLimit` or
- * `cached` means a flood of keys minted through either of those pushes
- * idempotency records out, and an honest client's retry then re-executes
- * the handler instead of replaying its stored response.  Naming a
- * separate cache narrows the blast radius; it does not remove it,
- * because this middleware's OWN key space is attacker-controlled too —
- * {@link IdempotencyOptionsType.maxKeyLength} bounds how big each minted
- * key is, not how many of them there are.
+ * expect times the TTL.  Naming a separate cache narrows the blast
+ * radius; it does not remove it.  Where the guarantee has to hold under
+ * an adversary, back it with Redis rather than an in-process LRU.
  */
 
 type CachedResponse = {
