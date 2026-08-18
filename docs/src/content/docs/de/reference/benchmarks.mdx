@@ -15,18 +15,20 @@ ist die maßgebliche Quelle; diese Seite ist ihre lesbare Fassung.
 
 ## Die Zahlen
 
-Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logische Kerne) · Windows 11 · 2026-08-18 ·
-Median aus neun verschränkten Runden.
+Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logische Kerne) · Windows 11 ·
+**Mittelwert aus zehn verschränkten Runden**, mit der Streuung, um die diese
+Runden schwankten.  Ein Abstand, der kleiner ist als die Streuung daneben, ist
+kein Unterschied.
 
 ### JavaScript — gleiche Maschine, gleicher Harness
 
-| Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
-| -------- | -------- | ---------- | ------------- | -------------- |
-| tell-Durchsatz, Batch 1k  | **807k/s** | 362k/s | 161k/s | 210M/s |
-| tell-Durchsatz, Batch 10k | **897k/s** | 373k/s | 176k/s | 479M/s |
-| ask-Roundtrip, p50        | 9,2 µs | **6,6 µs** | 10,4 µs | 0,9 µs |
-| Ping-Pong, 10k Wechsel    | 125k/s | **184k/s** | 85k/s | 329M/s |
-| spawn → gestartet → gestoppt | 41k/s | **180k/s** | 55k/s | 4,5M/s |
+| Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
+| -------- | -------- | ---------- | ------------- |
+| tell-Durchsatz, Batch 1k  | **780k/s** ±10 % | 366k/s ±3 % | 157k/s ±12 % |
+| tell-Durchsatz, Batch 10k | **890k/s** ±8 % | 379k/s ±6 % | 168k/s ±17 % |
+| ask-Roundtrip, p50        | 8,5 µs | **7,3 µs** | 12,1 µs |
+| Ping-Pong, 10k Wechsel    | 123k/s ±7 % | **182k/s** ±5 % | 88k/s ±10 % |
+| spawn → gestartet → gestoppt | 41k/s ±7 % | **176k/s** ±8 % | 51k/s ±20 % |
 
 ### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
 
@@ -36,10 +38,10 @@ nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
 
 | Szenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
 | -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell-Durchsatz, Batch 10k | 897k/s | 2,92M/s | **3,03M/s** | 1,33M/s | 600k/s |
-| Ping-Pong, 10k Wechsel    | 125k/s | 391k/s | 387k/s | **447k/s** | 168k/s |
-| spawn → gestartet → gestoppt | 41k/s | 25k/s | 24k/s | **32k/s** | 5k/s |
-| ask-Roundtrip, p50        | 9,2 µs | 40,5 µs | 47,1 µs | 7,3 µs | **5,6 µs** |
+| tell-Durchsatz, Batch 10k | 890k/s ±8 % | 2,97M/s ±8 % | **3,13M/s** ±15 % | 1,13M/s ±17 % | 603k/s ±21 % |
+| Ping-Pong, 10k Wechsel    | 123k/s ±7 % | 466k/s ±28 % | **468k/s** ±32 % | 403k/s ±13 % | 173k/s ±8 % |
+| spawn → gestartet → gestoppt | 41k/s ±7 % | 26k/s ±12 % | 24k/s ±13 % | **31k/s** ±9 % | 5k/s ±7 % |
+| ask-Roundtrip, p50        | 8,5 µs | 39,5 µs | 43,4 µs | 8,2 µs | **6,9 µs** |
 | Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
 Drei Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
@@ -68,8 +70,8 @@ Frameworks, ohne diese Kosten im Pfad.
 ### Was die Zahlen sagen
 
 **actor-ts führt im JavaScript-Feld beim Massen-Nachrichtendurchsatz** —
-Faktor 2,4 gegenüber nact und 5,5 gegenüber XState bei einem Batch von
-10 000 — und liegt beim ask-Roundtrip gleichauf mit nact; der Abstand liegt
+Faktor 2,3 gegenüber nact und 5,3 gegenüber XState bei einem Batch von
+10 000 — und liegt beim ask-Roundtrip nahe an nact; der Abstand liegt
 innerhalb des Rauschens zwischen zwei Läufen.
 
 **Beim Spawnen und beim Ping-Pong liegt es zurück**, und zwar aus einem
@@ -95,13 +97,18 @@ Framework-Qualität zweistellige Mikrosekunden.  Zweitens steht Akka ab 2.7
 unter BUSL-1.1 und schränkt den Produktiveinsatz ein; das gehört in dieselbe
 Entscheidung wie die Durchsatzzahl.
 
-**Die letzte Spalte ist kein Konkurrent.**  Sie besteht aus direkten
-Methodenaufrufen ohne Mailbox, ohne Supervision, ohne Lebenszyklus und ohne
-Backpressure — der Boden, damit sich die anderen Spalten als Preis der
-Abstraktion lesen lassen.  Grob Faktor 650 beim tell, grob Faktor 8 beim
-ask-Roundtrip.  Ihr Absolutwert ist zugleich die instabilste Zahl hier: eine
-Schleife, die ein JIT wegoptimieren kann, ist keine echte Messung — also als
-Größenordnung lesen und nicht feiner.
+**Es gibt bewusst keine Spalte „ohne Framework".**  Früher schloss eine diese
+Tabellen ab — schlichte Objekte und direkte Methodenaufrufe als Boden, der den
+Preis der Abstraktion zeigen sollte.  Sie ist aus zwei Gründen entfernt.  Eine
+Spalte, die zwei bis drei Größenordnungen über allem anderen liegt, wird als
+„diese Frameworks sind verschwenderisch" gelesen statt als „ein direkter
+Aufruf macht nichts davon — keine Queue, kein Scheduler, keine Supervision,
+kein Lebenszyklus, kein Backpressure", und kein danebengestellter Vorbehalt
+hat daran etwas geändert.  Sie war zudem die unzuverlässigste Zahl der
+Messung: eine Schleife, die ein JIT wegoptimieren kann, bewegte sich zwischen
+zwei Läufen um 16 % — mehr als jeder echte Arm.  Ein Vergleich soll bei der
+Wahl zwischen den vorliegenden Optionen helfen, und „gar kein Framework" ist
+keine davon.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -111,7 +118,7 @@ Produktivbetrieb auf echter Hardware mit echtem Netzwerk aus.  Vergleiche die
 Spalten, betrachte die letzte Stelle jeder Zahl als Fiktion und lies einen
 Abstand von 10 % als „ungefähr gleich" — die gemessene Streuung zwischen
 Läufen erreicht bei einer einzelnen Runde 15-30 %, und genau deshalb ist jede
-Zeile oben ein Median aus neun.
+Zahl oben ein Mittelwert aus zehn und trägt ihre Streuung.
 </Aside>
 
 ## Methodik
@@ -139,11 +146,13 @@ Die Teile, die die Tabelle lesenswert machen:
   stillschweigend verworfen hat und der Harness die Anforderung zählte.
 - **Ein Workload, quergeprüft.**  Batch-Größen und Iterationszahlen stehen in
   einer Datei, und der Generator schlägt fehl, wenn ein Arm andere meldet.
-- **Verschränkte Runden, Median pro Szenario.**  Runde 1 jedes Arms, dann
-  Runde 2 — so trifft Hintergrundlast alle Arme statt zufällig einen.  Jede
-  veröffentlichte Zeile ist ein echter Einzellauf, ganz übernommen: Durchsatz,
-  Perzentile und Speicher aus derselben Ausführung, nie spaltenweise zu einer
-  Zeile gemittelt, die nie so gemessen wurde.
+- **Verschränkte Runden, gemittelt.**  Runde 1 jedes Arms, dann Runde 2 — so
+  trifft Hintergrundlast alle Arme statt zufällig einen.  Jede veröffentlichte
+  Zahl ist der Mittelwert aus zehn Runden und trägt die Streuung, um die diese
+  Runden schwankten: den Median zu veröffentlichen hieße, eine Runde zu melden
+  und neun wegzuwerfen — einen Mittelwert ohne Streuung zu veröffentlichen
+  hieße zu verschweigen, dass einige dieser Zahlen zwischen Läufen um ein
+  Sechstel wandern.
 - **Ein Framework pro Subprozess**, damit Modulzustand, JIT-Profile und
   GC-Druck nicht zwischen Armen überlaufen.
 - **Logging überall aus.**  Ein Arm, der Logzeilen schreibt, misst seinen
@@ -198,10 +207,6 @@ passend zu den anderen Armen.  Stattdessen mit `ts-pattern` zu dispatchen — de
 Stil, den dieses Projekt in seinem eigenen Quellcode verwendet — kostet
 weitere 18-22 % tell-Durchsatz, was auf einem heißen Pfad zu wissen lohnt.
 
-**Der Boden-Arm** macht kein Queueing, keine Supervision, keinen Lebenszyklus
-und keine Ortstransparenz.  Er ist das, woraus ein Aktorsystem gebaut ist —
-nicht ein Aktorsystem ohne Overhead.
-
 ## Was nicht gemessen wurde
 
 Ausdrücklich genannt, denn eine Benchmark-Seite, die nur auflistet, was sie
@@ -233,7 +238,7 @@ bun install --cwd benchmarks/comparison
 ```
 
 ```bash
-bun run bench:compare -- --rounds=9
+bun run bench:compare -- --rounds=10
 ```
 
 ```bash

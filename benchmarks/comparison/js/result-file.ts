@@ -53,6 +53,15 @@ export type ScenarioResult = {
   readonly warmupIterations: number;
   readonly totalNs: number;
   readonly opsPerSecond: number;
+  /**
+   * Spread of `opsPerSecond` across the rounds this row averages.
+   *
+   * Published because the row is a mean: without it, a figure whose rounds
+   * disagreed by a third looks exactly as confident as one whose rounds agreed
+   * to a percent.  Absent (or 0) for a single-round file, where there is no
+   * spread to report.
+   */
+  readonly opsPerSecondStddev?: number;
   readonly perOperationNs: number;
   readonly meanNs: number;
   readonly stddevNs: number;
@@ -95,12 +104,12 @@ export type ComparisonResultFile = {
   readonly scenarios: ReadonlyArray<ScenarioResult>;
   readonly skippedScenarios: ReadonlyArray<SkippedScenario>;
   /**
-   * How many interleaved rounds this file is the median of.
+   * How many interleaved rounds this file averages.
    *
    * Absent or 1 means a single round, which on any machine that is not
    * otherwise idle is a coin toss: measured spreads of 15-30 % between
    * consecutive rounds are ordinary.  Anything published should say which
-   * it is.
+   * it is — and `opsPerSecondStddev` says how far those rounds disagreed.
    */
   readonly rounds?: number;
 };
@@ -109,9 +118,9 @@ export type ComparisonResultFile = {
 export const RESULTS_DIRECTORY = join(import.meta.dirname ?? '.', '..', 'results');
 
 /**
- * Per-round files, before the median is taken.  Kept out of `results/` (and
- * out of git) because they are working data: the published artefact is the
- * median, and committing every round would bury it.
+ * Per-round files, before they are averaged.  Kept out of `results/` (and out
+ * of git) because they are working data: the published artefact is the mean
+ * over them, and committing every round would bury it.
  */
 export const ROUNDS_DIRECTORY = join(RESULTS_DIRECTORY, '.rounds');
 

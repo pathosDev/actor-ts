@@ -398,41 +398,48 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 ## Benchmarks
 
 How does it compare to the other options?  Measured, rather than asserted —
-same machine, same harness, same workload, nine interleaved rounds, and every
+same machine, same harness, same workload, ten interleaved rounds, and every
 row verified against work the system actually completed rather than work it
 was asked for.
 
-Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX, 2026-08-18:
+Each figure is the **mean of those ten rounds**, with the spread they varied
+by — a gap smaller than the spread beside it is not a difference.
 
-| scenario                       | actor-ts    | nact 7.6.2 | XState 5.32.5 | no framework |
-| ------------------------------ | ----------- | ---------- | ------------- | ------------ |
-| tell throughput (batch 10k)    | **897k/s**  | 373k/s     | 176k/s        | 479M/s       |
-| ask round-trip (p50)           | 9.2 µs      | **6.6 µs** | 10.4 µs *     | 0.9 µs       |
-| ping-pong (10k exchanges)      | 125k/s      | **184k/s** | 85k/s         | 329M/s       |
-| spawn → started → stopped      | 41k/s       | **180k/s** | 55k/s         | 4.5M/s       |
+Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
+
+| scenario                       | actor-ts        | nact 7.6.2      | XState 5.32.5   |
+| ------------------------------ | --------------- | --------------- | --------------- |
+| tell throughput (batch 10k)    | **890k/s** ±8 % | 379k/s ±6 %     | 168k/s ±17 %    |
+| ask round-trip (p50)           | 8.5 µs          | **7.3 µs**      | 12.1 µs *       |
+| ping-pong (10k exchanges)      | 123k/s ±7 %     | **182k/s** ±5 % | 88k/s ±10 %     |
+| spawn → started → stopped      | 41k/s ±7 %      | **176k/s** ±8 % | 51k/s ±20 %     |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
 
-actor-ts leads the JavaScript field on bulk message throughput by a wide
-margin and is level with nact on ask latency.  It is behind on spawning and on
-two-actor ping-pong, both because it routes actor creation and each message
-through a dispatcher turn where nact works synchronously.  The last column is
-not a competitor — it is direct method calls, so it shows what the abstraction
-costs.
+actor-ts leads the JavaScript field on bulk message throughput — 2.3× nact and
+5.3× XState — and is close to nact on ask latency.  It is behind on spawning
+and on two-actor ping-pong, both because it routes actor creation and each
+message through a dispatcher turn where nact works synchronously.
+
+There is deliberately no "no framework" column.  One used to sit here, showing
+direct method calls as a floor; it was removed because a number two orders of
+magnitude above everything else is read as "these frameworks are wasteful"
+rather than as "a direct call does none of this work", and because it was the
+least stable figure in the suite.
 
 ### And against the JVM and .NET
 
 Kept in its own table on purpose: these are other virtual machines, measured by
 a harness that mirrors the JavaScript one rather than being it.
 
-| scenario                    | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
-| --------------------------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell throughput (batch 10k) | 897k/s         | 2.92M/s    | **3.03M/s** | 1.33M/s         | 600k/s         |
-| ping-pong (10k exchanges)   | 125k/s         | 391k/s     | 387k/s      | **447k/s**      | 168k/s         |
-| spawn → started → stopped   | 41k/s          | 25k/s      | 24k/s       | **32k/s**       | 5k/s ‡         |
-| ask round-trip (p50)        | 9.2 µs         | 40.5 µs †  | 47.1 µs †   | 7.3 µs          | **5.6 µs**     |
-| licence                     | MIT            | BUSL-1.1   | Apache-2.0  | Apache-2.0      | MIT            |
+| scenario                    | actor-ts (Bun) | Akka 2.8.8   | Pekko 1.6.0   | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| --------------------------- | -------------- | ------------ | ------------- | --------------- | -------------- |
+| tell throughput (batch 10k) | 890k/s ±8 %    | 2.97M/s ±8 % | **3.13M/s** ±15 % | 1.13M/s ±17 % | 603k/s ±21 %   |
+| ping-pong (10k exchanges)   | 123k/s ±7 %    | 466k/s ±28 % | **468k/s** ±32 %  | 403k/s ±13 %  | 173k/s ±8 %    |
+| spawn → started → stopped   | 41k/s ±7 %     | 26k/s ±12 %  | 24k/s ±13 %   | **31k/s** ±9 %  | 5k/s ±7 % ‡    |
+| ask round-trip (p50)        | 8.5 µs         | 39.5 µs †    | 43.4 µs †     | 8.2 µs          | **6.9 µs**     |
+| licence                     | MIT            | BUSL-1.1     | Apache-2.0    | Apache-2.0      | MIT            |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
 that is a microtask and in .NET an `await`; on the JVM, from a non-actor
@@ -453,13 +460,17 @@ agree to within the noise — **staying on an OSI-approved licence costs nothing
 in throughput.**  And the same actor model appears on three runtimes, which is
 what makes the runtime's own contribution visible rather than inferred.
 
+The spreads are the other half of the story: several of these figures moved by
+more than 15 % between rounds, so treat a 20 % gap as a difference and a 10 %
+gap as a tie.
+
 These are **ratios, not absolutes**, on one machine.  Read the columns, treat
 the last digit as fiction, and note that a 10 % gap here is inside the
 run-to-run noise.
 
 **[Full tables, methodology and caveats](./benchmarks/comparison/RESULTS.md)** —
 including what is deliberately *not* measured yet (clustering, persistence)
-and why.  Reproduce with `bun run bench:compare -- --rounds=9`.
+and why.  Reproduce with `bun run bench:compare -- --rounds=10`.
 
 ---
 

@@ -1,27 +1,33 @@
 /**
  * Collapses several interleaved measurement rounds into one publishable file
- * per arm, by taking the **median row** for every scenario.
+ * per arm, by **averaging every metric** across the rounds and recording how
+ * far they spread.
  *
  * This exists because a single round is not a measurement on any machine that
  * is not otherwise idle, and the machines these benchmarks actually run on
- * never are.  Measured here across five consecutive rounds on an otherwise
- * ordinary desktop: nact's ask rate varied by 2 %, actor-ts's by 15 %, and
- * XState's by 34 % — while the *ordering* of the three was identical in every
- * round.  Publishing one arbitrary round would have put a 34 % coin toss in a
- * table that readers will quote to three significant figures.
+ * never are.  Measured across five consecutive rounds on an ordinary desktop:
+ * one arm's ask rate varied by 2 %, another's by 15 %, a third's by 34 % —
+ * while the *ordering* of the three was identical in every round.
  *
- * Two decisions worth keeping:
+ * ## Why the mean, and what it costs
  *
- *  - **Median, not mean.**  A round disturbed by something else on the machine
- *    is an outlier, and the mean carries outliers into the published number
- *    while the median discards them.
- *  - **A real row, never a synthesised one.**  The median row is one round's
- *    actual measurement, carried across whole — throughput, percentiles, ΔRSS
- *    and completion counts all from the same run.  Averaging the columns
- *    separately would produce a row where the p99 belongs to one round and the
- *    throughput to another, which is a number no execution ever produced.
- *    With an even round count this takes the lower-middle row for the same
- *    reason: interpolating would invent one.
+ * This used to publish the median row, which threw away everything but one
+ * round.  The mean uses all of them, which is the stronger reason: with ten
+ * rounds, reporting one of them discards 90 % of the evidence.
+ *
+ * The trade-off is real and worth stating rather than hiding.  A round
+ * disturbed by something else on the machine is discarded by a median and
+ * carried by a mean.  Two things keep that honest:
+ *
+ *  - **`opsPerSecondStddev` is published next to every figure**, so a row
+ *    whose rounds disagreed is visible as exactly that instead of averaging
+ *    into a confident-looking number.  A reader can see when a gap is smaller
+ *    than the noise that produced it.
+ *  - **Averaging is per metric, not per row.**  Each published metric is the
+ *    mean of that metric across rounds, so the row as a whole is a summary
+ *    rather than a single observation.  `minNs` and `maxNs` are the exception:
+ *    averaging extremes would blunt exactly what they exist to show, so they
+ *    are the minimum of the minima and the maximum of the maxima.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -54,15 +60,48 @@ function groupRoundsByArm(): Map<string, ComparisonResultFile[]> {
   return grouped;
 }
 
+const mean = (values: ReadonlyArray<number>): number =>
+  values.reduce((total, value) => total + value, 0) / values.length;
+
+/** Population standard deviation — these rounds are the whole set, not a sample of one. */
+function standardDeviation(values: ReadonlyArray<number>): number {
+  if (values.length < 2) return 0;
+  const average = mean(values);
+  return Math.sqrt(mean(values.map((value) => (value - average) ** 2)));
+}
+
 /**
- * The median row by throughput, carried across whole.
+ * One published row from the same scenario measured in every round.
  *
- * Ties and even counts both resolve to the lower-middle element, so the result
- * is always a row some round actually produced.
+ * The counts (`iterations`, `opsPerIteration`, `warmupIterations`,
+ * `expectedOperations`, `completedOperations`) are identical in every round by
+ * construction — `report.ts` fails the run otherwise — so they are carried
+ * across rather than averaged, which would only introduce rounding.
  */
-function medianScenario(rows: ReadonlyArray<ScenarioResult>): ScenarioResult {
-  const sorted = [...rows].sort((a, b) => a.opsPerSecond - b.opsPerSecond);
-  return sorted[Math.floor((sorted.length - 1) / 2)]!;
+function averageScenario(rows: ReadonlyArray<ScenarioResult>): ScenarioResult {
+  const first = rows[0]!;
+  const pick = (select: (row: ScenarioResult) => number): number[] => rows.map(select);
+  const rssDeltas = rows
+    .map((row) => row.rssDeltaBytes)
+    .filter((value): value is number => value !== undefined);
+
+  return {
+    ...first,
+    totalNs: mean(pick((r) => r.totalNs)),
+    opsPerSecond: mean(pick((r) => r.opsPerSecond)),
+    opsPerSecondStddev: standardDeviation(pick((r) => r.opsPerSecond)),
+    perOperationNs: mean(pick((r) => r.perOperationNs)),
+    meanNs: mean(pick((r) => r.meanNs)),
+    stddevNs: mean(pick((r) => r.stddevNs)),
+    // The extremes stay extremes: the smallest iteration seen anywhere, and
+    // the largest.  A mean of minima describes nothing that happened.
+    minNs: Math.min(...pick((r) => r.minNs)),
+    maxNs: Math.max(...pick((r) => r.maxNs)),
+    p50Ns: mean(pick((r) => r.p50Ns)),
+    p95Ns: mean(pick((r) => r.p95Ns)),
+    p99Ns: mean(pick((r) => r.p99Ns)),
+    ...(rssDeltas.length === 0 ? {} : { rssDeltaBytes: mean(rssDeltas) }),
+  };
 }
 
 /**
@@ -84,7 +123,7 @@ export function mergeRounds(): string[] {
           (s) => s.scenario === reference.scenario && s.case === reference.case,
         ))
         .filter((s): s is ScenarioResult => s !== undefined);
-      return medianScenario(sameCase);
+      return averageScenario(sameCase);
     });
 
     written.push(writeResultFile({

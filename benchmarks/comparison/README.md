@@ -149,7 +149,6 @@ not a finding.
 | **Pekko** (JVM) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
 | **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
 | **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
-| **vanilla** | no framework at all | the floor, so every row reads as "what the abstraction costs" |
 
 Each arm's own header comment records where its framework's semantics
 differ from the scenario definition, and those notes travel with the
@@ -221,6 +220,26 @@ Both pin their transitive closure with `RestorePackagesWithLockFile` and a
 committed lock file, which is the .NET equivalent of the pinned pom, and both
 run under workstation GC — the default a console application gets, and a knob
 no other arm has been tuned on.
+
+### Removed: the no-framework floor
+
+An eighth arm used to sit at the end of every table — plain objects and direct
+method calls, meant as a floor showing what the actor abstraction costs.  It
+was removed, and the reason is worth keeping:
+
+- **It invited the wrong conclusion.**  A column running two to three orders of
+  magnitude above the others reads as "the frameworks are wasteful", when what
+  it actually shows is that a direct call does none of the work — no queue, no
+  scheduler, no supervision, no lifecycle, no back-pressure.  Every caveat in
+  the world next to the number did not stop the number from being the thing
+  people take away.
+- **It was the least trustworthy figure in the suite.**  A loop a JIT can
+  flatten is barely a measurement: it moved 16 % between two consecutive runs
+  of everything else, more than any real arm.
+
+A comparison should help someone choose between the options in front of them.
+"Use no framework" is not one of those options, and pricing it to three
+significant figures pretended otherwise.
 
 ### Evaluated and rejected: comedy
 
@@ -315,10 +334,16 @@ bun run bench:compare -- --rounds=7
 ```
 
 This runs the arms **interleaved** — round 1 of every arm, then round 2 —
-and publishes the per-scenario **median**.  Both halves matter.
+and publishes the per-scenario **mean**, together with the spread of the
+rounds behind it.
+
 Interleaving means whatever else the machine is doing lands on every arm
-rather than on whichever one happened to run during it; the median means
-a disturbed round is discarded instead of averaged in.
+rather than on whichever one happened to run during it.  The mean means
+all ten rounds are used: publishing the median would report one round and
+discard nine.  The cost of that choice is that a disturbed round is
+carried rather than dropped, which is exactly why the spread is published
+next to every figure — a row whose rounds disagreed is then visible as
+that, instead of averaging into a confident-looking number.
 
 The measured need for it, on an ordinary desktop with nothing unusual
 running: across five consecutive single rounds the ask rate varied by
@@ -326,11 +351,11 @@ running: across five consecutive single rounds the ask rate varied by
 of the three was identical every time.  A single round would have put
 that coin toss into a table readers quote to three significant figures.
 
-The published row is always **one real run carried across whole** —
-throughput, percentiles and ΔRSS from the same execution.  Averaging the
-columns separately would produce a row where the p99 came from one round
-and the throughput from another, which is a measurement nothing ever
-produced.
+Averaging is **per metric**, so a published row is a summary rather than a
+single observation — that is the honest way to describe it.  `min` and
+`max` are the exception: they are the smallest and largest iteration seen
+across all rounds, because a mean of extremes describes nothing that
+happened.
 
 Commit `results/` and the regenerated `RESULTS.md` together, **on a clean
 tree**: the environment block records the commit and marks it `-dirty`
