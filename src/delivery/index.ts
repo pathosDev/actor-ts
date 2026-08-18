@@ -8,3 +8,4 @@ export type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.
 export { ReliableDelivery } from './ReliableDelivery.js';
 export type { ProducerHandle, ConsumerHandle } from './ReliableDelivery.js';
 export type { Delivery, Acknowledgment, ConfirmationCallback } from './Messages.js';
+export { MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';

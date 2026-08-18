@@ -3,9 +3,13 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
-import { ReliableDelivery, ProducerControllerOptions, ProducerControllerOptionsBuilder } from '../../../src/delivery/index.js';
+import {
+  ReliableDelivery,
+  ProducerControllerOptions,
+  ProducerControllerOptionsBuilder,
+  MAX_DELIVERY_IDENTIFIER_LENGTH,
+} from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
-import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';

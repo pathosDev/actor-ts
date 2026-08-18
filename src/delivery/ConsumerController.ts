@@ -103,7 +103,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   }
 
   private deadLetter(message: Delivery<T>): void {
-    this.log.warn(`consumer refused a malformed delivery (seq=${String(message?.seq)})`);
+    this.log.warn(`consumer refused a malformed delivery (seq=${String(message.seq)})`);
     this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
   }
 
