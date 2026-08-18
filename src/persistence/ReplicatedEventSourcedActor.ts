@@ -315,11 +315,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   private _state!: State;
   private _vc = VectorClock.empty();
-  /**
-   * Strict order: every observed event, deduplicated, sorted by
-   * `_compare`.  (Not by `resolver()` — that hook is not consulted on
-   * this path.)
-   */
+  /** Strict order: every observed event, deduplicated, sorted by `_compare`. */
   private _events: Array<ReplicatedEventEnvelope<Event>> = [];
   /** Every observed event's `eventId`.  A hit means "already applied". */
   private _seenIds = new Set<string>();
