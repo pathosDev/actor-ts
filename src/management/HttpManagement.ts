@@ -1,8 +1,6 @@
 import type { ManagementRoutesOptions, ManagementRoutesOptionsType } from './ManagementRoutesOptions.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
-import { DistributedDataId } from '../crdt/DistributedData.js';
-import { LWWRegister } from '../crdt/LWWRegister.js';
 import {
   complete,
   completeJson,
@@ -31,6 +29,8 @@ import { healthChecksOf } from './HealthCheckExtension.js';
  *   - `GET /cluster/members`                  →  current membership JSON
  *   - `GET /cluster/leader`                   →  leader info
  *   - `GET /cluster/shards?type=<typeName>`   →  shard-to-region map for one type (#56)
+ *     — from `ClusterSharding`, so it needs no configuration beyond a region
+ *     or proxy for the type on this node (#682)
  *   - `GET /health`                           →  liveness (200 iff all checks pass)
  *   - `GET /ready`                            →  readiness (200 iff all checks pass)
  *   - `POST /cluster/leave`                   →  graceful leave (optional, off by default)
@@ -49,6 +49,14 @@ import { healthChecksOf } from './HealthCheckExtension.js';
  * — readiness is a property of the node, and a second answer that differs
  * from the one the gRPC health service gives is the failure mode this
  * whole seam exists to prevent.
+ *
+ * **Module dependencies point one way**: `src/management/` reads
+ * `src/cluster/`, `src/http/`, `src/metrics/` — and never `src/crdt/`.  The
+ * shard-map route used to reach into the CRDT store for the coordinator's
+ * DistributedData snapshot, which coupled observability to a replication
+ * backend it has no business knowing about and made the endpoint's answer
+ * depend on the operator having wired one up.  It asks `ClusterSharding`
+ * now (#557, #682).
  */
 export function managementRoutes(
   system: ActorSystem,
@@ -128,12 +136,22 @@ export function managementRoutes(
     : get(async () => complete(Status.NotFound, 'leave endpoint disabled'));
 
   /**
-   * GET /cluster/shards?type=<typeName> — returns the current shard map
-   * for one sharded type as recorded by the coordinator in DistributedData.
-   * Backed by the same store the coordinator reads on leader failover
-   * (`sharding-coordinator-state|<typeName>`), so the view is at most
-   * one gossip-tick stale.  Returns 404 if DD isn't started or the
-   * type isn't known.
+   * GET /cluster/shards?type=<typeName> — the current shard map for one
+   * sharded type, read from `ClusterSharding.shardMap()`: the last map the
+   * coordinator broadcast to this node's region, so the view is at most one
+   * coordinator publish stale and needs no configuration at all.
+   *
+   * It used to read the coordinator's DistributedData snapshot instead, which
+   * made it 404 out of the box twice over — nothing in the framework starts
+   * the DistributedData extension, and the snapshot is only written when the
+   * operator opts into a `coordinatorStateStore`.  Both preconditions are
+   * gone; what remains is that this node must participate in the type, i.e.
+   * have called `sharding.start()` or `sharding.startProxy()` for it, because
+   * the coordinator broadcasts only to regions that registered (#682).
+   *
+   * Returns 404 while no map has arrived for the type.  A 200 with an empty
+   * `shardHome` is the normal answer for a type nobody has addressed yet:
+   * `regions` fills on registration, `shardHome` only once a shard is placed.
    */
   const clusterShards = get(async (request) => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
@@ -142,36 +160,16 @@ export function managementRoutes(
     if (!typeName) {
       return complete(Status.BadRequest, 'missing query param `type`');
     }
-    const dd = system.extension(DistributedDataId);
-    if (!dd.isStarted()) {
-      return complete(Status.NotFound, 'DistributedData not started — shard map unavailable');
+    const view = cluster.sharding.shardMap(typeName);
+    if (!view) {
+      return complete(
+        Status.NotFound,
+        `no shard map for type "${typeName}" on this node yet — `
+        + 'the coordinator has not published one, or no region/proxy for the type '
+        + 'was started here',
+      );
     }
-    const reg = dd.get().get<LWWRegister<{
-      leader: string;
-      takenAt: number;
-      regions: ReadonlyArray<{
-        key: string; node: { systemName: string; host: string; port: number };
-        path: string; proxy: boolean; shards: ReadonlyArray<number>;
-      }>;
-      shardHome: ReadonlyArray<readonly [number, string]>;
-    }>>(`sharding-coordinator-state|${typeName}`);
-    const state = reg?.value();
-    if (!state) {
-      return complete(Status.NotFound, `no shard-map recorded for type "${typeName}" yet`);
-    }
-    return completeJson(Status.OK, {
-      typeName,
-      leader: state.leader,
-      takenAt: state.takenAt,
-      regions: state.regions.map((r) => ({
-        key: r.key,
-        address: `${r.node.systemName}@${r.node.host}:${r.node.port}`,
-        path: r.path,
-        proxy: r.proxy,
-        shards: r.shards,
-      })),
-      shardHome: state.shardHome.map(([shard, regionKey]) => ({ shard, regionKey })),
-    });
+    return completeJson(Status.OK, view);
   });
 
   /**
