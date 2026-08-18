@@ -110,10 +110,11 @@ GET /cluster/shards?type=cart
 {
   "typeName": "cart",
   "leader":   "my-app@10.0.0.5:2552",
+  "version":  7,
   "takenAt":  1710000000000,
   "regions": [
     {
-      "key":     "my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart",
       "address": "my-app@10.0.0.5:2552",
       "path":    "/system/cluster/sharding/region-cart",
       "proxy":   false,
@@ -121,7 +122,10 @@ GET /cluster/shards?type=cart
     },
     ...
   ],
-  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
+  "shardHome": [
+    { "shard": 0, "regionKey": "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart" },
+    ...
+  ]
 }
 ```
 
@@ -132,6 +136,44 @@ Nutze für:
 - **Diagnostizieren heißer Regionen** (eine Region mit zu vielen
   Shards).
 - **Manuelle Rebalance-Trigger** in der Entwicklung.
+
+**Woher die Antwort kommt.**  Der Node antwortet aus
+`ClusterSharding.shardMap(typeName)` — der letzten Karte, die der
+Coordinator an die Region dieses Nodes gesendet hat.  Dafür ist keine
+Konfiguration nötig: keine `DistributedData`-Extension, kein
+`coordinatorStateStore`, kein Round-Trip zum Leader.  Die einzige
+Voraussetzung ist, dass der antwortende Node an dem Typ teilnimmt —
+also `sharding.start(...)` oder `sharding.startProxy(...)` dafür
+aufgerufen hat —, denn der Coordinator sendet nur an Regionen, die
+sich registriert haben.  Ein Node, der `cart` nie erwähnt hat, hat
+nichts zu berichten und antwortet mit **404**.
+
+Früher las dieser Endpunkt den `DistributedData`-Snapshot des
+Coordinators, wodurch eine 200 in einer Standardkonfiguration
+unerreichbar war: nichts im Framework startet diese Extension, und der
+Snapshot wird nur geschrieben, wenn man sich per
+`coordinatorStateStore` dafür entscheidet.  Der Store existiert
+weiterhin und bleibt optional — er verkürzt den Leader-Failover —,
+aber dieser Endpunkt hängt nicht mehr davon ab.
+
+Den Body lesen:
+
+- `version` zählt *Broadcasts* des Coordinators, keine
+  Shard-Zuweisungen — eine Erhöhung pro Publish, und ein Publish
+  fasst einen Schwung Verschiebungen zusammen.  Vergleiche den Wert
+  über zwei Abfragen, um „die Karte hat sich bewegt“ von „die Karte
+  ist unverändert“ zu unterscheiden.
+- `takenAt` und `leader` stempelt der antwortende Node beim Eintreffen
+  der Karte, zwei Nodes können also dieselbe `version` mit leicht
+  verschiedenen Zeitstempeln melden.
+- `regions[].key` ist `<Adresse>|<Region-Pfad>`, derselbe Key, den
+  `shardHome[].regionKey` verwendet.  Eine Region, die nichts hostet,
+  steht trotzdem in der Liste, mit leerem `shards` — „registriert und
+  ohne Shards“ ist die interessante Hälfte einer Rebalance-Frage.
+- Eine **200 mit leerem `shardHome`** ist normal und kein Fehler:
+  `regions` füllt sich, sobald sich Regionen registrieren, während ein
+  Shard erst dann ein Zuhause bekommt, wenn eine Entity darin
+  adressiert wird.
 
 ## Metriken
 

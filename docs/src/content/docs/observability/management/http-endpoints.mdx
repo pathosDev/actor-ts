@@ -108,10 +108,11 @@ GET /cluster/shards?type=cart
 {
   "typeName": "cart",
   "leader":   "my-app@10.0.0.5:2552",
+  "version":  7,
   "takenAt":  1710000000000,
   "regions": [
     {
-      "key":     "my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart",
       "address": "my-app@10.0.0.5:2552",
       "path":    "/system/cluster/sharding/region-cart",
       "proxy":   false,
@@ -119,7 +120,10 @@ GET /cluster/shards?type=cart
     },
     ...
   ],
-  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
+  "shardHome": [
+    { "shard": 0, "regionKey": "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart" },
+    ...
+  ]
 }
 ```
 
@@ -129,6 +133,40 @@ for:
 - **Verifying even distribution** after a rebalance.
 - **Diagnosing hot regions** (one region with too many shards).
 - **Manual rebalance triggers** in development.
+
+**Where the answer comes from.**  The node answers from
+`ClusterSharding.shardMap(typeName)` — the last map the coordinator
+broadcast to this node's region.  Nothing needs configuring: no
+`DistributedData` extension, no `coordinatorStateStore`, no round trip
+to the leader.  The one precondition is that the answering node takes
+part in the type — it has called `sharding.start(...)` or
+`sharding.startProxy(...)` for it — because the coordinator broadcasts
+only to regions that registered.  A node that never mentioned `cart`
+has nothing to report and answers **404**.
+
+This endpoint used to read the coordinator's `DistributedData`
+snapshot, which made a 200 unreachable in a default configuration:
+nothing in the framework starts that extension, and the snapshot is
+only written when you opt into a `coordinatorStateStore`.  The store
+is still available and still optional — it shortens leader failover —
+but this endpoint no longer depends on it.
+
+Reading the body:
+
+- `version` counts coordinator *broadcasts*, not shard assignments —
+  one bump per publish, and a publish coalesces a burst of moves.
+  Compare it across two readouts to tell "the map moved" from "the map
+  is the same".
+- `takenAt` and `leader` are stamped by the answering node when the
+  map arrived, so two nodes can report the same `version` with
+  slightly different timestamps.
+- `regions[].key` is `<address>|<region path>`, the same key
+  `shardHome[].regionKey` uses.  A region that hosts nothing is still
+  listed, with an empty `shards` — "registered and given no shards" is
+  the interesting half of a rebalance question.
+- A **200 with an empty `shardHome`** is normal, not an error:
+  `regions` fills as soon as regions register, while a shard only gets
+  a home once an entity in it is addressed.
 
 ## Metrics
 
