@@ -78,7 +78,17 @@ export const Behaviors = {
     return { kind: 'receive', handler };
   },
 
-  /** Receive with an additional signal handler. */
+  /**
+   * Receive with an additional signal handler.
+   *
+   * The handler belongs to *this* behavior, not to the actor: transitioning to a
+   * `receive` that declares none unregisters it, so a state machine that needs
+   * `post-stop` cleanup — or wants a watched actor's death as a signal rather
+   * than as a message — declares `onSignal` in every state that needs it.  The
+   * sentinels are the exception: `Behaviors.stopped` leaves the handler in place,
+   * because a `post-stop` handler that stopped working the moment the actor
+   * stopped itself would be useless.
+   */
   receiveWithSignal<T>(
     handler: (context: TypedActorContext<T>, message: T) => Behavior<T>,
     onSignal: (context: TypedActorContext<T>, signal: Signal) => Behavior<T>,
@@ -108,6 +118,25 @@ export const Behaviors = {
    * Wrap a behavior with a supervisor strategy.  Any error thrown from the
    * wrapped handler is routed through `strategy` — the behavior is restarted
    * (reset to its initial form), stopped, resumed, or escalated.
+   *
+   * The wrapper **installs a scope that outlives the subtree it wraps**, the
+   * same way `intercept` survives its inner behavior's transitions: it
+   * contributes its side effect once and the framework remembers the strategy
+   * for the actor's lifetime, so a behavior the wrapped one transitions *to* is
+   * still supervised.  `Behaviors.stopped` is the way out of a scope; a
+   * transition is not.
+   *
+   * Nesting layers rather than replaces.  In
+   * `supervise(supervise(leaf).onFailure(inner)).onFailure(outer)` the innermost
+   * strategy decides; `Directive.Escalate` — and a restart budget it has spent —
+   * hand the same error to the next scope out, and only falling off the outermost
+   * one reaches the actor's cell, where the parent's strategy applies.  A scope a
+   * running behavior installs (returning a fresh `supervise(...)` from a handler)
+   * nests *inside* the ones already active rather than displacing them.
+   *
+   * A restart decided by an outer scope re-resolves that scope's own child, which
+   * rebuilds the wrappers below it — so the inner scopes come back with a full
+   * restart allowance.
    */
   supervise<T>(child: Behavior<T>): SuperviseBuilder<T> {
     return {

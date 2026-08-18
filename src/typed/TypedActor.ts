@@ -57,6 +57,43 @@ type ConcreteInterceptBehavior<T> = {
 type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
 
 /**
+ * One `Behaviors.supervise` wrapper the actor is currently running under.
+ *
+ * A *stack* of these replaces the single slot the interpreter used to hold, and
+ * that is what makes nesting work at all: `resolve` walks the wrapper chain in
+ * one loop, so the innermost `supervise` overwrote every outer one and an outer
+ * strategy was unreachable on every path — including an inner
+ * `Directive.Escalate`, which is the one path a layered design would consult it
+ * on (#638, #928).
+ */
+type SupervisionScope<T> = {
+  readonly node: SuperviseBehavior<T>;
+  /**
+   * Restart allowance for this scope's strategy.
+   *
+   * Owned per scope rather than recomputed per failure, because the whole point
+   * of a budget is that it *accumulates* across the restarts it counts — and a
+   * typed restart never leaves this instance, so nothing else would carry the
+   * tally.
+   */
+  readonly budget: RestartBudget;
+  /**
+   * How many interceptor layers of `current` sit *outside* this scope.
+   *
+   * A restart re-resolves the wrapper's child, which rebuilds every interceptor
+   * that lives *inside* it — so only the ones above it still have to be put
+   * back.  Counted while resolving because that is the only place the nesting is
+   * visible: once resolved, an interceptor around `supervise` and one under it
+   * are the same node.
+   *
+   * Mutable, unlike its siblings: the same wrapper re-adopted from a different
+   * position sits at a different depth, and it is the depth of the *current*
+   * resolve that a later restart has to undo.
+   */
+  interceptorDepth: number;
+};
+
+/**
  * Runtime host for a Behavior<T>.  Bridges the typed DSL to the OO Actor —
  * the actor's `onReceive` delegates into whichever Behavior is currently
  * active, and transitions follow whatever the handler returns.
@@ -66,27 +103,18 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
  */
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
-  private activeSupervise: SuperviseBehavior<T> | null = null;
   /**
-   * Restart allowance for {@link activeSupervise}'s strategy.
+   * Every `supervise` wrapper the actor is running under, outermost first.
    *
-   * Written in lockstep with that field and meaningful only while it is
-   * non-null.  It has to be a sibling field rather than something derived per
-   * failure, because the whole point of a budget is that it *accumulates*
-   * across the restarts it is counting — and a typed restart never leaves this
-   * instance, so nothing else would carry the tally.
+   * Nothing pops on a plain transition, and that is the documented contract
+   * rather than an omission: a wrapper contributes its side effect once and the
+   * framework remembers the strategy for the actor's lifetime, exactly the way
+   * `Behaviors.intercept` stays installed across the transitions of the
+   * behavior it wraps.  `Behaviors.stopped` is the way out of a supervision
+   * scope; a transition is not.  Only a restart shortens the stack, and only
+   * below the scope that decided it.
    */
-  private restartBudget: RestartBudget | null = null;
-  /**
-   * How many interceptor layers of `current` sit *outside* `activeSupervise`.
-   *
-   * A restart re-resolves `supervise.child`, which rebuilds every interceptor
-   * that lives *inside* the wrapper — so only the ones above it still have to
-   * be put back.  Counted while resolving because that is the only place the
-   * nesting is visible: once resolved, an interceptor around `supervise` and
-   * one under it are the same node.
-   */
-  private superviseInterceptorDepth = 0;
+  private readonly supervisionScopes: SupervisionScope<T>[] = [];
   private readonly stashBuffers: StashBufferImplementation<T>[] = [];
   private typedContext!: TypedActorContext<T>;
   private signalHandler: ((context: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
@@ -290,20 +318,54 @@ export class TypedActor<T> extends Actor<T> {
     this.maybeHandleTerminalSentinel();
   }
 
+  /**
+   * Route a failure through the supervision scopes the actor is running under,
+   * innermost first.
+   *
+   * `true` says a scope dealt with it and `onReceive` can return; `false` says
+   * every scope declined, so the error is rethrown and the *cell's* supervisor
+   * gets it.  Declining is exactly what `Directive.Escalate` means — "hand this
+   * to my own supervisor" — and a spent restart budget amounts to the same
+   * answer, so both walk one scope further out.  Reaching the cell is therefore
+   * falling off the end of the stack rather than a shortcut past the wrappers in
+   * between, which is what a `supervise` around a `supervise` was before (#638,
+   * #928).  A non-nested actor has a one-entry stack and sees no change.
+   */
   private handleSupervise(err: Error): boolean {
-    if (!this.activeSupervise) return false;
-    const supervise = this.activeSupervise;
-    const directive = supervise.strategy.decider(err);
-    return match(directive)
-      .with(Directive.Resume, () => true)
-      .with(Directive.Restart, () => this.onRestart(supervise))
-      .with(Directive.Stop, () => {
-        this.context.stopSelf();
-        return true;
-      })
-      .with(Directive.Escalate, () => false)
+    for (let index = this.supervisionScopes.length - 1; index >= 0; index--) {
+      if (this.applyDirective(index, err)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Ask the scope at `index` what to do about `err` and do it; `false` when it
+   * declined and the next scope out should be tried.
+   */
+  private applyDirective(index: number, err: Error): boolean {
+    const scope = this.supervisionScopes[index];
+    return match(scope.node.strategy.decider(err))
+      .with(Directive.Resume, () => this.onResume())
+      .with(Directive.Restart, () => this.onRestart(index))
+      .with(Directive.Stop, () => this.onStop())
+      .with(Directive.Escalate, () => this.onEscalate())
       .exhaustive();
   }
+
+  /** Keep the behavior and its state; the failing message is simply dropped. */
+  private onResume(): boolean { return true; }
+
+  /** Terminate the actor.  The failure ends here, so nothing is rethrown. */
+  private onStop(): boolean {
+    this.context.stopSelf();
+    return true;
+  }
+
+  /**
+   * Decline, so {@link handleSupervise} tries the next scope out and — past the
+   * outermost — rethrows to the cell.
+   */
+  private onEscalate(): boolean { return false; }
 
   /**
    * Restart the supervised behavior in place — unless the strategy's restart
@@ -326,25 +388,39 @@ export class TypedActor<T> extends Actor<T> {
    * (10 restarts/minute by default).  A behavior that always throws therefore
    * stops looping in place after `maxRetries`, and stops entirely once the
    * parent's own budget runs out.
+   *
+   * With scopes nested, "escalates" gains one hop: a spent budget hands the
+   * failure to the next `supervise` out before it ever reaches the cell, which
+   * is the same treatment `Directive.Escalate` gets.
    */
-  private onRestart(supervise: SuperviseBehavior<T>): boolean {
-    if (this.restartBudget && !this.restartBudget.registerRestart()) {
-      const { maxRetries, withinTimeRangeMs } = supervise.strategy;
+  private onRestart(index: number): boolean {
+    const scope = this.supervisionScopes[index];
+    if (!scope.budget.registerRestart()) {
+      const { maxRetries, withinTimeRangeMs } = scope.node.strategy;
       this.log.warn(
         `Typed supervise restart budget exhausted (${maxRetries} in ${withinTimeRangeMs}ms) — escalating`,
       );
       return false;
     }
-    // Read the depth before resolving: a nested `supervise` inside the
-    // child would overwrite the field on the way through.
-    const outerLayers = this.superviseInterceptorDepth;
+    // Read the depth before resolving: the re-resolve below re-enters this
+    // scope's own child, which can install nested scopes of its own.
+    const outerLayers = scope.interceptorDepth;
+    // Everything nested *inside* this scope is part of what restarts, so its
+    // scopes go with it and the re-resolve re-pushes whatever the child declares
+    // — with a full allowance, by the same reasoning that makes an interceptor
+    // inside the wrapper part of the fresh behavior.  This scope keeps the tally
+    // it just spent; truncating below it would restore unlimited restarts, the
+    // regression the budget exists to prevent.  And it happens *after* the
+    // budget check, so a refused restart leaves the stack untouched for the next
+    // scope out to decide on.
+    this.supervisionScopes.length = index + 1;
     // A typed restart re-resolves `supervise.child` in place — the cell
     // never sees it, so `onRecreate`'s drain does not run.  The stash
     // still cannot carry over (the re-resolved behavior has none of the
     // state that made those messages un-handleable), so it goes to dead
     // letters here for exactly the reason it does there.
     this.deadLetterStashBuffers();
-    const resolved = this.resolve(supervise.child, outerLayers);
+    const resolved = this.resolve(scope.node.child, outerLayers);
     const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
     // Interceptors installed *outside* the supervise wrapper are not part
     // of what restarts — they keep observing the fresh behavior.  The ones
@@ -386,16 +462,7 @@ export class TypedActor<T> extends Actor<T> {
           return { step: 'continue', next: n.factory(buffer) };
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
-          // Keyed on node identity, not on the strategy: a *different*
-          // `supervise` node is a different supervision scope and starts with
-          // a full allowance, while the same node keeps the tally it has built
-          // up.  That distinction is what makes the budget bite at all — a
-          // restart re-resolves `supervise.child`, never the wrapper, so the
-          // node reaching here twice means user code really did install a new
-          // scope rather than the supervisor merely doing its job.
-          if (this.activeSupervise !== n) this.restartBudget = new RestartBudget(n.strategy);
-          this.activeSupervise = n;
-          this.superviseInterceptorDepth = interceptorDepth;
+          this.enterSupervisionScope(n, interceptorDepth);
           return { step: 'continue', next: n.child };
         })
         // The one wrapper that does not collapse: resolve what it wraps (its
@@ -405,7 +472,18 @@ export class TypedActor<T> extends Actor<T> {
           step: 'done', final: wrapIntercepted(n.interceptor, this.resolve(n.inner, interceptorDepth + 1)),
         }))
         .with({ kind: 'receive' }, (n): ResolveStep => {
-          if (n.onSignal) this.signalHandler = n.onSignal;
+          // The handler belongs to the behavior that declared it, so adopting a
+          // `receive` that declares none unregisters it.  It used to only ever
+          // be *installed*, which made a state machine written as
+          // `receiveWithSignal` → plain `receive` per state keep the first
+          // state's handler for the rest of the actor's life — and go on having
+          // every `Terminated` taken away from its receive handler (#928).
+          //
+          // Only this arm touches the field: the sentinels leave it alone, so a
+          // behavior that answers `Behaviors.stopped` still reaches the
+          // `post-stop` handler it was adopted with, which is the whole point of
+          // registering one.
+          this.signalHandler = n.onSignal ?? null;
           return { step: 'done', final: n };
         })
         .with({ kind: 'same' }, (n): ResolveStep => ({ step: 'done', final: n }))
@@ -419,6 +497,32 @@ export class TypedActor<T> extends Actor<T> {
       cur = step.next;
     }
     throw new Error('Behavior resolution exceeded 64 hops — likely a cycle between deferred factories');
+  }
+
+  /**
+   * Record that the resolve walk passed through `node`, so a failure reaching
+   * {@link handleSupervise} can find its strategy.
+   *
+   * Keyed on the node's identity, not on the strategy: a *different* `supervise`
+   * node is a different supervision scope and starts with a full allowance,
+   * while the same node arriving again keeps the tally it has built up.  That
+   * distinction is what makes the budget bite at all — a restart re-resolves
+   * `supervise.child`, never the wrapper, so the node reaching here twice means
+   * user code really did install a scope again rather than the supervisor merely
+   * doing its job.
+   *
+   * A node not yet on the stack goes on *top*, because a wrapper reached by the
+   * walk is nested inside everything the walk passed on the way — including a
+   * wrapper a running behavior returns, which is the case the single slot used
+   * to destroy outright.
+   */
+  private enterSupervisionScope(node: SuperviseBehavior<T>, interceptorDepth: number): void {
+    const active = this.supervisionScopes.find((scope) => scope.node === node);
+    if (active !== undefined) {
+      active.interceptorDepth = interceptorDepth;
+      return;
+    }
+    this.supervisionScopes.push({ node, budget: new RestartBudget(node.strategy), interceptorDepth });
   }
 
   private maybeHandleTerminalSentinel(): void {

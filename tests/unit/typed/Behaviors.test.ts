@@ -575,6 +575,252 @@ describe('Behaviors.supervise — the strategy restart budget (#638)', () => {
   });
 });
 
+/**
+ * Two `supervise` wrappers used to collapse into one.  `resolve` held a single
+ * slot for the active scope and overwrote it on every hop of the wrapper walk,
+ * so after resolving `supervise(supervise(inner, sInner), sOuter)` the slot
+ * held the *inner* node and `sOuter` was unreachable on every path — an inner
+ * `Directive.Escalate` and an exhausted inner budget both jumped straight past
+ * it to the cell (#638, #928).
+ *
+ * The scopes are a stack now: the innermost decides, a directive it declines
+ * (`Escalate`, or a spent restart budget) hands the same error one scope out,
+ * and only falling off the outermost leaves the actor.  A non-nested actor has
+ * a one-entry stack and sees no change, which is what the budget block above
+ * keeps honest.
+ */
+describe('Behaviors.supervise — nested scopes (#638, #928)', () => {
+  /**
+   * Records each failure that left the actor entirely, and stops it — the same
+   * shape the budget block above uses, because "did this reach the cell" is the
+   * question every test here asks in one direction or the other.
+   */
+  const cellRecordsAndStops = (escalated: string[]): ActorOptions<string> =>
+    ActorOptions.create<string>().withSupervisorStrategy(
+      new OneForOneStrategy((error) => { escalated.push(error.message); return Directive.Stop; }),
+    );
+
+  /** Blows up on every message; one `init#n` entry per fresh resolve. */
+  const alwaysThrows = (initializations: string[]): Behavior<string> =>
+    Behaviors.setup<string>(() => {
+      initializations.push(`init#${initializations.length + 1}`);
+      return Behaviors.receiveMessage<string>(() => { throw new Error('always'); });
+    });
+
+  /** Throws on `'boom'`, records everything else — "is the actor still alive". */
+  const crashesOnBoom = (handled: string[], reason: string): Behavior<string> =>
+    Behaviors.receiveMessage<string>((message) => {
+      if (message === 'boom') throw new Error(reason);
+      handled.push(message);
+      return Behaviors.same;
+    });
+
+  /** A strategy that names itself in `consulted` when its decider runs. */
+  const records = (consulted: string[], name: string, directive: Directive): OneForOneStrategy =>
+    new OneForOneStrategy(() => { consulted.push(name); return directive; });
+
+  test('an inner Escalate hands the failure to the enclosing supervise, not to the cell', async () => {
+    const sys = newSys('typed-supervise-nested-escalate');
+    const consulted: string[] = [];
+    const handled: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(
+      Behaviors.supervise(crashesOnBoom(handled, 'nested')).onFailure(
+        records(consulted, 'inner', Directive.Escalate),
+      ),
+    ).onFailure(records(consulted, 'outer', Directive.Resume));
+    const ref = sys.spawn(typedActor(behavior), 'nested-escalate', cellRecordsAndStops(escalated));
+
+    ref.tell('boom');
+    ref.tell('after');
+    // Handling a message *after* the failure is the strongest available proof
+    // that the outer `Resume` ran: had the error reached the cell, its `Stop`
+    // would have killed the actor and nothing would follow.
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the outer Resume swallowed the failure and the actor kept going',
+    });
+
+    expect(consulted).toEqual(['inner', 'outer']);
+    expect(escalated).toEqual([]);
+    expect(handled).toEqual(['after']);
+    await sys.terminate();
+  });
+
+  test('the innermost scope decides — an outer Stop never runs when the inner Resumes', async () => {
+    const sys = newSys('typed-supervise-nested-innermost');
+    const consulted: string[] = [];
+    const handled: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(
+      Behaviors.supervise(crashesOnBoom(handled, 'nested')).onFailure(
+        records(consulted, 'inner', Directive.Resume),
+      ),
+    ).onFailure(records(consulted, 'outer', Directive.Stop));
+    const ref = sys.spawn(typedActor(behavior), 'nested-innermost', cellRecordsAndStops(escalated));
+
+    ref.tell('boom');
+    ref.tell('after');
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the inner Resume swallowed the failure',
+    });
+
+    // A stack, not a chain of votes: the outer decider is not asked at all
+    // once the inner one answers with something other than Escalate.
+    expect(consulted).toEqual(['inner']);
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('an exhausted inner budget escalates to the enclosing scope, not to the cell', async () => {
+    const sys = newSys('typed-supervise-nested-budget');
+    const initializations: string[] = [];
+    const outerDecisions: string[] = [];
+    const escalated: string[] = [];
+
+    const inner = Behaviors.supervise(alwaysThrows(initializations)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 1, withinTimeRangeMs: 60_000 }),
+    );
+    const behavior = Behaviors.supervise(inner).onFailure(
+      new OneForOneStrategy((error) => { outerDecisions.push(error.message); return Directive.Stop; }),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'nested-budget', cellRecordsAndStops(escalated));
+
+    ref.tell('a');
+    ref.tell('b');
+    await awaitCondition(() => outerDecisions.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the failure past the inner budget reached the outer strategy',
+    });
+
+    // One initial resolve plus the single restart the inner budget granted.
+    expect(initializations).toEqual(['init#1', 'init#2']);
+    expect(outerDecisions).toEqual(['always']);
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('only falling off the outermost scope reaches the cell', async () => {
+    const sys = newSys('typed-supervise-nested-off-the-end');
+    const consulted: string[] = [];
+    const handled: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(
+      Behaviors.supervise(crashesOnBoom(handled, 'nested')).onFailure(
+        records(consulted, 'inner', Directive.Escalate),
+      ),
+    ).onFailure(records(consulted, 'outer', Directive.Escalate));
+    const ref = sys.spawn(typedActor(behavior), 'nested-off-the-end', cellRecordsAndStops(escalated));
+
+    ref.tell('boom');
+    await awaitCondition(() => escalated.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the failure left the actor once no scope was left to try',
+    });
+
+    // Both wrappers get their say first — the cell is the end of the stack,
+    // not a shortcut past the outer one.
+    expect(consulted).toEqual(['inner', 'outer']);
+    expect(escalated).toEqual(['nested']);
+    await sys.terminate();
+  });
+
+  test('a restart the outer scope decided gives the inner scope a fresh budget', async () => {
+    // Re-resolving the outer wrapper's child rebuilds the inner wrapper, so the
+    // inner tally goes with it — the same reasoning that makes an interceptor
+    // *inside* a `supervise` part of what restarts.  Two full inner budgets in
+    // a row is what separates "reset" from "kept and immediately spent".
+    const sys = newSys('typed-supervise-nested-restart');
+    const initializations: string[] = [];
+    const escalated: string[] = [];
+
+    const inner = Behaviors.supervise(alwaysThrows(initializations)).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 1, withinTimeRangeMs: 60_000 }),
+    );
+    const behavior = Behaviors.supervise(inner).onFailure(
+      new OneForOneStrategy(() => Directive.Restart, { maxRetries: 5, withinTimeRangeMs: 60_000 }),
+    );
+    const ref = sys.spawn(typedActor(behavior), 'nested-restart', cellRecordsAndStops(escalated));
+
+    for (const message of ['a', 'b', 'c', 'd']) ref.tell(message);
+    // Four failures: inner restart, outer restart, inner restart, outer restart
+    // — five resolves in total, and none of them escalated out of the actor.
+    await awaitCondition(() => initializations.length === 5, {
+      timeoutMs: 4_000,
+      label: 'the inner budget was refilled by each restart the outer scope granted',
+    });
+
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('a supervise a running behavior returns nests inside the active scope', async () => {
+    // The dynamic case, and the one where the old single slot was unambiguously
+    // a bug rather than a documented design choice: the freshly installed
+    // wrapper replaced the one the actor was already running under.
+    const sys = newSys('typed-supervise-nested-dynamic');
+    const consulted: string[] = [];
+    const handled: string[] = [];
+    const escalated: string[] = [];
+
+    const installed = Behaviors.supervise(crashesOnBoom(handled, 'installed')).onFailure(
+      records(consulted, 'inner', Directive.Escalate),
+    );
+    const behavior = Behaviors.supervise(
+      Behaviors.receiveMessage<string>((message) => (message === 'install' ? installed : Behaviors.same)),
+    ).onFailure(records(consulted, 'outer', Directive.Resume));
+    const ref = sys.spawn(typedActor(behavior), 'nested-dynamic', cellRecordsAndStops(escalated));
+
+    ref.tell('install');
+    ref.tell('boom');
+    ref.tell('after');
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the scope installed at start-up still covered the failure',
+    });
+
+    expect(consulted).toEqual(['inner', 'outer']);
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('the scope still applies after the behavior transitions out of the wrapped subtree', async () => {
+    // Deliberately pins the shipped contract rather than #928's literal wording
+    // ("stops applying when the actor transitions out of it").  A `supervise`
+    // wrapper contributes its side effect once and the framework remembers the
+    // strategy for the actor's lifetime — the same rule `Behaviors.intercept`
+    // documents, and the rule the budget test above depends on, since every
+    // non-failing message it sends is a transition.  `Behaviors.stopped` is the
+    // way out of a supervision scope; a transition is not.
+    const sys = newSys('typed-supervise-outside-subtree');
+    const consulted: string[] = [];
+    const handled: string[] = [];
+    const escalated: string[] = [];
+
+    const behavior = Behaviors.supervise(
+      Behaviors.receiveMessage<string>((message) =>
+        (message === 'leave' ? crashesOnBoom(handled, 'after-leaving') : Behaviors.same)),
+    ).onFailure(records(consulted, 'outer', Directive.Resume));
+    const ref = sys.spawn(typedActor(behavior), 'outside-subtree', cellRecordsAndStops(escalated));
+
+    ref.tell('leave');
+    ref.tell('boom');
+    ref.tell('after');
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the strategy still covered a behavior reached by transition',
+    });
+
+    expect(consulted).toEqual(['outer']);
+    expect(escalated).toEqual([]);
+    await sys.terminate();
+  });
+});
+
 describe('Behaviors.empty / Behaviors.ignore', () => {
   test('ignore silently drops all messages', async () => {
     const sys = newSys();
@@ -851,6 +1097,129 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     });
 
     expect(seen).toEqual(['terminated-as-message:kid']);
+    await sys.terminate();
+  });
+});
+
+/**
+ * `signalHandler` was a one-way latch: `resolve` only ever *installed* one
+ * (`if (n.onSignal) this.signalHandler = n.onSignal`), never cleared it.  So a
+ * state machine written as `receiveWithSignal` → plain `receive` per state kept
+ * the first state's handler for the rest of the actor's life, and every
+ * `Terminated` went on being taken away from the receive handler (#928).
+ *
+ * The handler belongs to the `receive` node that declared it now, so adopting a
+ * `receive` that declares none unregisters it.  The sentinels are deliberately
+ * exempt: `Behaviors.stopped` declares no signals, and a `post-stop` handler
+ * that stopped working the moment the actor stopped itself would be useless.
+ */
+describe('Behaviors.receiveWithSignal — the handler follows the behavior that declared it (#928)', () => {
+  test('transitioning to a receive without onSignal unregisters the handler', async () => {
+    const sys = newSys('typed-signal-scope');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<unknown> = Behaviors.setup<unknown>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      const signalFree = Behaviors.receiveMessage<unknown>((message) => {
+        seen.push(message instanceof Terminated ? `terminated-as-message:${message.actor.path.name}` : 'plain');
+        return Behaviors.same;
+      });
+      return Behaviors.receiveWithSignal<unknown>(
+        (_context, message) => (message === 'drop-signals' ? signalFree : Behaviors.same),
+        (_context, signal) => { seen.push(`signal:${signal.kind}`); return Behaviors.same; },
+      );
+    });
+
+    const ref = sys.spawn(typedActor(parent), 'parent');
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
+
+    ref.tell('drop-signals');
+    ref.tell('probe');
+    // The probe is what makes the rest deterministic: the death must not race
+    // the transition, and `'plain'` is only ever recorded by the behavior the
+    // transition adopted.
+    await awaitCondition(() => seen.includes('plain'), {
+      timeoutMs: 4_000,
+      label: 'the signal-free behavior became current',
+    });
+
+    child!.stop();
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the death of the watched child arrived somewhere',
+    });
+
+    // `terminate()` stops the parent and awaits it, so a `post-stop` the stale
+    // handler would have fired has already had its chance by the next line —
+    // which makes the absence below an assertion rather than a hope.
+    await sys.terminate();
+    expect(seen).toEqual(['plain', 'terminated-as-message:kid']);
+  });
+
+  test('re-declaring onSignal in the next state keeps the signals coming', async () => {
+    // The migration path for the change above, and the reason it is safe to
+    // make: a state that wants signals says so, exactly as `Behaviors.receive`
+    // has always advertised.
+    const sys = newSys('typed-signal-scope-redeclared');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      const second = Behaviors.receiveWithSignal<string>(
+        () => Behaviors.same,
+        (_context, signal) => { seen.push(`second:${signal.kind}`); return Behaviors.same; },
+      );
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => (message === 'advance' ? second : Behaviors.same),
+        (_context, signal) => { seen.push(`first:${signal.kind}`); return Behaviors.same; },
+      );
+    });
+
+    const ref = sys.spawn(typedActor(parent), 'parent');
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
+
+    ref.tell('advance');
+    child!.stop();
+    await awaitCondition(() => seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the terminated signal reached one of the two handlers',
+    });
+
+    expect(seen).toEqual(['second:terminated']);
+    await sys.terminate();
+  });
+
+  test('a transition to Behaviors.stopped keeps the handler, so post-stop still fires', async () => {
+    // The counterpart a blanket "clear it on every resolve" would break: the
+    // `stopped` sentinel is not a `receive` node, so it never reaches the arm
+    // that owns the field, and the handler it was adopted from is still the one
+    // that asked to hear about the stop.
+    const sys = newSys('typed-signal-scope-stopped');
+    const seen: string[] = [];
+
+    const behavior = Behaviors.receiveWithSignal<string>(
+      (_context, message) => (message === 'die' ? Behaviors.stopped : Behaviors.same),
+      (_context, signal) => { seen.push(signal.kind); return Behaviors.same; },
+    );
+    const ref = sys.spawn(typedActor(behavior), 'stopper');
+
+    ref.tell('die');
+    await awaitCondition(() => seen.includes('post-stop'), {
+      timeoutMs: 4_000,
+      label: 'post-stop reached the handler the stopped behavior came from',
+    });
+
+    expect(seen).toEqual(['post-stop']);
     await sys.terminate();
   });
 });

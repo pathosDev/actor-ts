@@ -87,6 +87,37 @@ This is the typed-DSL equivalent of overriding `postStop`,
 `preRestart`, and handling `Terminated` messages in the untyped
 form.
 
+The handler belongs to **this behavior**, not to the actor.
+Transitioning to a `Behaviors.receive` that declares no `onSignal`
+unregisters it — so a state machine that wants `post-stop` cleanup,
+or wants a watched actor's death as a signal rather than as a
+message, declares `onSignal` in every state that needs it:
+
+```ts
+const draining = Behaviors.receiveWithSignal<Message>(
+  (context, message) => Behaviors.same,
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+
+// Keeps the cleanup — the next state declares its own handler.
+const working = Behaviors.receiveWithSignal<Message>(
+  (context, message) => draining,
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+
+// Loses it — a plain `receive` declares no signals, so from here on
+// `post-stop` fires nowhere and a `Terminated` arrives at the receive
+// handler as an ordinary message.
+const forgetful = Behaviors.receiveWithSignal<Message>(
+  (context, message) => Behaviors.receive((innerContext, innerMessage) => Behaviors.same),
+  (context, signal) => { cleanUp(); return Behaviors.same; },
+);
+```
+
+The sentinels are the one exception: `Behaviors.stopped` leaves the
+handler installed, because a `post-stop` handler that stopped
+working the moment the actor stopped itself would be useless.
+
 ### `setup` — capture the context once
 
 ```ts
@@ -229,6 +260,55 @@ bound becomes the parent's own strategy — ten restarts per minute
 by default.  A behavior that always throws therefore stops looping
 in place after `maxRetries`, and stops for good once the parent's
 budget is spent too.
+
+#### Scope: the wrapper outlives the subtree
+
+`supervise` installs a scope, and the scope lasts as long as the
+actor does.  A behavior the wrapped one *transitions to* is still
+supervised, even though the wrapper is nowhere in the value it
+returned:
+
+```ts
+const supervised = Behaviors
+  .supervise(Behaviors.receiveMessage<Message>((message) => nextPhase))
+  .onFailure(strategy);
+// `nextPhase` throwing is routed through `strategy` too.
+```
+
+This is the same rule [`intercept`](#intercept) follows, and for the
+same reason: the wrapper contributes its side effect once and the
+framework remembers the strategy.  `Behaviors.stopped` is the way out
+of a supervision scope; a transition is not.
+
+#### Nesting: the scopes layer
+
+Two wrappers make two scopes, and the inner one gets the first say:
+
+```ts
+const layered = Behaviors
+  .supervise(
+    Behaviors.supervise(leaf).onFailure(retryTwice),   // inner
+  )
+  .onFailure(giveUpAndStop);                           // outer
+```
+
+The innermost strategy decides.  `Directive.Escalate` — and a restart
+budget the scope has spent — hand the *same* error to the next scope
+out, which is exactly what `Escalate` means everywhere else in the
+framework.  Only falling off the outermost wrapper leaves the actor,
+where the cell's parent strategy takes over.  So `layered` above
+retries twice inside the actor and then stops it, rather than the
+inner wrapper's exhaustion going straight to the parent.
+
+A scope a **running behavior installs** — a handler returning a fresh
+`Behaviors.supervise(...)` — nests inside the ones already active
+rather than displacing them.
+
+A restart decided by an *outer* scope re-resolves that scope's own
+child, which rebuilds the wrappers below it — so the inner scopes come
+back with a full restart allowance.  That is the same split a restart
+already applies to interceptors: what lives inside the wrapper is part
+of what restarts.
 
 See [Supervision](/fundamentals/supervision/) for the
 directive semantics; they apply identically in the typed form, with
@@ -401,11 +481,22 @@ then `inner` handles.  Each wrapper decides whether the next one downwards
 gets the message at all — an interceptor that returns without calling
 `next` stops everything below it.
 
+`supervise` around `supervise` reads the same way and is the one
+composition where the order changes *who decides*: the innermost wrapper
+is asked first and hands the error outwards.  See
+[Nesting](#nesting-the-scopes-layer) above.
+
 One asymmetry is worth knowing.  The other decorators are resolved away
 once the actor starts: they contribute their side effect (capturing timers,
 installing a strategy) and collapse into the behavior they produced.  An
 interceptor cannot, because it has to be there on the *next* message too —
 so it stays wrapped around whatever the inner behavior becomes.
+
+Collapsing is not the same as expiring, though.  A `supervise` scope
+outlives the value that installed it and covers whatever the actor
+transitions into next; only the *wrapper node* is gone.  A signal handler
+is the opposite — it is a field of the `receive` behavior that declared
+it, so it goes away with that behavior.
 
 That same distinction decides what a **restart** rebuilds.  `supervise`
 restarts what it wraps, so an interceptor *inside* the wrapper is part of

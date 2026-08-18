@@ -236,6 +236,16 @@ Receive-Handler, auch wenn ein Signal-Handler registriert ist.  Einen
 zu registrieren leitet die Nachricht, die du angefordert hast, nicht
 klammheimlich um.
 
+"Wenn ein Signal-Handler registriert ist" gilt pro Behavior, nicht pro
+Actor.  Ein Signal-Handler gehört zu dem `receiveWithSignal`, das ihn
+deklariert hat — ein Zustand, der ein einfaches `Behaviors.receive`
+ist, hat also keinen, und der Tod aus einem einfachen `watch` erreicht
+ihn als `Terminated`-**Nachricht**, genau wie bei einem Actor, der
+überhaupt nie einen Handler registriert hat.  Will ein späterer Zustand
+den Tod weiterhin als Signal, deklariert er sein eigenes `onSignal`;
+will er ihn als Nachricht, sagt `watchWith` das explizit und gilt in
+jedem Zustand.
+
 ## `unwatch`
 
 ```ts
