@@ -58,16 +58,16 @@ async function attacker(name: string, port: number): Promise<InMemoryTransport> 
 
 describe('DistributedData decode isolation', () => {
   test('twelve malformed gossip entries do not kill the replica (#699)', async () => {
-    const victim = await startNode('decode-victim', 47_201);
+    const victim = await startNode('decode-victim', 48_201);
     const data = victim.system.extension(DistributedDataId).start(victim);
     await sleep(80);
 
-    const evil = await attacker('decode-evil', 47_202);
+    const evil = await attacker('decode-evil', 48_202);
     // Twelve is the number that used to exhaust the restart budget.
     for (let round = 0; round < 12; round++) {
       evil.send(victim.selfAddress, {
         kind: 'ddata-gossip',
-        from: new NodeAddress('decode-evil', 'h', 47_202).toJSON(),
+        from: new NodeAddress('decode-evil', 'h', 48_202).toJSON(),
         entries: { [`bad-${round}`]: { kind: 'NotACrdtKind', nonsense: round } },
       } as unknown as WireMessage);
     }
@@ -79,7 +79,7 @@ describe('DistributedData decode isolation', () => {
     // frame and this merge never happened.
     evil.send(victim.selfAddress, {
       kind: 'ddata-gossip',
-      from: new NodeAddress('decode-evil', 'h', 47_202).toJSON(),
+      from: new NodeAddress('decode-evil', 'h', 48_202).toJSON(),
       entries: { good: GCounter.empty().increment('decode-evil', 7).toJSON() },
     } as unknown as WireMessage);
     await sleep(200);
@@ -88,16 +88,16 @@ describe('DistributedData decode isolation', () => {
   });
 
   test('a malformed entry does not cost the other entries of the same frame (#699)', async () => {
-    const victim = await startNode('decode-victim2', 47_211);
+    const victim = await startNode('decode-victim2', 48_211);
     const data = victim.system.extension(DistributedDataId).start(victim);
     await sleep(80);
 
-    const evil = await attacker('decode-evil2', 47_212);
+    const evil = await attacker('decode-evil2', 48_212);
     // One frame, one bad entry between two good ones.  They are independent
     // CRDTs that merely travel together.
     evil.send(victim.selfAddress, {
       kind: 'ddata-gossip',
-      from: new NodeAddress('decode-evil2', 'h', 47_212).toJSON(),
+      from: new NodeAddress('decode-evil2', 'h', 48_212).toJSON(),
       entries: {
         first: GCounter.empty().increment('decode-evil2', 3).toJSON(),
         broken: { kind: 'GCounter', state: 'not-an-object' },

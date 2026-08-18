@@ -64,12 +64,12 @@ describe('DistributedData wire authority', () => {
     // Keyed on the payload's `from`, this node could be made to dial an
     // address the attacker names and queue a full CRDT snapshot there — in a
     // `Connection.pending` buffer that is never drained and never reclaimed.
-    const victim = await startNode('victim', 47_101);
+    const victim = await startNode('victim', 48_101);
     victim.system.extension(DistributedDataId).start(victim);
     await sleep(80);
 
-    const evil = await attacker('evil', 47_102);
-    const innocent = await attacker('innocent', 47_103);
+    const evil = await attacker('evil', 48_102);
+    const innocent = await attacker('innocent', 48_103);
     const receivedByInnocent: string[] = [];
     innocent.setHandler((_from, message) => { receivedByInnocent.push(message.kind); });
     const receivedByEvil: string[] = [];
@@ -78,7 +78,7 @@ describe('DistributedData wire authority', () => {
     evil.send(victim.selfAddress, {
       kind: 'ddata-write-request',
       // The lie: the payload names the innocent third party.
-      from: new NodeAddress('innocent', 'h', 47_103).toJSON(),
+      from: new NodeAddress('innocent', 'h', 48_103).toJSON(),
       pendingId: 'p1',
       key: 'k',
       value: GCounter.empty().increment('a', 1).toJSON(),
@@ -96,12 +96,12 @@ describe('DistributedData wire authority', () => {
   });
 
   test('a read-request is answered down the connection it arrived on (#723)', async () => {
-    const victim = await startNode('victim2', 47_111);
+    const victim = await startNode('victim2', 48_111);
     victim.system.extension(DistributedDataId).start(victim);
     await sleep(80);
 
-    const evil = await attacker('evil2', 47_112);
-    const innocent = await attacker('innocent2', 47_113);
+    const evil = await attacker('evil2', 48_112);
+    const innocent = await attacker('innocent2', 48_113);
     const receivedByInnocent: string[] = [];
     innocent.setHandler((_from, message) => { receivedByInnocent.push(message.kind); });
     const receivedByEvil: string[] = [];
@@ -109,7 +109,7 @@ describe('DistributedData wire authority', () => {
 
     evil.send(victim.selfAddress, {
       kind: 'ddata-read-request',
-      from: new NodeAddress('innocent2', 'h', 47_113).toJSON(),
+      from: new NodeAddress('innocent2', 'h', 48_113).toJSON(),
       pendingId: 'p1',
       key: 'k',
     } as unknown as WireMessage);
@@ -134,8 +134,8 @@ describe('DistributedData wire authority', () => {
     // that requiring the ack to come from an authenticated target does not
     // reject the real one.  The stray frames below are noise the node must
     // ignore without disturbing the genuine quorum.
-    const a = await startNode('qa', 47_121);
-    const b = await startNode('qb', 47_122, ['qa@h:47121']);
+    const a = await startNode('qa', 48_121);
+    const b = await startNode('qb', 48_122, ['qa@h:48121']);
     await awaitCondition(() => a.upMembers().length >= 2, {
       timeoutMs: 4_000,
       intervalMs: 25,
@@ -147,7 +147,7 @@ describe('DistributedData wire authority', () => {
     b.system.extension(DistributedDataId).start(b);
     await sleep(120);
 
-    const evil = await attacker('qevil', 47_123);
+    const evil = await attacker('qevil', 48_123);
     evil.setHandler(() => {});
 
     // Start a quorum write that needs b's ack, then have the attacker try to
@@ -158,7 +158,7 @@ describe('DistributedData wire authority', () => {
     });
 
     await sleep(60);
-    for (const claimed of ['qb@h:47122', 'qevil@h:47123']) {
+    for (const claimed of ['qb@h:48122', 'qevil@h:48123']) {
       evil.send(a.selfAddress, {
         kind: 'ddata-write-ack',
         from: NodeAddress.parse(claimed).toJSON(),
