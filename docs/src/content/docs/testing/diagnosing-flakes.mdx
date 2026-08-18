@@ -93,7 +93,7 @@ Causes this suite has actually had, with how each was settled.
 
 | Family | Status | Signature |
 | --- | --- | --- |
-| Fixed sleep before an assertion | Being converted | `await sleep(N)` then `expect(...)` on state a background step produces |
+| Fixed sleep before an assertion | Converting, ratcheted | `await sleep(N)` then `expect(...)` on state a background step produces |
 | A budget the per-test timeout cannot reach | Gated | `this test timed out after 5000ms` where an `awaitCondition` label was expected |
 | Bun's timer quantum | Settled | An elapsed-time assertion fails by ~15 ms, on an idle machine |
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
@@ -124,20 +124,30 @@ expect(stopped).toBe(true);
 covers when a sleep is still the right call — an absence you can only give a
 window to, a duration that *is* the assertion, an interleaving a test needs.
 
-**This conversion is unfinished.**  There are still 466 `await sleep(`
-sites under `tests/`, against 643 `awaitCondition(` ones — and the sleep count
-has gone *up* during the conversion, because new tests keep being written in
-the old shape.  A second helper muddies the picture further: `waitFor` appears
-332 times and is re-declared as a local `function waitFor(` in 32 separate
-files, each with its own timeout and poll interval.  Treat a
-`sleep`-then-`expect` pair in a failing test as a suspect before looking for
-anything cleverer.
+**This conversion is unfinished.**  479 sites under `tests/` still
+`await sleep(N)`, and 132 more take the same bet without the word `sleep` in
+it — an inline `Bun.sleep(20)`, or a `new Promise((r) => setTimeout(r, 20))`.
+611 fixed-delay waits in total, and **486 of them state no reason for the
+delay**.  Two duplications sit on top of that: 93 modules re-declare their own
+`sleep` rather than importing the shared one (8 import it), and 35 hand-roll a
+`waitFor` / `waitUntil` / `awaitConvergence` with its own timeout, its own
+poll step and no label.  Treat a `sleep`-then-`expect` pair in a failing test
+as a suspect before looking for anything cleverer.
 
-Those four numbers are `grep -ro '<pattern>' tests/ --include=*.ts | wc -l`
-(the last one `grep -rl`), so anyone can re-measure them rather than trust
-them; they were last taken on 2026-08-16.  They are stated exactly for the
-same reason: a rounded figure drifts silently, an exact one is visibly stale
-the moment it stops matching.
+The count *rose* for a week while the conversion was being planned — 448 on
+2026-08-11 against 479 on 2026-08-18 — because unrelated new tests kept
+arriving in the old shape, two of them with a fresh per-file shim on a single
+day.  So those numbers are no longer only documentation.
+`tests/unit/ci/SleepRatchet.test.ts` re-measures them on every `bun test` and
+fails when one goes up, per module: the debt can shrink and cannot grow back.
+It does not forbid waiting — an absence cannot be polled for, and 57 of the
+waits are followed by an assertion that something did *not* happen — it
+forbids an *unexplained* wait, a re-declared
+`sleep` and a re-invented poll loop, each with a one-line remedy the failure
+message spells out.  Measured 2026-08-18 at `95db877c`; a
+`grep -ro '<pattern>' tests/ --include=*.ts | wc -l` re-measures them roughly,
+but it also counts comments and quoted examples, which the gate's scanner
+blanks out first.
 
 ### A budget the per-test timeout cannot reach
 
