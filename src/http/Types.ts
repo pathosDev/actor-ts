@@ -32,11 +32,13 @@ export type HttpRequest = {
   readonly body: Uint8Array | null;
   /**
    * Optional remote IP address of the client as the server saw it
-   * (NOT the value of `x-forwarded-for` — that's a header the client
-   * can spoof unless a trusted proxy stripped + replaced it).  Backends
-   * SHOULD populate this from the underlying socket peer; consumers
-   * that need to trust a forwarded header MUST do so explicitly (see
-   * `IpAllowlist`'s `getClientIp` option).
+   * (NOT the value of `x-forwarded-for` — that's a header the client can
+   * spoof, and one every common proxy *appends* to rather than replacing,
+   * so no fixed position in it is trustworthy either).  Backends SHOULD
+   * populate this from the underlying socket peer; a consumer that needs
+   * the client's own address from behind a proxy MUST say which proxies it
+   * trusts (see `IpAllowlist`'s `trustedProxies` option), because that is
+   * the only thing that makes a position in the chain meaningful.
    */
   readonly remoteAddress?: string;
 };

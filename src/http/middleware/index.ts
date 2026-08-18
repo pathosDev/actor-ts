@@ -1,7 +1,13 @@
 export { BearerTokenAuth } from './BearerToken.js';
 export type { BearerTokenAuthOptions } from './BearerToken.js';
 export { IpAllowlist } from './IpAllowlist.js';
-export type { IpAllowlistOptions } from './IpAllowlist.js';
+export {
+  DEFAULT_FORWARDED_HEADER,
+  IpAllowlistOptions,
+  IpAllowlistOptionsBuilder,
+  IpAllowlistOptionsValidator,
+} from './IpAllowlistOptions.js';
+export type { IpAllowlistOptionsType } from './IpAllowlistOptions.js';
 
 // Security headers — HSTS, CSP, and the securityHeaders bundle.
 export { strictTransportSecurity, hsts } from './Hsts.js';

@@ -49,6 +49,43 @@ Die meisten Settings werden an Fastifys `FastifyServerOptions`
 durchgereicht.  Das Framework konfiguriert die Routen-
 Registrierung; du drehst an Fastifys eigenen Reglern.
 
+## Hinter einem Reverse-Proxy
+
+`HttpRequest.remoteAddress` kommt aus Fastifys `req.ip`, und das ist ohne
+`trustProxy` der Socket-Peer. Weil die Optionen des Konstruktors direkt
+an Fastify durchgereicht werden, lässt sich `trustProxy` hier
+konfigurieren — und wenn du es setzt, gib ihm die **Adressen** deiner
+Proxys:
+
+```ts
+new FastifyBackend({
+  trustProxy: '10.9.9.0/24',   // ✓ Trusted-Subnet-Form
+});
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="trustProxy: true löst zum client-kontrollierten Eintrag auf">
+  ```ts
+  new FastifyBackend({ trustProxy: true });   // ✗
+  new FastifyBackend({ trustProxy: 2 });      // ✗ adressblind
+  ```
+  `true` traut jedem Hop, `proxy-addr` kürzt die Adressliste also nie, und
+  `req.ip` wird der **linkeste** `X-Forwarded-For`-Eintrag — der, den der
+  Client geschickt hat. Eine numerische Hop-Anzahl vergleicht nur Indizes
+  und nie Adressen, glaubt dem Header also auch bei einem Request, der
+  durch keinen Proxy gelaufen ist.
+</Aside>
+
+<Aside type="tip" title="Oder die Entscheidung in der Allowlist lassen">
+  [`trustedProxies` von `IpAllowlist`](/de/http/middleware/ip-allowlist/)
+  wendet dieselbe Trust-by-Address-Regel eine Schicht höher an, braucht
+  nichts vom Backend und liest sich deshalb auf Express und Hono
+  identisch — dort ist `trustProxy` umständlich oder gar nicht vorhanden.
+  Nimm es, wenn die Client-Adresse ein *Policy*-Eingang ist und nicht
+  etwas, das jeder Handler braucht.
+</Aside>
+
 ## Security-Header
 
 Jede Response, die dieses Backend schreibt, trägt
@@ -144,8 +181,6 @@ Grobe Zahlen für triviale Routen:
 Fastify ist eines der schnellsten Node-HTTP-Frameworks; der
 Actor-Routing-Overhead des Frameworks ist der nächste Bottleneck
 für heiße Routen.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Nicht Fastifys Logger und actor-ts-Log zusammen nutzen">
   ```ts

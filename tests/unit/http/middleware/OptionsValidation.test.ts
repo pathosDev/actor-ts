@@ -4,6 +4,7 @@ import { TimeoutOptionsValidator } from '../../../../src/http/middleware/Timeout
 import { HstsOptionsValidator } from '../../../../src/http/middleware/HstsOptions.js';
 import { CorsOptionsValidator } from '../../../../src/http/middleware/CorsOptions.js';
 import { CsrfOptionsValidator, SameOriginOptionsValidator } from '../../../../src/http/middleware/CsrfOptions.js';
+import { IpAllowlistOptionsValidator } from '../../../../src/http/middleware/IpAllowlistOptions.js';
 import { StaticFilesOptionsValidator } from '../../../../src/http/static/StaticFilesOptions.js';
 import { RateLimitOptions, RateLimitOptionsValidator } from '../../../../src/http/cache/RateLimitOptions.js';
 import { IdempotencyOptions, IdempotencyOptionsValidator } from '../../../../src/http/cache/IdempotencyOptions.js';
@@ -85,6 +86,24 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ allowedOrigins: ['app.example'] })).toThrow(/allowedOrigins/);
     expect(() => validator.validate({ expectedScheme: 'ftp' as never })).toThrow(OptionsError);
     expect(() => validator.validate({ allowedOrigins: ['https://app.example'], expectedScheme: 'https' })).not.toThrow();
+    expect(() => validator.validate({})).not.toThrow();
+  });
+
+  // #715 — this validator exists for the mistakes that would otherwise be
+  // *silent*: an allowlist that reads as proxy-aware and filters nothing.
+  // CIDR syntax stays with `parseCidr`, which names the bad entry.
+  test('IpAllowlistOptions: no silently-inert forwarded-header configuration', () => {
+    const validator = new IpAllowlistOptionsValidator();
+    expect(() => validator.validate({ trustedProxies: [] })).toThrow(/trustedProxies/);
+    expect(() => validator.validate({ forwardedHeader: 'cf-connecting-ip' })).toThrow(/forwardedHeader/);
+    expect(() => validator.validate({ trustedProxies: ['10.9.9.0/24'], forwardedHeader: '' })).toThrow(OptionsError);
+    expect(() => validator.validate({
+      trustedProxies: ['10.9.9.0/24'],
+      getClientIp: (request) => request.remoteAddress,
+    })).toThrow(/getClientIp/);
+    // The two supported shapes, and the unset case.
+    expect(() => validator.validate({ allow: ['10.0.0.0/8'], trustedProxies: ['10.9.9.0/24'] })).not.toThrow();
+    expect(() => validator.validate({ allow: ['10.0.0.0/8'], getClientIp: (r) => r.remoteAddress })).not.toThrow();
     expect(() => validator.validate({})).not.toThrow();
   });
 

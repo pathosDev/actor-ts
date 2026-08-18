@@ -33,13 +33,40 @@ const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 
 new ExpressBackend(
   expressBackendOptions,
 );
-// X-Forwarded-* handling is configured on a bring-your-own Express app
-// (`app.set('trust proxy', true)`), passed via `.withApp(app)`.
 ```
 
 Express-style settings. `maxBodyBytes` defaults to **1 MiB**, the shared
 cap every backend applies — raise it only for an endpoint that genuinely
 takes more, as above.
+
+## Behind a reverse proxy
+
+`req.ip` is the socket peer, which is what lands in
+`HttpRequest.remoteAddress`. Express can be told to derive it from
+`X-Forwarded-For` instead — but only on a **bring-your-own app**
+(`app.set(...)`, passed via `.withApp(app)`), because
+`ExpressBackendOptions` has no `trustProxy` field.
+
+Prefer [`IpAllowlist`'s `trustedProxies`](/http/middleware/ip-allowlist/)
+over that route. It is the same trust-by-address rule, it does not need a
+bring-your-own app, and it reads identically on all three backends —
+Hono has no trust-proxy concept at all.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="app.set('trust proxy', true) is not the safe setting">
+  ```ts
+  app.set('trust proxy', true);     // ✗ returns the client-controlled entry
+  ```
+  `true` compiles to a trust-everything function, so `proxy-addr` never
+  truncates the address list and `req.ip` becomes the **leftmost**
+  `X-Forwarded-For` entry — exactly the value the client sent. Every
+  common proxy *appends* to that header rather than replacing it, so there
+  is no deployment in which `true` is correct. A numeric hop count is
+  better but still address-blind: it believes the header on a request that
+  passed no proxy at all. A trusted-subnet list is the only form that
+  checks who is actually connecting.
+</Aside>
 
 ## Security headers
 
@@ -185,8 +212,6 @@ Pass your existing app to the backend via `.withApp(app)` —
 actor-ts registers its routes on the same app, so your existing
 routes and middleware keep working without swapping the whole
 HTTP stack.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Express vs Fastify benchmarks">
   ```ts

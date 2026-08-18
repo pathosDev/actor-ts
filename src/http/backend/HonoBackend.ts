@@ -635,9 +635,14 @@ function honoWildcardRest(path: string, prefix: string): string {
  * Best-effort peer-IP extraction across Hono's adapter zoo.  Tries
  * the well-known shapes (Node-server `c.req.raw.socket.remoteAddress`,
  * Bun `c.env.requestIP({ ... }).address`, Cloudflare `c.req.raw.cf.ip`),
- * returns `undefined` if none of them yield a string.  Consumers
- * that need a guaranteed IP must override `getClientIp` on
- * IpAllowlist or similar middlewares.
+ * returns `undefined` if none of them yield a string.
+ *
+ * This is the **socket peer** only — no forwarding header is consulted,
+ * and Hono has no `trust proxy` setting to change that.  Behind a reverse
+ * proxy the client's own address therefore has to be resolved one layer
+ * up, by naming the proxies in `IpAllowlist`'s `trustedProxies` (#715);
+ * that path needs nothing from the backend beyond this value, which is
+ * why it works here as well as on Fastify and Express.
  */
 function extractHonoRemoteAddress(context: HonoContextLike): string | undefined {
   // 1. @hono/node-server: c.req.raw is the Node IncomingMessage.
