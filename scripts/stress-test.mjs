@@ -46,6 +46,19 @@
  * about).  Reports, logs and a machine-readable `summary.json` are left in
  * the report directory so a nightly job can upload them as an artifact and a
  * later run can compare identities across nights.
+ *
+ * **This module is importable, and that is a requirement rather than a
+ * convenience.**  A harness whose job is to tell a flake from a broken test is
+ * itself a classifier, and an unverified classifier is worth less than the
+ * measurement it replaces: read `parseReport` wrong and a `<skipped>` counts as
+ * a pass, read `identityOf` wrong and one test failing three times reads as
+ * three tests failing once.  The pure functions below are therefore exported
+ * and the driver runs under `import.meta.main`, so
+ * `tests/unit/ci/StressHarnessAggregation.test.ts` can drive them against
+ * fixture XML and synthetic run arrays instead of against a live suite, where
+ * a wrong classification is indistinguishable from a real flake.  Nothing
+ * about a normal `bun run test:stress` changes: the entry point still is the
+ * entry point.
  */
 import { spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
@@ -81,7 +94,7 @@ const KILL_GRACE_MS = 5_000;
  * `node:util`'s `parseArgs` would have to be told about the pass-through
  * filters, which is more configuration than three options are worth.
  */
-function parseArguments(argv) {
+export function parseArguments(argv) {
   const options = {
     runs: Number(process.env.ACTOR_TS_STRESS_RUNS ?? DEFAULT_RUNS),
     concurrency: Number(process.env.ACTOR_TS_STRESS_CONCURRENCY ?? '1'),
@@ -174,7 +187,7 @@ const NAMED_XML_ENTITIES = new Map([
  * looks: `expect(a && b)` and `expect(a &amp;&amp; b)` would otherwise count
  * as two different tests across runs written by two bun versions.
  */
-function unescapeXml(value) {
+export function unescapeXml(value) {
   return value.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|[a-zA-Z]+);/g, (entity, hex, decimal) => {
     if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
     if (decimal !== undefined) return String.fromCodePoint(Number.parseInt(decimal, 10));
@@ -192,7 +205,7 @@ const TESTCASE_TAG = /<testcase\b((?:\s+[A-Za-z_:][\w:.-]*\s*=\s*"[^"]*")*)\s*(\
 const ATTRIBUTE = /([A-Za-z_:][\w:.-]*)\s*=\s*"([^"]*)"/g;
 const SUMMARY_TAG = /<testsuites\b((?:\s+[A-Za-z_:][\w:.-]*\s*=\s*"[^"]*")*)\s*\/?>/;
 
-function attributesOf(source) {
+export function attributesOf(source) {
   const attributes = new Map();
   for (const match of source.matchAll(ATTRIBUTE)) {
     attributes.set(match[1], unescapeXml(match[2]));
@@ -207,14 +220,14 @@ function attributesOf(source) {
  * the filter was absolute).  Identity has to survive that or a nightly
  * artifact cannot be compared with a laptop's.
  */
-function normalisePath(value) {
+export function normalisePath(value) {
   const posix = value.replaceAll('\\', '/');
   const root = process.cwd().replaceAll('\\', '/');
   return posix.startsWith(`${root}/`) ? posix.slice(root.length + 1) : posix;
 }
 
 /** A test's identity across runs: where it lives, which describe it is in, its name. */
-function identityOf({ file, suite, name }) {
+export function identityOf({ file, suite, name }) {
   return `${file} :: ${suite === '' ? '(top level)' : suite} :: ${name}`;
 }
 
@@ -225,7 +238,7 @@ function identityOf({ file, suite, name }) {
  * from — chosen over bun's console summary because the console output is
  * presentation and already vanished once under GitHub Actions (#1194).
  */
-function parseReport(xml) {
+export function parseReport(xml) {
   const failures = [];
   let executed = 0;
   let skipped = 0;
@@ -253,7 +266,7 @@ function parseReport(xml) {
 }
 
 /** The root element's own totals — a cross-check on the per-testcase scan. */
-function parseSummary(xml) {
+export function parseSummary(xml) {
   const match = SUMMARY_TAG.exec(xml);
   if (!match) return undefined;
   const attributes = attributesOf(match[1]);
@@ -343,7 +356,7 @@ function runOnce({ index, reportPath, logPath, filters, environment, timeoutMs }
  * the aggregate silently gets smaller.  It is recorded as its own kind of
  * result rather than folded into "0 failures".
  */
-function collectRun(result, reportPath) {
+export function collectRun(result, reportPath) {
   const base = { ...result, executed: 0, skipped: 0, failures: [], reportMissing: false };
   // A hang has its own diagnosis, so it must not also be filed as "bun died
   // before the reporter flushed": the report is missing *because* the run was
@@ -412,7 +425,7 @@ function reportRun(run, logPath) {
 /* Aggregation + output                                                */
 /* ------------------------------------------------------------------ */
 
-function aggregate(results, runs) {
+export function aggregate(results, runs) {
   const byIdentity = new Map();
   for (const run of results) {
     for (const failure of run.failures) {
@@ -459,7 +472,7 @@ function formatTable(entries, runs) {
     .join('\n');
 }
 
-function render(aggregated, options) {
+export function render(aggregated, options) {
   const lines = [];
   lines.push('');
   lines.push('===== stress summary =====');
@@ -563,86 +576,102 @@ function writeStepSummary(aggregated, options) {
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
-const options = parseArguments(process.argv.slice(2));
-validate(options);
+/**
+ * Everything with a side effect, in one function.
+ *
+ * It is a function rather than module-scope statements for a single reason:
+ * `import.meta.main` below has to be able to *not* run it.  A test that imports
+ * `parseReport` must not thereby wipe a report directory and start N `bun test`
+ * children, which is exactly what module-scope statements did.
+ */
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  validate(options);
 
-const reportDirectory = resolve(process.cwd(), options.reportDirectory);
-rmSync(reportDirectory, { recursive: true, force: true });
-mkdirSync(reportDirectory, { recursive: true });
+  const reportDirectory = resolve(process.cwd(), options.reportDirectory);
+  rmSync(reportDirectory, { recursive: true, force: true });
+  mkdirSync(reportDirectory, { recursive: true });
 
-const environment = { ...process.env };
-if (!options.skipQuarantined) delete environment.ACTOR_TS_SKIP_FLAKY_MNS;
-else environment.ACTOR_TS_SKIP_FLAKY_MNS = '1';
+  const environment = { ...process.env };
+  if (!options.skipQuarantined) delete environment.ACTOR_TS_SKIP_FLAKY_MNS;
+  else environment.ACTOR_TS_SKIP_FLAKY_MNS = '1';
 
-console.log(
-  `stress-test: ${options.runs} run(s), concurrency ${options.concurrency}, `
-  + `quarantined suites ${options.skipQuarantined ? 'skipped' : 'included'}`,
-);
-if (options.filters.length > 0) console.log(`stress-test: filters — ${options.filters.join(' ')}`);
-console.log(`stress-test: reports in ${relative(process.cwd(), reportDirectory) || '.'}`);
-if (options.concurrency > 1) {
   console.log(
-    'stress-test: concurrency > 1 puts real contention on the machine, which is what '
-    + 'a load-sensitive flake needs — but parallel runs also share ports, temp roots '
-    + 'and the filesystem, so cross-run interference can show up as a flake that a '
-    + 'single run never has.  Confirm anything it finds at concurrency 1.',
+    `stress-test: ${options.runs} run(s), concurrency ${options.concurrency}, `
+    + `quarantined suites ${options.skipQuarantined ? 'skipped' : 'included'}`,
   );
+  if (options.filters.length > 0) console.log(`stress-test: filters — ${options.filters.join(' ')}`);
+  console.log(`stress-test: reports in ${relative(process.cwd(), reportDirectory) || '.'}`);
+  if (options.concurrency > 1) {
+    console.log(
+      'stress-test: concurrency > 1 puts real contention on the machine, which is what '
+      + 'a load-sensitive flake needs — but parallel runs also share ports, temp roots '
+      + 'and the filesystem, so cross-run interference can show up as a flake that a '
+      + 'single run never has.  Confirm anything it finds at concurrency 1.',
+    );
+  }
+
+  const results = await runAll(options, environment, reportDirectory);
+  const aggregated = aggregate(results, options.runs);
+
+  console.log(render(aggregated, options));
+  writeFileSync(
+    join(reportDirectory, 'summary.json'),
+    `${JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        runs: aggregated.runs,
+        greenRuns: aggregated.greenRuns,
+        filters: options.filters,
+        quarantinedSuitesIncluded: !options.skipQuarantined,
+        totalExecuted: aggregated.totalExecuted,
+        totalFailures: aggregated.totalFailures,
+        runTimeoutMs: options.runTimeoutMs,
+        runsTimedOut: aggregated.runsTimedOut,
+        runsWithoutReport: aggregated.runsWithoutReport,
+        runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
+        offenders: [...aggregated.flaky, ...aggregated.consistent].map((entry) => ({
+          identity: entry.identity,
+          file: entry.file,
+          suite: entry.suite,
+          name: entry.name,
+          failedRuns: entry.failedRuns,
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeStepSummary(aggregated, options);
+
+  const offenderCount = aggregated.flaky.length + aggregated.consistent.length;
+  // Named separately from "did not report", because the two point at different
+  // things: a hang means the suite stopped, a missing report means bun died
+  // while writing.  Both are red — a run whose result is unknown can never be
+  // counted towards a green night — but they are not the same finding.
+  if (aggregated.runsTimedOut.length > 0) {
+    console.error(
+      `\nstress-test: FAIL — ${aggregated.runsTimedOut.length} run(s) never exited `
+      + `(${aggregated.runsTimedOut.join(', ')}).`,
+    );
+    process.exit(1);
+  }
+  if (aggregated.runsWithoutReport.length > 0 || aggregated.runsRedWithoutFailures.length > 0) {
+    console.error('\nstress-test: FAIL — a run did not report its result.');
+    process.exit(1);
+  }
+  if (offenderCount > options.maximumFlakyTests) {
+    console.error(
+      `\nstress-test: FAIL — ${offenderCount} test(s) failed at least once, budget is `
+      + `${options.maximumFlakyTests}.`,
+    );
+    process.exit(1);
+  }
+  console.log(`\nstress-test: PASS (${aggregated.greenRuns}/${aggregated.runs} runs green)`);
 }
 
-const results = await runAll(options, environment, reportDirectory);
-const aggregated = aggregate(results, options.runs);
-
-console.log(render(aggregated, options));
-writeFileSync(
-  join(reportDirectory, 'summary.json'),
-  `${JSON.stringify(
-    {
-      generatedAt: new Date().toISOString(),
-      runs: aggregated.runs,
-      greenRuns: aggregated.greenRuns,
-      filters: options.filters,
-      quarantinedSuitesIncluded: !options.skipQuarantined,
-      totalExecuted: aggregated.totalExecuted,
-      totalFailures: aggregated.totalFailures,
-      runTimeoutMs: options.runTimeoutMs,
-      runsTimedOut: aggregated.runsTimedOut,
-      runsWithoutReport: aggregated.runsWithoutReport,
-      runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
-      offenders: [...aggregated.flaky, ...aggregated.consistent].map((entry) => ({
-        identity: entry.identity,
-        file: entry.file,
-        suite: entry.suite,
-        name: entry.name,
-        failedRuns: entry.failedRuns,
-      })),
-    },
-    null,
-    2,
-  )}\n`,
-);
-writeStepSummary(aggregated, options);
-
-const offenderCount = aggregated.flaky.length + aggregated.consistent.length;
-// Named separately from "did not report", because the two point at different
-// things: a hang means the suite stopped, a missing report means bun died
-// while writing.  Both are red — a run whose result is unknown can never be
-// counted towards a green night — but they are not the same finding.
-if (aggregated.runsTimedOut.length > 0) {
-  console.error(
-    `\nstress-test: FAIL — ${aggregated.runsTimedOut.length} run(s) never exited `
-    + `(${aggregated.runsTimedOut.join(', ')}).`,
-  );
-  process.exit(1);
-}
-if (aggregated.runsWithoutReport.length > 0 || aggregated.runsRedWithoutFailures.length > 0) {
-  console.error('\nstress-test: FAIL — a run did not report its result.');
-  process.exit(1);
-}
-if (offenderCount > options.maximumFlakyTests) {
-  console.error(
-    `\nstress-test: FAIL — ${offenderCount} test(s) failed at least once, budget is `
-    + `${options.maximumFlakyTests}.`,
-  );
-  process.exit(1);
-}
-console.log(`\nstress-test: PASS (${aggregated.greenRuns}/${aggregated.runs} runs green)`);
+// The seam the harness's own tests need.  `bun scripts/stress-test.mjs` — how
+// `bun run test:stress` and every CI job invoke it — is the entry point, so
+// this is true and the behaviour is unchanged; an `import` of the same file is
+// not, so the classifier can be examined without being run.
+if (import.meta.main) await main();
