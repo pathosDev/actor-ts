@@ -130,6 +130,71 @@ function installSteps({ name, lines }: WorkflowFile): InstallStep[] {
 
 const installs = workflows.flatMap(installSteps);
 
+type ArtifactUpload = {
+  readonly workflow: string;
+  readonly line: number;
+  /** Every entry of `path:`, whether a scalar or a block-scalar list. */
+  readonly paths: readonly string[];
+  /** The step's `with:` mapping, flattened to `key -> value`. */
+  readonly inputs: Readonly<Record<string, string>>;
+};
+
+/** How deep the *keys* of a step sit — the same column whether or not `- ` leads. */
+const keyIndentOf = (line: string): number => /^[\s-]*/.exec(line)![0].length;
+
+/**
+ * `actions/upload-artifact` steps with their `with:` inputs.
+ *
+ * A step's keys all sit at one indentation, and its `with:` entries one level
+ * deeper, so "the lines belonging to this step" is every following line
+ * indented at least as far as the `uses:` key. That is enough to read the three
+ * inputs the assertions below care about without a YAML parser — the same
+ * trade-off the rest of this file makes, and the "guards the guard" test
+ * rejects a parser that silently found nothing.
+ */
+function artifactUploads({ name, lines }: WorkflowFile): ArtifactUpload[] {
+  const out: ArtifactUpload[] = [];
+  lines.forEach((line, index) => {
+    if (!/^\s*(?:- )?uses:\s*actions\/upload-artifact@/.test(line)) return;
+    const keyIndent = keyIndentOf(line);
+    const inputs: Record<string, string> = {};
+    const paths: string[] = [];
+    let inPathBlock = false;
+    for (const following of lines.slice(index + 1)) {
+      if (following.trim() === '') continue;
+      const indent = /^\s*/.exec(following)![0].length;
+      if (indent < keyIndent) break; // the step ended
+      const entry = /^\s*([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(following);
+      if (entry === null) {
+        // A block scalar's payload line, which is only ever a path here.
+        if (inPathBlock) paths.push(following.trim());
+        continue;
+      }
+      inPathBlock = false;
+      const [, key, value] = entry;
+      if (key === undefined) continue;
+      if (indent > keyIndent) inputs[key] = value ?? '';
+      if (key !== 'path') continue;
+      if (value === '' || value === '|' || value === '>' || value === '|-') inPathBlock = true;
+      else paths.push(value!);
+    }
+    out.push({ workflow: name, line: index + 1, paths, inputs });
+  });
+  return out;
+}
+
+const uploads = workflows.flatMap(artifactUploads);
+
+/**
+ * A path with a dot-prefixed segment in it. `.` and `..` are navigation, not
+ * hidden names, so they do not count — `./dist` is an ordinary path.
+ */
+const isHiddenPath = (path: string): boolean =>
+  path
+    .replaceAll('\\', '/')
+    .split('/')
+    .some((segment) => segment.startsWith('.') && segment !== '.' && segment !== '..');
+
 /** Anything that fetches and executes somebody else's code on the runner. */
 const INSTALL_COMMAND = /\b(bun install|bunx|npm ci|npm install|npx|pnpm install|yarn install)\b/;
 
@@ -179,7 +244,60 @@ describe('workflow hygiene', () => {
     expect(jobs.length).toBeGreaterThanOrEqual(workflows.length);
     expect(jobs.map((job) => `${job.workflow}#${job.name}`)).toContain('docs.yml#deploy');
     expect(badgeStatements.length).toBeGreaterThan(0);
+    // The upload parser has to have read both halves of a step, or the two
+    // artifact assertions below hold over an empty list.
+    expect(uploads.length).toBeGreaterThanOrEqual(3);
+    expect(uploads.every((upload) => upload.paths.length > 0)).toBe(true);
+    expect(uploads.some((upload) => upload.paths.some(isHiddenPath))).toBe(true);
+    expect(uploads.some((upload) => upload.paths.every((path) => !isHiddenPath(path)))).toBe(true);
   });
+
+  /**
+   * #290 — `actions/upload-artifact` has defaulted `include-hidden-files` to
+   * false since v4.4, and `nightly-flakes.yml` uploads `.stress/`. So the
+   * nightly that exists to measure the quarantined suites uploaded **nothing**,
+   * twice, on both jobs: `No files were found with the provided path: .stress/`,
+   * and `total_count: 0` from the artifacts API for both runs. Meanwhile that
+   * workflow's own header, `docs/…/testing/diagnosing-flakes.mdx` and
+   * `.gitignore` all describe the artifact as the only durable evidence of the
+   * fourteen-night un-quarantine criterion, because both jobs are
+   * `continue-on-error` and the job conclusion is therefore always `success`.
+   *
+   * The path is the thing that decides it, so the path is what this reads:
+   * anything with a dot-prefixed segment needs the flag, and a future
+   * `path: .coverage/` gets the same treatment without anyone remembering why.
+   */
+  test.each(uploads.filter((upload) => upload.paths.some(isHiddenPath)))(
+    '$workflow:$line uploads a hidden path and asks for hidden files',
+    ({ paths, inputs }) => {
+      expect(
+        inputs['include-hidden-files'],
+        `The step uploads ${paths.filter(isHiddenPath).join(', ')}, whose leading dot makes it `
+        + 'invisible to upload-artifact\'s default glob (include-hidden-files is false since '
+        + 'v4.4). Set "include-hidden-files: true", or move the report directory to a '
+        + 'non-hidden path. Two nights of nightly-flakes uploaded zero files this way.',
+      ).toBe('true');
+    },
+  );
+
+  /**
+   * The other half, and the reason the first went unnoticed for two nights:
+   * `if-no-files-found: warn` writes a `::warning::` into a log nobody opens
+   * for a job that is `continue-on-error` and therefore always reports success.
+   * An upload that kept nothing has to be a red step — `publish.yml`'s SBOM
+   * upload has always done it this way.
+   */
+  test.each(uploads)(
+    '$workflow:$line fails rather than warns when it uploads nothing',
+    ({ inputs }) => {
+      expect(
+        inputs['if-no-files-found'],
+        'An upload-artifact step that matches no file must fail the step. With the default '
+        + '("warn") an artifact that was never produced is a log line, and every statement '
+        + 'that treats the artifact as evidence becomes false without anything going red.',
+      ).toBe('error');
+    },
+  );
 
   /**
    * #1194 — the badge counts used to be scraped out of bun's console summary
