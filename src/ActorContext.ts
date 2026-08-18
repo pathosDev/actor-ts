@@ -125,7 +125,17 @@ export interface ActorContext<TMessage = unknown> {
   /** Stop this actor itself. */
   stopSelf(): void;
 
-  /** Start death-watching an actor.  A Terminated message is sent when it stops. */
+  /**
+   * Start death-watching an actor.  A `Terminated` message is sent when it
+   * stops.
+   *
+   * It arrives on this actor's ordinary user queue, behind every `tell` already
+   * waiting there, and it cannot be lost on the way: a mailbox bound and a
+   * `throttle({ onExcess: 'drop' })` both step over it, because the framework
+   * sends it once and has no way to send it again (#729).  A watcher that
+   * cannot be reached at all — it has already stopped — gets a dead letter, so
+   * the loss is visible rather than silent.
+   */
   watch(ref: ActorRef): ActorRef;
 
   /**
@@ -142,7 +152,11 @@ export interface ActorContext<TMessage = unknown> {
    *     this.context.watchWith(connection, { kind: 'connectionLost' });
    *
    * `message` must belong to this actor's own protocol — it is delivered to
-   * `onReceive` like any other user message, not as a signal.
+   * `onReceive` like any other user message, not as a signal.  "Like any other"
+   * covers ordering and nothing else: it is queued behind whatever is already
+   * there, and it is exempt from this actor's mailbox bound and throttle for
+   * the same reason the `Terminated` it replaces is (#729) — a death is
+   * announced once.
    *
    * Last call wins: `watchWith` on an already-watched ref replaces whatever the
    * previous `watch`/`watchWith` registered, and a later plain `watch` drops the
@@ -230,10 +244,16 @@ export interface ActorContext<TMessage = unknown> {
    * Throttle this actor's user-message processing to a token-bucket
    * rate (#83).  Every dequeue from the user mailbox consumes one
    * token; when the bucket is empty the cell behaves per
-   * {@link ThrottleOnExcess}.  System messages (Terminated,
-   * supervision, watchNotify) are NOT throttled — they always run
-   * immediately, so timer fires and lifecycle events stay
+   * {@link ThrottleOnExcess}.  System commands (create, terminate,
+   * supervision, …) are NOT throttled — they run on the system queue,
+   * ahead of user messages, so timer fires and lifecycle events stay
    * responsive.
+   *
+   * A death-watch `Terminated` is on the *user* queue and is exempt all the
+   * same: it consumes no token and is never the message an `onExcess: 'drop'`
+   * discards, because the framework announces a death once (#729).  Before
+   * that exemption this JSDoc claimed the exemption anyway and the code did
+   * the opposite.
    *
    * Calling `throttle` again replaces the existing limiter; pass
    * `{ qps: Infinity }` or call {@link cancelThrottle} to remove one.

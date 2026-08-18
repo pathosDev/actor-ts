@@ -36,6 +36,12 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
           // whole arm a no-op — the queue grew past capacity and the drop was
           // reported anyway.  Counting is gated on an actual removal so the
           // metric cannot claim a drop that did not happen.
+          //
+          // Since #729 it also returns undefined when everything queued is a
+          // lifecycle notification that may not be dropped.  The arrival is
+          // still admitted: the bound is a memory ceiling, and overshooting it
+          // by the size of a watch set is a smaller price than blinding the
+          // watcher.  Nothing is reported, because nothing was discarded.
           const dropped = super.removeOldest();
           if (dropped !== undefined) this.reportDrop('drop-head');
           super.enqueue(env);
@@ -45,6 +51,28 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
         .exhaustive();
       return;
     }
+    super.enqueue(env);
+  }
+
+  /**
+   * A death notification is queued whatever the bound says — see
+   * {@link Mailbox.enqueueSignal}.
+   *
+   * Straight to the base queue, past the capacity check, and that is the whole
+   * override: every one of the three policies destroyed the notification
+   * otherwise, each in its own way (#729).  `drop-head` evicted whatever sat
+   * at the front, `drop-new` discarded the notification on arrival — the more
+   * likely of the two, since a `Terminated` arrives *late* relative to the
+   * flood that filled the queue — and `reject` was worse than either: it threw
+   * `MailboxFullError` synchronously on the **sender's** stack, and the sender
+   * is the dying cell's own watcher-notify loop.  That throw escaped
+   * `finalizeTermination` mid-loop, so the remaining watchers went unnotified,
+   * the parent was never told the child had stopped, and `terminate()` never
+   * settled.  `reject` is also this class's constructor default, so the
+   * documented `withMailbox(() => new BoundedMailbox({ capacity: n }))` shape
+   * reached it without naming it.
+   */
+  override enqueueSignal(env: Envelope<T>): void {
     super.enqueue(env);
   }
 }

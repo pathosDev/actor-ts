@@ -75,6 +75,10 @@ export type ActorOptionsType<TMessage = unknown> = {
    * act that introduces message loss, and {@link mailboxOverflow} decides
    * which message is lost.  Cannot be combined with `mailbox`, which brings
    * its own bound.
+   *
+   * What it never loses is a death-watch `Terminated`: since #729 that one
+   * arrives through a lane no overflow policy can shed, so bounding a watcher
+   * costs it backlog and not the deaths it is watching for.
    */
   readonly mailboxCapacity?: number;
   /**

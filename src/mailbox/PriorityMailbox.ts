@@ -91,6 +91,22 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
   }
 
   /**
+   * A death notification is queued whatever the capacity says — see
+   * {@link Mailbox.enqueueSignal}.
+   *
+   * Straight to {@link insert}, past the capacity check.  Overriding here is
+   * not optional for this class: its messages live in {@link ordered} rather
+   * than in the base user queue, so the inherited default — which delegates to
+   * `enqueue` — would hand the notification to the very overflow logic that
+   * sheds it (#729).  The notification takes its place in priority order like
+   * any other message, which means a `priorityFor` that ranks a `Terminated`
+   * last still delivers it last; what it can no longer do is delete it.
+   */
+  override enqueueSignal(envelope: Envelope<T>): void {
+    this.insert(envelope);
+  }
+
+  /**
    * Insert the arrival, then evict whatever now sits at the tail.
    *
    * Insert-then-evict rather than evict-then-insert so the arrival competes
@@ -104,8 +120,10 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
   private shedLeastImportant(envelope: Envelope<T>): void {
     this.insert(envelope);
     const shed = this.removeOldest();
-    // Cannot be undefined — something was just inserted — but the guard is
-    // the same discipline #407 established: count removals, not intentions.
+    // Undefined only when every entry — the arrival included — is a lifecycle
+    // notification that may not be dropped, which `prependUser` can produce by
+    // replaying a stashed one (#729).  The guard was already here for the
+    // discipline #407 established: count removals, not intentions.
     if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head');
   }
 
@@ -145,9 +163,22 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
    * Ignoring suspension is inherited on purpose: making room in a full queue
    * is not delivery, and a bound that lapses while the actor is suspended is
    * unbounded exactly when it matters most.
+   *
+   * Stepping over an {@link Envelope.undroppable} entry is inherited in intent
+   * but not in code — the base scans the user queue this class does not use, so
+   * the skip has to be written again here or a lifecycle notification that
+   * ranked low would be shed like anything else (#729).  Undefined means
+   * nothing queued may be dropped.
    */
   protected override removeOldest(): Envelope<T> | undefined {
-    return this.ordered.pop()?.envelope;
+    // From the tail, because that is the least important end; the first entry
+    // that may be dropped is the one to drop.
+    for (let index = this.ordered.length - 1; index >= 0; index--) {
+      if (this.ordered[index]!.envelope.undroppable !== true) {
+        return this.ordered.splice(index, 1)[0]!.envelope;
+      }
+    }
+    return undefined;
   }
 
   override get size(): number { return this.ordered.length; }
