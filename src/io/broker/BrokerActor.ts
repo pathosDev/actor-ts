@@ -366,15 +366,39 @@ export abstract class BrokerActor<
    * is abstract, so the base class never sees a message, and a stopped
    * subscriber stayed in every topic it held — still told on each fan-out,
    * into dead letters (#1111).  Sealing `onReceive` here would take the
-   * dispatch table away from all thirteen subclasses for the sake of one
+   * dispatch table away from all fourteen subclasses for the sake of one
    * hook, so the seam is explicit instead:
    *
    * ```ts
    * override onReceive(command: MyCommand): void {
-   *   if (command instanceof Terminated) { this.pruneTerminatedSubscriber(command.actor); return; }
-   *   // …
+   *   match<MyCommand | Terminated>(command)
+   *     .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
+   *     .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+   *     .exhaustive();
+   * }
+   *
+   * private onTerminated(signal: Terminated): void {
+   *   this.pruneTerminatedSubscriber(signal.actor);
    * }
    * ```
+   *
+   * Widening the *match* input rather than the parameter is what makes the
+   * arm mandatory: `exhaustive()` then refuses to compile without it
+   * (`NonExhaustiveError<Terminated>`), so forgetting it is a build failure
+   * instead of the runtime one it used to be — a `NonExhaustiveError` thrown
+   * at the first subscriber death, restarted by the default supervisor, and
+   * a full broker reconnect per restart until `maxRetries: 10` stops the
+   * bridge for good.  The parameter itself stays `MyCommand`, because
+   * `Actor<Command>` fixes the mailbox type; `P.instanceOf(Terminated)` does
+   * *not* typecheck against an un-widened union, so the widening is load-
+   * bearing and not decoration.
+   *
+   * **Local refs only.**  `context.watch` installs a watcher for a
+   * `LocalActorRef` and is otherwise a silent no-op, so a remote subscriber
+   * never produces a `Terminated` and stays registered until `postStop`
+   * (#918).  Whether the base class should intercept `Terminated` itself
+   * — sealing `onReceive` and renaming the subclass hook — is still open
+   * as #709.
    */
   protected subscribeRef(topic: string, ref: ActorRef<unknown>): void {
     const path = ref.path.toString();

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { match, P } from 'ts-pattern';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
@@ -1125,6 +1126,134 @@ describe('BrokerActor — stop during an in-flight reconnect (#708)', () => {
     expect(broker.liveHandle).toBeNull();
     expect(broker.publicConnectionState()).toBe('disconnected');
     expect(connectedEvents).toBe(0);
+    await sys.terminate();
+  });
+});
+
+/* ------------------ The documented Terminated arm (#709) ---------------- */
+
+type SubscribeTopicCommand = {
+  readonly kind: 'subscribe';
+  readonly topic: string;
+  readonly subscriber: ActorRef<unknown>;
+};
+type FanOutCommand = {
+  readonly kind: 'fan-out';
+  readonly topic: string;
+  readonly payload: string;
+};
+type RecipeCommand = SubscribeTopicCommand | FanOutCommand;
+
+/**
+ * A `BrokerActor` written exactly the way `subscribeRef`'s docs prescribe: the
+ * `Terminated` arm lives *inside* the matcher and delegates to a private
+ * `onTerminated`, and it is the **match input** — not the parameter, which
+ * `Actor<Command>` fixes — that is widened to admit the signal.
+ *
+ * The point of compiling it here is that the widening is what makes the arm
+ * mandatory: drop the `.with(P.instanceOf(Terminated), …)` line and
+ * `.exhaustive()` stops compiling with `NonExhaustiveError<Terminated>`, so
+ * the omission #709 is titled after becomes a build failure instead of a
+ * `NonExhaustiveError` thrown at the first subscriber death.  `P.instanceOf`
+ * does *not* typecheck against an un-widened union, so a recipe that drops
+ * the type argument does not compile either — `typecheck:dev` is therefore
+ * the thing keeping the published recipe honest.
+ *
+ * Counters are **static** on purpose: a restart replaces the instance, so an
+ * instance field could not tell "never restarted" from "restarted and the
+ * new instance has not counted yet".
+ */
+class RecipeBroker extends BrokerActor<FakeOptions, RecipeCommand, string, string> {
+  static connects = 0;
+  static prunes = 0;
+
+  constructor(options: Partial<FakeOptions> = {}) { super(options); }
+
+  protected configKey(): string { return 'actor-ts.io.broker.recipe'; }
+  protected builtInDefaultOptions(): Partial<FakeOptions> { return { endpoint: 'recipe:1' }; }
+  protected readOptionsFromConfig(_config: Config): Partial<FakeOptions> { return {}; }
+  protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
+  protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
+
+  protected async connectImplementation(): Promise<void> { RecipeBroker.connects++; }
+  protected async disconnectImplementation(): Promise<void> { /* nothing to close */ }
+  protected async dispatchOutgoing(): Promise<void> { /* never sends */ }
+
+  override onReceive(command: RecipeCommand): void {
+    match<RecipeCommand | Terminated>(command)
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
+      .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'fan-out' }, (m) => this.onFanOut(m))
+      .exhaustive();
+  }
+
+  private onTerminated(signal: Terminated): void {
+    if (this.pruneTerminatedSubscriber(signal.actor)) RecipeBroker.prunes++;
+  }
+
+  private onSubscribe(command: SubscribeTopicCommand): void {
+    this.subscribeRef(command.topic, command.subscriber);
+  }
+
+  private onFanOut(command: FanOutCommand): void {
+    this.fanOutToTopic(command.topic, command.payload);
+  }
+
+  publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
+  publicConnectionState(): string { return this.connectionState; }
+}
+
+describe('BrokerActor — the documented Terminated arm (#709)', () => {
+  test('a subscriber death prunes the topic and leaves the bridge running', async () => {
+    // The prune half is covered for a subclass that keeps its own counter
+    // (#1111).  What was never asserted is the *availability* half this issue
+    // is titled after: that handling `Terminated` costs no restart, i.e. no
+    // broker reconnect.  A subclass that omits the arm fails `.exhaustive()`,
+    // the default supervisor restarts it, `preRestart` → `postStop` tears the
+    // transport down, and `postRestart` → `preStart` reconnects — eleven
+    // subscriber deaths inside a minute then stop the bridge for good.
+    RecipeBroker.connects = 0;
+    RecipeBroker.prunes = 0;
+    const sys = makeSystem('recipe-terminated');
+
+    let resolveBroker!: (broker: RecipeBroker) => void;
+    const brokerReady = new Promise<RecipeBroker>((resolve) => { resolveBroker = resolve; });
+    const ref = sys.spawnAnonymous(() => {
+      const broker = new RecipeBroker();
+      resolveBroker(broker);
+      return broker as unknown as Actor<RecipeCommand>;
+    }) as ActorRef<RecipeCommand>;
+    const broker = await brokerReady;
+    await awaitCondition(() => RecipeBroker.connects === 1, { label: 'the broker connected' });
+
+    const doomed = new ProbeActor();
+    const doomedRef = sys.spawnAnonymous(() => doomed as unknown as Actor<unknown>);
+    const survivor = new ProbeActor();
+    const survivorRef = sys.spawnAnonymous(() => survivor as unknown as Actor<unknown>);
+    ref.tell({ kind: 'subscribe', topic: 'a', subscriber: doomedRef });
+    ref.tell({ kind: 'subscribe', topic: 'a', subscriber: survivorRef });
+    await awaitCondition(() => broker.publicSubscriberCount('a') === 2, {
+      label: 'both subscribers registered',
+    });
+
+    doomedRef.stop();
+    await awaitCondition(() => RecipeBroker.prunes === 1, {
+      label: 'the matcher routed Terminated into onTerminated',
+    });
+
+    expect(broker.publicSubscriberCount('a')).toBe(1);
+    // Never restarted: one connect for the whole test.  `connectImplementation`
+    // would run a second time on the restart path.
+    expect(RecipeBroker.connects).toBe(1);
+    expect(broker.publicConnectionState()).toBe('connected');
+
+    // And the bridge still works — the same instance, still fanning out.
+    ref.tell({ kind: 'fan-out', topic: 'a', payload: 'after' });
+    await awaitCondition(() => survivor.received.length === 1, {
+      label: 'the surviving subscriber still receives fan-out',
+    });
+    expect(survivor.received).toEqual(['after']);
+    expect(doomed.received).toEqual([]);
     await sys.terminate();
   });
 });

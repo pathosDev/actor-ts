@@ -141,17 +141,21 @@ verworfen und ein `BrokerNotConnected`-Event publisht.
 ### Subscriber-Tracking
 
 ```ts
-this.onReceive(message) {
+import { Terminated } from 'actor-ts';
+import { match, P } from 'ts-pattern';
+
+override onReceive(message: MyCommand): void {
   // `Terminated` erreicht onReceive, gehört aber nicht zur getypten
-  // Command-Union — warum dieser Arm deiner ist, steht unten.
-  if (message instanceof Terminated) {
-    this.pruneTerminatedSubscriber(message.actor);
-    return;
-  }
-  match(message)
+  // Command-Union — deshalb wird der *Match-Input* geweitet, siehe unten.
+  match<MyCommand | Terminated>(message)
+    .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
     .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
     .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
     .exhaustive();
+}
+
+private onTerminated(signal: Terminated): void {
+  this.pruneTerminatedSubscriber(signal.actor);
 }
 
 private onSubscribe(message: SubscribeCommand): void {
@@ -164,7 +168,8 @@ private onUnsubscribe(message: UnsubscribeCommand): void {
 ```
 
 `subscribeRef(topic, ref)` registriert `ref` als interessiert an den
-eingehenden Nachrichten von `topic` und **death-watcht** die Ref.
+eingehenden Nachrichten von `topic` und **death-watcht** die Ref — für eine
+lokale Ref; siehe den Hinweis weiter unten.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -174,13 +179,33 @@ import { Aside } from '@astrojs/starlight/components';
   also ihr eigenes Dispatch, und die Basis sieht nie eine Nachricht.  Ohne den
   Arm oben bleibt ein gestoppter Subscriber in jedem Topic, das er hielt, und
   kostet bei jedem Fan-out ein `tell` in die Dead Letters — das war ein echter
-  Defekt (#1111), kein hypothetischer.
+  Defekt (#1111), kein hypothetischer — und der `.exhaustive()`-Aufruf
+  *wirft* auf dem ungematchten Signal, was der Standard-Supervisor mit einem
+  Restart beantwortet, also mit einem vollen Broker-Reconnect pro
+  Subscriber-Tod.
+
+  Schreib es genau wie oben, dann kann beides nicht passieren: die Weitung des
+  **Match-Inputs** auf `MyCommand | Terminated` lässt `.exhaustive()` ohne den
+  Arm nicht mehr kompilieren (`NonExhaustiveError<Terminated>`) — das Weglassen
+  ist damit ein Build-Fehler und kein Laufzeitfehler.  Der *Parameter* bleibt
+  `MyCommand`, denn `Actor<Command>` legt den Mailbox-Typ fest, und die Weitung
+  ist tragend statt kosmetisch: `P.instanceOf(Terminated)` typcheckt gegen eine
+  ungeweitete Union nicht.
 
   `pruneTerminatedSubscriber(ref)` entfernt den Subscriber aus allen Topics und
   liefert zurück, ob überhaupt etwas entfernt wurde — so kannst du den Tod eines
   Subscribers von dem jedes anderen beobachteten Actors unterscheiden.  Es macht
   **kein** `unwatch`: die Zelle hat die Watch bereits fallen gelassen, als sie
   `Terminated` zugestellt hat.
+</Aside>
+
+<Aside type="caution" title="Die Death-Watch feuert nur für einen lokalen Subscriber">
+  `context.watch` registriert einen Watcher, wenn die Ref eine `LocalActorRef`
+  ist, und ist andernfalls ein stiller No-op — ein **entfernter** Subscriber
+  erzeugt also nie ein `Terminated`: er bleibt in jedem Topic, das er hielt,
+  bis der Broker-Aktor selbst stoppt, und kostet bei jedem Fan-out weiter ein
+  `tell` über die Node-Grenze.  Der Arm oben kann daran nichts ändern — das
+  Signal kommt nie an.  Nachverfolgt als #918.
 </Aside>
 
 `unsubscribeRef` vergleicht über den Pfad der Ref statt über das Ref-Objekt —

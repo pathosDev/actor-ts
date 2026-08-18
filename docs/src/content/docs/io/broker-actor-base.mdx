@@ -138,17 +138,21 @@ buffering is disabled: the message is dropped and a
 ### Subscriber tracking
 
 ```ts
-this.onReceive(message) {
+import { Terminated } from 'actor-ts';
+import { match, P } from 'ts-pattern';
+
+override onReceive(message: MyCommand): void {
   // `Terminated` reaches onReceive but is not part of the typed command
-  // union — see the note below on why this arm is yours to write.
-  if (message instanceof Terminated) {
-    this.pruneTerminatedSubscriber(message.actor);
-    return;
-  }
-  match(message)
+  // union, so the *match input* is widened to admit it — see the note below.
+  match<MyCommand | Terminated>(message)
+    .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
     .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
     .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
     .exhaustive();
+}
+
+private onTerminated(signal: Terminated): void {
+  this.pruneTerminatedSubscriber(signal.actor);
 }
 
 private onSubscribe(message: SubscribeCommand): void {
@@ -161,7 +165,8 @@ private onUnsubscribe(message: UnsubscribeCommand): void {
 ```
 
 `subscribeRef(topic, ref)` registers `ref` as interested in
-`topic`'s inbound messages, and **death-watches** it.
+`topic`'s inbound messages, and **death-watches** it — for a local ref;
+see the caveat below.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -170,12 +175,31 @@ import { Aside } from '@astrojs/starlight/components';
   you: `onReceive` is abstract, so every subclass owns its own dispatch and
   the base never sees a message.  Without the arm above, a subscriber that
   stops stays in every topic it held and costs a dead-lettered `tell` on each
-  fan-out — this was a real defect (#1111), not a hypothetical.
+  fan-out — this was a real defect (#1111), not a hypothetical — and the
+  `.exhaustive()` call *throws* on the unmatched signal, which the default
+  supervisor answers with a restart, i.e. a full broker reconnect per
+  subscriber death.
+
+  Write it exactly as above and neither can happen: widening the **match
+  input** to `MyCommand | Terminated` makes `.exhaustive()` refuse to compile
+  without the arm (`NonExhaustiveError<Terminated>`), so the omission is a
+  build failure rather than a runtime one.  The *parameter* stays
+  `MyCommand` — `Actor<Command>` fixes the mailbox type — and the widening
+  is load-bearing rather than cosmetic: `P.instanceOf(Terminated)` does not
+  typecheck against an un-widened union.
 
   `pruneTerminatedSubscriber(ref)` removes the subscriber from every topic
   and returns whether it removed anything, so you can tell a subscriber's
   death from any other watched actor's.  It does **not** `unwatch`: the cell
   already dropped the watch when it delivered `Terminated`.
+</Aside>
+
+<Aside type="caution" title="The watch only fires for a local subscriber">
+  `context.watch` installs a watcher when the ref is a `LocalActorRef` and is
+  a silent no-op otherwise, so a **remote** subscriber never produces a
+  `Terminated`: it stays in every topic it held until the broker actor itself
+  stops, and keeps costing a cross-node `tell` on each fan-out.  Nothing in
+  the arm above can help — the signal never arrives.  Tracked as #918.
 </Aside>
 
 `unsubscribeRef` matches on the ref's path rather than the ref object, so
