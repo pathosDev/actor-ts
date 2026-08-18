@@ -87,6 +87,13 @@ is the **`_e`** payload — without the envelope; `stored.version`
 is the **`_v`** value; `stored.manifest` is the **`_t`** tag.
 The adapter's read-path job:
 
+- Check `stored.manifest` against the manifest this adapter is
+  for, and refuse anything else.  Skipping this is how a row of
+  one event type gets decoded as another — the payload validates,
+  the static type says it is what you asked for, and nothing
+  downstream can tell.  Every built-in adapter throws a
+  `MigrationError` here; a multi-type journal switches on
+  `stored.manifest` and delegates instead.
 - Inspect `stored.version`.
 - If it's the current version, cast `stored.payload` to
   `DomainEvent` (the current shape) and return.
