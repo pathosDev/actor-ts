@@ -144,13 +144,13 @@ Methodik und Vergleich mit anderen Frameworks stehen unter
 [Benchmarks](/de/reference/benchmarks/):
 
 - **`tell`, Ende zu Ende** — rund **1,1 µs** pro Nachricht bei einer
-  Mailbox mit Tiefe (≈ 900 000 Nachrichten/Sekunde dauerhaft).  Das
+  Mailbox mit Tiefe (≈ 925 000 Nachrichten/Sekunde dauerhaft).  Das
   ist der gesamte Pfad: einreihen, einplanen, zustellen, behandeln.
   Der `tell()`-Aufruf selbst kehrt deutlich schneller zurück — er
   reiht nur ein.  „Wie lange dauert `tell`?" und „wie viele
   Nachrichten pro Sekunde?" sind also zwei Fragen, deren Antworten
   zwei Größenordnungen auseinanderliegen.
-- **`ask`-Roundtrip** — **7,8 µs** im p50, 27 µs im p99, Tiefe 1.
+- **`ask`-Roundtrip** — **7,3 µs** im p50, 27 µs im p99, Tiefe 1.
 - **Cross-Cluster `tell`** — begrenzt durch Netzwerk- +
   Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost, ms-Bereich
   über LAN.  Noch nicht gemessen; die Cluster-Benchmarks verlassen den
@@ -159,7 +159,7 @@ Methodik und Vergleich mit anderen Frameworks stehen unter
 Zum Vergleich: derselbe Workload ganz ohne Framework — direkte
 Methodenaufrufe, keine Mailbox, keine Supervision, kein Lebenszyklus —
 läuft bei etwa **1,7 ns** pro Aufruf.  Actor-Messaging kostet auf dem
-Durchsatzpfad also grob **das 650-Fache** eines direkten Aufrufs und
+Durchsatzpfad also grob **das 620-Fache** eines direkten Aufrufs und
 beim ask-Roundtrip etwa **das 8-Fache**.
 
 Das klingt schlimmer, als es ist, und die beiden Verhältnisse zeigen

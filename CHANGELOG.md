@@ -602,6 +602,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The comparison now reaches across the language boundary** (#27).  A JVM arm
+  (`benchmarks/comparison/akka/`, Maven + the Akka Typed Java API) answers the
+  question the issue was opened for: **actor-ts sustains about a third of a
+  mature JVM actor system's message throughput** — 925k/s against 2.85M/s at a
+  batch of 10 000, and 115k/s against 351k/s on a two-actor volley.  It wins
+  the spawn row (48k/s against 25k/s) and the ask row, the latter because every
+  arm drives the system from an external caller, which on an event loop is a
+  microtask and on the JVM is a thread parking on a future.
+
+  Pinned to 2.8.8: releases from 2.9 onwards are published only to a repository
+  that answers 403 to anonymous requests, and a row nobody can reproduce is not
+  evidence.  Its BUSL-1.1 licence is carried into every published table next to
+  the throughput figure.  The harness is mirrored by hand rather than using
+  JMH, so both sides of the table measure the same way — which is also why
+  cross-language rows never share a table with same-runtime ones.
+
+- **Warmup is part of the workload definition, and it had been wrong** (#27).
+  The harness default worked out at three unmeasured iterations for the largest
+  batch — harmless for a JavaScript arm, and measuring a JIT-compiled runtime
+  mid-compilation.  Fixing it moved the JVM arm's tell rate by 130 % and its
+  ask rate by 33 %.  Warmup is now explicit per case, identical across arms, and
+  cross-checked by the report generator like every other workload constant.
+
 - **Framework-comparison benchmarks, and the first numbers this project has
   ever published** (#27).  `benchmarks/comparison/` measures actor-ts against
   nact, XState v5 and a no-framework floor across four scenarios — spawn, tell

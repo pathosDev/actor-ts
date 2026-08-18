@@ -405,20 +405,41 @@ Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX, 2026-08-18:
 
 | scenario                       | actor-ts    | nact 7.6.2 | XState 5.32.5 | no framework |
 | ------------------------------ | ----------- | ---------- | ------------- | ------------ |
-| tell throughput (batch 10k)    | **900k/s**  | 404k/s     | 209k/s        | 582M/s       |
-| ask round-trip (p50)           | 7.8 µs      | **6.9 µs** | 11.7 µs *     | 1.0 µs       |
-| ping-pong (10k exchanges)      | 138k/s      | **197k/s** | 70k/s         | 341M/s       |
-| spawn → started → stopped      | 42k/s       | **157k/s** | 59k/s         | 3.5M/s       |
+| tell throughput (batch 10k)    | **925k/s**  | 409k/s     | 176k/s        | 575M/s       |
+| ask round-trip (p50)           | 7.3 µs      | **6.2 µs** | 15.8 µs *     | 0.9 µs       |
+| ping-pong (10k exchanges)      | 115k/s      | **162k/s** | 71k/s         | 345M/s       |
+| spawn → started → stopped      | 48k/s       | **205k/s** | 64k/s         | 5M/s         |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
 
-A mixed result, which is the useful kind.  actor-ts leads on bulk message
-throughput by a wide margin and is level with nact on ask latency; it is
-behind on spawning and on two-actor ping-pong, both because it routes actor
-creation and each message through a dispatcher turn where nact works
-synchronously.  The last column is not a competitor — it is direct method
-calls, so it shows what the abstraction costs.
+actor-ts leads the JavaScript field on bulk message throughput by a wide
+margin and is level with nact on ask latency.  It is behind on spawning and on
+two-actor ping-pong, both because it routes actor creation and each message
+through a dispatcher turn where nact works synchronously.  The last column is
+not a competitor — it is direct method calls, so it shows what the abstraction
+costs.
+
+### And against the JVM
+
+Kept in its own table on purpose: this is another virtual machine, measured by
+a harness that mirrors the JavaScript one rather than being it.
+
+| scenario                    | actor-ts (Bun) | Akka 2.8.8 (JDK 21) |
+| --------------------------- | -------------- | ------------------- |
+| tell throughput (batch 10k) | 925k/s         | **2.85M/s**         |
+| ping-pong (10k exchanges)   | 115k/s         | **351k/s**          |
+| spawn → started → stopped   | **48k/s**      | 25k/s               |
+| ask round-trip (p50)        | **7.3 µs**     | 45.9 µs †           |
+
+<sub>† Every arm drives the system from an external caller.  On an event loop
+that is a microtask; on the JVM it is a thread parking on a future, which costs
+tens of microseconds regardless of framework.</sub>
+
+So: roughly **three times the throughput** on the JVM, and that is the honest
+headline for anyone weighing a TypeScript actor system against a mature JVM
+one.  Akka is also BUSL-1.1 rather than open source in the OSI sense, which
+belongs in the same decision.
 
 These are **ratios, not absolutes**, on one machine.  Read the columns, treat
 the last digit as fiction, and note that a 10 % gap here is inside the

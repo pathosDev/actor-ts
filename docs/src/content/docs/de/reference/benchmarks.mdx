@@ -18,20 +18,35 @@ ist die maßgebliche Quelle; diese Seite ist ihre lesbare Fassung.
 Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logische Kerne) · Windows 11 · 2026-08-18 ·
 Median aus neun verschränkten Runden.
 
+### JavaScript — gleiche Maschine, gleicher Harness
+
 | Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
 | -------- | -------- | ---------- | ------------- | -------------- |
-| tell-Durchsatz, Batch 1k  | **850k/s** | 366k/s | 192k/s | 194M/s |
-| tell-Durchsatz, Batch 10k | **900k/s** | 404k/s | 209k/s | 582M/s |
-| ask-Roundtrip, p50        | 7,8 µs | **6,9 µs** | 11,7 µs | 1,0 µs |
-| Ping-Pong, 10k Wechsel    | 138k/s | **197k/s** | 70k/s | 341M/s |
-| spawn → gestartet → gestoppt | 42k/s | **157k/s** | 59k/s | 3,5M/s |
+| tell-Durchsatz, Batch 1k  | **877k/s** | 391k/s | 186k/s | 220M/s |
+| tell-Durchsatz, Batch 10k | **925k/s** | 409k/s | 176k/s | 575M/s |
+| ask-Roundtrip, p50        | 7,3 µs | **6,2 µs** | 15,8 µs | 0,9 µs |
+| Ping-Pong, 10k Wechsel    | 115k/s | **162k/s** | 71k/s | 345M/s |
+| spawn → gestartet → gestoppt | 48k/s | **205k/s** | 64k/s | 5M/s |
+
+### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
+
+Bewusst in einer eigenen Tabelle.  Die JavaScript-Arme oben laufen alle durch
+*buchstäblich denselben* Messcode; dieser hier bildet das Protokoll von Hand
+nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
+
+| Szenario | actor-ts (Bun 1.3.1) | Akka 2.8.8 (JDK 21) |
+| -------- | -------------------- | ------------------- |
+| tell-Durchsatz, Batch 10k | 925k/s | **2,85M/s** |
+| Ping-Pong, 10k Wechsel    | 115k/s | **351k/s** |
+| spawn → gestartet → gestoppt | **48k/s** | 25k/s |
+| ask-Roundtrip, p50        | **7,3 µs** | 45,9 µs |
 
 ### Was die Zahlen sagen
 
-**actor-ts führt beim Massen-Nachrichtendurchsatz** — Faktor 2,2 gegenüber
-nact und 4,3 gegenüber XState bei einem Batch von 10 000 — und liegt beim
-ask-Roundtrip gleichauf mit nact; die rund 7 % Abstand liegen innerhalb des
-Rauschens zwischen zwei Läufen.
+**actor-ts führt im JavaScript-Feld beim Massen-Nachrichtendurchsatz** —
+Faktor 2,3 gegenüber nact und 5,3 gegenüber XState bei einem Batch von
+10 000 — und liegt beim ask-Roundtrip gleichauf mit nact; der Abstand liegt
+innerhalb des Rauschens zwischen zwei Läufen.
 
 **Beim Spawnen und beim Ping-Pong liegt es zurück**, und zwar aus einem
 einzigen Grund.  actor-ts leitet die Aktorerzeugung über eine
@@ -41,6 +56,17 @@ Nachricht zahlt sich aus, sobald eine Mailbox Tiefe hat — das ist die
 tell-Spalte — und bringt gar nichts, wenn ein Ping-Pong so abwechselt, dass
 keine Mailbox je mehr als eine Nachricht hält.  Derselbe Mechanismus erklärt
 beide Richtungen.
+
+**Gegen die JVM: etwa ein Drittel des Durchsatzes.**  Das ist die Antwort auf
+die Frage, für die dieser Vergleich eröffnet wurde, und sie fällt nicht
+schmeichelhaft aus: ein ausgereiftes JVM-Aktorsystem bewegt rund dreimal so
+viele Nachrichten pro Sekunde.  Zwei Dinge gehören danebengestellt.  Erstens
+gewinnt actor-ts die spawn- und die ask-Zeile — letztere, weil jeder Arm das
+System von außen antreibt: im Event-Loop ist das ein Microtask, auf der JVM
+ein Thread, der sich an einem Future parkt, und das kostet unabhängig von der
+Framework-Qualität zweistellige Mikrosekunden.  Zweitens steht Akka ab 2.7
+unter BUSL-1.1 und schränkt den Produktiveinsatz ein; das gehört in dieselbe
+Entscheidung wie die Durchsatzzahl.
 
 **Die letzte Spalte ist kein Konkurrent.**  Sie besteht aus direkten
 Methodenaufrufen ohne Mailbox, ohne Supervision, ohne Lebenszyklus und ohne
@@ -65,11 +91,18 @@ Zeile oben ein Median aus neun.
 
 Die Teile, die die Tabelle lesenswert machen:
 
-- **Ein Harness, buchstäblich.**  Jeder JavaScript-Arm läuft durch denselben
-  Messcode — gleiches Warmup, gleiche Uhr, gleiche Perzentil-Rechnung.  Nur
-  die vier Operationsrümpfe unterscheiden sich.  Das ist eine stärkere Aussage
-  als „wir haben dieselbe Methodik verwendet", und es ist der Grund, warum
-  diese Seite JavaScript-Frameworks vergleicht und keine virtuellen Maschinen.
+- **Ein Harness, buchstäblich — auf der JavaScript-Seite.**  Jeder
+  JavaScript-Arm läuft durch denselben Messcode: gleiches Warmup, gleiche Uhr,
+  gleiche Perzentil-Rechnung, nur die vier Operationsrümpfe unterscheiden
+  sich.  Das ist eine stärkere Aussage als „wir haben dieselbe Methodik
+  verwendet", und deshalb teilen sich diese Zeilen eine Tabelle.  Der JVM-Arm
+  kann diesen Code nicht importieren, bildet das Protokoll also von Hand nach
+  — und genau deshalb stehen seine Zeilen separat.
+- **Warmup gehört zum Workload.**  Explizit pro Fall und über alle Arme
+  identisch, denn der Harness-Default ergibt beim größten Batch drei
+  ungemessene Iterationen — für JavaScript in Ordnung, für eine
+  JIT-kompilierte Runtime heißt das: mitten in der Kompilierung gemessen.
+  Die Korrektur bewegte die tell-Rate des JVM-Arms um 130 %.
 - **Erledigte Arbeit, nie angeforderte.**  Jeder Arm meldet, was das System
   *beobachtbar* getan hat — der zurückgelesene Zähler, die geprüfte Antwort,
   der bestätigte Lebenszyklus — und der Report-Generator weigert sich, eine
@@ -106,6 +139,14 @@ Antwortadresse reist in der Nachricht mit.  Es wird zudem faktisch nicht mehr
 gepflegt, seine Zahlen sind also eine Momentaufnahme von 7.6.2 und kein
 bewegliches Ziel.
 
+**Akka** wird in 2.8.8 gemessen — der neuesten Version, die noch auf Maven
+Central liegt; ab 2.9 erscheinen die Artefakte nur noch in einem Repository,
+das anonyme Anfragen ablehnt.  Eine Version, die sonst niemand auflösen kann,
+machte die Zeile unreproduzierbar.  Der Harness ist von Hand dem
+JavaScript-Pendant nachgebildet statt JMH zu nutzen: JMH ist das bessere
+Microbenchmark-Werkzeug, misst aber anders — und zwei Seiten mit
+unterschiedlicher Methodik lassen sich nicht als eine Tabelle lesen.
+
 **actor-ts** wird mit einfacher `if`-Verzweigung in den Handlern gemessen,
 passend zu den anderen Armen.  Stattdessen mit `ts-pattern` zu dispatchen — der
 Stil, den dieses Projekt in seinem eigenen Quellcode verwendet — kostet
@@ -126,10 +167,11 @@ ausgeführt hat, liest sich als Vergleich von allem:
 - **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
   SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
   Framework-Etikett.
-- **Noch keine sprachübergreifenden Zeilen.**  Ein Vergleich mit
-  Actor-Frameworks auf anderen virtuellen Maschinen ist eine andere und
-  schwächere Aussage als der Vergleich zweier JavaScript-Bibliotheken unter
-  einem Harness — er kommt in eine eigene Tabelle statt in diese.
+- **Bisher nur ein sprachübergreifender Arm.**  Die JVM ist gemessen,
+  .NET-Actor-Frameworks noch nicht.  Sprachübergreifende Zeilen bleiben in
+  ihrer eigenen Tabelle, weil sie eine schwächere Aussage sind als
+  Messungen durch denselben Harness — sie werden nie in die
+  JavaScript-Rangfolge gemischt.
 - **Eine Runtime.**  Alle Arme laufen auf Bun.  Der Mess-Harness greift in den
   Quellcode des Frameworks, den Node ohne Build-Schritt nicht laden kann; die
   Nachbarn auf Node zu messen hieße also, sie *nicht* durch denselben Harness
