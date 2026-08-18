@@ -64,10 +64,11 @@ export type ShardMapViewAssignment = {
  * The per-region shard *ids* are regrouped out of the assignment map rather
  * than taken from the event, which only carries each region's `shardCount`:
  * the coordinator keeps the two sides in step on every mutation, so grouping
- * `shards` by region key reconstructs exactly the set it counted — and it
- * keeps the endpoint's response shape byte-identical to the one the
- * DistributedData-backed handler produced, which is documented and may
- * already be parsed by operator tooling.
+ * `shards` by region key reconstructs exactly the set it counted.  Which is
+ * the point — every field the DistributedData-backed `/cluster/shards`
+ * handler produced is still here under the same name, so operator tooling
+ * parsing that documented shape keeps working.  `version` is added; nothing
+ * is removed or renamed.
  *
  * A region that hosts nothing still appears, with an empty `shards`: knowing
  * a node has registered and been given no shards is the interesting half of
