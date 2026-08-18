@@ -302,3 +302,10 @@ export type {
   EmailSmtpOptionsType,
   EmailProcessedAction,
 } from './EmailBridgeOptions.js';
+export { EmailTemplate, EmailTemplateError } from './EmailTemplate.js';
+export type { EmailTemplateValue } from './EmailTemplate.js';
+// Re-exported beside the template: filling one with markup on purpose goes
+// through the same `SafeHtml` brand the HTTP side uses, and reaching for it
+// should not mean importing from `actor-ts/http` to send a mail.  Escaping
+// itself is not re-exported — the template already does it.
+export { rawHtml, html, SafeHtml } from '../../util/Html.js';
