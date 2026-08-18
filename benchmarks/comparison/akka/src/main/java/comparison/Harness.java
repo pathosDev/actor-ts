@@ -24,6 +24,18 @@ public final class Harness {
 
     private Harness() {}
 
+    /**
+     * Smoke mode collapses every case to a single unwarmed iteration, matching
+     * `ACTOR_TS_BENCH_SMOKE` on the JavaScript side.
+     *
+     * <p>Without this the flag reached this arm and did nothing: the process ran
+     * the full workload and then overwrote a real measurement with it. That is
+     * the failure the JavaScript side guards against by refusing to write at
+     * all in smoke mode, and a cross-language arm has to honour the same rule
+     * or the flag is a trap rather than a check.
+     */
+    public static final boolean SMOKE_MODE = "1".equals(System.getenv("ACTOR_TS_BENCH_SMOKE"));
+
     /** One iteration of work; returns the operations the system was OBSERVED to complete. */
     @FunctionalInterface
     public interface Operation {
@@ -54,6 +66,11 @@ public final class Harness {
             String scenario, String caseName, String unit,
             int iterations, int opsPerIteration, int warmupIterations, String notes,
             Operation operation) throws Exception {
+
+        if (SMOKE_MODE) {
+            iterations = 1;
+            warmupIterations = 0;
+        }
 
         // Warmup comes from the workload rather than a formula. A JIT-compiled
         // runtime measured after a handful of iterations is measured

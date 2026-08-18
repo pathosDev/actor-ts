@@ -94,7 +94,13 @@ public final class Main {
                         return completed.longValue();
                     }));
 
-            ResultFile.write(results, EnvironmentBlock.fromDriver(), outputPath());
+            if (Harness.SMOKE_MODE) {
+                System.out.println("  smoke mode - " + results.size()
+                        + " case(s) executed, results NOT written (one unwarmed iteration "
+                        + "measures the JIT, not the framework)");
+            } else {
+                ResultFile.write(results, EnvironmentBlock.fromDriver(), outputPath());
+            }
         } finally {
             system.terminate();
         }
