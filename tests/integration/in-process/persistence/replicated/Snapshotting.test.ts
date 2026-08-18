@@ -206,14 +206,21 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     // Pre-seed the journal with an event whose `replica` id matches
     // a peer (not us) — so it ends up in `_seenIds` after recovery.
-    const peerEnvelope: ReplicatedEventEnvelope<Event> = {
+    //
+    // Deliberately without an `eventId`, which makes this the on-disk
+    // legacy-format guard as well (#706): an envelope journalled before that
+    // field existed must still recover, and must still deduplicate, on the
+    // `${replica}#${seqAtReplica}` fallback.  Refusing it here is what an
+    // upgrade losing an entity's history would look like.  The *remote* path
+    // refuses the same shape — the fallback is scoped to this node's own disk.
+    const peerEnvelope = {
       persistenceId: 'snap-counter',
       replica: 'peer-x',
       seqAtReplica: 1,
       vc: { 'peer-x': 1 },
       timestamp: Date.now(),
       event: { kind: 'added', n: 100 },
-    };
+    } as unknown as ReplicatedEventEnvelope<Event>;
     await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], 0);
 
     const a1 = await startActor('snap-3', 70_021, journal, snapshotStore);
@@ -238,10 +245,12 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     // Restart — recovery loads snapshot (seenIds includes 'peer-x#1').
     // We then replay the journal delta which DOES NOT include the peer
-    // event again (it was already in the snapshot's `events`).  But to
-    // simulate a re-broadcast, we manually re-append the same peer
-    // event to the journal under a fresh local seq — this would
-    // happen in production if peer-x re-broadcast its event.
+    // event again (it was already in the snapshot's `events`).  So we
+    // re-append the same envelope under a fresh journal seq: the same
+    // event appearing twice on disk, which is what the snapshot's
+    // `seenIds` exists to absorb.  (Not a re-broadcast — a live peer
+    // re-publishing carries the same `eventId` and is deduplicated on
+    // that; this is the on-disk duplicate, on the legacy key.)
     await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], await journal.highestSeq('snap-counter'));
 
     CountingCounter.onEventCallCount = 0;

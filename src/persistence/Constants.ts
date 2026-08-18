@@ -109,3 +109,91 @@ export const MAX_TAGS_PER_EVENT = 64;
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
 export const SEQ_PADDING = 20;
+
+/**
+ * Random hex characters in a replicated event's id — 96 bits.
+ *
+ * `ReplicatedEventSourcedActor` used to identify an event cluster-wide by
+ * `${replica}#${seqAtReplica}`, and both halves travelled in the broadcast
+ * payload: the replica id is public and `seqAtReplica` is a plain counter, so a
+ * peer could compute a victim's *future* ids by arithmetic.  A hit in the
+ * deduplication set means *silently discard*, so pre-claiming `victim#42` made
+ * every peer drop the victim's genuine 42nd event — permanently, because the
+ * forgery is journaled and the set is snapshotted (#706).
+ *
+ * The same attack and the same remedy as `TAG_ENTROPY_CHARACTERS` in
+ * `src/crdt/Constants.ts` (#722), and deliberately the same width.  Entropy is
+ * what works here where transport binding does not: a replica id is *not*
+ * required to be the sending node's address (a fixed region name is documented
+ * and shipped), and the deduplication key has to stay byte-identical across a
+ * re-delivery of the same event, which rules out anything derived locally.
+ *
+ * At 96 bits a replica persisting 10^9 events has a collision chance around
+ * 6e-12, and `persist` draws against the observed set anyway.
+ */
+export const REPLICATED_EVENT_ID_ENTROPY_CHARACTERS = 24;
+
+/**
+ * Longest accepted replica id.
+ *
+ * A replica id is half the identity of every event: it prefixes the event id,
+ * keys the vector clock, and is stored in the journal and in every snapshot
+ * from then on.  Nothing bounded it, so one peer-supplied envelope could carry
+ * a megabyte of replica id into permanent local state — and a vector clock is a
+ * `Record<ReplicaId, number>`, so its keys are the same string under the same
+ * bound.
+ *
+ * 255 matches {@link MAX_PERSISTENCE_ID_LENGTH}: the two are the same kind of
+ * name in the same records, and a replica id that needs more than a node
+ * address or a region name has a different problem.  The actor checks its *own*
+ * `replicaId` against this at `preStart` too, so an over-long id fails loudly
+ * on the node that chose it instead of being silently rejected by every peer.
+ */
+export const MAX_REPLICA_ID_LENGTH = 255;
+
+/**
+ * Longest accepted replicated event id.
+ *
+ * Derived rather than chosen: an id minted by `persist` is a replica id, a
+ * `#`, and {@link REPLICATED_EVENT_ID_ENTROPY_CHARACTERS} of entropy, so a
+ * fixed number small enough to be a useful bound would reject honest peers
+ * whose replica id sits near {@link MAX_REPLICA_ID_LENGTH}.
+ */
+export const MAX_REPLICATED_EVENT_ID_LENGTH =
+  MAX_REPLICA_ID_LENGTH + 1 + REPLICATED_EVENT_ID_ENTROPY_CHARACTERS;
+
+/**
+ * Most vector-clock entries a peer-supplied replicated envelope may carry.
+ *
+ * The clock is merged into local state unconditionally and never pruned, so
+ * entries a peer invents are permanent: they inflate every subsequent envelope
+ * this replica broadcasts and every snapshot it writes.  A cluster legitimately
+ * grows one entry per replica ever seen, which is why this sits far above any
+ * real deployment — the same figure and the same reasoning as
+ * `MAX_CRDT_ENTRIES`.  Vector-clock garbage collection is #535; this only
+ * stops one frame from doing the growing.
+ */
+export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
+
+/**
+ * Default ceiling on the canonical event history a `ReplicatedEventSourcedActor`
+ * will accept from its peers, in events.
+ *
+ * The history is unbounded by construction — there is no compaction yet (#535)
+ * — and every accepted remote envelope also costs one journal write and one
+ * deduplication-set entry.  Worse, an out-of-order arrival refolds the whole
+ * history, so N envelopes crafted to sort early cost O(N²) work.
+ *
+ * The bound is deliberately a **refusal, not an eviction**.  Dropping an entry
+ * from the history changes the fold, and dropping one from the deduplication
+ * set reopens double-apply, so silent eviction would trade a bounded leak for
+ * unbounded divergence.  It also applies to the *remote* path only: refusing a
+ * local `persist` would lose a write the caller was told succeeded, and the
+ * local application is not the untrusted party here.
+ *
+ * 100 000 is above what the documented workload for this pattern reaches
+ * (small-write / many-read entities) and far below the point at which a refold
+ * storm is survivable, so an actor approaching it wants snapshots or a lower
+ * `maxObservedEvents()` rather than a bigger number.
+ */
+export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
