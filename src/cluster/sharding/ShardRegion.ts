@@ -7,6 +7,7 @@ import { ActorPath } from '../../ActorPath.js';
 import { DEFAULT_NUM_SHARDS, DEFAULT_PASSIVATION_IDLE_MS } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Terminated } from '../../SystemMessages.js';
 import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
@@ -774,6 +775,14 @@ export class ShardRegion<TMessage = unknown>
    * which is the fail-stop the alternative lacks — an accepted mismatch routes
    * the same entity id into two different shards and runs two live instances
    * of it, one per node, at paths that never collide.
+   *
+   * This message *is* the whole of the issue's "clear rejection" criterion, and
+   * it named a HOCON key that does not exist — `actor-ts.sharding.num-shards`,
+   * against a `reference.conf` that ships `number-of-shards`.  It is built from
+   * {@link ConfigKeys} now rather than spelled out, because that is the one
+   * source of truth for a key path and no test can catch a wrong string in a
+   * free-text log line: `NoDeadConfigKeys` walks `reference.conf` →
+   * `ConfigKeys`, so an *invented* key is outside its direction of travel.
    */
   private onRegisterRefused(message: RegisterRefused, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
@@ -787,7 +796,7 @@ export class ShardRegion<TMessage = unknown>
       + `${message.regionNumShards} and the coordinator governs the type with ${message.numShards}. `
       + `No shard will be allocated here and messages for this type will keep buffering until the `
       + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
-      + `(explicitly, or via actor-ts.sharding.num-shards).`,
+      + `(explicitly, or via ${ConfigKeys.sharding.numberOfShards}).`,
     );
   }
 
