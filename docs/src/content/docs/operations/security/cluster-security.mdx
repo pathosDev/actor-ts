@@ -595,6 +595,62 @@ Refused frames are dropped and logged at `WARN`. The
 coordinator's own local leg builds the same wrapper, so a
 single-node cluster rebalances exactly as before.
 
+### A region can only speak for its own node
+
+The same gap ran in the other direction, and it was the more
+expensive one. Every message a `ShardCoordinator` accepts is a
+claim about the **sender's own** node: which shards its region
+hosts, that its region is gone, that a hand-off finished, where
+to send a shard home or a statistics reply. The coordinator read
+all of that out of the payload. Its only gate was `isLeader()`
+plus, with a lease, holding the lease — which answers *"am I the
+authoritative coordinator?"*, never *"may this sender speak for
+that region?"*.
+
+So one well-formed `sharding.Register` naming somebody else's
+address seized every shard of a type, and one
+`sharding.RegionTerminated` evicted its region. The eviction is
+the worse half: it sends no `HandOff`, so the victim keeps its
+shard actors and its entities running. The result is two owners
+for one live shard — the same entity id instantiated twice, and
+for a persistent entity two writers on one `persistenceId`.
+
+The region-side origin check above does not blunt this, because
+the attacker never sends a `ShardHome`. It poisons the
+coordinator's allocation map with one forged frame and the
+*genuine* coordinator then emits the redirect itself, from the
+leader's own node, inside a wrapper every region rightly
+accepts. One forgery, every subsequent hop authentic.
+
+The coordinator now claims its own well-known path on the
+envelope router and applies the same two conditions: the frame
+arrived inside the wrapper, and the address its payload names is
+the peer's own. Both directions of the register loop are
+therefore attributed, which also fixed how a region addresses
+the coordinator — by the **leader's** system name, not its own,
+since an actor path carries the system it belongs to.
+
+`hostedShards` is bounded and capped on top of that. It was the
+only caller-*sized* input the coordinator had — one `Register`
+wrote an allocation entry per array element, with no range check
+and no length cap, into state that is broadcast to every region
+and persisted to the coordinator-state store, so the growth
+survived restarts. Entries outside `0 .. numShards - 1` are now
+dropped and the accepted set cannot exceed `numShards`.
+
+<Aside type="caution" title="What this is, and is not">
+  Under mTLS the peer is certificate-backed — the `hello`
+  handshake refuses a claimed address the peer certificate does
+  not vouch for — so comparing the payload against it **is**
+  authentication. On a plaintext cluster it is defence in depth:
+  it stops a member speaking for *another* member, not a member
+  speaking for itself. Four coordinator-inbound kinds
+  (`EntityStarted`, `EntityStopped`, `GetRememberedEntities`,
+  `BeginHandOffAcknowledgment`) carry no address at all, so
+  attribution is the only thing that can be asked of them — any
+  authenticated member can still send those.
+</Aside>
+
 ### A version cannot claim an address in advance
 
 Version is a logical clock seeded from `Date.now()`, so
