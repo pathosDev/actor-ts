@@ -104,9 +104,22 @@
  *     wrote.
  *   - Everything else is `any`, and there `any` is the honest type: the harness
  *     does not know what `const cache = buildIt()` evaluated to, and inventing
- *     a type would be prose masquerading as a check.  Nothing is lost relative
- *     to before — an unresolved identifier was already error-typed, so
- *     everything downstream of it was already unchecked.
+ *     a type would be prose masquerading as a check.
+ *
+ * That last one is a trade, and it was measured rather than assumed.  Compared
+ * with compiling every fence in isolation, the prologue **removes 38 findings
+ * and adds 2** (262 on 186 pages → 226 on 170).  The removals inspected are all
+ * artefacts of the isolation rather than defects: an identifier an earlier fence
+ * imported (`idempotent`, `HttpExtensionId`), a shorthand property whose value
+ * an earlier fence declared (`keyring`), and — the interesting one — a page-local
+ * `class Worker` that, isolated, resolved to the DOM's `Worker` and produced a
+ * confident TS2345 against `ActorClassOrFactory` (`routing/router.mdx`).  The
+ * residual risk is the opposite direction: a *computed* carried value is `any`,
+ * so a genuine mismatch downstream of one is not seen.  Closing that needs the
+ * TypeScript API to read the earlier fence's inferred type, not a CLI.  Spot
+ * check that it is not hiding the obvious case — the `NodeAddress[]` into
+ * `withSeeds(string[])` drift on the four seed-provider pages is still reported,
+ * because those fences declare `seeds` themselves.
  *
  * **The leftover "cannot find name" was one bucket holding two defects.** The
  * question this script was landed unwired to settle was whether to tolerate
