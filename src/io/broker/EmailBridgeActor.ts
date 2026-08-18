@@ -325,6 +325,17 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
     });
 
     await client.connect();
+    if ((imap.onProcessed ?? 'markSeen') === 'move') {
+      // A move into a mailbox that does not exist fails, and a settle that
+      // fails leaves the message unflagged — so it is delivered again, and
+      // again, forever.  Creating it once here is the difference between a
+      // working bridge and a livelock nothing reports.
+      try {
+        await client.mailboxCreate(imap.moveToMailbox!);
+      } catch {
+        // Already there — the only other outcome worth having.
+      }
+    }
     await client.mailboxOpen(imap.mailbox ?? DEFAULT_IMAP_MAILBOX);
     this.imapClient = client;
 
@@ -725,6 +736,8 @@ export type ImapSearchQueryLike = { readonly seen?: boolean; readonly all?: bool
 export interface ImapFlowClientLike {
   connect(): Promise<void>;
   mailboxOpen(mailbox: string): Promise<unknown>;
+  /** Rejects when the mailbox already exists, which the caller treats as success. */
+  mailboxCreate(path: string): Promise<unknown>;
   readonly mailbox?: { readonly uidValidity?: unknown };
   readonly capabilities?: { has(capability: string): boolean };
   search(query: ImapSearchQueryLike, options: { uid: true }): Promise<ReadonlyArray<number> | false>;

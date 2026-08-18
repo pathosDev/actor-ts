@@ -163,6 +163,9 @@ class FakeImapClient implements ImapFlowClientLike {
   readonly flagAdds: Array<{ uid: string; flags: ReadonlyArray<string> }> = [];
   readonly moves: Array<{ uid: string; destination: string }> = [];
   readonly searches: ImapSearchQueryLike[] = [];
+  readonly mailboxCreates: string[] = [];
+  /** Mailboxes that already exist — creating one of these rejects, as a server would. */
+  readonly existingMailboxes = new Set<string>();
   idleCalls = 0;
   noopCalls = 0;
   logoutCalls = 0;
@@ -186,6 +189,13 @@ class FakeImapClient implements ImapFlowClientLike {
 
   async connect(): Promise<void> { /* nothing to do */ }
   async mailboxOpen(_mailbox: string): Promise<unknown> { return {}; }
+
+  async mailboxCreate(path: string): Promise<unknown> {
+    this.mailboxCreates.push(path);
+    if (this.existingMailboxes.has(path)) throw new Error(`ALREADYEXISTS: ${path}`);
+    this.existingMailboxes.add(path);
+    return {};
+  }
 
   async search(query: ImapSearchQueryLike, _options: { uid: true }): Promise<ReadonlyArray<number>> {
     this.searches.push(query);
@@ -486,6 +496,77 @@ describe('EmailBridgeActor — inbound sweep', () => {
       expect(imapModule.last().moves).toEqual([{ uid: '3', destination: 'Processed' }]);
       expect(imapModule.last().flagAdds).toEqual([]);
       expect(inbox.received.length).toBe(1);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  // Without this the very first settle fails, the message stays unflagged,
+  // and the bridge redelivers it forever — with the move reported as an
+  // ordinary warning.
+  test('move mode creates the destination mailbox on connect', async () => {
+    const system = makeSystem();
+    try {
+      const inbox = new InboxActor(() => null, 'silent');
+      const inboxRef = system.spawn(() => inbox, 'inbox');
+
+      const imapModule = new FakeImapModule();
+      const actor = new TestEmailBridgeActor(
+        EmailBridgeOptions.create()
+          .withImap({ ...fastImap, onProcessed: 'move', moveToMailbox: 'Processed' })
+          .withTarget(inboxRef),
+        imapModule,
+      );
+      system.spawn(() => actor, 'bridge');
+      await sleep(80);
+
+      expect(imapModule.last().mailboxCreates).toEqual(['Processed']);
+      expect(actor.state).toBe('connected');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('an already existing destination mailbox does not fail the connect', async () => {
+    const system = makeSystem();
+    try {
+      const inbox = new InboxActor(() => null, 'silent');
+      const inboxRef = system.spawn(() => inbox, 'inbox');
+
+      const imapModule = new FakeImapModule();
+      // A server rejects CREATE for a mailbox that is already there.
+      imapModule.configureClient = (client) => { client.existingMailboxes.add('Processed'); };
+      const actor = new TestEmailBridgeActor(
+        EmailBridgeOptions.create()
+          .withImap({ ...fastImap, onProcessed: 'move', moveToMailbox: 'Processed' })
+          .withTarget(inboxRef),
+        imapModule,
+      );
+      system.spawn(() => actor, 'bridge');
+      await sleep(80);
+
+      expect(actor.state).toBe('connected');
+      expect(imapModule.clients.length).toBe(1); // no reconnect cycle
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('markSeen mode creates no mailbox', async () => {
+    const system = makeSystem();
+    try {
+      const inbox = new InboxActor(() => null, 'silent');
+      const inboxRef = system.spawn(() => inbox, 'inbox');
+
+      const imapModule = new FakeImapModule();
+      const actor = new TestEmailBridgeActor(
+        EmailBridgeOptions.create().withImap(fastImap).withTarget(inboxRef),
+        imapModule,
+      );
+      system.spawn(() => actor, 'bridge');
+      await sleep(80);
+
+      expect(imapModule.last().mailboxCreates).toEqual([]);
     } finally {
       await system.terminate();
     }
