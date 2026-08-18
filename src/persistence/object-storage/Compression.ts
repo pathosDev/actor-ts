@@ -284,8 +284,17 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     // Not canary-checked: fzstd is pure JS with no native binding to be
     // missing, so a successful import already answers "does it work?".  It
     // sizes its own output buffer and takes no bound, so this branch too
-    // rests on the post-decode assertion (#780 blocks testing it — fzstd
-    // has no devDependency, so it is never installed here).
+    // rests on the post-decode assertion.
+    //
+    // That shortcut is an assumption about the PACKAGE, not about this code,
+    // and it is checked directly now that fzstd is a devDependency (#676 —
+    // it had none before, so nothing here was ever installed):
+    // `tests/unit/ci/OptionalPeerModuleShapes.test.ts` decodes both the
+    // canary frame above and a frame this file's own compress path wrote,
+    // which is the interoperability the fallback actually promises.
+    // Reaching this BRANCH from a test is a separate problem and still open:
+    // on Bun and Node `node:zlib` wins the canary, so the resolver returns
+    // before it gets here and forcing it would need a seam.
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(
