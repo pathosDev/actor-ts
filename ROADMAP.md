@@ -43,7 +43,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Next window is open (`[Unreleased]`).  The obvious heads from here: the
   `reference.conf` expansion tracked in #887; the residual security items
   the wave narrowed rather than closed (#112 needs the incarnation identity
-  from #940; #607 needs the eviction policy from #1080); #766, whose titled
+  from #940; #607's eviction residual is closed by #1080); #766, whose titled
   fix turns out to be insufficient on its own; and the fresh audit round
   #1166–#1193, which is unstarted and holds several `priority: high`
   correctness defects — `PersistentActor` has no fencing (#1166),
