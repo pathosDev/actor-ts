@@ -263,6 +263,13 @@ Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
 nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
 `OptionsError`.
 
+`capacity` begrenzt die Nachrichten, die die Mailbox verwerfen *darf* —
+in einer Mailbox, die nur noch nicht zugestellte Todesmeldungen enthält,
+liegt die Queue also darüber, statt eine davon zu verlieren.  Der
+Überschuss ist durch die Zahl der beobachteten Actors begrenzt und ist
+der Preis der Ausnahme, die [Death Watch](/de/fundamentals/death-watch/)
+beschreibt: bemiss eine Kapazität an deinem Verkehr, nicht aufs Byte.
+
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
 - **`drop-head`** = "Frisch gewinnt."  Richtig für Telemetrie,

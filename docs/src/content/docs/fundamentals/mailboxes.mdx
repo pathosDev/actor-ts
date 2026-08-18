@@ -246,6 +246,13 @@ policy either way and the question does not arise.
 The options are validated at construction: a missing or non-positive
 `capacity` and an unknown overflow policy throw `OptionsError`.
 
+`capacity` bounds the messages the mailbox is allowed to *discard*, which
+in a mailbox holding nothing but undelivered death notifications means the
+queue sits above it rather than losing one.  The overshoot is bounded by
+how many actors this one watches, and it is the price of the exemption
+[Death watch](/fundamentals/death-watch/) describes: size a capacity for
+your traffic, not to the byte.
+
 Picking between them is a backpressure-vs-loss trade-off:
 
 - **`drop-head`** = "freshest wins."  Right for telemetry, sensor
