@@ -817,8 +817,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Cost on the uninstrumented path is two field reads, one getter and two
    * compares — still less than the `BoundedMailbox.enqueue` bound check that
    * used to run here by default.
+   *
+   * `exemptFromBound` picks the mailbox door: `enqueueSignal` instead of
+   * `enqueue`, for the one envelope class no load-shedding policy may discard
+   * (see {@link Envelope.undroppable}).  A parameter rather than a second seam
+   * so the stamp, the backlog warning and the `schedule()` still cannot be
+   * forgotten for it — those apply to a `Terminated` exactly as they do to
+   * anything else.
    */
-  private _enqueueUser(env: Envelope<TMessage>): void {
+  private _enqueueUser(env: Envelope<TMessage>, exemptFromBound: boolean = false): void {
     // Attach the arrival stamp here rather than at the two `post*` doors, so
     // there is exactly one answer to "when did this message arrive" — and so
     // the replay paths keep getting it right by construction: `unstashAll`
@@ -843,7 +850,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this._explain !== null || this.system._metricsRegistry !== null) {
       if (env.enqueuedAtMs === undefined) stamped = { ...env, enqueuedAtMs: Date.now() };
     }
-    this.mailbox.enqueue(stamped);
+    if (exemptFromBound) this.mailbox.enqueueSignal(stamped);
+    else this.mailbox.enqueue(stamped);
     if (this.mailbox.size >= this._mailboxWarnAt) this._onMailboxHighWaterMark();
     this.schedule();
   }
@@ -871,6 +879,34 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._enqueueUser(env);
   }
 
+  /**
+   * @internal — the door a framework lifecycle notification comes through, as
+   * opposed to the `postUserEnvelope` every `tell` uses.
+   *
+   * Same lane, same position: the envelope lands at the tail of the user queue
+   * and reaches `onReceive` like any other message, which is what keeps the
+   * ordering death-watch documents — everything told to this actor before the
+   * watched one died is handled first, then the notification.  What differs is
+   * that no bound may discard it (#729); see {@link Envelope.undroppable}.
+   *
+   * The marker is stamped here rather than by the caller so there is one
+   * answer to "which envelopes are exempt", and so a future notification
+   * cannot be added that takes the exempt door without the marker the eviction
+   * side reads.
+   *
+   * A terminated recipient still dead-letters, exactly as `postUserEnvelope`
+   * does.  That is the honest outcome — there is no actor left to tell — and it
+   * is observable, which is the whole difference from the eviction this
+   * replaces.
+   */
+  postSignalEnvelope(env: Envelope<TMessage>): void {
+    if (this.state === 'terminated') {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+      return;
+    }
+    this._enqueueUser({ ...env, undroppable: true }, true);
+  }
+
   /** @internal */
   enqueueSystem(command: SystemCommand, sender: ActorRef | null = null): void {
     this.mailbox.enqueueSystem({ message: command, sender });
@@ -880,7 +916,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal */
   _addWatcher(watcher: ActorRef): void {
     if (this.state === 'terminated') {
-      watcher.tell(new Terminated(this.self) as never);
+      this._notifyWatcher(watcher, new Terminated(this.self));
       return;
     }
     this._watchers.add(watcher);
@@ -889,6 +925,46 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal */
   _removeWatcher(watcher: ActorRef): void {
     this._watchers.delete(watcher);
+  }
+
+  /**
+   * Hand one watcher its death notification, and let nothing about that
+   * watcher's queue affect this actor's teardown.
+   *
+   * Two things happen here that a plain `watcher.tell(...)` did not do (#729).
+   *
+   * A **local** watcher is reached through {@link postSignalEnvelope} rather
+   * than through `tell`, so the notification is exempt from that watcher's
+   * mailbox bound.  It went through `LocalActorRef.tell` before, which is the
+   * ordinary user funnel, so a bounded watcher's overflow policy decided the
+   * fate of a message the framework had promised to deliver and would never
+   * send again.  Anything else ref-shaped — a remote ref, or the mailbox-less
+   * `TerminationWatcher` that `gracefulStop` registers — keeps its plain
+   * `tell`, because there is no cell and no queue to be exempt from.
+   *
+   * And the send is **guarded**, because `tell` into an arbitrary ref can
+   * throw: the `reject` overflow policy raised `MailboxFullError` on this
+   * stack, and a remote transport or a caller's own `Mailbox` subclass may
+   * raise anything at all.  Unguarded, that escaped `finalizeTermination`
+   * mid-loop and skipped everything after it — the remaining watchers, the
+   * `_watchers.clear()`, the `_removeWatcher` sweep and, worst, the parent's
+   * `childTerminated`, so the parent kept a dead child forever and any
+   * teardown waiting on `_children.size === 0` never fired.  One watcher's
+   * full mailbox could hang `terminate()` for the whole system.  A refusal now
+   * costs that watcher its notification — as a **dead letter**, not silence —
+   * and costs the teardown nothing.
+   */
+  private _notifyWatcher(watcher: ActorRef, terminated: Terminated): void {
+    try {
+      if (watcher instanceof LocalActorRef) {
+        watcher.getCell().postSignalEnvelope({ message: terminated, sender: null });
+        return;
+      }
+      watcher.tell(terminated as never);
+    } catch (e) {
+      this.log.error(`watcher ${watcher.path} refused Terminated — dead-lettering it`, e);
+      this.system.deadLetters.tell(new DeadLetter(terminated, this.self, watcher));
+    }
   }
 
   /* ============================ Message processing ========================== */
@@ -1002,8 +1078,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
         // Throttle gate (#83) — applies only to user messages, never
         // to system commands (those ran above and must stay
-        // responsive for lifecycle / supervision / Terminated).
-        if (this._throttleBucket && !this._throttleBucket.tryConsume(1)) {
+        // responsive for lifecycle / supervision).
+        //
+        // Nor to a lifecycle notification, which rides the user lane but is
+        // not user traffic: `onExcess: 'drop'` consumed a `Terminated`
+        // outright, so a rate limit meant to shed load blinded the watcher
+        // instead — the same #729 loss one layer up from the mailbox, and the
+        // opposite of what `ActorContext.throttle` documents.  It consumes no
+        // token either: a notification the framework sends once is not part of
+        // the budget it is metering.
+        if (this._throttleBucket && env.undroppable !== true && !this._throttleBucket.tryConsume(1)) {
           // 'pause' returns the message to the head of the mailbox and arms a
           // resume timer; 'drop' silently consumes it.  Either way this turn
           // runs no user handler and the batch is over.
@@ -1064,8 +1148,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
   }
 
+  /**
+   * Currently unreachable — nothing in the framework emits `watchNotify`; the
+   * two live notify sites are `finalizeTermination` and `_addWatcher`, both
+   * through {@link _notifyWatcher}.  Kept, and kept exempt from the mailbox
+   * bound like the live paths (#729), so that wiring it later cannot
+   * reintroduce the loss by taking the ordinary door.
+   */
   private onWatchNotify(signal: WatchNotifyCommand): void {
-    this._enqueueUser({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+    this.postSignalEnvelope({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
   }
 
   private async onReceiveTimeout(): Promise<void> {
@@ -1186,9 +1277,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     ).inc();
     this.system.eventStream.publish(new ActorStopped(this.self));
 
-    // Notify watchers
-    const term = new Terminated(this.self);
-    for (const watcher of this._watchers) watcher.tell(term as never);
+    // Notify watchers.  One shared `Terminated`, one guarded send each — see
+    // `_notifyWatcher` for why the loop must not be able to throw.
+    const terminated = new Terminated(this.self);
+    for (const watcher of this._watchers) this._notifyWatcher(watcher, terminated);
     this._watchers.clear();
 
     // Tell watched targets to drop us from their watcher set
@@ -1288,11 +1380,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
-   *      because the envelope it evicts is as likely to be a `Terminated`
-   *      (#729) or a delivery confirmation (#732) as it is to be telemetry.
-   *      The heap is the ceiling now, and drawing a lower one is the
-   *      caller's decision.  Growth is not silent: the cell warns at
+   *      because the envelope it evicts is as likely to be a delivery
+   *      confirmation (#732) as it is to be telemetry.  The heap is the
+   *      ceiling now, and drawing a lower one is the caller's decision.
+   *      Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
+   *
+   * One class of envelope is out of every policy's reach in all three shapes
+   * since #729: a death-watch `Terminated` takes `Mailbox.enqueueSignal` and
+   * carries {@link Envelope.undroppable}, so a caller who bounds an actor is
+   * no longer choosing to lose its lifecycle signals along with its backlog.
    *
    * Drop reporting is wired *after* the choice rather than inside it, so all
    * three shapes get it on one line.  Wiring it at the construction site is

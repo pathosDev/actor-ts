@@ -1,6 +1,6 @@
 ---
 title: Test-Flakes diagnostizieren
-description: Einen flaky Test von einem kaputten unterscheiden — mit dem Repeat-Run-Harness — und ihn dann gegen den Katalog der Ursachen halten, die diese Suite tatsächlich hatte — feste Sleeps, Buns Timer-Quantum, ein Dispatcher-Hop, den kein Poll-Intervall gewinnt, und die drei Multi-Node-Suites, die CI nicht ausführt.
+description: "Einen flaky Test von einem kaputten unterscheiden — mit dem Repeat-Run-Harness — und ihn dann gegen den Katalog der Ursachen halten, die diese Suite tatsächlich hatte: feste Sleeps, Buns Timer-Quantum, ein Dispatcher-Hop, den kein Poll-Intervall gewinnt, und die drei Multi-Node-Suites, die CI nicht ausführt."
 ---
 
 Der [Testing-Überblick](/de/testing/overview/) sagt dir, wie du einen Test
@@ -103,7 +103,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 
 | Familie | Stand | Signatur |
 | --- | --- | --- |
-| Fester Sleep vor einer Assertion | Wird umgestellt | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
+| Fester Sleep vor einer Assertion | Wird umgestellt, mit Ratsche | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
 | Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
 | Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
@@ -136,20 +136,32 @@ behandelt, wann ein Sleep weiterhin richtig ist — eine Abwesenheit, der man
 nur ein Zeitfenster geben kann, eine Dauer, die *selbst* die Assertion ist,
 eine Verschränkung, die ein Test braucht.
 
-**Diese Umstellung ist nicht abgeschlossen.**  Unter `tests/` stehen weiterhin
-466 `await sleep(`-Stellen gegen 643 `awaitCondition(`-Stellen — und die
-Sleep-Zahl ist während der Umstellung *gestiegen*, weil neue Tests weiter in
-der alten Form geschrieben werden.  Ein zweiter Helper trübt das Bild
-zusätzlich: `waitFor` taucht 332-mal auf und wird in 32 einzelnen Dateien als
-lokales `function waitFor(` neu deklariert, jedes Mal mit eigenem Timeout und
-Poll-Intervall.  Behandle ein `sleep`-dann-`expect`-Paar in einem umgefallenen
-Test als Verdächtigen, bevor du nach etwas Raffinierterem suchst.
+**Diese Umstellung ist nicht abgeschlossen.**  479 Stellen unter `tests/`
+warten weiterhin mit `await sleep(N)`, und 132 weitere gehen dieselbe Wette
+ohne das Wort `sleep` ein — ein direktes `Bun.sleep(20)` oder ein
+`new Promise((r) => setTimeout(r, 20))`.  Insgesamt 611 Wartezeiten mit fester
+Dauer, und **486 davon nennen keinen Grund für die Verzögerung**.  Dazu kommen
+zwei Doppelungen: 93 Module deklarieren ihr eigenes `sleep`, statt das
+gemeinsame zu importieren (8 importieren es), und 35 bauen sich ein eigenes
+`waitFor` / `waitUntil` / `awaitConvergence` mit eigenem Timeout, eigenem
+Poll-Schritt und ohne Label.  Behandle ein `sleep`-dann-`expect`-Paar in einem
+umgefallenen Test als Verdächtigen, bevor du nach etwas Raffinierterem suchst.
 
-Diese vier Zahlen sind `grep -ro '<pattern>' tests/ --include=*.ts | wc -l`
-(die letzte `grep -rl`), also nachmessbar statt zu glauben; zuletzt erhoben am
-16.08.2026.  Sie stehen aus demselben Grund exakt da: eine gerundete Zahl
-driftet unbemerkt, eine exakte ist sichtbar veraltet, sobald sie nicht mehr
-stimmt.
+Die Zahl ist während der Planung der Umstellung eine Woche lang *gestiegen* —
+448 am 11.08.2026 gegen 479 am 18.08.2026 —, weil unbeteiligte neue Tests
+weiter in der alten Form ankamen, zwei davon an einem einzigen Tag mit einem
+frischen dateilokalen Shim.  Diese Zahlen sind deshalb nicht mehr nur
+Dokumentation: `tests/unit/ci/SleepRatchet.test.ts` misst sie bei jedem
+`bun test` nach und schlägt fehl, sobald eine steigt — pro Modul.  Die Schuld
+kann also schrumpfen und nicht wieder wachsen.  Verboten wird dabei nicht das
+Warten — eine Abwesenheit lässt sich nicht pollen, und auf 57 der Wartezeiten
+folgt eine Assertion, dass etwas *nicht* passiert ist —, sondern eine
+*unbegründete* Wartezeit, ein neu deklariertes
+`sleep` und eine neu erfundene Poll-Schleife; für alle drei nennt die
+Fehlermeldung eine einzeilige Abhilfe.  Erhoben am 18.08.2026 auf `95db877c`;
+ein `grep -ro '<pattern>' tests/ --include=*.ts | wc -l` misst grob nach, zählt
+aber auch Kommentare und zitierte Beispiele mit, die der Scanner der Prüfung
+vorher ausblendet.
 
 ### Ein Budget, das der Test-Timeout nie erreicht
 

@@ -36,8 +36,13 @@ Two main scenarios:
 1. **CPU-bound parallelism in one process** — actor-ts is
    single-threaded per system; multi-threading needs multiple
    systems.  Worker mesh distributes them.
-2. **Isolation within one process** — a "worker" failing
-   doesn't take down the main system.
+2. **Isolation within one process** — a worker failing doesn't
+   take down the main system.  That covers an uncaught throw, an
+   unhandled rejection, and a bootstrap that fails to load: the
+   framework subscribes the worker's `error` event, so the
+   failure reaches `restartPolicy` instead of the host's own
+   crash path.  See [Failure containment](#failure-containment)
+   for what is and isn't guaranteed per runtime.
 
 For **multi-process** parallelism (separate OS processes), use
 regular cluster + TCP transport.  Worker mesh is specifically
@@ -109,12 +114,25 @@ void main();
 | `withInitData(data)` | Payload delivered to every worker's `join()` context (`initData`).  Default `null`. |
 | `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
 | `withReadyTimeoutMs(ms)` | Per-worker handshake timeout.  Default `10000`. |
+| `withRestartMinBackoffMs(ms)` | Delay before the first respawn of a crashed slot.  Default `200`. |
+| `withRestartMaxBackoffMs(ms)` | Ceiling for the respawn delay, which doubles per attempt.  Default `10000`. |
+| `withRestartRandomFactor(f)` | ± jitter fraction on each respawn delay, in `[0, 1]`.  Default `0.2`. |
+| `withMaxRestarts(n)` | Restarts granted per slot within the window before it is retired; `-1` for unlimited.  Default `10`. |
+| `withRestartWindowMs(ms)` | Sliding window the restart budget counts over; `0` never resets it.  Default `60000`. |
+| `withOnWorkerPermanentlyDown(fn)` | Called once per slot whose restart budget is spent.  Default: a `console.error` line. |
 | `withBackend(backend)` | Spawn through this `WorkerBackend` instead of the detected one — a runtime auto-detection does not know, or an in-memory fake in a test.  Default: detected. |
 
 The returned `WorkerCluster` exposes `size`, `addresses`
 (the `NodeAddress` of each worker), the shared `broker`, and
 `terminate()`.  Misconfigured options (a bad `basePort`, a
 non-positive `workers`) throw `OptionsError` at `spawn`.
+
+`spawn()` leaves no live workers behind when it fails: a worker whose
+handshake times out is terminated before the rejection propagates, and
+so is every sibling that did come up — the instance that owns them is
+never returned, so nothing else could reach them.  `terminate()` waits
+for the threads to actually go rather than firing and forgetting, within
+the bound described below.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -260,6 +278,48 @@ system.spawn(GpuJobActor, 'gpu-jobs');
 
 A worker crashing doesn't take down the main system — separate
 event loops.
+
+## Failure containment
+
+What "a worker failing doesn't take down the main system" actually
+covers, and what it costs:
+
+- **An uncaught throw, an unhandled rejection, or a bootstrap that
+  won't load** is contained.  The framework subscribes the worker's
+  `error` event on every runtime; without that subscription Node
+  re-raises the worker's error on the host and Deno rejects an internal
+  promise, and both exit `1` before `restartPolicy` is ever consulted.
+- **One failure produces one respawn.** Node and Bun emit `error` *and
+  then* the exit event for a single throw, and Deno emits only `error` —
+  whichever arrives first drives the restart and the other is dropped.
+- **Respawns back off and are budgeted.** Each slot waits
+  `restartMinBackoffMs`, doubling to `restartMaxBackoffMs` with
+  `restartRandomFactor` jitter, and gets `maxRestarts` attempts inside
+  `restartWindowMs`.  A slot that spends its budget is retired: no
+  further worker is started for it, and `onWorkerPermanentlyDown` is
+  called once with the slot's index, address and restart count.  A
+  replacement that never becomes ready counts against the same budget,
+  so a permanently broken bootstrap stops instead of looping.
+- **A failed respawn degrades the mesh by one worker** rather than
+  killing the host.  `size` drops, the slot's address is unregistered
+  from the broker, and the failure is reported.
+
+Two runtime asymmetries are worth knowing:
+
+<Aside type="caution" title="Deno confirms neither exit nor shutdown">
+  Deno's parent-side `Worker` emits no `close` event at all, so restarts
+  there are driven entirely by `error` — a worker that exits *without*
+  throwing goes unnoticed.  Deno also emits nothing after
+  `terminate()`, so `terminate()` falls back to a short internal bound
+  instead of a confirmation.  The thread is killed either way; the
+  framework simply cannot observe it.
+</Aside>
+
+Malformed traffic is dropped, not fatal: the broker validates a frame's
+`to` and `from` addresses before routing it, so one bad
+`postMessage` from a worker no longer throws inside the host's message
+listener.  The frame's `payload` is validated by the receiving
+transport, not by the broker.
 
 ## When NOT to use it
 

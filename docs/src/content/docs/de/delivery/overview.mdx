@@ -46,10 +46,11 @@ Die zuverlässige Zustellung des Frameworks ist standardmäßig
 wenn der Producer zwischen Senden und Empfang des ACK abstürzt.
 
 Für **effectively-once** dedupliziert der Controller eingehende
-Duplikate bereits pro `(producerId, seq)` — aber nur innerhalb
-seiner In-Memory-Lebensdauer.  Wenn Du Dedup brauchst, das
-Consumer-Restarts überlebt, persistiere Deine eigene
-processed-Seq zusammen mit dem Business-State im Handler:
+Duplikate bereits pro `(producerId, Producer-Inkarnation, seq)` — aber nur
+innerhalb seiner In-Memory-Lebensdauer und nur innerhalb einer Inkarnation des
+Producers.  Wenn Du Dedup brauchst, das den Neustart einer der beiden Seiten
+überlebt, persistiere Deine eigene processed-Seq zusammen mit dem
+Business-State im Handler:
 
 ```ts
 new ConsumerController<DeliveryMessage>({

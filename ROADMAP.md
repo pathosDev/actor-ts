@@ -51,7 +51,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
   `KeepMajority` leaves both sides running on an exact tie (#1170), a
   singleton that exhausts its restart budget is never re-spawned (#1175),
   and `ShardCoordinator` ignores the configured shard count (#1026).
-- ~6 250 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~6 250 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update

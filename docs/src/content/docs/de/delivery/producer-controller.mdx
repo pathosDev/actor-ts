@@ -46,7 +46,7 @@ type ProducerControllerOptionsType<T> = {
 | `consumer` | Die `ConsumerController`-Ref, an die zugestellt wird. |
 | `resendTimeout` | Wie lange auf ein ACK gewartet wird, bevor retransmittiert wird. |
 | `windowSize` | Flow-Control-Window — pausiert das Queuing nach N unbestätigten In-Flight-Nachrichten. |
-| `producerId` | Stabiler Identifier, mit dem der Consumer über Restarts hinweg dedupliziert. Wird auto-generiert, wenn weggelassen; bei persistierten Producern willst Du einen stabilen String, damit Recovery matcht. |
+| `producerId` | Stabiler Identifier, an dem der Consumer seinen Dedup-State festmacht. Wird auto-generiert, wenn weggelassen; setze ihn fest, wenn Du über Restarts hinweg eine Identität in Logs, Metriken und der Map des Consumers willst. Er trägt **kein** Dedup-*Fenster* über einen Restart — siehe *Restart und die Producer-Inkarnation*. |
 
 ## Backpressure
 
@@ -98,15 +98,42 @@ bei t=1000 → Seq 5 retransmitten
 ... bis das ACK kommt oder der Producer stoppt
 ```
 
-Retransmits nutzen **dieselbe Seq** wie das Original.  Der
-Consumer dedupliziert anhand der Seq.
+Retransmits nutzen **dieselbe Seq** wie das Original — und dieselbe
+Producer-Inkarnation, damit der Consumer sie als dieselbe Nachricht erkennt.
 
-## State + Restart
+## Restart und die Producer-Inkarnation
+
+Jede Konstruktion eines `ProducerController` erzeugt ein frisches, nicht
+erratbares **Inkarnations**-Token und stempelt es auf jedes `Delivery`.  Es ist
+nicht konfigurierbar; es existiert, weil `producerId` allein zwei Fragen nicht
+beantworten kann.
+
+**Ist das ein Retransmit oder ein neu gestarteter Producer?**  Der
+Sequenz-Zähler liegt im Speicher, also nummeriert ein neu gestarteter Producer
+wieder ab 1, während `producerId` unverändert bleibt.  Ein Consumer, der nur an
+`producerId` festmacht, würde das ganze Präfix nach dem Restart als schon
+behandelte Sequenznummern sehen, es als Duplikate absorbieren und — weil ein
+absorbiertes Delivery trotzdem bestätigt wird — jede einzelne Nachricht als
+erfolgreich zugestellt zurückmelden.  Der Consumer macht stattdessen an
+`(producerId, incarnation)` fest, also eröffnet eine neue Inkarnation ein
+frisches Dedup-Fenster und ihre Nachrichten erreichen den Handler.
+
+**Kam dieses Acknowledgment von einem echten Delivery?**  `producerId` und
+`seq` sind beide erratbar, ein dreifeldriges Ack ließe sich also von allem
+fabrizieren, das den Producer adressieren kann — es würde den Retransmit
+abbrechen und Dein `confirm` mit Erfolg auslösen.  Das Inkarnations-Token
+verlässt den Producer nur auf Deliveries, die er tatsächlich gesendet hat; es
+zurückzuspiegeln ist damit der Nachweis, den der Producer verlangt.
+
+Ein Ack mit der falschen Inkarnation — gefälscht oder ein Nachläufer der
+vorherigen Inkarnation derselben `producerId` — wird ignoriert.
 
 ```ts
 // Ohne Persistenz:
 Producer crasht → Buffer weg → unbestätigte Nachrichten sind verloren
-// Beim Restart setzt das Senden bei Seq 1 wieder ein (kein Resume)
+// Beim Restart setzt das Senden bei Seq 1 wieder ein, unter einer neuen
+// Inkarnation — der Consumer behandelt diese Sends also als neu und
+// nicht als Duplikate
 
 // Mit ProducerController + PersistentActor-Wrapper:
 Producer crasht → Recovery baut Buffer + last-acked-Seq wieder auf

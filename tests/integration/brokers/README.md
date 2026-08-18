@@ -25,8 +25,11 @@ a 5-node mesh.
 ```
 tests/integration/brokers/
 ├── lib/
-│   ├── WaitForPort.ts          # TCP/HTTP readiness probe
-│   └── Scenario.ts               # tiny scenario runner + waitFor
+│   ├── WaitForPort.ts            # TCP/HTTP readiness probe
+│   ├── Scenario.ts               # tiny scenario runner + waitFor
+│   ├── PersistenceContract.ts    # shared journal/snapshot/durable-state contract
+│   ├── PgWireRunner.ts           # runs the Postgres stores against a pg-wire server
+│   └── persistence-contract/     # the contract's per-store scenario modules
 ├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
 ├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
@@ -36,7 +39,16 @@ tests/integration/brokers/
 ├── nats/                         # B.6 — NATS (Closes #24)
 ├── redis-streams/                # B.7 — Redis (refs #296)
 ├── grpc/                         # B.8 — gRPC (Closes #296)
-└── k8s/                          # B.9 — kind (Closes #298)
+├── k8s/                          # B.9 — kind (Closes #298)
+├── postgres/                     # PostgreSQL (Closes #323)
+├── mariadb/                      # MariaDB (Closes #324)
+├── libsql/                       # libSQL / sqld (refs #400)
+├── mssql/                        # SQL Server 2022 (Closes #399)
+├── cockroachdb/                  # CockroachDB — pg wire (Closes #401)
+├── yugabytedb/                   # YugabyteDB — pg wire (Closes #401)
+├── mongodb/                      # MongoDB (Closes #397)
+├── dynamodb/                     # DynamoDB Local (Closes #398)
+└── email/                        # GreenMail — SMTP + IMAP (refs #1133)
 ```
 
 ## Why a separate `tests/integration/brokers/package.json`?
@@ -73,16 +85,47 @@ Failure mode is loud: the test runner's first `import` of the
 missing package throws "Cannot find module" before any scenario
 even starts.
 
-Every suite directory follows the same shape:
+Every suite directory has the same three files:
 
 ```
-<broker>/
-├── docker-compose.<broker>.yml   # broker service + runner service
-├── Runner.ts                     # imports scenarios/*, calls runScenarios()
+<name>/
+├── docker-compose.<name>.yml     # service under test + runner service
+├── Dockerfile.runner             # runner image, installs from the manifest above
+└── Runner.ts                     # entry point, exits 0 / 1
+```
+
+Three suites also carry a config file their image needs —
+`mqtt/mosquitto.conf`, `amqp/rabbitmq.conf`, `grpc/echo.proto`.
+
+What `Runner.ts` then executes comes in two shapes.
+
+**Own scenarios.**  The nine broker suites — s3, mqtt, kafka, amqp,
+nats, redis-streams, grpc, k8s, email — add a `scenarios/` directory,
+and the runner imports it and calls `runScenarios()` from
+`lib/Scenario.ts`:
+
+```
+<name>/
 └── scenarios/
     ├── 01-…ts
     └── 02-…ts
 ```
+
+**Shared persistence contract.**  The eight persistence suites —
+postgres, mariadb, libsql, mssql, cockroachdb, yugabytedb, mongodb,
+dynamodb — have **no** `scenarios/` directory.  They supply three
+factories (`makeJournal`, `makeSnapshotStore`, `makeDurableStateStore`)
+and run `sqlPersistenceScenarios()` from `lib/PersistenceContract.ts`,
+whose cases live in `lib/persistence-contract/` and are shared with the
+fast `bun test` pass (#390).  So a backend earns its live coverage by
+writing a harness rather than another copy of the tests, and a case
+added for one backend is immediately checked against all of them.
+
+The two Postgres-wire certifications are thinner still: `cockroachdb`
+and `yugabytedb` hand a description and a port to `runPgWireSuite()`
+from `lib/PgWireRunner.ts`, which drives the *unmodified* Postgres
+stores against the other server — that is the whole point of those two
+(#401).
 
 ## Run locally
 
@@ -90,14 +133,23 @@ You need Docker (Desktop on macOS/Windows, Engine on Linux).
 Nothing else.  Per-suite:
 
 ```bash
-bun run test:integration:s3        # MinIO + S3ObjectStorageBackend
-bun run test:integration:mqtt      # Mosquitto + MqttActor
-bun run test:integration:kafka     # Redpanda + KafkaActor
-bun run test:integration:amqp      # RabbitMQ + AmqpActor
-bun run test:integration:nats      # NATS + NatsActor
-bun run test:integration:redis     # Redis + RedisStreamsActor
-bun run test:integration:grpc      # gRPC echo + GrpcActor
-bun run test:integration:k8s       # kind + KubernetesApiSeedProvider
+bun run test:integration:s3           # MinIO + S3ObjectStorageBackend
+bun run test:integration:mqtt         # Mosquitto + MqttActor
+bun run test:integration:kafka        # Redpanda + KafkaActor
+bun run test:integration:amqp         # RabbitMQ + AmqpActor
+bun run test:integration:nats         # NATS + NatsActor
+bun run test:integration:redis        # Redis + RedisStreamsActor
+bun run test:integration:grpc         # gRPC echo + GrpcActor
+bun run test:integration:k8s          # kind + KubernetesApiSeedProvider
+bun run test:integration:postgres     # PostgreSQL + Postgres{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:mariadb      # MariaDB + MariaDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:libsql       # libSQL (sqld) + LibSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:mssql        # SQL Server 2022 + MsSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:cockroachdb  # CockroachDB + the Postgres stores over pg wire
+bun run test:integration:yugabytedb   # YugabyteDB + the Postgres stores over pg wire
+bun run test:integration:mongodb      # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:dynamodb     # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:email        # GreenMail (SMTP + IMAP) + EmailBridgeActor
 ```
 
 All of them:

@@ -235,7 +235,11 @@ wenn es überhaupt keinen Zustandsübergang gibt, auf den man warten könnte:
   Operation bringt ihr eigenes Timeout mit, das einen langsamen Start abfängt.
 
 Schreib in einem Kommentar dazu, welcher der Fälle es ist. Ein Sleep mit
-Begründung ist Dokumentation; ein Sleep ohne ist eine Wette.
+Begründung ist Dokumentation; ein Sleep ohne ist eine Wette. Das wird geprüft
+und nicht nur erbeten: `tests/unit/ci/SleepRatchet.test.ts` zählt pro Modul die
+Wartezeiten mit fester Dauer, die keinen Grund nennen, und schlägt fehl, sobald
+die Zahl steigt — ein neuer Sleep kommt also durch, indem er sagt warum, und
+die bestehenden können nur weniger werden.
 
 Das alles ist Vorbeugung. Wenn ein Test *bereits* zeitweise umfällt, hat
 [Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/) das

@@ -423,9 +423,12 @@ const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOpti
 
 Two limits worth knowing:
 
-- **It is in-process.**  A restart of the process forgets the floor.  A
-  durable floor needs trusted state outside the bucket, which the
-  framework has no seam for yet.
+- **It is per store instance, not per process.**  A restart forgets the
+  floor — and so does anything else that builds a new store, because every
+  node constructs its own.  A shard rebalance therefore hands the next
+  writer a cold floor with no restart anywhere.  A durable floor needs
+  trusted state outside the bucket, which the framework has no seam for
+  yet.
 - **It fires on a legitimate delete-and-recreate from another writer.**
   A recreated record restarts at revision 1.  Deleting through *this*
   store drops the floor with it, so this only applies across processes —

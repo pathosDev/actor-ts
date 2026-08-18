@@ -118,6 +118,22 @@ describe('WorkerBroker — routing', () => {
     expect(broker.registered()).toEqual([]);
   });
 
+  test('register after close() is refused and does not repopulate the registry', () => {
+    const broker = new WorkerBroker();
+    broker.register(addr(1), new FakePort());
+    broker.close();
+
+    // A respawn that lost the race with shutdown.  Without the guard the port
+    // is retained for the process lifetime while `onMessage` drops all of its
+    // traffic — inert, and holding its worker alive (#735).
+    const late = new FakePort();
+    broker.register(addr(2), late);
+    expect(broker.registered()).toEqual([]);
+    expect(late.onmessage).toBeNull();
+    expect(late.started).toBe(false);
+    expect(late.closed).toBe(true);
+  });
+
   test('messages route correctly across more than two workers', () => {
     const broker = new WorkerBroker();
     const p1 = new FakePort();
@@ -135,5 +151,67 @@ describe('WorkerBroker — routing', () => {
     expect(p1.posted.length).toBe(1);
     expect((p1.posted[0] as BrokeredMessage).from.port).toBe(2);
     expect(p2.posted).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* #701 — a malformed frame must not reach `NodeAddress.fromJSON`            */
+/* ------------------------------------------------------------------------ */
+
+describe('WorkerBroker — malformed frames', () => {
+  /**
+   * Every case below used to throw out of `onMessage`, i.e. out of the host's
+   * worker `message` listener, where nothing catches it: Node re-raises it as an
+   * `uncaughtException` and Bun exits 1.  One frame from one worker took the
+   * whole process down.
+   *
+   * Two of them throw a `TypeError` from the `env.to` dereference itself; the
+   * rest throw a plain `Error` from the hardened `fromJSON` (#571), so a test
+   * written against `TypeError` alone would miss half of them.
+   */
+  const hostileFrames: ReadonlyArray<readonly [string, unknown]> = [
+    ['undefined', undefined],
+    ['null', null],
+    ['a bare string', 'not-an-envelope'],
+    ['no `to` at all', { from: addr(1).toJSON(), payload: { kind: 'ping' } }],
+    ['`to` null', { from: addr(1).toJSON(), to: null, payload: { kind: 'ping' } }],
+    // The regression #571 introduced: before `fromJSON` validated, this
+    // constructed an address and was routed or dropped as unknown — never fatal.
+    ['`to.port` a string', {
+      from: addr(1).toJSON(),
+      to: { systemName: 'sys', host: 'host', port: '2' },
+      payload: { kind: 'ping' },
+    }],
+    // `from` is what the receiving MessageChannelTransport dereferences the
+    // instant the frame is re-posted, so it is checked here too.
+    ['`from` missing', { to: addr(2).toJSON(), payload: { kind: 'ping' } }],
+  ];
+
+  for (const [label, frame] of hostileFrames) {
+    test(`drops a frame with ${label} instead of throwing`, () => {
+      const broker = new WorkerBroker();
+      const aPort = new FakePort();
+      const bPort = new FakePort();
+      broker.register(addr(1), aPort);
+      broker.register(addr(2), bPort);
+
+      expect(() => aPort.inject(frame)).not.toThrow();
+      expect(bPort.posted).toEqual([]);
+      expect(aPort.posted).toEqual([]);
+    });
+  }
+
+  test('a hostile frame does not stop the next well-formed one from routing', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    aPort.inject({ from: addr(1).toJSON(), to: null });
+    const good = envelope(addr(1), addr(2));
+    aPort.inject(good);
+
+    expect(bPort.posted).toEqual([good]);
   });
 });

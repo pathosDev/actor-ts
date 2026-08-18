@@ -638,6 +638,69 @@ Verworfene Frames werden gedroppt und auf `WARN` geloggt. Der
 lokale Zweig des Koordinators baut denselben Wrapper, ein
 Ein-Node-Cluster rebalanciert also genau wie zuvor.
 
+### Eine Region kann nur für ihren eigenen Node sprechen
+
+Dieselbe Lücke lief auch in die andere Richtung, und dort war
+sie teurer. Jede Nachricht, die ein `ShardCoordinator`
+annimmt, ist eine Aussage über den **eigenen** Node des
+Absenders: welche Shards seine Region hostet, dass seine Region
+weg ist, dass ein Hand-off fertig ist, wohin ein Shard-Home oder
+eine Statistik-Antwort geht. Der Koordinator las das alles aus
+der Payload. Sein einziges Gate war `isLeader()` — plus, mit
+Lease, das gehaltene Lease — und das beantwortet *„bin ich der
+autoritative Koordinator?"*, nie *„darf dieser Absender für jene
+Region sprechen?"*.
+
+Ein einziges wohlgeformtes `sharding.Register` mit der Adresse
+eines anderen riss damit jeden Shard eines Typs an sich, und ein
+`sharding.RegionTerminated` warf dessen Region hinaus. Die
+Räumung ist die schlimmere Hälfte: Sie verschickt kein
+`HandOff`, das Opfer behält seine Shard-Actors und seine
+Entities also im Betrieb. Ergebnis sind zwei Besitzer für einen
+lebenden Shard — dieselbe Entity-Id zweimal instanziiert und,
+bei einer persistenten Entity, zwei Schreiber auf einer
+`persistenceId`.
+
+Die Herkunftsprüfung der Region oben mildert das nicht, denn der
+Angreifer schickt gar kein `ShardHome`. Er vergiftet die
+Allokationskarte des Koordinators mit einem gefälschten Frame,
+und der *echte* Koordinator verschickt die Umleitung dann selbst
+— vom Node des Leaders, in einem Wrapper, den jede Region
+zu Recht annimmt. Eine Fälschung, jeder weitere Hop echt.
+
+Der Koordinator beansprucht jetzt seinen eigenen well-known Pfad
+im Envelope-Router und wendet dieselben zwei Bedingungen an: Der
+Frame kam im Wrapper an, und die Adresse in seiner Payload ist
+die des Peers. Beide Richtungen der Register-Schleife sind damit
+attribuiert — was auch korrigiert hat, wie eine Region den
+Koordinator adressiert: über den Systemnamen des **Leaders**,
+nicht über den eigenen, denn ein Actor-Pfad trägt das System, zu
+dem er gehört.
+
+`hostedShards` ist obendrein begrenzt und gedeckelt. Es war die
+einzige Eingabe des Koordinators, deren *Größe* der Aufrufer
+bestimmte — ein `Register` schrieb einen Allokationseintrag pro
+Array-Element, ohne Bereichsprüfung und ohne Längenlimit, in
+Zustand, der an jede Region gesendet und in den
+Coordinator-State-Store persistiert wird; das Wachstum überlebte
+also Neustarts. Einträge außerhalb `0 .. numShards - 1` werden
+jetzt verworfen, und die akzeptierte Menge kann `numShards` nicht
+überschreiten.
+
+<Aside type="caution" title="Was das ist — und was nicht">
+  Unter mTLS ist der Peer zertifikatsgestützt — der
+  `hello`-Handshake weist eine behauptete Adresse ab, für die
+  das Peer-Zertifikat nicht bürgt —, der Vergleich mit der
+  Payload **ist** dort also Authentifizierung. In einem
+  Klartext-Cluster ist er Defence in Depth: Er verhindert, dass
+  ein Mitglied für ein *anderes* Mitglied spricht, nicht, dass
+  es für sich selbst spricht. Vier Koordinator-Eingangsarten
+  (`EntityStarted`, `EntityStopped`, `GetRememberedEntities`,
+  `BeginHandOffAcknowledgment`) tragen überhaupt keine Adresse,
+  von ihnen lässt sich also nur Attribution verlangen — die
+  darf weiterhin jedes authentifizierte Mitglied senden.
+</Aside>
+
 ### Eine Version kann keine Adresse im Voraus beanspruchen
 
 Die Version ist eine logische Uhr, gesät aus `Date.now()` — und

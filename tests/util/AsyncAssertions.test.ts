@@ -49,6 +49,8 @@ describe('assertDoesNotCompleteWithin', () => {
   });
 
   test('rejects when promise settles early', async () => {
+    // The 10 ms is the experiment: settling well inside the 100 ms budget is
+    // what `assertDoesNotCompleteWithin` has to reject.
     const fast = new Promise<number>((resolve) => setTimeout(() => resolve(42), 10));
     await expect(assertDoesNotCompleteWithin(fast, 100, 'should-not-settle'))
       .rejects.toThrow(/settled within \d+ms/);

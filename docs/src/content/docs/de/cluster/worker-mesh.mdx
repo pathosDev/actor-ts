@@ -36,8 +36,14 @@ Zwei Hauptszenarien:
 1. **CPU-gebundene Parallelität in einem Prozess** — actor-ts ist
    pro System Single-Threaded; Multi-Threading braucht mehrere
    Systeme. Worker-Mesh verteilt sie.
-2. **Isolation innerhalb eines Prozesses** — ein "Worker", der
-   ausfällt, reißt das Hauptsystem nicht mit.
+2. **Isolation innerhalb eines Prozesses** — ein Worker, der
+   ausfällt, reißt das Hauptsystem nicht mit.  Das gilt für einen
+   nicht gefangenen Throw, eine unbehandelte Rejection und ein
+   Bootstrap, das sich nicht laden lässt: Das Framework abonniert
+   das `error`-Event des Workers, sodass der Fehler bei
+   `restartPolicy` landet und nicht auf dem Crash-Pfad des Hosts.
+   Siehe [Fehler-Containment](#fehler-containment) dazu, was pro
+   Runtime garantiert ist und was nicht.
 
 Für **Multi-Process**-Parallelität (separate OS-Prozesse) nutze
 den regulären Cluster + TCP-Transport. Worker-Mesh ist speziell
@@ -111,12 +117,26 @@ void main();
 | `withInitData(data)` | Payload, die jedem Worker im `join()`-Context zugestellt wird (`initData`).  Default `null`. |
 | `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
 | `withReadyTimeoutMs(ms)` | Handshake-Timeout pro Worker.  Default `10000`. |
+| `withRestartMinBackoffMs(ms)` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots.  Default `200`. |
+| `withRestartMaxBackoffMs(ms)` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird.  Default `10000`. |
+| `withRestartRandomFactor(f)` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`.  Default `0.2`. |
+| `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt.  Default `10`. |
+| `withRestartWindowMs(ms)` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück.  Default `60000`. |
+| `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `console.error`-Zeile. |
 | `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
 
 Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
 `NodeAddress` jedes Workers), den gemeinsamen `broker` und
 `terminate()`.  Fehlkonfigurierte Optionen (ein falscher `basePort`,
 ein nicht-positives `workers`) werfen `OptionsError` bei `spawn`.
+
+`spawn()` lässt bei einem Fehlschlag keine lebenden Worker zurück: Ein
+Worker, dessen Handshake abläuft, wird beendet, bevor die Rejection
+weitergegeben wird — und ebenso jedes Geschwister, das erfolgreich
+hochgekommen ist, denn die Instanz, die sie besitzt, wird nie
+zurückgegeben, sodass sie sonst niemand mehr erreichen könnte.
+`terminate()` wartet darauf, dass die Threads tatsächlich verschwinden,
+statt nur abzufeuern — innerhalb der unten beschriebenen Schranke.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -264,6 +284,52 @@ system.spawn(GpuJobActor, 'gpu-jobs');
 
 Ein abstürzender Worker reißt das Hauptsystem nicht mit —
 separate Event-Loops.
+
+## Fehler-Containment
+
+Was "ein ausfallender Worker reißt das Hauptsystem nicht mit"
+tatsächlich abdeckt — und was es kostet:
+
+- **Ein nicht gefangener Throw, eine unbehandelte Rejection oder ein
+  Bootstrap, das sich nicht laden lässt**, wird abgefangen.  Das
+  Framework abonniert das `error`-Event des Workers auf jeder Runtime;
+  ohne dieses Abonnement wirft Node den Worker-Fehler erneut im Host
+  und Deno rejected eine interne Promise — beide beenden sich mit `1`,
+  bevor `restartPolicy` überhaupt gefragt wird.
+- **Ein Fehler erzeugt genau einen Respawn.** Node und Bun senden für
+  einen einzigen Throw `error` *und danach* das Exit-Event, Deno nur
+  `error` — was zuerst eintrifft, treibt den Restart, das andere wird
+  verworfen.
+- **Respawns warten und haben ein Budget.** Jeder Slot wartet
+  `restartMinBackoffMs`, verdoppelt bis `restartMaxBackoffMs` mit
+  `restartRandomFactor`-Jitter, und bekommt `maxRestarts` Versuche
+  innerhalb von `restartWindowMs`.  Ein Slot, dessen Budget erschöpft
+  ist, wird stillgelegt: Für ihn startet kein weiterer Worker, und
+  `onWorkerPermanentlyDown` wird einmal mit Index, Adresse und
+  Restart-Zahl des Slots aufgerufen.  Ein Ersatz, der nie ready wird,
+  zählt gegen dasselbe Budget — ein dauerhaft defektes Bootstrap hört
+  also auf, statt zu schleifen.
+- **Ein fehlgeschlagener Respawn verkleinert das Mesh um einen
+  Worker**, statt den Host zu töten.  `size` sinkt, die Adresse des
+  Slots wird beim Broker abgemeldet, und der Fehler wird gemeldet.
+
+Zwei Runtime-Asymmetrien sind erwähnenswert:
+
+<Aside type="caution" title="Deno bestätigt weder Exit noch Shutdown">
+  Denos elternseitiger `Worker` sendet überhaupt kein `close`-Event —
+  Restarts werden dort ausschließlich von `error` getrieben, und ein
+  Worker, der sich *ohne* Throw beendet, bleibt unbemerkt.  Deno sendet
+  nach `terminate()` ebenfalls nichts, sodass `terminate()` auf eine
+  kurze interne Schranke zurückfällt statt auf eine Bestätigung.  Der
+  Thread wird in beiden Fällen beendet; das Framework kann es nur nicht
+  beobachten.
+</Aside>
+
+Fehlerhafter Traffic wird verworfen, nicht fatal: Der Broker validiert
+die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
+ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
+nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
+validiert der empfangende Transport, nicht der Broker.
 
 ## Wann NICHT verwenden
 

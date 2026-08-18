@@ -32,9 +32,15 @@ not hold up:
   so a node could still exhaust its heap.
 - **A mailbox cannot tell what it is discarding.**  `drop-head` suits
   telemetry, where the freshest reading is the only one that matters.
-  It does not suit a `Terminated` signal, a delivery confirmation, or a
-  WebSocket `close` — and those went through the same queue.  Each of
-  those turned into a filed defect.
+  It does not suit a delivery confirmation or a WebSocket `close` — and
+  those went through the same queue.  Each of those turned into a filed
+  defect.
+
+  One of them, the death-watch `Terminated`, is now out of every
+  policy's reach: it takes a lane no bound can shed (see
+  [Death watch](/fundamentals/death-watch/) and *A mailbox of your own*
+  below).  The rest is still application traffic, and only you know
+  which of it is safe to lose.
 
 So the loss is now something you ask for, per actor, and the growth is
 something you are told about: an actor whose queue reaches 10 000
@@ -134,6 +140,41 @@ keeps firing alongside the stock counter.  What you cannot do is combine
 `withMailbox` with `withMailboxCapacity` — that is a configuration error
 rather than a silent precedence rule.
 
+#### One obligation: `enqueueSignal`
+
+A queue that sheds has one thing it must not shed.  The framework
+announces a death exactly once — see
+[Death watch](/fundamentals/death-watch/) — so a `Terminated` arrives
+through `enqueueSignal` rather than `enqueue`, and the contract is
+*queue it whatever your bound says*:
+
+```ts
+class SheddingMailbox<T> extends Mailbox<T> {
+  // ...as above...
+
+  /** Past the bound, deliberately: this one cannot be re-sent. */
+  override enqueueSignal(envelope: Envelope<T>): void {
+    super.enqueue(envelope);
+  }
+}
+```
+
+The base implementation delegates to your `enqueue`, which is correct for
+a queue that discards nothing and wrong for one that does — so **override
+it whenever you override `enqueue` to shed**.  `BoundedMailbox` and
+`PriorityMailbox` already do.  Delegating rather than writing straight to
+the base queue is deliberate: a subclass may keep its messages somewhere
+else entirely, and an envelope hidden in a store your `dequeueUser` never
+reads is worse than one you dropped.
+
+The envelope also carries `undroppable: true`, which `removeOldest` reads
+— so a `drop-head`-shaped bound built on that seam steps over it for
+free, and does not have to know why.  If your `enqueue` throws instead,
+the framework turns the refusal into a
+[dead letter](/operations/dead-letters/) and the dying actor's teardown
+continues; what it cannot do is invent a second copy of the
+notification.
+
 ## System messages always come first
 
 Inside every mailbox, two queues live side-by-side: **user messages**
@@ -152,6 +193,12 @@ This matters because:
   messages get the absolute precedence above.
 - A failing actor's supervisor decision (Restart / Resume / Stop)
   takes effect immediately, not after the queue clears.
+- A death-watch `Terminated` is a *user* message too, for the same
+  reason `PoisonPill` is: it must arrive **after** everything already
+  told to the watcher, so a handler that reacts to a death sees the
+  work that preceded it.  Undroppable is not the same as
+  queue-jumping — it keeps its place in line and merely cannot be
+  discarded from it.
 
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
@@ -198,6 +245,13 @@ policy either way and the question does not arise.
 
 The options are validated at construction: a missing or non-positive
 `capacity` and an unknown overflow policy throw `OptionsError`.
+
+`capacity` bounds the messages the mailbox is allowed to *discard*, which
+in a mailbox holding nothing but undelivered death notifications means the
+queue sits above it rather than losing one.  The overshoot is bounded by
+how many actors this one watches, and it is the price of the exemption
+[Death watch](/fundamentals/death-watch/) describes: size a capacity for
+your traffic, not to the byte.
 
 Picking between them is a backpressure-vs-loss trade-off:
 

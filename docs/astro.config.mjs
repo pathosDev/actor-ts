@@ -680,6 +680,7 @@ export default defineConfig({
                 { label: 'WebSocket client', slug: 'io/websocket',         translations: { de: 'WebSocket-Client', es: 'Cliente WebSocket', fr: 'Client WebSocket', ja: 'WebSocket クライアント', ko: 'WebSocket 클라이언트', 'pt-BR': 'Cliente WebSocket', ru: 'WebSocket-клиент', 'zh-CN': 'WebSocket 客户端' } },
                 { label: 'TCP',              slug: 'io/tcp',               translations: { de: 'TCP', es: 'TCP', fr: 'TCP', ja: 'TCP', ko: 'TCP', 'pt-BR': 'TCP', ru: 'TCP', 'zh-CN': 'TCP' } },
                 { label: 'UDP',              slug: 'io/udp',               translations: { de: 'UDP', es: 'UDP', fr: 'UDP', ja: 'UDP', ko: 'UDP', 'pt-BR': 'UDP', ru: 'UDP', 'zh-CN': 'UDP' } },
+                { label: 'Email bridge',     slug: 'io/email-bridge',      translations: { de: 'E-Mail-Bridge', es: 'Puente de correo', fr: 'Passerelle e-mail', ja: 'メールブリッジ', ko: '이메일 브리지', 'pt-BR': 'Ponte de e-mail', ru: 'Почтовый мост', 'zh-CN': '邮件桥接' } },
               ],
             },
             {

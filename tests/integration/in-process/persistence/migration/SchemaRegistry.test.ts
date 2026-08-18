@@ -23,6 +23,8 @@ import {
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
+/** A second event type, so one registry can hold two manifests (#737). */
+type ClosedV1 = { kind: 'closed'; reason: string };
 
 const v1Schema: ParserLike<DepositedV1> = {
   parse(input: unknown) {
@@ -47,6 +49,14 @@ const v3Schema: ParserLike<DepositedV3> = {
     if (typedInput.kind !== 'deposited' || typeof typedInput.cents !== 'number') throw new Error('bad v3 — cents');
     if (typedInput.currency !== 'USD' && typedInput.currency !== 'EUR') throw new Error('bad v3 — currency');
     return { kind: 'deposited', cents: typedInput.cents, currency: typedInput.currency };
+  },
+};
+
+const closedSchema: ParserLike<ClosedV1> = {
+  parse(input: unknown) {
+    const typedInput = input as ClosedV1;
+    if (typedInput.kind !== 'closed' || typeof typedInput.reason !== 'string') throw new Error('bad closed');
+    return { kind: 'closed', reason: typedInput.reason };
   },
 };
 
@@ -210,5 +220,77 @@ describe('InMemorySchemaRegistry — snapshotAdapter', () => {
     expect(wire.version).toBe(1);
     const back = adapter.fromJournal(wire);
     expect(back).toEqual({ kind: 'deposited', amount: 50 });
+  });
+});
+
+/* --------------- read path is bound to its own manifest (#737) ------------- */
+
+describe('InMemorySchemaRegistry — read path is bound to its own manifest', () => {
+  /**
+   * Both manifests are registered in the one registry, and that is the whole
+   * point of the fixture rather than an incidental detail: an *unregistered*
+   * foreign manifest was already refused before this guard existed, by the
+   * `no schema registered` lookup further down `fromJournal`.  A test built on
+   * one would pass against the unfixed code and prove nothing.  Here the
+   * foreign frame is fully readable — registered manifest, registered version,
+   * payload valid under its own codec — so the only thing that can refuse it
+   * is the manifest compare.
+   */
+  function registryWithTwoEventTypes(): InMemorySchemaRegistry {
+    const registry = new InMemorySchemaRegistry();
+    registry.register('Account.Deposited', 1, { codec: zodCodec(v1Schema) });
+    registry.register('Account.Closed', 1, { codec: zodCodec(closedSchema) });
+    return registry;
+  }
+
+  const foreignFrame = {
+    manifest: 'Account.Closed', version: 1, payload: { kind: 'closed', reason: 'fraud' },
+  } as const;
+
+  test('eventAdapter refuses a frame carrying another registered manifest', () => {
+    const registry = registryWithTwoEventTypes();
+    const adapter = registry.eventAdapter<DepositedV1>('Account.Deposited');
+    // Without the guard this decodes cleanly through Account.Closed's codec and
+    // hands a Closed back to a caller statically typed Deposited — type
+    // confusion the caller cannot detect, not a codec error it could catch.
+    expect(() => adapter.fromJournal(foreignFrame)).toThrow(MigrationError);
+    expect(() => adapter.fromJournal(foreignFrame))
+      .toThrow(/manifest mismatch: schema-registry adapter is for 'Account\.Deposited', got 'Account\.Closed'/);
+  });
+
+  test('the refusal carries the offending manifest and version, like its siblings', () => {
+    const registry = registryWithTwoEventTypes();
+    const adapter = registry.eventAdapter<DepositedV1>('Account.Deposited');
+    let caught: MigrationError | undefined;
+    try { adapter.fromJournal(foreignFrame); } catch (err) { caught = err as MigrationError; }
+    expect(caught).toBeInstanceOf(MigrationError);
+    expect(caught?.manifest).toBe('Account.Closed');
+    expect(caught?.version).toBe(1);
+  });
+
+  test('snapshotAdapter inherits the guard through its delegation', () => {
+    const registry = registryWithTwoEventTypes();
+    // snapshotAdapter returns eventAdapter cast to the snapshot type, so this
+    // pins that the delegation carries the check — and that the message stays
+    // worded neutrally rather than naming eventAdapter.
+    const adapter = registry.snapshotAdapter<DepositedV1>('Account.Deposited');
+    expect(() => adapter.fromJournal(foreignFrame)).toThrow(/manifest mismatch: schema-registry adapter/);
+  });
+
+  test('the adapter still reads its own manifest — the guard refuses only foreigners', () => {
+    const registry = registryWithTwoEventTypes();
+    // The inverse of the three cases above.  A guard that refused every frame,
+    // or compared against the wrong side, would fail here: both adapters must
+    // keep round-tripping their own manifest out of a registry that also holds
+    // the other one.
+    const deposited = registry.eventAdapter<DepositedV1>('Account.Deposited');
+    expect(deposited.fromJournal({
+      manifest: 'Account.Deposited', version: 1, payload: { kind: 'deposited', amount: 7 },
+    })).toEqual({ kind: 'deposited', amount: 7 });
+    expect(deposited.fromJournal(deposited.toJournal({ kind: 'deposited', amount: 3 })))
+      .toEqual({ kind: 'deposited', amount: 3 });
+
+    const closed = registry.eventAdapter<ClosedV1>('Account.Closed');
+    expect(closed.fromJournal(foreignFrame)).toEqual({ kind: 'closed', reason: 'fraud' });
   });
 });

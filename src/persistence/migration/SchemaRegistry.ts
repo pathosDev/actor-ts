@@ -11,9 +11,11 @@ import { MigrationError } from './Envelope.js';
  *   - **Writes** at the latest registered version using that
  *     version's codec — so encode-time validation catches bad
  *     domain values before they hit the journal.
- *   - **Reads** by looking up the stored version, decoding with
- *     that version's codec, then chaining the registered upcasters
- *     forward to the latest version.
+ *   - **Reads** its own manifest only — a stored frame tagged with
+ *     any other manifest is refused with a `MigrationError` rather
+ *     than decoded into the wrong type — then looks up the stored
+ *     version, decodes with that version's codec and chains the
+ *     registered upcasters forward to the latest version.
  *
  * Confluent-style HTTP schema registries (subject-versioned with
  * remote compat checks) are out-of-scope for v1.  The interface
@@ -118,8 +120,12 @@ export interface SchemaRegistry {
 
   /**
    * Build an `EventAdapter` that writes at the latest registered
-   * version of `manifest` and reads any registered version by
-   * chaining upcasters forward.
+   * version of `manifest` and reads any registered version of *that
+   * same* manifest by chaining upcasters forward.  A stored frame
+   * carrying a different manifest raises a `MigrationError`: the
+   * adapter is bound to one manifest on both paths, so an actor whose
+   * event union spans manifests needs a hand-written `fromJournal`
+   * that switches on `stored.manifest` (#737).
    *
    * `JournalShape` follows `EventAdapter`'s own convention and defaults
    * to the domain type — pass it only when the latest codec encodes to
@@ -241,6 +247,25 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
         return { manifest, version: latest, payload: validated };
       },
       fromJournal: (stored: StoredFrame): E => {
+        // Bound to one manifest on the read path too, not just on the write
+        // path: everything below resolves from `stored.manifest`, so without
+        // this compare a row tagged with another manifest registered in the
+        // same registry decodes cleanly and returns as `E` — type confusion
+        // the caller cannot detect, since the payload is valid and the static
+        // type claims it got what it asked for.  Throwing (rather than
+        // dead-lettering) is what `MigrationChain.upcast` and `defaultsAdapter`
+        // already do, and is the only option on the recovery path anyway:
+        // `Replay` has no per-event error channel, so this surfaces through
+        // `onRecoveryFailure` like a `JournalIntegrityError` — the entity's
+        // state is not reconstructible from what is on disk.  The message
+        // avoids naming `eventAdapter` because `snapshotAdapter` delegates
+        // here (#737).
+        if (stored.manifest !== manifest) {
+          throw new MigrationError(
+            `manifest mismatch: schema-registry adapter is for '${manifest}', got '${stored.manifest}'`,
+            stored.manifest, stored.version,
+          );
+        }
         const startDesc = this.get(stored.manifest, stored.version);
         if (!startDesc) {
           throw new MigrationError(

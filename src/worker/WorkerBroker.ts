@@ -3,6 +3,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
+import { isNodeAddressData } from '../cluster/WireValidation.js';
 
 /**
  * Main-thread piece of the multi-core cluster.  Collects one `MessagePort`
@@ -24,9 +25,17 @@ export class WorkerBroker {
    */
   register(address: NodeAddress, port: PortLike): void {
     const key = address.toString();
+    // A closed broker must stay empty.  Without this a respawn that raced
+    // shutdown re-populated `ports` after `close()` with a port whose traffic
+    // `onMessage` then drops — inert, permanently retained, and keeping its
+    // worker reachable-but-dead for the process lifetime (#735).
+    if (this.stopped) {
+      try { port.close?.(); } catch { /* ignore */ }
+      return;
+    }
     if (this.ports.has(key)) throw new Error(`WorkerBroker: address ${key} already registered`);
     this.ports.set(key, port);
-    port.onmessage = (evt) => this.onMessage(key, evt.data as BrokeredMessage);
+    port.onmessage = (evt) => this.onMessage(key, evt.data);
     port.start?.();
   }
 
@@ -57,12 +66,46 @@ export class WorkerBroker {
 
   /* -------------------------------- Internal ------------------------------- */
 
-  private onMessage(_sourceKey: string, env: BrokeredMessage): void {
+  /**
+   * `frame` is `unknown` and not `BrokeredMessage` deliberately — it is
+   * whatever a worker put on its port, and the cast this signature used to
+   * carry was the whole defect.  `NodeAddress.fromJSON` validates and
+   * *throws* by design (#571), on the premise that a frame guard rejected
+   * malformed addresses before it ran; that premise never held here, so the
+   * hardening turned a class of malformed frame that used to be routed or
+   * silently dropped into a host-killing throw inside the worker's `message`
+   * listener (#701).
+   *
+   * Malformed frames are dropped, not rejected loudly: this is the same policy
+   * the unknown-destination case has always had, and the broker has no logger
+   * to report through.  The try/catch is a backstop for the same reason — a
+   * throw from anything downstream must not escape into an event callback the
+   * host cannot catch.
+   */
+  private onMessage(_sourceKey: string, frame: unknown): void {
     if (this.stopped) return;
-    const targetAddr = NodeAddress.fromJSON(env.to);
-    const target = this.ports.get(targetAddr.toString());
-    if (!target) return;                       // unknown address → drop
-    // Re-post verbatim; receiver's transport trusts the envelope's `from`.
-    target.postMessage(env);
+    if (!isBrokeredMessage(frame)) return;
+    try {
+      const targetAddr = NodeAddress.fromJSON(frame.to);
+      const target = this.ports.get(targetAddr.toString());
+      if (!target) return;                     // unknown address → drop
+      // Re-post verbatim; receiver's transport trusts the envelope's `from`.
+      target.postMessage(frame);
+    } catch { /* malformed or unroutable → drop */ }
   }
+}
+
+/**
+ * The floor a brokered envelope must clear before anything reads it.
+ *
+ * Only the two address fields are checked: `to` is what the broker itself
+ * dereferences, and `from` is what the receiving `MessageChannelTransport`
+ * dereferences the moment the frame is re-posted.  The `payload` is not
+ * validated here — that is #945's brief, over on the transport, and doing it in
+ * both places would mean two guards to keep in step.
+ */
+function isBrokeredMessage(value: unknown): value is BrokeredMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const { to, from } = value as Partial<BrokeredMessage>;
+  return isNodeAddressData(to) && isNodeAddressData(from);
 }

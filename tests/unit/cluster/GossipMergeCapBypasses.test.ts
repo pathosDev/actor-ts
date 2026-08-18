@@ -145,7 +145,7 @@ afterEach(async () => {
 
 describe('#114 — the version cap cannot be walked up in two steps', () => {
   test('two records for the same address in one frame do not lift the second past the cap', async () => {
-    const node = await startNode('two-records', 9_301);
+    const node = await startNode('two-records', 9_601);
     nodes.push(node);
     const claimed = squatTarget('two-records');
 
@@ -174,7 +174,7 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
   });
 
   test('and the address stays winnable by the node that really owns it', async () => {
-    const node = await startNode('two-records-owner', 9_302);
+    const node = await startNode('two-records-owner', 9_602);
     nodes.push(node);
     const claimed = squatTarget('two-records-owner');
 
@@ -200,7 +200,7 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
   });
 
   test('the sender fallback does not hand the next frame the wider cap', async () => {
-    const node = await startNode('fallback-door', 9_303);
+    const node = await startNode('fallback-door', 9_603);
     nodes.push(node);
     const claimed = squatTarget('fallback-door');
 
@@ -228,7 +228,7 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
   test('an ordinary record still merges onto an address already on file', async () => {
     // The regression side of the same rule: closing the walk-up must not
     // freeze a member whose clock is merely a little ahead.
-    const node = await startNode('ordinary-update', 9_304);
+    const node = await startNode('ordinary-update', 9_604);
     nodes.push(node);
     const peer = squatTarget('ordinary-update');
 
@@ -245,7 +245,7 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
   });
 
   test('refused records are counted once per frame, not logged once per record', async () => {
-    const node = await startNode('refusal-metric', 9_305);
+    const node = await startNode('refusal-metric', 9_605);
     nodes.push(node);
     node.system.extension(MetricsExtensionId).enable();
     const claimed = squatTarget('refusal-metric');
@@ -276,7 +276,7 @@ describe('#138 — the caps bound the map across bucket changes', () => {
     // map slot — so the next block was admitted too, and the one after that.
     const maxMembers = 5;
     const maxTombstones = 5;
-    const node = await startNode('reincarnation-pump', 9_306, { maxMembers, maxTombstones });
+    const node = await startNode('reincarnation-pump', 9_606, { maxMembers, maxTombstones });
     nodes.push(node);
     const peer = new NodeAddress('reincarnation-pump', '10.0.138.2', 9_290);
 
@@ -323,7 +323,7 @@ describe('#138 — the caps bound the map across bucket changes', () => {
     // for the next block while keeping the map entry.
     const maxMembers = 5;
     const maxTombstones = 5;
-    const node = await startNode('conversion-pump', 9_307, { maxMembers, maxTombstones });
+    const node = await startNode('conversion-pump', 9_607, { maxMembers, maxTombstones });
     nodes.push(node);
     const peer = new NodeAddress('conversion-pump', '10.0.138.2', 9_290);
 
@@ -356,7 +356,7 @@ describe('#138 — the caps bound the map across bucket changes', () => {
   });
 
   test('cap refusals are counted for operators', async () => {
-    const node = await startNode('cap-metric', 9_308, { maxMembers: 2 });
+    const node = await startNode('cap-metric', 9_608, { maxMembers: 2 });
     nodes.push(node);
     node.system.extension(MetricsExtensionId).enable();
     const peer = new NodeAddress('cap-metric', '10.0.138.2', 9_290);

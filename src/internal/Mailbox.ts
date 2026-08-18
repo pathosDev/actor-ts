@@ -61,6 +61,31 @@ export type Envelope<T = unknown> = {
    * is precisely what the metric is asking about.
    */
   readonly replayed?: boolean;
+  /**
+   * This envelope carries a lifecycle notification the framework generated
+   * and cannot send again, so no load-shedding policy may discard it (#729).
+   *
+   * Today that is exactly the `Terminated` a death-watch delivers.  It is
+   * *not* application traffic: the watch was installed through
+   * `context.watch`, the framework promised to answer it, and the answer
+   * happens once — there is no retry, no sender to back off, and the dying
+   * cell has already cleared its watcher set by the time the queue decides.
+   * A bounded mailbox that evicted it left the watcher believing a dead actor
+   * was alive, with nothing but an `actor_mailbox_dropped_total` increment to
+   * say so.
+   *
+   * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
+   * sets it, and read in two places: {@link Mailbox.removeOldest}, so an
+   * eviction steps over it, and the cell's throttle gate, so `onExcess:
+   * 'drop'` does not silently consume it either.
+   *
+   * It travels with the envelope rather than being remembered by the mailbox
+   * because the envelope outlives any one queue position: it survives a
+   * `stash` / `unstashAll` round trip and a `prependUser` replay, and both of
+   * those hand it back to a bound that would otherwise get a second chance to
+   * shed it.
+   */
+  readonly undroppable?: boolean;
 };
 
 /**
@@ -156,6 +181,33 @@ export class Mailbox<T = unknown> {
   }
 
   /**
+   * Queue a framework lifecycle notification — see {@link Envelope.undroppable}
+   * — at the tail of the user lane, **exempt from whatever bound this mailbox
+   * enforces**.
+   *
+   * Override this whenever you override {@link enqueue} to shed load.  The
+   * default here delegates, which is right for a queue that never discards
+   * anything and wrong for one that does: a subclass that drops on a full
+   * queue would drop this too, and the framework has no second copy to send.
+   * Delegating rather than pushing straight onto the base queue is deliberate
+   * — a subclass may keep its messages somewhere else entirely (`PriorityMailbox`
+   * keeps a priority-ordered array), and an envelope smuggled into a store that
+   * subclass never reads is worse than one it dropped: invisible to its
+   * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
+   * comes out of it.
+   *
+   * The envelope still arrives at the **tail**, which is what keeps the
+   * documented death-watch ordering intact: every `tell` already queued is
+   * handled first, then the notification.  It is not a priority lane and must
+   * not become one — the system queue is where the framework puts messages
+   * that overtake user traffic, and a `Terminated` deliberately is not one of
+   * those.
+   */
+  enqueueSignal(env: Envelope<T>): void {
+    this.enqueue(env);
+  }
+
+  /**
    * Put envelopes at the FRONT of the user queue, preserving their order.
    *
    * One bulk move, not a spread: `unstashAll` replays up to
@@ -177,7 +229,7 @@ export class Mailbox<T = unknown> {
   }
 
   /**
-   * Remove the oldest user message, regardless of suspension.
+   * Remove the oldest **droppable** user message, regardless of suspension.
    *
    * `dequeueUser` refuses while suspended, and rightly so — a suspended actor
    * must not be handed work.  Making room in a full queue is a different
@@ -186,11 +238,41 @@ export class Mailbox<T = unknown> {
    * the bound matters most, since suspension means the actor has failed and is
    * awaiting its parent's supervision decision while messages keep arriving.
    *
-   * Returns `undefined` only when the queue is already empty, which lets the
-   * caller distinguish a real drop from a no-op.
+   * Envelopes marked {@link Envelope.undroppable} are stepped over rather than
+   * evicted, and put back in the order they were queued (#729).  Queueing the
+   * notification exempt from the bound is only half the guarantee: `drop-head`
+   * evicts the *oldest* message, so a `Terminated` that reached the tail
+   * safely becomes the head again after enough newer arrivals and would be
+   * destroyed then instead.  Both halves are needed, and this is the one that
+   * every bound built on this seam — including a caller's own — inherits
+   * without knowing about it.
+   *
+   * Returns `undefined` when the queue holds nothing that may be dropped,
+   * which lets the caller distinguish a real drop from a no-op.  A queue made
+   * entirely of undroppable notifications therefore *exceeds* its capacity
+   * rather than losing one, by however many of them there are — bounded by the
+   * watcher's watch set, and the alternative is trading a bounded overshoot
+   * for an unbounded ability to lose exactly the messages a bound must keep.
+   *
+   * Cost is one shift on the ordinary path (nothing is marked) and O(k) when k
+   * notifications sit at the front, on the overflow path, which is already the
+   * slow one.
    */
   protected removeOldest(): Envelope<T> | undefined {
-    return this.userQueue.shift();
+    // Allocated only once something is actually stepped over, so the common
+    // case — an empty `held` — costs no array at all.
+    let held: Array<Envelope<T>> | null = null;
+    for (;;) {
+      const candidate = this.userQueue.shift();
+      if (candidate === undefined) break;
+      if (candidate.undroppable !== true) {
+        if (held !== null) this.userQueue.unshiftAll(held);
+        return candidate;
+      }
+      (held ??= []).push(candidate);
+    }
+    if (held !== null) this.userQueue.unshiftAll(held);
+    return undefined;
   }
 
   dequeueSystem(): Envelope<unknown> | undefined {

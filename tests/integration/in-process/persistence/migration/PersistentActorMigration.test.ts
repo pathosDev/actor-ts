@@ -20,9 +20,12 @@ import {
 import {
   defaultsAdapter,
   defaultsSnapshotAdapter,
+  InMemorySchemaRegistry,
   MigrationChain,
   MigrationError,
+  zodCodec,
   type EventAdapter,
+  type ParserLike,
   type SnapshotAdapter,
 } from '../../../../../src/persistence/migration/index.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
@@ -367,7 +370,120 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
   });
 });
 
-/* ----------------------- 7. No-adapter regression ----------------------- */
+/* ------------- 7. Registry adapter refuses a foreign manifest ----------- */
+
+describe('PersistentActor — registry adapter on a foreign manifest', () => {
+  type ClosedV1 = { kind: 'closed'; reason: string };
+  type RegistryEvent = DepositedV1 | ClosedV1;
+  type RegistryState = { balance: number; closed: boolean };
+
+  const depositedSchema: ParserLike<DepositedV1> = {
+    parse(input: unknown) {
+      const typedInput = input as DepositedV1;
+      if (typedInput.kind !== 'deposited' || typeof typedInput.amount !== 'number') throw new Error('bad deposited');
+      return { kind: 'deposited', amount: typedInput.amount };
+    },
+  };
+  const closedSchema: ParserLike<ClosedV1> = {
+    parse(input: unknown) {
+      const typedInput = input as ClosedV1;
+      if (typedInput.kind !== 'closed' || typeof typedInput.reason !== 'string') throw new Error('bad closed');
+      return { kind: 'closed', reason: typedInput.reason };
+    },
+  };
+
+  /**
+   * One registry holding both event types — the shape that makes the defect
+   * reachable.  A journal row tagged `Account.Closed` is fully readable *by the
+   * registry*, so nothing except the adapter's own manifest compare can refuse
+   * it; before #737 it folded into the actor as if it were a Deposited.
+   */
+  function twoTypeRegistry(): InMemorySchemaRegistry {
+    const registry = new InMemorySchemaRegistry();
+    registry.register('Account.Deposited', 1, { codec: zodCodec(depositedSchema) });
+    registry.register('Account.Closed', 1, { codec: zodCodec(closedSchema) });
+    return registry;
+  }
+
+  class RegistryAccount extends PersistentActor<Command, RegistryEvent, RegistryState> {
+    readonly persistenceId: string;
+    constructor(
+      persistenceId: string,
+      private readonly registry: InMemorySchemaRegistry,
+      private readonly seen: unknown[],
+      private readonly failures: Error[],
+    ) {
+      super();
+      this.persistenceId = persistenceId;
+    }
+    initialState(): RegistryState { return { balance: 0, closed: false }; }
+    onEvent(s: RegistryState, e: RegistryEvent): RegistryState {
+      return e.kind === 'deposited'
+        ? { ...s, balance: s.balance + e.amount }
+        : { ...s, closed: true };
+    }
+    override onRecoveryComplete(s: RegistryState): void { this.seen.push({ ready: s }); }
+    override onRecoveryFailure(e: Error): void { this.failures.push(e); }
+    override eventAdapter(): EventAdapter<RegistryEvent> {
+      return this.registry.eventAdapter<RegistryEvent>('Account.Deposited');
+    }
+    async onCommand(_state: RegistryState, _command: Command): Promise<void> { /* not exercised */ }
+  }
+
+  test('a journal row tagged with another registered manifest fails recovery', async () => {
+    const { system, journal } = makeSystem('registry-foreign');
+    // A legitimate row, then one whose `_t` names the *other* registered type.
+    // Both are valid under their own codec, so the second is refused for its
+    // manifest alone — nothing else in the read path objects to it.
+    await journal.append<unknown>('acct-foreign', [
+      { event: { _v: 1, _t: 'Account.Deposited', _e: { kind: 'deposited', amount: 10 } } },
+      { event: { _v: 1, _t: 'Account.Closed', _e: { kind: 'closed', reason: 'fraud' } } },
+    ], 0);
+
+    const seen: unknown[] = [];
+    const failures: Error[] = [];
+    system.spawn(() => new RegistryAccount('acct-foreign', twoTypeRegistry(), seen, failures), 'a');
+    // Wait for recovery to settle *either* way rather than for the failure
+    // alone: a permissive read path completes recovery instead of failing, and
+    // polling only for `failures` would turn that into a timeout whose message
+    // says nothing about what went wrong.  This way the assertions below name
+    // the actual outcome.
+    await awaitCondition(() => failures.length > 0 || seen.length > 0, {
+      label: 'recovery over the foreign-manifest row settled',
+    });
+    // The decisive half: recovery must NOT have completed, because completing
+    // means the Closed row was folded into state through a Deposited-typed
+    // adapter.  Without the guard this holds `{ ready: { balance: 10, closed:
+    // true } }` — the type confusion, end to end.
+    expect(seen).toEqual([]);
+    expect(failures[0]).toBeInstanceOf(MigrationError);
+    expect(failures[0]!.message).toContain('manifest mismatch');
+    expect(failures[0]!.message).toContain("got 'Account.Closed'");
+    await system.terminate();
+  });
+
+  test('the same actor recovers normally when every row carries its own manifest', async () => {
+    const { system, journal } = makeSystem('registry-own');
+    // The inverse, on the identical wiring: a guard that refused every frame,
+    // or one that compared the wrong side, would break this too.
+    await journal.append<unknown>('acct-own', [
+      { event: { _v: 1, _t: 'Account.Deposited', _e: { kind: 'deposited', amount: 10 } } },
+      { event: { _v: 1, _t: 'Account.Deposited', _e: { kind: 'deposited', amount: 5 } } },
+    ], 0);
+
+    const seen: unknown[] = [];
+    const failures: Error[] = [];
+    system.spawn(() => new RegistryAccount('acct-own', twoTypeRegistry(), seen, failures), 'a');
+    await awaitCondition(() => seen.length > 0, {
+      label: 'recovery from the same-manifest rows completed',
+    });
+    expect(failures).toEqual([]);
+    expect(seen).toContainEqual({ ready: { balance: 15, closed: false } });
+    await system.terminate();
+  });
+});
+
+/* ----------------------- 8. No-adapter regression ----------------------- */
 
 describe('PersistentActor — no-adapter regression', () => {
   test('actor without adapter behaves identically to pre-migration code', async () => {

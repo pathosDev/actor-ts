@@ -11,14 +11,19 @@ wie der Handler resolved, steuert, ob das ACK feuert.
 ## Wie das ACK wirklich feuert
 
 ```
-1. ConsumerController empfängt ein Delivery-Envelope
-2. Controller prüft den Dedup-State pro Producer
+1. ConsumerController lässt das Delivery-Envelope zu
+   → fehlerhaft (kein replyTo, ungültige seq, zu lange Ids) → Dead Letter,
+     kein Handler
+2. Controller prüft den Dedup-State für (producerId, incarnation)
    → bekannte Seq → nur re-ACK, Handler überspringen
    → neue Seq   → handler(body) aufrufen, auf Resolve warten
-3. Handler resolved → Controller sendet ACK an msg.replyTo
+3. Handler resolved → Controller sendet ACK an msg.replyTo und
+                      spiegelt die Inkarnation des Delivery zurück
    Handler wirft   → Controller ACKt NICHT
-4. Producer empfängt ACK → entfernt Seq aus dem In-Flight-Buffer
-                          → gibt einen Window-Slot für den nächsten Send frei
+4. Producer prüft, ob das ACK seine eigene Inkarnation spiegelt
+   → Abweichung → ignoriert, der Retransmit-Timer bleibt stehen
+   → Treffer    → entfernt Seq aus dem In-Flight-Buffer
+                  → gibt einen Window-Slot für den nächsten Send frei
 ```
 
 Der Handler ist der einzige User-seitige Schalter.  Was *im*
@@ -124,6 +129,12 @@ Recovery: Producer startet neu.  Ohne Persistenz ist msg #5
 verloren.  Mit Persistenz ist die Nachricht im
 Unacked-Buffer-Journal des Producers; wird beim Recovery
 gesendet.
+
+Alles, was der neu gestartete Producer *danach* sendet, kommt normal an.  Der
+Restart erzeugt eine neue Producer-Inkarnation, der Consumer eröffnet also ein
+frisches Dedup-Fenster, statt die wiederverwendeten Sequenznummern als schon
+behandelte Duplikate zu werten — siehe *Restart und die Producer-Inkarnation*
+auf der Seite [ProducerController](/de/delivery/producer-controller/).
 
 ### Consumer-Crash vor der Verarbeitung
 
@@ -232,6 +243,18 @@ dieselbe Seq wird ignoriert, sodass der Callback nie doppelt
 feuert.  Das ist das **einzige** Producer-seitige Signal, dass
 eine Nachricht angekommen ist; ohne ihn ist der Send aus Sicht
 Deines Codes Fire-and-Forget.
+
+Das Signal ist nur so gut wie das ACK dahinter — deshalb verlangt der Producer,
+dass das ACK sein eigenes Inkarnations-Token zurückspiegelt, bevor er darauf
+reagiert.  `producerId` und `seq` sind beide erratbar, das Inkarnations-Token
+ist es nicht, und es verlässt den Producer nur auf Deliveries, die er
+tatsächlich gesendet hat.  Ohne diese Prüfung könnte alles, das den Producer
+adressieren kann, den Retransmit abbrechen und `confirm(null)` für eine
+Nachricht auslösen, die der Consumer nie gesehen hat — der Stream würde
+stillschweigend auf At-most-once herabgestuft und dabei Erfolg melden.  Beachte,
+was das Signal weiterhin *nicht* verspricht: es sagt, dass der Consumer die
+Verantwortung für die Seq übernommen hat — bei einer erneuten Zustellung heißt
+das, der Handler lief bei einem *früheren* Versuch, nicht bei diesem.
 
 ## Wann du die Controller NICHT einsetzt
 

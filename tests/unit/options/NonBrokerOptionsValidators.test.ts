@@ -41,6 +41,7 @@ import {
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
+import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
   ConfigSeedProviderOptionsValidator,
@@ -412,6 +413,31 @@ describe('WorkerClusterOptionsValidator', () => {
     expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
   });
+
+  test('accepts the restart-budget knobs at their edges', () => {
+    // A zero floor means "respawn on the next turn"; a zero window means the
+    // counts are never reset; -1 restarts restores the unbounded behaviour.
+    expect(() => check({ restartMinBackoffMs: 0, restartMaxBackoffMs: 0 })).not.toThrow();
+    expect(() => check({ restartRandomFactor: 0 })).not.toThrow();
+    expect(() => check({ restartRandomFactor: 1 })).not.toThrow();
+    expect(() => check({ maxRestarts: -1 })).not.toThrow();
+    expect(() => check({ maxRestarts: 0 })).not.toThrow();
+    expect(() => check({ restartWindowMs: 0 })).not.toThrow();
+  });
+
+  test('rejects out-of-domain restart-budget knobs', () => {
+    expect(() => check({ restartMinBackoffMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ restartMaxBackoffMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ restartRandomFactor: 1.5 })).toThrow(OptionsError);
+    expect(() => check({ restartWindowMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxRestarts: -2 })).toThrow(OptionsError);
+    expect(() => check({ maxRestarts: 2.5 })).toThrow(OptionsError);
+  });
+
+  test('rejects a maximum respawn backoff below the minimum', () => {
+    expect(() => check({ restartMinBackoffMs: 500, restartMaxBackoffMs: 100 }))
+      .toThrow(/restartMaxBackoffMs must be >= restartMinBackoffMs \(500\)/);
+  });
 });
 
 describe('ProducerControllerOptionsValidator', () => {
@@ -425,6 +451,16 @@ describe('ProducerControllerOptionsValidator', () => {
 
   test('accepts sensible flow-control values', () => {
     expect(() => check({ resendTimeout: 500, windowSize: 16 })).not.toThrow();
+  });
+
+  test('rejects an empty or over-long producerId', () => {
+    // The consumer refuses an identifier past this bound, so accepting one
+    // here would turn every delivery from this producer into a silent dead
+    // letter instead of a construction-time error (#727, #728).
+    expect(() => check({ producerId: '' })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1) })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH) })).not.toThrow();
+    expect(() => check({ producerId: 'orders' })).not.toThrow();
   });
 });
 

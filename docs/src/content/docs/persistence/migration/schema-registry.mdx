@@ -43,8 +43,11 @@ the registry to:
 - **Validate** payloads — each version's `codec` (typically a
   `zodCodec`) is enforced on both the write and read paths.
 - **Build adapters** — `registry.eventAdapter(manifest)` writes at
-  the latest version and reads any older version by chaining the
-  registered upcasters forward.
+  the latest version and reads any older version of *that same
+  manifest* by chaining the registered upcasters forward.  A stored
+  frame carrying a different manifest is refused with a
+  `MigrationError`, even when that manifest is registered too — see
+  [One adapter, one manifest](#one-adapter-one-manifest).
 - **Drive tooling** — admin dashboards, dev-tools showing journal
   contents.
 
@@ -127,6 +130,56 @@ type SchemaRegistration<Wire = unknown, Upcasted = unknown, Previous = unknown> 
 is `InMemorySchemaRegistry` (`new InMemorySchemaRegistry()`),
 which keeps all state in one process.  Implement the interface
 yourself if you need a different backing store.
+
+## One adapter, one manifest
+
+An adapter built by `eventAdapter(m)` or `snapshotAdapter(m)` is
+bound to `m` on **both** paths.  It writes `m`, and it reads only
+`m`: a stored frame whose manifest is anything else raises a
+`MigrationError`, even when that other manifest is registered in
+the same registry.
+
+```ts
+const registry = new InMemorySchemaRegistry();
+registry.register('Account.Deposited', 1, { codec: zodCodec(DepositedV1) });
+registry.register('Account.Closed', 1, { codec: zodCodec(ClosedV1) });
+
+const adapter = registry.eventAdapter<DepositedV1>('Account.Deposited');
+
+// Reads its own manifest, at any registered version.
+adapter.fromJournal({ manifest: 'Account.Deposited', version: 1, payload });
+
+// Refused — MigrationError: manifest mismatch: schema-registry adapter
+// is for 'Account.Deposited', got 'Account.Closed'
+adapter.fromJournal({ manifest: 'Account.Closed', version: 1, payload });
+```
+
+Without that check the second read would decode cleanly through
+`Account.Closed`'s codec and hand a `ClosedV1` back to a caller
+statically typed `DepositedV1` — type confusion the caller cannot
+detect, because the payload is valid and the static type says it
+got what it asked for.  On a recovery path that means a foreign
+event folded into `onEvent` and a state that never existed.
+`MigrationChain.upcast` and `defaultsAdapter` have always refused
+this; the registry adapter now agrees with them.
+
+The realistic trigger is a **mis-wiring**, not an attacker: the
+manifest strings of `eventAdapter(...)` and `snapshotAdapter(...)`
+swapped, or the argument changed between deploys while old rows
+still carry the old value.  Nothing the registry itself wrote can
+trip it, since `toJournal` always tags with the adapter's own
+manifest.
+
+The consequence worth planning for: **one actor whose event union
+spans several manifests cannot use a single registry-built
+adapter.** That was never really supported — `toJournal` tags every
+event with the one manifest and validates it against that
+manifest's codec, so such an actor could not persist its other
+event types anyway — but the read path used to fail silently and
+now fails loudly.  Write a `fromJournal` that switches on
+`stored.manifest` and delegates to a per-type adapter, the same
+way [`MigrationChain`](/persistence/migration/migrating-adapter/)
+expects for a multi-type journal.
 
 ## Compatibility checks
 

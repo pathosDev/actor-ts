@@ -11,6 +11,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — The exported type IpAllowlistOptions is now the
+  accepted-input union IpAllowlistOptionsBuilder | IpAllowlistOptionsType,
+  and also a value alias for the builder, matching every other options
+  family in the project (#715).**
+
+  Passing an object literal to IpAllowlist is unaffected.
+
+  *Migration:* Annotate with IpAllowlistOptionsType instead of
+  IpAllowlistOptions wherever you read fields off a value of that type —
+  the union has no `allow` on its builder branch.
+
+- **BREAKING — A bounded mailbox's `capacity` now bounds the messages it is
+  allowed to discard rather than the messages it holds (#729).**
+
+  A queue made entirely of undelivered death notifications sits above the
+  number instead of losing one, and the overshoot is bounded by how many
+  actors that watcher watches. Nothing changes for a queue holding
+  ordinary traffic, and no drop is reported for an eviction that did not
+  happen.
+
+  *Migration:* If you sized a capacity as a hard memory ceiling, add
+  headroom for the watcher's watch set, or assert on `size` only for
+  mailboxes that hold no death notifications.
+
+- **The documented recipe for routing Terminated into
+  pruneTerminatedSubscriber now widens the match input instead of guarding
+  ahead of the matcher, which makes the arm mandatory at compile time:
+  exhaustive() refuses to compile without it, so omitting it is a build
+  failure rather than a NonExhaustiveError thrown at the first subscriber
+  death, answered by a supervisor restart and a full broker reconnect per
+  death. The arm delegates to a private onTerminated handler, matching the
+  house rule for match arms. Both language pages also gain the caveat that
+  context.watch installs a watcher only for a local ref, so a remote
+  subscriber never produces a Terminated at all, and the wrong subclass
+  count in the rationale is corrected from thirteen to fourteen. (#709).**
 - **The FAQ's per-message overhead figures are measured now, and two of them
   were wrong** (#27).  `reference/faq` had asserted "~50 ns per `tell`" and
   "actor messaging costs 50-200× a direct call" with nothing behind either.
@@ -602,6 +637,119 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **IpAllowlist gained `trustedProxies`, the CIDRs of the reverse proxies in
+  front of the app (#715).**
+
+  Set it and the middleware reads the chain in wire order — forwarded
+  entries first, socket peer last — and walks it from the right, taking
+  the first address that is not one of those proxies. A client that
+  reaches the app directly is the untrusted peer, so its header is never
+  read at all; junk it prepends sits left of its real address and is never
+  reached; an unparseable entry counts as untrusted, ends the walk and
+  then fails the allowlist too. When every entry is trusted the fallback
+  is the socket peer, not the leftmost entry, which is a deliberate
+  divergence from proxy-addr because that value is reachable by a caller
+  behind the proxy. `forwardedHeader` (default x-forwarded-for) points the
+  same walk at a header a vendor sets rather than appends —
+  cf-connecting-ip, true-client-ip, x-real-ip. Trust is expressed as
+  addresses and not as a hop count on purpose: a numeric trust-proxy
+  setting compares indexes and never addresses, so it believes the header
+  on a request that passed no proxy at all. It also means the option needs
+  nothing from the backend and therefore works identically on Fastify,
+  Express and Hono — where trustProxy is respectively reachable, reachable
+  only via a bring-your-own app, and absent. IpAllowlist now also has the
+  standard XOptions family: IpAllowlistOptionsType,
+  IpAllowlistOptionsBuilder, IpAllowlistOptions and
+  IpAllowlistOptionsValidator.
+
+- **`Mailbox.enqueueSignal(envelope)` and `Envelope.undroppable`, the seam
+  that keeps a framework lifecycle notification out of reach of a
+  load-shedding policy (#729).**
+
+  A `Mailbox` subclass of your own that overrides `enqueue` to shed should
+  override `enqueueSignal` too and queue the envelope past its bound; the
+  base implementation delegates to `enqueue`, which is correct for a queue
+  that discards nothing. `BoundedMailbox` and `PriorityMailbox` already
+  override it. Delegating rather than writing straight to the base user
+  queue is deliberate — a subclass may keep its messages elsewhere, and an
+  envelope hidden in a store its own `dequeueUser` never reads is worse
+  than one it dropped.
+
+- **Worker respawns are now delayed and budgeted instead of firing straight
+  from the close listener without limit (#734).**
+
+  Five new options and their builder methods: `restartMinBackoffMs`
+  (default 200), `restartMaxBackoffMs` (default 10000),
+  `restartRandomFactor` (default 0.2), `maxRestarts` (default 10, `-1` for
+  the previous unbounded behaviour) and `restartWindowMs` (default 60000),
+  matching the framework's own ten-restarts-per-minute supervision
+  allowance. A slot whose budget is spent is retired for good and reported
+  once through the new `onWorkerPermanentlyDown` callback, which is the
+  only diagnostic the worker subsystem can offer — it has no logger. A
+  replacement that never becomes ready counts against the same budget as a
+  worker that died. The pending respawn timer is unreferenced so it cannot
+  hold the process open, cancelled by `terminate()`, and re-checks the
+  shutdown flag when it fires; without all three, introducing a delay
+  would have made a previously unreachable broker hole reachable. The
+  knobs are code-only for now and have no config-file equivalent.
+
+- **`MAX_DELIVERY_IDENTIFIER_LENGTH` is exported from the `./delivery` entry
+  point, so an application picking its own `producerId` can read the bound
+  the consumer admits rather than discovering it by having deliveries
+  refused (#727).**
+
+  This mirrors `MAX_PERSISTENCE_ID_LENGTH` on the persistence side.
+
+- **A ratchet over the test tree's fixed-delay waits,
+  `tests/unit/ci/SleepRatchet.test.ts`, following the shape
+  `AwaitConditionBudgets.test.ts` established: a repo-wide invariant
+  expressed as a test, so it needs no new tooling and no workflow change and
+  does not wait on the Biome adoption in #417. Three ledgers, each a ceiling
+  that only ever moves down and each with a zero-cost remedy the failure
+  message names: 93 modules that declare their own `sleep` instead of
+  importing the shared one, 35 hand-rolled polling helpers (`waitFor` /
+  `waitUntil` / `awaitConvergence`), and 486 waits that state no reason,
+  counted per module so a failure names the file. It counts more than the
+  greps this migration has been measured with: beside the 479 `await sleep(`
+  sites the tree holds 60 inline `Bun.sleep(20)` and 72 inline `new
+  Promise((r) => setTimeout(r, 20))`, 611 waits in all, so a fifth of the
+  debt was previously invisible. It is deliberately not a ban on waiting,
+  because 57 of those waits are followed by an assertion that something did
+  not happen and an absence cannot be polled for; what it forbids is an
+  unexplained wait, a re-declared `sleep` and a re-invented poll loop. Also
+  removes the one dead `Bun.sleep` shim, in
+  `tests/unit/ActorSelection.test.ts`, which had zero call sites and
+  survived because no tsconfig sets `noUnusedLocals`. (#418).**
+
+- **Email bridge actor** (#1133).  `EmailBridgeActor` turns a mailbox into a
+  message source and SMTP into a sink — the ops/alerting bridge that otherwise
+  gets hand-rolled per project.  Inbound uses IMAP IDLE via `imapflow` (with a
+  polling fallback for servers that do not offer it, or do not honour it) and is
+  **at-least-once, settled by IMAP flags**: a message is marked `\Seen` — or
+  moved to another mailbox — only once the target actor tells back
+  `{ kind: 'acknowledgment', ackToken }`.  A refusal, a missed deadline, a lost
+  connection and a dead process all end the same way, with the message still
+  unflagged and therefore delivered again; "processed" is a fact on the server,
+  not bookkeeping in memory.  Outbound goes through a pooled `nodemailer`
+  transport, and an SMTP failure is classified before it is escalated — a
+  message the server rejected is dropped rather than re-queued at the head of
+  the buffer behind a torn-down pool.  Reconnection is the `BrokerActor`
+  lifecycle's, since `imapflow` does none of its own.  Both drivers are optional
+  peer dependencies loaded on first connect, so a send-only bridge never imports
+  `imapflow`.  One actor watches one mailbox (an IMAP connection can IDLE only
+  on the mailbox it selected).  Config under
+  `actor-ts.io.broker.email-bridge`; verified against GreenMail in the broker
+  integration suite.
+- **HTML email templates** (#1133).  `EmailTemplate` fills a stored HTML snippet
+  — one from HOCON, a database row, or a file an operator edits — which the
+  `html` tagged template cannot cover, since it needs its markup as a JavaScript
+  literal.  Values are HTML-escaped by default and the one opt-out is the same
+  `SafeHtml` brand the HTTP side uses, so `rawHtml(...)` states the intent at the
+  call site.  Setting a placeholder the template does not declare throws, and
+  rendering with any placeholder still unset throws naming all of them — both
+  are failures that would otherwise only surface in a mail already sent.
+  Deliberately logic-less: it substitutes placeholders, it is not a template
+  engine.
 - **The comparison is complete: eight arms across three runtimes** (#27).  Two
   .NET arms close the set the issue asked for — the classic actor API on the
   CLR, and the virtual-actor runtime.  Full table in the README and in
@@ -1336,6 +1484,73 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **A watcher whose mailbox used `overflow: 'reject'` could hang
+  `terminate()` for the whole actor tree (#729).**
+
+  `MailboxFullError` was thrown synchronously on the dying cell's own
+  stack, from inside its watcher-notify loop, and escaped
+  `finalizeTermination` ahead of the parent's `childTerminated` — so the
+  parent kept the dead child in `_children` forever, any teardown waiting
+  on an empty children map never fired, every watcher after the throwing
+  one in iteration order also went unnotified, and `ActorStopped` had
+  already been published to observers. `reject` is `BoundedMailbox`'s own
+  constructor default, so the documented bring-your-own-mailbox shape
+  reached it without naming it. The notify loop is now guarded per
+  watcher: a refusal costs that watcher its notification, as a dead
+  letter, and costs the teardown nothing.
+
+- **`throttle({ onExcess: 'drop' })` silently consumed a death-watch
+  `Terminated`, which is the opposite of what `ActorContext.throttle` has
+  always documented (#729).**
+
+  The notification now bypasses the throttle gate and consumes no token: a
+  death the framework announces once is not part of the budget a rate
+  limit meters.
+
+- **Stopping a broker actor while a reconnect attempt was in flight left a
+  fully live broker connection attached to the terminated actor, or an
+  unbounded reconnect loop (#708).**
+
+  Reconnect runs on the system scheduler, detached from the mailbox, and
+  the scheduler settles a one-shot handle before invoking it, so
+  postStop's cancel is a no-op against an attempt that has already begun.
+  That attempt then resumed on a dead actor: on success the base class
+  adopted the connection (state connected, BrokerConnected published,
+  buffer drained, live driver handles nothing could close, because
+  postStop had already cleared the transport gate and deregistered the
+  actor's CoordinatedShutdown service-stop task); on failure it re-armed
+  the backoff timer, and since maxAttempts defaults to Infinity the cycle
+  never ended. The base class now checks liveness at the entry to a
+  connect attempt, again after the teardown that precedes the handshake,
+  and again on both exits from connectImplementation, tearing the escaped
+  connection down instead of adopting it. handleConnectionLost and the
+  reconnect scheduler refuse to act on a stopped actor. Affects all
+  fourteen BrokerActor subclasses; MqttActor exhibited the full shape
+  because its entire handshake sits inside the awaited promise.
+
+- **The four exact wait counts in the testing/diagnosing-flakes page had all
+  drifted since they were taken on 2026-08-16 — the page's own framing says
+  an exact figure is meant to be visibly stale the moment it stops matching,
+  and it was (#418).**
+
+  Both language versions now carry the re-measured figures and defer to
+  the gate, which cannot go stale without going red, and the
+  wait-with-a-reason rule in testing/overview says that it is checked
+  rather than merely asked for. Two pre-existing waits that the widened
+  pattern made visible were given their reason instead of a ledger row, in
+  `tests/integration/lib/ControlRoutes.ts` and
+  `tests/util/AsyncAssertions.test.ts`.
+
+- **A ShardRegion now addresses the coordinator by the leader's system name
+  rather than its own (#712).**
+
+  An actor path carries the system it belongs to, so guessing it locally
+  only worked when every member shared one name; where they differed the
+  frame missed the leader's registered path and reached the coordinator
+  through generic path resolution, which delivers with no sender at all.
+  Invisible before because that fallback happened to resolve to the same
+  actor.
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
   case, printed both green summary lines, and then hung forever — no exit
@@ -2436,6 +2651,268 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING — An event or snapshot adapter built by
+  InMemorySchemaRegistry.eventAdapter(manifest) / snapshotAdapter(manifest)
+  now reads only that manifest (#737).**
+
+  Previously fromJournal resolved the codec, the latest version and every
+  upcaster from stored.manifest alone and never compared it to the
+  manifest the adapter was built for, so a journal row tagged with any
+  other manifest registered in the same registry decoded cleanly and was
+  returned as the requested type — type confusion on the replay path
+  (CWE-843) that the caller could not detect, since the payload validates
+  against the foreign codec and the static type claims it got what it
+  asked for. A mismatch now raises MigrationError ("manifest mismatch:
+  schema-registry adapter is for 'X', got 'Y'"), matching
+  MigrationChain.upcast and defaultsAdapter, which have always refused
+  that frame, and serializerCodec's serializerId check one layer down. The
+  realistic trigger is a mis-wiring rather than an attacker — the manifest
+  strings of eventAdapter and snapshotAdapter swapped, or the argument
+  changed between deploys while old rows still carry the old value — since
+  the registry's own write path can never emit a foreign manifest. On a
+  recovery path the refusal surfaces through onRecoveryFailure instead of
+  folding a foreign event into state.
+
+  *Migration:* A journal stream whose _t values were written by something
+  other than a registry adapter (e.g. wrapEventAsEnvelope with a per-event
+  manifestFor) no longer replays through a single registry-built adapter;
+  write a fromJournal that switches on stored.manifest and delegates per
+  type, as MigrationChain already required for a multi-type journal.
+
+- **IpAllowlist no longer documents an x-forwarded-for extractor that reads
+  the leftmost, client-controlled entry (#715).**
+
+  This was a guidance defect, not a live vulnerability: the shipped
+  default reads the socket peer and fails closed, and Fastify's base `ip`
+  getter is the socket peer without trustProxy, so nothing was exploitable
+  unless an operator copied the snippet out of the project's own
+  documentation. The premise that made it look safe was untrue — NGINX's
+  $proxy_add_x_forwarded_for, AWS ALB's default xff_header_processing and
+  Cloudflare all append the connecting peer rather than replacing the
+  inbound header, so in exactly the deployment the recipe was written for
+  its first entry is whatever the caller typed. The same value was
+  reachable a second way the report never named: `app.set('trust proxy',
+  true)` on Express and `trustProxy: true` on Fastify compile to a
+  trust-everything function, so proxy-addr never truncates the address
+  list and returns that leftmost entry byte for byte. Six pages in each
+  language, five src JSDoc blocks and two test fixtures carried one or the
+  other; all now describe trust-by-address, and the Express and Fastify
+  backend pages carry an explicit warning against the `true` form.
+
+- **A death-watch `Terminated` can no longer be discarded on its way to the
+  watcher (#729).**
+
+  It now takes `Mailbox.enqueueSignal` — the tail of the user queue,
+  exempt from whatever bound the mailbox enforces — and carries
+  `Envelope.undroppable`, which `Mailbox.removeOldest` steps over so a
+  later eviction cannot reach it either. Both halves were needed: queueing
+  it exempt is not enough when `drop-head` evicts the oldest message and
+  the notification becomes the oldest after enough newer arrivals. This
+  bites a mailbox you gave a capacity, not the default one: since the
+  default mailbox became unbounded again there was no default-reachable
+  path, but opting into a bound was silently opting into losing lifecycle
+  signals, and all four policies destroyed the notification in their own
+  way — `drop-head` evicted it after it was safely queued, `drop-new`
+  discarded it on arrival, `drop-lowest-priority` shed it as least
+  important, and `reject` threw. A notification that genuinely cannot be
+  queued — the watcher has already stopped, or its own `Mailbox` subclass
+  refuses it — now becomes a dead letter instead of vanishing, so the loss
+  is observable. Every consumer built on the notification was affected
+  while it was not: `BackoffSupervisor`'s respawn, `Router`'s routee
+  pruning, `ShardRegion`, `ClusterSingletonManager`, `Shard` and
+  `GracefulStop` all stall on a death they never hear about.
+
+- **An uncaught throw, an unhandled rejection, or a bootstrap that fails to
+  load inside a worker no longer kills the host process (#700).**
+
+  The runtime worker abstraction gained an `error` event that both
+  backends subscribe, so the failure reaches `restartPolicy` instead of
+  the host's own crash path. Measured before the fix: Node re-raised the
+  worker's error via `process.nextTick` and never fired `exit`, so the
+  restart path was never reached, and Deno rejected an internal promise —
+  both exited 1, and only Bun contained the throw. On Deno a bare listener
+  is not enough, so the Web adapter now cancels the event; the parent-side
+  `Worker` there emits no `close` at all, which is why restarts on Deno
+  are error-driven only. Close and error share one per-worker latch,
+  because Node and Bun emit both for a single throw and routing the new
+  event into the existing path would respawn twice per crash. An error
+  arriving before `worker-ready` now rejects the handshake immediately
+  instead of burning the full `readyTimeoutMs`. A new cross-runtime smoke
+  case covers it on Bun, Node and Deno, which is the only place either
+  claim can be proven — no un-quarantined unit test spawns an OS thread.
+
+- **One malformed `worker-transport` frame from a worker no longer
+  terminates the host (#701).**
+
+  `WorkerBroker.onMessage` took its argument as a validated envelope and
+  read `to` straight into `NodeAddress.fromJSON`; it now takes the frame
+  as unknown, checks the `to` and `from` addresses, and drops what does
+  not clear the check, with a try/catch behind it. Five shapes each exited
+  the host 1 before this, and only two of them threw the documented
+  `TypeError` — a missing or null `to` throws a plain `Error` from
+  `fromJSON` instead. Note the direction of travel: hardening `fromJSON`
+  to throw made this path worse, not better. A frame carrying `to.port` as
+  a string used to construct an address and be routed or dropped as an
+  unknown destination, and became fatal once the validator threw, because
+  a throwing validator is right behind a frame guard and wrong in front of
+  a bare call site. Malformed frames are dropped without a log line: the
+  broker has no logger, and the frame's `payload` is still validated by
+  the receiving transport rather than here.
+
+- **A replacement worker that misses its handshake deadline no longer
+  terminates the host as an unhandled rejection (#702).**
+
+  The respawn was a discarded promise with no handler; it is now a handled
+  call that reports the failure and asks the slot's restart budget for
+  another attempt, so a permanently broken bootstrap degrades the mesh by
+  one worker and then stops instead of looping. There is no supervisor
+  above the worker mesh to escalate to — `WorkerCluster` is a
+  static-constructed plain object, not an actor — so the report follows
+  the dispatcher's precedent of a prefixed `console.error`.
+
+- **BREAKING — Worker threads no longer outlive the failure that dropped
+  them (#735).**
+
+  A handshake that times out terminates its own worker before rejecting; a
+  partial `spawn()` failure tears down every sibling that did come up,
+  including ones still mid-handshake, since the instance that owns them is
+  never returned; a respawn suspended across shutdown is cleaned up
+  instead of registering into a closed broker; and `terminate()` now waits
+  for the threads rather than firing and forgetting. Adding an `await` was
+  not the fix: only Node returns something awaitable, so the completion
+  wait moved into the runtime adapters, where the Web adapter registers
+  its close listener before the native call and caps the wait at 250 ms
+  because Deno emits no completion signal at all — treat Deno shutdown as
+  best-effort, not confirmed. `WorkerBroker.register` also refuses
+  registration after `close()`, which previously repopulated the port map
+  permanently with an inert port that kept its worker alive for the
+  process lifetime.
+
+  *Migration:* `WorkerLike.terminate()` now returns `Promise<void>`
+  instead of `void | Promise<number>`; a custom `WorkerBackend` must
+  return a promise that resolves when the thread is gone, or
+  `Promise.resolve()` where the runtime cannot say.
+
+- **BREAKING — A `ProducerController` now stamps a crypto-random
+  per-incarnation token on every `Delivery`, and the `ConsumerController`
+  keys its deduplication state on `(producerId, incarnation)` rather than on
+  `producerId` alone (#726).**
+
+  Before this, a restarted or re-created producer numbered from 1 again
+  while its configured `producerId` survived unchanged, so the consumer
+  matched the whole post-restart prefix against a deduplication window
+  that was still live, absorbed those messages as duplicates before the
+  handler ran, answered each with an ordinary acknowledgment, and drove
+  the caller's `confirm(null)` — reporting messages as successfully
+  delivered that the handler never saw. It needed no crash and no
+  attacker: two sequential `ReliableDelivery.producer(...)` calls with the
+  same `producerId` against one surviving consumer reproduced it. A new
+  incarnation replaces the deduplication entry for its `producerId` rather
+  than adding one, so the map stays at one entry per producer; the cost is
+  that a straggling delivery from the outgoing incarnation resets the
+  window again, so a few already-handled sequence numbers may run twice
+  around a changeover — an at-least-once duplicate, which the protocol
+  declares tolerable, where absorbing the whole prefix was not bounded at
+  all.
+
+  *Migration:* `Delivery` gains a required `incarnation` field: code that
+  builds a `Delivery` envelope by hand (a relay that reconstructs rather
+  than forwards, a hand-rolled sender) must supply it.
+
+- **BREAKING — `ProducerController.onAcknowledgment` now requires the
+  acknowledgment to echo the producer's own incarnation token before it acts
+  on it (#730).**
+
+  It previously authenticated an acknowledgment by comparing the payload's
+  own `producerId` against its id, and both that and `seq` are enumerable
+  — so anything able to address the producer could cancel the retransmit
+  and fire the caller's `confirm(null)`, silently downgrading the stream
+  from at-least-once to at-most-once while reporting success. The check is
+  deliberately not on the envelope sender, which is `None` for every
+  acknowledgment the producer will ever see because both the consumer and
+  the cluster's envelope dispatch tell with a single argument, and not
+  against `options.consumer`, which the documented relay topology makes a
+  forwarder rather than the acker; with no channel identity available the
+  identity has to travel in the message. It also rejects a straggling
+  acknowledgment from the previous incarnation of the same `producerId`,
+  which would otherwise settle whatever the new incarnation had parked
+  under that sequence number.
+
+  *Migration:* `Acknowledgment` gains a required `incarnation` field: a
+  test double or hand-rolled consumer that acknowledges manually must
+  carry it through from the `Delivery` it is answering, or the producer
+  will ignore the acknowledgment and keep retransmitting.
+
+- **The `ConsumerController` now admits a `Delivery` envelope before using
+  any of its fields, and dead-letters one that fails: a missing or non-ref
+  `replyTo`, a `seq` that is not a positive safe integer, or an empty or
+  over-long `producerId` or `incarnation`. Every one of those fields is
+  declared non-optional on the public type, which is exactly why nothing
+  guarded them — a wire body that omits `replyTo` satisfies the type at
+  compile time and dereferences to `undefined` at run time, and because the
+  handling runs on a promise detached from `onReceive` that `TypeError`
+  settled as a rejection nothing was watching and exited the process on Bun,
+  Node and Deno alike. A refusal is a dead letter rather than an actor fault
+  on purpose: faulting would restart the consumer, and the deduplication map
+  is a field initialiser, so one malformed message would cost duplicate
+  suppression for every healthy producer on the node and then loop as the
+  retransmit arrived. Sending the acknowledgment is guarded for the same
+  reason — an acknowledgment is best-effort by design, so losing one costs a
+  retransmit, which is the mechanism the protocol already has. The
+  producer-side options validator now enforces the same identifier bound the
+  consumer admits, so a `producerId` the consumer would refuse fails at
+  construction instead of silently dead-lettering every delivery. (#727).**
+
+- **A broker connection could outlive the actor that owned it, with no
+  reference through which anything could close it, and — for MQTT — re-issue
+  every remembered SUBSCRIBE, so a terminated actor stayed a fully
+  subscribed consumer feeding dead letters. The failure path was worse: a
+  dead actor kept opening real connections to the broker on every backoff
+  window until the whole ActorSystem terminated. Both are now closed by an
+  explicit liveness check on every path out of a connect attempt. (#708).**
+
+- **A ShardCoordinator now derives a region's identity from the
+  authenticated connection instead of the payload (#712).**
+
+  Every coordinator-inbound sharding kind is a claim about the sender's
+  own node, and the coordinator read all of it out of the frame: its only
+  gate was "am I the leader (and do I hold the lease)", never "may this
+  sender speak for that region". One well-formed sharding.Register naming
+  another node's address seized every shard of a type and redirected
+  honest regions' entity traffic to an attacker-chosen host; one
+  sharding.RegionTerminated evicted a region, and because that path sends
+  no HandOff the victim kept its shard actors and entities running,
+  leaving two owners for one live shard — the same entity id instantiated
+  twice and, for a persistent entity, two writers on one persistenceId.
+  The coordinator now claims its own well-known path on the envelope
+  router, requires each frame to arrive inside the
+  AuthenticatedShardingMessage wrapper that a JSON wire body cannot mint
+  (which also covers the non-canonical-to bypass, where a trailing slash
+  misses the handler lookup and the actor tree delivers unwrapped), and
+  requires the address the payload names to be the peer's own. Under mTLS
+  the peer is certificate-backed, so the comparison is authentication; on
+  a plaintext cluster it stops a member speaking for another member.
+  Mirrors the region-side origin gate from #584, which does not blunt this
+  on its own because the attacker never sends a ShardHome — it poisons the
+  coordinator's map and the genuine coordinator emits the redirect itself.
+  A side effect: a numShards mismatch can no longer park another node's
+  region key in refusedRegions and mute its GetShardHome answers for the
+  rest of the leader term.
+
+- **A region's hostedShards claim is validated against the shard range and
+  capped (#712).**
+
+  It was the only caller-sized input the coordinator had — onRegister
+  wrote an allocation entry per array element with no range check and no
+  length cap, into state that is broadcast to every region and persisted
+  to coordinatorStateStore, so one frame could plant millions of
+  out-of-range ids and the growth survived restarts. Entries outside
+  0..numShards-1 are dropped, duplicates collapse, and the accepted set
+  cannot exceed numShards. This is the bound-and-cap half of #948's third
+  proposal; the live-owner conflict check, the previous-owner
+  RegionInfo.shards cleanup and the region-side give-up-when-downed remain
+  open there.
 
 - **A `ShardRegion` now honours a coordinator directive only when the
   authenticated peer that sent it is the node hosting the coordinator
