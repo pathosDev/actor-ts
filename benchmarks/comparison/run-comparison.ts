@@ -58,7 +58,17 @@ type ExternalArm = {
   readonly name: string;
   /** Directory to run in, relative to this file. */
   readonly directory: string;
-  /** Script to run, relative to `directory` — resolved to an absolute path. */
+  /**
+   * The command to run.
+   *
+   * `'directory'` means a script that ships with the arm (a build wrapper) and
+   * is invoked through its absolute path; `'path'` means an installed tool
+   * found on `PATH`.  The distinction is not cosmetic: cmd.exe resolves a bare
+   * name against `PATH` but *not* against the child's working directory, so
+   * getting it wrong fails with "is either misspelled or could not be found" —
+   * a message that reads like a missing toolchain rather than a lookup rule.
+   */
+  readonly resolveFrom: 'directory' | 'path';
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   /** Why this arm exists as a separate toolchain, for `--list`. */
@@ -81,6 +91,7 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     kind: 'external',
     name: 'akka',
     directory: 'akka',
+    resolveFrom: 'directory',
     executable: mavenWrapper(),
     args: ['-q', '-B', 'compile', 'exec:java'],
     toolchain: 'JDK 21 + Maven wrapper',
@@ -92,9 +103,34 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     kind: 'external',
     name: 'pekko',
     directory: 'pekko',
+    resolveFrom: 'directory',
     executable: mavenWrapper(),
     args: ['-q', '-B', 'compile', 'exec:java'],
     toolchain: 'JDK 21 + Maven wrapper',
+  },
+  // The .NET side. `--nologo -v q` keeps the build chatter out of the run;
+  // Release matters, since a Debug build measures the absence of the JIT's
+  // optimiser rather than the framework.
+  {
+    kind: 'external',
+    name: 'akka.net',
+    directory: 'akka-net',
+    resolveFrom: 'path',
+    executable: 'dotnet',
+    args: ['run', '-c', 'Release', '--nologo', '-v', 'q'],
+    toolchain: '.NET 10 SDK',
+  },
+  // The virtual-actor model, and the arm whose semantics diverge most: grains
+  // activate on first call and there is no caller-visible spawn or stop, so
+  // three of its four rows measure a near-equivalent and say so in a note.
+  {
+    kind: 'external',
+    name: 'orleans',
+    directory: 'orleans',
+    resolveFrom: 'path',
+    executable: 'dotnet',
+    args: ['run', '-c', 'Release', '--nologo', '-v', 'q'],
+    toolchain: '.NET 10 SDK',
   },
   { kind: 'javascript', name: 'vanilla', file: 'vanilla.ts' },
 ];
@@ -142,7 +178,10 @@ function runArm(arm: ComparisonArm, environment: NodeJS.ProcessEnv): number | nu
   }
 
   const directory = join(COMPARISON_ROOT, arm.directory);
-  return spawnSync(join(directory, arm.executable), [...arm.args], {
+  const command = arm.resolveFrom === 'directory'
+    ? join(directory, arm.executable)
+    : arm.executable;
+  return spawnSync(command, [...arm.args], {
     stdio: 'inherit',
     cwd: directory,
     env: environment,

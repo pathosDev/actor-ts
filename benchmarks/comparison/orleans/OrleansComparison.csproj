@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The virtual-actor arm of the framework comparison (#27).
+
+    This is the arm whose model differs most from every other one here, and the
+    scenarios say so rather than pretending otherwise: there is no caller-visible
+    spawn or stop (grains activate on first call and deactivate on their own
+    schedule), and a grain call is an RPC rather than a mailbox send. Each row
+    that measures a near-equivalent instead of the thing itself carries a note
+    that travels with it into every published table.
+
+    `RestorePackagesWithLockFile` pins the transitive closure into a committed
+    lock file, so the arm resolves the same way on any machine.
+
+    Licence: MIT.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Comparison</RootNamespace>
+    <AssemblyName>OrleansComparison</AssemblyName>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Workstation GC, matching the other .NET arm and a default console app. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Orleans.Server" Version="10.2.2" />
+    <PackageReference Include="Microsoft.Orleans.Sdk" Version="10.2.2" />
+  </ItemGroup>
+
+</Project>

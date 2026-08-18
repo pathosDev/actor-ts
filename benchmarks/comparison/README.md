@@ -140,6 +140,8 @@ not a finding.
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
 | **Akka** (JVM) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
 | **Pekko** (JVM) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
+| **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
+| **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
 | **vanilla** | no framework at all | the floor, so every row reads as "what the abstraction costs" |
 
 Each arm's own header comment records where its framework's semantics
@@ -186,13 +188,32 @@ Three things about the Akka arm are decisions rather than defaults:
   (fairness rule 7): "the same code ran on both sides" is a claim only the
   JavaScript arms can make.
 
-**Read the JVM ask rows with care.**  Every arm drives the system under test from
-an external caller.  On a JavaScript event loop that is a microtask; on the
-JVM it is a real thread parking and unparking on a `CompletableFuture`, which
-costs tens of microseconds per operation.  So the ask row measures *awaiting
-a reply from outside the actor system*, and that is architecturally more
-expensive on the JVM regardless of the framework.  It is not evidence that
-Akka's messaging is slow — its tell throughput is the highest in the table.
+**Read the JVM ask rows with care.**  Every arm drives the system under test
+from an external caller.  On a JavaScript event loop that is a microtask; in
+.NET it is an `await`; on the JVM, from a non-actor thread, it is a real thread
+parking and unparking on a `CompletableFuture`.
+
+That is not a hypothesis — the .NET arms make it measurable.  They run the same
+actor model through the same scenarios and land roughly **five times higher**
+on the ask row than the JVM arms, while the JVM arms lead the tell rows by a
+wide margin.  So the ask row measures *the cost of asking from outside the
+actor system on that runtime*, not the framework's messaging speed.  The note
+travels with the number into every published table.
+
+### The .NET arms
+
+`akka-net/` uses the classic actor API — the one its own documentation leads
+with.  `orleans/` is the virtual-actor model and the only arm here whose
+semantics genuinely differ: grains activate on first call, there is no
+caller-visible create or stop, and a grain call is an RPC.  Three of its four
+rows therefore measure a near-equivalent and say so in a note:
+activation-on-first-call for spawn, `[OneWay]` for tell, and a driven chain of
+awaited calls for ping-pong.
+
+Both pin their transitive closure with `RestorePackagesWithLockFile` and a
+committed lock file, which is the .NET equivalent of the pinned pom, and both
+run under workstation GC — the default a console application gets, and a knob
+no other arm has been tuned on.
 
 ### Evaluated and rejected: comedy
 
@@ -222,6 +243,8 @@ benchmarks/comparison/
     pom.xml           pinned dependency + the reasoning behind the version
     src/main/java/    harness, JSON writer, actors, entry point
   pekko/              the other JVM arm — same sources, different package prefix
+  akka-net/           the .NET arm — classic actor API, committed lock file
+  orleans/            the virtual-actor arm — grains, single-silo localhost
   js/
     workload.ts       the batch sizes, iteration counts and warmup, once
     arm.ts            shared runner + completion accounting

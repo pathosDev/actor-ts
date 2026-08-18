@@ -80,7 +80,12 @@ public final class Main {
                     () -> tellBatch(system, refs.counter(), TELL_LARGE_BATCH)));
 
             results.add(Harness.measure("ask-round-trip", "sequential", "ask",
-                    ASK_ITERATIONS, 1, ASK_WARMUP, null,
+                    ASK_ITERATIONS, 1, ASK_WARMUP,
+                    "Driven from a non-actor thread, where Java has no non-blocking wait: each round trip "
+                    + "parks and unparks a thread on a CompletableFuture. The .NET arms await "
+                    + "instead and land ~5x higher on this row, so read it as the cost of asking "
+                    + "from outside the actor system on this runtime, not as the framework's "
+                    + "messaging speed — its tell throughput is the highest in the table.",
                     () -> {
                         String reply = ask(system, refs.echo(), replyTo -> new Actors.Echo("hi", replyTo));
                         return "echo:hi".equals(reply) ? 1 : 0;
