@@ -33,13 +33,15 @@ it mounts under it (e.g. `/static/...`), without one it mounts at the root.
 | `withSymlinks('within-root' \| 'follow')` | `symlinks` | `'within-root'` |
 | `withContentTypes(map)` | `contentTypes` | — (ext → type overrides) |
 | `withMaxFileSize(bytes)` | `maxFileSize` | 50 MiB (larger → 413) |
+| `withStreamThreshold(bytes)` | `streamThreshold` | — (unset: nothing streams) |
 
 ## Behaviour
 
 - **Conditional requests** — a weak `ETag` (size + mtime) and
   `Last-Modified`; matching `If-None-Match` / `If-Modified-Since` → `304`.
 - **Range** — a single `bytes=` range → `206` (or `416` if unsatisfiable);
-  `Accept-Ranges: bytes` is advertised.
+  `Accept-Ranges: bytes` is advertised. Only the requested window is read,
+  never the whole file.
 - **Directories** — a request without a trailing slash `301`-redirects to
   add it (query preserved); with a slash, index files are tried in order,
   then a listing (if browsing) or `404`. Under `within-root`, an index file
@@ -73,13 +75,53 @@ and mtime are exactly what the policy withholds. Switch to
 `withSymlinks('follow')` when the tree links outside itself on purpose (a
 build output, a package-manager link farm).
 
+## Memory: buffered by default, streamed on request
+
+A body is read into memory by default, bounded by `maxFileSize` (50 MiB → a
+larger file gets `413`). A `Range` reads only the bytes it asked for, so a
+`bytes=0-0` on a 50 MiB file costs one byte, not 50 MiB.
+
+Set `streamThreshold` and a body at or above it is sent as a stream, read
+64 KiB at a time — so serving a file larger than the process's memory costs
+the same as serving a small one:
+
+```ts
+import { getFromDirectory, StaticFilesOptions } from 'actor-ts/http';
+
+const largeDownloads = StaticFilesOptions.create()
+  .withStreamThreshold(8 * 1024 * 1024)
+  .withMaxFileSize(8 * 1024 * 1024);
+
+const routes = getFromDirectory('downloads', '/srv/releases', largeDownloads);
+```
+
+Two things follow from setting it:
+
+- **The `413` retires.** `maxFileSize` bounds what is *buffered*, and a
+  streamed body is not. `streamThreshold` must be at or below `maxFileSize`
+  (a higher one is rejected as a contradiction), which means nothing can
+  buffer past the threshold — the cap becomes unreachable rather than
+  waived, so no bound is lost.
+- **`Content-Length` is stated for you.** A backend has nothing to measure
+  on a stream, so the handler sets the header itself. Fastify and Express
+  put it on the wire; on Hono it depends on the runtime's server
+  (`Bun.serve` re-frames a stream as chunked, `node:http` and `Deno.serve`
+  do not).
+
+`HEAD` reads nothing either way.
+
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Bodies are buffered">
-  Files are read into memory (bounded by `maxFileSize`, default 50 MiB → a
-  larger file gets `413`). This keeps serving correct and identical across
-  Bun, Node, and Deno; streaming very large files without buffering is a
-  future enhancement. Range requests still work — they slice the buffer.
+<Aside type="caution" title="Streaming is opt-in for a reason">
+  A stream body is **one-shot**, and two first-party middlewares still
+  mishandle one: `cached()` and `idempotent()` serialise a body by checking
+  for `Uint8Array`, so a streamed response is stored as an empty object and
+  the second hit serves nothing (#674); and the Express backend pipes a
+  stream with no error handler, so a mid-response failure takes the process
+  or the request with it (#979). Until those land, do not combine
+  `streamThreshold` with `cached()` / `idempotent()`, and prefer the default
+  Fastify backend for a streaming mount. Leaving streaming off is why the
+  out-of-the-box static route is unaffected by both.
 </Aside>
 
 <Aside type="note" title="Options only — no HOCON">
