@@ -368,6 +368,38 @@ describe('WorkerCluster — worker error containment', () => {
     await cluster.terminate();
   });
 
+  test('a stale event from a dead worker does not tear down its replacement', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(1)
+      .withRestartPolicy('on-failure')
+      // No delay, so the replacement is registered before the second event of
+      // the pair arrives — which is what makes the latch observable at all.
+      .withRestartMinBackoffMs(0)
+      .withRestartRandomFactor(0)
+      .withBackend(backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    const dead = backend.spawned[0]!;
+
+    dead.simulateError('uncaught in worker');
+    await awaitCondition(() => backend.spawned.length === 2 && cluster.size === 1, {
+      label: 'the replacement is registered and serving the slot',
+    });
+
+    // The second half of the pair Node and Bun emit for one throw.  The
+    // replacement now owns the same address, so without the per-worker latch
+    // this unregisters and respawns a perfectly healthy worker.
+    dead.simulateCrash(1);
+    // Absence: a zero backoff means the damage would land on the next turn.
+    await sleep(RESPAWN_SETTLED_MS);
+    expect(backend.spawned.length).toBe(2);
+    expect(cluster.size).toBe(1);
+    expect(backend.spawned[1]!.terminated).toBe(false);
+    await cluster.terminate();
+  });
+
   test('an error during the handshake rejects spawn without waiting out readyTimeoutMs', async () => {
     const backend = new FakeWorkerBackend({
       // Fired after the cluster has installed its handshake listeners, and
@@ -544,6 +576,38 @@ describe('WorkerCluster — no leaked threads on the failure paths', () => {
     await expect(WorkerCluster.spawn(workerOptions)).rejects.toThrow(/did not become ready/);
     expect(backend.spawned.length).toBe(3);
     expect(backend.spawned.map(spawned => spawned.terminated)).toEqual([true, true, true]);
+  });
+
+  test('a spawn failure also terminates a sibling still mid-handshake', async () => {
+    // Slot 1 fails immediately, slot 2 hangs.  `spawn()` therefore rejects while
+    // slot 2's handshake is still in flight, which is a worker no `handles`
+    // entry points at yet — and the only reason it can be reached at all is the
+    // in-flight set.  Without it, slot 2 keeps running until its own
+    // `readyTimeoutMs`, which here is two seconds away.
+    let spawns = 0;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (spawned) => {
+        const slot = spawns++;
+        if (slot === 0) { autoHandshake(spawned); return; }
+        if (slot === 1) { queueMicrotask(() => spawned.simulateError('slot 1 blew up')); }
+      },
+    });
+
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(3)
+      .withReadyTimeoutMs(2_000)
+      .withBackend(backend);
+    const startedAt = performance.now();
+    await expect(WorkerCluster.spawn(workerOptions)).rejects.toThrow(/slot 1 blew up/);
+
+    // Well inside slot 2's handshake window, so a leaked slot 2 would still be
+    // running here rather than already timed out.
+    expect(performance.now() - startedAt).toBeLessThan(500);
+    await awaitCondition(() => backend.spawned.every(spawned => spawned.terminated), {
+      label: 'every worker, including the one still starting, was terminated',
+      timeoutMs: 500,
+    });
   });
 
   test('terminate() does not resolve before every worker is actually gone', async () => {
