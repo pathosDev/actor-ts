@@ -63,6 +63,33 @@ import { Aside } from '@astrojs/starlight/components';
   `--skip-quarantined` when the subject of the run is the rest of the suite.
 </Aside>
 
+### Why you can believe the harness
+
+Everything above is a *computed* verdict, and a classifier that is wrong looks
+exactly like a measurement that is surprising.  So the harness is checked
+against inputs whose answer is known before the run starts:
+
+- `tests/unit/ci/StressHarnessAggregation.test.ts` drives the JUnit parser and
+  the aggregation over fixtures — a pass, a `<failure>`, an `<error>`, a
+  `<skipped/>`, an escaped test name, and the same test spelled with a POSIX
+  path, a Windows path and an absolute path, which must collapse to **one**
+  identity or "failed 3 of 5 runs" becomes three unrelated reds.
+- `tests/unit/ci/StressHarnessClassification.test.ts` runs the real script over
+  a synthetic suite whose behaviour is decided by a counter file: one test fails
+  in run 3 of 5, one fails in all five, one never fails, one is skipped.  The
+  expected verdict is a fact rather than a judgement, which is the only way to
+  tell "reported as flaky" from "misclassified".
+- `tests/unit/ci/StressHarnessQuarantine.test.ts` proves the paragraph in the
+  box above: a fixture behind the real `describeMns` guard runs when the flag is
+  exported in the parent environment, and skips under `--skip-quarantined`.
+- `tests/unit/ci/StressHarnessWatchdog.test.ts` drives it against a suite that
+  genuinely never finishes.
+
+The distinction those four protect is the one this page is built on.  A skip
+counted as a pass, or a hang counted as green, produces a clean-looking number
+for a night in which nothing was measured — and that number would then be
+quoted here.
+
 ## What repetition can and cannot find
 
 A loop drives up the probability of a **load-sensitive** flake: a fixed sleep
@@ -212,24 +239,49 @@ Tests observed failing intermittently whose cause is **not** yet established.
 Ruling causes out is not the same as establishing one, so these are listed
 without a verdict rather than guessed at:
 
-| Test | File |
-| --- | --- |
-| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` |
-| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` |
-| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` |
-| `messages are delivered asynchronously (queueMicrotask)` | `tests/unit/InMemoryTransport.test.ts` |
-| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` |
+| Test | File | Sleep ruled out? |
+| --- | --- | --- |
+| `stoppingStrategy stops a failing child` | `tests/Actor.test.ts` | Yes — wait converted |
+| `shards rebalance when a node leaves` | `tests/Cluster.test.ts` | Yes — wait converted |
+| `explicit seeds bypass discovery` | `tests/ClusterBootstrap.test.ts` | Yes — deadline loop converted |
+| `peers list is empty after shutdown` | `tests/unit/InMemoryTransport.test.ts` | Yes — the test is fully synchronous |
+| `partition + heal flips reachability without dropping the workers` | `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` | Yes — the file has no wait to convert |
 
-Ports and filesystem paths have been ruled out for all five.  All five have
-since had their fixed sleep — or, in `ClusterBootstrap`'s case, a hand-rolled
-deadline loop that fell through silently — replaced by a wait on the state
-the assertion reads, so **"the sleep was too short" is no longer an available
-explanation** for any of them.
+Ports and filesystem paths have been ruled out for all five, and so has "the
+sleep was too short" — but not by the same argument in each case, and the
+difference is what tells you where to look next:
 
-That is the value of writing an open entry down instead of guessing: if a
-nightly names one of these again, the remaining candidates are a genuinely
-slow step and an ordering inversion, and the `summary.json` says how often.
-Add the count here rather than starting over.
+- **Three had a wait, and it was converted.**  `Actor`, `Cluster` and
+  `ClusterBootstrap` each waited on a fixed delay — `ClusterBootstrap` through a
+  hand-rolled deadline loop that fell through silently — and now wait on the
+  state the assertion reads.
+- **Two never had one.**  `peers list is empty after shutdown` is synchronous
+  end to end: every step is awaited, there is no poll and no delay, so the
+  remaining suspect is the module-level registry `InMemoryTransport` shares
+  between tests.  `ParallelMultiNodeSpec.test.ts` contains **no** fixed-delay
+  wait at all; it waits through `spec.awaitMembers` / `spec.awaitMemberStatus`
+  budgets.
+
+  For that second one there is now a measurement rather than a suspicion.  A
+  15-repeat local run of the three quarantined suites (2026-08-18) caught
+  `partition + heal` once, and the failure is not an assertion at all:
+
+  ```text
+  InvalidStateError: Worker has been terminated
+      at postMessage (src/runtime/worker/WebWorkerBackend.ts:88)
+      at postMessage (src/testkit/ParallelMultiNodeSpec.ts:409)
+      at onMessage   (src/testkit/internal/MultiNodeBroker.ts:90)
+  ```
+
+  The broker forwarded a message to a worker that had already been terminated,
+  and the rejection was attributed to whichever test was running.  That is a
+  teardown race in the harness, not a timing bet in the test — so no wait, of
+  any shape, could have been the cause.
+
+That is the value of writing an open entry down instead of guessing: an entry
+whose sleep was converted and an entry that never had one lead to different
+next steps, and only the count in `summary.json` distinguishes "seen once" from
+"seen often".  Add the count here rather than starting over.
 
 ## Three suites CI does not run
 
@@ -244,11 +296,51 @@ Bun on GitHub's hosted runners cannot respawn functional worker threads after
 the first worker test — they spawn, handshake, and then never run — and the
 same resource starvation delays `LeaseMajority`'s renewal timer past the
 lease TTL, so both sides of a partition acquire and the test sees a false
-split-brain.  Neither reproduces locally or in Docker.
+split-brain.  The *hang* does not reproduce locally or in Docker.
 
 **A green CI check therefore says nothing about these three.**  A local
 `bun test` runs them; so does the real-network `integration` workflow's
 equivalent coverage.
+
+### What they actually do locally
+
+Measured with the harness on 2026-08-18, 15 repeats of exactly these three
+suites at concurrency 1 on a Windows laptop (`develop` @ `58fcc9fc`) — two
+invocations, 5 repeats then 10 — with 10 executed tests per repeat and no
+skips, so the flag really was dropped:
+
+```sh
+bun run test:stress -- --runs=15 --run-timeout=480000 \
+  tests/multi-node/LeaseMajority.test.ts \
+  tests/multi-node/ParallelPubSub.test.ts \
+  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
+```
+
+
+| Test | Failed | Verdict |
+| --- | --- | --- |
+| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
+| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
+| everything else in the three suites, `ParallelPubSub` included | 0 / 15 | — |
+
+Two conclusions, and the second one is the useful one:
+
+- **Nothing here is consistently failing.**  Both offenders are flaky at about
+  7 %, and no run hung.  So the local story and the hosted-runner story are
+  genuinely different failures, and lifting the quarantine is gated on the
+  runner pool rather than on a broken test.
+- **"Does not reproduce locally" was too strong for the failures themselves.**
+  `LeaseMajority` produced the same false split-brain locally that the hosted
+  runners produce — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
+  came back `true` — after the test's hand-rolled 25 s deadline loop
+  (`tests/multi-node/LeaseMajority.test.ts`) fell through silently and let two
+  assertions run against whatever state existed at that moment.  That loop is
+  the same shape the `ClusterBootstrap` fix removed, and it is the reason the
+  failing run took 49 s against a 24 s baseline.
+
+Fixing either is the quarantine's business (#538), not this page's.  What
+belongs here is the number: a run of these three that names one of the two
+above at roughly 1 in 15 is the *known* state, not a new finding.
 
 ### Getting them back
 
@@ -265,6 +357,18 @@ weekend pools and several `bun-version: latest` rolls, which is what has to
 be shown to have stopped happening.  A single red night resets the count, and
 each night's `summary.json` is the evidence (`greenRuns == runs`, and an empty
 `runsTimedOut` — a hung run is red however few tests failed in it).
+
+**The first two nights kept no evidence at all.**  `actions/upload-artifact`
+has defaulted `include-hidden-files` to false since v4.4, `.stress` is a
+dot-directory, and so both jobs on both nights logged `No files were found with
+the provided path: .stress/` and uploaded zero files — while `if-no-files-found`
+was left at `warn`, in jobs that are `continue-on-error` and therefore always
+conclude `success`.  Nothing went red; the sentence above was simply false.
+Both steps now set `include-hidden-files: true` and `if-no-files-found: error`,
+and `tests/unit/ci/WorkflowHygiene.test.ts` asserts the pair for every hidden
+upload path in `.github/workflows/`, so the next dot-directory artifact cannot
+repeat it.  **Nights before that fix cannot be counted**: the runs happened,
+but their `summary.json` was never kept.
 
 **Nothing accumulates that streak.**  It is counted by a human reading run
 annotations, which is the same thing that made the quarantine permanent in the
