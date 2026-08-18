@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { match, P } from 'ts-pattern';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
@@ -70,6 +71,23 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
    * Consumed by the connect that awaits it.
    */
   connectGate: Promise<void> | null = null;
+  /**
+   * When set, the next `disconnectImplementation` parks on it *after*
+   * counting itself.  `_tryConnect` tears the previous transport down before
+   * building the new one, so this is the seam that lets a stop land between
+   * those two halves of one reconnect attempt (#708).
+   */
+  disconnectGate: Promise<void> | null = null;
+  /**
+   * The driver handle the subclass owns, assigned only *after* `connectGate`
+   * settles — `MqttActor`'s exact shape, where `this.client` is set inside
+   * the `'connect'` callback, i.e. after the whole handshake.  Bumping a
+   * counter cannot express "the teardown closed nothing", which is the
+   * observable at the heart of #708; a handle can.
+   */
+  liveHandle: string | null = null;
+  /** Every handle `disconnectImplementation` actually closed, in order. */
+  closedHandles: string[] = [];
 
   constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
@@ -96,11 +114,21 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
       this.connectGate = null;
       await gate;
     }
+    this.liveHandle = `client-${this.connectAttempts}`;
   }
   protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
     // Live handles die with the connection; the desired set does not.
     this.appliedSubscriptions = [];
+    if (this.liveHandle !== null) {
+      this.closedHandles.push(this.liveHandle);
+      this.liveHandle = null;
+    }
+    if (this.disconnectGate) {
+      const gate = this.disconnectGate;
+      this.disconnectGate = null;
+      await gate;
+    }
   }
 
   protected override initialSubscriptions(): Iterable<readonly [string, string]> {
@@ -139,6 +167,19 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
 
   /** How many `Terminated` messages actually removed a subscriber (#1111). */
   terminatedPrunes = 0;
+
+  /**
+   * Counted *after* `super.postStop()` resolves, so a test can wait on the
+   * stop having fully completed rather than on a proxy an earlier step
+   * already satisfies — `connectionState` reads `disconnected` after a mere
+   * connect failure, long before any stop (#708).
+   */
+  postStopCalls = 0;
+
+  override async postStop(): Promise<void> {
+    await super.postStop();
+    this.postStopCalls++;
+  }
 
   override onReceive(command: FakeCommand): void {
     // Exactly the seam `subscribeRef`'s docs prescribe: the base class cannot
@@ -924,4 +965,295 @@ describe('BrokerActor — subscribers', () => {
     await sys.terminate();
   });
 
+});
+
+/* ------------------- Stop during an in-flight reconnect ----------------- */
+
+/**
+ * A reconnect attempt runs on the **system** scheduler, detached from the
+ * mailbox, and `Scheduler` settles a one-shot handle *before* invoking it —
+ * so `postStop`'s `cancel()` is a no-op against an attempt that has already
+ * begun, and that attempt then resumes on a terminated actor (#708).
+ *
+ * Every test here drives the actor into a reconnect cycle first, because the
+ * *first* connect cannot race a stop: `preStart` is awaited by the cell.
+ *
+ * The delay is pinned to exactly 20 ms (`factor: 1`, `randomFactor: 0`) so a
+ * `RecordingScheduler` can count the broker's own wake-ups by value and the
+ * "no timer was armed" assertion needs no timing window at all — the
+ * unguarded `_handleReconnect` re-arms synchronously from the catch block.
+ */
+const RECONNECT_EVERY_20_MS = {
+  initialDelayMs: 20, maxDelayMs: 20, factor: 1, randomFactor: 0,
+} as const;
+
+describe('BrokerActor — stop during an in-flight reconnect (#708)', () => {
+  test('a connect that resolves after the stop is abandoned, not adopted', async () => {
+    const sys = makeSystem('stop-race-resolve');
+    let connectedEvents = 0;
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(_: unknown): void { connectedEvents++; }
+      })()),
+      BrokerConnected,
+    );
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      // Fail attempt 1 so attempt 2 runs on the scheduler, where a stop can
+      // interleave with it.
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    // Park attempt 2 inside `connectImplementation`, after its replay pass.
+    let releaseConnect!: () => void;
+    broker.connectGate = new Promise<void>((resolve) => { releaseConnect = resolve; });
+    await awaitCondition(() => broker.connectAttempts === 2, {
+      label: 'the scheduled reconnect entered connectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the connect was parked',
+    });
+    // Both teardowns so far found no handle to close: the subclass assigns
+    // its handle only after the gate, exactly as `MqttActor` does.
+    expect(broker.closedHandles).toEqual([]);
+
+    releaseConnect();
+    // Settles either way: the guard closes the connection it just opened,
+    // the unguarded version adopts it.
+    await awaitCondition(
+      () => broker.closedHandles.length === 1 || broker.publicConnectionState() === 'connected',
+      { label: 'the resumed connect finished one way or the other' },
+    );
+
+    // The handle the subclass acquired post-mortem was released…
+    expect(broker.closedHandles).toEqual(['client-2']);
+    expect(broker.liveHandle).toBeNull();
+    // …the state machine did not go back to `connected`…
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    // …and no `BrokerConnected` was announced for an actor with no owner.
+    expect(connectedEvents).toBe(0);
+    await sys.terminate();
+  });
+
+  test('a connect that rejects after the stop arms no further attempt', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'stop-race-reject', scheduler });
+    const twentyMillisecondWakeUps = (): number =>
+      scheduler.delays.filter((delay) => delay === 20).length;
+
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    let rejectConnect!: (cause: Error) => void;
+    broker.connectGate = new Promise<void>((_, reject) => { rejectConnect = reject; });
+    await awaitCondition(() => broker.connectAttempts === 2, {
+      label: 'the scheduled reconnect entered connectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the connect was parked',
+    });
+    const attemptsAtStop = broker.connectAttempts;
+    const disconnectsAtStop = broker.disconnects;
+    const wakeUpsAtStop = twentyMillisecondWakeUps();
+
+    // Keep every later attempt failing, so a surviving cycle shows up as an
+    // unbounded loop rather than converging on one lucky success.
+    // `maxAttempts` defaults to `Number.POSITIVE_INFINITY`, so nothing else
+    // would ever stop it.
+    broker.failNextConnects = 100;
+    rejectConnect(new Error('connect failed after the stop'));
+    // ~10 backoff windows.  The scheduler assertion below does not need
+    // them — the re-arm is synchronous — but the attempt count does.
+    await sleep(200);
+
+    expect(twentyMillisecondWakeUps()).toBe(wakeUpsAtStop);
+    expect(broker.connectAttempts).toBe(attemptsAtStop);
+    // The half-built transport was closed exactly once, by the abandon path.
+    expect(broker.disconnects).toBe(disconnectsAtStop + 1);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    await sys.terminate();
+  });
+
+  test('an attempt whose teardown outlived the stop never opens a connection', async () => {
+    // The worst shape of all: the stop lands between the attempt's
+    // `_closeTransport()` and its `connectImplementation()`, so without a
+    // second liveness check the *entire* handshake happens post-mortem.
+    const sys = makeSystem('stop-race-teardown');
+    let connectedEvents = 0;
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(_: unknown): void { connectedEvents++; }
+      })()),
+      BrokerConnected,
+    );
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: RECONNECT_EVERY_20_MS },
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+
+    // Park attempt 2 in the teardown that precedes its connect.
+    let releaseDisconnect!: () => void;
+    broker.disconnectGate = new Promise<void>((resolve) => { releaseDisconnect = resolve; });
+    await awaitCondition(() => broker.disconnects === 1, {
+      label: 'the scheduled reconnect entered disconnectImplementation',
+    });
+
+    ref.stop();
+    await awaitCondition(() => broker.postStopCalls === 1, {
+      label: 'postStop ran to completion while the teardown was parked',
+    });
+    expect(broker.connectAttempts).toBe(1);
+
+    releaseDisconnect();
+    // Everything the unguarded path does from here is microtasks —
+    // `connectImplementation` bumps its counter on its first line — so this
+    // window is a settling budget, not a race.
+    await sleep(120);
+
+    expect(broker.connectAttempts).toBe(1);
+    expect(broker.liveHandle).toBeNull();
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    expect(connectedEvents).toBe(0);
+    await sys.terminate();
+  });
+});
+
+/* ------------------ The documented Terminated arm (#709) ---------------- */
+
+type SubscribeTopicCommand = {
+  readonly kind: 'subscribe';
+  readonly topic: string;
+  readonly subscriber: ActorRef<unknown>;
+};
+type FanOutCommand = {
+  readonly kind: 'fan-out';
+  readonly topic: string;
+  readonly payload: string;
+};
+type RecipeCommand = SubscribeTopicCommand | FanOutCommand;
+
+/**
+ * A `BrokerActor` written exactly the way `subscribeRef`'s docs prescribe: the
+ * `Terminated` arm lives *inside* the matcher and delegates to a private
+ * `onTerminated`, and it is the **match input** — not the parameter, which
+ * `Actor<Command>` fixes — that is widened to admit the signal.
+ *
+ * The point of compiling it here is that the widening is what makes the arm
+ * mandatory: drop the `.with(P.instanceOf(Terminated), …)` line and
+ * `.exhaustive()` stops compiling with `NonExhaustiveError<Terminated>`, so
+ * the omission #709 is titled after becomes a build failure instead of a
+ * `NonExhaustiveError` thrown at the first subscriber death.  `P.instanceOf`
+ * does *not* typecheck against an un-widened union, so a recipe that drops
+ * the type argument does not compile either — `typecheck:dev` is therefore
+ * the thing keeping the published recipe honest.
+ *
+ * Counters are **static** on purpose: a restart replaces the instance, so an
+ * instance field could not tell "never restarted" from "restarted and the
+ * new instance has not counted yet".
+ */
+class RecipeBroker extends BrokerActor<FakeOptions, RecipeCommand, string, string> {
+  static connects = 0;
+  static prunes = 0;
+
+  constructor(options: Partial<FakeOptions> = {}) { super(options); }
+
+  protected configKey(): string { return 'actor-ts.io.broker.recipe'; }
+  protected builtInDefaultOptions(): Partial<FakeOptions> { return { endpoint: 'recipe:1' }; }
+  protected readOptionsFromConfig(_config: Config): Partial<FakeOptions> { return {}; }
+  protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
+  protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
+
+  protected async connectImplementation(): Promise<void> { RecipeBroker.connects++; }
+  protected async disconnectImplementation(): Promise<void> { /* nothing to close */ }
+  protected async dispatchOutgoing(): Promise<void> { /* never sends */ }
+
+  override onReceive(command: RecipeCommand): void {
+    match<RecipeCommand | Terminated>(command)
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
+      .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'fan-out' }, (m) => this.onFanOut(m))
+      .exhaustive();
+  }
+
+  private onTerminated(signal: Terminated): void {
+    if (this.pruneTerminatedSubscriber(signal.actor)) RecipeBroker.prunes++;
+  }
+
+  private onSubscribe(command: SubscribeTopicCommand): void {
+    this.subscribeRef(command.topic, command.subscriber);
+  }
+
+  private onFanOut(command: FanOutCommand): void {
+    this.fanOutToTopic(command.topic, command.payload);
+  }
+
+  publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
+  publicConnectionState(): string { return this.connectionState; }
+}
+
+describe('BrokerActor — the documented Terminated arm (#709)', () => {
+  test('a subscriber death prunes the topic and leaves the bridge running', async () => {
+    // The prune half is covered for a subclass that keeps its own counter
+    // (#1111).  What was never asserted is the *availability* half this issue
+    // is titled after: that handling `Terminated` costs no restart, i.e. no
+    // broker reconnect.  A subclass that omits the arm fails `.exhaustive()`,
+    // the default supervisor restarts it, `preRestart` → `postStop` tears the
+    // transport down, and `postRestart` → `preStart` reconnects — eleven
+    // subscriber deaths inside a minute then stop the bridge for good.
+    RecipeBroker.connects = 0;
+    RecipeBroker.prunes = 0;
+    const sys = makeSystem('recipe-terminated');
+
+    let resolveBroker!: (broker: RecipeBroker) => void;
+    const brokerReady = new Promise<RecipeBroker>((resolve) => { resolveBroker = resolve; });
+    const ref = sys.spawnAnonymous(() => {
+      const broker = new RecipeBroker();
+      resolveBroker(broker);
+      return broker as unknown as Actor<RecipeCommand>;
+    }) as ActorRef<RecipeCommand>;
+    const broker = await brokerReady;
+    await awaitCondition(() => RecipeBroker.connects === 1, { label: 'the broker connected' });
+
+    const doomed = new ProbeActor();
+    const doomedRef = sys.spawnAnonymous(() => doomed as unknown as Actor<unknown>);
+    const survivor = new ProbeActor();
+    const survivorRef = sys.spawnAnonymous(() => survivor as unknown as Actor<unknown>);
+    ref.tell({ kind: 'subscribe', topic: 'a', subscriber: doomedRef });
+    ref.tell({ kind: 'subscribe', topic: 'a', subscriber: survivorRef });
+    await awaitCondition(() => broker.publicSubscriberCount('a') === 2, {
+      label: 'both subscribers registered',
+    });
+
+    doomedRef.stop();
+    await awaitCondition(() => RecipeBroker.prunes === 1, {
+      label: 'the matcher routed Terminated into onTerminated',
+    });
+
+    expect(broker.publicSubscriberCount('a')).toBe(1);
+    // Never restarted: one connect for the whole test.  `connectImplementation`
+    // would run a second time on the restart path.
+    expect(RecipeBroker.connects).toBe(1);
+    expect(broker.publicConnectionState()).toBe('connected');
+
+    // And the bridge still works — the same instance, still fanning out.
+    ref.tell({ kind: 'fan-out', topic: 'a', payload: 'after' });
+    await awaitCondition(() => survivor.received.length === 1, {
+      label: 'the surviving subscriber still receives fan-out',
+    });
+    expect(survivor.received).toEqual(['after']);
+    expect(doomed.received).toEqual([]);
+    await sys.terminate();
+  });
 });
