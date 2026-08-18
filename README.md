@@ -82,7 +82,8 @@ A short tour of what's in the box:
   `getFromDirectory` — MIME detection, conditional requests, Range,
   directory browsing).
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
-  NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
+  NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP and IMAP/SMTP email
+  integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
 - **Typed options + fail-fast validation** — one fluent `XOptions` builder per

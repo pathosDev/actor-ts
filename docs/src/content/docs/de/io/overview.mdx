@@ -1,6 +1,6 @@
 ---
 title: I/O im Überblick
-description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
+description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP, E-Mail) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
 ---
 
 Actors erledigen In-Process-Arbeit sauber; die **Außenwelt** ist
@@ -63,6 +63,7 @@ Subklassen implementieren drei Hooks (`connectImplementation`, `disconnectImplem
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle — ausgehende Verbindung. |
 | `TcpServerActor` | Raw TCP | Eigene Protokolle — bindet einen Port, bedient jede angenommene Verbindung. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
+| `EmailBridgeActor` | IMAP (rein) + SMTP (raus) | Ops-/Alerting-Bridge — ein Postfach als Quelle, gepooltes SMTP als Senke. |
 
 Jeder hat seine eigene Seite in diesem Abschnitt.  Diese Übersicht
 behandelt das **gemeinsame Muster**, das sie alle teilen.
@@ -288,7 +289,7 @@ protokollspezifischen Teile.
   [gRPC](/de/io/grpc/), [WebSocket-Client](/de/io/websocket/),
   [WebSocket-Server](/de/http/websocket/),
   [SSE](/de/io/sse/), [TCP](/de/io/tcp/),
-  [UDP](/de/io/udp/).
+  [UDP](/de/io/udp/), [E-Mail-Bridge](/de/io/email-bridge/).
 - **[BrokerActor-Basisklasse](/de/io/broker-actor-base/)** —
   der gemeinsame Lifecycle und die gemeinsame Konfiguration.
 - **[HTTP-Übersicht](/de/http/overview/)** — das separate

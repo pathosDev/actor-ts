@@ -483,6 +483,10 @@ const PAGES = [
    'UDP',
    'UdpSocketActor — datagram-based I/O for ports like syslog and DNS.'],
 
+  ['io/email-bridge.md',
+   'Email bridge',
+   'EmailBridgeActor — a mailbox as message source (IMAP IDLE) and SMTP as sink, with at-least-once settled by IMAP flags.'],
+
   ['http/overview.md',
    'HTTP overview',
    'HttpExtension + pluggable backends — single API across Fastify, Express, Hono.'],
