@@ -98,8 +98,8 @@ function parsedFrame(json: string): WireMessage {
 
 describe('DistributedData — a `__proto__` store key (#767)', () => {
   test('reaches the peer it is gossiped to', async () => {
-    const a = await startNode('proto-a', 47_301);
-    const b = await startNode('proto-b', 47_302, ['proto-a@h:47301']);
+    const a = await startNode('proto-a', 48_301);
+    const b = await startNode('proto-b', 48_302, ['proto-a@h:48301']);
     await waitFor(() => a.upMembers().length >= 2 && b.upMembers().length >= 2);
 
     const dataA = a.system.extension(DistributedDataId).start(a);
@@ -140,16 +140,16 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
     // The exploit walkthrough end to end: a hostile frame plants the key on
     // one replica, which then holds it, reports it through `keys()`, and never
     // tells anyone else — converging nowhere while looking healthy.
-    const a = await startNode('proto-relay-a', 47_311);
-    const b = await startNode('proto-relay-b', 47_312, ['proto-relay-a@h:47311']);
+    const a = await startNode('proto-relay-a', 48_311);
+    const b = await startNode('proto-relay-b', 48_312, ['proto-relay-a@h:48311']);
     await waitFor(() => a.upMembers().length >= 2 && b.upMembers().length >= 2);
 
     const dataA = a.system.extension(DistributedDataId).start(a);
     const dataB = b.system.extension(DistributedDataId).start(b);
     await sleep(60);
 
-    const evil = await attacker('proto-evil', 47_313);
-    const from = JSON.stringify(new NodeAddress('proto-evil', 'h', 47_313).toJSON());
+    const evil = await attacker('proto-evil', 48_313);
+    const from = JSON.stringify(new NodeAddress('proto-evil', 'h', 48_313).toJSON());
     const planted = JSON.stringify(GCounter.empty().increment('proto-evil', 6).toJSON());
     evil.send(a.selfAddress, parsedFrame(
       `{"kind":"ddata-gossip","from":${from},"entries":{"__proto__":${planted}}}`,
