@@ -448,10 +448,13 @@ const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOpti
 
 Zwei Grenzen, die man kennen sollte:
 
-- **Sie ist prozesslokal.**  Ein Neustart des Prozesses vergisst die
-  Untergrenze.  Eine dauerhafte Untergrenze bräuchte vertrauenswürdigen
-  Zustand außerhalb des Buckets, wofür das Framework noch keine Naht
-  hat.
+- **Sie gilt je Store-Instanz, nicht je Prozess.**  Ein Neustart vergisst
+  die Untergrenze — und alles andere, was einen neuen Store baut, ebenso,
+  denn jeder Knoten legt seinen eigenen an.  Ein Shard-Rebalance übergibt
+  dem nächsten Schreiber daher eine kalte Untergrenze, ohne dass irgendwo
+  ein Neustart stattfand.  Eine dauerhafte Untergrenze bräuchte
+  vertrauenswürdigen Zustand außerhalb des Buckets, wofür das Framework
+  noch keine Naht hat.
 - **Sie schlägt bei einem legitimen Delete-and-Recreate eines anderen
   Schreibers an.**  Ein neu angelegter Record beginnt wieder bei
   Revision 1.  Ein Delete über *diesen* Store nimmt die Untergrenze mit,
