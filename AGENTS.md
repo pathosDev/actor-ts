@@ -254,9 +254,62 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   primitives (HTTP serve, sockets, workers, SQLite, …) live behind small
   abstractions in **`src/runtime/`** and auto-detect at startup.
 - **Optional peer dependencies:** `import()` them lazily with a clear
-  *"install it with `bun add …`"* error on failure. Declare them in
-  `peerDependencies` **and** `peerDependenciesMeta.<pkg>.optional = true`,
-  and add a matching `devDependency` so the test suite can exercise them.
+  *"install it with `bun add …`"* error on failure, and declare them in
+  `peerDependencies` **and** `peerDependenciesMeta.<pkg>.optional = true`.
+
+  Then declare the package a **second** time, in **one of exactly two
+  dependency contexts**. Which one is not a preference — it follows from how
+  the adapter is actually exercised:
+
+  - **Root `devDependencies`** when a suite under `bun test`, or a
+    `tests/smoke/` case, imports the **real** module. What that buys is
+    narrower than it looks, and worth stating exactly, because the obvious
+    answer is wrong: installing a package makes **no** existing suite
+    exercise it. Nothing in `tests/` is conditioned on module availability,
+    and every adapter path runs against a hand-rolled fake
+    (`FakeCassandraClient`, `FakeMemcached`, `mock.module('@aws-sdk/client-s3',
+    …)`) — which is the right shape for fast feedback and stays. What the
+    fakes cannot cover is the seam between themselves and reality: each
+    adapter reaches its peer through a hand-written structural type
+    (`MemjsClientStatic`, `CassandraDriver`, `WebsocketServerLike`), and a
+    fake satisfies that stub by construction, so the stub is checked against
+    nothing. A **root devDependency is justified by a test that imports the
+    real module and asserts the shape the adapter destructures** — see
+    `tests/unit/ci/OptionalPeerModuleShapes.test.ts`. Use a **literal**
+    specifier there: it is the only form that pins the package at the install,
+    and the only one `knip` can attribute to the manifest entry, which is what
+    keeps it out of `knip.jsonc`'s `ignoreDependencies`.
+  - **`tests/integration/brokers/package.json`** when the adapter earns its
+    coverage against a live broker in Docker. Those packages are absent from
+    the root `node_modules` **by design** — the rationale is in
+    `tsconfig.dev.json`'s exclude entry and
+    `tests/integration/brokers/README.md` — and that is what keeps the root
+    install tiny (two runtime dependencies) and keeps heavyweight driver
+    closures out of `bun audit`'s surface.
+
+  A peer in **neither** context is the defect (#676): nothing installs it, so
+  the structural stub standing in for its types is checked against nothing,
+  and no gate notices — `bun run typecheck` never compiles a call site and the
+  adapter suites all pass against their fakes.
+  `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the split, in both
+  directions, so it cannot rot silently again.
+
+  Three traps, all silent:
+
+  - **`bun add <pkg>` no-ops** when `<pkg>` is already an optional peer — bun
+    treats it as declared and does nothing. Write the `devDependencies` entry
+    **by hand** and materialise it with `bun install`.
+  - **A package that ships no types of its own** (`ws`, `memjs`) needs its
+    `@types/*` alongside, or the literal import fails `typecheck:dev` under
+    `noImplicitAny`.
+  - **A root devDependency enters `bun audit`'s surface**, so `bun run
+    lint:audit` is the gate that decides whether a peer *can* live there at
+    all — a driver whose closure carries an unfixable high advisory cannot,
+    and that is a security decision, not a packaging one. Do not reach for a
+    new `--ignore`: every suppression in `lint:audit` predates the gate, and
+    adding one to get a change through is how a gate stops gating. Record the
+    gap in the guard's allow-list instead and raise it. This is why
+    `cassandra-driver` is still declared nowhere (#676).
 
 ## Code style
 

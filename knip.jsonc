@@ -46,15 +46,32 @@
   // `SqliteJournal.ts` / `SqliteClient.ts`, `express` from `ExpressBackend.ts`.
   // The rest of the optional peers resolve fine and are deliberately not listed:
   // an ignore entry that is not needed hides a finding later.
+  //
+  // `ws` and `@types/ws` are the exception that had to be measured rather than
+  // reasoned about (#676). The two peers added with them — `fzstd` and `memjs`
+  // — are attributed from a literal `await import()` in
+  // `tests/unit/ci/OptionalPeerModuleShapes.test.ts` and so are deliberately
+  // NOT listed here; `@types/memjs` is attributed too, through the `memjs`
+  // import it types. `ws` is not, and neither is its type package:
+  // knip credits neither from that same file, and a static
+  // `import { WebSocketServer } from 'ws'` does not move it either (both forms
+  // were tried). `ws` ships no declarations of its own and carries an `exports`
+  // map with no `types` condition, so the runtime package and `@types/ws` are
+  // reached by different resolution paths and knip lands on neither. The import
+  // is real and asserted — see the test above, and
+  // `tests/smoke/cases/20-express-upgrade-middleware.mjs`, which imports `ws`
+  // on all three runtimes.
   "ignoreDependencies": [
     "@fastify/static",
     "@hono/node-server",
     "@hono/node-ws",
     "@types/better-sqlite3",
     "@types/express",
+    "@types/ws",
     "better-sqlite3",
     "express",
-    "hono"
+    "hono",
+    "ws"
   ],
 
   "rules": {
