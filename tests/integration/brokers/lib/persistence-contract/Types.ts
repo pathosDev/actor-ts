@@ -47,6 +47,21 @@ interface HarnessBase {
 export type JournalCapabilities = {
   /** Journal round-trips `tags` on append/read.  Default `true`. */
   readonly tags?: boolean;
+  /**
+   * Journal implements the optional `raiseCompactionMark`.  Default `true`.
+   *
+   * `false` is a *conforming* answer, not a gap to be fixed:
+   * `src/persistence/Journal.ts` documents the method as "optional, and
+   * absence is meaningful" — a journal that cannot record a mark
+   * independently of its events omits it, and `migrateBetweenJournals`
+   * refuses a compacted stream rather than silently renumbering it.  Every
+   * in-tree journal implements it, which is why the two scenarios that
+   * exercise it could assert its presence unnoticed (#536).
+   *
+   * Declared on the harness rather than sniffed off the store because `skip`
+   * runs *before* `make()` — the scenario has no journal to inspect yet.
+   */
+  readonly compactionMark?: boolean;
 };
 
 export interface JournalHarness extends HarnessBase {

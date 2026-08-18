@@ -13,6 +13,22 @@ import { offsetStart } from '../../../../../src/persistence/query/PersistenceQue
 import { assert, assertEqual, expectThrows } from './Assert.js';
 import { closeQuietly, type ContractScenario, type JournalHarness } from './Types.js';
 
+/**
+ * `raiseCompactionMark` is optional and its absence is meaningful
+ * (`src/persistence/Journal.ts`), so a harness that declares it absent skips
+ * these two scenarios instead of failing them.
+ *
+ * Every in-tree journal implements the method, which is why asserting its
+ * presence inside `run` went unnoticed: the suite has to be able to certify a
+ * *conforming* journal that omits it, not only the eleven that implement it
+ * (#536).
+ */
+function compactionMarkSkip(harness: JournalHarness): string | null {
+  return harness.capabilities?.compactionMark === false
+    ? 'journal does not implement the optional raiseCompactionMark'
+    : null;
+}
+
 export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
   return [
     {
@@ -362,6 +378,7 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
     },
     {
       name: 'raiseCompactionMark seeds the high-water mark of a stream with no events',
+      skip: compactionMarkSkip,
       async run(harness) {
         const journal = await harness.make();
         const persistenceId = harness.pid('seed-mark');
@@ -370,7 +387,12 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         // renumbers every surviving event and detaches it from its snapshot.
         const raiseCompactionMark = journal.raiseCompactionMark?.bind(journal);
         try {
-          assert(raiseCompactionMark !== undefined, 'journal implements raiseCompactionMark');
+          // Reached only when the harness declared the capability, so this is a
+          // declaration-versus-reality check, not a conformance requirement.
+          assert(
+            raiseCompactionMark !== undefined,
+            'harness does not declare capabilities.compactionMark: false, so the journal must implement raiseCompactionMark',
+          );
           await raiseCompactionMark!(persistenceId, 4);
           assertEqual(await journal.highestSeq(persistenceId), 4, 'the mark becomes the high-water mark');
           assertEqual(await journal.read(persistenceId, 1), [], 'no events are invented');
@@ -391,12 +413,16 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
     },
     {
       name: 'raiseCompactionMark is monotonic and never deletes events',
+      skip: compactionMarkSkip,
       async run(harness) {
         const journal = await harness.make();
         const persistenceId = harness.pid('monotonic-mark');
         const raiseCompactionMark = journal.raiseCompactionMark?.bind(journal);
         try {
-          assert(raiseCompactionMark !== undefined, 'journal implements raiseCompactionMark');
+          assert(
+            raiseCompactionMark !== undefined,
+            'harness does not declare capabilities.compactionMark: false, so the journal must implement raiseCompactionMark',
+          );
           await journal.append(persistenceId, [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
           // Below the head: a sequence number handed out once may never be
           // handed out again, so this must not rewind anything.
