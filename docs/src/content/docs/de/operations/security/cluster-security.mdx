@@ -789,33 +789,76 @@ Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
 Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
 die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
 diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
-ein einziger Record darin angesehen wird. Es gibt keinen
-Stellknopf: verglichen wird ein Peer mit *sich selbst*, das
-braucht kein Uhren-Skew-Budget. Und eine Sequence, die zu weit
-vor der Uhr des Empfängers liegt, um plausibel zu sein, wird zwar
-gemerged, aber nie als Marke übernommen — sonst würde ein
-einziger Frame mit `Number.MAX_SAFE_INTEGER` den echten Knoten
-für immer verstummen lassen, genau der Exploit, den die
-Versionsgrenze oben verhindert.
+ein einziger Record darin angesehen wird. Der Vergleich selbst
+braucht keinen Stellknopf: verglichen wird ein Peer mit *sich
+selbst*, damit kommt kein Uhren-Skew-Budget ins Spiel.
+
+Eine Sequence muss außerdem **plausibel** sein — eine endliche
+Zahl, die nicht weiter vor der Uhr des Empfängers liegt als
+`maxVersionSkewMs`, dasselbe Budget, das eine gegossipte Version
+bekommt, denn die Zahl wird aus der Wanduhr des Autors gestempelt.
+Ein Frame außerhalb dieses Budgets wird abgewiesen, genau wie eine
+Wiederholung.
+
+Angefangen hat das als die schwächere Regel: der Frame wurde
+gemerged, und nur das *Übernehmen* seiner Zahl als Marke wurde
+verweigert — mit dem Argument, ein Frame mit
+`Number.MAX_SAFE_INTEGER` könne kein Mitschnitt eines echten
+Frames sein. Gefälscht ist bei diesem Angriff aber nur die
+*Sequence*. Das `members`-Array ist weiterhin der Mitschnitt, und
+nichts auf diesem Draht bindet beides aneinander — ein
+mitgeschnittener Frame mit einem umgeschriebenen Feld wurde also
+gemerged, ließ die Marke unangetastet und wurde deshalb bei jeder
+Zustellung erneut gemerged, unbegrenzt, gegen einen Empfänger, der
+eine Marke für einen noch lebenden Absender hielt. Ihn abzuweisen
+kostet nichts: die Marke bleibt dort, wo der letzte plausible
+Frame sie hinterlassen hat, der nächste Frame des echten Knotens
+überbietet sie also weiterhin und landet. Den echten Knoten für
+immer verstummen zu lassen — der Exploit, den die Versionsgrenze
+oben verhindert — ist damit von beiden Seiten geschlossen statt
+von einer.
+
+Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
+*Prozess* unter diesem `system@host:port` antwortet, einmal pro
+`Cluster.join` geprägt. Sie wird bewusst mitgeführt und noch nicht
+ausgewertet. Das Feld ist auf dem Draht optional, damit ein Knoten
+jeder der beiden Versionen einen der anderen versteht — und ein
+optionales Feld umgeht man durch *Weglassen*, eine auf eine
+Abweichung gestützte Ablehnung wäre also eine, aus der ein
+Angreifer aussteigt und in die ein legitimer Peer der Vorversion
+hineinläuft. Das Feld verpflichtend zu machen bricht alle acht
+adresstragenden Frame-Felder auf einmal und wartet auf die
+Versionierung des Wire-Protokolls. Aus `toString`, `equals` und
+`compareTo` bleibt es heraus, an der Identität eines Knotens
+ändert sich also nichts.
+
+Der eine Vergleich, der keine Einigung braucht, wird gezogen: Ein
+Record, den ein Peer *über diesen Knoten* schickt, behält die
+eigene Inkarnation dieses Knotens. Die Beförderung durch den
+Leader ist die einzige Aussage über sich selbst, die ein Knoten
+annimmt, und sie wird als Ganzes gemerged, Adresse inklusive —
+ohne diese Ersetzung wäre der Identifikator des lokalen Records
+also das, was der letzte befördernde Peer gerade behauptet hat.
 
 Zwei Dinge schließt das **nicht**. Erstens einen Peer, der sich
 Standing erworben hat und einen *frischen* Frame komponiert, der
 eine gelöschte Adresse mit ihrer alten Version nennt: Das ist eine
-Fälschung, kein Replay, und um sie von einer echten
-Wiederentdeckung zu unterscheiden, braucht die Adresse selbst
-eine Inkarnationsidentität — der Neustart eines Knotens muss ein
-*anderes* Member unter demselben `host:port` sein.
+Fälschung, kein Replay, und um sie abzuweisen, müsste die
+Inkarnation **verpflichtend** sein statt nur mitgeführt — also
+genau der Wire-Bruch von oben.
 
-Zweitens — und es ist dieselbe fehlende Inkarnationsidentität —
-lebt die Marke nur so lange wie ihr Absender. Ein gelöschtes
-Member verliert seine Marke, und eine fehlende Marke lässt alles
-zu. Sobald also der **Absender** selbst evakuiert wurde (eine
-gewöhnliche Partition trifft Absender und Subjekt gemeinsam),
-lässt sich die mitgeschnittene Konversation in Aufnahmereihenfolge
-abspielen: Der Selbstdatensatz des Absenders wird immer
-zugelassen, wodurch er wiederbelebt *und* die Marke aus dem alten
-Frame neu gesetzt wird — und der nächste mitgeschnittene Frame
-spricht dann für das Subjekt.
+Zweitens lebt die Marke nur so lange wie ihr Absender. Ein
+gelöschtes Member verliert seine Marke, und eine fehlende Marke
+lässt alles zu. Sobald also der **Absender** selbst evakuiert
+wurde (eine gewöhnliche Partition trifft Absender und Subjekt
+gemeinsam), lässt sich die mitgeschnittene Konversation in
+Aufnahmereihenfolge abspielen: Der Selbstdatensatz des Absenders
+wird immer zugelassen, wodurch er wiederbelebt *und* die Marke aus
+dem alten Frame neu gesetzt wird — und der nächste mitgeschnittene
+Frame spricht dann für das Subjekt. Eine Inkarnationsidentität
+schließt auch das nicht: Ein Knoten, der heruntergefahren wurde,
+während er noch läuft, antwortet unter derselben Inkarnation, die
+der Mitschnitt trägt.
 
 Beide Restrisiken werden separat verfolgt.
 

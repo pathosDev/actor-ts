@@ -131,6 +131,10 @@ describe('an address says which process is answering at it', () => {
     const node = await startJoiningNode('incarnation-self', 9_602);
     nodes.push(node);
 
+    // Asserted present before it is compared: `toBe(undefined) === undefined`
+    // would hold for a node that mints nothing at all, which is the state this
+    // case exists to rule out.
+    expect(node.cluster.selfAddress.incarnation).toBeString();
     const self = internals(node.cluster).members.get(node.address.toString());
     expect(self?.address.incarnation).toBe(node.cluster.selfAddress.incarnation);
     // `gossipTick` serialises exactly this, so it is what a peer receives.
@@ -265,6 +269,8 @@ describe('a peer cannot restate this node own incarnation', () => {
     nodes.push(node);
     const selfKey = node.address.toString();
     const localIncarnation = node.cluster.selfAddress.incarnation;
+    expect(localIncarnation).toBeString();
+    expect(localIncarnation).not.toBe('forged-by-a-peer');
     expect(internals(node.cluster).members.get(selfKey)?.status).toBe('joining');
 
     const leader = new NodeAddress('incarnation-promote', '10.0.94.2', 9_690);
@@ -292,6 +298,7 @@ describe('a peer cannot restate this node own incarnation', () => {
     nodes.push(node);
     const selfKey = node.address.toString();
     const localIncarnation = node.cluster.selfAddress.incarnation;
+    expect(localIncarnation).toBeString();
 
     const leader = new NodeAddress('incarnation-blank', '10.0.94.2', 9_690);
     gossipFrom(node.cluster, leader, Date.now(), [{

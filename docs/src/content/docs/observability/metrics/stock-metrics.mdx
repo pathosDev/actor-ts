@@ -171,10 +171,12 @@ For monitoring cluster health:
   on `reason="map-cap"` means `max-members` / `max-tombstones` is
   full. `reason="timestamp-skew"` is a tombstone whose `removedAt` is
   not a plausible instant. `reason="replayed-frame"` is a whole gossip
-  frame that did not out-number the last one accepted from that peer —
-  a duplicate, or someone re-sending a frame captured off the wire.
-  The counter is incremented once per frame with that frame's count,
-  and the label set is closed at those four values.
+  frame whose `sequence` did not out-number the last one accepted from
+  that peer, or was not a finite number within `maxVersionSkewMs` of
+  this node's clock — a duplicate, someone re-sending a frame captured
+  off the wire, or someone re-sending one with its `sequence` rewritten
+  to clear the mark. The counter is incremented once per frame with
+  that frame's count, and the label set is closed at those four values.
 - `cluster_envelope_from_mismatch_total` should sit at zero too. It
   moves when an envelope's payload names a sender other than the
   connection it arrived on — a client old enough to still send that

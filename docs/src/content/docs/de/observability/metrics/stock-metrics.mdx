@@ -187,10 +187,13 @@ Zum Monitoring der Cluster-Gesundheit:
   heißt, `max-members` / `max-tombstones` ist voll.
   `reason="timestamp-skew"` ist ein Tombstone, dessen `removedAt` kein
   plausibler Zeitpunkt ist. `reason="replayed-frame"` ist ein ganzer
-  Gossip-Frame, der den letzten von diesem Peer akzeptierten nicht
-  überbietet — ein Duplikat, oder jemand sendet einen vom Draht
-  mitgeschnittenen Frame erneut. Der Zähler wird einmal pro Frame um
-  dessen Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
+  Gossip-Frame, dessen `sequence` den letzten von diesem Peer
+  akzeptierten nicht überbietet oder keine endliche Zahl innerhalb von
+  `maxVersionSkewMs` um die Uhr dieses Knotens ist — ein Duplikat,
+  jemand sendet einen vom Draht mitgeschnittenen Frame erneut, oder
+  jemand sendet einen erneut, dessen `sequence` umgeschrieben wurde, um
+  die Marke zu überspringen. Der Zähler wird einmal pro Frame um dessen
+  Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
   geschlossen.
 - `cluster_envelope_from_mismatch_total` sollte ebenfalls bei null
   liegen. Er bewegt sich, wenn die Payload eines Envelopes einen
