@@ -41,6 +41,7 @@ import {
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
+import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
   ConfigSeedProviderOptionsValidator,
@@ -425,6 +426,16 @@ describe('ProducerControllerOptionsValidator', () => {
 
   test('accepts sensible flow-control values', () => {
     expect(() => check({ resendTimeout: 500, windowSize: 16 })).not.toThrow();
+  });
+
+  test('rejects an empty or over-long producerId', () => {
+    // The consumer refuses an identifier past this bound, so accepting one
+    // here would turn every delivery from this producer into a silent dead
+    // letter instead of a construction-time error (#727, #728).
+    expect(() => check({ producerId: '' })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1) })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH) })).not.toThrow();
+    expect(() => check({ producerId: 'orders' })).not.toThrow();
   });
 });
 
