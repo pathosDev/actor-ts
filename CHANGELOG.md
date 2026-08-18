@@ -587,6 +587,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Email bridge actor** (#1133).  `EmailBridgeActor` turns a mailbox into a
+  message source and SMTP into a sink — the ops/alerting bridge that otherwise
+  gets hand-rolled per project.  Inbound uses IMAP IDLE via `imapflow` (with a
+  polling fallback for servers that do not offer it, or do not honour it) and is
+  **at-least-once, settled by IMAP flags**: a message is marked `\Seen` — or
+  moved to another mailbox — only once the target actor tells back
+  `{ kind: 'acknowledgment', ackToken }`.  A refusal, a missed deadline, a lost
+  connection and a dead process all end the same way, with the message still
+  unflagged and therefore delivered again; "processed" is a fact on the server,
+  not bookkeeping in memory.  Outbound goes through a pooled `nodemailer`
+  transport, and an SMTP failure is classified before it is escalated — a
+  message the server rejected is dropped rather than re-queued at the head of
+  the buffer behind a torn-down pool.  Reconnection is the `BrokerActor`
+  lifecycle's, since `imapflow` does none of its own.  Both drivers are optional
+  peer dependencies loaded on first connect, so a send-only bridge never imports
+  `imapflow`.  One actor watches one mailbox (an IMAP connection can IDLE only
+  on the mailbox it selected).  Config under
+  `actor-ts.io.broker.email-bridge`; verified against GreenMail in the broker
+  integration suite.
+- **HTML email templates** (#1133).  `EmailTemplate` fills a stored HTML snippet
+  — one from HOCON, a database row, or a file an operator edits — which the
+  `html` tagged template cannot cover, since it needs its markup as a JavaScript
+  literal.  Values are HTML-escaped by default and the one opt-out is the same
+  `SafeHtml` brand the HTTP side uses, so `rawHtml(...)` states the intent at the
+  call site.  Setting a placeholder the template does not declare throws, and
+  rendering with any placeholder still unset throws naming all of them — both
+  are failures that would otherwise only surface in a mail already sent.
+  Deliberately logic-less: it substitutes placeholders, it is not a template
+  engine.
 - **The bidirectional collections count participants, not only pairs**
   (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
   number of distinct participants on each side, both O(1), reading the two

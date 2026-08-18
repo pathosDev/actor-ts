@@ -96,6 +96,13 @@ export const ConfigKeys = {
   io: {
     broker: {
       amqp: 'actor-ts.io.broker.amqp',
+      /**
+       * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
+       * halves: they are two sides of one connection lifecycle, and a
+       * bridge configured with only one of them is the normal case rather
+       * than a degenerate one.
+       */
+      emailBridge: 'actor-ts.io.broker.email-bridge',
       grpc: {
         client: 'actor-ts.io.broker.grpc.client',
         server: 'actor-ts.io.broker.grpc.server',
