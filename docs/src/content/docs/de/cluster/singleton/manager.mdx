@@ -326,10 +326,13 @@ const singletonOptions = StartSingletonOptions.create<Command>()
 Ein gesunder Hand-over kostet einen Netzwerk-Roundtrip und erreicht den
 Timeout nie — die Anfrage wird alle halbe Sekunde erneut gesendet, solange
 sie offen ist, denn ein Cluster-Envelope ist Fire-and-forget und ein
-einzelner Frame kann hinter einem Handshake verloren gehen. Den Timeout zu
-erreichen bedeutet, dass ein berechtigter Peer gar nicht geantwortet hat:
-er ist von hier unerreichbar, oder er hält sich weiterhin für den Host und
-hat abgelehnt.
+einzelner Frame kann hinter einem Handshake verloren gehen. Auf einen Peer,
+der **geht**, während die Anfrage offen ist, wird nicht weiter gewartet: er
+ist aus der berechtigten Menge herausgefallen, die eigene Sicht dieses Nodes
+sagt also schon, dass er nicht hosten kann. Den Timeout zu erreichen
+bedeutet, dass ein berechtigter Peer, der noch `up` ist, gar nicht
+geantwortet hat: er ist von hier unerreichbar, oder er hält sich weiterhin
+für den Host und hat abgelehnt.
 
 Der Manager hostet dann **trotzdem** und sagt das auf `warn`, mit den Namen
 der Peers, die stumm geblieben sind. Das ist die bewusste Wahl zwischen

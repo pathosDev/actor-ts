@@ -304,9 +304,12 @@ const singletonOptions = StartSingletonOptions.create<Command>()
 A healthy hand-over costs one network round trip and never reaches the
 timeout — the request is re-sent every half second while it is
 outstanding, because a cluster envelope is fire-and-forget and a single
-frame can be dropped behind a handshake.  Reaching the timeout means some
-eligible peer did not answer at all: it is unreachable from here, or it
-still believes it is the host and declined.
+frame can be dropped behind a handshake.  A peer that **leaves** while the
+request is outstanding stops being waited on: it has dropped out of the
+eligible set, so this node's own view already says it cannot be hosting.
+Reaching the timeout means some eligible peer that is still `up` did not
+answer at all: it is unreachable from here, or it still believes it is the
+host and declined.
 
 The manager then **hosts anyway** and says so at `warn`, naming the peers
 that stayed silent.  This is the deliberate choice between two properties
