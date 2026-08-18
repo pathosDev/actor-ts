@@ -11,6 +11,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **An uninstrumented system is unaffected: `ActorCell.schedule` branches on
+  whether a metrics registry is installed before arming a turn, so the path
+  with metrics off keeps exactly the closure it had, captures no clock read,
+  and allocates nothing extra. The measurement is taken cell-side rather
+  than inside `Dispatcher`, which is what keeps the public `Dispatcher`
+  contract a two-member interface a third party can implement — and it means
+  the three built-ins, a per-actor `ActorOptions.withDispatcher(...)`, and a
+  third-party dispatcher the framework has never seen are all covered
+  without an API change. The gate is evaluated when a turn is armed, so a
+  turn armed just before metrics were enabled is left out rather than
+  measured against a clock read that never happened, matching the rule the
+  mailbox arrival stamp already follows. (#196).**
+
 - **`examples/mailbox/priority-dispatch.ts` ranks unknown messages with
   `.otherwise(() => 5)` instead of `match(...).exhaustive()` (#733).**
 
@@ -757,6 +770,83 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **A scheduled task that throws is now reported instead of vanishing onto
+  the console (#678).**
+
+  `Scheduler` gained an optional `onError` sink and `ActorSystem` fills it
+  in, so a throw out of `scheduleOnceFunction` or
+  `scheduleAtFixedRateFunction` reaches the system logger — and therefore
+  every configured log sink, MDC included — and is published on the event
+  stream as a new `SchedulerError` carrying the `cause`. Both the sink
+  type `SchedulerErrorSink` and the event class are exported.
+  `console.error` survives only as the documented last resort, for a
+  scheduler used outside an actor system; a sink you set yourself is never
+  taken over, and it is handed back when the system terminates.
+
+- **`NodeAddress` carries an optional `incarnation` — which process is
+  answering at a `system@host:port` — minted once per `Cluster.join` from
+  `NodeAddress.mintIncarnation()` (#940).**
+
+  It rides every address-bearing wire field, is bounded on arrival by
+  `MAX_NODE_INCARNATION_LENGTH`, and stays deliberately out of `toString`,
+  `equals` and `compareTo`, so every map keyed on the string form, the
+  leader's lexicographic order and `RefCodec`'s local-vs-remote test are
+  unchanged. Optional in both directions: a peer that predates the field
+  sends none and is understood, and a peer that does not know the field
+  ignores the extra JSON key — so this is not a wire break. No merge rule
+  is keyed on it yet, and that is a decision rather than an omission: an
+  optional field is bypassed by stripping it, so a refusal on a mismatch
+  would be one an attacker opts out of while a legitimate peer of the
+  previous version walks into it. Requiring the field breaks all eight
+  address-bearing frame fields at once and waits on #823. The one
+  comparison that needs no distributed agreement is made: a record a peer
+  sends about the local node keeps the local node's own incarnation, so
+  the leader's promotion — the single claim about itself a node accepts,
+  merged wholesale including the address — can no longer restate it.
+
+- **`actor_mailbox_depth` — a label-free histogram of queue depth, observed
+  once per delivery, with buckets from 1 to 10 000 messages (#196).**
+
+  It is the distribution `actor_mailbox_size` cannot be: that gauge
+  samples an instant every 2 s and mints no series below 10 000 queued
+  messages, because the `path` label it needs to say which actor is behind
+  is only affordable that far up. The range it is blind on is 1-9 999,
+  which is where a burst actually lives, and a spike between two of its
+  ticks was recorded nowhere. The histogram's top bucket boundary is the
+  gauge's floor, so the two now cover everything between them with no gap:
+  read the histogram to learn that a backlog exists and how deep its tail
+  goes, read the gauge to learn whose. Because it carries no labels it
+  costs one series per bucket however many actors or sharded entities
+  exist. Its count matches `actor_messages_delivered_total` exactly, and
+  its floor is 1 rather than 0 because the observation counts the message
+  being delivered — so sizing a bounded mailbox from its p99 is now a
+  measurement rather than a guess.
+
+- **`actor_dispatcher_queue_delay_seconds` — a histogram labelled by
+  `Dispatcher.id`, measuring how long an actor turn waited between being
+  handed to a dispatcher and starting (#196).**
+
+  This is the saturation signal, and it is deliberately not the
+  `dispatcher_saturation_ratio` the issue asked for. A 0-1 busy fraction
+  has no primitive this project can use on all three supported runtimes:
+  `performance.eventLoopUtilization` is absent on Bun 1.3, real on Node
+  26, and a permanent hard-zero stub on Deno 2.6 — measured on each, and
+  now re-checked per runtime by a new cross-runtime smoke case. A ratio
+  built on it would read a flat 0 % on Deno for ever, which is worse than
+  publishing nothing, because an alert on a metric that never fires looks
+  exactly like a system that is never saturated; and even where the
+  reading is real it covers the whole event loop, so it could never have
+  been attributed to one of several dispatchers. Scheduling delay needs
+  nothing but a clock, so it is the same measurement everywhere: at rest
+  it is one hand-off (microseconds), under saturation it grows without
+  bound, and "utilization is at 100 %" becomes "turns are waiting longer
+  than my latency budget", which an alert rule can actually state. Buckets
+  run 10 µs to 10 s. One caveat is documented rather than glossed: on
+  `MicrotaskDispatcher` the delay stays low even while actors starve the
+  event loop, because the queue it measures is the microtask queue the
+  runtime drains first — a low reading there means microtask scheduling is
+  not the bottleneck, not that there is headroom.
 
 - **`PriorityMailboxOptions` gains `onPriorityError` and
   `withOnPriorityError(cause, message)`, fired whenever `priorityFor` throws
@@ -1663,6 +1753,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **The shared persistence contract suite no longer fails a journal that
+  legitimately omits the optional `raiseCompactionMark` (#536).**
+
+  Two scenarios asserted the method's presence instead of skipping, which
+  was invisible because all eleven in-tree journal harnesses implement it,
+  and would have reported two failures for a conforming third-party
+  backend the moment the suite was used to certify one.
+  `JournalCapabilities` gains `compactionMark`, defaulting to true;
+  declaring it false skips exactly those two scenarios, and leaving it
+  unset still fails loudly so the flag cannot paper over a real
+  divergence. No in-tree backend changes behaviour — the identical 370
+  cases bind with the identical 7 skips.
+
+- **The TestKit's `ManualScheduler` no longer keeps the raw-console
+  behaviour the framework abandoned (#678).**
+
+  It overrides every scheduling method, so the base class's guard never
+  ran on its path; it now reports through the inherited sink, which means
+  a system built with `ActorSystemOptions.withScheduler(new
+  ManualScheduler())` sees a failing task on its logger and its event
+  stream like any other. The message-delivery forms `scheduleOnce` and
+  `scheduleAtFixedRate` deliberately do not publish here — a throw inside
+  the target's handler is its supervisor's business.
+
+- **`ParallelMultiNodeSpec` subscribed `message` and `close` on every worker
+  it spawned and never `error`, so an uncaught throw inside a worker took
+  the whole test process down with it — including the framework's own
+  parallel multi-node suites (#678).**
+
+  The containment added in #700 did not reach it: the Web-Worker adapter
+  cancels the event from inside the listener that a subscription installs,
+  and the Node adapter registers `on('error')` only when something
+  subscribes, so with no subscriber Node re-raises on the host and Deno
+  rejects an internal promise, both exiting 1. Bound by a new
+  cross-runtime smoke case, because Bun contains the throw on its own and
+  `bun test` spawns no OS thread at all.
 
 - **`GET /cluster/shards?type=<name>` no longer returns 404 on a
   default-configured cluster (#682).**
@@ -2940,6 +3067,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **A captured gossip frame can no longer be replayed by rewriting one field
+  (#940).**
+
+  The per-sender frame counter admitted any `sequence` above its
+  high-water mark, and only refused to *adopt* an implausible one as the
+  new mark — so a frame restamped `Number.MAX_SAFE_INTEGER` merged, left
+  the mark untouched, and therefore merged again on every delivery,
+  without limit, against a receiver holding a mark for a sender that was
+  still alive. That is the one configuration the guard was claimed to hold
+  in. Only the `sequence` is fabricated in the attack; the `members` array
+  is still the recording, and nothing on the cluster wire binds the two
+  together. The plausibility bound moves from "do not adopt" to "do not
+  admit", so a frame whose sequence is not a finite number within
+  `maxVersionSkewMs` of the receiver's clock is now dropped whole.
+  Refusing it loses nothing: the mark stays where the last plausible frame
+  put it, so the real node's next frame still out-numbers it and still
+  merges — the pinning exploit closed on `version` in #114 is not
+  reintroduced one field to the left. `reason="replayed-frame"` on
+  `cluster_gossip_records_refused_total` now also covers this case.
 
 - **A `PriorityMailbox` whose `priorityFor` cannot rank a message no longer
   inserts it at the head of the queue (#733).**

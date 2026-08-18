@@ -24,13 +24,13 @@ import {
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger } from './Logger.js';
-import { DispatcherError } from './SystemMessages.js';
+import { DispatcherError, SchedulerError } from './SystemMessages.js';
 import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
-import { Scheduler } from './Scheduler.js';
+import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
@@ -189,6 +189,12 @@ export class ActorSystem {
    */
   private readonly dispatcherErrorSink: DispatcherErrorSink;
 
+  /**
+   * The sink this system installed on {@link scheduler}, kept so termination
+   * can tell it apart from one the owner installed.
+   */
+  private readonly schedulerErrorSink: SchedulerErrorSink;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
@@ -220,6 +226,13 @@ export class ActorSystem {
     this.dispatcherErrorSink = (error, dispatcherId) =>
       this._reportDispatcherError(error, dispatcherId, null);
     this.dispatcher.onError ??= this.dispatcherErrorSink;
+    // And the same again for the scheduler, which had the identical hole:
+    // a throwing `scheduleOnceFunction` task reached only `console.error`
+    // (#678).  `??=` for the same lent-instance reason — `withScheduler` is
+    // documented as "typically a ManualScheduler in tests", so the instance
+    // is even more often the caller's than the dispatcher is.
+    this.schedulerErrorSink = (error) => this._reportSchedulerError(error);
+    this.scheduler.onError ??= this.schedulerErrorSink;
     const deadLetterRef = new DeadLetterRef(this.name, this.eventStream);
     this.deadLetters = deadLetterRef;
     this.extensions = new Extensions(this);
@@ -748,6 +761,41 @@ export class ActorSystem {
     }
   }
 
+  /**
+   * @internal Surface a scheduled task that threw — through the system
+   * logger, and on the {@link EventStream} as a {@link SchedulerError}.
+   *
+   * The scheduler twin of {@link _reportDispatcherError}, with one channel
+   * fewer: there is no `actor` to attribute a bare closure to, and no
+   * scheduler id to name because a system has exactly one.
+   *
+   * **Why this does not need a rate limit, and why it does not feed back into
+   * the logger.**  The logging subsystem's own flush ticker is armed through
+   * `scheduleAtFixedRateFunction` (`BatchingSink`), so the framework's log
+   * flush ticks on the very scheduler whose failures now go to the log — the
+   * shape `logging/SinkReporter.ts` warns about.  It does not close, for two
+   * independent reasons.  The ticker body is a length check that `void`s an
+   * async `flush()`, so a *delivery* failure is not a throw on this path at
+   * all; `BatchingSink` reports those through its own `SinkReporter`, which
+   * writes to the console deliberately and rate-limits itself.  And a ticker
+   * body that did throw would produce one report per tick — one for one with
+   * the failures, exactly as the `console.error` this replaces, not an
+   * amplification.  The `catch` is for the loop that *can* close: this runs
+   * inside the scheduler's own guard, so a logger or a subscriber that throws
+   * here would otherwise be reported as a scheduler error from inside the
+   * report of one.  Catching ends that in one hop and still prints both.
+   */
+  _reportSchedulerError(error: unknown): void {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    try {
+      this.log.error('Unhandled scheduler error', cause);
+      this.eventStream.publish(new SchedulerError(cause));
+    } catch (reportFailure) {
+      console.error('[actor-ts] unhandled scheduler error:', cause);
+      console.error('[actor-ts] reporting that scheduler error failed:', reportFailure);
+    }
+  }
+
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
@@ -757,6 +805,12 @@ export class ActorSystem {
     // `ActorSystemOptions` outlives this system, and one the owner wired
     // themselves is theirs to keep.
     if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
+    // Same for the scheduler.  `shutdown()` above already disarmed every
+    // handle this system owns, so nothing of ours can still fire — but a
+    // `ManualScheduler` handed in through `ActorSystemOptions` outlives the
+    // system and is advanced by the test afterwards, and its ticks must not
+    // report into a logger that is about to be closed.
+    if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
     const finish = (): void => { for (const resolve of resolvers) resolve(); };

@@ -734,29 +734,67 @@ stamps — seeded from that node's wall clock at startup and
 incremented once per frame — and a receiver remembers the
 highest one it has accepted from each connection peer. A frame
 that does not out-number that mark is dropped whole, before any
-record in it is looked at. There is no knob: the comparison is
-between a peer and *itself*, so it needs no clock-skew budget,
-and a sequence too far ahead of the receiver's clock to be
-plausible is merged but never adopted as the mark — otherwise
-one frame numbered `Number.MAX_SAFE_INTEGER` would silence the
-real node forever, which is the exploit the version cap above
-exists to prevent.
+record in it is looked at. The comparison itself needs no knob:
+it is between a peer and *itself*, so no clock-skew budget comes
+into it.
+
+A sequence must also be **plausible** — a finite number no
+further ahead of the receiver's clock than `maxVersionSkewMs`,
+the same budget a gossiped version gets, because the number is
+stamped from the author's wall clock. A frame outside that budget
+is refused, exactly like a repeat.
+
+That started out as the weaker rule: the frame was merged, and
+only *adopting* its number as the mark was refused, on the
+argument that a frame numbered `Number.MAX_SAFE_INTEGER` cannot
+be a recording of a real frame. Only the *sequence* is fabricated
+in that attack. The `members` array is still the recording, and
+nothing on this wire binds the two together — so a captured frame
+with one field rewritten was merged, left the mark untouched, and
+was therefore merged again on every delivery, without limit,
+against a receiver that held a mark for a sender that was still
+alive. Refusing it loses nothing: the mark stays where the last
+plausible frame put it, so the real node's next frame still
+out-numbers it and still lands. Silencing the real node forever —
+the exploit the version cap above exists to prevent — is closed
+from both sides rather than one.
+
+An address additionally carries an **incarnation**: which
+*process* is answering at that `system@host:port`, minted once
+per `Cluster.join`. It is deliberately carried and not yet acted
+on. The field is optional on the wire, so that a node running
+either version understands one running the other — and an
+optional field is bypassed by *stripping* it, which means a
+refusal keyed on a mismatch would be one an attacker opts out of
+while a legitimate peer of the previous version walks into it.
+Requiring the field breaks all eight address-bearing frame fields
+at once and waits on the wire-protocol versioning work. It stays
+out of `toString`, `equals` and `compareTo`, so nothing keyed on
+a node's identity changes.
+
+The one comparison that needs no agreement is made: a record a
+peer sends *about this node* keeps this node's own incarnation.
+The leader's promotion is the single claim about itself a node
+accepts, and it is merged wholesale, address included — so
+without that substitution the local record's identifier would be
+whatever the last peer to promote it happened to say.
 
 Two things this does **not** close. First, a peer that has earned
 standing and composes a *fresh* frame naming a deleted address at
 its old version: that is a forgery rather than a replay, and
-telling it apart from a genuine re-discovery needs an incarnation
-identity on the address itself — a node's restart has to be a
-*different* member at the same `host:port`.
+refusing it needs the incarnation to be **required** rather than
+carried, which is the wire break above.
 
-Second — and it is the same missing incarnation identity — the
-mark lives only as long as the sender does. Deleting a member
-drops its mark, and a missing mark admits everything, so once the
-**sender** has itself been evicted (an ordinary partition takes
-out sender and subject together) the recorded conversation can be
-replayed in capture order: the sender's own self-record is always
-admitted, which revives it *and* re-seeds the mark from the old
-frame, and the next recorded frame then speaks for the subject.
+Second, the mark lives only as long as the sender does. Deleting a
+member drops its mark, and a missing mark admits everything, so
+once the **sender** has itself been evicted (an ordinary partition
+takes out sender and subject together) the recorded conversation
+can be replayed in capture order: the sender's own self-record is
+always admitted, which revives it *and* re-seeds the mark from the
+old frame, and the next recorded frame then speaks for the
+subject. An incarnation identity does not close this one either —
+a node downed while still running answers to the same incarnation
+the recording carries.
 
 Both residuals are tracked separately.
 

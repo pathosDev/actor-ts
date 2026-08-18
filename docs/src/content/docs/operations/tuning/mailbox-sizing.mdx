@@ -154,6 +154,7 @@ expose mailbox depth:
 
 ```
 actor_mailbox_size{class="Worker", path="..."}
+actor_mailbox_depth_bucket
 actor_mailbox_wait_seconds_bucket
 actor_mailbox_dropped_total{class="Worker", reason="drop-head"}
 ```
@@ -165,6 +166,14 @@ Watch:
   that mark, so its *presence* is the signal; on a healthy system the
   metric is empty.  A drained mailbox reads 0 rather than its last
   spike.
+- **`actor_mailbox_depth`** — the same quantity as a *distribution*,
+  covering the range the gauge is silent on.  This is the metric to size
+  a capacity from: a `capacity` is a bet on the worst-case burst, and the
+  histogram's p99 is the measurement of that burst.  Its last bucket
+  boundary is the gauge's 10 000 floor, so the two cover everything
+  between them — the histogram tells you how deep, the gauge tells you
+  who.  It has no labels, so it costs the same whether you run ten actors
+  or ten thousand sharded entities.
 - **`actor_mailbox_wait_seconds`** — how long messages actually waited
   before delivery.  This is the **earlier** of the two backlog
   signals, and the one to alert on: depth has a 10 000-message floor
