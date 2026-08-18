@@ -1,6 +1,6 @@
 export { WorkerCluster } from './WorkerCluster.js';
 export { WorkerClusterOptions, WorkerClusterOptionsBuilder, WorkerClusterOptionsValidator } from './WorkerClusterOptions.js';
-export type { WorkerClusterOptionsType } from './WorkerClusterOptions.js';
+export type { WorkerClusterOptionsType, WorkerPermanentlyDownInfo } from './WorkerClusterOptions.js';
 // Part of the public options shape (`backend`), so it has to be nameable
 // from the package root — otherwise the emitted declarations reference a
 // type consumers cannot import.
