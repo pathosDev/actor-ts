@@ -334,6 +334,14 @@ Without an explicit `Content-Type` a stream defaults to
 streaming response in the caching middleware.  For SSE, use the
 [`SseActor`](/io/sse/).
 
+Set `Content-Length` yourself when you know it.  A backend derives
+the length from a `Uint8Array` body but has nothing to measure on a
+stream, so without the header the response goes out chunked.
+Fastify and Express keep a length you set; Hono hands its
+`Response` to the runtime's server, and `Bun.serve` re-frames a
+stream as chunked regardless (`node:http` and `Deno.serve` keep it).
+[Static file serving](/http/static-files/) does this for you.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`entity<T>` doesn't validate">

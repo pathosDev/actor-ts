@@ -342,6 +342,15 @@ Ohne expliziten `Content-Type` fällt ein Stream auf
 eine streamende Response daher nicht durch die Caching-Middleware.
 Für SSE nimm den [`SseActor`](/de/io/sse/).
 
+Setze `Content-Length` selbst, wenn du sie kennst.  Ein Backend
+leitet die Länge aus einem `Uint8Array`-Body ab, hat bei einem Stream
+aber nichts zu messen — ohne den Header geht die Response also
+chunked hinaus.  Fastify und Express übernehmen eine gesetzte Länge;
+Hono gibt seine `Response` an den Server der Runtime, und
+`Bun.serve` framet einen Stream ohnehin chunked (`node:http` und
+`Deno.serve` behalten sie).
+[Statische Dateien](/de/http/static-files/) machen das für dich.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`entity<T>` validiert nicht">

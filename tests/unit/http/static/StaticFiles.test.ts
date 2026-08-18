@@ -10,10 +10,28 @@ import { HonoBackend } from '../../../../src/http/backend/HonoBackend.js';
 import { HttpExtensionId } from '../../../../src/http/HttpExtension.js';
 import { compile, concat, type CompiledRoute, type Route } from '../../../../src/http/Route.js';
 import { getFromBrowseableDirectory, getFromDirectory, getFromFile } from '../../../../src/http/static/StaticFiles.js';
-import type { StaticFilesOptions } from '../../../../src/http/static/StaticFilesOptions.js';
+import { StaticFilesOptions } from '../../../../src/http/static/StaticFilesOptions.js';
+import { readFileStream } from '../../../../src/http/static/FsAccess.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
 import type { HttpRequest, HttpResponse } from '../../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+
+/**
+ * Size of `large.bin`.  Bigger than one read chunk (64 KiB) so a streamed
+ * response is forced through several `pull` rounds instead of finishing in
+ * one, and bigger than Node's 4 KiB Buffer pool so `readFile`'s allocation is
+ * exact — which is what lets the range assertions compare `buffer.byteLength`
+ * against the whole-file size and mean something.
+ */
+const LARGE_FILE_SIZE = 300 * 1024;
+
+/** Deterministic, position-dependent bytes, so a mis-ordered chunk shows up. */
+function largeFileBytes(): Uint8Array {
+  const bytes = new Uint8Array(LARGE_FILE_SIZE);
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 31 + 7) % 251;
+  return bytes;
+}
 
 let root: string;
 beforeAll(async () => {
@@ -23,6 +41,7 @@ beforeAll(async () => {
   await mkdir(join(root, 'sub'));
   await writeFile(join(root, 'sub', 'page.txt'), 'hello sub');
   await writeFile(join(root, '.secret'), 'nope');
+  await writeFile(join(root, 'large.bin'), largeFileBytes());
 });
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 
@@ -49,11 +68,36 @@ async function start(mk: () => HttpServerBackend, routes: Route): Promise<string
   return `http://${binding.host}:${binding.port}`;
 }
 
-describe.each(backends)('static files — %s backend', (_name, mk) => {
-  const routes = (): Route => concat(
-    getFromDirectory('static', root),
-    getFromBrowseableDirectory('browse', root),
-  );
+/**
+ * Which backends put the streamed body's length on the wire — a measurement,
+ * not a preference.  Fastify and Express both keep a `content-length` the
+ * handler set before the body.  Hono hands its `Response` to whatever server
+ * the runtime provides, and `Bun.serve` drops the header and re-frames the body
+ * as chunked; `node:http` and `Deno.serve` keep it, so the same mount IS
+ * length-stated on the other two runtimes (the smoke case covers that side —
+ * `bun test` only ever runs here).
+ */
+const backendsStatingStreamLength = new Set(['fastify', 'express']);
+
+describe.each(backends)('static files — %s backend', (backendName, mk) => {
+  const routes = (): Route => {
+    /*
+     * A second mount of the same tree with streaming on — the cross-backend
+     * half of #465.  `maxFileSize` is deliberately BELOW the file and equal to
+     * the threshold, which is what binds these cases: a handler that quietly
+     * fell back to buffering would still deliver every byte and still let the
+     * backend compute a correct `content-length`, so nothing below would move.
+     * With the cap under the file size, that fallback answers 413 instead.
+     */
+    const streamingOptions = StaticFilesOptions.create()
+      .withStreamThreshold(64 * 1024)
+      .withMaxFileSize(64 * 1024);
+    return concat(
+      getFromDirectory('static', root),
+      getFromBrowseableDirectory('browse', root),
+      getFromDirectory('streamed', root, streamingOptions),
+    );
+  };
 
   test('serves a file with the correct MIME type', async () => {
     const url = await start(mk, routes());
@@ -162,6 +206,52 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
     expect(html).toContain('page.txt');
     expect(html).toContain('href="../"'); // parent link (not at mount root)
   });
+
+  test('a streamed file arrives byte-for-byte over the wire', async () => {
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/streamed/large.bin`);
+    expect(response.status).toBe(200);
+    const received = new Uint8Array(await response.arrayBuffer());
+    expect(received.length).toBe(LARGE_FILE_SIZE);
+    // Spot-check the ends and a chunk boundary rather than 300 KiB of
+    // comparisons: a dropped or reordered `pull` moves at least one of them.
+    const expected = largeFileBytes();
+    expect(received[0]).toBe(expected[0]);
+    expect(received[64 * 1024 - 1]).toBe(expected[64 * 1024 - 1]);
+    expect(received[64 * 1024]).toBe(expected[64 * 1024]);
+    expect(received[LARGE_FILE_SIZE - 1]).toBe(expected[LARGE_FILE_SIZE - 1]);
+  });
+
+  test('a streamed 200 states its content-length wherever the backend can', async () => {
+    // The handler always sets the header (pinned exactly in the directive-level
+    // block below).  Whether it reaches the client is the backend's half: with
+    // nothing set, a stream body has no length for a backend to measure and
+    // every large download would silently become chunked, so what is asserted
+    // here is that the length arrives *correct* rather than merely present.
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/streamed/large.bin`);
+    expect(response.status).toBe(200);
+    if (backendsStatingStreamLength.has(backendName)) {
+      expect(response.headers.get('content-length')).toBe(String(LARGE_FILE_SIZE));
+    } else {
+      // Never a *wrong* length — a stated 0, as Fastify used to answer, is
+      // worse than an honest chunked framing.
+      expect(response.headers.get('content-length')).toBeNull();
+      expect(response.headers.get('transfer-encoding')).toBe('chunked');
+    }
+    await response.arrayBuffer(); // drain: an abandoned body keeps the socket open
+  });
+
+  test('a Range against a streaming mount still answers 206 with the window', async () => {
+    const url = await start(mk, routes());
+    const response = await fetch(`${url}/streamed/large.bin`, { headers: { range: 'bytes=100-131' } });
+    expect(response.status).toBe(206);
+    expect(response.headers.get('content-range')).toBe(`bytes 100-131/${LARGE_FILE_SIZE}`);
+    const received = new Uint8Array(await response.arrayBuffer());
+    expect(received.length).toBe(32);
+    expect(received[0]).toBe(largeFileBytes()[100]);
+    expect(received[31]).toBe(largeFileBytes()[131]);
+  });
 });
 
 /*
@@ -231,8 +321,45 @@ async function serveFrom(fsRoot: string, options: StaticFilesOptions | undefined
   return await route.handler(request);
 }
 
-const bodyText = (response: HttpResponse): string =>
-  typeof response.body === 'string' ? response.body : new TextDecoder().decode(response.body as Uint8Array);
+/**
+ * Read a directive-level body as text.  The stream arm is not decoration: a
+ * `streamThreshold` mount answers with a `ReadableStream`, and `TextDecoder`
+ * throws on one — so a helper that only handled `Uint8Array` would make
+ * "return bytes again" look like the fix for a failing streaming test and
+ * silently revert #465.
+ */
+async function bodyText(response: HttpResponse): Promise<string> {
+  const body = response.body;
+  if (typeof body === 'string') return body;
+  if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
+    return new TextDecoder().decode(await drainStream(body));
+  }
+  return new TextDecoder().decode(body as Uint8Array);
+}
+
+/** Concatenate every chunk of a one-shot response stream. */
+async function drainStream(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
 
 /*
  * Directory links run everywhere: `symlink(..., 'junction')` asks Windows for
@@ -274,7 +401,7 @@ describe('static files — within-root confinement on directory links', () => {
   test('the listing omits it and keeps the in-root link, as a directory', async () => {
     const response = await serve({ browse: true }, '/sub/', 'sub/');
     expect(response.status).toBe(200);
-    const html = bodyText(response);
+    const html = await bodyText(response);
     expect(html).toContain('href="directory-alias/"'); // trailing slash: a link to a directory is one
     expect(html).not.toContain('directory-escape');
   });
@@ -283,7 +410,7 @@ describe('static files — within-root confinement on directory links', () => {
     const options: StaticFilesOptions = { browse: true, symlinks: 'follow' };
     const response = await serve(options, '/sub/', 'sub/');
     expect(response.status).toBe(200);
-    expect(bodyText(response)).toContain('href="directory-escape/"');
+    expect(await bodyText(response)).toContain('href="directory-escape/"');
     expect((await serve(options, '/sub/directory-escape/secret.txt', 'sub/directory-escape/secret.txt')).status).toBe(200);
   });
 });
@@ -351,7 +478,7 @@ describeIfFileSymlinks('static files — within-root confinement on file links',
   test("'follow' serves that same index file", async () => {
     const response = await serve({ symlinks: 'follow' }, '/');
     expect(response.status).toBe(200);
-    expect(bodyText(response)).toBe('out-of-root secret');
+    expect(await bodyText(response)).toBe('out-of-root secret');
   });
 
   test('a subdirectory index file is refused when it links out of the root', async () => {
@@ -365,14 +492,14 @@ describeIfFileSymlinks('static files — within-root confinement on file links',
   test('a link that stays inside the root is served, one that escapes is not', async () => {
     const alias = await serve(undefined, '/sub/alias.txt', 'sub/alias.txt');
     expect(alias.status).toBe(200);
-    expect(bodyText(alias)).toBe('in root');
+    expect(await bodyText(alias)).toBe('in root');
     expect((await serve(undefined, '/sub/escape.txt', 'sub/escape.txt')).status).toBe(404);
   });
 
   test('the listing omits the escaping entries and keeps the in-root one', async () => {
     const response = await serve({ browse: true }, '/sub/', 'sub/');
     expect(response.status).toBe(200); // the escaping index counts as absent → listing
-    const html = bodyText(response);
+    const html = await bodyText(response);
     expect(html).toContain('alias.txt');
     expect(html).not.toContain('index.html');
     expect(html).not.toContain('escape.txt');
@@ -382,8 +509,209 @@ describeIfFileSymlinks('static files — within-root confinement on file links',
     const options: StaticFilesOptions = { browse: true, symlinks: 'follow', indexFiles: [] };
     const response = await serve(options, '/sub/', 'sub/');
     expect(response.status).toBe(200);
-    const html = bodyText(response);
+    const html = await bodyText(response);
     expect(html).toContain('escape.txt');
     expect(html).toContain('index.html');
+  });
+});
+
+/*
+ * How much of a file the handler holds in memory (#465, #969).  Directive-level
+ * on purpose: the invariants here are about the SHAPE of `HttpResponse.body` —
+ * a stream vs a buffer, and how large the buffer behind a range view is — and
+ * every backend erases that distinction by the time bytes reach a socket.  The
+ * cross-backend block above proves the wire behaviour; this block proves the
+ * memory behaviour, and only one of the two can regress silently.
+ */
+describe('static files — read window and streaming', () => {
+  const requestFor = (
+    headers: Readonly<Record<string, string>> = {},
+    method: HttpRequest['method'] = 'GET',
+  ): HttpRequest => ({
+    method, path: '/large.bin', headers, query: {}, params: {}, body: null,
+  });
+
+  const serveLarge = async (
+    options: StaticFilesOptions | undefined,
+    headers?: Readonly<Record<string, string>>,
+    method?: HttpRequest['method'],
+  ): Promise<HttpResponse> => {
+    const compiled = compile(getFromFile(join(root, 'large.bin'), options));
+    const route = compiled[0] as CompiledRoute;
+    return await route.handler(requestFor(headers, method));
+  };
+
+  test('by default a 200 body is still a buffer, not a stream', async () => {
+    // The opt-in half of the decision: a stream body is one-shot, and the
+    // middleware that mishandles one (#674) and the backend that pipes it
+    // without an error handler (#979) are both still open.  If this ever goes
+    // red because the default flipped, those two have to have landed first.
+    const response = await serveLarge(undefined);
+    expect(response.status).toBe(200);
+    expect(response.body).toBeInstanceOf(Uint8Array);
+    expect((response.body as Uint8Array).byteLength).toBe(LARGE_FILE_SIZE);
+  });
+
+  test('a Range buffers the requested window only, not the whole file', async () => {
+    // The read-amplification invariant.  The old implementation read the file
+    // whole and returned `bytes.subarray(start, end + 1)`; a subarray is a
+    // VIEW, so the response kept the entire 300 KiB `ArrayBuffer` alive to
+    // answer 32 bytes — once per in-flight request.  `byteLength` alone cannot
+    // tell the two apart, which is why the assertion that matters is on the
+    // backing buffer.
+    const response = await serveLarge(undefined, { range: 'bytes=100-131' });
+    expect(response.status).toBe(206);
+    const bytes = response.body as Uint8Array;
+    expect(bytes.byteLength).toBe(32);
+    expect(bytes.buffer.byteLength).toBe(32);
+    expect(bytes[0]).toBe(largeFileBytes()[100]);
+    expect(bytes[31]).toBe(largeFileBytes()[131]);
+  });
+
+  test('a one-byte Range does not allocate the file', async () => {
+    const response = await serveLarge(undefined, { range: 'bytes=0-0' });
+    expect(response.status).toBe(206);
+    expect(response.headers?.['content-length']).toBe('1');
+    expect((response.body as Uint8Array).buffer.byteLength).toBe(1);
+  });
+
+  test('above the threshold the 200 body is a stream with a stated length', async () => {
+    const options = StaticFilesOptions.create().withStreamThreshold(64 * 1024);
+    const response = await serveLarge(options);
+    expect(response.status).toBe(200);
+    expect(response.body).toBeInstanceOf(ReadableStream);
+    expect(response.headers?.['content-length']).toBe(String(LARGE_FILE_SIZE));
+    const drained = await drainStream(response.body as ReadableStream<Uint8Array>);
+    expect(drained.byteLength).toBe(LARGE_FILE_SIZE);
+    const expected = largeFileBytes();
+    expect(drained[0]).toBe(expected[0]);
+    expect(drained[64 * 1024]).toBe(expected[64 * 1024]);
+    expect(drained[LARGE_FILE_SIZE - 1]).toBe(expected[LARGE_FILE_SIZE - 1]);
+  });
+
+  test('below the threshold the same mount still buffers', async () => {
+    // The threshold is a boundary, not a switch: a 300 KiB file under a 1 MiB
+    // threshold keeps the cheaper single-read path.
+    const options = StaticFilesOptions.create().withStreamThreshold(1024 * 1024);
+    const response = await serveLarge(options);
+    expect(response.status).toBe(200);
+    expect(response.body).toBeInstanceOf(Uint8Array);
+  });
+
+  test('the threshold applies to the Range window, not the file size', async () => {
+    const options = StaticFilesOptions.create().withStreamThreshold(64 * 1024);
+    const small = await serveLarge(options, { range: 'bytes=0-15' });
+    expect(small.status).toBe(206);
+    expect(small.body).toBeInstanceOf(Uint8Array);
+
+    const wide = await serveLarge(options, { range: `bytes=0-${LARGE_FILE_SIZE - 1}` });
+    expect(wide.status).toBe(206);
+    expect(wide.body).toBeInstanceOf(ReadableStream);
+    const drained = await drainStream(wide.body as ReadableStream<Uint8Array>);
+    expect(drained.byteLength).toBe(LARGE_FILE_SIZE);
+  });
+
+  test('HEAD reads nothing whether streaming is on or off', async () => {
+    const options = StaticFilesOptions.create().withStreamThreshold(64 * 1024);
+    for (const settings of [undefined, options]) {
+      const response = await serveLarge(settings, {}, 'HEAD');
+      expect(response.status).toBe(200);
+      expect(response.body).toBeNull();
+      expect(response.headers?.['content-length']).toBe(String(LARGE_FILE_SIZE));
+    }
+  });
+
+  test('a file over maxFileSize is refused with 413 while bodies are buffered', async () => {
+    // First test this branch has ever had: `maxFileSize` is documented as the
+    // in-memory buffering cap, and nothing pinned the refusal it produces.
+    const options = StaticFilesOptions.create().withMaxFileSize(1024);
+    const response = await serveLarge(options);
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({ error: 'file too large' });
+  });
+
+  test('a threshold retires that 413 instead of refusing what streaming exists for', async () => {
+    const options = StaticFilesOptions.create()
+      .withMaxFileSize(1024)
+      .withStreamThreshold(1024);
+    const response = await serveLarge(options);
+    expect(response.status).toBe(200);
+    expect(response.body).toBeInstanceOf(ReadableStream);
+    await (response.body as ReadableStream<Uint8Array>).cancel();
+  });
+
+  test('a threshold above maxFileSize is rejected as a contradiction', () => {
+    // The rule that makes skipping the 413 safe: with it held, no response can
+    // buffer more than `streamThreshold` bytes, so the cap is unreachable
+    // rather than waived.  Without it there would be a band of sizes that
+    // streaming is enabled for and the cap still refuses.
+    const options = StaticFilesOptions.create()
+      .withMaxFileSize(1024)
+      .withStreamThreshold(2048);
+    expect(() => getFromFile(join(root, 'large.bin'), options)).toThrow(OptionsError);
+    expect(() => getFromFile(join(root, 'large.bin'), options)).toThrow(/streamThreshold must not exceed maxFileSize/);
+  });
+
+  test('a non-integer or zero threshold is rejected', () => {
+    expect(() => getFromFile(join(root, 'large.bin'), { streamThreshold: 0 })).toThrow(OptionsError);
+    expect(() => getFromFile(join(root, 'large.bin'), { streamThreshold: 2.5 })).toThrow(OptionsError);
+  });
+});
+
+/*
+ * The stream source itself.  Driven directly rather than through the handler
+ * because the properties under test — chunking, a window that starts mid-file,
+ * and releasing the file handle on every exit — are `readFileStream`'s and
+ * would be invisible once a response has been drained for its bytes.
+ */
+describe('static files — readFileStream', () => {
+  test('chunks a window that starts mid-file and ends exactly', async () => {
+    const stream = readFileStream(join(root, 'large.bin'), 1000, 200 * 1024);
+    const chunkSizes: number[] = [];
+    const reader = stream.getReader();
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunkSizes.push(value.byteLength);
+      total += value.byteLength;
+    }
+    reader.releaseLock();
+    expect(total).toBe(200 * 1024);
+    // 64 KiB chunks: three full ones plus an 8 KiB remainder.
+    expect(chunkSizes).toEqual([64 * 1024, 64 * 1024, 64 * 1024, 8 * 1024]);
+  });
+
+  test('an empty window opens no handle and closes immediately', async () => {
+    const stream = readFileStream(join(root, 'large.bin'), 0, 0);
+    const reader = stream.getReader();
+    expect((await reader.read()).done).toBe(true);
+    reader.releaseLock();
+  });
+
+  test('cancelling after a partial read releases the handle and does not double-close', async () => {
+    // `cancel` can arrive while a `pull` is still settling, and closing a
+    // handle twice rejects on Node — so the release has to be idempotent.
+    // On Windows the `rm` below is the real detector: an open handle makes
+    // unlinking the file fail, which is exactly a leak.  On POSIX unlink
+    // succeeds regardless, and a leak surfaces instead as a Deno
+    // `--trace-leaks` op in the smoke case.
+    const scratch = await mkdtemp(join(tmpdir(), 'actor-ts-static-cancel-'));
+    const file = join(scratch, 'large.bin');
+    await writeFile(file, largeFileBytes());
+    const stream = readFileStream(file, 0, LARGE_FILE_SIZE);
+    const reader = stream.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    await reader.cancel();
+    reader.releaseLock();
+    await rm(scratch, { recursive: true });
+  });
+
+  test('a missing file surfaces as a stream error, not a silent empty body', async () => {
+    const stream = readFileStream(join(root, 'does-not-exist.bin'), 0, 10);
+    const reader = stream.getReader();
+    await expect(reader.read()).rejects.toThrow();
+    reader.releaseLock();
   });
 });
