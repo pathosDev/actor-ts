@@ -1,4 +1,5 @@
 import type { ActorRef } from './ActorRef.js';
+import { LogContext } from './LogContext.js';
 
 /** A handle that lets callers cancel a scheduled task. */
 export interface Cancellable {
@@ -120,6 +121,33 @@ export class Scheduler {
     cancellable._settle();
   }
 
+  /**
+   * Run one fired schedule with the MDC of whoever armed it left behind.
+   *
+   * `AsyncLocalStorage` binds a store when the timer is *created*, so a
+   * schedule armed from inside a request's `LogContext.run` scope fires under
+   * that request's context — for the whole life of a `setInterval`, which is
+   * the process lifetime for anything armed in `preStart`.  The callback then
+   * either `tell`s (and `LocalActorRef.tell` re-stamps the inherited context
+   * onto the envelope, so it travels downstream and over the wire) or runs a
+   * user task whose log lines claim a request that ended long ago (#718).
+   *
+   * A fired schedule belongs to nobody: the arming request is over, and the
+   * tick serves whoever comes next.  So this is exactly the seam
+   * {@link LogContext.runFresh} documents, and clearing fails safe — a field
+   * nobody set cannot leak.  A caller who genuinely wants the arming context
+   * on its ticks says so, by capturing `LogContext.snapshot()` at arm time and
+   * reopening it inside the task.
+   *
+   * The clear sits here rather than at the four public entry points so that
+   * every schedule gets it — the two message forms *and* the two bare-function
+   * forms, which never pass through an `ActorCell` and would otherwise stay
+   * leaking whatever the delivery side does.
+   */
+  private fireCleared(run: () => void): void {
+    LogContext.runFresh(run);
+  }
+
   private oneShot(delayMs: number, run: () => void): Cancellable {
     let handle: ReturnType<typeof setTimeout> | null = null;
     const cancellable = this.track(() => {
@@ -130,7 +158,7 @@ export class Scheduler {
       // Settle before running: the schedule is over either way, and `run`
       // may itself schedule, cancel, or throw.
       this.settle(cancellable);
-      if (!this._cancelled) run();
+      if (!this._cancelled) this.fireCleared(run);
     }, delayMs);
     return cancellable;
   }
@@ -145,10 +173,10 @@ export class Scheduler {
     timeoutHandle = setTimeout(() => {
       timeoutHandle = null;
       if (cancellable.isCancelled || this._cancelled) return;
-      run();
+      this.fireCleared(run);
       intervalHandle = setInterval(() => {
         if (cancellable.isCancelled || this._cancelled) return;
-        run();
+        this.fireCleared(run);
       }, intervalMs);
     }, initialDelayMs);
     return cancellable;

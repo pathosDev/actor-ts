@@ -356,7 +356,7 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
   kann den User nachschlagen, wenn er mehr braucht.
 </Aside>
 
-<Aside type="caution" title="Aufgeschobene Arbeit behält die MDC — das ist die Gefahr, nicht der Verlust">
+<Aside type="caution" title="Selbst aufgeschobene Arbeit behält die MDC — das ist die Gefahr, nicht der Verlust">
   ```ts
   override onReceive(message) {
     this.log.info('handling');               // ✓ MDC vorhanden
@@ -367,16 +367,18 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
   ```
   `AsyncLocalStorage` bindet den Store, wenn eine Async-Ressource
   **erzeugt** wird, nicht wenn sie läuft.  Ein innerhalb der Runde
-  scharfgemachtes `setTimeout` sieht beim Feuern also weiterhin die MDC
-  dieser Runde — obwohl `run()` längst zurückgekehrt ist.
-  `context.timers` verhält sich genauso: es delegiert an den
-  System-Scheduler, dessen Callback ein normales `tell` absetzt, und
-  dieses `tell` snapshotet den zur Feuerzeit aktuellen Kontext.
+  scharfgemachtes rohes `setTimeout` sieht beim Feuern also weiterhin
+  die MDC dieser Runde — obwohl `run()` längst zurückgekehrt ist.
 
   Der Fehlerfall ist damit das Gegenteil von Kontextverlust —
   aufgeschobene Arbeit **erbt** den Kontext derjenigen Runde, die sie
   zufällig gestartet hat.  Wenn diese Arbeit jemand anderem dient, siehe
   [Aufgeschobene Arbeit und Tenant-Isolation](#aufgeschobene-arbeit-und-tenant-isolation).
+
+  **Was das Framework aufschiebt, räumt das Framework auf** — siehe
+  [Was das Framework garantiert](#was-das-framework-garantiert).  Die
+  Regel oben betrifft also die Arbeit, die *du* aufschiebst, nicht
+  irgendetwas, das das Framework dir zurückgibt.
 </Aside>
 
 <Aside type="caution" title="`info`-Aufrufe, die große Objekte allokieren">
@@ -403,13 +405,56 @@ Runde überlebt, die sie gestartet hat** — ein nicht awaitetes Promise,
 ein später geflushter Puffer, eine im Batch geleerte Queue, ein für
 die Zukunft scharfgemachter Retry.
 
+### Was das Framework garantiert
+
+**Der Kontext gehört zum Envelope, nicht zur Async-Ressource.** Eine
+Auslieferung trägt den Kontext, den ihr `tell` gesnapshotet hat, oder
+keinen — niemals den, der zufällig in dem Timer, Socket-Callback oder
+Dispatcher-Tick ambient war, der den Actor geweckt hat. Konkret laufen
+alle diese mit **geleerter** MDC statt mit einer geerbten:
+
+| Ausgeliefert von | Läuft unter |
+| --- | --- |
+| Einem `tell` aus einem `LogContext.run`-Scope | dem Kontext dieses Scopes |
+| Einem `tell` von irgendwo sonst | leer |
+| `ReceiveTimeout` | leer |
+| Einem `context.timers`-Tick und jedem `Scheduler`-Zeitplan | leer |
+| `preStart` / `postStop` | leer |
+| Einem eingehenden Cluster-Frame ohne Kontext | leer |
+
+Zwei Konsequenzen, die ausdrücklich gesagt gehören.
+
+Eine **vom Framework ausgelieferte Nachricht erbt niemals den vorigen
+Request.** Vorher nagelte ein `setInterval`, das beim Behandeln des
+Requests von Tenant A scharfgemacht wurde, A's Identifier an jeden
+späteren Tick — und weil ein `tell` den Kontext, unter dem es läuft,
+erneut snapshotet, auch an alle, die der Tick als Nächstes anschrieb.
+Dasselbe galt für einen `ReceiveTimeout`, den die Anwendung nie selbst
+scharfmacht, und für jedes gewöhnliche `tell`, das zufällig eine
+Dispatcher-Runde mit einem korrelierten teilte.
+
+Und **Lifecycle-Hooks gehören nicht zu dem Request, der den Actor
+gespawnt hat.** `preStart` eines Kindes, das in einem Request-Handler
+gespawnt wurde, loggt ohne `correlationId`. Braucht ein Hook eine,
+übergib sie — über den Konstruktor oder in der ersten Nachricht —
+statt auf ambientes Erben zu setzen:
+
+```ts
+// The correlation id is data the child owns, not context it inherits.
+const child = this.context.spawn(() => new Worker(correlationId), 'worker');
+```
+
+### Was weiterhin dir gehört
+
 `AsyncLocalStorage` bindet den Store, wenn die Async-Ressource
 *erzeugt* wird. Ein in einer Runde gestartetes Promise behält deren
 Kontext also für immer, und jedes `tell` seiner Fortsetzung stempelt
-diesen Kontext auf das Envelope. Dient die aufgeschobene Arbeit einem
-anderen Prinzipal als die auslösende Runde, reisen die Identifier des
-einen Tenants mit den Nachrichten eines anderen mit — ein Datenleck,
-nicht bloß eine verwirrende Log-Zeile:
+diesen Kontext auf das Envelope. Das Framework sieht dieses Promise
+nicht — es entsteht und löst sich vollständig innerhalb deines
+Handlers auf —, diese Hälfte bleibt also deine. Dient die
+aufgeschobene Arbeit einem anderen Prinzipal als die auslösende Runde,
+reisen die Identifier des einen Tenants mit den Nachrichten eines
+anderen mit — ein Datenleck, nicht bloß eine verwirrende Log-Zeile:
 
 ```ts
 // ✗ Leckt: der Drain erbt den Request, der den Flush ausgelöst hat.
@@ -437,7 +482,10 @@ wem die aufgeschobene Arbeit gehört.
 
 Nimm es an der Naht, an der Arbeit dem Aufrufer nicht mehr zurechenbar
 ist, der sie zufällig gestartet hat: eine Hintergrundschleife, ein
-Wartungslauf, ein Retry-Timer.
+Wartungslauf, ein mit rohem `setTimeout` scharfgemachter Retry. (Ein
+über `context.timers` oder den System-`Scheduler` scharfgemachter Retry
+bekommt das schon — siehe
+[Was das Framework garantiert](#was-das-framework-garantiert).)
 
 ```ts
 override onReceive(_message: string): void {

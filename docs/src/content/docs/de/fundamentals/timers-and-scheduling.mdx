@@ -186,6 +186,47 @@ import { Aside } from '@astrojs/starlight/components';
   gewöhnlichen Nachricht an `this.self`, supervised und stop-sicher.
 </Aside>
 
+## Ein Tick trägt keinen diagnostischen Kontext
+
+Was auch immer einen Zeitplan scharfgemacht hat — der Zeitplan gehört
+ihm nicht. Ein gefeuerter Timer läuft daher mit **geleerter** MDC, nicht
+mit dem Kontext, der beim Armieren aktuell war:
+
+```ts
+override onReceive(message: Request): void {
+  // Called inside LogContext.run({ tenant: 'acme' }, ...) upstream.
+  this.context.timers.startTimerWithFixedDelay('sweep', { kind: 'sweep' }, 60_000);
+}
+
+private onSweep(): void {
+  this.log.info('sweeping');    // → no tenant field, on this and every later tick
+  this.auditor.tell('swept');   // → and the envelope carries none either
+}
+```
+
+Das gilt für alle vier `system.scheduler`-Einstiegspunkte ebenso wie für
+`context.timers`. Ohne das würde ein einziges `setInterval`, das beim
+Behandeln des Requests eines Tenants scharfgemacht wurde, dessen
+Identifier für die Lebensdauer des Prozesses an jeden Tick nageln — und
+weil ein `tell` den Kontext, unter dem es läuft, erneut snapshotet, auch
+an alle weitergeben, die der Tick als Nächstes anschrieb.
+
+Braucht ein Tick den Armierungs-Kontext wirklich, sag es ausdrücklich:
+schnappschieße ihn beim Armieren und öffne ihn im Handler erneut.
+
+```ts
+private readonly armedUnder = LogContext.snapshot();   // at arm time
+
+private onSweep(): void {
+  LogContext.run(this.armedUnder, () => this.log.info('sweeping'));
+}
+```
+
+Siehe [Logging — was das Framework garantiert](/de/fundamentals/logging/#was-das-framework-garantiert)
+für die vollständige Liste der betroffenen Auslieferungen — und für die
+Hälfte, die weiterhin du schließen musst: ein rohes `setTimeout` oder ein
+nicht awaitetes Promise erbt den Kontext der Runde genau wie bisher.
+
 ## Fixed-Rate-Semantik
 
 `scheduleAtFixedRate` jagt **keine** verpassten Feuerungen.  Wenn

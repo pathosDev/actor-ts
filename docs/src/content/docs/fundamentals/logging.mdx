@@ -349,7 +349,7 @@ of that snapshot.  This means:
   the user if it needs more.
 </Aside>
 
-<Aside type="caution" title="Deferred work keeps the MDC — that is the hazard, not the loss">
+<Aside type="caution" title="Work you defer yourself keeps the MDC — that is the hazard, not the loss">
   ```ts
   override onReceive(message) {
     this.log.info('handling');               // ✓ MDC present
@@ -359,16 +359,19 @@ of that snapshot.  This means:
   }
   ```
   `AsyncLocalStorage` binds a store when an async resource is
-  **created**, not when it runs, so a `setTimeout` armed inside the
+  **created**, not when it runs, so a raw `setTimeout` armed inside the
   turn still sees the turn's MDC when it fires — even though `run()`
-  returned long before.  `context.timers` behaves the same way: it
-  delegates to the system scheduler, whose callback does a normal
-  `tell`, and that `tell` snapshots the context current at fire time.
+  returned long before.
 
   The failure mode is therefore the opposite of losing context —
   deferred work *inherits* the context of whichever turn happened to
   start it.  When that work serves someone else, see
   [Deferred work and tenant isolation](#deferred-work-and-tenant-isolation).
+
+  **What the framework defers, the framework clears** — see
+  [What the framework guarantees](#what-the-framework-guarantees). So
+  the rule above is about the work *you* defer, not about anything the
+  framework hands back to you.
 </Aside>
 
 <Aside type="caution" title="`info` calls that allocate big objects">
@@ -394,13 +397,55 @@ being what you want the moment work **outlives the turn that started
 it** — an un-awaited promise, a buffer flushed later, a queue drained
 in a batch, a retry armed for the future.
 
+### What the framework guarantees
+
+**The context is per envelope, not per async resource.** A delivery
+carries the context its `tell` snapshotted, or none — never the one
+that happened to be ambient in whichever timer, socket callback or
+dispatcher tick woke the actor up. Concretely, all of these run with
+the MDC **emptied** rather than inherited:
+
+| Delivered by | Runs under |
+| --- | --- |
+| A `tell` from inside a `LogContext.run` scope | that scope's context |
+| A `tell` from anywhere else | empty |
+| `ReceiveTimeout` | empty |
+| A `context.timers` tick, and every `Scheduler` schedule | empty |
+| `preStart` / `postStop` | empty |
+| An inbound cluster frame with no context | empty |
+
+Two consequences worth stating outright.
+
+A **framework-delivered message never inherits the previous request.**
+Before, a `setInterval` armed while handling tenant A's request pinned
+A's identifiers to every later tick — and, because a `tell` re-snapshots
+the context it runs under, forwarded them to whoever the tick messaged
+next. The same held for a `ReceiveTimeout`, which the application never
+arms itself, and for any plain `tell` that happened to share a
+dispatcher turn with a correlated one.
+
+And **lifecycle hooks are not part of the request that spawned the
+actor.** `preStart` on a child spawned inside a request handler logs
+with no `correlationId`. If a hook needs one, pass it in — through the
+constructor, or in the first message — rather than relying on ambient
+inheritance:
+
+```ts
+// The correlation id is data the child owns, not context it inherits.
+const child = this.context.spawn(() => new Worker(correlationId), 'worker');
+```
+
+### What is still yours to close
+
 `AsyncLocalStorage` binds a store when the async resource is
 *created*. So a promise started inside a turn keeps that turn's
 context forever, and every `tell` its continuation makes stamps that
-context onto the envelope. If the deferred work serves a different
-principal than the turn that triggered it, one tenant's identifiers
-travel with another tenant's messages — a data leak, not just a
-confusing log line:
+context onto the envelope. The framework cannot see that promise — it
+is created and resolved entirely inside your handler — so this half
+stays yours. If the deferred work serves a different principal than
+the turn that triggered it, one tenant's identifiers travel with
+another tenant's messages — a data leak, not just a confusing log
+line:
 
 ```ts
 // ✗ Leaks: the drain inherits whichever request triggered the flush.
@@ -428,7 +473,9 @@ deferred work belongs to.
 
 Use it at the seam where work stops being attributable to the caller
 that happened to start it: a background loop, a maintenance sweep, a
-retry timer.
+retry you armed with a raw `setTimeout`. (A retry armed through
+`context.timers` or the system `Scheduler` already gets this — see
+[What the framework guarantees](#what-the-framework-guarantees).)
 
 ```ts
 override onReceive(_message: string): void {

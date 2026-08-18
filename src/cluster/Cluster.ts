@@ -1105,7 +1105,8 @@ export class Cluster {
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
     // the next envelope, so both trails keep flowing across hops.
-    // Empty / missing contexts skip the corresponding wrapper.
+    // A missing trace skips its wrapper; a missing MDC gets a *cleared*
+    // one rather than none at all (#718, below).
     let dispatch: () => void = (): void => this.dispatchEnvelope(from, message);
 
     // Tracing: if the envelope carries a parent context, open a
@@ -1144,13 +1145,24 @@ export class Cluster {
     // The same emptiness question the two `tell` paths ask, through the same
     // helper.  Its identity fast path cannot fire here — the sanitiser hands
     // back a fresh object every time — but a peer that sends `context: {}`, or
-    // one whose every key the sanitiser rejected, must still take the
-    // no-wrapper branch rather than pay an `AsyncLocalStorage` frame for a
-    // context with nothing in it.
+    // one whose every key the sanitiser rejected, must still be treated as
+    // having sent nothing, rather than having its emptiness installed as a
+    // context of its own.  What the two branches now differ in is *whose*
+    // emptiness that is (#718) — and the `else` still costs no
+    // `AsyncLocalStorage` frame on a node with no MDC open, because `runFresh`
+    // skips the wrapper when there is no store to shadow.
     if (context && !LogContext.isEmpty(context)) {
       LogContext.run(context, dispatch);
     } else {
-      dispatch();
+      // `runFresh`, not a bare call: an inbound frame that carries no context
+      // must be dispatched under a *cleared* one, and there is a store to clear
+      // (#718).  `TcpTransport.send` opens the outbound socket lazily, so the
+      // socket — and every `onData` callback on it — is bound to the
+      // `AsyncLocalStorage` store of whichever request first sent to that peer.
+      // Unwrapped, `dispatchEnvelope`'s `ref.tell(body)` snapshots that store
+      // onto the local envelope, and a peer's context-free frame is delivered
+      // under one of *our* earlier requests' correlation ids.
+      LogContext.runFresh(dispatch);
     }
   }
 

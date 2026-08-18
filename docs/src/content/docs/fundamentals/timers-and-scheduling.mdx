@@ -179,6 +179,46 @@ import { Aside } from '@astrojs/starlight/components';
   an ordinary message to `this.self`, supervised and stop-safe.
 </Aside>
 
+## A tick carries no diagnostic context
+
+Whatever armed a schedule, the schedule does not belong to it. So a
+fired timer runs with the MDC **emptied**, not with the context that
+was current when the timer was armed:
+
+```ts
+override onReceive(message: Request): void {
+  // Called inside LogContext.run({ tenant: 'acme' }, ...) upstream.
+  this.context.timers.startTimerWithFixedDelay('sweep', { kind: 'sweep' }, 60_000);
+}
+
+private onSweep(): void {
+  this.log.info('sweeping');    // → no tenant field, on this and every later tick
+  this.auditor.tell('swept');   // → and the envelope carries none either
+}
+```
+
+That holds for all four `system.scheduler` entry points as well as
+`context.timers`. Without it, one `setInterval` armed while handling
+one tenant's request would pin that tenant's identifiers to every tick
+for the life of the process — and, because a `tell` re-snapshots the
+context it runs under, forward them to whoever the tick messaged next.
+
+If a tick genuinely needs the arming context, say so explicitly:
+capture it at arm time and reopen it in the handler.
+
+```ts
+private readonly armedUnder = LogContext.snapshot();   // at arm time
+
+private onSweep(): void {
+  LogContext.run(this.armedUnder, () => this.log.info('sweeping'));
+}
+```
+
+See [Logging — what the framework guarantees](/fundamentals/logging/#what-the-framework-guarantees)
+for the full list of deliveries this applies to, and for the half that
+is still yours to close — a raw `setTimeout` or an un-awaited promise
+inherits the turn's context exactly as it always did.
+
 ## Fixed-rate semantics
 
 `scheduleAtFixedRate` does **not** chase missed firings.  If the
