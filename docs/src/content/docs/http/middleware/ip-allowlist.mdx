@@ -1,6 +1,6 @@
 ---
 title: IP allowlist
-description: IpAllowlist() restricts a route subtree to clients inside configured IPv4/IPv6 CIDRs — reads the socket peer by default and never trusts x-forwarded-for unless you opt in.
+description: IpAllowlist() restricts a route subtree to clients inside configured IPv4/IPv6 CIDRs — reads the socket peer by default, and behind a proxy resolves the client from the forwarded chain once you name the proxies.
 ---
 
 `IpAllowlist` restricts a route subtree to clients whose IP falls
@@ -9,9 +9,10 @@ inside one of the configured CIDRs — defence-in-depth on top of
 token is useless off an allowlisted network.
 
 ```ts
-import { IpAllowlist, withMiddleware } from 'actor-ts/http';
+import { IpAllowlist, IpAllowlistOptions, withMiddleware } from 'actor-ts/http';
 
-const allowlist = IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] });
+const ipAllowlistOptions = IpAllowlistOptions.create().withAllow('10.0.0.0/8', '127.0.0.1/32');
+const allowlist = IpAllowlist(ipAllowlistOptions);
 
 const managementRoutes = withMiddleware(allowlist, clusterRoutes);
 ```
@@ -23,34 +24,87 @@ missing — client IP fails closed with `403`.
 
 ## Configuration
 
-`IpAllowlist` takes a plain options object:
+`IpAllowlistOptions` — builder or plain object:
 
 | Field | Purpose |
 | --- | --- |
 | `allow` | Non-empty list of CIDR strings; at least one must contain the client IP, else `403`.  Invalid CIDR syntax throws at construction. |
-| `getClientIp` | Override IP extraction.  Default reads `request.remoteAddress` (the socket peer).  Returning `null`/`undefined` denies the request (fail-closed). |
+| `trustedProxies` | CIDRs of the reverse proxies in front of this app.  Unset (the default) means no forwarding header is read at all.  See below. |
+| `forwardedHeader` | Header carrying the forwarded chain.  Default `'x-forwarded-for'`; only read when `trustedProxies` is set. |
+| `getClientIp` | Replace IP extraction wholesale — the escape hatch.  Default reads `request.remoteAddress` (the socket peer).  Returning `null`/`undefined` denies the request (fail-closed).  Mutually exclusive with `trustedProxies`. |
 
 ### Behind a reverse proxy
 
-The default reads the **socket peer** and deliberately does **not**
-trust `x-forwarded-for` — that header is client-spoofable when no proxy
-sits in front.  Behind a trusted proxy (Cloudflare, AWS ALB, NGINX)
-that strips and sets it, opt in explicitly:
+The default reads the **socket peer**, which behind a proxy is the proxy.
+To get the client's own address, name the proxies — that is the whole
+configuration:
 
 ```ts
-IpAllowlist({
-  allow: ['10.0.0.0/8'],
-  getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim(),
-});
+const ipAllowlistOptions = IpAllowlistOptions.create()
+  .withAllow('10.0.0.0/8')
+  .withTrustedProxies('10.9.9.0/24');
+
+const allowlist = IpAllowlist(ipAllowlistOptions);
+```
+
+The middleware then reads the chain in wire order —
+`[...x-forwarded-for entries, socket peer]`, client first — and walks it
+**from the right**, taking the first address that is not one of your
+proxies.
+
+That direction is the entire point, because every common proxy
+**appends** to an inbound `X-Forwarded-For` rather than replacing it:
+
+| Proxy | What it does to `X-Forwarded-For` |
+| --- | --- |
+| NGINX | `$proxy_add_x_forwarded_for` is *the inbound header, comma-appended with `$remote_addr`* |
+| AWS ALB | appends the connecting peer (`xff_header_processing` defaults to `append`) |
+| Cloudflare | appends, and additionally **sets** `CF-Connecting-IP` |
+
+So the **leftmost** entry is whatever the client typed, and only the
+entries added from the right were added by infrastructure.  Three things
+follow, and each closes a hole a hand-written extractor leaves open:
+
+- A client that reaches the app **directly** is the socket peer, and the
+  peer is not one of your proxies — so the walk stops there and the
+  header is never read.  A forged `x-forwarded-for` decides nothing.
+- Junk a client prepends sits to the *left* of its real address and is
+  never reached.
+- An entry that is not a valid address matches no CIDR, counts as
+  untrusted, ends the walk — and then fails `allow` too.
+
+Where your proxy **sets** a single-value header instead of appending,
+point the same walk at it.  On Cloudflare that is `CF-Connecting-IP`:
+
+```ts
+const ipAllowlistOptions = IpAllowlistOptions.create()
+  .withAllow('10.0.0.0/8')
+  .withTrustedProxies('173.245.48.0/20', '103.21.244.0/22')   // …the published Cloudflare ranges
+  .withForwardedHeader('cf-connecting-ip');
 ```
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Only read x-forwarded-for behind a proxy that sets it">
-  If clients can reach the app directly, they can forge
-  `x-forwarded-for` and walk straight through the allowlist.  Override
-  `getClientIp` **only** when a trusted proxy in front strips the
-  inbound header and sets its own.
+<Aside type="caution" title="Never trust every hop">
+  ```ts
+  .withTrustedProxies('0.0.0.0/0')   // ✗ trusts the whole chain
+  ```
+  The walk then finds nothing untrusted and falls back to the socket peer,
+  so the option buys exactly nothing — but the **backend** spellings of
+  the same idea are worse than nothing: `app.set('trust proxy', true)` on
+  Express and `trustProxy: true` on Fastify make `req.ip` the *leftmost*
+  entry, the one the client controls, and that value lands in
+  `remoteAddress` for every middleware.  Name the addresses of your own
+  load balancers and nothing else.
+</Aside>
+
+<Aside type="tip" title="A hop count is not enough either">
+  A numeric hop count — `trust proxy: 2` on Express, `trustProxy: 2` on
+  Fastify — compares indexes and never addresses, so it believes the
+  header on a request that passed no proxy at all: two forged entries are
+  two believed entries.  `trustedProxies` checks the socket peer first,
+  which is why it does not share that hole, and why it needs nothing from
+  the backend — it works identically on Fastify, Express and Hono.
 </Aside>
 
 ## Where to next

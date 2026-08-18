@@ -24,9 +24,32 @@ export type WorkerCloseEvent = {
   readonly code?: number;
 };
 
+/**
+ * An uncaught throw, an unhandled rejection, or a bootstrap that fails to
+ * load, inside the worker.
+ *
+ * It is a member of {@link WorkerEventMap} rather than an out-of-band concern
+ * because leaving it out is what made the documented containment guarantee
+ * false: with no name to subscribe, Node re-raises the worker's error on the
+ * host via `process.nextTick` and Deno rejects an internal promise — both exit
+ * 1, and Node's `exit` event never fires, so the restart path is never even
+ * reached (#700).  Only Bun contains the throw on its own.
+ *
+ * Deliberately not an `Error`: Node hands over a real `Error`, the Web Worker
+ * API hands over an `ErrorEvent` whose `error` may be anything or nothing, so
+ * the only field a caller can rely on is a (possibly absent) message.
+ */
+export type WorkerErrorEvent = {
+  /** The failure's message, when the runtime supplies one. */
+  readonly message?: string;
+  /** The thrown value itself, where the runtime hands one over. */
+  readonly error?: unknown;
+};
+
 export type WorkerEventMap = {
   message: WorkerMessageEvent;
   close: WorkerCloseEvent;
+  error: WorkerErrorEvent;
 };
 
 export interface WorkerLike {
@@ -39,7 +62,19 @@ export interface WorkerLike {
     event: K,
     handler: (ev: WorkerEventMap[K]) => void,
   ): void;
-  terminate(): void | Promise<number>;
+  /**
+   * Kill the thread and resolve once it is actually gone — **best effort, and
+   * bounded**.
+   *
+   * The runtimes do not agree on how they say so, which is why the wait lives
+   * behind this method instead of at the call site: Node's `terminate()`
+   * resolves after `exit`, Bun's returns `undefined` but does emit `close`
+   * within a couple of milliseconds, and Deno's returns `undefined` *and*
+   * emits nothing at all afterwards.  So each backend supplies its own
+   * completion signal and caps the wait; awaiting the native return value is
+   * only a real wait on one of the three (#735).
+   */
+  terminate(): Promise<void>;
 }
 
 export type WorkerSpawnOptions = {

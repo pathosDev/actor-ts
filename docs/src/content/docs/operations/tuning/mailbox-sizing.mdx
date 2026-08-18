@@ -30,6 +30,13 @@ wrong for a `Terminated` signal, a delivery confirmation or a
 WebSocket `close`.  All three went through the same queue, and each
 became a filed defect.
 
+One of the three has since been taken off the table for good: a
+[death-watch](/fundamentals/death-watch/) `Terminated` now arrives
+through a lane no overflow policy can shed, and no throttle can
+drop.  So a bound you set costs the actor its backlog, never the
+deaths it is watching for.  The other two are application messages,
+and there the sentence above still holds in full.
+
 The ceiling that trade bought was not real either: only the *user*
 queue was bounded.  System messages were never capped, so the
 process could exhaust its heap regardless.
@@ -282,10 +289,12 @@ protocol design.
   ```
   A bound is a decision to discard messages, and it can only be made
   where someone knows which ones are expendable.  Applied across the
-  board it reaches actors nobody assessed — a death-watch subscriber,
-  a delivery producer, a WebSocket hub — and the evicted envelope is
-  a control message.  That is the shape the unbounded default exists
-  to prevent, and setting a global capacity re-creates it.
+  board it reaches actors nobody assessed — a delivery producer, a
+  WebSocket hub — and the evicted envelope is a control message.  That
+  is the shape the unbounded default exists to prevent, and setting a
+  global capacity re-creates it.  A death-watch subscriber is the one
+  case the framework now covers itself: its `Terminated` survives any
+  bound.  Everything else in your protocol is still yours to assess.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

@@ -73,9 +73,14 @@ type ExpressRequestLike = {
   rawBody?: Uint8Array | null;
   body?: unknown;
   /**
-   * Express's IP accessor — by default the socket peer; when
-   * `app.set('trust proxy', ...)` is configured, the leftmost
-   * `X-Forwarded-For` entry.  Forwarded into `HttpRequest.remoteAddress`.
+   * Express's IP accessor — by default the socket peer.  With
+   * `app.set('trust proxy', ...)` it is whatever `proxy-addr` resolves,
+   * and *which* entry that is depends entirely on the value: a subnet
+   * list (or a hop count) yields the rightmost entry outside the trusted
+   * set, while `true` trusts every hop and therefore yields the
+   * **leftmost**, client-controlled entry.  Forwarded into
+   * `HttpRequest.remoteAddress` either way, so `true` is never the right
+   * setting under an `IpAllowlist` (#715).
    */
   ip?: string;
   /** Raw socket — fallback when `req.ip` isn't populated. */

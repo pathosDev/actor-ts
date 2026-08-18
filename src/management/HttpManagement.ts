@@ -247,8 +247,10 @@ export function managementRoutes(
   // IP allowlist wraps EVERY management endpoint, including health/
   // ready — network-level isolation is independent of who's allowed
   // to authenticate.  Probes that should reach the endpoint despite
-  // the allowlist must come from an allowed network or the operator
-  // must override `getClientIp` to inspect a trusted header.
+  // the allowlist must come from an allowed network; behind a reverse
+  // proxy that means naming the proxy in the allowlist's
+  // `trustedProxies` so the client's own address is resolved instead
+  // of the proxy's.
   if (options.ipAllowlist) {
     all = withMiddleware(options.ipAllowlist, all);
   }

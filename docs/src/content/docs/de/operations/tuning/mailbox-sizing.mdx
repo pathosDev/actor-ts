@@ -29,6 +29,13 @@ für ein `Terminated`-Signal, eine Delivery-Bestätigung oder ein
 WebSocket-`close` falsch. Alle drei liefen durch dieselbe Queue, und
 aus jedem wurde ein gemeldeter Defekt.
 
+Einer der drei ist inzwischen endgültig vom Tisch: ein `Terminated` der
+[Death Watch](/de/fundamentals/death-watch/) kommt über eine Spur an,
+die keine Overflow-Policy abwerfen und kein Throttle verwerfen kann.
+Eine Schranke, die du setzt, kostet den Actor also seinen Backlog, nie
+die Tode, auf die er wartet. Die anderen zwei sind
+Anwendungsnachrichten, und dort gilt der Satz oben unverändert.
+
 Die Obergrenze, die dieser Handel erkaufte, gab es ohnehin nicht: nur
 die *User*-Queue war begrenzt. System-Nachrichten waren nie gedeckelt,
 der Prozess konnte den Heap also trotzdem ausschöpfen.
@@ -287,10 +294,12 @@ Protokoll-Design.
   Ein Bound ist die Entscheidung, Nachrichten zu verwerfen, und die
   kann nur dort fallen, wo jemand weiß, welche entbehrlich sind.
   Pauschal angewandt trifft sie Actors, die niemand beurteilt hat —
-  einen Death-Watch-Subscriber, einen Delivery-Producer, einen
-  WebSocket-Hub — und der verworfene Envelope ist eine
-  Kontrollnachricht. Genau das soll der unbounded Default verhindern,
-  und eine globale Kapazität stellt es wieder her.
+  einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
+  Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
+  Default verhindern, und eine globale Kapazität stellt es wieder her.
+  Ein Death-Watch-Subscriber ist der eine Fall, den das Framework
+  inzwischen selbst abdeckt: sein `Terminated` übersteht jede Schranke.
+  Alles andere in deinem Protokoll bleibt deine Beurteilung.
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">

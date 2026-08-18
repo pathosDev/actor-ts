@@ -304,10 +304,11 @@ const routes = managementRoutes(system, cluster, {
   // the application at all.
   ipAllowlist: IpAllowlist({
     allow: ['10.0.0.0/8', '127.0.0.1/32'],
-    // Operators behind a trusted reverse-proxy: pass a custom
-    // extractor that reads x-forwarded-for (the default reads
-    // the socket peer and ignores forwarded headers).
-    // getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+    // Behind a reverse proxy, name the proxies: the client address
+    // is then resolved from the forwarded chain's socket end
+    // inwards.  Without this the default reads the socket peer,
+    // which behind a proxy is the proxy.
+    // trustedProxies: ['10.9.9.0/24'],
   }),
 });
 ```

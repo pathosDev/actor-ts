@@ -93,8 +93,14 @@ the whole server does.
   regardless — browsers ignore it over plain HTTP. Don't gate security
   headers on a scheme the app can't see.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
-  spoofable `X-Forwarded-For`. Trust a forwarded header only when your proxy
-  overwrites it (`IpAllowlist`'s `getClientIp` option).
+  spoofable `X-Forwarded-For` — and "does my proxy overwrite the header" is
+  the wrong question, because NGINX, AWS ALB and Cloudflare all **append**
+  to it. The client's own text stays at the left of the chain forever. Name
+  the proxies instead ([`IpAllowlist`'s
+  `trustedProxies`](/http/middleware/ip-allowlist/)) and the client address
+  is resolved from the socket end inwards, which is the only end
+  infrastructure controls. Never trust every hop: on Express and Fastify
+  `trust proxy: true` resolves to that leftmost, client-chosen entry.
 - **Secrets from the environment**, not HOCON files — the CSRF secret, Basic
   credentials, and bearer tokens all take values you load at startup.
 

@@ -76,7 +76,14 @@ export class RestartBudget {
   private failureTimes: number[] = [];
 
   constructor(
-    private readonly strategy: SupervisorStrategy,
+    /**
+     * Only the two allowance fields are read, and the parameter says so: the
+     * worker mesh budgets its slot respawns through this class (#734) and has
+     * neither an actor to apply a `Directive` to nor a supervision scope to
+     * name, so requiring a whole `SupervisorStrategy` would only have it
+     * fabricate both.  A `SupervisorStrategy` still satisfies it.
+     */
+    private readonly strategy: Pick<SupervisorStrategy, 'maxRetries' | 'withinTimeRangeMs'>,
     private readonly now: () => number = Date.now,
   ) {}
 

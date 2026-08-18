@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — The exported type IpAllowlistOptions is now the
+  accepted-input union IpAllowlistOptionsBuilder | IpAllowlistOptionsType,
+  and also a value alias for the builder, matching every other options
+  family in the project (#715).**
+
+  Passing an object literal to IpAllowlist is unaffected.
+
+  *Migration:* Annotate with IpAllowlistOptionsType instead of
+  IpAllowlistOptions wherever you read fields off a value of that type —
+  the union has no `allow` on its builder branch.
+
+- **BREAKING — A bounded mailbox's `capacity` now bounds the messages it is
+  allowed to discard rather than the messages it holds (#729).**
+
+  A queue made entirely of undelivered death notifications sits above the
+  number instead of losing one, and the overshoot is bounded by how many
+  actors that watcher watches. Nothing changes for a queue holding
+  ordinary traffic, and no drop is reported for an eviction that did not
+  happen.
+
+  *Migration:* If you sized a capacity as a hard memory ceiling, add
+  headroom for the watcher's watch set, or assert on `size` only for
+  mailboxes that hold no death notifications.
+
 - **The documented recipe for routing Terminated into
   pruneTerminatedSubscriber now widens the match input instead of guarding
   ahead of the matcher, which makes the arm mandatory at compile time:
@@ -598,6 +622,62 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **IpAllowlist gained `trustedProxies`, the CIDRs of the reverse proxies in
+  front of the app (#715).**
+
+  Set it and the middleware reads the chain in wire order — forwarded
+  entries first, socket peer last — and walks it from the right, taking
+  the first address that is not one of those proxies. A client that
+  reaches the app directly is the untrusted peer, so its header is never
+  read at all; junk it prepends sits left of its real address and is never
+  reached; an unparseable entry counts as untrusted, ends the walk and
+  then fails the allowlist too. When every entry is trusted the fallback
+  is the socket peer, not the leftmost entry, which is a deliberate
+  divergence from proxy-addr because that value is reachable by a caller
+  behind the proxy. `forwardedHeader` (default x-forwarded-for) points the
+  same walk at a header a vendor sets rather than appends —
+  cf-connecting-ip, true-client-ip, x-real-ip. Trust is expressed as
+  addresses and not as a hop count on purpose: a numeric trust-proxy
+  setting compares indexes and never addresses, so it believes the header
+  on a request that passed no proxy at all. It also means the option needs
+  nothing from the backend and therefore works identically on Fastify,
+  Express and Hono — where trustProxy is respectively reachable, reachable
+  only via a bring-your-own app, and absent. IpAllowlist now also has the
+  standard XOptions family: IpAllowlistOptionsType,
+  IpAllowlistOptionsBuilder, IpAllowlistOptions and
+  IpAllowlistOptionsValidator.
+
+- **`Mailbox.enqueueSignal(envelope)` and `Envelope.undroppable`, the seam
+  that keeps a framework lifecycle notification out of reach of a
+  load-shedding policy (#729).**
+
+  A `Mailbox` subclass of your own that overrides `enqueue` to shed should
+  override `enqueueSignal` too and queue the envelope past its bound; the
+  base implementation delegates to `enqueue`, which is correct for a queue
+  that discards nothing. `BoundedMailbox` and `PriorityMailbox` already
+  override it. Delegating rather than writing straight to the base user
+  queue is deliberate — a subclass may keep its messages elsewhere, and an
+  envelope hidden in a store its own `dequeueUser` never reads is worse
+  than one it dropped.
+
+- **Worker respawns are now delayed and budgeted instead of firing straight
+  from the close listener without limit (#734).**
+
+  Five new options and their builder methods: `restartMinBackoffMs`
+  (default 200), `restartMaxBackoffMs` (default 10000),
+  `restartRandomFactor` (default 0.2), `maxRestarts` (default 10, `-1` for
+  the previous unbounded behaviour) and `restartWindowMs` (default 60000),
+  matching the framework's own ten-restarts-per-minute supervision
+  allowance. A slot whose budget is spent is retired for good and reported
+  once through the new `onWorkerPermanentlyDown` callback, which is the
+  only diagnostic the worker subsystem can offer — it has no logger. A
+  replacement that never becomes ready counts against the same budget as a
+  worker that died. The pending respawn timer is unreferenced so it cannot
+  hold the process open, cancelled by `terminate()`, and re-checks the
+  shutdown flag when it fires; without all three, introducing a delay
+  would have made a previously unreachable broker hole reachable. The
+  knobs are code-only for now and have no config-file equivalent.
 
 - **`MAX_DELIVERY_IDENTIFIER_LENGTH` is exported from the `./delivery` entry
   point, so an application picking its own `producerId` can read the bound
@@ -1298,6 +1378,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **A watcher whose mailbox used `overflow: 'reject'` could hang
+  `terminate()` for the whole actor tree (#729).**
+
+  `MailboxFullError` was thrown synchronously on the dying cell's own
+  stack, from inside its watcher-notify loop, and escaped
+  `finalizeTermination` ahead of the parent's `childTerminated` — so the
+  parent kept the dead child in `_children` forever, any teardown waiting
+  on an empty children map never fired, every watcher after the throwing
+  one in iteration order also went unnotified, and `ActorStopped` had
+  already been published to observers. `reject` is `BoundedMailbox`'s own
+  constructor default, so the documented bring-your-own-mailbox shape
+  reached it without naming it. The notify loop is now guarded per
+  watcher: a refusal costs that watcher its notification, as a dead
+  letter, and costs the teardown nothing.
+
+- **`throttle({ onExcess: 'drop' })` silently consumed a death-watch
+  `Terminated`, which is the opposite of what `ActorContext.throttle` has
+  always documented (#729).**
+
+  The notification now bypasses the throttle gate and consumes no token: a
+  death the framework announces once is not part of the budget a rate
+  limit meters.
 
 - **Stopping a broker actor while a reconnect attempt was in flight left a
   fully live broker connection attached to the terminated actor, or an
@@ -2442,6 +2545,148 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING — An event or snapshot adapter built by
+  InMemorySchemaRegistry.eventAdapter(manifest) / snapshotAdapter(manifest)
+  now reads only that manifest (#737).**
+
+  Previously fromJournal resolved the codec, the latest version and every
+  upcaster from stored.manifest alone and never compared it to the
+  manifest the adapter was built for, so a journal row tagged with any
+  other manifest registered in the same registry decoded cleanly and was
+  returned as the requested type — type confusion on the replay path
+  (CWE-843) that the caller could not detect, since the payload validates
+  against the foreign codec and the static type claims it got what it
+  asked for. A mismatch now raises MigrationError ("manifest mismatch:
+  schema-registry adapter is for 'X', got 'Y'"), matching
+  MigrationChain.upcast and defaultsAdapter, which have always refused
+  that frame, and serializerCodec's serializerId check one layer down. The
+  realistic trigger is a mis-wiring rather than an attacker — the manifest
+  strings of eventAdapter and snapshotAdapter swapped, or the argument
+  changed between deploys while old rows still carry the old value — since
+  the registry's own write path can never emit a foreign manifest. On a
+  recovery path the refusal surfaces through onRecoveryFailure instead of
+  folding a foreign event into state.
+
+  *Migration:* A journal stream whose _t values were written by something
+  other than a registry adapter (e.g. wrapEventAsEnvelope with a per-event
+  manifestFor) no longer replays through a single registry-built adapter;
+  write a fromJournal that switches on stored.manifest and delegates per
+  type, as MigrationChain already required for a multi-type journal.
+
+- **IpAllowlist no longer documents an x-forwarded-for extractor that reads
+  the leftmost, client-controlled entry (#715).**
+
+  This was a guidance defect, not a live vulnerability: the shipped
+  default reads the socket peer and fails closed, and Fastify's base `ip`
+  getter is the socket peer without trustProxy, so nothing was exploitable
+  unless an operator copied the snippet out of the project's own
+  documentation. The premise that made it look safe was untrue — NGINX's
+  $proxy_add_x_forwarded_for, AWS ALB's default xff_header_processing and
+  Cloudflare all append the connecting peer rather than replacing the
+  inbound header, so in exactly the deployment the recipe was written for
+  its first entry is whatever the caller typed. The same value was
+  reachable a second way the report never named: `app.set('trust proxy',
+  true)` on Express and `trustProxy: true` on Fastify compile to a
+  trust-everything function, so proxy-addr never truncates the address
+  list and returns that leftmost entry byte for byte. Six pages in each
+  language, five src JSDoc blocks and two test fixtures carried one or the
+  other; all now describe trust-by-address, and the Express and Fastify
+  backend pages carry an explicit warning against the `true` form.
+
+- **A death-watch `Terminated` can no longer be discarded on its way to the
+  watcher (#729).**
+
+  It now takes `Mailbox.enqueueSignal` — the tail of the user queue,
+  exempt from whatever bound the mailbox enforces — and carries
+  `Envelope.undroppable`, which `Mailbox.removeOldest` steps over so a
+  later eviction cannot reach it either. Both halves were needed: queueing
+  it exempt is not enough when `drop-head` evicts the oldest message and
+  the notification becomes the oldest after enough newer arrivals. This
+  bites a mailbox you gave a capacity, not the default one: since the
+  default mailbox became unbounded again there was no default-reachable
+  path, but opting into a bound was silently opting into losing lifecycle
+  signals, and all four policies destroyed the notification in their own
+  way — `drop-head` evicted it after it was safely queued, `drop-new`
+  discarded it on arrival, `drop-lowest-priority` shed it as least
+  important, and `reject` threw. A notification that genuinely cannot be
+  queued — the watcher has already stopped, or its own `Mailbox` subclass
+  refuses it — now becomes a dead letter instead of vanishing, so the loss
+  is observable. Every consumer built on the notification was affected
+  while it was not: `BackoffSupervisor`'s respawn, `Router`'s routee
+  pruning, `ShardRegion`, `ClusterSingletonManager`, `Shard` and
+  `GracefulStop` all stall on a death they never hear about.
+
+- **An uncaught throw, an unhandled rejection, or a bootstrap that fails to
+  load inside a worker no longer kills the host process (#700).**
+
+  The runtime worker abstraction gained an `error` event that both
+  backends subscribe, so the failure reaches `restartPolicy` instead of
+  the host's own crash path. Measured before the fix: Node re-raised the
+  worker's error via `process.nextTick` and never fired `exit`, so the
+  restart path was never reached, and Deno rejected an internal promise —
+  both exited 1, and only Bun contained the throw. On Deno a bare listener
+  is not enough, so the Web adapter now cancels the event; the parent-side
+  `Worker` there emits no `close` at all, which is why restarts on Deno
+  are error-driven only. Close and error share one per-worker latch,
+  because Node and Bun emit both for a single throw and routing the new
+  event into the existing path would respawn twice per crash. An error
+  arriving before `worker-ready` now rejects the handshake immediately
+  instead of burning the full `readyTimeoutMs`. A new cross-runtime smoke
+  case covers it on Bun, Node and Deno, which is the only place either
+  claim can be proven — no un-quarantined unit test spawns an OS thread.
+
+- **One malformed `worker-transport` frame from a worker no longer
+  terminates the host (#701).**
+
+  `WorkerBroker.onMessage` took its argument as a validated envelope and
+  read `to` straight into `NodeAddress.fromJSON`; it now takes the frame
+  as unknown, checks the `to` and `from` addresses, and drops what does
+  not clear the check, with a try/catch behind it. Five shapes each exited
+  the host 1 before this, and only two of them threw the documented
+  `TypeError` — a missing or null `to` throws a plain `Error` from
+  `fromJSON` instead. Note the direction of travel: hardening `fromJSON`
+  to throw made this path worse, not better. A frame carrying `to.port` as
+  a string used to construct an address and be routed or dropped as an
+  unknown destination, and became fatal once the validator threw, because
+  a throwing validator is right behind a frame guard and wrong in front of
+  a bare call site. Malformed frames are dropped without a log line: the
+  broker has no logger, and the frame's `payload` is still validated by
+  the receiving transport rather than here.
+
+- **A replacement worker that misses its handshake deadline no longer
+  terminates the host as an unhandled rejection (#702).**
+
+  The respawn was a discarded promise with no handler; it is now a handled
+  call that reports the failure and asks the slot's restart budget for
+  another attempt, so a permanently broken bootstrap degrades the mesh by
+  one worker and then stops instead of looping. There is no supervisor
+  above the worker mesh to escalate to — `WorkerCluster` is a
+  static-constructed plain object, not an actor — so the report follows
+  the dispatcher's precedent of a prefixed `console.error`.
+
+- **BREAKING — Worker threads no longer outlive the failure that dropped
+  them (#735).**
+
+  A handshake that times out terminates its own worker before rejecting; a
+  partial `spawn()` failure tears down every sibling that did come up,
+  including ones still mid-handshake, since the instance that owns them is
+  never returned; a respawn suspended across shutdown is cleaned up
+  instead of registering into a closed broker; and `terminate()` now waits
+  for the threads rather than firing and forgetting. Adding an `await` was
+  not the fix: only Node returns something awaitable, so the completion
+  wait moved into the runtime adapters, where the Web adapter registers
+  its close listener before the native call and caps the wait at 250 ms
+  because Deno emits no completion signal at all — treat Deno shutdown as
+  best-effort, not confirmed. `WorkerBroker.register` also refuses
+  registration after `close()`, which previously repopulated the port map
+  permanently with an inert port that kept its worker alive for the
+  process lifetime.
+
+  *Migration:* `WorkerLike.terminate()` now returns `Promise<void>`
+  instead of `void | Promise<number>`; a custom `WorkerBackend` must
+  return a promise that resolves when the thread is gone, or
+  `Promise.resolve()` where the runtime cannot say.
 
 - **BREAKING — A `ProducerController` now stamps a crypto-random
   per-incarnation token on every `Delivery`, and the `ConsumerController`

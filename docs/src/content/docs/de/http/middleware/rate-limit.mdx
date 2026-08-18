@@ -26,9 +26,9 @@ const routes = path('api', post(limited(apiHandler)));
 Jede eindeutige IP (hier: der Socket-Peer `request.remoteAddress`) bekommt ein
 Budget von 100/Minute.  Überschüssige Requests bekommen 429 mit einem
 `Retry-After`-Header.  **Nutze als Key einen Wert, den der Client nicht
-fälschen kann** — nicht `x-forwarded-for`, außer ein vertrauenswürdiger
-Proxy setzt ihn (siehe Sicherheitshinweis unten), sonst rotiert ein
-Angreifer den Header pro Request und umgeht das Limit.
+fälschen kann** — niemals einen rohen `x-forwarded-for` (siehe
+Sicherheitshinweis unten), sonst rotiert ein Angreifer den Header pro
+Request und umgeht das Limit.
 
 ## Konfiguration
 
@@ -173,10 +173,12 @@ import { Aside } from '@astrojs/starlight/components';
   key: (request) => request.headers['x-forwarded-for'];   // ✗ spoofbar
   ```
   Hinter einem Load-Balancer / Proxy steht die echte IP in
-  `X-Forwarded-For` (oder ähnlich).  Aber Clients können diesen
-  Header selbst setzen, wenn der Proxy nicht so konfiguriert ist,
-  dass er ihn entfernt.  Vertrau nur, wenn **dein Proxy in der
-  Kette ist und den Header überschreibt**.
+  `X-Forwarded-For` (oder ähnlich) — aber nicht an einer Position, die der
+  Request benennen darf: NGINX, AWS ALB und Cloudflare **hängen** alle an
+  den Header an, was der Client geschrieben hat bleibt also links davon.
+  Nimm `request.remoteAddress` als Key, oder löse die Client-Adresse so
+  auf, wie [`IpAllowlist`](/de/http/middleware/ip-allowlist/) es tut —
+  benenne die Proxys und lies die Kette vom Socket-Ende nach innen.
 </Aside>
 
 <Aside type="caution" title="In-Memory-Cache über Pods">

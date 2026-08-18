@@ -33,14 +33,42 @@ const expressBackendOptions = ExpressBackendOptions.create().withMaxBodyBytes(4 
 new ExpressBackend(
   expressBackendOptions,
 );
-// Das X-Forwarded-*-Handling wird auf einer eigenen Express-App
-// konfiguriert (`app.set('trust proxy', true)`) und via `.withApp(app)`
-// übergeben.
 ```
 
 Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
 dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
 wirklich mehr annimmt, so wie oben.
+
+## Hinter einem Reverse-Proxy
+
+`req.ip` ist der Socket-Peer, und der landet in
+`HttpRequest.remoteAddress`. Express kann angewiesen werden, ihn
+stattdessen aus `X-Forwarded-For` abzuleiten — aber nur auf einer
+**eigenen App** (`app.set(...)`, via `.withApp(app)` übergeben), denn
+`ExpressBackendOptions` hat kein `trustProxy`-Feld.
+
+Nimm dafür lieber
+[`trustedProxies` von `IpAllowlist`](/de/http/middleware/ip-allowlist/).
+Das ist dieselbe Trust-by-Address-Regel, braucht keine eigene App und
+liest sich auf allen drei Backends gleich — Hono hat überhaupt kein
+Trust-Proxy-Konzept.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="app.set('trust proxy', true) ist nicht die sichere Einstellung">
+  ```ts
+  app.set('trust proxy', true);     // ✗ liefert den client-kontrollierten Eintrag
+  ```
+  `true` kompiliert zu einer Funktion, die allen traut — `proxy-addr`
+  kürzt die Adressliste also nie, und `req.ip` wird der **linkeste**
+  `X-Forwarded-For`-Eintrag: genau der Wert, den der Client geschickt hat.
+  Jeder verbreitete Proxy *hängt* an diesen Header an, statt ihn zu
+  ersetzen — es gibt also kein Deployment, in dem `true` richtig ist. Eine
+  numerische Hop-Anzahl ist besser, aber immer noch adressblind: sie
+  glaubt dem Header auch bei einem Request, der durch keinen Proxy
+  gelaufen ist. Nur eine Liste vertrauenswürdiger Subnetze prüft, wer
+  tatsächlich verbindet.
+</Aside>
 
 ## Security-Header
 
@@ -191,8 +219,6 @@ await http.newServerAt('0.0.0.0', 8080)
 actor-ts registriert seine Routen auf derselben App, sodass deine
 bestehenden Routen und Middleware weiter funktionieren, ohne den
 ganzen HTTP-Stack auszutauschen.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Express vs. Fastify im Benchmark">
   ```ts
