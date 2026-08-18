@@ -35,6 +35,7 @@ import {
 import type { MetricsRegistry, MetricSample } from '../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { MetricsRegistryOptions } from '../../../src/metrics/MetricsRegistryOptions.js';
+import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const DELAY = 'actor_dispatcher_queue_delay_seconds';
@@ -270,6 +271,49 @@ describe('actor_dispatcher_queue_delay_seconds', () => {
       // `Envelope.enqueuedAtMs` follows, and the reason the gate is evaluated
       // at arming time rather than at collection time.
       expect(totals(registry, 'late-dispatcher').count).toBe(1);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('renders on the wire with le beside dispatcher, one group per dispatcher', async () => {
+    // This family is the framework's **first labelled histogram** — every
+    // other one (`actor_message_handler_seconds`, `actor_mailbox_wait_seconds`,
+    // `actor_mailbox_depth`, `router_scatter_gather_latency_seconds`) passes
+    // `{}`.  So the exporter's "compose `le` with the series' own labels" path
+    // had no caller until now, and a scrape is where a mistake there would
+    // first show up: a `_bucket` row that dropped `dispatcher` would silently
+    // merge every dispatcher's buckets into one wrong histogram.
+    const system = newSystem('delay-wire');
+    const registry = system.extension(MetricsExtensionId).enable();
+    const first = new ThroughputDispatcher(1, 'wire-one');
+    const second = new ThroughputDispatcher(1, 'wire-two');
+    const firstOptions = ActorOptions.create().withDispatcher(first);
+    const secondOptions = ActorOptions.create().withDispatcher(second);
+    try {
+      system.spawn(Prompt, 'a', firstOptions).tell(1);
+      system.spawn(Prompt, 'b', secondOptions).tell(1);
+      await awaitCondition(
+        () => totals(registry, 'wire-one').count >= 1 && totals(registry, 'wire-two').count >= 1,
+        { timeoutMs: 4_000, label: 'both dispatchers reported a turn' },
+      );
+
+      const text = exportPrometheus(registry);
+      expect(text).toContain(`# TYPE ${DELAY} histogram`);
+      // Both labels on every bucket row, and the two dispatchers stay apart.
+      expect(text).toContain(`${DELAY}_bucket{dispatcher="wire-one",le="+Inf"}`);
+      expect(text).toContain(`${DELAY}_bucket{dispatcher="wire-two",le="+Inf"}`);
+      expect(text).toContain(`${DELAY}_bucket{dispatcher="wire-one",le="0.001"}`);
+      // `_sum` / `_count` keep `dispatcher` and must not carry `le` — a bucket
+      // label on a summary row is not valid Prometheus.
+      expect(text).toContain(`${DELAY}_count{dispatcher="wire-one"}`);
+      expect(text).toContain(`${DELAY}_sum{dispatcher="wire-one"}`);
+      expect(text).not.toContain(`${DELAY}_count{dispatcher="wire-one",le=`);
+      // One bucket row per boundary per dispatcher, and nothing unlabelled:
+      // a row without `dispatcher` would be the merged-histogram bug.
+      const bucketRows = text.split('\n').filter((line) => line.startsWith(`${DELAY}_bucket`));
+      expect(bucketRows).toHaveLength((DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS.length + 1) * 2);
+      expect(bucketRows.every((line) => line.includes('dispatcher="wire-'))).toBe(true);
     } finally {
       await system.terminate();
     }
