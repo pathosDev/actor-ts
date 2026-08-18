@@ -8,7 +8,11 @@ Zustellung.  Er:
 
 - Empfängt `Delivery<T>`-Envelopes von einem oder mehreren
   `ProducerController`n.
-- Dedupliziert Duplikate (gleiches `producerId` + `seq`).
+- Dedupliziert Duplikate (gleiches `producerId` + gleiche Producer-Inkarnation
+  + gleiche `seq`).
+- Weist ein fehlerhaftes Envelope ab — ohne `replyTo`, mit einer `seq`, die
+  keine positive Safe-Integer ist, oder mit einem leeren bzw. zu langen
+  Identifier — als Dead Letter, ohne den Handler zu rufen und ohne zu ACKen.
 - Ruft eine User-**Handler-Funktion** mit dem Message-Body auf.
 - ACKt **automatisch** an den Producer zurück, sobald der
   Handler resolved; wirft der Handler, kein ACK — der Producer
@@ -51,15 +55,24 @@ type ConsumerControllerOptionsType<T> = {
 
 Die einzige Einstellung ist der Handler.  Den Dedup-State pro
 Producer hält der Controller intern — Du konfigurierst weder
-eine Buffer-Größe noch eine Consumer-ID.
+eine Buffer-Größe noch eine Consumer-ID.  Auch die Grenzen dafür, was ein
+eingehendes Envelope enthalten darf, sind bewusst nicht konfigurierbar: sie
+existieren, um Wire-Input zu begrenzen, und ein Limit, das der Sender anheben
+könnte, ist kein Limit.
 
 ## Handler-Kontrakt
 
 Der Controller ruft `handler(body)` einmal pro *neuem*
-`(producerId, seq)`-Paar auf.  Sobald der Handler resolved,
+`(producerId, incarnation, seq)`-Tripel auf.  Sobald der Handler resolved,
 schickt der Controller ein ACK zurück an den Producer (via
 `Delivery.replyTo`), und der Producer gibt seinen In-Flight-Slot
 frei.
+
+Die Inkarnation ist es, die einen *neu gestarteten* Producer aus dem
+Dedup-Fenster heraushält: er verwendet seine Sequenznummern wieder, seine
+Inkarnation aber nicht — seine Nachrichten sind also neu und keine Duplikate.
+Siehe *Restart und die Producer-Inkarnation* auf der Seite
+[ProducerController](/de/delivery/producer-controller/).
 
 ```ts
 new ConsumerController<OrderEvent>({
@@ -90,11 +103,11 @@ schickt dieselbe Seq erneut.  Das ist der einzige
 
 ### Duplikat-Behandlung läuft automatisch
 
-Wenn dasselbe `(producerId, seq)` erneut ankommt (z. B. weil der
+Wenn dasselbe `(producerId, incarnation, seq)` erneut ankommt (z. B. weil der
 Producer retransmittiert hat, bevor unser ACK ihn erreicht hat),
 überspringt der Controller den Handler und schickt einfach
 nochmal das ACK.  Kein Applikations-Code nötig — der Controller
-hält `contiguous` und Out-of-order-Seqs pro Producer intern fest.
+hält `contiguous` und Out-of-order-Seqs pro Producer-Inkarnation intern fest.
 
 Für **fachliche Idempotenz** (z. B. "eine Kreditkarte nicht
 doppelt belasten, auch nicht über Consumer-Neustarts hinweg")
@@ -157,9 +170,15 @@ const p2 = system.spawnAnonymous(() =>
 Jeder Producer pflegt seine eigene Seq.  Der Consumer
 dedupliziert **pro Producer** automatisch — er hält einen
 separaten `(contiguous, above)`-Dedup-State pro `producerId`,
-sodass die Seq-Räume zweier Producer nicht kollidieren.
+sodass die Seq-Räume zweier Producer nicht kollidieren.  Der Eintrag hält
+außerdem fest, welche *Inkarnation* dieser `producerId` die Zähler beschreiben —
+ein Delivery einer neuen Inkarnation ersetzt ihn, statt einen zweiten Eintrag
+anzulegen.  Damit bleibt die Map bei einem Eintrag pro Producer, zum Preis eines
+möglichen weiteren Duplikats: ein nachlaufendes Delivery der ausscheidenden
+Inkarnation setzt das Fenster erneut zurück, ein paar schon behandelte Seqs
+können um den Wechsel herum also zweimal laufen.
 
-Dein Handler sieht nur den Body — `producerId` und `seq` sind
+Dein Handler sieht nur den Body — `producerId`, `incarnation` und `seq` sind
 die Sache des Controllers.  Falls Du sie für Business-Logik
 brauchst, persistiere einen Wrapper, der sie durch Deine
 Verarbeitungs-Pipeline trägt.

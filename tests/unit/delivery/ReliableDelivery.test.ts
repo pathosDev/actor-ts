@@ -2,13 +2,24 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
+import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
+import {
+  ReliableDelivery,
+  ProducerControllerOptions,
+  ProducerControllerOptionsBuilder,
+  MAX_DELIVERY_IDENTIFIER_LENGTH,
+} from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/** A silent TestKit — every case here would otherwise log its own warnings. */
+const quietKit = (name: string): TestKit => TestKit.create(name, TestKitOptions.create()
+  .withLogger(new NoopLogger())
+  .withLogLevel(LogLevel.Off));
 
 describe('ReliableDelivery — happy path', () => {
   test('producer → consumer delivers every message exactly once', async () => {
@@ -85,6 +96,7 @@ describe('ReliableDelivery — resilience', () => {
     const dup1: Delivery<string> = {
       kind: 'reliable-delivery.delivery',
       producerId: 'test-producer',
+      incarnation: 'test-incarnation',
       seq: 1,
       body: 'once',
       replyTo: selfProbe as never,
@@ -129,8 +141,15 @@ describe('ReliableDelivery — resilience', () => {
         seen++;
         if (seen < 3) return; // drop
         delivered = d.body;
-        // Acknowledgment manually to match ConsumerController's protocol.
-        d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
+        // Acknowledgment manually to match ConsumerController's protocol —
+        // including echoing the incarnation, without which the producer
+        // rejects it as unauthenticated (#730).
+        d.replyTo.tell({
+          kind: 'reliable-delivery.ack',
+          producerId: d.producerId,
+          incarnation: d.incarnation,
+          seq: d.seq,
+        });
       }
     }
     const consumerRef = kit.system.spawn(Flaky, 'flaky');
@@ -305,5 +324,415 @@ describe('ReliableDelivery — generated controller names', () => {
 
     await first.system.terminate();
     await second.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — producer restart (#726)', () => {
+  test('a re-created producer with the same producerId is not absorbed as duplicates', async () => {
+    // No crash and no supervision needed: stop-and-recreate is the plainest
+    // application pattern there is, and `nextSeq` is an instance field with no
+    // seed while `producerId` comes off the captured options object — so the
+    // second controller numbers from 1 again against a consumer whose dedup
+    // entry for that id never went away.
+    const kit = quietKit('rd-restart-recreate');
+    const received: string[] = [];
+    const confirmedDelivered: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withProducerId('orders')
+      .withResendTimeout(200)
+      .withWindowSize(4);
+
+    const first = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-first');
+    for (const s of ['a', 'b', 'c']) {
+      first.tell(s, (err) => { if (err === null) confirmedDelivered.push(s); });
+    }
+    await awaitCondition(() => confirmedDelivered.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the first incarnation delivered and confirmed three messages',
+    });
+    first.stop();
+
+    const second = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-second');
+    for (const s of ['d', 'e', 'f']) {
+      second.tell(s, (err) => { if (err === null) confirmedDelivered.push(s); });
+    }
+    await awaitCondition(() => received.length === 6, {
+      timeoutMs: 4_000,
+      label: 'the second incarnation reached the handler too',
+    });
+    expect(received).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+
+    // The worst symptom was not the loss, it was the lie: an absorbed message
+    // is answered with an ordinary ack, so `confirm(null)` reported success
+    // for a body the handler never saw.  Every confirmed body must be one the
+    // handler actually ran.
+    await awaitCondition(() => confirmedDelivered.length === 6, {
+      timeoutMs: 4_000,
+      label: 'both incarnations confirmed all six sends',
+    });
+    for (const body of confirmedDelivered) expect(received).toContain(body);
+
+    second.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a supervised restart of the producer does not silently absorb what follows', async () => {
+    // The trigger is ordinary: `onAcknowledgment` runs the caller's `confirm`
+    // synchronously inside `onReceive`, so a throwing callback faults the
+    // producer.  The default strategy is one-for-one, so only the producer is
+    // recreated and the consumer keeps its dedup entry — which is the exact
+    // shape the issue describes.
+    const kit = quietKit('rd-restart-supervised');
+    const received: string[] = [];
+    const restarts: string[] = [];
+    const subscribed = { value: false };
+
+    class RestartListener extends Actor<ActorRestarted> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, ActorRestarted);
+        subscribed.value = true;
+      }
+      override onReceive(event: ActorRestarted): void { restarts.push(event.actor.path.toString()); }
+    }
+    kit.system.spawn(RestartListener, 'restart-listener');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the restart listener subscribed to the event stream',
+    });
+
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withProducerId('orders')
+      .withResendTimeout(2_000)
+      .withWindowSize(4);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-supervised');
+    const producerPath = producer.ref.path.toString();
+
+    let blewUp = false;
+    producer.tell('before', () => {
+      if (blewUp) return;
+      blewUp = true;
+      throw new Error('confirmation callback blew up');
+    });
+
+    // Assert the restart really happened.  Without this the test would pass
+    // just as happily if the producer had never faulted at all, which is the
+    // one thing that would make it prove nothing.
+    await awaitCondition(() => restarts.includes(producerPath), {
+      timeoutMs: 4_000,
+      label: 'the throwing confirmation callback restarted the producer',
+    });
+    expect(received).toEqual(['before']);
+
+    producer.tell('after-1');
+    producer.tell('after-2');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the restarted producer still reached the handler',
+    });
+    expect(received).toEqual(['before', 'after-1', 'after-2']);
+
+    producer.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('the same seq from a different incarnation is fresh; from the same one it is a duplicate', async () => {
+    // The discriminating case.  A guard keyed on `producerId` alone cannot
+    // tell these two apart, so a fix that only widened the *value* stored
+    // under the key would pass the suite above and fail here.
+    const kit = quietKit('rd-incarnation-key');
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const base = {
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      seq: 1,
+      replyTo: probe as never,
+    } as const;
+
+    consumer.ref.tell({ ...base, incarnation: 'first', body: 'from-first' } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first incarnation delivery was handled',
+    });
+
+    consumer.ref.tell({ ...base, incarnation: 'second', body: 'from-second' } as never);
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second incarnation is not treated as a duplicate of the first',
+    });
+    expect(received).toEqual(['from-first', 'from-second']);
+
+    // The property the fix must not break: a genuine retransmit — same
+    // incarnation, same seq — is still absorbed and still re-acked, so the
+    // producer can release its window slot.
+    consumer.ref.tell({ ...base, incarnation: 'second', body: 'retransmitted' } as never);
+    await awaitCondition(() => probe.messageCount === 3, {
+      timeoutMs: 4_000,
+      label: 'all three deliveries were acknowledged',
+    });
+    await sleep(30);
+    expect(received).toEqual(['from-first', 'from-second']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
+  test('an ack that does not echo the producer incarnation is ignored', async () => {
+    const kit = quietKit('rd-forged-ack');
+    const confirmations: Array<Error | null> = [];
+    const probe = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(probe as never)
+      .withResendTimeout(80)
+      .withWindowSize(1);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('payment-instruction', (err) => { confirmations.push(err); });
+
+    const first = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(first.seq).toBe(1);
+    expect(first.incarnation.length).toBeGreaterThan(0);
+
+    // Everything an arbitrary sender can derive on its own: the kind, the
+    // enumerable producer id, and the sequence number.  Acting on this would
+    // cancel the retransmit and report success for a message that may never
+    // have been handled at all.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: 'forged-incarnation',
+      seq: first.seq,
+    } as never);
+
+    // The retransmit is the observable proof: the resend timer only fires
+    // while the send is still in flight, so a second delivery means the
+    // forged ack changed nothing.
+    const retransmitted = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(retransmitted.seq).toBe(1);
+    expect(confirmations).toHaveLength(0);
+
+    // The honest ack — the same two fields plus the incarnation it read off
+    // the wire — still settles it exactly once.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: first.incarnation,
+      seq: first.seq,
+    } as never);
+    await awaitCondition(() => confirmations.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the honest acknowledgment settled the send',
+    });
+    expect(confirmations).toEqual([null]);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('two producers sharing a producerId cannot settle sends for one another', async () => {
+    // Not an attack — two processes that both left `producerId` at the same
+    // configured string.  Before the incarnation check either one's ack would
+    // release the other's window slot and fire the other caller's `confirm`.
+    const kit = quietKit('rd-crossed-acks');
+    const confirmations: Array<Error | null> = [];
+    const probeA = kit.createTestProbe();
+    const probeB = kit.createTestProbe();
+    const optionsFor = (consumer: unknown): ProducerControllerOptionsBuilder<string> =>
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer as never)
+        .withProducerId('shared-id')
+        .withResendTimeout(5_000)
+        .withWindowSize(1);
+
+    const producerA = ReliableDelivery.producer<string>(kit.system, optionsFor(probeA), 'crossed-a');
+    const producerB = ReliableDelivery.producer<string>(kit.system, optionsFor(probeB), 'crossed-b');
+    producerA.tell('a-body', (err) => { confirmations.push(err); });
+    producerB.tell('b-body', () => {});
+
+    const deliveryB = await probeB.receiveOne(4_000) as Delivery<string>;
+    expect(deliveryB.producerId).toBe('shared-id');
+
+    // B's own, entirely honest acknowledgment, delivered to A.
+    producerA.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: deliveryB.producerId,
+      incarnation: deliveryB.incarnation,
+      seq: deliveryB.seq,
+    } as never);
+    await sleep(80);
+    expect(confirmations).toHaveLength(0);
+
+    producerA.stop(); producerB.stop();
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — malformed delivery (#727)', () => {
+  /**
+   * Collects dead letters off the event stream.  Returns once the listener has
+   * actually subscribed, so a refusal cannot race the subscription.
+   */
+  const watchDeadLetters = async (kit: TestKit): Promise<DeadLetter[]> => {
+    const seen: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class DeadLetterListener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { seen.push(letter); }
+    }
+    kit.system.spawn(DeadLetterListener, 'dead-letter-listener');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the dead-letter listener subscribed to the event stream',
+    });
+    return seen;
+  };
+
+  test('a delivery with no replyTo is dead-lettered, and the consumer keeps working', async () => {
+    // `replyTo` is declared non-optional, which is exactly why nothing
+    // guarded it: a wire body that omits it satisfies the type and
+    // dereferences to `undefined`.  Because the handling is detached from
+    // `onReceive`, that TypeError settled as a rejection nothing was
+    // watching — process exit, not a supervised fault.
+    const kit = quietKit('rd-malformed-replyto');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'unroutable',
+    } as never);
+    await awaitCondition(() => deadLetters.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the replyTo-less delivery was dead-lettered',
+    });
+    expect(received).toEqual([]);
+
+    // Still alive and still stateful: a restart would have wiped the dedup
+    // window, so proving the next delivery lands is proving it was refused
+    // rather than escalated.
+    const probe = kit.createTestProbe();
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'well-formed',
+      replyTo: probe as never,
+    } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the consumer still handles a well-formed delivery',
+    });
+    expect(received).toEqual(['well-formed']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a seq that is not a positive safe integer is refused', async () => {
+    const kit = quietKit('rd-malformed-seq');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const badSequences = [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1];
+
+    for (const seq of badSequences) {
+      consumer.ref.tell({
+        kind: 'reliable-delivery.delivery',
+        producerId: 'orders',
+        incarnation: 'incarnation-1',
+        seq,
+        body: `seq-${String(seq)}`,
+        replyTo: probe as never,
+      } as never);
+    }
+    await awaitCondition(() => deadLetters.length === badSequences.length, {
+      timeoutMs: 4_000,
+      label: 'every malformed seq was dead-lettered',
+    });
+    expect(received).toEqual([]);
+    // A refused envelope is never acknowledged — acking it would tell the
+    // sender the framework accepted a sequence it will never track.
+    expect(probe.messageCount).toBe(0);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('an over-long or empty identifier is refused before it becomes a map key', async () => {
+    const kit = quietKit('rd-malformed-identifier');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const tooLong = 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1);
+
+    for (const [producerId, incarnation, body] of [
+      [tooLong, 'incarnation-1', 'long-producer-id'],
+      ['orders', tooLong, 'long-incarnation'],
+      ['', 'incarnation-1', 'empty-producer-id'],
+    ] as const) {
+      consumer.ref.tell({
+        kind: 'reliable-delivery.delivery',
+        producerId,
+        incarnation,
+        seq: 1,
+        body,
+        replyTo: probe as never,
+      } as never);
+    }
+
+    await awaitCondition(() => deadLetters.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three malformed identifiers were dead-lettered',
+    });
+    expect(received).toEqual([]);
+    expect(probe.messageCount).toBe(0);
+
+    // An identifier exactly at the bound is admitted — the cap must be the one
+    // the producer-side validator enforces, not one notch tighter, or a
+    // legally configured producerId would dead-letter every delivery.
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH),
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'at-the-bound',
+      replyTo: probe as never,
+    } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'an identifier exactly at the bound is admitted',
+    });
+    expect(received).toEqual(['at-the-bound']);
+
+    consumer.stop();
+    await kit.system.terminate();
   });
 });
