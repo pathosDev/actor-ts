@@ -52,7 +52,9 @@ Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
 Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
 Nachrichten erreicht, loggt eine Warnung — und erneut bei jeder
 Verdopplung.  Mit aktivierten Metriken meldet `actor_mailbox_size` die
-Tiefe pro Actor.
+Tiefe pro Actor oberhalb dieser Marke, und `actor_mailbox_depth` die
+gesamte Verteilung darunter — ein Ausschlag, der die Warnschwelle nie
+erreicht, bleibt damit trotzdem sichtbar.
 
 Eine Queue ohne Decke muss billig bleiben, wenn sie tief wird — deshalb
 liegt beiden Queues einer Mailbox ein
@@ -603,7 +605,10 @@ Greife in drei Situationen zu einer Alternative:
    angenommenen sind.  Beobachte `actor_mailbox_wait_seconds`, um das
    herauszufinden, bevor du es brauchst — sie steigt, sobald ein Actor
    nicht mehr mitkommt, während `actor_mailbox_size` erst meldet, wenn
-   eine Queue 10 000 Nachrichten überschreitet.
+   eine Queue 10 000 Nachrichten überschreitet.  Das p99 von
+   `actor_mailbox_depth` ist das, woraus du die Zahl selbst wählst: Eine
+   Kapazität ist eine Wette auf den schlimmsten Ausschlag, und dieses
+   Histogramm ist die Messung davon.
 
 ## Wie es weitergeht
 

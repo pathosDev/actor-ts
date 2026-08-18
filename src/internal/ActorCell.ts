@@ -15,7 +15,11 @@ import type { Cluster } from '../cluster/Cluster.js';
 import type { EntityContext } from '../EntityContext.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
-import { MAILBOX_WAIT_BUCKETS_SECONDS } from '../metrics/Constants.js';
+import {
+  DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS,
+  MAILBOX_DEPTH_BUCKETS_MESSAGES,
+  MAILBOX_WAIT_BUCKETS_SECONDS,
+} from '../metrics/Constants.js';
 import type { MetricsRegistry } from '../metrics/Metrics.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { NOOP_TRACER } from '../tracing/NoopTracer.js';
@@ -969,12 +973,84 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   /* ============================ Message processing ========================== */
 
+  /**
+   * Arm one turn on whichever dispatcher owns this cell.
+   *
+   * The instrumented branch exists to measure **dispatcher scheduling
+   * delay** — how long a turn waited between being handed to a dispatcher and
+   * actually starting.  That is the honest, portable stand-in for the
+   * `dispatcher_saturation_ratio` #196 asked for: a busy/idle ratio has no
+   * primitive here that works on all three supported runtimes
+   * (`performance.eventLoopUtilization` is absent on Bun, real on Node and a
+   * hard-zero stub on Deno), and even where it is real it covers the whole
+   * libuv loop, so it could never carry the per-`dispatcher` label the metric
+   * was specified with.  Delay needs no primitive beyond a clock, so it is the
+   * same measurement everywhere; see
+   * {@link DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS}.
+   *
+   * **This is the only layer that can take the measurement.**  A `Dispatcher`
+   * is a two-member interface a third party implements (`id`, `execute`) with
+   * no system, no logger and no registry behind it, and adding a required
+   * member to reach one would be a breaking change to a public extension
+   * point.  Measuring here instead covers every dispatcher — the three
+   * built-ins, a per-actor `ActorOptions.withDispatcher(…)`, and a
+   * third-party implementation the framework has never seen — for one clock
+   * read and no API change at all.
+   *
+   * Split into two branches rather than one closure with a conditional inside,
+   * for the reason #411 established: the uninstrumented path keeps exactly the
+   * closure it had, with no captured clock read and nothing extra to allocate.
+   * The gate is evaluated at arming time, so a turn armed just before
+   * `enable()` is left out rather than observed against a registry that did not
+   * exist when its clock was read — the same rule the arrival stamp follows.
+   *
+   * `performance.now()` rather than `Date.now()`, unlike
+   * `actor_mailbox_wait_seconds`: it is monotonic, so no NTP step can put a
+   * negative sample into the sum, and it resolves to 100 ns on all three
+   * runtimes where `Date.now()` resolves to 1 ms — four decades coarser than
+   * the ~1-5 µs an unloaded hand-off takes, which would have reported every
+   * healthy dispatcher as exactly zero.
+   */
   private schedule(): void {
     if (this.processing || this.state === 'terminated') return;
     if (!this.hasDispatchableWork()) return;
     this.processing = true;
     const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
-    dispatcher.execute(() => this.runReported(dispatcher.id));
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) {
+      dispatcher.execute(() => this.runReported(dispatcher.id));
+      return;
+    }
+    const requestedAt = performance.now();
+    dispatcher.execute(() => {
+      this._observeQueueDelay(metrics, dispatcher.id, requestedAt);
+      return this.runReported(dispatcher.id);
+    });
+  }
+
+  /**
+   * Record what {@link schedule} armed and this turn finally collected.
+   *
+   * The `dispatcher` label is safe under the stock-label policy #658 set —
+   * a label's values must be bounded by what the *deployment* declares, never
+   * by traffic or by a remote party.  `Dispatcher.id` is a string in the
+   * caller's own source: the three built-ins contribute one value each however
+   * many instances exist, and a custom one is as wide as the code that names
+   * it.  Nothing an entity id or a peer can reach ever appears here, which is
+   * why this family needs neither a reporting floor nor a `bucketize` where
+   * `actor_mailbox_size` needs the former (#745).  The registry's per-family
+   * cap stays the backstop for a deployment that mints an id per actor anyway.
+   */
+  private _observeQueueDelay(
+    metrics: MetricsRegistry, dispatcherId: string, requestedAt: number,
+  ): void {
+    metrics.histogram(
+      'actor_dispatcher_queue_delay_seconds', { dispatcher: dispatcherId },
+      {
+        help: 'Time an actor turn waited between being handed to a dispatcher and starting, seconds.',
+        buckets: DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS,
+      },
+    ).observe((performance.now() - requestedAt) / 1000);
   }
 
   /**
@@ -1555,6 +1631,31 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           },
         ).observe(Math.max(0, Date.now() - env.enqueuedAtMs) / 1000);
       }
+      // How deep the queue was when this message was picked — the
+      // *distribution* `actor_mailbox_size` cannot be.  That gauge samples an
+      // instant every 2 s and mints nothing below
+      // `MAILBOX_DEPTH_REPORTING_FLOOR`, because the `path` label it needs to
+      // say *which* actor is behind is only affordable that far up (#745).
+      // The range it is blind on is 1-9 999, which is the range a burst
+      // actually lives in, and a spike between two of its ticks is recorded
+      // nowhere at all.  This family is the other half: no labels, so the
+      // whole thing costs one series per bucket however many actors or
+      // entities exist, and one observation per delivery, so nothing is
+      // missed between samples.
+      //
+      // `+ 1` because the envelope has already been dequeued by the time it
+      // gets here: `mailbox.size` is what is *still* waiting, and the depth a
+      // reader means is the one that included this message.  It also makes 1
+      // the floor rather than 0, so "quiet" is a bucket rather than an
+      // absence.  `size` is O(1) on every mailbox shape in the tree — the base
+      // reads a ring buffer's length, `PriorityMailbox` its ordered array's.
+      metrics.histogram(
+        'actor_mailbox_depth', {},
+        {
+          help: 'Queued user messages at the moment one was delivered, including itself.',
+          buckets: MAILBOX_DEPTH_BUCKETS_MESSAGES,
+        },
+      ).observe(this.mailbox.size + 1);
     }
 
     // The tracer DOES fall back to the noop rather than being skipped: an

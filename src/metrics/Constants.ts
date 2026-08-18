@@ -89,3 +89,69 @@ export const MAILBOX_DEPTH_REPORTING_FLOOR = 10_000;
 export const MAILBOX_WAIT_BUCKETS_SECONDS: ReadonlyArray<number> = Object.freeze([
   0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10,
 ]);
+
+/**
+ * Bucket boundaries for `actor_mailbox_depth`, in queued messages.
+ *
+ * **The histogram and the gauge answer different questions and meet at one
+ * number.**  `actor_mailbox_size` reports *which* actor is behind, and pays
+ * for that attribution with a `path` label it can only afford above
+ * {@link MAILBOX_DEPTH_REPORTING_FLOOR} — below the floor it mints nothing at
+ * all, which is the whole 1-9 999 range.  This family covers exactly that
+ * range: label-free, so it costs one series per bucket no matter how many
+ * actors or entities exist, and observed per delivery, so a spike between two
+ * of the gauge's 2 s ticks still lands somewhere.  The price is that it cannot
+ * say *whose* mailbox was deep.
+ *
+ * The top boundary is therefore the gauge's floor rather than a round number,
+ * and it is written as that constant so the two cannot drift: everything in
+ * the `+Inf` overflow bucket is, by construction, an actor the gauge is
+ * already reporting by path.  Read the histogram to find out that a backlog
+ * exists and how deep the tail of it goes; read the gauge to find out who.
+ *
+ * A 1-2-5 ladder from a single message, because the distribution this is meant
+ * to reveal is extremely skewed: a healthy system puts nearly every
+ * observation in the first bucket, and the question is entirely about the last
+ * few. `1` is the honest floor — the observation counts the message being
+ * delivered, so a quiet actor reads exactly 1 and never 0, and a `0` boundary
+ * would be a bucket nothing can ever fall into.
+ */
+export const MAILBOX_DEPTH_BUCKETS_MESSAGES: ReadonlyArray<number> = Object.freeze([
+  1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, MAILBOX_DEPTH_REPORTING_FLOOR,
+]);
+
+/**
+ * Bucket boundaries for `actor_dispatcher_queue_delay_seconds`, in seconds.
+ *
+ * **This ladder is what a portable saturation signal costs.**  The metric
+ * #196 asked for was `dispatcher_saturation_ratio`, a 0-1 busy fraction, and
+ * the only primitive that could have produced one is
+ * `performance.eventLoopUtilization`: measured on this project's three
+ * supported runtimes it is *absent* on Bun, *real* on Node, and a
+ * *hard-zero stub* on Deno.  A ratio that reads 0 on a third of the matrix is
+ * worse than no ratio, because an alert built on it never fires and nobody
+ * finds out.  Scheduling delay needs no runtime primitive — two reads of a
+ * clock every runtime has — so it is the same measurement everywhere.
+ *
+ * A 1-5 ladder from 10 µs to 10 s, six decades in thirteen boundaries.  The
+ * floor is set from measurement rather than taste: `performance.now()` resolves
+ * to 100 ns on Bun 1.3, Node 26 and Deno 2.6 alike, and an unloaded hand-off
+ * takes ~1 µs through `queueMicrotask` and ~3 µs through `setImmediate`.  So
+ * 10 µs is a hundred resolution steps above the noise and still below every
+ * healthy hop — which makes the first bucket mean "handed off immediately" and
+ * the *second* one already mean "something was queued ahead of it".  Starting
+ * at 1 ms, as `MAILBOX_WAIT_BUCKETS_SECONDS` does, would have collapsed the
+ * entire healthy range plus two decades of early degradation into bucket one:
+ * the #998 defect, in a family whose whole purpose is to notice degradation
+ * early.
+ *
+ * Half-decade steps rather than the siblings' 1-2-5, because six decades at
+ * 1-2-5 is nineteen boundaries and this family carries a `dispatcher` label —
+ * bucket count multiplies by the number of dispatchers here, where the two
+ * label-free mailbox families pay it once.  The top boundary is 10 s, matching
+ * both siblings, so a turn's whole life — queued for a dispatcher, queued in a
+ * mailbox, inside the handler — reads on one axis.
+ */
+export const DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS: ReadonlyArray<number> = Object.freeze([
+  0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
+]);
