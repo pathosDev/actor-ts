@@ -131,6 +131,38 @@ not a finding.
 
 ---
 
+## The arms
+
+| arm | what it is | why it is here |
+| --- | ---------- | -------------- |
+| **actor-ts** | this project | the reference implementation of all four scenarios |
+| **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
+| **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
+| **vanilla** | no framework at all | the floor, so every row reads as "what the abstraction costs" |
+
+Each arm's own header comment records where its framework's semantics
+differ from the scenario definition, and those notes travel with the
+numbers into `RESULTS.md` and every published table.  The two that matter
+most: XState processes events synchronously and has no request/response
+primitive, so its `ask` row is `send` + `waitFor` on a snapshot; nact
+creates actors synchronously, where actor-ts defers construction to a
+dispatcher turn.
+
+### Evaluated and rejected: comedy
+
+`comedy` was installed, measured as a candidate and removed.  It declares
+`@types/node` as a **runtime dependency**, resolving to **10.3.3** — old
+enough that it shadows the real one for this whole tree, and every
+`node:`-prefixed import in `src/` stops type-checking the moment it is
+installed.  It also brings `core-js@2.6.12` with a lifecycle script and
+`babel-polyfill`, for 37 packages in service of one arm.
+
+That is recorded here rather than silently omitted: a reader comparing
+JavaScript actor libraries deserves to know the third one was considered.
+The measurement is not the reason it is absent — the cost to the tree is.
+
+---
+
 ## Layout
 
 ```

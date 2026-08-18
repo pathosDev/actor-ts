@@ -2,5 +2,9 @@
   "name": "actor-ts-comparison-benchmarks",
   "private": true,
   "type": "module",
-  "description": "Dependency manifest for the framework-comparison benchmarks (#27). The frameworks measured against actor-ts are installed HERE and never in the root manifest: they are third-party code that exists only to be benchmarked, so they must not enter the shipped dependency closure, `bun audit`'s surface, or `bun run bench`. Bun and Node resolve them by walking up from the importing file, while `../../../src/index.js` and `../../lib/harness.js` stay relative — so one file can import both sides. See ./README.md for the fairness contract and the run commands."
+  "description": "Dependency manifest for the framework-comparison benchmarks (#27). The frameworks measured against actor-ts are installed HERE and never in the root manifest: they are third-party code that exists only to be benchmarked, so they must not enter the shipped dependency closure, `bun audit`'s surface, or `bun run bench`. Bun and Node resolve them by walking up from the importing file, while `../../../src/index.js` and `../../lib/harness.js` stay relative — so one file can import both sides. See ./README.md for the fairness contract and the run commands.",
+  "devDependencies": {
+    "nact": "7.6.2",
+    "xstate": "5.32.5"
+  }
 }

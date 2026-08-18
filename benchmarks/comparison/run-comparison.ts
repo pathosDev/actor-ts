@@ -40,6 +40,8 @@ type ComparisonArm = {
  */
 const ARMS: ReadonlyArray<ComparisonArm> = [
   { name: 'actor-ts', file: 'actor-ts.ts' },
+  { name: 'nact', file: 'nact.ts' },
+  { name: 'xstate', file: 'xstate.ts' },
   { name: 'vanilla', file: 'vanilla.ts' },
 ];
 
