@@ -400,9 +400,13 @@ export class ClusterSingleton implements Extension {
       kind: 'singleton.HandOverAcknowledgment',
       typeName,
     };
+    // `peer.systemName`, not this node's: the manager path embeds the hosting
+    // system's name, and a cluster's members do not have to share one — see
+    // `ClusterSingletonManager.sendToPeer` for what addressing it with the
+    // sender's name costs.
     this.clusterOrThrow()._sendEnvelope(peer, {
       kind: 'envelope',
-      to: singletonManagerPath(this.system.name, typeName),
+      to: singletonManagerPath(peer.systemName, typeName),
       from: null,
       body: acknowledgment,
       tag: 'Singleton',

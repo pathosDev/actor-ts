@@ -321,6 +321,92 @@ describe('ClusterSingleton — hand-over on a leader move (#949)', () => {
   }, 30_000);
 });
 
+describe('ClusterSingleton — nodes whose systems are named differently (#949)', () => {
+  test('the hand-over is addressed to the peer, not to the sender', async () => {
+    // The manager path embeds the *hosting* system's name, and a cluster's
+    // members do not have to share one — `MultiNodeSpec` names every node's
+    // system after its role precisely so a test can tell them apart, and
+    // `tests/multi-node/SingletonFailover.test.ts` runs on that.  A frame
+    // addressed with the sender's name misses the recipient's per-path handler,
+    // falls through to `Cluster.dispatchEnvelope`'s generic path resolution, and
+    // arrives at the manager as a bare body with no authenticated peer — which
+    // it then, correctly, refuses to act on.  Nothing else in this file catches
+    // that, because every other node here shares one system name.
+    const census = new SingletonCensus();
+    const nodeBeta = await startNode({ systemName: 'beta', port: 53_902, seeds: [] });
+    const startOn = (node: Node, where: string): ActorRef<string> => {
+      const singletonOptions = StartSingletonOptions.create<string>()
+        .withTypeName('cross-named')
+        // Well below the default, so only an *answered* hand-over can pass this
+        // in time — taking the timeout would blow the wait below.
+        .withHandOverTimeoutMs(20_000)
+        .withActor(() => new SlowStoppingMarker(census, where, 200));
+      return node.cluster.singleton.start(singletonOptions);
+    };
+
+    startOn(nodeBeta, 'beta');
+    await awaitCondition(() => census.liveOn('beta') === 1, { label: 'beta hosts the singleton' });
+
+    // 'alpha' sorts before 'beta' in the address string, so alpha leads.
+    const nodeAlpha = await startNode({ systemName: 'alpha', port: 53_901, seeds: ['beta@h:53902'] });
+    startOn(nodeAlpha, 'alpha');
+    await awaitCondition(
+      () => nodeAlpha.cluster.upMembers().length === 2 && nodeBeta.cluster.upMembers().length === 2,
+      { timeoutMs: 5_000, label: 'both differently-named nodes are up' },
+    );
+
+    await awaitCondition(
+      () => census.liveOn('alpha') === 1 && census.liveOn('beta') === 0,
+      { timeoutMs: 5_000, label: 'the singleton moved to alpha' },
+    );
+    expect(census.peak).toBe(1);
+    expect(census.timeline).toEqual(['beta:started', 'beta:stopped', 'alpha:started']);
+    // Reached by acknowledgment and not by running out of patience — the whole
+    // point, since the timeout would have produced the same end state.
+    expect(nodeAlpha.log.saw('did not acknowledge the hand-over')).toBe(false);
+
+    await stopNode(nodeAlpha);
+    await stopNode(nodeBeta);
+  }, 30_000);
+
+  test('a proxy on one system reaches the singleton hosted on another', async () => {
+    // The same defect on the delivery path, which predates this issue:
+    // `ClusterSingletonProxy.deliver` addressed the manager with *its own*
+    // system name.  Generic path resolution then handed the manager the raw
+    // user body instead of a `singleton-deliver`, so it was logged as an
+    // unrecognised message and dropped — no dead letter, no arrival.
+    const census = new SingletonCensus();
+    const nodeAlpha = await startNode({ systemName: 'alpha', port: 53_911, seeds: [] });
+    const nodeBeta = await startNode({ systemName: 'beta', port: 53_912, seeds: ['alpha@h:53911'] });
+    await awaitCondition(
+      () => nodeAlpha.cluster.upMembers().length === 2 && nodeBeta.cluster.upMembers().length === 2,
+      { timeoutMs: 5_000, label: 'both differently-named nodes are up' },
+    );
+
+    // beta takes its proxy first, so its manager path is claimed and it can
+    // answer alpha's hand-over request at once rather than making alpha wait out
+    // the timeout — the property the previous test covers, kept out of this one.
+    const fromBeta = nodeBeta.cluster.singleton.ref<string>('cross-named-routing');
+
+    // alpha sorts first, so alpha hosts; beta only talks to it.
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('cross-named-routing')
+      .withActor(() => new SlowStoppingMarker(census, 'alpha', 0));
+    nodeAlpha.cluster.singleton.start(singletonOptions);
+    await awaitCondition(() => census.liveOn('alpha') === 1, { label: 'alpha hosts the singleton' });
+
+    fromBeta.tell('from-beta');
+    await awaitCondition(
+      () => census.received.length > 0,
+      { timeoutMs: 5_000, label: 'the message crossed to the differently-named host' },
+    );
+    expect(census.received).toEqual(['alpha:from-beta']);
+
+    await stopNode(nodeBeta);
+    await stopNode(nodeAlpha);
+  }, 30_000);
+});
+
 describe('ClusterSingleton — who may ask for a hand-over (#949)', () => {
   test('a member that cannot be the elected host is refused', async () => {
     // A hand-over is a directive that stops the singleton, so an unauthenticated

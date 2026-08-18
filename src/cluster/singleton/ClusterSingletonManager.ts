@@ -1087,20 +1087,28 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   /**
-   * One hand-over frame to one peer's manager, at the path every node hosts its
-   * manager on.
+   * One hand-over frame to one peer's manager.
+   *
+   * `peer.systemName` and **not** `this.system.name`: the manager path embeds
+   * the *hosting* system's name, and a cluster's members do not have to share
+   * one.  `MultiNodeSpec` gives every node a system named after its role
+   * precisely so a test can tell them apart, and there the two spellings differ
+   * — a frame addressed with the sender's name misses the recipient's per-path
+   * handler entirely, falls through to `Cluster.dispatchEnvelope`'s generic path
+   * resolution, and arrives at the manager as a bare body with no authenticated
+   * peer attached.  Which the manager then, correctly, refuses to act on.
    *
    * `from: null` like the proxy's own sends, and for a sharper reason than
-   * symmetry: `EnvelopeMessage.from` is an actor *path*, and the manager path
-   * is identical on every node — so filling it in would name the recipient, not
-   * the sender.  The sender that matters is the socket-verified `NodeAddress`
-   * the receiving `Cluster` supplies to the per-path handler, which no payload
-   * can forge.
+   * symmetry: `EnvelopeMessage.from` is an actor *path*, and the only path this
+   * exchange knows is the recipient's — so filling it in would name the wrong
+   * end.  The sender that matters is the socket-verified `NodeAddress` the
+   * receiving `Cluster` supplies to the per-path handler, which no payload can
+   * forge.
    */
   private sendToPeer(peer: NodeAddress, message: SingletonMessage): void {
     this.options.cluster._sendEnvelope(peer, {
       kind: 'envelope',
-      to: singletonManagerPath(this.system.name, this.options.typeName),
+      to: singletonManagerPath(peer.systemName, this.options.typeName),
       from: null,
       body: message,
       tag: 'Singleton',
