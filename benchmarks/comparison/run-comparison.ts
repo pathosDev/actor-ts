@@ -85,6 +85,17 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     args: ['-q', '-B', 'compile', 'exec:java'],
     toolchain: 'JDK 21 + Maven wrapper',
   },
+  // Its Apache-licensed fork, measured next to it on purpose: the two differ
+  // only in their dependency, so any gap between them is the fork rather than
+  // the benchmark — and the licences differ in a way that decides adoption.
+  {
+    kind: 'external',
+    name: 'pekko',
+    directory: 'pekko',
+    executable: mavenWrapper(),
+    args: ['-q', '-B', 'compile', 'exec:java'],
+    toolchain: 'JDK 21 + Maven wrapper',
+  },
   { kind: 'javascript', name: 'vanilla', file: 'vanilla.ts' },
 ];
 
