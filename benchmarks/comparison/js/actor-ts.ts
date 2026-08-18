@@ -26,9 +26,32 @@
  *  - **ping-pong** returns the exchange count the volleying actor itself
  *    tallied.
  *
+ * ## Why these handlers dispatch with `if` and not `match`
+ *
+ * AGENTS.md requires every `match` arm in `src/` to delegate to a private
+ * `onXxx` handler, and these actors keep the handlers — but the dispatch
+ * itself is a plain conditional, because `match` is not free and the other
+ * arms do not pay it.  Measured here, five interleaved rounds each:
+ *
+ * | tell-throughput | `match(...)` | plain `if` | cost   |
+ * | --------------- | ------------ | ---------- | ------ |
+ * | batch=1k        |     681k/s   |    827k/s  |  -18 % |
+ * | batch=10k       |     748k/s   |    914k/s  |  -22 % |
+ *
+ * Comparing actor-ts *plus a ts-pattern matcher per message* against nact's
+ * bare `if` would have charged this framework a fifth of its throughput for
+ * a dispatch style the benchmark imposed rather than the framework requires.
+ * The repo's own `single-node/tell-throughput.ts` uses a plain `if` for the
+ * same reason, and the `if` figure is the one that agrees with the ~922k that
+ * file's header has recorded since #411 — two independent paths to the same
+ * number, which is what makes the rest of the table worth reading.
+ *
+ * The delta is a real finding rather than a benchmarking detail: a user
+ * following the project's own house style pays it on every message.  See
+ * #974 for the same matcher cost on the mailbox overflow path.
+ *
  *   bun run benchmarks/comparison/js/actor-ts.ts
  */
-import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
@@ -106,10 +129,8 @@ class CounterActor extends Actor<CounterMessage> {
   private count = 0;
 
   override onReceive(message: CounterMessage): void {
-    match(message)
-      .with({ kind: 'increment' }, () => this.onIncrement())
-      .with({ kind: 'readAndReset' }, () => this.onReadAndReset())
-      .exhaustive();
+    if (message.kind === 'increment') this.onIncrement();
+    else this.onReadAndReset();
   }
 
   private onIncrement(): void {
@@ -140,10 +161,8 @@ type VolleyMessage = StartVolleyMessage | PongMessage;
 type PingMessage = { kind: 'ping' };
 
 class PongActor extends Actor<PingMessage> {
-  override onReceive(message: PingMessage): void {
-    match(message)
-      .with({ kind: 'ping' }, () => this.onPing())
-      .exhaustive();
+  override onReceive(): void {
+    this.onPing();
   }
 
   private onPing(): void {
@@ -165,10 +184,8 @@ class PingActor extends Actor<VolleyMessage> {
   }
 
   override onReceive(message: VolleyMessage): void {
-    match(message)
-      .with({ kind: 'startVolley' }, (m) => this.onStartVolley(m))
-      .with({ kind: 'pong' }, () => this.onPong())
-      .exhaustive();
+    if (message.kind === 'startVolley') this.onStartVolley(message);
+    else this.onPong();
   }
 
   private onStartVolley(message: StartVolleyMessage): void {
