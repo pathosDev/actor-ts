@@ -395,6 +395,74 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 
 ---
 
+## Benchmarks
+
+How does it compare to the other options?  Measured, rather than asserted —
+same machine, same harness, same workload, nine interleaved rounds, and every
+row verified against work the system actually completed rather than work it
+was asked for.
+
+Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX, 2026-08-18:
+
+| scenario                       | actor-ts    | nact 7.6.2 | XState 5.32.5 | no framework |
+| ------------------------------ | ----------- | ---------- | ------------- | ------------ |
+| tell throughput (batch 10k)    | **897k/s**  | 373k/s     | 176k/s        | 479M/s       |
+| ask round-trip (p50)           | 9.2 µs      | **6.6 µs** | 10.4 µs *     | 0.9 µs       |
+| ping-pong (10k exchanges)      | 125k/s      | **184k/s** | 85k/s         | 329M/s       |
+| spawn → started → stopped      | 41k/s       | **180k/s** | 55k/s         | 4.5M/s       |
+
+<sub>\* XState has no request/response primitive — that row is `send` plus a
+snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
+
+actor-ts leads the JavaScript field on bulk message throughput by a wide
+margin and is level with nact on ask latency.  It is behind on spawning and on
+two-actor ping-pong, both because it routes actor creation and each message
+through a dispatcher turn where nact works synchronously.  The last column is
+not a competitor — it is direct method calls, so it shows what the abstraction
+costs.
+
+### And against the JVM and .NET
+
+Kept in its own table on purpose: these are other virtual machines, measured by
+a harness that mirrors the JavaScript one rather than being it.
+
+| scenario                    | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| --------------------------- | -------------- | ---------- | ----------- | --------------- | -------------- |
+| tell throughput (batch 10k) | 897k/s         | 2.92M/s    | **3.03M/s** | 1.33M/s         | 600k/s         |
+| ping-pong (10k exchanges)   | 125k/s         | 391k/s     | 387k/s      | **447k/s**      | 168k/s         |
+| spawn → started → stopped   | 41k/s          | 25k/s      | 24k/s       | **32k/s**       | 5k/s ‡         |
+| ask round-trip (p50)        | 9.2 µs         | 40.5 µs †  | 47.1 µs †   | 7.3 µs          | **5.6 µs**     |
+| licence                     | MIT            | BUSL-1.1   | Apache-2.0  | Apache-2.0      | MIT            |
+
+<sub>† Every arm drives the system from an external caller.  On an event loop
+that is a microtask and in .NET an `await`; on the JVM, from a non-actor
+thread, it is a thread parking on a future — which is why the two .NET arms
+land ~5× higher on this row while the JVM arms lead the tell rows.<br/>
+‡ Orleans has no caller-visible create or stop; grains activate on first call,
+so that row is activation latency rather than a comparable lifecycle.</sub>
+
+**Against the JVM, expect roughly a third of the throughput** — that is the
+honest headline for anyone weighing a TypeScript actor system against a mature
+JVM one.  Against .NET the gap is smaller, and against the virtual-actor model
+actor-ts is ahead on bulk messaging while well behind on request/response,
+where a grain call is the native operation.
+
+Two things worth reading off this table beyond the raw numbers.  The two JVM
+columns are the same framework either side of its licence change, and they
+agree to within the noise — **staying on an OSI-approved licence costs nothing
+in throughput.**  And the same actor model appears on three runtimes, which is
+what makes the runtime's own contribution visible rather than inferred.
+
+These are **ratios, not absolutes**, on one machine.  Read the columns, treat
+the last digit as fiction, and note that a 10 % gap here is inside the
+run-to-run noise.
+
+**[Full tables, methodology and caveats](./benchmarks/comparison/RESULTS.md)** —
+including what is deliberately *not* measured yet (clustering, persistence)
+and why.  Reproduce with `bun run bench:compare -- --rounds=9`.
+
+---
+
 ## Roadmap & status
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The

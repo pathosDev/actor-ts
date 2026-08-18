@@ -39,8 +39,18 @@ benchmarks/
   memory/             # ΔRSS / Δheap probes
   persistence/        # journal append, recovery, snapshot tradeoffs
   http/               # Fastify vs. Express vs. Hono (+ REST comparison)
+  comparison/         # vs. OTHER actor frameworks — own manifest + own driver
   run-all.ts          # driver — spawns every file in a subprocess
 ```
+
+`comparison/` is the one directory the driver does **not** discover.  It
+carries its own `package.json` and lockfile, because the frameworks it
+measures actor-ts against are third-party code that exists only to be
+benchmarked — it must not enter the shipped dependency closure, `bun
+audit`'s surface, or `bun run bench` on a clean clone.  It has its own
+rules too (completion-verified counts, one workload across arms,
+cross-language rows kept out of same-runtime tables); see
+[comparison/README.md](comparison/README.md).
 
 Files whose name starts with `_` (e.g. `worker/_cpu-worker.ts`) are
 helpers used BY benchmarks and are skipped by the discovery driver.
@@ -165,6 +175,7 @@ is not a TTY (piping to a file works without ANSI noise).
 | `memory`      | ΔRSS per idle actor, ΔRSS per queued message |
 | `persistence` | journal append rate (InMemory / SQLite mem / SQLite file), recovery time at 100 and 10 000 events, **snapshot-frequency tradeoff** (write rate vs. recovery time for never / every 1000 / every 100 / every 10 events) |
 | `http`        | Fastify, Express, and Hono route throughput (plain text + JSON) plus a side-by-side REST comparison |
+| `comparison`  | actor-ts vs. **other actor frameworks** — spawn rate, tell throughput, ask latency, ping-pong (#27).  Not discovered by `run-all.ts`: own manifest, own driver, own README |
 
 ---
 

@@ -129,19 +129,39 @@ bookkeeping.
 
 ### What's the per-message overhead?
 
-Roughly:
+Measured on Bun 1.3.1, a Ryzen 9 7940HX, median of nine rounds — see
+[Benchmarks](/reference/benchmarks/) for the methodology and the
+comparison against other frameworks:
 
-- **`tell`** — ~50 ns per call on hot path (microtask
-  dispatcher).  Memory: ~200 bytes per envelope.
-- **`ask`** — ~5 μs per call (temporary ref construction).
-  Memory: ~500 bytes plus Promise machinery.
+- **`tell`, end to end** — about **1 µs** per message with a mailbox
+  that has depth (roughly a million messages/second sustained).  That is the
+  cost of the whole path: enqueue, schedule, deliver, handle.  The
+  `tell()` call on its own returns far faster than that — it only
+  enqueues — so "how long does `tell` take" and "how many messages per
+  second" are different questions with answers two orders of magnitude
+  apart.
+- **`ask` round trip** — **9 µs** at p50, 37 µs at p99, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
-  cost.  Sub-millisecond on localhost, ms-range over LAN.
+  cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
+  measured; the cluster benchmarks do not leave the process.
 
-For comparison: a raw `function call` is ~1 ns.  Actor messaging
-costs 50-200× a direct call — which is fine for most workloads
-but visible if you'd hammer the same actor with millions of
-messages per second.
+For comparison, the same workload with no framework at all — direct
+method calls, no mailbox, no supervision, no lifecycle — runs at about
+**2 ns** per call.  So actor messaging costs several **hundred times** a
+direct call on the throughput path, and about **8×** on an ask round trip.
+
+That sounds worse than it is, and the two ratios are why.  You are not
+paying for a slower function call; you are paying for a queue, a
+scheduler, supervision and location transparency.  A million messages a
+second through one actor is reachable; a hundred million is not, and
+that is the line to design against.
+
+<Aside type="note" title="Dispatch style is not free either">
+These figures use plain conditional dispatch in the message handler.
+Dispatching with `ts-pattern` — the style this project uses in its own
+source — costs a further 18-22 % of tell throughput, which is worth
+knowing on a hot path.
+</Aside>
 
 ### Should I worry about garbage collection?
 

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The JVM arm of the framework comparison (#27).
+
+  Version 2.8.8 is deliberate and is the newest one that can be resolved
+  WITHOUT credentials: releases from 2.9 onwards are published only to
+  repo.akka.io, which answers 403 to an anonymous request.  A benchmark
+  nobody else can reproduce is not evidence, so this arm stays on the newest
+  publicly available artifact and says so.
+
+  LICENCE: Akka 2.7 and later ship under the Business Source Licence 1.1, not
+  Apache 2.0.  Benchmarking is covered by its non-production grant, and the
+  licence is carried into the published tables next to the numbers, because a
+  reader comparing frameworks is usually also choosing one.
+
+  Built with Maven rather than bare javac because `akka-actor-typed` pulls in
+  scala-library, typesafe-config and slf4j transitively; hand-managing that
+  closure would be neither simple nor reproducible.  Java, not Scala, so the
+  JDK is the only toolchain needed.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>dev.actor-ts</groupId>
+  <artifactId>comparison-akka</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>actor-ts comparison — JVM arm</name>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <akka.version>2.8.8</akka.version>
+    <scala.binary.version>2.13</scala.binary.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.typesafe.akka</groupId>
+      <artifactId>akka-actor-typed_${scala.binary.version}</artifactId>
+      <version>${akka.version}</version>
+    </dependency>
+    <!--
+      A no-op SLF4J binding.  Without a binding Akka prints a substitute-logger
+      warning to stderr on every run; with a real one it would be measuring its
+      logger.  Fairness rule 3: logging off in every arm.
+    -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId><!-- 1.7.x: Akka 2.8 binds the SLF4J 1.x API; a 2.x binding leaves a StaticLoggerBinder warning on stderr -->
+      <version>1.7.36</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.5.0</version>
+        <configuration>
+          <mainClass>comparison.Main</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

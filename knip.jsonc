@@ -25,6 +25,15 @@
 
   "project": ["src/**/*.ts", "scripts/**/*.{ts,mjs}"],
 
+  // The framework-comparison benchmarks (#27) carry their own package.json and
+  // lockfile, for the same reason `examples/` stays out of scope below: the
+  // frameworks actor-ts is measured against are installed there, so resolving
+  // those imports against the root manifest reports every one as `unlisted` —
+  // an error here, and noise rather than a finding. The `entry` pattern above
+  // (`benchmarks/**/*.ts`) pulls the whole tree in otherwise. Verified before
+  // adding: without this, knip reports `nact` and `xstate` as unlisted.
+  "ignore": ["benchmarks/comparison/**"],
+
   // `examples/` stays out of scope via `project` above. It is not published, and
   // its four frontends (Angular, Next, React, Svelte) each carry their own
   // package.json — resolving those imports against the root manifest reports

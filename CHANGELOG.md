@@ -104,6 +104,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   context.watch installs a watcher only for a local ref, so a remote
   subscriber never produces a Terminated at all, and the wrong subclass
   count in the rationale is corrected from thirteen to fourteen. (#709).**
+- **The FAQ's per-message overhead figures are measured now, and two of them
+  were wrong** (#27).  `reference/faq` had asserted "~50 ns per `tell`" and
+  "actor messaging costs 50-200× a direct call" with nothing behind either.
+  The measured end-to-end cost of a `tell` is about **1.1 µs** — the ~50 ns
+  figure described the enqueue alone, not delivery and handling, so the page
+  answered "how long does `tell` take" with a number and "how many messages
+  per second" with the same one, two orders of magnitude apart.  Against a
+  no-framework floor of ~1.7 ns per call the real ratio is about **650×** on
+  the throughput path and about **8×** on an ask round trip, not 50-200×.
+
+  Both language versions now cite the benchmark run behind the numbers and
+  link the new `reference/benchmarks` page.  The cross-cluster line is marked
+  as still unmeasured rather than left to read as measured, since the cluster
+  benchmarks do not leave the process (#1177).
 
 - **BREAKING — the receptionist's total cap is now called
   `maxSubscriptionsTotal`** (#1200).  It was enforced as a count of
@@ -808,6 +822,98 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   are failures that would otherwise only surface in a mail already sent.
   Deliberately logic-less: it substitutes placeholders, it is not a template
   engine.
+- **The comparison is complete: eight arms across three runtimes** (#27).  Two
+  .NET arms close the set the issue asked for — the classic actor API on the
+  CLR, and the virtual-actor runtime.  Full table in the README and in
+  `reference/benchmarks`; the short version is that actor-ts sustains **897k
+  messages/second** at a batch of 10 000, against 2.9-3.0M on the JVM, 1.33M on
+  .NET and 600k for virtual actors, while leading every JavaScript arm.
+
+  Having the *same* actor model on three runtimes is what makes the runtime's
+  own contribution visible rather than inferred — and it settled a question the
+  earlier phases could only flag. The ask row splits by **runtime, not
+  framework**: both JVM arms sit near 40-47 µs while both .NET and both
+  JavaScript arms sit under 11 µs. That is the external caller — a microtask on
+  an event loop, an `await` in .NET, a thread parking on a future on the JVM —
+  and the JVM arms lead the tell rows precisely because that cost is not in
+  their path there.
+
+  The virtual-actor arm is the one whose semantics genuinely differ: grains
+  activate on first call and there is no caller-visible create or stop, so
+  three of its four rows measure a named near-equivalent and say so on the row.
+  Its strong ask and weak tell are the same fact twice — request/response is
+  what a grain call is.
+
+- **Both sides of the JVM licence split are measured, and they are the same
+  speed** (#27).  A second JVM arm (`benchmarks/comparison/pekko/`) measures
+  the Apache-licensed fork against the BUSL-1.1 original from Java sources that
+  are identical apart from the package prefix.  They agree to within the noise
+  on every scenario — 2.74M/s against 2.73M/s on tell throughput — so **staying
+  on an OSI-approved licence costs nothing in throughput**, and each arm is a
+  control on the other since they differ only in which dependency they pull.
+  Pinned to the newest *stable* release rather than the available 2.0
+  milestone.
+
+- **The comparison now reaches across the language boundary** (#27).  A JVM arm
+  (`benchmarks/comparison/akka/`, Maven + the Akka Typed Java API) answers the
+  question the issue was opened for: **actor-ts sustains about a third of a
+  mature JVM actor system's message throughput** — 925k/s against 2.85M/s at a
+  batch of 10 000, and 115k/s against 351k/s on a two-actor volley.  It wins
+  the spawn row (48k/s against 25k/s) and the ask row, the latter because every
+  arm drives the system from an external caller, which on an event loop is a
+  microtask and on the JVM is a thread parking on a future.
+
+  Pinned to 2.8.8: releases from 2.9 onwards are published only to a repository
+  that answers 403 to anonymous requests, and a row nobody can reproduce is not
+  evidence.  Its BUSL-1.1 licence is carried into every published table next to
+  the throughput figure.  The harness is mirrored by hand rather than using
+  JMH, so both sides of the table measure the same way — which is also why
+  cross-language rows never share a table with same-runtime ones.
+
+- **Warmup is part of the workload definition, and it had been wrong** (#27).
+  The harness default worked out at three unmeasured iterations for the largest
+  batch — harmless for a JavaScript arm, and measuring a JIT-compiled runtime
+  mid-compilation.  Fixing it moved the JVM arm's tell rate by 130 % and its
+  ask rate by 33 %.  Warmup is now explicit per case, identical across arms, and
+  cross-checked by the report generator like every other workload constant.
+
+- **Framework-comparison benchmarks, and the first numbers this project has
+  ever published** (#27).  `benchmarks/comparison/` measures actor-ts against
+  nact, XState v5 and a no-framework floor across four scenarios — spawn, tell
+  throughput, ask round-trip and ping-pong — and publishes the result in the
+  README, in a bilingual `reference/benchmarks` docs page, and in a generated
+  `RESULTS.md` carrying the hardware, versions, licences and date behind every
+  row.
+
+  The headline: actor-ts sustains ~900k messages/second at a batch of 10 000,
+  2.2× nact and 4.3× XState, and is level with nact on ask latency (7.8 µs vs
+  6.9 µs at p50).  It is behind on spawning (42k/s vs 157k/s) and on two-actor
+  ping-pong (138k/s vs 197k/s), both for the same reason: actor creation goes
+  through a `create` system message and every message through a dispatcher
+  turn, so per-message batching pays when a mailbox has depth and does nothing
+  when a volley alternates.  A mixed result, published as one.
+
+  The methodology is enforced rather than described.  Every arm runs through
+  the *same* harness — same warmup, same clock, same percentile maths — so
+  only the four operation bodies differ.  Every arm reports work the system
+  was **observed** to complete, and the report generator refuses to render a
+  row whose completed count disagrees with what was requested; that guard is
+  the mechanised form of the defect that once had this project publishing a
+  figure roughly 10× too high (#1027).  Arms are interleaved round by round
+  and each published row is the median of nine, because a single round varied
+  by up to 34 % on an ordinary desktop while the ordering of the frameworks
+  never changed.
+
+  The comparison tree carries its own manifest and lockfile, so the measured
+  frameworks never enter the shipped dependency closure, `bun audit`'s surface
+  or `bun run bench`.  `bun run typecheck:compare` is the check that owns it.
+
+- **`bun run bench:compare`, `bench:compare:report` and `typecheck:compare`**
+  (#27) — measure, validate-and-publish, and type-check the comparison tree.
+  `bench:compare -- --rounds=N` runs the arms interleaved and publishes the
+  per-scenario median; `bench:compare:report` refuses to write `RESULTS.md`
+  when any row's completed work disagrees with the workload definition.
+
 - **The bidirectional collections count participants, not only pairs**
   (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
   number of distinct participants on each side, both O(1), reading the two

@@ -1,0 +1,263 @@
+---
+title: Benchmarks
+description: Gemessener Vergleich von actor-ts mit benachbarten JavaScript-Actor-Frameworks — die Zahlen, die Methodik dahinter und was bewusst noch nicht gemessen wurde.
+---
+
+Wie schlägt sich actor-ts gegen die Alternativen?  Diese Seite beantwortet das
+mit Messungen statt mit Adjektiven — und sagt genauso deutlich, was **nicht**
+gemessen wurde, denn ein Vergleich, der nur seine Siege auflistet, ist Werbung.
+
+Alles hier stammt aus
+[`benchmarks/comparison/`](https://github.com/pathosDev/actor-ts/tree/main/benchmarks/comparison)
+und lässt sich selbst nachfahren.  Die generierte
+[`RESULTS.md`](https://github.com/pathosDev/actor-ts/blob/main/benchmarks/comparison/RESULTS.md)
+ist die maßgebliche Quelle; diese Seite ist ihre lesbare Fassung.
+
+## Die Zahlen
+
+Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logische Kerne) · Windows 11 · 2026-08-18 ·
+Median aus neun verschränkten Runden.
+
+### JavaScript — gleiche Maschine, gleicher Harness
+
+| Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
+| -------- | -------- | ---------- | ------------- | -------------- |
+| tell-Durchsatz, Batch 1k  | **807k/s** | 362k/s | 161k/s | 210M/s |
+| tell-Durchsatz, Batch 10k | **897k/s** | 373k/s | 176k/s | 479M/s |
+| ask-Roundtrip, p50        | 9,2 µs | **6,6 µs** | 10,4 µs | 0,9 µs |
+| Ping-Pong, 10k Wechsel    | 125k/s | **184k/s** | 85k/s | 329M/s |
+| spawn → gestartet → gestoppt | 41k/s | **180k/s** | 55k/s | 4,5M/s |
+
+### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
+
+Bewusst in einer eigenen Tabelle.  Die JavaScript-Arme oben laufen alle durch
+*buchstäblich denselben* Messcode; dieser hier bildet das Protokoll von Hand
+nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
+
+| Szenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
+| tell-Durchsatz, Batch 10k | 897k/s | 2,92M/s | **3,03M/s** | 1,33M/s | 600k/s |
+| Ping-Pong, 10k Wechsel    | 125k/s | 391k/s | 387k/s | **447k/s** | 168k/s |
+| spawn → gestartet → gestoppt | 41k/s | 25k/s | 24k/s | **32k/s** | 5k/s |
+| ask-Roundtrip, p50        | 9,2 µs | 40,5 µs | 47,1 µs | 7,3 µs | **5,6 µs** |
+| Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
+
+Drei Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
+zeigt.
+
+**Dasselbe Aktorenmodell erscheint auf drei Runtimes** — JVM, CLR und
+JavaScript.  Genau das macht den Beitrag der Runtime selbst sichtbar, statt ihn
+zu unterstellen: die JVM führt beim Massendurchsatz, .NET liegt dazwischen, und
+actor-ts erreicht etwa ein Drittel der JVM.
+
+**Die beiden JVM-Spalten sind dasselbe Framework beiderseits seines
+Lizenzwechsels**: der Apache-lizenzierte Fork gegen das BUSL-1.1-Original.  Sie
+stimmen in jeder Zeile innerhalb des Rauschens überein — **auf einer
+OSI-konformen Lizenz zu bleiben kostet also keinen Durchsatz**.  Und weil sich
+diese beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
+Kontrolle für den anderen.
+
+**Die ask-Zeile trennt sich nach Runtime, nicht nach Framework.**  Beide
+JVM-Arme liegen bei 40-47 µs, während beide .NET-Arme und beide
+JavaScript-Arme unter 11 µs bleiben.  Das ist der externe Aufrufer, nicht das
+Framework: im Event-Loop ist das Warten ein Microtask und in .NET ein `await`,
+auf der JVM aus einem Nicht-Aktor-Thread aber ein Thread, der sich an einem
+Future parkt.  Die JVM-Arme führen die tell-Zeilen deutlich — dieselben
+Frameworks, ohne diese Kosten im Pfad.
+
+### Was die Zahlen sagen
+
+**actor-ts führt im JavaScript-Feld beim Massen-Nachrichtendurchsatz** —
+Faktor 2,4 gegenüber nact und 5,5 gegenüber XState bei einem Batch von
+10 000 — und liegt beim ask-Roundtrip gleichauf mit nact; der Abstand liegt
+innerhalb des Rauschens zwischen zwei Läufen.
+
+**Beim Spawnen und beim Ping-Pong liegt es zurück**, und zwar aus einem
+einzigen Grund.  actor-ts leitet die Aktorerzeugung über eine
+`create`-Systemnachricht und jede Nachricht über einen Dispatcher-Durchlauf;
+nact konstruiert Aktoren synchron auf dem aufrufenden Stack.  Das Batching pro
+Nachricht zahlt sich aus, sobald eine Mailbox Tiefe hat — das ist die
+tell-Spalte — und bringt gar nichts, wenn ein Ping-Pong so abwechselt, dass
+keine Mailbox je mehr als eine Nachricht hält.  Derselbe Mechanismus erklärt
+beide Richtungen.
+
+**Gegen die JVM: etwa ein Drittel des Durchsatzes.**  Gegen .NET ist der
+Abstand kleiner, und gegen das Virtual-Actor-Modell liegt actor-ts beim
+Massen-Messaging vorn (897k/s gegen 600k/s), bei Request/Response dagegen
+deutlich zurück — dort ist ein Grain-Aufruf die native Operation.  Das ist die Antwort auf
+die Frage, für die dieser Vergleich eröffnet wurde, und sie fällt nicht
+schmeichelhaft aus: ein ausgereiftes JVM-Aktorsystem bewegt rund dreimal so
+viele Nachrichten pro Sekunde.  Zwei Dinge gehören danebengestellt.  Erstens
+gewinnt actor-ts die spawn- und die ask-Zeile — letztere, weil jeder Arm das
+System von außen antreibt: im Event-Loop ist das ein Microtask, auf der JVM
+ein Thread, der sich an einem Future parkt, und das kostet unabhängig von der
+Framework-Qualität zweistellige Mikrosekunden.  Zweitens steht Akka ab 2.7
+unter BUSL-1.1 und schränkt den Produktiveinsatz ein; das gehört in dieselbe
+Entscheidung wie die Durchsatzzahl.
+
+**Die letzte Spalte ist kein Konkurrent.**  Sie besteht aus direkten
+Methodenaufrufen ohne Mailbox, ohne Supervision, ohne Lebenszyklus und ohne
+Backpressure — der Boden, damit sich die anderen Spalten als Preis der
+Abstraktion lesen lassen.  Grob Faktor 650 beim tell, grob Faktor 8 beim
+ask-Roundtrip.  Ihr Absolutwert ist zugleich die instabilste Zahl hier: eine
+Schleife, die ein JIT wegoptimieren kann, ist keine echte Messung — also als
+Größenordnung lesen und nicht feiner.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Verhältnisse, keine Absolutwerte">
+Das sind Messungen auf einer einzelnen Maschine.  Sie sagen nichts über einen
+Produktivbetrieb auf echter Hardware mit echtem Netzwerk aus.  Vergleiche die
+Spalten, betrachte die letzte Stelle jeder Zahl als Fiktion und lies einen
+Abstand von 10 % als „ungefähr gleich" — die gemessene Streuung zwischen
+Läufen erreicht bei einer einzelnen Runde 15-30 %, und genau deshalb ist jede
+Zeile oben ein Median aus neun.
+</Aside>
+
+## Methodik
+
+Die Teile, die die Tabelle lesenswert machen:
+
+- **Ein Harness, buchstäblich — auf der JavaScript-Seite.**  Jeder
+  JavaScript-Arm läuft durch denselben Messcode: gleiches Warmup, gleiche Uhr,
+  gleiche Perzentil-Rechnung, nur die vier Operationsrümpfe unterscheiden
+  sich.  Das ist eine stärkere Aussage als „wir haben dieselbe Methodik
+  verwendet", und deshalb teilen sich diese Zeilen eine Tabelle.  Der JVM-Arm
+  kann diesen Code nicht importieren, bildet das Protokoll also von Hand nach
+  — und genau deshalb stehen seine Zeilen separat.
+- **Warmup gehört zum Workload.**  Explizit pro Fall und über alle Arme
+  identisch, denn der Harness-Default ergibt beim größten Batch drei
+  ungemessene Iterationen — für JavaScript in Ordnung, für eine
+  JIT-kompilierte Runtime heißt das: mitten in der Kompilierung gemessen.
+  Die Korrektur bewegte die tell-Rate des JVM-Arms um 130 %.
+- **Erledigte Arbeit, nie angeforderte.**  Jeder Arm meldet, was das System
+  *beobachtbar* getan hat — der zurückgelesene Zähler, die geprüfte Antwort,
+  der bestätigte Lebenszyklus — und der Report-Generator weigert sich, eine
+  Zeile zu rendern, deren erledigte Anzahl von der angeforderten abweicht.
+  Das ist nicht hypothetisch: eine früher von diesem Projekt veröffentlichte
+  Zahl war rund 10-mal zu hoch, weil die Mailbox die meisten Nachrichten
+  stillschweigend verworfen hat und der Harness die Anforderung zählte.
+- **Ein Workload, quergeprüft.**  Batch-Größen und Iterationszahlen stehen in
+  einer Datei, und der Generator schlägt fehl, wenn ein Arm andere meldet.
+- **Verschränkte Runden, Median pro Szenario.**  Runde 1 jedes Arms, dann
+  Runde 2 — so trifft Hintergrundlast alle Arme statt zufällig einen.  Jede
+  veröffentlichte Zeile ist ein echter Einzellauf, ganz übernommen: Durchsatz,
+  Perzentile und Speicher aus derselben Ausführung, nie spaltenweise zu einer
+  Zeile gemittelt, die nie so gemessen wurde.
+- **Ein Framework pro Subprozess**, damit Modulzustand, JIT-Profile und
+  GC-Druck nicht zwischen Armen überlaufen.
+- **Logging überall aus.**  Ein Arm, der Logzeilen schreibt, misst seinen
+  Logger.
+
+## Vorbehalte je Framework
+
+Diese reisen mit den Zahlen mit, statt in einer Fußnote zu stehen, die niemand
+liest.
+
+**XState v5** ist eine Statechart-Bibliothek, deren Aktoren das
+Transportmittel sind — kein Actor-Framework mit angebauten Statecharts.  Es hat
+kein Request/Response-Primitiv, deshalb ist seine ask-Zeile ein `send` mit
+anschließendem Warten auf den Snapshot: idiomatisch, aber kein natives ask.
+Die Ereignisverarbeitung ist synchron, deshalb messen seine tell-Zeilen
+überhaupt keine Mailbox.
+
+**nact** erzeugt Aktoren synchron und kennt keinen ambienten Sender: die
+Antwortadresse reist in der Nachricht mit.  Es wird zudem faktisch nicht mehr
+gepflegt, seine Zahlen sind also eine Momentaufnahme von 7.6.2 und kein
+bewegliches Ziel.
+
+**Orleans** ist eine Virtual-Actor-Runtime und der Arm, dessen Semantik am
+stärksten abweicht.  Grains aktivieren beim ersten Aufruf, es gibt kein für den
+Aufrufer sichtbares Erzeugen oder Stoppen, und ein Grain-Aufruf ist ein RPC —
+drei seiner vier Zeilen messen deshalb ein benanntes Näherungsäquivalent:
+Erstaufruf-Aktivierung für spawn (mit frischen Grain-Identitäten je Iteration,
+denn ein bereits aktivierter Grain würde einen warmen Dispatch messen), einen
+One-Way-RPC für tell und eine getriebene Kette awaiteter Aufrufe für
+Ping-Pong.  Seine starke ask- und schwache tell-Zeile sind dieselbe Tatsache,
+zweimal gesehen: Request/Response *ist* ein Grain-Aufruf.
+
+**Akka.NET** ist die klassische Actor-API auf der CLR — das Modell, das seine
+eigene Dokumentation voranstellt.
+
+**Akka und Pekko** sind dieselbe Linie beiderseits eines Lizenzwechsels und
+werden aus Java-Quellen gemessen, die sich nur im Paketpräfix unterscheiden —
+jede Differenz zwischen ihnen ist also der Fork und nicht der Benchmark.  Akka
+wird in 2.8.8 gemessen, der neuesten Version, die noch auf Maven Central
+liegt; ab 2.9 erscheinen die Artefakte nur noch in einem Repository, das
+anonyme Anfragen ablehnt.  Pekko steht bei 1.6.0, seiner neuesten *stabilen*
+Version; ein 2.0-Milestone existiert und wird bewusst nicht verwendet, weil
+ein released Framework gegen ein nicht-released zu stellen eine andere Aussage
+wäre.  Eine Version, die sonst niemand auflösen kann,
+machte die Zeile unreproduzierbar.  Der Harness ist von Hand dem
+JavaScript-Pendant nachgebildet statt JMH zu nutzen: JMH ist das bessere
+Microbenchmark-Werkzeug, misst aber anders — und zwei Seiten mit
+unterschiedlicher Methodik lassen sich nicht als eine Tabelle lesen.
+
+**actor-ts** wird mit einfacher `if`-Verzweigung in den Handlern gemessen,
+passend zu den anderen Armen.  Stattdessen mit `ts-pattern` zu dispatchen — der
+Stil, den dieses Projekt in seinem eigenen Quellcode verwendet — kostet
+weitere 18-22 % tell-Durchsatz, was auf einem heißen Pfad zu wissen lohnt.
+
+**Der Boden-Arm** macht kein Queueing, keine Supervision, keinen Lebenszyklus
+und keine Ortstransparenz.  Er ist das, woraus ein Aktorsystem gebaut ist —
+nicht ein Aktorsystem ohne Overhead.
+
+## Was nicht gemessen wurde
+
+Ausdrücklich genannt, denn eine Benchmark-Seite, die nur auflistet, was sie
+ausgeführt hat, liest sich als Vergleich von allem:
+
+- **Kein Clustering, kein Sharding.**  Gegen das Sharding ist eine
+  Durchsatz-Regression offen; ein Sharding-Vergleich jetzt würde sie in die
+  erste Zahl einbacken, die jemand sieht.
+- **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
+  SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
+  Framework-Etikett.
+- **Vier sprachübergreifende Arme, alle auf einer Maschine.**  Sprachübergreifende Zeilen bleiben in
+  ihrer eigenen Tabelle, weil sie eine schwächere Aussage sind als
+  Messungen durch denselben Harness — sie werden nie in die
+  JavaScript-Rangfolge gemischt.
+- **Eine Runtime.**  Alle Arme laufen auf Bun.  Der Mess-Harness greift in den
+  Quellcode des Frameworks, den Node ohne Build-Schritt nicht laden kann; die
+  Nachbarn auf Node zu messen hieße also, sie *nicht* durch denselben Harness
+  zu schicken.  Der identische Messpfad wurde als wertvoller bewertet; der
+  Preis: diese Bibliotheken sind für Node geschrieben und ihre Zahlen dort
+  können abweichen.
+- **Kein Regressions-Gate.**  Nichts schlägt fehl, wenn sich eine Zahl
+  zwischen Releases verschiebt.
+
+## Nachvollziehen
+
+```bash
+bun install --cwd benchmarks/comparison
+```
+
+```bash
+bun run bench:compare -- --rounds=9
+```
+
+```bash
+bun run bench:compare:report
+```
+
+Der erste Befehl installiert das eigene Manifest des Vergleichsbaums — die
+gemessenen Frameworks sind bewusst nicht Teil des Root-Installs und gelangen
+so nie in die ausgelieferte Abhängigkeitshülle.  Der zweite misst, der dritte
+validiert die Ergebnisse und generiert `RESULTS.md` neu.
+
+Für die Arbeit an einem einzelnen Arm:
+
+```bash
+bun run bench:compare -- --framework=nact
+```
+
+## Wie es weitergeht
+
+- **[Migrations-Überblick](/de/migration/overview/)** — wenn du von einem
+  anderen Actor-Framework kommst.
+- **[FAQ](/de/reference/faq/)** — inklusive des Overheads pro Nachricht, den
+  diese Zahlen jetzt belegen.
+- **[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)** — der
+  Knopf, der die Durchsatzzahlen am stärksten bewegt.
+- **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** — begrenzt
+  versus unbegrenzt und was beides kostet.
