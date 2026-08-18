@@ -174,7 +174,9 @@ describe('Stock actor metrics', () => {
       // One observation per delivery, so depth tracks
       // `actor_messages_delivered_total` exactly — unlike the wait histogram,
       // which deliberately skips unstamped and replayed envelopes.
-      expect(totalsOf('actor_mailbox_depth')).toBe(valueFor(reg, 'actor_messages_delivered_total'));
+      const delivered = valueFor(reg, 'actor_messages_delivered_total') ?? 0;
+      expect(delivered).toBeGreaterThanOrEqual(2);
+      expect(totalsOf('actor_mailbox_depth')).toBe(delivered);
       // Per *turn*, not per message: the two tells may share one turn, so the
       // only sound relation is that turns never outnumber deliveries.
       expect(totalsOf('actor_dispatcher_queue_delay_seconds')).toBeGreaterThanOrEqual(1);

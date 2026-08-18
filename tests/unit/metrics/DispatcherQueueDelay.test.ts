@@ -219,7 +219,11 @@ describe('actor_dispatcher_queue_delay_seconds', () => {
     } finally {
       await system.terminate();
     }
-  });
+    // Its own timeout, because this is the one case here that deliberately
+    // blocks the loop: BURST × SPIN_MS of held event loop plus a poll for each
+    // of the calm turns, and the saturated phase's 10 s failure budget has to
+    // be reachable or its label never makes it to the reporter.
+  }, 15_000);
 
   test('is not emitted at all while metrics are disabled', async () => {
     const system = newSystem('delay-off');
