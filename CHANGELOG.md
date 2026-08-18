@@ -602,6 +602,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The comparison is complete: eight arms across three runtimes** (#27).  Two
+  .NET arms close the set the issue asked for — the classic actor API on the
+  CLR, and the virtual-actor runtime.  Full table in the README and in
+  `reference/benchmarks`; the short version is that actor-ts sustains **897k
+  messages/second** at a batch of 10 000, against 2.9-3.0M on the JVM, 1.33M on
+  .NET and 600k for virtual actors, while leading every JavaScript arm.
+
+  Having the *same* actor model on three runtimes is what makes the runtime's
+  own contribution visible rather than inferred — and it settled a question the
+  earlier phases could only flag. The ask row splits by **runtime, not
+  framework**: both JVM arms sit near 40-47 µs while both .NET and both
+  JavaScript arms sit under 11 µs. That is the external caller — a microtask on
+  an event loop, an `await` in .NET, a thread parking on a future on the JVM —
+  and the JVM arms lead the tell rows precisely because that cost is not in
+  their path there.
+
+  The virtual-actor arm is the one whose semantics genuinely differ: grains
+  activate on first call and there is no caller-visible create or stop, so
+  three of its four rows measure a named near-equivalent and say so on the row.
+  Its strong ask and weak tell are the same fact twice — request/response is
+  what a grain call is.
+
 - **Both sides of the JVM licence split are measured, and they are the same
   speed** (#27).  A second JVM arm (`benchmarks/comparison/pekko/`) measures
   the Apache-licensed fork against the BUSL-1.1 original from Java sources that

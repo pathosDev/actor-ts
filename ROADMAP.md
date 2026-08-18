@@ -313,8 +313,10 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Documentation
 
-- Performance benchmarks vs JVM actor frameworks (#27) — `benchmarks/` has the
-  micro-benches; what is missing is the side-by-side comparison run
+- ~~Performance benchmarks vs JVM actor frameworks (#27)~~ — done.
+  `benchmarks/comparison/` measures actor-ts against seven arms (nact, XState,
+  Akka, Pekko, Akka.NET, Orleans and a no-framework floor) and publishes to the
+  README, `reference/benchmarks` (EN+DE) and a generated `RESULTS.md`
 
 ## Explicitly out of scope
 

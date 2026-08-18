@@ -23,11 +23,11 @@ median of nine interleaved rounds.
 
 | scenario | actor-ts | nact 7.6.2 | XState 5.32.5 | no framework |
 | -------- | -------- | ---------- | ------------- | ------------ |
-| tell throughput, batch 1k  | **891k/s** | 391k/s | 197k/s | 223M/s |
-| tell throughput, batch 10k | **979k/s** | 411k/s | 178k/s | 518M/s |
-| ask round-trip, p50        | 7.3 µs | **6.3 µs** | 15.9 µs | 0.8 µs |
-| ping-pong, 10k exchanges   | 112k/s | **159k/s** | 69k/s | 336M/s |
-| spawn → started → stopped  | 49k/s | **212k/s** | 67k/s | 5.2M/s |
+| tell throughput, batch 1k  | **807k/s** | 362k/s | 161k/s | 210M/s |
+| tell throughput, batch 10k | **897k/s** | 373k/s | 176k/s | 479M/s |
+| ask round-trip, p50        | 9.2 µs | **6.6 µs** | 10.4 µs | 0.9 µs |
+| ping-pong, 10k exchanges   | 125k/s | **184k/s** | 85k/s | 329M/s |
+| spawn → started → stopped  | 41k/s | **180k/s** | 55k/s | 4.5M/s |
 
 ### Cross-language — another virtual machine, mirrored harness
 
@@ -35,19 +35,33 @@ Kept in its own table on purpose.  The JavaScript arms above all run through
 *literally the same* measurement code; this one reproduces the protocol by
 hand, on a different runtime, and that is a weaker claim.
 
-| scenario | actor-ts (Bun 1.3.1) | Akka 2.8.8 (JDK 21) | Pekko 1.6.0 (JDK 21) |
-| -------- | -------------------- | ------------------- | -------------------- |
-| tell throughput, batch 10k | 979k/s | **2.73M/s** | **2.74M/s** |
-| ping-pong, 10k exchanges   | 112k/s | 315k/s | **355k/s** |
-| spawn → started → stopped  | **49k/s** | 23k/s | 22k/s |
-| ask round-trip, p50        | **7.3 µs** | 44.3 µs | 47.1 µs |
-| licence                    | MIT | BUSL-1.1 | Apache-2.0 |
+| scenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
+| tell throughput, batch 10k | 897k/s | 2.92M/s | **3.03M/s** | 1.33M/s | 600k/s |
+| ping-pong, 10k exchanges   | 125k/s | 391k/s | 387k/s | **447k/s** | 168k/s |
+| spawn → started → stopped  | 41k/s | 25k/s | 24k/s | **32k/s** | 5k/s |
+| ask round-trip, p50        | 9.2 µs | 40.5 µs | 47.1 µs | 7.3 µs | **5.6 µs** |
+| licence                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
-The two JVM columns are the same framework either side of its licence change:
-the Apache-licensed fork against the BUSL-1.1 original.  They agree to within
-the noise on every row, so **staying on an OSI-approved licence costs nothing
-in throughput** — and because the two arms differ only in which dependency
-they pull, each is a control on the other.
+Three things are readable from this table that no single row shows.
+
+**The same actor model appears on three runtimes** — JVM, CLR and JavaScript —
+which is what makes the runtime's own contribution visible rather than
+inferred.  The JVM leads bulk throughput, .NET sits between it and actor-ts,
+and actor-ts is roughly a third of the JVM.
+
+**The two JVM columns are the same framework either side of its licence
+change**: the Apache-licensed fork against the BUSL-1.1 original.  They agree
+to within the noise on every row, so **staying on an OSI-approved licence costs
+nothing in throughput** — and because those two arms differ only in which
+dependency they pull, each is a control on the other.
+
+**The ask row splits by runtime, not by framework.**  Both JVM arms sit near
+40-47 µs while both .NET arms and both JavaScript arms sit under 11 µs.  That
+is the external caller, not the frameworks: on an event loop the wait is a
+microtask and in .NET an `await`, but on the JVM from a non-actor thread it is
+a thread parking on a future.  The JVM arms lead the tell rows by a wide
+margin, which is the same frameworks measured without that cost in the path.
 
 ### What the numbers say
 
@@ -63,7 +77,10 @@ calling stack.  Per-message batching pays for itself when a mailbox has depth
 alternates so that no mailbox ever holds more than one message.  The same
 mechanism explains both directions.
 
-**Against the JVM, expect roughly a third of the throughput.**  That is the
+**Against the JVM, expect roughly a third of the throughput.**  Against .NET
+the gap is narrower, and against the virtual-actor model actor-ts is ahead on
+bulk messaging (897k/s against 600k/s) while well behind on request/response,
+where a grain call is the native operation.  That is the
 answer to the question this comparison was opened to settle, and it is not a
 flattering one: a mature JVM actor system moves about three times the messages
 per second.  Two things belong next to it.  First, actor-ts wins the spawn row
@@ -138,6 +155,18 @@ do not measure a mailbox at all.
 address travels inside the message.  It is also effectively unmaintained, so
 its numbers are a snapshot of 7.6.2 rather than of a moving target.
 
+**Orleans** is a virtual-actor runtime, and the arm whose semantics diverge
+most.  Grains activate on first call, there is no caller-visible create or
+stop, and a grain call is an RPC — so three of its four rows measure a named
+near-equivalent: first-call activation for spawn (with fresh grain identities
+every iteration, since calling an already-activated grain would measure a warm
+dispatch), a one-way RPC for tell, and a driven chain of awaited calls for
+ping-pong.  Its strong ask row and weak tell row are the same fact seen twice:
+request/response is what a grain call *is*.
+
+**Akka.NET** is the classic actor API on the CLR, the model its own
+documentation leads with.
+
 **Akka and Pekko** are the same lineage either side of a licence change, and
 are measured from Java sources that are identical apart from the package
 prefix — so any gap between them is the fork rather than the benchmark.  Akka
@@ -171,10 +200,9 @@ a comparison of everything:
 - **No persistence.**  The persistence benchmarks cover in-memory and SQLite
   only, so a comparable arm would be a storage-engine comparison wearing a
   framework label.
-- **Only the JVM so far.**  Two JVM frameworks are measured; .NET actor
-  frameworks are not yet.  Cross-language rows stay in their own table because
-  they are a weaker claim than same-harness ones, never mixed into the
-  JavaScript ranking.
+- **Four cross-language arms, all on one machine.**  Cross-language rows stay
+  in their own table because they are a weaker claim than same-harness ones,
+  and are never mixed into the JavaScript ranking.
 - **One runtime.**  Every arm runs on Bun.  The measurement harness reaches
   into the framework's source, which Node cannot load without a build step, so
   running the neighbours on Node would mean not running them through the same

@@ -22,11 +22,11 @@ Median aus neun verschränkten Runden.
 
 | Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 | ohne Framework |
 | -------- | -------- | ---------- | ------------- | -------------- |
-| tell-Durchsatz, Batch 1k  | **891k/s** | 391k/s | 197k/s | 223M/s |
-| tell-Durchsatz, Batch 10k | **979k/s** | 411k/s | 178k/s | 518M/s |
-| ask-Roundtrip, p50        | 7,3 µs | **6,3 µs** | 15,9 µs | 0,8 µs |
-| Ping-Pong, 10k Wechsel    | 112k/s | **159k/s** | 69k/s | 336M/s |
-| spawn → gestartet → gestoppt | 49k/s | **212k/s** | 67k/s | 5,2M/s |
+| tell-Durchsatz, Batch 1k  | **807k/s** | 362k/s | 161k/s | 210M/s |
+| tell-Durchsatz, Batch 10k | **897k/s** | 373k/s | 176k/s | 479M/s |
+| ask-Roundtrip, p50        | 9,2 µs | **6,6 µs** | 10,4 µs | 0,9 µs |
+| Ping-Pong, 10k Wechsel    | 125k/s | **184k/s** | 85k/s | 329M/s |
+| spawn → gestartet → gestoppt | 41k/s | **180k/s** | 55k/s | 4,5M/s |
 
 ### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
 
@@ -34,20 +34,36 @@ Bewusst in einer eigenen Tabelle.  Die JavaScript-Arme oben laufen alle durch
 *buchstäblich denselben* Messcode; dieser hier bildet das Protokoll von Hand
 nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
 
-| Szenario | actor-ts (Bun 1.3.1) | Akka 2.8.8 (JDK 21) | Pekko 1.6.0 (JDK 21) |
-| -------- | -------------------- | ------------------- | -------------------- |
-| tell-Durchsatz, Batch 10k | 979k/s | **2,73M/s** | **2,74M/s** |
-| Ping-Pong, 10k Wechsel    | 112k/s | 315k/s | **355k/s** |
-| spawn → gestartet → gestoppt | **49k/s** | 23k/s | 22k/s |
-| ask-Roundtrip, p50        | **7,3 µs** | 44,3 µs | 47,1 µs |
-| Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 |
+| Szenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
+| tell-Durchsatz, Batch 10k | 897k/s | 2,92M/s | **3,03M/s** | 1,33M/s | 600k/s |
+| Ping-Pong, 10k Wechsel    | 125k/s | 391k/s | 387k/s | **447k/s** | 168k/s |
+| spawn → gestartet → gestoppt | 41k/s | 25k/s | 24k/s | **32k/s** | 5k/s |
+| ask-Roundtrip, p50        | 9,2 µs | 40,5 µs | 47,1 µs | 7,3 µs | **5,6 µs** |
+| Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
-Die beiden JVM-Spalten sind dasselbe Framework beiderseits seines
-Lizenzwechsels: der Apache-lizenzierte Fork gegen das BUSL-1.1-Original.  Sie
+Drei Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
+zeigt.
+
+**Dasselbe Aktorenmodell erscheint auf drei Runtimes** — JVM, CLR und
+JavaScript.  Genau das macht den Beitrag der Runtime selbst sichtbar, statt ihn
+zu unterstellen: die JVM führt beim Massendurchsatz, .NET liegt dazwischen, und
+actor-ts erreicht etwa ein Drittel der JVM.
+
+**Die beiden JVM-Spalten sind dasselbe Framework beiderseits seines
+Lizenzwechsels**: der Apache-lizenzierte Fork gegen das BUSL-1.1-Original.  Sie
 stimmen in jeder Zeile innerhalb des Rauschens überein — **auf einer
 OSI-konformen Lizenz zu bleiben kostet also keinen Durchsatz**.  Und weil sich
-die beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
+diese beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
 Kontrolle für den anderen.
+
+**Die ask-Zeile trennt sich nach Runtime, nicht nach Framework.**  Beide
+JVM-Arme liegen bei 40-47 µs, während beide .NET-Arme und beide
+JavaScript-Arme unter 11 µs bleiben.  Das ist der externe Aufrufer, nicht das
+Framework: im Event-Loop ist das Warten ein Microtask und in .NET ein `await`,
+auf der JVM aus einem Nicht-Aktor-Thread aber ein Thread, der sich an einem
+Future parkt.  Die JVM-Arme führen die tell-Zeilen deutlich — dieselben
+Frameworks, ohne diese Kosten im Pfad.
 
 ### Was die Zahlen sagen
 
@@ -65,7 +81,10 @@ tell-Spalte — und bringt gar nichts, wenn ein Ping-Pong so abwechselt, dass
 keine Mailbox je mehr als eine Nachricht hält.  Derselbe Mechanismus erklärt
 beide Richtungen.
 
-**Gegen die JVM: etwa ein Drittel des Durchsatzes.**  Das ist die Antwort auf
+**Gegen die JVM: etwa ein Drittel des Durchsatzes.**  Gegen .NET ist der
+Abstand kleiner, und gegen das Virtual-Actor-Modell liegt actor-ts beim
+Massen-Messaging vorn (897k/s gegen 600k/s), bei Request/Response dagegen
+deutlich zurück — dort ist ein Grain-Aufruf die native Operation.  Das ist die Antwort auf
 die Frage, für die dieser Vergleich eröffnet wurde, und sie fällt nicht
 schmeichelhaft aus: ein ausgereiftes JVM-Aktorsystem bewegt rund dreimal so
 viele Nachrichten pro Sekunde.  Zwei Dinge gehören danebengestellt.  Erstens
@@ -147,6 +166,19 @@ Antwortadresse reist in der Nachricht mit.  Es wird zudem faktisch nicht mehr
 gepflegt, seine Zahlen sind also eine Momentaufnahme von 7.6.2 und kein
 bewegliches Ziel.
 
+**Orleans** ist eine Virtual-Actor-Runtime und der Arm, dessen Semantik am
+stärksten abweicht.  Grains aktivieren beim ersten Aufruf, es gibt kein für den
+Aufrufer sichtbares Erzeugen oder Stoppen, und ein Grain-Aufruf ist ein RPC —
+drei seiner vier Zeilen messen deshalb ein benanntes Näherungsäquivalent:
+Erstaufruf-Aktivierung für spawn (mit frischen Grain-Identitäten je Iteration,
+denn ein bereits aktivierter Grain würde einen warmen Dispatch messen), einen
+One-Way-RPC für tell und eine getriebene Kette awaiteter Aufrufe für
+Ping-Pong.  Seine starke ask- und schwache tell-Zeile sind dieselbe Tatsache,
+zweimal gesehen: Request/Response *ist* ein Grain-Aufruf.
+
+**Akka.NET** ist die klassische Actor-API auf der CLR — das Modell, das seine
+eigene Dokumentation voranstellt.
+
 **Akka und Pekko** sind dieselbe Linie beiderseits eines Lizenzwechsels und
 werden aus Java-Quellen gemessen, die sich nur im Paketpräfix unterscheiden —
 jede Differenz zwischen ihnen ist also der Fork und nicht der Benchmark.  Akka
@@ -181,8 +213,7 @@ ausgeführt hat, liest sich als Vergleich von allem:
 - **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
   SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
   Framework-Etikett.
-- **Bisher nur die JVM.**  Zwei JVM-Frameworks sind gemessen,
-  .NET-Actor-Frameworks noch nicht.  Sprachübergreifende Zeilen bleiben in
+- **Vier sprachübergreifende Arme, alle auf einer Maschine.**  Sprachübergreifende Zeilen bleiben in
   ihrer eigenen Tabelle, weil sie eine schwächere Aussage sind als
   Messungen durch denselben Harness — sie werden nie in die
   JavaScript-Rangfolge gemischt.

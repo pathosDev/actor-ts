@@ -140,7 +140,7 @@ comparison against other frameworks:
   enqueues — so "how long does `tell` take" and "how many messages per
   second" are different questions with answers two orders of magnitude
   apart.
-- **`ask` round trip** — **7.3 µs** at p50, 27 µs at p99, depth 1.
+- **`ask` round trip** — **9 µs** at p50, 37 µs at p99, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
   cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
   measured; the cluster benchmarks do not leave the process.
