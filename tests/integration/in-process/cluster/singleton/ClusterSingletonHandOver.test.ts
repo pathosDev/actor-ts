@@ -287,6 +287,47 @@ describe('ClusterSingleton — hand-over on a leader move (#949)', () => {
     await stopNode(nodeB);
   }, 30_000);
 
+  test('a peer that leaves mid-hand-over stops being waited on', async () => {
+    // A peer that goes away will never answer, and by this node's own view it
+    // can no longer be hosting — so continuing to wait on it would spend the
+    // whole timeout on a question membership has already settled, and end in the
+    // warning that says the invariant could not be proven when in fact it was.
+    //
+    // B is silent by construction (it never mentions the singleton), so the only
+    // thing that can end A's wait short of the timeout is B dropping out of the
+    // eligible set.  The timeout is set an order of magnitude above the budget
+    // below, so taking it cannot pass this.
+    const systemName = 'sng-handover-departing';
+    const census = new SingletonCensus();
+    const nodeB = await startNode({ systemName, port: 53_1002, seeds: [] });
+    const nodeA = await startNode({ systemName, port: 53_1001, seeds: [`${systemName}@h:531002`] });
+    await awaitCondition(
+      () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+      { timeoutMs: 5_000, label: 'both nodes are up' },
+    );
+
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('departing')
+      .withHandOverTimeoutMs(60_000)
+      .withActor(() => new SlowStoppingMarker(census, 'a', 0));
+    nodeA.cluster.singleton.start(singletonOptions);
+
+    // Nothing can have hosted yet: A is waiting on a peer that cannot answer.
+    // This is an *absence* — it already holds, and has to still hold after the
+    // request has had every chance to be answered — so there is nothing to poll.
+    await sleep(200);
+    expect(census.liveOn('a')).toBe(0);
+
+    await stopNode(nodeB);
+    await awaitCondition(
+      () => census.liveOn('a') === 1,
+      { timeoutMs: 6_000, label: 'A hosts once the silent peer has left the cluster' },
+    );
+    expect(nodeA.log.saw('did not acknowledge the hand-over')).toBe(false);
+
+    await stopNode(nodeA);
+  }, 30_000);
+
   test('a peer that only calls ref() answers at once instead of costing the timeout', async () => {
     // The counterpart to the test above, and why the envelope-path claim moved
     // off the manager and onto the extension: a node that merely talks to the

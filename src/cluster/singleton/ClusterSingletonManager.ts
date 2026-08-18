@@ -181,6 +181,7 @@ type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
 type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
 type RestartChildEvent = { readonly kind: 'restart-child' };
 type HandOverTimeoutEvent = { readonly kind: 'hand-over-timeout' };
+type HandOverRetryEvent = { readonly kind: 'hand-over-retry' };
 
 type ManagerEvent =
   | ReconcileEvent
@@ -188,7 +189,8 @@ type ManagerEvent =
   | LeaseLostEvent
   | AcquireRetryEvent
   | RestartChildEvent
-  | HandOverTimeoutEvent;
+  | HandOverTimeoutEvent
+  | HandOverRetryEvent;
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated | AuthenticatedSingletonMessage;
 
@@ -419,6 +421,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
       .with({ kind: 'restart-child' }, () => this.onRestartChild())
       .with({ kind: 'hand-over-timeout' }, () => this.onHandOverTimeout())
+      .with({ kind: 'hand-over-retry' }, () => this.onHandOverRetry())
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -807,7 +810,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       }),
       retryTimer: this.system.scheduler.scheduleAtFixedRateFunction(
         retryIntervalMs, retryIntervalMs,
-        () => this.resendHandOverRequest(),
+        () => this.self.tell({ kind: 'hand-over-retry' } satisfies ManagerEvent),
       ),
       held: [],
     };
@@ -819,19 +822,35 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   /**
-   * Re-ask whoever has not answered yet.
+   * Re-ask whoever has not answered yet — and stop waiting on anyone who has
+   * meanwhile left the set that could be hosting.
    *
-   * Safe to run straight off the timer rather than through the mailbox, unlike
-   * every state transition here: it reads one set and sends, and changes no
-   * state at all.  See {@link SINGLETON_HAND_OVER_RETRY_INTERVAL_MS} for why the
-   * re-send is load-bearing and not belt-and-braces.
+   * The re-send is load-bearing rather than belt-and-braces; see
+   * {@link SINGLETON_HAND_OVER_RETRY_INTERVAL_MS}.  The pruning is the other
+   * half of the same problem: a peer that goes `down` or `leaving` mid-hand-over
+   * will never answer, and by this node's own view it can no longer be hosting
+   * — so continuing to wait on it would spend the whole `handOverTimeoutMs` on a
+   * question that has already been settled, and end in the warning that says the
+   * invariant could not be proven when in fact it was.
    */
-  private resendHandOverRequest(): void {
+  private onHandOverRetry(): void {
     const pending = this.handOver;
     if (pending === null) return;
-    const peers = this.handOverPeers()
-      .filter((address) => pending.awaiting.has(address.toString()));
-    this.sendHandOverRequestTo(peers);
+    const eligible = this.handOverPeers();
+    const stillEligible = new Set(eligible.map((address) => address.toString()));
+    for (const awaited of [...pending.awaiting]) {
+      if (!stillEligible.has(awaited)) {
+        this.log.debug(
+          `singleton '${this.options.typeName}': ${awaited} left the eligible set — `
+          + 'no longer waiting on its hand-over',
+        );
+        pending.awaiting.delete(awaited);
+      }
+    }
+    if (pending.awaiting.size === 0) { this.completeHandOver(); return; }
+    this.sendHandOverRequestTo(
+      eligible.filter((address) => pending.awaiting.has(address.toString())),
+    );
   }
 
   private sendHandOverRequestTo(peers: readonly NodeAddress[]): void {
