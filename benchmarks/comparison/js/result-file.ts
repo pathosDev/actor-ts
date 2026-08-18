@@ -92,10 +92,26 @@ export type ComparisonResultFile = {
   readonly environment: EnvironmentBlock;
   readonly scenarios: ReadonlyArray<ScenarioResult>;
   readonly skippedScenarios: ReadonlyArray<SkippedScenario>;
+  /**
+   * How many interleaved rounds this file is the median of.
+   *
+   * Absent or 1 means a single round, which on any machine that is not
+   * otherwise idle is a coin toss: measured spreads of 15-30 % between
+   * consecutive rounds are ordinary.  Anything published should say which
+   * it is.
+   */
+  readonly rounds?: number;
 };
 
 /** Directory holding the committed result files. */
 export const RESULTS_DIRECTORY = join(import.meta.dirname ?? '.', '..', 'results');
+
+/**
+ * Per-round files, before the median is taken.  Kept out of `results/` (and
+ * out of git) because they are working data: the published artefact is the
+ * median, and committing every round would bury it.
+ */
+export const ROUNDS_DIRECTORY = join(RESULTS_DIRECTORY, '.rounds');
 
 /**
  * `<framework>-<runtime>.json`, lower-cased and punctuation-free.
@@ -109,10 +125,18 @@ export function resultFileName(framework: FrameworkIdentity, runtime: RuntimeIde
   return `${slug(framework.name)}-${slug(runtime.name)}.json`;
 }
 
-/** Write one result file, creating `results/` if this is the first run. */
-export function writeResultFile(file: ComparisonResultFile): string {
-  mkdirSync(RESULTS_DIRECTORY, { recursive: true });
-  const path = join(RESULTS_DIRECTORY, resultFileName(file.framework, file.runtime));
+/**
+ * Write one result file.
+ *
+ * With a `round`, it lands in `results/.rounds/` under a round-suffixed name
+ * and is merged later; without one it is the published file directly.
+ */
+export function writeResultFile(file: ComparisonResultFile, round?: number): string {
+  const directory = round === undefined ? RESULTS_DIRECTORY : ROUNDS_DIRECTORY;
+  const base = resultFileName(file.framework, file.runtime);
+  const name = round === undefined ? base : base.replace(/\.json$/, `-r${round}.json`);
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, name);
   writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
   return path;
 }

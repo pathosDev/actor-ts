@@ -81,6 +81,20 @@ export interface ArmDefinition {
  */
 const smokeMode = process.env.ACTOR_TS_BENCH_SMOKE === '1';
 
+/**
+ * Which round of an interleaved multi-round run this process is.
+ *
+ * Set by `run-comparison.ts --rounds=N`.  When present the arm writes into
+ * `results/.rounds/` and the driver takes the per-row median afterwards;
+ * when absent it writes the published file directly.
+ */
+const roundNumber = ((): number | undefined => {
+  const raw = process.env.ACTOR_TS_COMPARISON_ROUND;
+  if (raw === undefined) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+})();
+
 /** Per-case tally of what the system under test was seen to do. */
 type CompletionTally = {
   calls: number;
@@ -179,6 +193,6 @@ export async function runArm(arm: ArmDefinition): Promise<void> {
     environment: captureEnvironment(),
     scenarios,
     skippedScenarios: arm.skipped ?? [],
-  });
+  }, roundNumber);
   console.log(`\n  wrote ${path}`);
 }

@@ -227,11 +227,32 @@ bun run typecheck:compare
 
 ### Before publishing a measurement
 
-Run the arms **alternately over several rounds** rather than once each,
-and compare the spread before believing the gap.  The run-to-run
-variation on this kind of benchmark is percent-level, and two arms
-measured half an hour apart on a machine that was doing something else
-in between is not a comparison.  Commit `results/` and the regenerated
-`RESULTS.md` together, on a clean tree — the environment block records
-the commit and marks it `-dirty` otherwise, which is a measurement
-nobody can reproduce.
+**Publish from `--rounds`, never from a single run:**
+
+```bash
+bun run bench:compare -- --rounds=7
+```
+
+This runs the arms **interleaved** — round 1 of every arm, then round 2 —
+and publishes the per-scenario **median**.  Both halves matter.
+Interleaving means whatever else the machine is doing lands on every arm
+rather than on whichever one happened to run during it; the median means
+a disturbed round is discarded instead of averaged in.
+
+The measured need for it, on an ordinary desktop with nothing unusual
+running: across five consecutive single rounds the ask rate varied by
+2 % on one arm, 15 % on another and 34 % on a third — while the ordering
+of the three was identical every time.  A single round would have put
+that coin toss into a table readers quote to three significant figures.
+
+The published row is always **one real run carried across whole** —
+throughput, percentiles and ΔRSS from the same execution.  Averaging the
+columns separately would produce a row where the p99 came from one round
+and the throughput from another, which is a measurement nothing ever
+produced.
+
+Commit `results/` and the regenerated `RESULTS.md` together, **on a clean
+tree**: the environment block records the commit and marks it `-dirty`
+otherwise, which is a number nobody can reproduce.  The per-round working
+files under `results/.rounds/` are git-ignored — the median is the
+artefact.

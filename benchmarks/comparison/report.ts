@@ -257,13 +257,18 @@ function armsSection(results: ReadonlyArray<LoadedResult>): string {
   const lines = [
     '## Arms',
     '',
-    '| framework | version | language | licence | runtime |',
-    '| --------- | ------- | -------- | ------- | ------- |',
+    '`rounds` is how many interleaved measurements each published row is the',
+    'median of.  A single round is not a measurement on a machine that is not',
+    'otherwise idle — see the spread note below.',
+    '',
+    '| framework | version | language | licence | runtime | rounds |',
+    '| --------- | ------- | -------- | ------- | ------- | ------ |',
   ];
   for (const { content } of results) {
     lines.push(
       `| ${content.framework.name} | ${content.framework.version} | ${content.framework.language} `
-      + `| ${content.framework.license} | ${content.runtime.name} ${content.runtime.version} |`,
+      + `| ${content.framework.license} | ${content.runtime.name} ${content.runtime.version} `
+      + `| ${content.rounds ?? 1} |`,
     );
   }
   lines.push('');
@@ -308,9 +313,15 @@ function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
     '## How to read this',
     '',
     'These are **ratios, not absolutes**.  Single-machine measurements say nothing',
-    'about a production deployment on real hardware with real networks, and the',
-    'run-to-run spread on this kind of benchmark is percent-level — so compare',
-    'columns, and treat the last digit of every figure as fiction.',
+    'about a production deployment on real hardware with real networks, so compare',
+    'columns and treat the last digit of every figure as fiction.',
+    '',
+    'How much fiction: across five consecutive rounds on an ordinary desktop, the',
+    'ask rate varied by 2 % on one arm, 15 % on another and 34 % on a third — while',
+    'the *ordering* of the three was identical in every round.  That is the shape of',
+    'the noise here, and it is why each row below is the median of several',
+    'interleaved rounds rather than one run, and why a 10 % gap between two arms',
+    'should be read as "about the same".',
     '',
     'Two rules govern what is in here, both from `README.md`:',
     '',

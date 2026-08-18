@@ -92,3 +92,8 @@ graphify-out/cost.json
 graphify-out/.graphify_labels.json
 graphify-out/.graphify_python
 graphify-out/.graphify_root
+
+# Per-round working files from `bun run bench:compare -- --rounds=N`.  The
+# published artefact is the median in `results/*.json`; committing every
+# round would bury it.
+benchmarks/comparison/results/.rounds/
