@@ -14,6 +14,7 @@
 import type {
   WorkerBackend,
   WorkerCloseEvent,
+  WorkerErrorEvent,
   WorkerEventMap,
   WorkerLike,
   WorkerMessageEvent,
@@ -30,7 +31,21 @@ export class FakeWorker implements WorkerLike {
   private readonly messageListeners = new Set<(e: WorkerMessageEvent) => void>();
   /** Pending close-listeners. */
   private readonly closeListeners = new Set<(e: WorkerCloseEvent) => void>();
-  /** Whether `terminate()` has been called. */
+  /**
+   * Pending error-listeners.  Before `WorkerEventMap` had an `error` member,
+   * `addEventListener` here ended in an `else if` with no `else`, so an
+   * `'error'` subscription was silently dropped and no test could have observed
+   * one (#700).
+   */
+  private readonly errorListeners = new Set<(e: WorkerErrorEvent) => void>();
+  /**
+   * Whether the thread is actually gone — set when `terminate()`'s promise
+   * resolves, not when it is called.
+   *
+   * That distinction is the point: a synchronous flag cannot tell an awaited
+   * `terminate()` from a fire-and-forget one, which is exactly what #735 is
+   * about.  A caller that drops the promise sees `false` here.
+   */
   terminated = false;
   /** Label for diagnostics. */
   readonly name: string;
@@ -47,6 +62,8 @@ export class FakeWorker implements WorkerLike {
       this.messageListeners.add(handler as (e: WorkerMessageEvent) => void);
     } else if (event === 'close') {
       this.closeListeners.add(handler as (e: WorkerCloseEvent) => void);
+    } else if (event === 'error') {
+      this.errorListeners.add(handler as (e: WorkerErrorEvent) => void);
     }
   }
 
@@ -58,14 +75,31 @@ export class FakeWorker implements WorkerLike {
       this.messageListeners.delete(handler as (e: WorkerMessageEvent) => void);
     } else if (event === 'close') {
       this.closeListeners.delete(handler as (e: WorkerCloseEvent) => void);
+    } else if (event === 'error') {
+      this.errorListeners.delete(handler as (e: WorkerErrorEvent) => void);
     }
   }
 
-  terminate(): void {
-    this.terminated = true;
-    // Synthesise a clean exit so any restartHandler attached via
-    // WorkerCluster.attachRestartHandler sees `code === 0`.
-    for (const h of this.closeListeners) h({ code: 0 });
+  /**
+   * Resolve on a macrotask, and only then report the thread as gone — the real
+   * adapters wait for a runtime signal (Node's `exit`, Bun's `close`) or a
+   * bounded timeout, so a fake that settled synchronously would let a
+   * fire-and-forget teardown pass.
+   */
+  terminate(): Promise<void> {
+    // The macrotask hop IS the assertion this fixture exists to make: a caller
+    // that drops the promise is observably distinguishable from one that awaits
+    // it only if the flag is set across a turn boundary.  Zero delay, so it
+    // costs a turn and not a wait.
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        this.terminated = true;
+        // Synthesise a clean exit so any handler attached via
+        // WorkerCluster.attachFailureHandlers sees `code === 0`.
+        for (const h of this.closeListeners) h({ code: 0 });
+        resolve();
+      }, 0);
+    });
   }
 
   /* -------------------- Test helpers (not on WorkerLike) -------------- */
@@ -78,6 +112,24 @@ export class FakeWorker implements WorkerLike {
   /** Simulate an abnormal exit — like a crash with non-zero code. */
   simulateCrash(code = 1): void {
     for (const h of this.closeListeners) h({ code });
+  }
+
+  /**
+   * Simulate an uncaught throw inside the worker.  Fires only the `error`
+   * listeners; {@link simulateUncaughtThrow} covers the runtimes that follow it
+   * with a `close`.
+   */
+  simulateError(message = 'worker boom'): void {
+    for (const h of this.errorListeners) h({ message, error: new Error(message) });
+  }
+
+  /**
+   * The full Node/Bun sequence for one uncaught throw: `error` and *then* an
+   * abnormal `close`.  Exactly one respawn must come out of it.
+   */
+  simulateUncaughtThrow(message = 'worker boom', code = 1): void {
+    this.simulateError(message);
+    this.simulateCrash(code);
   }
 
   /** Drain `posted` and return it. */

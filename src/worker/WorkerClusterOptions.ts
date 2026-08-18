@@ -1,3 +1,4 @@
+import type { NodeAddress } from '../cluster/NodeAddress.js';
 import { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
@@ -5,6 +6,52 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
+
+/** `ActorSystem` name each worker hosts when nothing overrides it. */
+export const DEFAULT_WORKER_SYSTEM_NAME = 'worker-cluster';
+/** Hostname component of each worker's {@link NodeAddress}. */
+export const DEFAULT_WORKER_HOSTNAME = 'worker';
+/** Port of the first worker; each subsequent slot increments from here. */
+export const DEFAULT_WORKER_BASE_PORT = 1;
+/** How long a worker gets to complete its hello/init/ready handshake. */
+export const DEFAULT_WORKER_READY_TIMEOUT_MS = 10_000;
+/** Restart crashed workers, leave clean exits alone. */
+export const DEFAULT_WORKER_RESTART_POLICY: RestartPolicy = 'on-failure';
+
+/** First respawn delay; doubles per attempt up to {@link DEFAULT_RESTART_MAX_BACKOFF_MS}. */
+export const DEFAULT_RESTART_MIN_BACKOFF_MS = 200;
+/** Ceiling for the respawn delay. */
+export const DEFAULT_RESTART_MAX_BACKOFF_MS = 10_000;
+/** ± jitter fraction on each respawn delay, so sibling slots do not synchronise. */
+export const DEFAULT_RESTART_RANDOM_FACTOR = 0.2;
+/**
+ * Restarts granted per slot inside {@link DEFAULT_RESTART_WINDOW_MS} before it
+ * is retired.  Mirrors `defaultStrategy`'s ten-per-minute allowance in
+ * `src/Supervision.ts` — a worker slot and a supervised child fail the same
+ * way, so there is no reason for the two budgets to disagree.
+ */
+export const DEFAULT_MAX_RESTARTS = 10;
+/** Sliding window the restart budget counts over. */
+export const DEFAULT_RESTART_WINDOW_MS = 60_000;
+
+/**
+ * What a retired slot reports through
+ * {@link WorkerClusterOptionsType.onWorkerPermanentlyDown}.
+ *
+ * `src/worker/` has no logger of any kind, so before this existed a crash loop
+ * was completely silent from the framework's side and its end was invisible
+ * (#734).  This callback is the only diagnostic the mesh can offer.
+ */
+export type WorkerPermanentlyDownInfo = {
+  /** Slot index — stable across restarts, and what fixes the worker's port. */
+  readonly index: number;
+  /** Address the slot occupied; no worker answers on it any more. */
+  readonly address: NodeAddress;
+  /** Restarts that were granted before the budget refused one. */
+  readonly restarts: number;
+  /** The failure that spent the last of the budget, where the runtime gave one. */
+  readonly error?: unknown;
+};
 
 /** Plain options-object shape accepted by {@link WorkerCluster.spawn}. */
 export type WorkerClusterOptionsType = {
@@ -16,6 +63,12 @@ export type WorkerClusterOptionsType = {
   readonly initData?: unknown;
   readonly restartPolicy?: RestartPolicy;
   readonly readyTimeoutMs?: number;
+  readonly restartMinBackoffMs?: number;
+  readonly restartMaxBackoffMs?: number;
+  readonly restartRandomFactor?: number;
+  readonly maxRestarts?: number;
+  readonly restartWindowMs?: number;
+  readonly onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
   readonly backend?: WorkerBackend;
 };
 
@@ -51,6 +104,50 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /** ActorSystem name each worker hosts.  Default: `'worker-cluster'`. */
   withSystemName(systemName: string): this {
     return this.set('systemName', systemName);
+  }
+
+  /** Delay before the first respawn of a crashed slot.  Default: 200ms. */
+  withRestartMinBackoffMs(restartMinBackoffMs: number): this {
+    return this.set('restartMinBackoffMs', restartMinBackoffMs);
+  }
+
+  /** Ceiling for the respawn delay, which doubles per attempt.  Default: 10000ms. */
+  withRestartMaxBackoffMs(restartMaxBackoffMs: number): this {
+    return this.set('restartMaxBackoffMs', restartMaxBackoffMs);
+  }
+
+  /** ± jitter fraction applied to each respawn delay, in `[0, 1]`.  Default: 0.2. */
+  withRestartRandomFactor(restartRandomFactor: number): this {
+    return this.set('restartRandomFactor', restartRandomFactor);
+  }
+
+  /**
+   * Restarts granted per slot within {@link withRestartWindowMs} before the
+   * slot is retired for good.  `-1` restores the pre-budget behaviour of
+   * restarting forever.  Default: 10.
+   */
+  withMaxRestarts(maxRestarts: number): this {
+    return this.set('maxRestarts', maxRestarts);
+  }
+
+  /**
+   * Sliding window the restart budget counts over; `0` means the counts are
+   * never reset, so a slot gets {@link withMaxRestarts} restarts for the whole
+   * process lifetime.  Default: 60000ms.
+   */
+  withRestartWindowMs(restartWindowMs: number): this {
+    return this.set('restartWindowMs', restartWindowMs);
+  }
+
+  /**
+   * Called once per slot when its restart budget is spent and no further
+   * worker will be started for it.  Not expressible in a config file, for the
+   * same reason as `backend`.  Default: a `console.error` line.
+   */
+  withOnWorkerPermanentlyDown(
+    onWorkerPermanentlyDown: (info: WorkerPermanentlyDownInfo) => void,
+  ): this {
+    return this.set('onWorkerPermanentlyDown', onWorkerPermanentlyDown);
   }
 
   /** Hostname component of each worker's {@link NodeAddress}.  Default: `'worker'`. */
@@ -108,13 +205,35 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     // used to fall through the `match` in WorkerCluster and silently mean
     // "never restart".
     this.oneOf('restartPolicy', ['always', 'on-failure', 'never']);
+    // A zero floor is legitimate — it means "respawn on the next turn" — so
+    // these are non-negative rather than positive.
+    this.nonNegativeNumber('restartMinBackoffMs');
+    this.nonNegativeNumber('restartMaxBackoffMs');
+    this.numberInRange('restartRandomFactor', 0, 1);
+    this.nonNegativeNumber('restartWindowMs');
+    // `-1` is the documented "restart forever" escape hatch, which is what
+    // `RestartBudget` reads a negative allowance as; anything below that is a
+    // typo, and a fraction would silently never be reached.
+    if (s.maxRestarts !== undefined && (!Number.isInteger(s.maxRestarts) || s.maxRestarts < -1)) {
+      this.fail('maxRestarts', 'must be an integer >= -1 (-1 = unlimited)', s.maxRestarts);
+    }
+    if (s.restartMinBackoffMs !== undefined && s.restartMaxBackoffMs !== undefined
+      && s.restartMaxBackoffMs < s.restartMinBackoffMs) {
+      this.fail(
+        'restartMaxBackoffMs',
+        `must be >= restartMinBackoffMs (${s.restartMinBackoffMs})`,
+        s.restartMaxBackoffMs,
+      );
+    }
   }
 }
 
 /**
- * The slice of worker-cluster settings HOCON can supply.  Everything else
- * is either per-call identity (`bootstrap`, `initData`) or an object a
- * config file cannot express (`backend`).
+ * The slice of worker-cluster settings HOCON can supply.  The rest is either
+ * per-call identity (`bootstrap`, `initData`), something a config file cannot
+ * express (`backend`, `onWorkerPermanentlyDown`), or still code-only —
+ * `systemName` / `hostname` / `basePort` / `readyTimeoutMs` and the five
+ * restart-budget knobs, whose config leaves are #883's scope.
  */
 export type WorkerClusterConfigDefaults = Pick<
   WorkerClusterOptionsType,
