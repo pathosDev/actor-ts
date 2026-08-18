@@ -41,6 +41,23 @@ export type WorkloadCase = {
   readonly iterations: number;
   /** Batch size, so throughput reads per-operation rather than per-batch. */
   readonly opsPerIteration: number;
+  /**
+   * Unmeasured iterations run first, stated explicitly rather than left to the
+   * harness default.
+   *
+   * The default is `min(100, iterations / 10)`, which for the batched cases
+   * works out at **three** warmup iterations for `tell batch=10k` and **two**
+   * for ping-pong.  That is fine for a JavaScript arm and actively unfair to a
+   * JVM one, which needs thousands of executions before its optimising
+   * compiler produces steady-state code.  Measured: raising warmup from 100 to
+   * 3 000 moved the JVM arm's ask rate by 33 % and its tell rate by 11 %,
+   * while the JavaScript arms barely moved.
+   *
+   * So warmup is part of the workload definition, identical across arms and
+   * generous enough that no runtime is measured mid-compilation.  It costs a
+   * few seconds per arm.
+   */
+  readonly warmupIterations: number;
 };
 
 /**
@@ -56,25 +73,25 @@ export const WORKLOAD: ReadonlyArray<WorkloadCase> = [
   // bookkeeping would be a visible share of it — and because the
   // cross-language arms have to route spawning through an actor anyway,
   // where the batch amortises the one round trip that costs.
-  { scenario: 'spawn',           case: 'batch=100',   unit: 'actor',    iterations: 100,   opsPerIteration: 100 },
+  { scenario: 'spawn',           case: 'batch=100',   unit: 'actor',    iterations: 100,   opsPerIteration: 100,     warmupIterations: 50 },
 
   // Two batch sizes, because the interesting difference between frameworks
   // here is how throughput *scales* with queue depth, not its value at one
   // depth.  A framework that wins at 1k and loses at 10k is telling you
   // something about its scheduler that neither row says alone.
-  { scenario: 'tell-throughput', case: 'batch=1k',    unit: 'msg',      iterations: 100,   opsPerIteration: 1_000 },
-  { scenario: 'tell-throughput', case: 'batch=10k',   unit: 'msg',      iterations: 30,    opsPerIteration: 10_000 },
+  { scenario: 'tell-throughput', case: 'batch=1k',    unit: 'msg',      iterations: 100,   opsPerIteration: 1_000,   warmupIterations: 50 },
+  { scenario: 'tell-throughput', case: 'batch=10k',   unit: 'msg',      iterations: 30,    opsPerIteration: 10_000,  warmupIterations: 15 },
 
   // Sequential and depth-1 on purpose: this row is round-trip *latency*, so
   // p50/p99 are the point and throughput is a derived convenience.  A
   // pipelined variant would answer a different question and is deliberately
   // not folded in here.
-  { scenario: 'ask-round-trip',  case: 'sequential',  unit: 'ask',      iterations: 5_000, opsPerIteration: 1 },
+  { scenario: 'ask-round-trip',  case: 'sequential',  unit: 'ask',      iterations: 5_000, opsPerIteration: 1,       warmupIterations: 2_000 },
 
   // Two actors volleying: the one scenario where the framework's scheduler
   // is the entire subject, with no user code, no payload and no allocation
   // worth speaking of between the hops.
-  { scenario: 'ping-pong',       case: 'exchanges=10k', unit: 'exchange', iterations: 20,  opsPerIteration: 10_000 },
+  { scenario: 'ping-pong',       case: 'exchanges=10k', unit: 'exchange', iterations: 20,  opsPerIteration: 10_000, warmupIterations: 10 },
 ];
 
 /**

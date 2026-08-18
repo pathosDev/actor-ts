@@ -34,30 +34,112 @@ import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi } from '../lib/stats.js';
+import { captureEnvironment } from './js/environment.js';
 import { mergeRounds } from './js/merge-rounds.js';
 import { ROUNDS_DIRECTORY } from './js/result-file.js';
 
-type ComparisonArm = {
-  /** Published framework name — also selects the arm on the command line. */
+/** An arm written in TypeScript, run through the shared harness on Bun. */
+type JavaScriptArm = {
+  readonly kind: 'javascript';
   readonly name: string;
   /** File under `js/`, run in its own Bun subprocess. */
   readonly file: string;
 };
 
 /**
- * Every JavaScript arm, in publication order.
+ * An arm on another virtual machine, driven by its own build tool.
+ *
+ * It mirrors the measurement protocol by hand and writes the same result
+ * schema — see `report.ts`, which validates every one of the workload
+ * constants precisely because these cannot import them.
+ */
+type ExternalArm = {
+  readonly kind: 'external';
+  readonly name: string;
+  /** Directory to run in, relative to this file. */
+  readonly directory: string;
+  /** Script to run, relative to `directory` — resolved to an absolute path. */
+  readonly executable: string;
+  readonly args: ReadonlyArray<string>;
+  /** Why this arm exists as a separate toolchain, for `--list`. */
+  readonly toolchain: string;
+};
+
+type ComparisonArm = JavaScriptArm | ExternalArm;
+
+/**
+ * Every arm, in publication order.
  *
  * The floor comes last on purpose: read as a table, "what it costs against no
  * framework at all" is the closing line rather than the opening one.
  */
 const ARMS: ReadonlyArray<ComparisonArm> = [
-  { name: 'actor-ts', file: 'actor-ts.ts' },
-  { name: 'nact', file: 'nact.ts' },
-  { name: 'xstate', file: 'xstate.ts' },
-  { name: 'vanilla', file: 'vanilla.ts' },
+  { kind: 'javascript', name: 'actor-ts', file: 'actor-ts.ts' },
+  { kind: 'javascript', name: 'nact', file: 'nact.ts' },
+  { kind: 'javascript', name: 'xstate', file: 'xstate.ts' },
+  {
+    kind: 'external',
+    name: 'akka',
+    directory: 'akka',
+    executable: mavenWrapper(),
+    args: ['-q', '-B', 'compile', 'exec:java'],
+    toolchain: 'JDK 21 + Maven wrapper',
+  },
+  { kind: 'javascript', name: 'vanilla', file: 'vanilla.ts' },
 ];
 
-const JAVASCRIPT_ARM_DIRECTORY = resolve(import.meta.dirname ?? '.', 'js');
+/**
+ * The Maven wrapper's file name differs by platform.  It is always invoked
+ * through its absolute path: a bare name is not on the PATH, and cmd.exe does
+ * not resolve one against the child's working directory either — which fails
+ * with "is either misspelled or could not be found", a message that reads like
+ * a missing toolchain rather than a lookup rule.
+ */
+function mavenWrapper(): string {
+  return process.platform === 'win32' ? 'mvnw.cmd' : 'mvnw';
+}
+
+const COMPARISON_ROOT = resolve(import.meta.dirname ?? '.', '.');
+const JAVASCRIPT_ARM_DIRECTORY = join(COMPARISON_ROOT, 'js');
+
+/**
+ * The environment block, passed to external arms rather than re-derived there.
+ *
+ * Every arm of a run executes on the same machine in the same session, and a
+ * JVM has no portable way to read a CPU model at all — so two arms describing
+ * one machine differently would be a reporting bug with no upside.
+ */
+function environmentVariables(): Record<string, string> {
+  const environment = captureEnvironment();
+  return {
+    ACTOR_TS_COMPARISON_CPU: environment.cpuModel,
+    ACTOR_TS_COMPARISON_CORES: String(environment.logicalCores),
+    ACTOR_TS_COMPARISON_MEMORY_BYTES: String(environment.memoryBytes),
+    ACTOR_TS_COMPARISON_OS: environment.os,
+    ACTOR_TS_COMPARISON_DATE: environment.date,
+    ACTOR_TS_COMPARISON_VERSION: environment.actorTsVersion,
+    ACTOR_TS_COMPARISON_COMMIT: environment.actorTsCommit,
+  };
+}
+
+function runArm(arm: ComparisonArm, environment: NodeJS.ProcessEnv): number | null {
+  if (arm.kind === 'javascript') {
+    return spawnSync('bun', ['run', join(JAVASCRIPT_ARM_DIRECTORY, arm.file)], {
+      stdio: 'inherit',
+      env: environment,
+    }).status;
+  }
+
+  const directory = join(COMPARISON_ROOT, arm.directory);
+  return spawnSync(join(directory, arm.executable), [...arm.args], {
+    stdio: 'inherit',
+    cwd: directory,
+    env: environment,
+    // A build wrapper is a script rather than an executable, so it needs a
+    // shell to run at all.
+    shell: true,
+  }).status;
+}
 
 function run(): void {
   const args = process.argv.slice(2);
@@ -83,7 +165,11 @@ function run(): void {
   }
 
   if (listOnly) {
-    for (const arm of selected) console.log(`${arm.name}  js/${arm.file}`);
+    for (const arm of selected) {
+      console.log(arm.kind === 'javascript'
+        ? `${arm.name}  js/${arm.file}`
+        : `${arm.name}  ${arm.directory}/  (${arm.toolchain})`);
+    }
     return;
   }
 
@@ -106,25 +192,23 @@ function run(): void {
 
   const start = Date.now();
   const failed: string[] = [];
+  const sharedEnvironment = { ...process.env, ...environmentVariables() };
 
   // Rounds outside, arms inside.  The other order would measure each arm
   // under whatever the machine happened to be doing during its block.
   for (let round = 1; round <= rounds; round++) {
     for (const arm of selected) {
       const roundLabel = rounds > 1 ? ansi.gray(` (round ${round}/${rounds})`) : '';
-      console.log('\n' + ansi.cyan('▸ ') + ansi.bold(arm.name) + ansi.gray(' / js/') + arm.file + roundLabel);
-      const result = spawnSync(
-        'bun',
-        ['run', join(JAVASCRIPT_ARM_DIRECTORY, arm.file)],
-        {
-          stdio: 'inherit',
-          env: rounds > 1
-            ? { ...process.env, ACTOR_TS_COMPARISON_ROUND: String(round) }
-            : process.env,
-        },
-      );
-      if (result.status !== 0) {
-        console.error(ansi.red(`  [exit=${result.status}] ${arm.name}`));
+      const where = arm.kind === 'javascript' ? `js/${arm.file}` : `${arm.directory}/`;
+      console.log('\n' + ansi.cyan('▸ ') + ansi.bold(arm.name) + ansi.gray(' / ') + where + roundLabel);
+
+      const environment = rounds > 1
+        ? { ...sharedEnvironment, ACTOR_TS_COMPARISON_ROUND: String(round) }
+        : sharedEnvironment;
+
+      const status = runArm(arm, environment);
+      if (status !== 0) {
+        console.error(ansi.red(`  [exit=${status}] ${arm.name}`));
         if (!failed.includes(arm.name)) failed.push(arm.name);
       }
     }

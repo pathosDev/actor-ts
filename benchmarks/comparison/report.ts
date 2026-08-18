@@ -123,6 +123,12 @@ function validate(results: ReadonlyArray<LoadedResult>): string[] {
           + `${canonical.opsPerIteration}. The arms are not running the same benchmark.`,
         );
       }
+      if (canonical.warmupIterations !== scenario.warmupIterations) {
+        problems.push(
+          `${label}: warmupIterations ${scenario.warmupIterations}, but js/workload.ts says `
+          + `${canonical.warmupIterations}. An arm measured mid-compilation is not comparable.`,
+        );
+      }
       if (canonical.iterations !== scenario.iterations) {
         problems.push(
           `${label}: iterations ${scenario.iterations}, but js/workload.ts says `

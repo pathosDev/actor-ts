@@ -119,6 +119,7 @@ function toScenarioResult(
     unit: result.unit,
     iterations: result.iterations,
     opsPerIteration: result.opsPerIteration,
+    warmupIterations: armCase.workload.warmupIterations,
     totalNs: result.totalNs,
     opsPerSecond: result.opsPerSec,
     perOperationNs: result.perOpNs,
@@ -151,6 +152,10 @@ export async function runArm(arm: ArmDefinition): Promise<void> {
     unit: armCase.workload.unit,
     iterations: armCase.workload.iterations,
     opsPerIteration: armCase.workload.opsPerIteration,
+    // Explicit, from the workload — the harness default is far too small for a
+    // JIT-compiled runtime, and warmup has to be identical across arms to
+    // compare them at all.  See the note on `warmupIterations` in workload.ts.
+    warmupIterations: armCase.workload.warmupIterations,
     setup: armCase.setup?.bind(armCase),
     teardown: armCase.teardown?.bind(armCase),
     run: async (): Promise<void> => {

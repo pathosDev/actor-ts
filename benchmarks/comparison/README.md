@@ -138,6 +138,7 @@ not a finding.
 | **actor-ts** | this project | the reference implementation of all four scenarios |
 | **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
+| **Akka** (JVM) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
 | **vanilla** | no framework at all | the floor, so every row reads as "what the abstraction costs" |
 
 Each arm's own header comment records where its framework's semantics
@@ -147,6 +148,37 @@ most: XState processes events synchronously and has no request/response
 primitive, so its `ask` row is `send` + `waitFor` on a snapshot; nact
 creates actors synchronously, where actor-ts defers construction to a
 dispatcher turn.
+
+### The JVM arm
+
+`akka/` is a Maven subproject built against the Akka Typed **Java** API, so
+the JDK is the only extra toolchain.  Three things about it are decisions
+rather than defaults:
+
+- **Version 2.8.8, from Maven Central.**  Releases from 2.9 onwards are
+  published only to `repo.akka.io`, which answers **403** to an anonymous
+  request.  A benchmark nobody else can reproduce is not evidence, so this
+  arm stays on the newest publicly resolvable artifact and says so.
+- **BUSL-1.1, not Apache-2.0.**  Akka 2.7 and later restrict production use.
+  Benchmarking falls under the non-production grant, and the licence is
+  carried into every published table next to the number, because a reader
+  comparing frameworks is usually also choosing one.
+- **A hand-mirrored harness, deliberately not JMH.**  JMH is the better
+  microbenchmark tool and measures differently — forked JVMs, blackholes, its
+  own warmup policy.  A comparison whose two sides use different
+  methodologies cannot be read as one table, so this side reproduces the
+  JavaScript protocol exactly instead, down to the percentile rule.  That is
+  also why cross-language rows never share a table with same-runtime ones
+  (fairness rule 7): "the same code ran on both sides" is a claim only the
+  JavaScript arms can make.
+
+**Read its ask row with care.**  Every arm drives the system under test from
+an external caller.  On a JavaScript event loop that is a microtask; on the
+JVM it is a real thread parking and unparking on a `CompletableFuture`, which
+costs tens of microseconds per operation.  So the ask row measures *awaiting
+a reply from outside the actor system*, and that is architecturally more
+expensive on the JVM regardless of the framework.  It is not evidence that
+Akka's messaging is slow — its tell throughput is the highest in the table.
 
 ### Evaluated and rejected: comedy
 
@@ -171,8 +203,12 @@ benchmarks/comparison/
   tsconfig.json       the only config that type-checks this tree
   run-comparison.ts   driver — one framework per subprocess
   report.ts           validates results/ and generates RESULTS.md
+  akka/               the JVM arm — Maven, Akka Typed Java API
+    mvnw, mvnw.cmd    Maven wrapper, `only-script` — no binary jar committed
+    pom.xml           pinned dependency + the reasoning behind the version
+    src/main/java/    harness, JSON writer, actors, entry point
   js/
-    workload.ts       the batch sizes and iteration counts, once
+    workload.ts       the batch sizes, iteration counts and warmup, once
     arm.ts            shared runner + completion accounting
     environment.ts    hardware / runtime / commit capture
     result-file.ts    the on-disk schema

@@ -49,6 +49,8 @@ export type ScenarioResult = {
   readonly unit: string;
   readonly iterations: number;
   readonly opsPerIteration: number;
+  /** Unmeasured iterations run first — published so a row states its own warmup. */
+  readonly warmupIterations: number;
   readonly totalNs: number;
   readonly opsPerSecond: number;
   readonly perOperationNs: number;
