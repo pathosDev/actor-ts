@@ -11,14 +11,18 @@ resolves controls whether the ack fires.
 ## How the ack actually fires
 
 ```
-1. ConsumerController receives a Delivery envelope
-2. Controller checks per-producer dedup state
+1. ConsumerController admits the Delivery envelope
+   → malformed (no replyTo, bad seq, over-long ids) → dead letter, no handler
+2. Controller checks dedup state for (producerId, incarnation)
    → known seq → re-ack only, skip handler
    → new seq  → call handler(body), wait for resolution
-3. Handler resolves → controller sends Ack to msg.replyTo
+3. Handler resolves → controller sends Ack to msg.replyTo,
+                      echoing the delivery's incarnation
    Handler throws  → controller does NOT ack
-4. Producer receives Ack → removes seq from its in-flight buffer
-                          → frees a window slot for the next send
+4. Producer checks the Ack echoes its own incarnation
+   → mismatch → ignored, the retransmit timer stands
+   → match    → removes seq from its in-flight buffer
+                → frees a window slot for the next send
 ```
 
 The handler is the only user-facing knob.  Whatever happens
@@ -123,6 +127,12 @@ Recovery: producer restarts.  Without persistence, msg #5 is
 lost.  With persistence, the message is in the producer's
 unacked-buffer journal; transmits on recovery.
 
+Everything the restarted producer sends *after* that lands normally.  The
+restart mints a new producer incarnation, so the consumer opens a fresh dedup
+window instead of treating the re-used sequence numbers as duplicates it has
+already handled — see *Restart and the producer incarnation* on the
+[ProducerController](/delivery/producer-controller/) page.
+
 ### Consumer crash before processing
 
 ```
@@ -226,6 +236,17 @@ redelivered (duplicate) Ack for the same seq is ignored, so the
 callback never double-fires.  This is the **only** producer-side
 signal that a message landed; without it the send is
 fire-and-forget from your code's point of view.
+
+The signal is only as good as the Ack behind it, which is why the producer
+requires the Ack to echo its own incarnation token before acting on it.
+`producerId` and `seq` are both guessable; the incarnation is not, and it
+leaves the producer only on deliveries it actually sent.  Without that check,
+anything able to address the producer could cancel the retransmit and fire
+`confirm(null)` for a message the consumer had never seen — downgrading the
+stream to at-most-once while reporting success.  Note what the signal still
+does *not* promise: it says the consumer accepted responsibility for the seq,
+so for a redelivery it means the handler ran on an *earlier* attempt, not on
+this one.
 
 ## When NOT to use the controllers
 

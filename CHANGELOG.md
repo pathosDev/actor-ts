@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The documented recipe for routing Terminated into
+  pruneTerminatedSubscriber now widens the match input instead of guarding
+  ahead of the matcher, which makes the arm mandatory at compile time:
+  exhaustive() refuses to compile without it, so omitting it is a build
+  failure rather than a NonExhaustiveError thrown at the first subscriber
+  death, answered by a supervisor restart and a full broker reconnect per
+  death. The arm delegates to a private onTerminated handler, matching the
+  house rule for match arms. Both language pages also gain the caveat that
+  context.watch installs a watcher only for a local ref, so a remote
+  subscriber never produces a Terminated at all, and the wrong subclass
+  count in the rationale is corrected from thirteen to fourteen. (#709).**
+
 - **BREAKING — the receptionist's total cap is now called
   `maxSubscriptionsTotal`** (#1200).  It was enforced as a count of
   key/subscriber *pairs* while being documented as a count of *subscribers* —
@@ -586,6 +598,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **`MAX_DELIVERY_IDENTIFIER_LENGTH` is exported from the `./delivery` entry
+  point, so an application picking its own `producerId` can read the bound
+  the consumer admits rather than discovering it by having deliveries
+  refused (#727).**
+
+  This mirrors `MAX_PERSISTENCE_ID_LENGTH` on the persistence side.
+
+- **A ratchet over the test tree's fixed-delay waits,
+  `tests/unit/ci/SleepRatchet.test.ts`, following the shape
+  `AwaitConditionBudgets.test.ts` established: a repo-wide invariant
+  expressed as a test, so it needs no new tooling and no workflow change and
+  does not wait on the Biome adoption in #417. Three ledgers, each a ceiling
+  that only ever moves down and each with a zero-cost remedy the failure
+  message names: 93 modules that declare their own `sleep` instead of
+  importing the shared one, 35 hand-rolled polling helpers (`waitFor` /
+  `waitUntil` / `awaitConvergence`), and 486 waits that state no reason,
+  counted per module so a failure names the file. It counts more than the
+  greps this migration has been measured with: beside the 479 `await sleep(`
+  sites the tree holds 60 inline `Bun.sleep(20)` and 72 inline `new
+  Promise((r) => setTimeout(r, 20))`, 611 waits in all, so a fifth of the
+  debt was previously invisible. It is deliberately not a ban on waiting,
+  because 57 of those waits are followed by an assertion that something did
+  not happen and an absence cannot be polled for; what it forbids is an
+  unexplained wait, a re-declared `sleep` and a re-invented poll loop. Also
+  removes the one dead `Bun.sleep` shim, in
+  `tests/unit/ActorSelection.test.ts`, which had zero call sites and
+  survived because no tsconfig sets `noUnusedLocals`. (#418).**
 
 - **Email bridge actor** (#1133).  `EmailBridgeActor` turns a mailbox into a
   message source and SMTP into a sink — the ops/alerting bridge that otherwise
@@ -1258,6 +1298,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **Stopping a broker actor while a reconnect attempt was in flight left a
+  fully live broker connection attached to the terminated actor, or an
+  unbounded reconnect loop (#708).**
+
+  Reconnect runs on the system scheduler, detached from the mailbox, and
+  the scheduler settles a one-shot handle before invoking it, so
+  postStop's cancel is a no-op against an attempt that has already begun.
+  That attempt then resumed on a dead actor: on success the base class
+  adopted the connection (state connected, BrokerConnected published,
+  buffer drained, live driver handles nothing could close, because
+  postStop had already cleared the transport gate and deregistered the
+  actor's CoordinatedShutdown service-stop task); on failure it re-armed
+  the backoff timer, and since maxAttempts defaults to Infinity the cycle
+  never ended. The base class now checks liveness at the entry to a
+  connect attempt, again after the teardown that precedes the handshake,
+  and again on both exits from connectImplementation, tearing the escaped
+  connection down instead of adopting it. handleConnectionLost and the
+  reconnect scheduler refuse to act on a stopped actor. Affects all
+  fourteen BrokerActor subclasses; MqttActor exhibited the full shape
+  because its entire handshake sits inside the awaited promise.
+
+- **The four exact wait counts in the testing/diagnosing-flakes page had all
+  drifted since they were taken on 2026-08-16 — the page's own framing says
+  an exact figure is meant to be visibly stale the moment it stops matching,
+  and it was (#418).**
+
+  Both language versions now carry the re-measured figures and defer to
+  the gate, which cannot go stale without going red, and the
+  wait-with-a-reason rule in testing/overview says that it is checked
+  rather than merely asked for. Two pre-existing waits that the widened
+  pattern made visible were given their reason instead of a ledger row, in
+  `tests/integration/lib/ControlRoutes.ts` and
+  `tests/util/AsyncAssertions.test.ts`.
+
+- **A ShardRegion now addresses the coordinator by the leader's system name
+  rather than its own (#712).**
+
+  An actor path carries the system it belongs to, so guessing it locally
+  only worked when every member shared one name; where they differed the
+  frame missed the leader's registered path and reached the coordinator
+  through generic path resolution, which delivers with no sender at all.
+  Invisible before because that fallback happened to resolve to the same
+  actor.
 
 - **`bun run smoke` exits again on Windows** (#1196).  The Deno arm ran every
   case, printed both green summary lines, and then hung forever — no exit
@@ -2358,6 +2442,126 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING — A `ProducerController` now stamps a crypto-random
+  per-incarnation token on every `Delivery`, and the `ConsumerController`
+  keys its deduplication state on `(producerId, incarnation)` rather than on
+  `producerId` alone (#726).**
+
+  Before this, a restarted or re-created producer numbered from 1 again
+  while its configured `producerId` survived unchanged, so the consumer
+  matched the whole post-restart prefix against a deduplication window
+  that was still live, absorbed those messages as duplicates before the
+  handler ran, answered each with an ordinary acknowledgment, and drove
+  the caller's `confirm(null)` — reporting messages as successfully
+  delivered that the handler never saw. It needed no crash and no
+  attacker: two sequential `ReliableDelivery.producer(...)` calls with the
+  same `producerId` against one surviving consumer reproduced it. A new
+  incarnation replaces the deduplication entry for its `producerId` rather
+  than adding one, so the map stays at one entry per producer; the cost is
+  that a straggling delivery from the outgoing incarnation resets the
+  window again, so a few already-handled sequence numbers may run twice
+  around a changeover — an at-least-once duplicate, which the protocol
+  declares tolerable, where absorbing the whole prefix was not bounded at
+  all.
+
+  *Migration:* `Delivery` gains a required `incarnation` field: code that
+  builds a `Delivery` envelope by hand (a relay that reconstructs rather
+  than forwards, a hand-rolled sender) must supply it.
+
+- **BREAKING — `ProducerController.onAcknowledgment` now requires the
+  acknowledgment to echo the producer's own incarnation token before it acts
+  on it (#730).**
+
+  It previously authenticated an acknowledgment by comparing the payload's
+  own `producerId` against its id, and both that and `seq` are enumerable
+  — so anything able to address the producer could cancel the retransmit
+  and fire the caller's `confirm(null)`, silently downgrading the stream
+  from at-least-once to at-most-once while reporting success. The check is
+  deliberately not on the envelope sender, which is `None` for every
+  acknowledgment the producer will ever see because both the consumer and
+  the cluster's envelope dispatch tell with a single argument, and not
+  against `options.consumer`, which the documented relay topology makes a
+  forwarder rather than the acker; with no channel identity available the
+  identity has to travel in the message. It also rejects a straggling
+  acknowledgment from the previous incarnation of the same `producerId`,
+  which would otherwise settle whatever the new incarnation had parked
+  under that sequence number.
+
+  *Migration:* `Acknowledgment` gains a required `incarnation` field: a
+  test double or hand-rolled consumer that acknowledges manually must
+  carry it through from the `Delivery` it is answering, or the producer
+  will ignore the acknowledgment and keep retransmitting.
+
+- **The `ConsumerController` now admits a `Delivery` envelope before using
+  any of its fields, and dead-letters one that fails: a missing or non-ref
+  `replyTo`, a `seq` that is not a positive safe integer, or an empty or
+  over-long `producerId` or `incarnation`. Every one of those fields is
+  declared non-optional on the public type, which is exactly why nothing
+  guarded them — a wire body that omits `replyTo` satisfies the type at
+  compile time and dereferences to `undefined` at run time, and because the
+  handling runs on a promise detached from `onReceive` that `TypeError`
+  settled as a rejection nothing was watching and exited the process on Bun,
+  Node and Deno alike. A refusal is a dead letter rather than an actor fault
+  on purpose: faulting would restart the consumer, and the deduplication map
+  is a field initialiser, so one malformed message would cost duplicate
+  suppression for every healthy producer on the node and then loop as the
+  retransmit arrived. Sending the acknowledgment is guarded for the same
+  reason — an acknowledgment is best-effort by design, so losing one costs a
+  retransmit, which is the mechanism the protocol already has. The
+  producer-side options validator now enforces the same identifier bound the
+  consumer admits, so a `producerId` the consumer would refuse fails at
+  construction instead of silently dead-lettering every delivery. (#727).**
+
+- **A broker connection could outlive the actor that owned it, with no
+  reference through which anything could close it, and — for MQTT — re-issue
+  every remembered SUBSCRIBE, so a terminated actor stayed a fully
+  subscribed consumer feeding dead letters. The failure path was worse: a
+  dead actor kept opening real connections to the broker on every backoff
+  window until the whole ActorSystem terminated. Both are now closed by an
+  explicit liveness check on every path out of a connect attempt. (#708).**
+
+- **A ShardCoordinator now derives a region's identity from the
+  authenticated connection instead of the payload (#712).**
+
+  Every coordinator-inbound sharding kind is a claim about the sender's
+  own node, and the coordinator read all of it out of the frame: its only
+  gate was "am I the leader (and do I hold the lease)", never "may this
+  sender speak for that region". One well-formed sharding.Register naming
+  another node's address seized every shard of a type and redirected
+  honest regions' entity traffic to an attacker-chosen host; one
+  sharding.RegionTerminated evicted a region, and because that path sends
+  no HandOff the victim kept its shard actors and entities running,
+  leaving two owners for one live shard — the same entity id instantiated
+  twice and, for a persistent entity, two writers on one persistenceId.
+  The coordinator now claims its own well-known path on the envelope
+  router, requires each frame to arrive inside the
+  AuthenticatedShardingMessage wrapper that a JSON wire body cannot mint
+  (which also covers the non-canonical-to bypass, where a trailing slash
+  misses the handler lookup and the actor tree delivers unwrapped), and
+  requires the address the payload names to be the peer's own. Under mTLS
+  the peer is certificate-backed, so the comparison is authentication; on
+  a plaintext cluster it stops a member speaking for another member.
+  Mirrors the region-side origin gate from #584, which does not blunt this
+  on its own because the attacker never sends a ShardHome — it poisons the
+  coordinator's map and the genuine coordinator emits the redirect itself.
+  A side effect: a numShards mismatch can no longer park another node's
+  region key in refusedRegions and mute its GetShardHome answers for the
+  rest of the leader term.
+
+- **A region's hostedShards claim is validated against the shard range and
+  capped (#712).**
+
+  It was the only caller-sized input the coordinator had — onRegister
+  wrote an allocation entry per array element with no range check and no
+  length cap, into state that is broadcast to every region and persisted
+  to coordinatorStateStore, so one frame could plant millions of
+  out-of-range ids and the growth survived restarts. Entries outside
+  0..numShards-1 are dropped, duplicates collapse, and the accepted set
+  cannot exceed numShards. This is the bound-and-cap half of #948's third
+  proposal; the live-owner conflict check, the previous-owner
+  RegionInfo.shards cleanup and the region-side give-up-when-downed remain
+  open there.
 
 - **A `ShardRegion` now honours a coordinator directive only when the
   authenticated peer that sent it is the node hosting the coordinator

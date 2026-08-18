@@ -9,7 +9,6 @@ import { TestKit } from '../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (n = 'sel'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())

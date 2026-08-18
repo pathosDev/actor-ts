@@ -8,7 +8,10 @@ It:
 
 - Receives `Delivery<T>` envelopes from one or more
   `ProducerController`s.
-- Dedups duplicates (same `producerId` + `seq`).
+- Dedups duplicates (same `producerId` + producer incarnation + `seq`).
+- Refuses a malformed envelope — one with no `replyTo`, a `seq` that is not a
+  positive safe integer, or an empty / over-long identifier — as a dead letter,
+  without running the handler and without acking.
 - Invokes a user **handler function** with each message body.
 - Acks back to the producer **automatically** after the handler
   resolves; if the handler throws, no ack — the producer retransmits.
@@ -50,14 +53,21 @@ type ConsumerControllerOptionsType<T> = {
 
 The only setting is the handler.  Per-producer dedup state is
 managed internally — you don't configure a buffer size or
-consumer ID.
+consumer ID.  The bounds on what an incoming envelope may contain are
+deliberately not configurable either: they exist to bound wire input, and a
+limit the sender could raise is not a limit.
 
 ## Handler contract
 
 The controller calls `handler(body)` once per *new* `(producerId,
-seq)` pair.  After the handler resolves, the controller sends an
+incarnation, seq)` triple.  After the handler resolves, the controller sends an
 Ack back to the producer (via `Delivery.replyTo`) and the producer
 releases its in-flight slot.
+
+The incarnation is what keeps a *restarted* producer out of the dedup window:
+it re-uses its sequence numbers but not its incarnation, so its messages are
+new rather than duplicates.  See *Restart and the producer incarnation* on the
+[ProducerController](/delivery/producer-controller/) page.
 
 ```ts
 new ConsumerController<OrderEvent>({
@@ -88,11 +98,11 @@ explicit nack message.
 
 ### Duplicate handling is automatic
 
-When the same `(producerId, seq)` arrives again (e.g. the producer
+When the same `(producerId, incarnation, seq)` arrives again (e.g. the producer
 retransmitted before our Ack reached it), the controller skips the
 handler and re-sends the Ack.  No application code needed — the
 controller tracks `contiguous` + out-of-order seqs per producer
-internally.
+incarnation internally.
 
 For **business-level** idempotency (e.g. "don't charge a credit
 card twice even across consumer restarts"), persist your own
@@ -152,9 +162,14 @@ const p2 = system.spawnAnonymous(() =>
 Each producer maintains its own seq.  The consumer dedups
 **per producer** automatically — it keeps a separate
 `(contiguous, above)` dedup state per `producerId`, so two
-producers' seq spaces don't collide.
+producers' seq spaces don't collide.  The entry also records which
+*incarnation* of that `producerId` the counters describe, and a delivery from a
+new incarnation replaces it rather than adding a second entry.  That keeps the
+map at one entry per producer, at the cost of one more possible duplicate: a
+straggling delivery from the outgoing incarnation resets the window again, so a
+handful of already-handled seqs may run twice around the changeover.
 
-Your handler sees only the body — `producerId` and `seq` are
+Your handler sees only the body — `producerId`, `incarnation` and `seq` are
 the controller's concern.  If you need them for business
 logic, persist a wrapper that carries them through your
 processing pipeline.

@@ -373,14 +373,19 @@ export function isShardingMessage(message: unknown): message is ShardingMessage 
 /**
  * A sharding frame together with the peer whose connection it arrived on.
  *
- * Several of the region's inbound kinds are coordinator directives — `HandOff`
- * tears a shard's entities down, `ShardHome` moves ownership,
+ * Used in **both** directions, because both ends acted on the `kind` string
+ * alone.  Several of the region's inbound kinds are coordinator directives —
+ * `HandOff` tears a shard's entities down, `ShardHome` moves ownership,
  * `RememberedEntities` pre-creates entities, `ShardMapUpdate` publishes an
  * allocation map to every local subscriber, `RegisterAcknowledgment` settles
  * the register loop — and the region used to honour all of them on the word of
- * anything that could complete a `hello`.  The authenticated identity is known
- * at the transport, but it has to survive the trip through the actor's mailbox
- * to be worth anything, which is what this wrapper is for (#584).
+ * anything that could complete a `hello` (#584).  Every one of the
+ * coordinator's inbound kinds is in turn a claim about the sender's own node —
+ * which shards it hosts, that its region is gone, where to send a reply — and
+ * the coordinator read those out of the payload while the authenticated peer
+ * went in the bin (#712).  The identity is known at the transport, but it has to
+ * survive the trip through the actor's mailbox to be worth anything, which is
+ * what this wrapper is for.
  *
  * **Deliberately a class, not a `{ kind }` tag.**  A wire body is always plain
  * JSON, so a class instance is a shape the wire cannot mint — `instanceof` is
