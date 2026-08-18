@@ -41,6 +41,7 @@ import {
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import type { LogContextData } from '../../../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
@@ -166,6 +167,27 @@ class SlowStoppingMarker extends Actor<string> {
   override onReceive(message: string): void {
     this.census.received.push(`${this.where}:${message}`);
   }
+}
+
+/**
+ * Collects the payloads that reach one node's `system.deadLetters`.
+ *
+ * `subscribed` flips in `preStart`, which is a turn later than the `spawn` that
+ * created it — so a test that sends before checking it races the subscription
+ * and then waits out its timeout for a letter that was published to nobody.
+ */
+class DeadLetterCollector extends Actor<DeadLetter> {
+  constructor(
+    private readonly seen: unknown[],
+    private readonly subscribed: { value: boolean },
+  ) { super(); }
+
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+    this.subscribed.value = true;
+  }
+
+  override onReceive(message: DeadLetter): void { this.seen.push(message.message); }
 }
 
 describe('ClusterSingleton — hand-over on a leader move (#949)', () => {
@@ -445,6 +467,53 @@ describe('ClusterSingleton — nodes whose systems are named differently (#949)'
 
     await stopNode(nodeBeta);
     await stopNode(nodeAlpha);
+  }, 30_000);
+});
+
+describe('ClusterSingleton — routed to a node that never called start() (#949)', () => {
+  test('the message reaches deadLetters instead of a log line', async () => {
+    // Claiming the manager path from `ref()` — which is what lets a proxy-only
+    // node answer a hand-over at all — also puts a handler where there used to be
+    // none, so a *user* message routed to such a node no longer falls through to
+    // `Cluster.dispatchEnvelope`'s "no envelope handler registered, dropping"
+    // warning.  It now goes to `deadLetters`, for the reason
+    // `ClusterSingletonManager.onSingletonDeliver` gives on the neighbouring
+    // path: only the dead-letter stream makes a lost message a metric, a
+    // DevTools entry and something a test can assert.
+    const systemName = 'sng-handover-nomanager';
+    const census = new SingletonCensus();
+    const nodeA = await startNode({ systemName, port: 53_1101, seeds: [] });
+    const nodeB = await startNode({ systemName, port: 53_1102, seeds: [`${systemName}@h:531101`] });
+    await awaitCondition(
+      () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+      { timeoutMs: 5_000, label: 'both nodes are up' },
+    );
+
+    // A sorts first and is therefore the elected host — and A only ever takes a
+    // `ref()`, so nothing anywhere is hosting.  The deployment mistake, seen
+    // from the far end of the wire.
+    nodeA.cluster.singleton.ref<string>('never-started');
+    const seenOnA: unknown[] = [];
+    const subscribed = { value: false };
+    nodeA.kit.system.spawn(() => new DeadLetterCollector(seenOnA, subscribed), 'dead-letter-collector');
+    await awaitCondition(() => subscribed.value, { label: "A's dead-letter collector is listening" });
+
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('never-started')
+      .withActor(() => new SlowStoppingMarker(census, 'b', 0));
+    const fromB = nodeB.cluster.singleton.start(singletonOptions);
+    fromB.tell('nowhere-to-go');
+
+    await awaitCondition(
+      () => seenOnA.length > 0,
+      { timeoutMs: 5_000, label: "the undeliverable message reached A's dead letters" },
+    );
+    expect(seenOnA).toEqual(['nowhere-to-go']);
+    expect(nodeA.log.saw('never called')).toBe(true);
+    expect(census.total()).toBe(0);
+
+    await stopNode(nodeB);
+    await stopNode(nodeA);
   }, 30_000);
 });
 

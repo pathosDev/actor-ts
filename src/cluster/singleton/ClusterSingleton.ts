@@ -434,7 +434,13 @@ export class ClusterSingleton implements Extension {
         + 'dead letters.  Call start() on every node that may become the elected host.',
       );
     }
-    this.system.deadLetters.tell(new DeadLetter(body, null, this.system.deadLetters));
+    // The local proxy is the recipient, mirroring `ClusterSingletonProxy`'s own
+    // `onMissingHost` on the sending side: it is the one `ActorRef` that names
+    // *which* singleton could not be delivered to, and its synthetic path says
+    // which node.  It always exists here — the only way to claim this path
+    // without a manager is through `proxyFor`.
+    const recipient = this.proxies.get(typeName) ?? this.system.deadLetters;
+    this.system.deadLetters.tell(new DeadLetter(body, null, recipient));
   }
 
   /**
