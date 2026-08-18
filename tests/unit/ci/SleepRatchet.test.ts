@@ -89,6 +89,22 @@ const REPOSITORY_ROOT = join(TESTS_DIRECTORY, '..');
 const CANONICAL_WAIT_HELPER = 'tests/util/AwaitCondition.ts';
 
 /** Where the three ledgers below were measured, for the failure messages. */
+/**
+ * The ledgers were measured at `LEDGER_REVISION`.  They have been reconciled
+ * once since, and only in the two directions this guard permits:
+ *
+ * - **Recorded**, because it predates the rule from this branch's side: the
+ *   `EmailBridgeActor` work merged into `develop` (12539abd) while wave 3's
+ *   phase-1 branches were open, bringing 40 fixed-delay waits and one `sleep`
+ *   shim with it.  Nobody on those branches could have avoided them.
+ * - **Credited**, because it was paid off: `ReliableDelivery.test.ts` drops out
+ *   of the unexplained ledger entirely.  Wave 3 converted one wait to a poll
+ *   and gave the rest the reason they were missing.
+ *
+ * Nothing the wave's own agents introduced was recorded here.  Two of them did
+ * add unexplained waits — this guard caught both on the very phase it landed
+ * in — and both were converted or explained at the call site instead.
+ */
 const LEDGER_REVISION = '95db877c';
 const LEDGER_MEASURED_ON = '2026-08-18';
 
@@ -137,6 +153,7 @@ const LEGACY_SLEEP_DECLARATIONS: readonly string[] = [
   'tests/integration/in-process/http/websocket/WebsocketBackendSuite.ts',
   'tests/integration/in-process/http/websocket/WebsocketClientActor.test.ts',
   'tests/integration/in-process/io/broker/BrokerActor.test.ts',
+  'tests/integration/in-process/io/broker/EmailBridgeActor.test.ts',
   'tests/integration/in-process/io/broker/JetStreamActor.test.ts',
   'tests/integration/in-process/io/broker/KafkaActor.test.ts',
   'tests/integration/in-process/io/broker/MqttActor.test.ts',
@@ -280,6 +297,9 @@ const LEGACY_UNEXPLAINED_WAITS: Readonly<Record<string, number>> = {
   'tests/ClusterBootstrap.test.ts': 1,
   'tests/ShardingAdvanced.test.ts': 14,
   'tests/integration/brokers/amqp/scenarios/02-ack-nack.ts': 1,
+  'tests/integration/brokers/email/scenarios/01-send-and-receive.ts': 1,
+  'tests/integration/brokers/email/scenarios/02-no-acknowledgment-redelivers.ts': 3,
+  'tests/integration/brokers/email/scenarios/04-move-mode.ts': 2,
   'tests/integration/brokers/amqp/scenarios/03-fanout-exchange.ts': 1,
   'tests/integration/brokers/grpc/Runner.ts': 1,
   'tests/integration/brokers/kafka/scenarios/03-manual-commit.ts': 1,
@@ -318,6 +338,7 @@ const LEGACY_UNEXPLAINED_WAITS: Readonly<Record<string, number>> = {
   'tests/integration/in-process/cluster/singleton/ClusterSingletonRestart.test.ts': 1,
   'tests/integration/in-process/http/websocket/WebsocketBackendSuite.ts': 1,
   'tests/integration/in-process/http/websocket/WebsocketClientActor.test.ts': 1,
+  'tests/integration/in-process/io/broker/EmailBridgeActor.test.ts': 34,
   'tests/integration/in-process/io/broker/BrokerActor.test.ts': 42,
   'tests/integration/in-process/io/broker/JetStreamActor.test.ts': 22,
   'tests/integration/in-process/io/broker/KafkaActor.test.ts': 19,
@@ -376,7 +397,6 @@ const LEGACY_UNEXPLAINED_WAITS: Readonly<Record<string, number>> = {
   'tests/unit/crdt/DistributedDataProtoKey.test.ts': 3,
   'tests/unit/crdt/DurableDistributedData.test.ts': 3,
   'tests/unit/crdt/ORSetTagForgery.test.ts': 2,
-  'tests/unit/delivery/ReliableDelivery.test.ts': 1,
   'tests/unit/devtools/ExplainMethods.test.ts': 1,
   'tests/unit/devtools/ExplainPlan.test.ts': 5,
   'tests/unit/devtools/Introspection.test.ts': 3,

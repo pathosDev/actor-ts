@@ -45,7 +45,7 @@ import { SystemGroups, shardRegionName, systemActorPath } from '../../../../src/
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { coordinatorSegments, regionSegments } from '../../../util/SystemPaths.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -66,8 +66,6 @@ class Entity extends Actor<Command> {
 
   private onWork(): void { delivered++; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type Victim = {
   system: ActorSystem;
@@ -243,6 +241,9 @@ describe('ShardCoordinator sender authority (#712)', () => {
       hostedShards: Array.from({ length: NUM_SHARDS }, (_unused, shardId) => shardId),
       numShards: NUM_SHARDS,
     });
+    // The assertion is an absence: give the coordinator a turn to act on the
+    // forged frame, then prove it did not.  A poll cannot express this — the
+    // condition is already true at t=0 and must still hold later.
     await sleep(200);
 
     expect(registeredNodes(victim)).toEqual([victim.cluster.selfAddress.toString()]);
@@ -278,6 +279,9 @@ describe('ShardCoordinator sender authority (#712)', () => {
       hostedShards: Array.from({ length: NUM_SHARDS }, (_unused, shardId) => shardId),
       numShards: NUM_SHARDS,
     });
+    // The assertion is an absence: give the coordinator a turn to act on the
+    // forged frame, then prove it did not.  A poll cannot express this — the
+    // condition is already true at t=0 and must still hold later.
     await sleep(200);
 
     expect(registeredNodes(victim)).toEqual([victim.cluster.selfAddress.toString()]);
@@ -295,6 +299,8 @@ describe('ShardCoordinator sender authority (#712)', () => {
       region: victim.regionPath,
       node: victim.cluster.selfAddress.toJSON(),
     });
+    // The assertion is an absence: the forged frame gets a turn and must
+    // still have changed nothing.
     await sleep(200);
 
     expect(registeredNodes(victim)).toEqual([victim.cluster.selfAddress.toString()]);
@@ -319,6 +325,8 @@ describe('ShardCoordinator sender authority (#712)', () => {
       requesterNode: reflected.address.toJSON(),
       timeoutMs: 100,
     });
+    // The assertion is an absence: nothing must arrive at the reflected node,
+    // so the wait has to outlast the request it proves never lands.
     await sleep(400);
 
     expect(reflected.received).toEqual([]);
@@ -356,7 +364,11 @@ describe('ShardCoordinator sender authority (#712)', () => {
       ],
       numShards: NUM_SHARDS,
     });
-    await sleep(300);
+    await awaitCondition(
+      () => Array.from(coordinatorState(victim).regions.values())
+        .some((info) => info.path === '/self-declared'),
+      { label: 'the self-declared region was admitted' },
+    );
 
     const state = coordinatorState(victim);
     const claimant = Array.from(state.regions.values())

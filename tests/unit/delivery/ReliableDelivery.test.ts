@@ -243,6 +243,8 @@ describe('ReliableDelivery — shutdown (#451)', () => {
       timeoutMs: 4_000,
       label: 'the window-sized batch reached the consumer',
     });
+    // The assertion is an absence: the window must NOT advance past two, so
+    // this is a settle period rather than a condition that becomes true.
     await sleep(30);
 
     // Two delivered and awaiting an ack that never comes, two still queued.
@@ -481,6 +483,8 @@ describe('ReliableDelivery — producer restart (#726)', () => {
       timeoutMs: 4_000,
       label: 'all three deliveries were acknowledged',
     });
+    // The assertion is an absence: exactly two of the three reach the handler
+    // and the third must stay absorbed, so the settle period IS the assertion.
     await sleep(30);
     expect(received).toEqual(['from-first', 'from-second']);
 
@@ -571,6 +575,8 @@ describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
       incarnation: deliveryB.incarnation,
       seq: deliveryB.seq,
     } as never);
+    // The assertion is an absence: the forged acknowledgment must settle
+    // nothing, so there is no condition to poll for, only one not to meet.
     await sleep(80);
     expect(confirmations).toHaveLength(0);
 
