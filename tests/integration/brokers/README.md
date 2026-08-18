@@ -25,8 +25,11 @@ a 5-node mesh.
 ```
 tests/integration/brokers/
 ├── lib/
-│   ├── WaitForPort.ts          # TCP/HTTP readiness probe
-│   └── Scenario.ts               # tiny scenario runner + waitFor
+│   ├── WaitForPort.ts            # TCP/HTTP readiness probe
+│   ├── Scenario.ts               # tiny scenario runner + waitFor
+│   ├── PersistenceContract.ts    # shared journal/snapshot/durable-state contract
+│   ├── PgWireRunner.ts           # runs the Postgres stores against a pg-wire server
+│   └── persistence-contract/     # the contract's per-store scenario modules
 ├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
 ├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
@@ -36,7 +39,15 @@ tests/integration/brokers/
 ├── nats/                         # B.6 — NATS (Closes #24)
 ├── redis-streams/                # B.7 — Redis (refs #296)
 ├── grpc/                         # B.8 — gRPC (Closes #296)
-└── k8s/                          # B.9 — kind (Closes #298)
+├── k8s/                          # B.9 — kind (Closes #298)
+├── postgres/                     # PostgreSQL (Closes #323)
+├── mariadb/                      # MariaDB (Closes #324)
+├── libsql/                       # libSQL / sqld (refs #400)
+├── mssql/                        # SQL Server 2022 (Closes #399)
+├── cockroachdb/                  # CockroachDB — pg wire (Closes #401)
+├── yugabytedb/                   # YugabyteDB — pg wire (Closes #401)
+├── mongodb/                      # MongoDB (Closes #397)
+└── dynamodb/                     # DynamoDB Local (Closes #398)
 ```
 
 ## Why a separate `tests/integration/brokers/package.json`?
@@ -90,14 +101,22 @@ You need Docker (Desktop on macOS/Windows, Engine on Linux).
 Nothing else.  Per-suite:
 
 ```bash
-bun run test:integration:s3        # MinIO + S3ObjectStorageBackend
-bun run test:integration:mqtt      # Mosquitto + MqttActor
-bun run test:integration:kafka     # Redpanda + KafkaActor
-bun run test:integration:amqp      # RabbitMQ + AmqpActor
-bun run test:integration:nats      # NATS + NatsActor
-bun run test:integration:redis     # Redis + RedisStreamsActor
-bun run test:integration:grpc      # gRPC echo + GrpcActor
-bun run test:integration:k8s       # kind + KubernetesApiSeedProvider
+bun run test:integration:s3           # MinIO + S3ObjectStorageBackend
+bun run test:integration:mqtt         # Mosquitto + MqttActor
+bun run test:integration:kafka        # Redpanda + KafkaActor
+bun run test:integration:amqp         # RabbitMQ + AmqpActor
+bun run test:integration:nats         # NATS + NatsActor
+bun run test:integration:redis        # Redis + RedisStreamsActor
+bun run test:integration:grpc         # gRPC echo + GrpcActor
+bun run test:integration:k8s          # kind + KubernetesApiSeedProvider
+bun run test:integration:postgres     # PostgreSQL + Postgres{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:mariadb      # MariaDB + MariaDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:libsql       # libSQL (sqld) + LibSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:mssql        # SQL Server 2022 + MsSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:cockroachdb  # CockroachDB + the Postgres stores over pg wire
+bun run test:integration:yugabytedb   # YugabyteDB + the Postgres stores over pg wire
+bun run test:integration:mongodb      # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:dynamodb     # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
 ```
 
 All of them:
