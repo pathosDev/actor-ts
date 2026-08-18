@@ -384,7 +384,7 @@ const LEGACY_UNEXPLAINED_WAITS: Readonly<Record<string, number>> = {
   'tests/unit/ReceiveTimeout.test.ts': 2,
   'tests/unit/RestartRegressions.test.ts': 5,
   'tests/unit/Router.test.ts': 5,
-  'tests/unit/Scheduler.test.ts': 8,
+  'tests/unit/Scheduler.test.ts': 7,
   'tests/unit/Supervision.test.ts': 1,
   'tests/unit/Timers.test.ts': 4,
   'tests/unit/cache/InMemoryCache.test.ts': 6,
