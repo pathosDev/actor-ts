@@ -265,6 +265,14 @@ die Bulk-Schicht zahlt.
 Drops landen wie alle anderen in `actor_mailbox_dropped_total`, dasselbe
 Alerting gilt also weiter.
 
+Eine Form, auf die du beim Dimensionieren achten solltest: eine
+Nachricht, deren `priorityFor` nicht auswertbar ist, wird *zuletzt*
+rangiert — auf einer vollen Mailbox ist sie damit diejenige, die
+abgeworfen wird.  Das ist die richtige Antwort, bedeutet aber, dass sich
+ein defekter Priority-Callback hier als steigendes `drop-new` zeigt und
+nicht als Fehler — verdrahte `onPriorityError`, wenn du beides
+unterscheiden willst.
+
 Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die volle
 PriorityMailbox-Oberfläche.
 

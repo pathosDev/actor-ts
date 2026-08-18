@@ -58,6 +58,31 @@ export type PriorityMailboxOptionsType<T> = {
    * than replacing it.
    */
   readonly onDrop?: (reason: MailboxDropReason) => void;
+  /**
+   * Optional hook fired each time {@link priorityFor} fails to rank a
+   * message — it threw, or it answered with something that is not a usable
+   * number — and the message was therefore queued at the lowest priority
+   * instead (#733).
+   *
+   * Worth wiring, because the alternative to the containment is not a
+   * clearer failure but a *worse* one: before #733 a throw escaped into the
+   * stack of whichever actor called `tell`, and restarted it.  Contained,
+   * the message still arrives — just last — so nothing else in the system
+   * says that a `priorityFor` is broken.  This hook is what says it.
+   *
+   * `cause` is what `priorityFor` threw, or a `TypeError` describing the
+   * value it returned.  `message` is the message it could not rank, which is
+   * usually the interesting half: the framework hands `priorityFor`
+   * `PoisonPill` and `Kill` as ordinary user messages, so a callback written
+   * only for application traffic sees them here first.
+   *
+   * **Record and return.**  An observer that throws puts the escape back —
+   * this runs on the sender's stack too — and costs the message its place in
+   * the queue, which is exactly what the containment was for.  Same contract
+   * as {@link onDrop}, which is also called with nothing between it and the
+   * sender.
+   */
+  readonly onPriorityError?: (cause: unknown, message: T) => void;
 };
 
 /**
@@ -93,6 +118,11 @@ export class PriorityMailboxOptionsBuilder<T> extends OptionsBuilder<PriorityMai
   /** Hook fired on each overflow drop (for metrics). */
   withOnDrop(onDrop: (reason: MailboxDropReason) => void): this {
     return this.set('onDrop', onDrop);
+  }
+
+  /** Hook fired when `priorityFor` could not rank a message (for diagnostics). */
+  withOnPriorityError(onPriorityError: (cause: unknown, message: T) => void): this {
+    return this.set('onPriorityError', onPriorityError);
   }
 }
 

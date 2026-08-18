@@ -346,6 +346,66 @@ Common shapes for `priorityFor`:
   funnel via a router.
 </Aside>
 
+### When `priorityFor` cannot answer
+
+Your callback does not have to be total.  If it **throws**, or if it
+answers with something that is not a usable number — `undefined`, `NaN`,
+a value of another type — the message is queued at the **lowest**
+priority and nothing else happens.  It is not dropped and the failure
+does not surface at the `tell` site.
+
+Both halves matter:
+
+- **Lowest, not highest.**  A priority that could not be determined must
+  not outrank one that was stated.  Ties still break by FIFO, so
+  unrankable messages stay in send-order relative to each other.
+- **Contained, not thrown.**  `priorityFor` runs synchronously inside the
+  *sender's* `tell`.  A sender is a bystander to the receiver's mailbox
+  configuration: it has nothing to do about a broken `priorityFor` and no
+  way to tell that from a failure of its own.  An escaping throw landed
+  in the sender's `onReceive` and got the **sender** restarted — the same
+  confusion the `reject` caution above describes, for a bug that has
+  nothing to do with the sender at all.
+
+`±Infinity` is a *ranking*, not a failure: `-Infinity` means "ahead of
+everything", `+Infinity` means "behind everything", and both are ordered
+as written.  Only `NaN` and non-numbers count as undeterminable.
+
+<Aside type="caution" title="The framework calls `priorityFor` with `PoisonPill` and `Kill`">
+  `ref.stop()` and `ref.kill()` post `PoisonPill` / `Kill` as ordinary
+  **user** messages — that is what makes `stop()` a graceful
+  drain-then-stop rather than a queue-jump.  So `priorityFor` sees them
+  too, and neither has any fields: a `match(message).…​.exhaustive()`
+  throws on both, and the **field-derived** and **caller-tagged** shapes
+  above return `undefined`.
+
+  The containment means that is survivable rather than fatal, but rank
+  them deliberately instead of relying on it — an `.otherwise(() => 5)`
+  arm, or a `?? 5` on the field.  Otherwise every `stop()` costs you a
+  contained failure and a mailbox entry at the very back of the queue.
+</Aside>
+
+To see a contained failure rather than only its consequences, pass
+`onPriorityError`.  Nothing else in the system reports one — the message
+still arrives, just last:
+
+```ts
+import { PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withOnPriorityError((cause, message) => {
+    log.warn(`priorityFor could not rank ${JSON.stringify(message)}: ${String(cause)}`);
+  });
+
+const mailbox = new PriorityMailbox<Message>(triageOptions);
+```
+
+`cause` is whatever `priorityFor` threw, or a `TypeError` describing the
+value it returned.  **Record and return** from the hook: it runs on the
+sender's stack too, so a throw from inside it puts the escape back — and
+costs the message its place in the queue.
+
 The current implementation uses a sorted-insertion array — O(log n)
 locate + O(n) splice on each enqueue.  Fine for mailboxes that stay
 in the low thousands; if you have a sustained 10 000-message backlog
@@ -401,7 +461,12 @@ reports `drop-new`.
 
 The options are validated at construction: a missing or non-callable
 `priorityFor`, a non-positive `capacity`, an unknown policy, or a policy
-without a capacity all throw `OptionsError`.
+without a capacity all throw `OptionsError`.  What the callback *returns*
+is a runtime question and is handled at the enqueue instead — see
+[When `priorityFor` cannot answer](#when-priorityfor-cannot-answer).  On a
+bounded mailbox the two meet: an unrankable message is the least important
+thing in the queue, so under `drop-lowest-priority` it is the arrival that
+gets shed, reported as `drop-new`.
 
 ## Per-actor mailbox via ActorOptions
 

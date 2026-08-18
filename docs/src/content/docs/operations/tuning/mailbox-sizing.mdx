@@ -261,6 +261,12 @@ urgent tier survives and the bulk tier pays.
 Drops land in `actor_mailbox_dropped_total` like any other, so the same
 alerting applies.
 
+One shape to watch when you size this: a message whose `priorityFor`
+cannot be evaluated is ranked *last*, which on a full mailbox makes it
+the one that gets shed.  That is the right answer, but it means a broken
+priority callback shows up here as a rising `drop-new` rather than as an
+error — wire `onPriorityError` if you want to tell the two apart.
+
 See [Mailboxes](/fundamentals/mailboxes/) for the full
 PriorityMailbox surface.
 
