@@ -73,7 +73,7 @@ await system.http(8558).bind(routes);
 | `GET /ready` | ✓ | Readiness — 200 wenn jeder Readiness-Check besteht (Cluster-Mitgliedschaft + -Konnektivität registriert das Framework selbst). |
 | `GET /cluster/members` | Wenn `cluster` gesetzt | Membership-JSON. |
 | `GET /cluster/leader` | Wenn `cluster` gesetzt | Leader-Adresse. |
-| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt | Shard-Verteilung für einen sharded Typ. |
+| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt, für einen Typ, an dem dieser Node teilnimmt | Shard-Verteilung für einen sharded Typ. |
 | `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Graceful Cluster-Leave auslösen. |
 | `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Peer per Adresse force-downen. |
 | `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus-Textformat. |

@@ -43,10 +43,20 @@ export type RegionInfoData = {
  * Pluggable persistence for the coordinator's allocation state.
  * Symmetric to `RememberEntitiesStore` from #49: load / save / clear.
  *
- * The default impl is `DistributedDataCoordinatorStateStore` —
- * gossip-replicated within the cluster, so when leadership flips
- * the new leader sees a recent snapshot from the previous leader.
- * Custom impls could front a SQLite table or any other backend.
+ * **Nothing is wired by default.**  The stock implementation is
+ * `DistributedDataCoordinatorStateStore` — gossip-replicated within
+ * the cluster, so when leadership flips the new leader sees a recent
+ * snapshot from the previous leader — but you opt in by passing it as
+ * `coordinatorStateStore`, having started the DistributedData
+ * extension yourself.  Without that, `ShardCoordinator` rebuilds from
+ * region `Register` claims, which is the behaviour every default
+ * configuration has.  "Default impl" used to sit here and read as
+ * "wired for you"; it never was (#682).  Custom implementations could
+ * front a SQLite table or any other backend.
+ *
+ * This store is *not* what the `/cluster/shards` management endpoint
+ * reads — that answers from `ClusterSharding.shardMap()` and works
+ * with no store configured.
  */
 export interface CoordinatorStateStore {
   /** Load the most recent snapshot, or `null` if none stored. */
