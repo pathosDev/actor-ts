@@ -154,12 +154,43 @@ Both timer flavors propagate errors slightly differently:
   A throw inside the handler is caught by the supervisor, just like
   a regular message.
 - **`system.scheduler.scheduleAtFixedRateFunction(...)` / `scheduleOnceFunction(...)`**
-  catches and logs throws (`console.error('[actor-ts] scheduler error:', e)`)
-  but doesn't escalate.  A failing scheduler callback won't crash
-  the system; it also won't be noticed unless you log-tail.
+  catches throws and *reports* them without escalating.  The task runs
+  inside a raw timer callback, so there is no cell and no supervisor
+  above it — but the failure is no longer invisible.  It is reported
+  twice over, exactly like a [failed dispatcher work
+  unit](/fundamentals/dispatchers/#when-a-work-unit-throws):
+
+  - **The system logger** gets an `error` record, so the failure reaches
+    every configured [log sink](/observability/logging/multi-sink/).
+  - **The event stream** gets a `SchedulerError`, carrying the `cause`.
+
+  A failing scheduler callback still won't crash the system, and a
+  repeating schedule keeps ticking past it.
+
+  ```ts
+  import { Actor, SchedulerError } from 'actor-ts';
+
+  class SchedulerAlarm extends Actor<SchedulerError> {
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, SchedulerError);
+    }
+    override onReceive(event: SchedulerError): void {
+      this.log.error('a scheduled task threw', event.cause);
+    }
+  }
+  ```
+
+  `console.error` remains only as the last resort, for a `Scheduler`
+  used outside an actor system: the `onError` slot is unset until an
+  `ActorSystem` adopts the instance, and a failure that reaches nobody
+  is worse than one that reaches a terminal.  A sink you set yourself
+  is never taken over, and it is handed back when the system
+  terminates — which matters for the `ManualScheduler` you lend a
+  system in a test and keep driving afterwards.
 - **`system.scheduler.scheduleOnce(...)` / `scheduleAtFixedRate(...)`**
   delivers via `target.tell(...)`.  Errors handled by the *target's*
-  supervisor.
+  supervisor — these two never publish a `SchedulerError`, because a
+  throw inside the target's handler is the parent's business.
 
 import { Aside } from '@astrojs/starlight/components';
 

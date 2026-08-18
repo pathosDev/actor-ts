@@ -121,7 +121,7 @@ export type { Decider, SupervisorStrategy, StrategyOptions } from './Supervision
 
 // Runtime services
 export { Scheduler } from './Scheduler.js';
-export type { Cancellable } from './Scheduler.js';
+export type { Cancellable, SchedulerErrorSink } from './Scheduler.js';
 export {
   Dispatchers,
   ImmediateDispatcher,
@@ -151,6 +151,7 @@ export {
   ActorStopped,
   ActorRestarted,
   DispatcherError,
+  SchedulerError,
   ActorKilledError,
   AskTimeoutError,
 } from './SystemMessages.js';

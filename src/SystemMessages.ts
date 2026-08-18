@@ -148,6 +148,34 @@ export class DispatcherError {
   }
 }
 
+/**
+ * A task handed to the system `Scheduler` threw, and nothing above it was
+ * going to hear about it.
+ *
+ * The twin of {@link DispatcherError}, and deliberately *not* an
+ * {@link ActorLifecycleEvent} for the same reason: a scheduled function
+ * belongs to no cell, so there is no actor whose life this is a transition
+ * in.  Nothing is dropped by carrying only the `cause` — the two entry
+ * points that can produce this (`scheduleOnceFunction`,
+ * `scheduleAtFixedRateFunction`) take a bare closure, so the scheduler never
+ * held a name for the thing that failed, and a system has exactly one
+ * scheduler for a report to be about.
+ *
+ * Supervision structurally cannot see this: the task runs inside a
+ * `setTimeout` / `setInterval` callback with no cell and no parent above it,
+ * which is why it needed a channel instead of a console line (#678).  The
+ * message-delivery forms — `scheduleOnce` / `scheduleAtFixedRate` — do *not*
+ * publish here: those `tell` a target, and a throw inside the target's
+ * handler is the parent's strategy to deal with.
+ */
+export class SchedulerError {
+  constructor(
+    /** The failure, normalised to an `Error` even when a non-Error was thrown. */
+    public readonly cause: Error,
+  ) {}
+  toString(): string { return `SchedulerError(${this.cause.message})`; }
+}
+
 /** Thrown when an actor handles a Kill system message. */
 export class ActorKilledError extends Error {
   constructor() {

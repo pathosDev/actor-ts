@@ -1,6 +1,26 @@
 import type { ActorRef } from './ActorRef.js';
 import { LogContext } from './LogContext.js';
 
+/**
+ * Where the scheduler reports a scheduled task that threw.
+ *
+ * A `Scheduler` cannot reach the system logger on its own, and the reason is
+ * construction order rather than ownership: `ActorSystem` builds the scheduler
+ * *before* the logger, because a log sink's flush ticker is armed on the
+ * scheduler (`BatchingSink`) and therefore needs one to already exist.  So the
+ * logger cannot be a constructor parameter, and the sink is a slot the owner
+ * fills in afterwards — `ActorSystem` assigns one once both exist, and
+ * everything the framework reports about a failed task flows through that
+ * assignment (#678).
+ *
+ * The error and nothing else.  `DispatcherErrorSink` carries a `dispatcherId`
+ * because a system has many dispatchers and a report has to say which one
+ * failed; a system has exactly one scheduler, and the task itself is an
+ * anonymous closure the scheduler never had a name for.  Inventing an
+ * identifier here would mean inventing one at every call site too.
+ */
+export type SchedulerErrorSink = (error: unknown) => void;
+
 /** A handle that lets callers cancel a scheduled task. */
 export interface Cancellable {
   /**
@@ -49,6 +69,19 @@ export class Scheduler {
   private _cancelled = false;
 
   /**
+   * Where a scheduled task that threw is reported.  Optional so that a
+   * scheduler stays usable with no system at all — a bare `new Scheduler()`
+   * in a test, or one constructed before `ActorSystem.create` returns — and
+   * an unset sink falls back to `console.error`, which is what every
+   * scheduler did before the slot existed.
+   *
+   * `ActorSystem` fills it in with `??=`, so a sink the owner set
+   * deliberately survives being handed to a system through
+   * `ActorSystemOptions.withScheduler`.
+   */
+  onError?: SchedulerErrorSink;
+
+  /**
    * Every schedule that still owns a native handle.
    *
    * `shutdown()` used to set a flag and stop there, which makes callbacks
@@ -71,7 +104,7 @@ export class Scheduler {
 
   /** Run a user-supplied function once after a delay. */
   scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
-    return this.oneShot(delayMs, () => runGuarded(task));
+    return this.oneShot(delayMs, () => this.runGuarded(task));
   }
 
   /** Deliver a message repeatedly at a fixed interval, after an initial delay. */
@@ -90,7 +123,7 @@ export class Scheduler {
     intervalMs: number,
     task: () => void,
   ): Cancellable {
-    return this.fixedRate(initialDelayMs, intervalMs, () => runGuarded(task));
+    return this.fixedRate(initialDelayMs, intervalMs, () => this.runGuarded(task));
   }
 
   /**
@@ -148,6 +181,59 @@ export class Scheduler {
     LogContext.runFresh(run);
   }
 
+  /**
+   * Run a user-supplied task, reporting a throw instead of letting it escape.
+   *
+   * Escaping matters twice over: the task runs inside a bare `setTimeout` /
+   * `setInterval` callback, so a throw is an uncaught exception with no
+   * supervisor above it, and on a repeating schedule it would also be the
+   * last tick.  A method rather than the module-level function it used to be,
+   * because the report now needs `this` to reach {@link onError}.
+   */
+  private runGuarded(task: () => void): void {
+    try {
+      task();
+    } catch (error) {
+      this.reportTaskError(error);
+    }
+  }
+
+  /**
+   * Report a task that threw through {@link onError}, or — when nothing wired
+   * a sink, and only then — on the console.
+   *
+   * The console branch is the documented last resort, not a second channel.
+   * It exists because a scheduler is usable without a system at all, and a
+   * failure that reaches nobody is worse than one that reaches a terminal.
+   * The sink is called inside its own guard for the same reason: a sink that
+   * throws has destroyed the only report of the original error, so the
+   * fallback takes over and prints what the sink was handed.  The sink's own
+   * failure is printed *after* it — an operator who wired a sink and sees
+   * console output anyway is owed the reason, but the original error is still
+   * the one nobody else is holding.
+   *
+   * `protected` rather than private because the TestKit's `ManualScheduler`
+   * overrides every scheduling entry point and so never reaches
+   * {@link runGuarded}.  It catches in `advance()` instead and has to be able
+   * to reach the same report; otherwise a system built with
+   * `ActorSystemOptions.withScheduler(new ManualScheduler())` would keep
+   * exactly the behaviour this replaces, and `src/testkit/` is shipped
+   * surface rather than in-repo scaffolding.
+   */
+  protected reportTaskError(error: unknown): void {
+    const sink = this.onError;
+    if (sink === undefined) {
+      console.error('[actor-ts] unhandled scheduler error:', error);
+      return;
+    }
+    try {
+      sink(error);
+    } catch (sinkFailure) {
+      console.error('[actor-ts] unhandled scheduler error:', error);
+      console.error('[actor-ts] the scheduler error sink failed too:', sinkFailure);
+    }
+  }
+
   private oneShot(delayMs: number, run: () => void): Cancellable {
     let handle: ReturnType<typeof setTimeout> | null = null;
     const cancellable = this.track(() => {
@@ -180,13 +266,5 @@ export class Scheduler {
       }, intervalMs);
     }, initialDelayMs);
     return cancellable;
-  }
-}
-
-function runGuarded(task: () => void): void {
-  try {
-    task();
-  } catch (e) {
-    console.error('[actor-ts] scheduler error:', e);
   }
 }

@@ -159,13 +159,47 @@ Beide Timer-Spielarten propagieren Fehler etwas anders:
   Supervisions-Pfad.  Ein Throw im Handler wird vom Supervisor
   gefangen, genau wie bei einer regulären Nachricht.
 - **`system.scheduler.scheduleAtFixedRateFunction(...)` / `scheduleOnceFunction(...)`**
-  fängt und loggt Throws (`console.error('[actor-ts] scheduler error:', e)`),
-  eskaliert aber nicht.  Ein fehlschlagender Scheduler-Callback
-  crasht das System nicht; er wird auch nicht bemerkt, außer du
-  log-tailst.
+  fängt Throws und *meldet* sie, ohne zu eskalieren.  Der Task läuft
+  in einem rohen Timer-Callback, es gibt also keine Cell und keinen
+  Supervisor darüber — aber der Fehler ist nicht mehr unsichtbar.  Er
+  wird doppelt gemeldet, genau wie eine [fehlgeschlagene
+  Dispatcher-Arbeitseinheit](/de/fundamentals/dispatchers/#wenn-eine-arbeitseinheit-wirft):
+
+  - **Der System-Logger** bekommt einen `error`-Record, damit der Fehler
+    jeden konfigurierten
+    [Log-Sink](/de/observability/logging/multi-sink/) erreicht.
+  - **Der Event-Stream** bekommt einen `SchedulerError`, der die `cause`
+    trägt.
+
+  Ein fehlschlagender Scheduler-Callback crasht das System weiterhin
+  nicht, und ein wiederholender Schedule tickt darüber hinaus weiter.
+
+  ```ts
+  import { Actor, SchedulerError } from 'actor-ts';
+
+  class SchedulerAlarm extends Actor<SchedulerError> {
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, SchedulerError);
+    }
+    override onReceive(event: SchedulerError): void {
+      this.log.error('a scheduled task threw', event.cause);
+    }
+  }
+  ```
+
+  `console.error` bleibt nur als letzte Instanz, für einen `Scheduler`
+  außerhalb eines Actor-Systems: der `onError`-Slot ist ungesetzt, bis
+  ein `ActorSystem` die Instanz adoptiert, und ein Fehler, der niemanden
+  erreicht, ist schlimmer als einer, der ein Terminal erreicht.  Ein
+  Sink, den du selbst setzt, wird nie übernommen, und er wird
+  zurückgegeben, wenn das System terminiert — was für den
+  `ManualScheduler` zählt, den du einem System im Test leihst und
+  danach weiter antreibst.
 - **`system.scheduler.scheduleOnce(...)` / `scheduleAtFixedRate(...)`**
   liefert via `target.tell(...)`.  Fehler werden vom Supervisor des
-  *Targets* behandelt.
+  *Targets* behandelt — diese beiden publizieren nie einen
+  `SchedulerError`, denn ein Throw im Handler des Targets ist Sache des
+  Parents.
 
 import { Aside } from '@astrojs/starlight/components';
 

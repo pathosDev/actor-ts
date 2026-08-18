@@ -133,19 +133,22 @@ describe('ManualScheduler lifecycle', () => {
     expect(fired).toBe(true);
   });
 
-  test('task exceptions are swallowed (scheduler keeps running)', () => {
-    const originalError = console.error;
-    console.error = () => {};
-    try {
-      const scheduler = new ManualScheduler();
-      let subsequent = 0;
-      scheduler.scheduleOnceFunction(5, () => { throw new Error('oops'); });
-      scheduler.scheduleOnceFunction(10, () => { subsequent++; });
-      scheduler.advance(50);
-      expect(subsequent).toBe(1);
-    } finally {
-      console.error = originalError;
-    }
+  test('task exceptions are reported, not swallowed, and the schedule survives', () => {
+    // `advance()` catches on its own — every scheduling method here is an
+    // override, so `Scheduler.runGuarded` never runs on this path — and it has
+    // to report through the slot it inherits rather than the console (#678).
+    // Stubbing `console.error` to a no-op, as this test used to, would pass
+    // just as well with the error going nowhere.
+    const scheduler = new ManualScheduler();
+    const reported: unknown[] = [];
+    scheduler.onError = (error) => { reported.push(error); };
+    let subsequent = 0;
+    scheduler.scheduleOnceFunction(5, () => { throw new Error('oops'); });
+    scheduler.scheduleOnceFunction(10, () => { subsequent++; });
+    scheduler.advance(50);
+    expect(subsequent).toBe(1);
+    expect(reported.length).toBe(1);
+    expect((reported[0] as Error).message).toBe('oops');
   });
 });
 
