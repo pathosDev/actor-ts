@@ -24,5 +24,20 @@
     "rootDir": "."
   },
   "include": ["src/**/*.ts", "benchmarks/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+
+    // The framework-comparison tree carries its own `package.json` and its
+    // own lockfile (#27): its arms import the frameworks they measure
+    // against, and those resolve against
+    // `benchmarks/comparison/node_modules`, never the root install.  Same
+    // rule `tsconfig.dev.json` applies to the example frontends and the
+    // broker runners — a file whose imports another manifest owns cannot
+    // compile here however much of it is fixed.  The config that DOES own
+    // it is `benchmarks/comparison/tsconfig.json`, run as
+    // `bun run typecheck:compare` by the `comparison-smoke` job in
+    // `.github/workflows/benchmarks.yml`.
+    "benchmarks/comparison"
+  ]
 }

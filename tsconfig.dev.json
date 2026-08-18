@@ -51,6 +51,17 @@
     // containers `bun run test:integration:brokers` starts.
     "tests/integration/brokers/**",
 
+    // The framework-comparison benchmarks: `benchmarks/comparison/package.json`
+    // is a second dependency context on purpose (#27).  Its arms import the
+    // frameworks actor-ts is measured against — third-party code that exists
+    // only to be benchmarked, so it must stay out of the shipped closure and
+    // out of `bun audit`'s surface.  Those imports resolve against
+    // `benchmarks/comparison/node_modules`, which the root install does not
+    // and must not carry.  The config that owns them is
+    // `benchmarks/comparison/tsconfig.json`, run as `bun run typecheck:compare`
+    // by the `comparison-smoke` job in `.github/workflows/benchmarks.yml`.
+    "benchmarks/comparison/**",
+
     // Three examples that demonstrate an optional peer the root install does
     // not carry.  Each one loads it through a guarded `import()` and prints
     // an "install it with …" message when it is missing — the type positions

@@ -18,6 +18,13 @@ bun.lockb
 # `.astro/`-cache is a separate folder Astro recreates on each build.
 .astro/
 
+# Build output of the cross-language comparison arms (#27).  `results/` and
+# `RESULTS.md` under the same tree ARE committed — they are the measurement,
+# and a result nobody can read later is not one.
+benchmarks/comparison/**/target/
+benchmarks/comparison/**/bin/
+benchmarks/comparison/**/obj/
+
 # Bun + benchmark artefacts
 .bun-cache/
 .bench-*.sqlite
