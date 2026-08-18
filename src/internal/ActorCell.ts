@@ -1051,6 +1051,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * whole batch, and covers the system-command drain and third-party
    * dispatchers for free.  An envelope that *does* carry a context still
    * nests its own `LogContext.run` inside, so propagation is unchanged.
+   *
+   * A process with no MDC anywhere pays neither: `runFresh` returns the
+   * callback's value without opening a store when there is nothing ambient
+   * to shadow, which matters more than the `run` call itself — an active
+   * store is propagated to every async resource created under it, so wrapping
+   * a turn unconditionally taxed all {@link throughput} `await`s inside it and
+   * measured 3-8 % of tell throughput.  See {@link LogContext.runFresh}.
    */
   private runReported(dispatcherId: string): Promise<void> {
     return LogContext.runFresh(() => this.run().catch(

@@ -119,8 +119,21 @@ export const LogContext = {
    * (`Cluster.onEnvelope`).  So the deferred work still needing this by hand
    * is the work *you* defer — an un-awaited promise, a buffer flushed later,
    * a raw `setTimeout` — not anything the framework hands you.
+   *
+   * **No store means no wrapper.**  With nothing ambient, `get()` already
+   * returns {@link EMPTY}, so running `callback` bare is observably identical
+   * to running it inside `storage.run(EMPTY, …)` — and it keeps the runtime's
+   * no-store fast path, which is what makes the framework's own three seams
+   * affordable.  The cost of an active store is not the `run` call: it is that
+   * every async resource created under one propagates it, so wrapping a turn
+   * unconditionally taxed each `await` inside it.  Measured on
+   * `benchmarks/single-node/tell-throughput.ts`, an unconditional wrapper cost
+   * 3-8 % of tell throughput in a process with no MDC at all; this guard takes
+   * that back, and a process that does open scopes pays only where there is
+   * something to shadow.
    */
   runFresh<T>(callback: () => T): T {
+    if (storage.getStore() === undefined) return callback();
     return storage.run(EMPTY, callback);
   },
 

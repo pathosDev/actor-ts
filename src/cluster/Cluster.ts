@@ -1147,9 +1147,10 @@ export class Cluster {
     // back a fresh object every time — but a peer that sends `context: {}`, or
     // one whose every key the sanitiser rejected, must still be treated as
     // having sent nothing, rather than having its emptiness installed as a
-    // context of its own.  Either way one `AsyncLocalStorage` frame is opened:
-    // the branches differ in *what* they install, not in whether they install
-    // anything (#718).
+    // context of its own.  What the two branches now differ in is *whose*
+    // emptiness that is (#718) — and the `else` still costs no
+    // `AsyncLocalStorage` frame on a node with no MDC open, because `runFresh`
+    // skips the wrapper when there is no store to shadow.
     if (context && !LogContext.isEmpty(context)) {
       LogContext.run(context, dispatch);
     } else {
