@@ -42,6 +42,10 @@ export type {
 export {
   BearerTokenAuth,
   IpAllowlist,
+  DEFAULT_FORWARDED_HEADER,
+  IpAllowlistOptions,
+  IpAllowlistOptionsBuilder,
+  IpAllowlistOptionsValidator,
   strictTransportSecurity,
   hsts,
   HstsOptions,
@@ -82,7 +86,7 @@ export {
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
-  IpAllowlistOptions,
+  IpAllowlistOptionsType,
   HstsOptionsType,
   CspOptionsType,
   CspDirectives,

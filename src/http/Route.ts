@@ -88,9 +88,10 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | Compiled
  * Examples (all shipped in `src/http/middleware/`):
  *   - `BearerTokenAuth({ tokens })` — checks `Authorization: Bearer`,
  *     short-circuits with 401 on mismatch.
- *   - `IpAllowlist({ allow })` — checks `remoteAddress` (or a
- *     configured extractor) against a CIDR list, short-circuits
- *     with 403 if not allowed.
+ *   - `IpAllowlist({ allow })` — checks `remoteAddress` (or, with
+ *     `trustedProxies` set, the client address resolved from the
+ *     forwarded chain) against a CIDR list, short-circuits with 403
+ *     if not allowed.
  *
  * Throwing `HttpError(status, message)` is the idiomatic short-circuit:
  * the global error handler catches it and emits the right response.
