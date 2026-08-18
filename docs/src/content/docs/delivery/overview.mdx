@@ -44,10 +44,10 @@ default — a message may be redelivered if the producer crashes
 between sending and receiving the ack.
 
 For **effectively-once**, the controller already dedupes
-incoming duplicates per `(producerId, seq)` — but only within
-its in-memory lifetime.  If you need dedup that survives
-consumer restarts, persist your own processed-seq alongside
-the business state in the handler:
+incoming duplicates per `(producerId, producer incarnation, seq)` — but only
+within its in-memory lifetime, and only within one incarnation of the producer.
+If you need dedup that survives either side restarting, persist your own
+processed-seq alongside the business state in the handler:
 
 ```ts
 new ConsumerController<DeliveryMessage>({
