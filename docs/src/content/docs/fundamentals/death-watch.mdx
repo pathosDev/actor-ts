@@ -60,6 +60,17 @@ Three things going on:
    watched actor stopped are processed in order, then the
    `Terminated` follows.
 
+"Like any other message" covers ordering, and only ordering.  A death
+is announced **once** — the framework has no way to send it again — so
+the notification is exempt from everything that discards user messages
+on the way in: a [mailbox bound](/fundamentals/mailboxes/) of any
+policy, and a `throttle({ onExcess: 'drop' })`.  Bounding a watcher
+costs it backlog, never the deaths it is watching for.  And if the
+notification genuinely cannot be delivered — the watcher itself has
+already stopped, or its mailbox refuses the message — it becomes a
+[dead letter](/operations/dead-letters/), so the loss is visible
+rather than silent.
+
 ## The `Terminated` message
 
 ```ts
@@ -171,7 +182,10 @@ are handled in two different places.
 Everything else is unchanged: the message arrives through the mailbox
 with the same ordering guarantees, watching an already-stopped ref
 delivers immediately, and a watcher that stops has its registrations
-cleaned up for it.
+cleaned up for it.  Your domain message inherits the exemption the
+`Terminated` it replaces has — a bound or a throttle cannot discard it
+either, because it is still the announcement of a death that happens
+once.
 
 ### One registration, one death
 
