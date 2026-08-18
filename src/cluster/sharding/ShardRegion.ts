@@ -151,7 +151,6 @@ export class ShardRegion<TMessage = unknown>
   private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
-  private registered = false;
   /**
    * Set when the coordinator refused this region's `numShards` (#633).  A
    * refused region must stop hammering the register loop — the count is fixed
@@ -760,7 +759,6 @@ export class ShardRegion<TMessage = unknown>
   private onRegisterAcknowledgment(message: RegisterAcknowledgment, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
-    this.registered = true;
     this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
@@ -786,7 +784,6 @@ export class ShardRegion<TMessage = unknown>
    */
   private onRegisterRefused(message: RegisterRefused, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
-    this.registered = false;
     this.registerRefused = true;
     this.registerTimer?.cancel();
     this.registerTimer = null;
@@ -1314,7 +1311,6 @@ export class ShardRegion<TMessage = unknown>
   /* -------------------------------- Misc ------------------------------ */
 
   private onLeaderChanged(): void {
-    this.registered = false;
     this.coordinatorRef = null;
     // Nobody is believed to host the coordinator until `ensureRegistered`
     // re-reads the leader — a directive arriving in that gap has no authority
