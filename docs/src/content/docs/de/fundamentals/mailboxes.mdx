@@ -32,10 +32,16 @@ Speicherdecke gewinnen", und er ging nicht auf:
   System-Nachrichten — Lifecycle, Supervision, Watch — waren nie
   gedeckelt, ein Node konnte den Heap also trotzdem ausschöpfen.
 - **Eine Mailbox weiß nicht, was sie verwirft.**  `drop-head` passt zu
-  Telemetrie, wo nur der frischeste Messwert zählt.  Zu einem
-  `Terminated`-Signal, einer Delivery-Bestätigung oder einem
-  WebSocket-`close` passt es nicht — und die liefen durch dieselbe
-  Queue.  Aus jedem dieser Fälle wurde ein gemeldeter Defekt.
+  Telemetrie, wo nur der frischeste Messwert zählt.  Zu einer
+  Delivery-Bestätigung oder einem WebSocket-`close` passt es nicht — und
+  die liefen durch dieselbe Queue.  Aus jedem dieser Fälle wurde ein
+  gemeldeter Defekt.
+
+  Einer davon, das `Terminated` der Death Watch, ist inzwischen für jede
+  Policy unerreichbar: es nimmt eine Spur, die keine Schranke abwerfen
+  kann (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine
+  eigene Mailbox* weiter unten).  Der Rest ist Anwendungsverkehr, und
+  nur du weißt, welcher davon verzichtbar ist.
 
 Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
 Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
@@ -140,6 +146,42 @@ feuert also weiter neben dem Standard-Counter.  Was nicht geht, ist
 `withMailbox` mit `withMailboxCapacity` zu kombinieren — das ist ein
 Konfigurationsfehler, keine stille Vorrangregel.
 
+#### Eine Pflicht: `enqueueSignal`
+
+Eine Queue, die abwirft, hat eines, das sie nicht abwerfen darf.  Das
+Framework kündigt einen Tod genau einmal an — siehe
+[Death Watch](/de/fundamentals/death-watch/) — deshalb kommt ein
+`Terminated` über `enqueueSignal` statt über `enqueue`, und der Vertrag
+lautet: *reihe es ein, was deine Schranke auch sagt*:
+
+```ts
+class SheddingMailbox<T> extends Mailbox<T> {
+  // ...wie oben...
+
+  /** Absichtlich an der Schranke vorbei: dieses eine ist nicht erneut sendbar. */
+  override enqueueSignal(envelope: Envelope<T>): void {
+    super.enqueue(envelope);
+  }
+}
+```
+
+Die Basisimplementierung delegiert an dein `enqueue`, was für eine Queue
+richtig ist, die nichts verwirft, und für eine, die es tut, falsch —
+also **überschreibe sie immer dann, wenn du `enqueue` zum Abwerfen
+überschreibst**.  `BoundedMailbox` und `PriorityMailbox` tun das schon.
+Dass die Basis delegiert statt direkt in die Basis-Queue zu schreiben,
+ist Absicht: eine Subklasse kann ihre Nachrichten ganz woanders halten,
+und ein Envelope, das in einem Speicher versteckt liegt, den dein
+`dequeueUser` nie liest, ist schlimmer als eines, das du verworfen hast.
+
+Das Envelope trägt außerdem `undroppable: true`, was `removeOldest`
+liest — eine Schranke in `drop-head`-Form, die auf dieser Nahtstelle
+aufsetzt, überspringt es damit gratis und muss nicht wissen, warum.
+Wirft dein `enqueue` stattdessen, macht das Framework aus der
+Verweigerung ein [Dead Letter](/de/operations/dead-letters/) und der
+Abbau des sterbenden Actors läuft weiter; was es nicht kann, ist eine
+zweite Kopie der Benachrichtigung erfinden.
+
 ## System-Nachrichten kommen immer zuerst
 
 In jeder Mailbox leben zwei Queues nebeneinander: **User-Nachrichten**
@@ -160,6 +202,12 @@ Das ist wichtig, weil:
 - Die Supervisor-Entscheidung eines fehlschlagenden Actors (Restart
   / Resume / Stop) tritt sofort in Kraft, nicht erst nachdem die
   Queue leer ist.
+- Ein `Terminated` der Death Watch ist ebenfalls eine *User*-Nachricht,
+  aus demselben Grund wie `PoisonPill`: es muss **nach** allem
+  ankommen, was dem Watcher bereits gesagt wurde, damit ein Handler,
+  der auf einen Tod reagiert, die Arbeit davor gesehen hat.  Nicht
+  verwerfbar heißt nicht vordrängeln — es behält seinen Platz in der
+  Reihe und kann nur nicht mehr daraus entfernt werden.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
@@ -214,6 +262,13 @@ Policy, stellt sich die Frage gar nicht.
 Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
 nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
 `OptionsError`.
+
+`capacity` begrenzt die Nachrichten, die die Mailbox verwerfen *darf* —
+in einer Mailbox, die nur noch nicht zugestellte Todesmeldungen enthält,
+liegt die Queue also darüber, statt eine davon zu verlieren.  Der
+Überschuss ist durch die Zahl der beobachteten Actors begrenzt und ist
+der Preis der Ausnahme, die [Death Watch](/de/fundamentals/death-watch/)
+beschreibt: bemiss eine Kapazität an deinem Verkehr, nicht aufs Byte.
 
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 

@@ -63,6 +63,18 @@ Drei Dinge passieren:
    *vor* dem Stop des beobachteten Actors gesendet wurden, werden in
    Reihenfolge verarbeitet, danach folgt das `Terminated`.
 
+„Wie jede andere Nachricht" bezieht sich auf die Reihenfolge — und nur
+darauf.  Ein Tod wird **einmal** angekündigt, das Framework kann ihn
+nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
+ausgenommen, was User-Nachrichten beim Einreihen verwirft: von einer
+[Mailbox-Schranke](/de/fundamentals/mailboxes/) jeder Policy und von
+einem `throttle({ onExcess: 'drop' })`.  Einen Watcher zu beschränken
+kostet ihn Backlog, niemals die Tode, auf die er wartet.  Und wenn die
+Benachrichtigung wirklich nicht zugestellt werden kann — der Watcher
+ist selbst schon gestoppt, oder seine Mailbox verweigert die Nachricht
+— wird sie zum [Dead Letter](/de/operations/dead-letters/), damit der
+Verlust sichtbar statt stillschweigend ist.
+
 ## Die `Terminated`-Nachricht
 
 ```ts
@@ -176,7 +188,10 @@ verschiedenen Stellen behandelt.
 Alles andere bleibt unverändert: die Nachricht kommt über die Mailbox
 mit denselben Ordnungsgarantien an, eine bereits gestoppte Ref zu
 beobachten liefert sofort, und ein Watcher, der stoppt, bekommt seine
-Registrierungen automatisch aufgeräumt.
+Registrierungen automatisch aufgeräumt.  Deine Domain-Nachricht erbt
+die Ausnahme des `Terminated`, das sie ersetzt — auch sie kann von
+einer Schranke oder einem Throttle nicht verworfen werden, denn sie ist
+weiterhin die Ankündigung eines Todes, der einmal passiert.
 
 ### Eine Registrierung, ein Tod
 
