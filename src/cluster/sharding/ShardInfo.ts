@@ -9,9 +9,10 @@ import type { ShardMessage } from './Shard.js';
  * placement data (which node, which region, how many entities) *and* a live
  * `ref` you can send to.  The ref is materialised on the asking node — the
  * wire payload behind it is plain data — so the shape is deliberately **not**
- * JSON-serialisable.  Surfaces that need a serialisable view (the
- * `/cluster/shards` management endpoint, the DevTools frames) keep their own
- * DTOs rather than dragging a ref through JSON.
+ * JSON-serialisable.  Surfaces that need a serialisable view keep their own
+ * DTOs rather than dragging a ref through JSON: `ShardMapView` for the
+ * `/cluster/shards` management endpoint, `ShardMapInfo` for the DevTools
+ * frames.
  *
  * It is a snapshot: `entityCount` was true when the hosting region answered,
  * and `node` only holds until the next rebalance.  Hold the `ref`, not the
