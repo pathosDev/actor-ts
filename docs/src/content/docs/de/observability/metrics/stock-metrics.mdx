@@ -209,9 +209,9 @@ Zum Monitoring der Cluster-Gesundheit:
 
 ## DistributedData-Metriken
 
-Der Quorum-Pfad des CRDT-Replikators — `updateAsync` / `getAsync` — und
-sein Wire-Decoder. Jede Label-Menge hier ist fest und winzig, die vier
-Familien tragen also insgesamt sechs Serien bei:
+Der Quorum-Pfad des CRDT-Replikators — `updateAsync` / `getAsync` — plus
+sein Wire-Decoder und sein Gossip-Packer. Jede Label-Menge hier ist fest
+und winzig, die fünf Familien tragen also insgesamt acht Serien bei:
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
@@ -219,9 +219,10 @@ Familien tragen also insgesamt sechs Serien bei:
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum-Requests, die ihre Deadline erreichten, bevor genug Replikas antworteten. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum-Requests, die abgelehnt wurden, weil `max-pending-quorum-requests` erreicht war. |
 | `distributed_data_dropped_values_total` | counter | — | Von Peers gelieferte CRDT-Werte, die diese Replika nicht dekodieren wollte. |
+| `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Lokale Keys, die ein Gossip-Frame nicht tragen konnte — über dem Frame-Budget oder nicht serialisierbar. |
 
 `operation` ist `write` oder `read` — diese beiden Werte und keine
-anderen.
+anderen. `reason` ist `oversize` oder `unserialisable`, ebenso.
 
 - `distributed_data_quorum_pending` dicht an deinem konfigurierten
   `max-pending-quorum-requests` heißt, dass der nächste Aufrufer gleich
@@ -235,6 +236,15 @@ anderen.
 - `distributed_data_dropped_values_total` ist gar kein Tuning-Signal —
   ein Peer schickt Payloads, die diese Replika nicht dekodieren kann,
   also ein kaputter oder feindlicher Knoten.
+- `distributed_data_gossip_skipped_keys_total{reason="oversize"}` über
+  null heißt, dass ein Key **nicht konvergiert**: seine eigene Kodierung
+  überschreitet `max-gossip-bytes` (oder das Wire-Cap, auf das es
+  heruntergeschnitten wird), und der State eines Keys ist die kleinste
+  Einheit, die Gossip senden kann — Aufteilen hilft also nicht. Erhöhe
+  beide Knöpfe oder teile den Wert auf; die begleitende Warnung nennt
+  Key und Größe. `reason="unserialisable"` heißt, der Tagged-JSON-Codec
+  verweigert den Wert — eine Funktion oder ein `Promise` in einem
+  `LWWRegister`, also ein Anwendungs- und kein Tuning-Problem.
 
 ## Projektions-Metriken
 

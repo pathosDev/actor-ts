@@ -190,9 +190,9 @@ For monitoring cluster health:
 
 ## DistributedData metrics
 
-The CRDT replicator's quorum path — `updateAsync` / `getAsync` — and
-its wire decoder.  Every label set here is fixed and tiny, so the four
-families contribute six series in total:
+The CRDT replicator's quorum path — `updateAsync` / `getAsync` — plus
+its wire decoder and its gossip packer.  Every label set here is fixed
+and tiny, so the five families contribute eight series in total:
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -200,8 +200,10 @@ families contribute six series in total:
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum requests that hit their deadline before enough replicas replied. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum requests refused because `max-pending-quorum-requests` was reached. |
 | `distributed_data_dropped_values_total` | counter | — | Peer-supplied CRDT values this replica refused to decode. |
+| `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Local keys a gossip frame could not carry — over the frame budget, or unserialisable. |
 
 `operation` is `write` or `read` — those two values and no others.
+`reason` is `oversize` or `unserialisable`, likewise.
 
 - `distributed_data_quorum_pending` riding near your configured
   `max-pending-quorum-requests` means the next caller is about to be
@@ -215,6 +217,14 @@ families contribute six series in total:
 - `distributed_data_dropped_values_total` is not a tuning signal at all
   — a peer is sending payloads this replica cannot decode, which means a
   broken or hostile node.
+- `distributed_data_gossip_skipped_keys_total{reason="oversize"}` above
+  zero means a key is **not converging**: its own encoding exceeds
+  `max-gossip-bytes` (or the wire cap it is clamped to), and one key's
+  state is the smallest unit gossip can send, so no amount of slicing
+  helps.  Raise both knobs or split the value; the accompanying warning
+  names the key and its size.  `reason="unserialisable"` means a value
+  the tagged-JSON codec refuses — a function or a `Promise` inside an
+  `LWWRegister`, which is an application bug rather than a tuning one.
 
 ## Projection metrics
 
