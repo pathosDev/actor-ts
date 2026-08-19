@@ -1,0 +1,44 @@
+// The second JVM arm of the framework comparison (#27, #1229).
+//
+// Pekko is the Apache-licensed fork of the other JVM framework's 2.6 line,
+// taken up after that project moved to the Business Source Licence. Measuring
+// both answers a question the licence change made real: what does staying on
+// Apache-2.0 cost in throughput?
+//
+// Version 1.6.0 is the newest STABLE release. 2.0.0-M3 exists and is newer,
+// and is deliberately not used: publishing a comparison against a milestone
+// would compare a released framework to an unreleased one.
+//
+// Everything else mirrors ../akka-java deliberately — same Java sources modulo
+// the package prefix, same hand-mirrored harness, same result schema, same
+// build tool, same pinned JDK. The two arms differing only in their dependency
+// is the point: any gap between them is the fork, not the benchmark.
+package build
+
+import mill.*
+import mill.javalib.*
+
+object `package` extends JavaModule:
+
+  def javacOptions = Seq("--release", "21")
+
+  // Pinned rather than inherited, and identical to the sibling arm's — two arms
+  // whose whole purpose is to differ in one dependency must not also differ in
+  // the JVM that runs them.
+  def jvmId = "zulu:21.0.10"
+
+  def mainClass = Some("comparison.Main")
+
+  def mvnDeps = Seq(
+    mvn"org.apache.pekko:pekko-actor-typed_2.13:1.6.0",
+    // A no-op SLF4J binding: without one the runtime prints a substitute-logger
+    // warning to stderr, with a real one the arm would be measuring its logger.
+    // Fairness rule 3 — logging off in every arm.
+    //
+    // 2.0.x here where the sibling pins 1.7.x: Pekko binds the SLF4J 2.x API.
+    // Getting this wrong is visible rather than silent — the wrong generation
+    // leaves a warning on stderr, which is what the smoke run checks for.
+    mvn"org.slf4j:slf4j-nop:2.0.16",
+  )
+
+end `package`

@@ -21,7 +21,6 @@ bun.lockb
 # Build output of the cross-language comparison arms (#27).  `results/` and
 # `RESULTS.md` under the same tree ARE committed — they are the measurement,
 # and a result nobody can read later is not one.
-benchmarks/comparison/**/target/
 benchmarks/comparison/**/bin/
 benchmarks/comparison/**/obj/
 # The JVM arms' build cache.  It appears before a build even starts — the

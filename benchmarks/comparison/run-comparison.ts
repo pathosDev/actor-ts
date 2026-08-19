@@ -109,12 +109,12 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
   // the benchmark — and the licences differ in a way that decides adoption.
   {
     kind: 'external',
-    name: 'pekko',
-    directory: 'pekko',
+    name: 'pekko-java',
+    directory: 'pekko-java',
     resolveFrom: 'directory',
-    executable: mavenWrapper(),
-    args: ['-q', '-B', 'compile', 'exec:java'],
-    toolchain: 'JDK 21 + Maven wrapper',
+    executable: millWrapper(),
+    args: ['--ticker', 'false', 'run'],
+    toolchain: 'JDK 21 + Mill wrapper',
   },
   // The .NET side. `--nologo -v q` keeps the build chatter out of the run;
   // Release matters, since a Debug build measures the absence of the JIT's
@@ -143,25 +143,16 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
 ];
 
 /**
- * The Maven wrapper's file name differs by platform.  It is always invoked
+ * The Mill wrapper's file name differs by platform.  It is always invoked
  * through its absolute path: a bare name is not on the PATH, and cmd.exe does
  * not resolve one against the child's working directory either — which fails
  * with "is either misspelled or could not be found", a message that reads like
  * a missing toolchain rather than a lookup rule.
- */
-function mavenWrapper(): string {
-  return process.platform === 'win32' ? 'mvnw.cmd' : 'mvnw';
-}
-
-/**
- * The Mill wrapper's file name differs by platform for the same reason the
- * Maven one does — and for one more: on Windows the `.bat` is not a
- * convenience but the only entry point.  The POSIX `mill` script refuses to
- * run anywhere that is not Linux or macOS, so a Git Bash invocation of `./mill`
- * exits rather than falling back, which `mvnw` did not do.
  *
- * Invoked through its absolute path, like the Maven wrapper: a bare name is on
- * neither the PATH nor cmd.exe's search of the child's working directory.
+ * And on Windows the `.bat` is not a convenience but the only entry point: the
+ * POSIX `mill` script refuses to run anywhere that is not Linux or macOS, so a
+ * Git Bash invocation of `./mill` exits rather than falling back — which the
+ * Maven wrapper it replaced did not do.
  */
 function millWrapper(): string {
   return process.platform === 'win32' ? 'mill.bat' : 'mill';
