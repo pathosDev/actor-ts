@@ -12,6 +12,7 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * A shard ref for a shard on *another* node used to be a plain path ref
@@ -44,16 +45,17 @@ class Entity extends Actor<Command> {
   private onWork(): void {}
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited shard-placement state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -124,6 +126,10 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     // Place the shard somewhere, then work out who is *not* hosting it — the
@@ -156,6 +162,10 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     seed.region.tell({ id: ENTITY_ID, kind: 'work' });
@@ -177,6 +187,10 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     seed.region.tell({ id: ENTITY_ID, kind: 'work' });

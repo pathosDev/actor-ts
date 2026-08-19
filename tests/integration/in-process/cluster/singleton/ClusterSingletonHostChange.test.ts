@@ -12,6 +12,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * #637 — the host of a role-restricted singleton moved without anything the
@@ -38,16 +39,17 @@ import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
  * observable on the dead-letter stream instead of a log line.
  */
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 20): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 20,
+  label = 'the awaited singleton host-change state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -263,6 +265,10 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     census.received.length = 0;
     fromLeader.tell('after-handover');
     await waitFor(() => census.received.length > 0);
+    // The settle is what makes "and reaches it once" mean anything: the poll
+    // above returns on the delivery that reaches one, so a duplicate can only
+    // show up in a window after it.  Polling `length === 1` instead would
+    // return on the same delivery and never see the second.
     await sleep(200);
     expect(census.received).toEqual(['c:after-handover']);
 
@@ -432,6 +438,9 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
 
     // Nobody carries the role yet, so this is held rather than routed.
     proxy.tell('buffered-before-any-host');
+    // Two of the three claims here are absences — nothing dropped, nothing
+    // delivered — and they hold at t=0, so the window is what would disprove
+    // them.  `hasPending()` alone would be satisfied before either could fail.
     await sleep(100);
     expect(proxy.hasPending()).toBe(true);
     expect(proxy.droppedCount).toBe(0);
@@ -516,6 +525,9 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     // to show up.  Without that second the assertion could pass by being early
     // rather than by being right.
     await waitFor(() => isUnreachableOn(nodeC, 52512), 10_000);
+    // The extra second, per the note above: the assertion is that the singleton
+    // did NOT move, which is already true the moment the detector fires.  Only
+    // elapsed time distinguishes "did not move" from "has not moved yet".
     await sleep(1_000);
     expect(census.total()).toBe(1);
     expect(census.liveOn('b')).toBe(1);
@@ -565,6 +577,9 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
     // manager's `child` — so from here the manager, not a dead child ref, is
     // what the message meets.
     await waitFor(() => census.liveOn('a') === 0);
+    // Settle before the next probe: the manager has to have finished clearing
+    // `child` for the following tell to meet the manager rather than a dead
+    // ref, and that clearing has no observable beyond the census above.
     await sleep(300);
 
     census.received.length = 0;

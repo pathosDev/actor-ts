@@ -14,6 +14,7 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * The `actor-ts.sharding.*` block used to be documented but never read (#834,
@@ -44,16 +45,17 @@ class Entity extends Actor<Command> {
   private onWork(): void {}
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 5_000, stepMs = 20): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 20,
+  label = 'the awaited HOCON-configured sharding state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -134,6 +136,8 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 1);
 
+    // An absence: nothing may stop the entity inside a test window, so
+    // `stopped === 0` is already true at t=0 and there is nothing to poll for.
     await sleep(400);
     expect(stopped).toBe(0);
   });
@@ -149,6 +153,8 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 1);
 
+    // An absence: nothing may stop the entity inside a test window, so
+    // `stopped === 0` is already true at t=0 and there is nothing to poll for.
     await sleep(400);
     expect(stopped).toBe(0);
   });

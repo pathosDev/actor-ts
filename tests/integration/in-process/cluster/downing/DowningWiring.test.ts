@@ -31,8 +31,6 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
 /**
  * Both partition tests assert that the seed *saw* the peer go
  * unreachable.  That transition is driven by the failure detector's
@@ -47,14 +45,17 @@ function awaitUnreachable(node: Node, what: string): Promise<void> {
   );
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), and the local `sleep` shim that drove the old
+ * deadline loop went with it.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  stepMs = 25,
+  label = 'the awaited downing/membership state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   sys: ActorSystem;

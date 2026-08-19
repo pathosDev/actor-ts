@@ -12,6 +12,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const received: string[] = [];
 
@@ -49,14 +50,16 @@ async function stopNode(node: Node): Promise<void> {
   await node.system.terminate();
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await Bun.sleep(20);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  label = 'the awaited singleton-API state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: 20, label });
 
 describe('ClusterSingleton — calling shapes', () => {
   test('all four start() forms land on the same manager path', async () => {

@@ -11,16 +11,19 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorFactory } from '../../../../../src/Actor.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  stepMs = 25,
+  label = 'the awaited daemon-process state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type NodeSetup = {
   system: ActorSystem;
@@ -60,8 +63,10 @@ describe('ShardedDaemonProcess — single node', () => {
       .withNumDaemons(4)
       .withActorFor((i) => () => new Worker(i));
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
-    await sleep(150);
 
+    // No warm-up wait: the four `receiveOne(1_000)` calls below each wait for
+    // their own message, so a fixed delay in front of them only ever added
+    // 150 ms to a passing run (#418).
     const starts: string[] = [];
     for (let i = 0; i < 4; i++) starts.push(await probe.receiveOne(1_000) as string);
     expect(new Set(starts)).toEqual(new Set(['start-0', 'start-1', 'start-2', 'start-3']));

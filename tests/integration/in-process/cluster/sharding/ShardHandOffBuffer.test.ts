@@ -14,6 +14,7 @@ import type { ShardingMessage } from '../../../../../src/cluster/sharding/Shardi
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * `completeHandOff` used to clear `shardHomes` without ever replaying the
@@ -61,16 +62,17 @@ class Entity extends Actor<Command> {
   private onWork(): void { delivered++; }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited hand-off/buffer state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -176,6 +178,8 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
 
     tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId });
     await waitFor(() => !entityIsUp(node, shardId));
+    // An absence: nothing was queued, so nothing may be delivered.  Both counts
+    // already hold at t=0 and a poll on them would return immediately.
     await sleep(200);
 
     // Nothing was queued, so nothing may be delivered — and the shard stays
