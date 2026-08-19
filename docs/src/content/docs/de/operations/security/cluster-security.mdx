@@ -267,7 +267,7 @@ erreichen.
 | Massenhaft geöffnete Sockets, die gar nichts senden, um die Obergrenze zu füllen | Handshake-Deadline auf jedem angenommenen Socket, damit kein Slot unbefristet gehalten wird |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
-| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt akzeptierten überbieten |
+| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
@@ -762,7 +762,7 @@ und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
 einem Peer Log-Verstärkung schenken statt des Wachstums, das er
 gerade verloren hat.
 
-### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen, solange sein Absender Member ist
+### Ein mitgeschnittener Frame lässt sich nicht bei einem Empfänger abspielen, der von seinem Absender gehört hat
 
 Ein Gossip-Frame ist eine Momentaufnahme der Member-Map, und die
 Version eines Members bewegt sich nur, wenn sich sein Status
@@ -792,6 +792,12 @@ diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
 ein einziger Record darin angesehen wird. Der Vergleich selbst
 braucht keinen Stellknopf: verglichen wird ein Peer mit *sich
 selbst*, damit kommt kein Uhren-Skew-Budget ins Spiel.
+
+Die Marke wird an genau einer Stelle geschrieben — im Gossip-Pfad,
+während er einen Frame annimmt — sie existiert also für einen Peer,
+von dem dieser Knoten einen Frame angenommen hat, und für keine
+andere Adresse. Das ist die Grenze, und das dritte Restrisiko
+unten ist das, was außerhalb davon liegt.
 
 Eine Sequence muss außerdem **plausibel** sein — eine endliche
 Zahl, die nicht weiter vor der Uhr des Empfängers liegt als
@@ -840,27 +846,63 @@ annimmt, und sie wird als Ganzes gemerged, Adresse inklusive —
 ohne diese Ersetzung wäre der Identifikator des lokalen Records
 also das, was der letzte befördernde Peer gerade behauptet hat.
 
-Zwei Dinge schließt das **nicht**. Erstens einen Peer, der sich
+Drei Dinge schließt das **nicht**. Erstens einen Peer, der sich
 Standing erworben hat und einen *frischen* Frame komponiert, der
 eine gelöschte Adresse mit ihrer alten Version nennt: Das ist eine
 Fälschung, kein Replay, und um sie abzuweisen, müsste die
 Inkarnation **verpflichtend** sein statt nur mitgeführt — also
 genau der Wire-Bruch von oben.
 
-Zweitens lebt die Marke nur so lange wie ihr Absender. Ein
-gelöschtes Member verliert seine Marke, und eine fehlende Marke
-lässt alles zu. Sobald also der **Absender** selbst evakuiert
-wurde (eine gewöhnliche Partition trifft Absender und Subjekt
-gemeinsam), lässt sich die mitgeschnittene Konversation in
-Aufnahmereihenfolge abspielen: Der Selbstdatensatz des Absenders
-wird immer zugelassen, wodurch er wiederbelebt *und* die Marke aus
-dem alten Frame neu gesetzt wird — und der nächste mitgeschnittene
-Frame spricht dann für das Subjekt. Eine Inkarnationsidentität
-schließt auch das nicht: Ein Knoten, der heruntergefahren wurde,
-während er noch läuft, antwortet unter derselben Inkarnation, die
-der Mitschnitt trägt.
+Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
+keine zu haben — nur einer davon ist die Evakuierung des Absenders
+selbst. Ein gelöschtes Member verliert seine Marke, aus dem Grund
+von oben — und eine gewöhnliche Partition trifft Absender und
+Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig. Ein
+frischer oder neu gestarteter Prozess hat von Anfang an keine. Und
+ein Member, von dem man **über Dritte** erfahren hat, hatte noch
+nie eine: Gossip ist epidemisch, ein Knoten legt C also auf Bs
+Wort hin als `up` ab und hat trotzdem noch nie einen Frame *von* C
+gesehen. Im letzten Fall ist der Absender die ganze Zeit volles
+Member und nirgends wurde etwas evakuiert — deshalb lässt sich
+dieser Schutz nicht so beschreiben, dass er gilt, „solange sein
+Absender Member ist". Genau das stand vorher in diesem Abschnitt
+sowie in den Changelog- und Roadmap-Einträgen, und es war falsch.
 
-Beide Restrisiken werden separat verfolgt.
+Einen Frame von einem Peer ohne Marke abzuweisen ist nicht die
+fehlende Prüfung: Der erste Frame *jedes* Peers ist einer, ein
+Empfänger, der sie abweist, würde also nie erfahren, dass ein
+Cluster existiert. Was ein Mitschnitt aus einer leeren Marke zieht,
+ist ein Bootstrap über zwei Frames — der erste kauft Standing und
+setzt die Marke, aus seiner eigenen mitgeschnittenen Zahl, und der
+zweite überbietet sie und spricht für das Subjekt. Gegen ein über
+Dritte erfahrenes Member geht es noch kürzer, weil das Standing
+schon da ist und ein Frame genügt.
+
+Drittens, und das ist der Grund, warum die beiden oben offen
+bleiben: Nichts, was sich auf den eigenen Zähler des Absenders
+stützt, kann einen Mitschnitt von einem lebenden Frame trennen —
+beide wurden von demselben Zähler gestempelt. Was sie trennt, ist,
+*welcher Prozess* sie abgeschickt hat, und die einzige für den
+Empfänger prüfbare Aussage darüber ist die Inkarnation. Die muss
+**verpflichtend** sein, bevor eine Ablehnung darauf ruhen kann, und
+das wartet auf die Versionierung des Wire-Protokolls.
+
+Verpflichtend würde sie einen Mitschnitt einer **früheren**
+Inkarnation rundheraus abweisen — das ist der gewöhnliche
+Restart-Fall und der Großteil der Exposition. Zwei Kanten blieben
+auch dann, und sie sind es wert, genannt zu werden, damit niemand
+mehr erwartet: Ein Knoten, der heruntergefahren wurde, während er
+noch läuft, antwortet unter derselben Inkarnation, die der
+Mitschnitt trägt; und ein frisch gestarteter Empfänger hat keine
+frühere Inkarnation des Subjekts, gegen die er eine Erstsichtung
+vergleichen könnte, ein Record über ein Member, von dem er noch nie
+gehört hat, bleibt also zulässig. In einem korrekt konfigurierten
+mTLS-Cluster ist keine der beiden Kanten von außen erreichbar —
+`hello` ist an das Peer-Zertifikat gebunden — die Exposition sind
+also Plaintext- und Server-only-TLS-Deployments plus ein
+kompromittierter Peer.
+
+Alle drei Restrisiken werden separat verfolgt.
 
 ## Per-Deployment-Rezept
 

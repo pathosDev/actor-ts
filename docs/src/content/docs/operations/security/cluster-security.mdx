@@ -255,7 +255,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Sockets opened in bulk that send nothing at all, to fill the inbound cap | Handshake deadline on every accepted socket, so no slot is held open-ended |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
 | Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
-| Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted |
+| Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted from that sender (partial: only once one has been) |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
@@ -709,7 +709,7 @@ label is closed at `version-skew`, `map-cap`, `timestamp-skew`
 and `replayed-frame`. Logging per record would hand a peer log
 amplification in place of the growth it just lost.
 
-### A recorded frame cannot be played back while its sender is a member
+### A recorded frame cannot be played back to a receiver that has heard from its sender
 
 A gossip frame is a snapshot of the member map, and a member's
 version only moves when its status does — so a frame captured
@@ -737,6 +737,11 @@ that does not out-number that mark is dropped whole, before any
 record in it is looked at. The comparison itself needs no knob:
 it is between a peer and *itself*, so no clock-skew budget comes
 into it.
+
+The mark is written in exactly one place — the gossip path, as it
+accepts a frame — so it exists for a peer this node has accepted a
+frame **from**, and for no other address. That is the bound, and
+the third residual below is what falls outside it.
 
 A sequence must also be **plausible** — a finite number no
 further ahead of the receiver's clock than `maxVersionSkewMs`,
@@ -779,24 +784,56 @@ accepts, and it is merged wholesale, address included — so
 without that substitution the local record's identifier would be
 whatever the last peer to promote it happened to say.
 
-Two things this does **not** close. First, a peer that has earned
+Three things this does **not** close. First, a peer that has earned
 standing and composes a *fresh* frame naming a deleted address at
 its old version: that is a forgery rather than a replay, and
 refusing it needs the incarnation to be **required** rather than
 carried, which is the wire break above.
 
-Second, the mark lives only as long as the sender does. Deleting a
-member drops its mark, and a missing mark admits everything, so
-once the **sender** has itself been evicted (an ordinary partition
-takes out sender and subject together) the recorded conversation
-can be replayed in capture order: the sender's own self-record is
-always admitted, which revives it *and* re-seeds the mark from the
-old frame, and the next recorded frame then speaks for the
-subject. An incarnation identity does not close this one either —
-a node downed while still running answers to the same incarnation
-the recording carries.
+Second, a missing mark admits everything, and there are three ways
+to be missing one — only one of which is the sender's own
+eviction. An evicted member's mark is dropped with it, for the
+reason above — and an ordinary partition takes out sender and
+subject together, so that route arrives ready to use. A fresh or
+restarted process starts with none at all. And a member learned
+**third-party** never had one: gossip is epidemic, so a node files
+C as `up` on B's word and has still never seen a frame *from* C.
+In that last case the sender is a full member the whole time and
+nothing anywhere was evicted — which is why this guard cannot be
+described as holding "while its sender is a member". The earlier
+wording of this section, and of the changelog and roadmap entries,
+said exactly that, and it was wrong.
 
-Both residuals are tracked separately.
+Refusing a frame from a peer with no mark is not the missing
+check: the first frame from *every* peer is one, so a receiver that
+refused them would never learn a cluster exists. What a recording
+gets from an empty mark is a two-frame bootstrap — the first frame
+buys standing and installs the mark, off its own recorded number,
+and the second out-numbers it and speaks for the subject. Against
+a member learned third-party it is shorter still, because the
+standing is already there and one frame does it.
+
+Third, and this is why the two above stay open: nothing keyed on
+the sender's own counter can separate a recording from a live
+frame, because both were stamped by the same counter. What
+separates them is *which process* emitted them, and the only
+receiver-checkable statement of that is the incarnation — which
+has to be **required** before a refusal can rest on it, and that
+waits on the wire-protocol versioning work.
+
+Requiring it would close a recording of a **previous** incarnation
+outright, which is the ordinary restart case and the bulk of the
+exposure. Two edges would survive even then, and they are worth
+stating so nobody expects more: a node downed while still running
+answers under the same incarnation its recording carries; and a
+freshly started receiver holds no earlier incarnation of the
+subject to compare a first sighting against, so a record about a
+member it has never heard of remains admissible. On a correctly
+configured mTLS cluster neither edge is reachable by an outsider —
+`hello` is bound to the peer certificate — so the exposure is
+plaintext and server-only-TLS deployments, plus a compromised peer.
+
+All three residuals are tracked separately.
 
 ## Per-deployment recipe
 
