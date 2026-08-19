@@ -277,7 +277,9 @@ benchmarks/comparison/
     environment.ts    hardware / runtime / commit capture
     result-file.ts    the on-disk schema
     actor-ts.ts       the reference arm
-    vanilla.ts        the floor — no framework at all
+    nact.ts           the JavaScript neighbours
+    xstate.ts
+    merge-rounds.ts   averages interleaved rounds into results/
   results/            committed per-run JSON, one file per framework × runtime
   RESULTS.md          generated from results/ — never hand-edited
 ```
