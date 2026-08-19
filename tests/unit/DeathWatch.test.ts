@@ -86,6 +86,8 @@ describe('watch / unwatch', () => {
       timeoutMs: 4_000,
       label: 'the unwatched target stopped',
     });
+    // The settle window itself: an absence cannot be polled, so this is the span
+    // in which a `Terminated` that should not exist would have arrived.
     await sleep(20);
     expect(terminatedReceived).toBe(0);
     await sys.terminate();
@@ -320,6 +322,8 @@ describe('watchWith', () => {
       timeoutMs: 4_000,
       label: 'the unwatched worker stopped',
     });
+    // The settle window itself: an absence cannot be polled, so this is the span
+    // in which a notification the `unwatch` should have cancelled would arrive.
     await sleep(20);
     expect(seen).toEqual([]);
     await sys.terminate();

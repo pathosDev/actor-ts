@@ -33,6 +33,8 @@ describe('InMemoryCache — get/set round-trip', () => {
     const cache = new InMemoryCache();
     await cache.set('k', 'temp', 30);
     expect((await cache.get('k')).toNullable()).toBe('temp');
+    // The elapsed time IS the assertion: 50 ms has to outlast the 30 ms TTL,
+    // and expiry is lazy, so there is no event to poll for.
     await sleep(50);
     expect((await cache.get('k')).isNone()).toBe(true);
   });
@@ -40,6 +42,8 @@ describe('InMemoryCache — get/set round-trip', () => {
   test('set without TTL never expires', async () => {
     const cache = new InMemoryCache();
     await cache.set('k', 1);
+    // An absence: an entry written without a TTL must still be there afterwards,
+    // which is already true at t = 0 and has to survive a real window.
     await sleep(20);
     expect((await cache.get('k')).toNullable()).toBe(1);
   });
@@ -62,6 +66,8 @@ describe('InMemoryCache — incr', () => {
   test('TTL applies only on creation, not on subsequent increments', async () => {
     const cache = new InMemoryCache();
     expect(await cache.incr('rate', 50)).toBe(1);
+    // Half the 50 ms TTL: the increment below has to land while the entry is
+    // still alive, so the elapsed time is what positions it.
     await sleep(20);
     expect(await cache.incr('rate', 50)).toBe(2);  // ttlMs ignored on existing key
     await sleep(40);  // total ~60ms, original TTL=50 should have expired by now
@@ -86,6 +92,8 @@ describe('InMemoryCache — setIfAbsent', () => {
   test('after expiry, setIfAbsent succeeds again', async () => {
     const cache = new InMemoryCache();
     expect(await cache.setIfAbsent('k', 'v1', 30)).toBe(true);
+    // The elapsed time IS the assertion: 50 ms outlasts the 30 ms TTL, which is
+    // what makes the key absent again for the second `setIfAbsent`.
     await sleep(50);
     expect(await cache.setIfAbsent('k', 'v2', 30)).toBe(true);
     expect((await cache.get('k')).toNullable()).toBe('v2');
@@ -140,6 +148,8 @@ describe('InMemoryCache — mget / mset (#14)', () => {
     const cache = new InMemoryCache();
     await cache.set('a', 1, 10);  // 10 ms TTL
     await cache.set('b', 2);      // no TTL
+    // The elapsed time IS the assertion: 20 ms outlasts `a`'s 10 ms TTL while
+    // `b`, written without one, must survive.
     await new Promise((r) => setTimeout(r, 20));
     const got = await cache.mget(['a', 'b']);
     expect(got.has('a')).toBe(false);
@@ -160,6 +170,8 @@ describe('InMemoryCache — mget / mset (#14)', () => {
   test('mset with no TTL persists indefinitely', async () => {
     const cache = new InMemoryCache();
     await cache.mset(new Map([['a', 1], ['b', 2]] as const));
+    // An absence: entries written without a TTL must still be there, which is
+    // already true at t = 0 and has to survive a real window.
     await new Promise((r) => setTimeout(r, 20));
     expect((await cache.mget(['a', 'b'])).size).toBe(2);
   });

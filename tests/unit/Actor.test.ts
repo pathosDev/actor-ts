@@ -96,7 +96,12 @@ describe('Actor lifecycle', () => {
     }
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
-    await sleep(20);
+    // The first instance has to have started before the failure arrives, or the
+    // restart under test is a start.  `events` is the array the assertion below
+    // reads, so wait on it rather than on a duration.
+    await awaitCondition(() => events.includes('start:1'), {
+      label: 'the first instance ran preStart',
+    });
     ref.tell('fail');
     // First instance starts, then fails, then a new instance (id=2) enters postRestart
     // and the default implementation calls preStart again.  `start:` arriving twice
@@ -147,6 +152,10 @@ describe('Actor lifecycle', () => {
     class A extends Actor<number> {
       override async onReceive(n: number): Promise<void> {
         events.push(`start:${n}`);
+        // A fixture, not a wait: the handler has to still be running when the
+        // next message could be dispatched, or "the cell awaits before the next
+        // message" has nothing to observe.  The recorded start/end interleaving
+        // is the assertion.
         await sleep(10);
         events.push(`end:${n}`);
       }

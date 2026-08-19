@@ -556,6 +556,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the routee being removed stopped',
     });
+    // The one-hop settle named above: the prune is private state, so there is
+    // nothing to poll between the stop and the router having acted on it.
     await sleep(30);
 
     hits.clear();
@@ -604,6 +606,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the routee being removed stopped',
     });
+    // The one-hop settle named above: the prune is private state, so there is
+    // nothing to poll between the stop and the router having acted on it.
     await sleep(30);
 
     hits.clear();
@@ -613,6 +617,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the broadcast reached the surviving routees',
     });
+    // The settle window itself: `deadLetters` staying empty is an absence, and a
+    // poll that stopped at two accounted-for messages could not see a third.
     await sleep(20);
 
     // A broadcast reaches every routee in the pool, so a stale member is one
@@ -789,6 +795,8 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       timeoutMs: 4_000,
       label: 'both routees answered, winner and loser',
     });
+    // The settle window itself: both assertions below are absences — exactly one
+    // record, and no dead letter for the loser's reply.
     await sleep(20);
 
     // Exactly one reply, attributed to the routee that produced it — the
@@ -1003,6 +1011,8 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       timeoutMs: 4_000,
       label: 'both routees stopped',
     });
+    // The one-hop settle: the router prunes on the `Terminated` that follows the
+    // stop, and that prune is private state with nothing to poll on.
     await sleep(30);
 
     let caught: unknown = null;

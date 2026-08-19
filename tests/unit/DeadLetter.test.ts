@@ -88,6 +88,9 @@ describe('DeadLetter routing', () => {
     // Import Nobody lazily to avoid unused at top.
     const { Nobody } = await import('../../src/ActorRef.js');
     Nobody.tell('nothing');
+    // An absence, so it cannot be polled: `Nobody` must swallow the message
+    // rather than publish a DeadLetter.  `find(...) === undefined` is true the
+    // instant the tell returns and has to still be true after a real window.
     await sleep(30);
     expect(seen.find(d => d.message === 'nothing')).toBeUndefined();
     await sys.terminate();
@@ -170,6 +173,9 @@ describe('DeadLetter delivery loop', () => {
 
     // Must return rather than recurse; the assertion is that we get here.
     expect(() => dead.tell('trigger')).not.toThrow();
+    // An absence: a dead letter about a dead letter must not recurse.  The
+    // window is what gives an unbounded loop time to take the system down, and
+    // `isTerminated === false` is already true when the wait starts.
     await sleep(30);
     expect(sys.isTerminated).toBe(false);
     await sys.terminate();

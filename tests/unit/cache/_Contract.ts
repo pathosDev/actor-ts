@@ -92,6 +92,8 @@ export function runCacheContractTests(spec: CacheContractSpec): void {
     test(`${spec.name} contract: set with sub-second TTL expires`, async () => {
       await cache.set('k', 'temp', 30);
       expect((await cache.get('k')).toNullable()).toBe('temp');
+      // The elapsed time IS the assertion: 50 ms outlasts the 30 ms TTL, and every
+      // backend expires lazily, so there is no event to poll for.
       await sleep(50);
       expect((await cache.get('k')).isNone()).toBe(true);
     });

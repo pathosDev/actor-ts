@@ -48,6 +48,8 @@ describe('ReceiveTimeout', () => {
     // Keep nudging the actor every 20ms — timeout (50ms) should not elapse.
     for (let i = 0; i < 6; i++) {
       ref.tell('ping');
+      // The elapsed time IS the assertion: 20 ms between messages has to stay
+      // under the 50 ms timeout, so the gap cannot be replaced by a poll.
       await sleep(20);
     }
     expect(fired).toBe(0);
@@ -75,6 +77,9 @@ describe('ReceiveTimeout', () => {
     }
     const sys = newSystem();
     sys.spawn(A, 'a');
+    // An absence, so it cannot be polled: the window has to outlast the 30 ms
+    // timeout that was armed and then cancelled, and `fired === 0` is already
+    // true when the wait starts.
     await sleep(100);
     expect(fired).toBe(0);
     await sys.terminate();
