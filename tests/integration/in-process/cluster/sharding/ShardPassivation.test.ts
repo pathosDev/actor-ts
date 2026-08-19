@@ -14,6 +14,7 @@ import type { ShardStats } from '../../../../../src/cluster/sharding/ShardingPro
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * Shard-level passivation (#892).  A shard used to outlive its entities
@@ -49,16 +50,17 @@ class Entity extends Actor<Command> {
   private onWork(): void { delivered++; }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited passivation state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -170,6 +172,10 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     const rounds = 25;
     for (let round = 0; round < rounds; round++) {
       node.region.tell({ id: 'user-1', kind: 'work' });
+      // The elapsed time IS the experiment: 35 ms is deliberately longer than the
+      // 30 ms passivation idle, so each round lands while the shard is mid-stop —
+      // the case `route` has to buffer.  A shorter or state-based wait would stop
+      // producing the race the test exists for.
       await sleep(35);
     }
 
@@ -187,6 +193,9 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 1);
 
+    // An absence: the shard sweep must find nothing to do, so `stopped === 0`
+    // and the shard still being up are both true at t=0.  Only a window that
+    // spans several 40 ms sweeps can disprove them.
     await sleep(300);
     expect(stopped).toBe(0);
     expect(shardIsUp(node, 'user-1')).toBe(true);

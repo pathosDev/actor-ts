@@ -12,6 +12,7 @@ import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sha
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * A shard actor that dies outside a handoff used to take its entities with it
@@ -45,16 +46,17 @@ class Entity extends Actor<Command> {
   private onWork(): void {}
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited remember-entities recovery state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -169,6 +171,9 @@ describe('ClusterSharding — remembered entities after an unexpected shard deat
     shardRef(node).stop();
     await waitFor(() => !shardIsUp(node));
 
+    // An absence: without rememberEntities nothing may be restored, so
+    // `created === 1` holds at t=0 and a poll on it would assert nothing.  The
+    // window is what would expose a recovery that should not happen.
     await sleep(250);
     expect(created).toBe(1);
 

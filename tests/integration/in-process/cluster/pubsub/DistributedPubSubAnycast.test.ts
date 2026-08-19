@@ -16,7 +16,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import type { TestProbe } from '../../../../../src/testkit/TestProbe.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * #155 — the cross-node half of anycast: a `Publish` with
@@ -29,8 +29,6 @@ import { awaitCondition } from '../../../../util/AwaitCondition.js';
  * survives the round trip: envelope out, well-known path in, one local
  * delivery on the far side.
  */
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type Node = {
   readonly system: ActorSystem;
@@ -70,6 +68,8 @@ async function stopNode(node: Node): Promise<void> {
  */
 async function awaitAnycastReaches(publish: () => void, probe: TestProbe, label: string): Promise<void> {
   await awaitCondition(
+    // The inner wait cannot be a poll: `publish()` is a `tell`, so any delivery
+    // it causes lands in a later turn than the call (#1145).
     async () => { publish(); await sleep(25); return probe.hasMessage(); },
     { timeoutMs: 8_000, intervalMs: 25, label },
   );
@@ -84,6 +84,8 @@ async function awaitAnycastReaches(publish: () => void, probe: TestProbe, label:
  */
 async function drain(...probes: TestProbe[]): Promise<void> {
   for (const probe of probes) probe.clearInbox();
+  // The settle, per the note above: what has to hold is that nothing *more*
+  // arrives, and an absence is already true at t=0.
   await sleep(120);
   for (const probe of probes) probe.clearInbox();
 }

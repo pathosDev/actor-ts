@@ -33,7 +33,7 @@ import { ShardKey } from '../../../../../src/cluster/sharding/ShardKey.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { regionSegments } from '../../../../util/SystemPaths.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -73,8 +73,6 @@ class Entity extends Actor<Command> {
 
   private onWork(): void { delivered++; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type Node = {
   system: ActorSystem;
@@ -171,6 +169,10 @@ describe('ClusterSharding — numShards mismatch (#633)', () => {
     // that is a different shard, owned by itself, and before the fix it got
     // one — a second live instance, writing the same persistenceId.
     other.region.tell({ id: ENTITY_ID, kind: 'work' });
+    // An absence: the claim is that no *second* live instance appears and that
+    // the misrouted message is buffered rather than delivered.  Both are already
+    // true at t=0, so only a window can disprove them — and a poll on
+    // `liveEntityCount === 1` would return on the first tick and assert nothing.
     await sleep(600);
 
     expect(liveEntityCount(nodes)).toBe(1);

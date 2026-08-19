@@ -11,6 +11,7 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { DEFAULT_NUM_SHARDS } from '../../../../../src/cluster/sharding/ShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /**
  * A configured `numShards` has to reach the coordinator, not just the region
@@ -55,16 +56,17 @@ class Entity extends Actor<Command> {
   private onWork(message: WorkCommand): void { delivered.add(message.id); }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited shard-count propagation state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 /**
  * An entity id whose shard lands beyond `DEFAULT_NUM_SHARDS`.  Searched rather

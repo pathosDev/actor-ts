@@ -26,7 +26,7 @@ import {
 import { MailboxDepthProbe } from '../../../../../src/cluster/router/MailboxDepthProbe.js';
 import type { MailboxDepthReportMessage } from '../../../../../src/cluster/router/MailboxDepthProtocol.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 const ROUTEE_PATH = '/user/worker';
 
@@ -244,7 +244,7 @@ describe('ClusterRouter — smallest-mailbox (#69)', () => {
       });
       // Fixed wait on purpose: the claim is that the other ten never arrive,
       // and an absence has nothing to poll for.
-      await Bun.sleep(80);
+      await sleep(80);
       expect(received.length).toBe(10);
     } finally {
       await stopNode(a);

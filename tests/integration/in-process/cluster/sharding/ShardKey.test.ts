@@ -9,6 +9,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ShardKey } from '../../../../../src/cluster/sharding/ShardKey.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type GreetCommand = { readonly kind: 'greet'; readonly userId: string };
 
@@ -39,14 +40,16 @@ async function startNode(systemName: string, port: number): Promise<{ system: Ac
   return { system, cluster };
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await Bun.sleep(20);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  label = 'the awaited shard-key routing state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: 20, label });
 
 describe('ClusterSharding — class-declared shard keys', () => {
   test('a zero-argument entity class needs nothing but itself', async () => {

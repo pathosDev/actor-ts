@@ -15,6 +15,7 @@ import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
 import { Member } from '../../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { sleep } from '../../../../util/AwaitCondition.js';
 
 const addr = (port: number, host = 'h'): NodeAddress => new NodeAddress('sys', host, port);
 
@@ -207,8 +208,13 @@ class FakeLease implements Lease {
   onLost(): () => void { return () => {}; }
 }
 
-const flushMicrotasks = (): Promise<void> =>
-  new Promise((r) => setTimeout(r, 0));
+/**
+ * A zero-length turn boundary, not a wait on an outcome: `decide()` starts an
+ * `acquire()` whose `.then` has to run before the next assertion reads
+ * `lease.released`.  There is no state to poll for — the point is to yield the
+ * event loop once, and 0 ms is the shortest way to say that.
+ */
+const flushMicrotasks = (): Promise<void> => sleep(0);
 
 describe('LeaseMajority', () => {
   test('strict majority: returns the unreachable side without touching the lease', () => {
@@ -442,7 +448,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(lease.pendingCount()).toBe(1);
 
     // 2. Simulate the local timeout firing — advance past the deadline.
-    await new Promise((r) => setTimeout(r, 60));
+    //    The elapsed time IS the assertion: the strategy's `acquireTimeoutMs`
+    //    is 30 ms and only a real 60 ms can put the clock past it.
+    await sleep(60);
 
     // 3. Another decide() detects the deadline passed → bumps the epoch
     //    and abandons attempt #1.  No fresh acquire starts while that
@@ -490,8 +498,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.released).toBe(false);
 
-    // Cross the deadline and abandon the attempt.
-    await new Promise((r) => setTimeout(r, 50));
+    // Cross the deadline and abandon the attempt.  The elapsed time IS the
+    // assertion — `acquireTimeoutMs` is 30 ms.
+    await sleep(50);
     strat.decide(clusterView);
     await flushMicrotasks();
     // Releasing here would be a no-op against every real backend, so the
@@ -514,7 +523,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(clusterView).size).toBe(0);
-    await new Promise((r) => setTimeout(r, 50));
+    // The elapsed time IS the assertion: 50 ms puts the clock past the 30 ms
+    // `acquireTimeoutMs`, which is what makes the next `decide()` abandon.
+    await sleep(50);
     strat.decide(clusterView);
 
     lease.resolveAt(0, false);
@@ -535,7 +546,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(clusterView).size).toBe(0);
-    await new Promise((r) => setTimeout(r, 50));
+    // The elapsed time IS the assertion: past the 30 ms `acquireTimeoutMs`.
+    await sleep(50);
 
     // First post-timeout decide: notices the deadline and abandons the
     // attempt.  The attempt then lands, so the undo runs — and rejects,

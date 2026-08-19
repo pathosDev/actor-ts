@@ -17,17 +17,18 @@ import {
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 2000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418).
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+  stepMs = 25,
+  label = 'the awaited broker-mesh state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -135,6 +136,9 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     class NoopActor extends Actor<string> { override onReceive(_: string): void {} }
     const ref = nodeA.system.spawn(NoopActor, 'noop');
     ref.tell('hello');
+    // An absence: the claim is that a tell to a purely local actor over a
+    // broker-backed cluster raises nothing.  Survival is already true at t=0,
+    // so only a window can disprove it.
     await sleep(30);
     // Survived without error.
     expect(nodeA.cluster.upMembers().length).toBe(1);
