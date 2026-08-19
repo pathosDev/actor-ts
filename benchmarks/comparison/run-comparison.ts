@@ -104,6 +104,19 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     args: ['--ticker', 'false', 'run'],
     toolchain: 'JDK 21 + Mill wrapper',
   },
+  // The same framework, same version, through its Scala API in the idiomatic
+  // functional style.  Next to the Java arm on purpose: the pair differs only
+  // in the language binding, so any gap between them is the binding rather
+  // than the framework or the runtime.
+  {
+    kind: 'external',
+    name: 'akka-scala',
+    directory: 'akka-scala',
+    resolveFrom: 'directory',
+    executable: millWrapper(),
+    args: ['--ticker', 'false', 'run'],
+    toolchain: 'JDK 21 + Mill wrapper',
+  },
   // Its Apache-licensed fork, measured next to it on purpose: the two differ
   // only in their dependency, so any gap between them is the fork rather than
   // the benchmark — and the licences differ in a way that decides adoption.

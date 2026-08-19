@@ -1,0 +1,52 @@
+// The Scala-binding JVM arm of the framework comparison (#27, #1229).
+//
+// Same framework, same version, same harness protocol as ../akka-java — the
+// only deliberate difference is the language binding, which is what the pair
+// exists to price. The `_3` artifacts of 2.8.8 are on Maven Central beside the
+// `_2.13` ones the sibling resolves, so the version pin is not a compromise
+// made to get Scala: it is the identical release.
+//
+// Version 2.8.8 is the newest resolvable WITHOUT credentials for both bindings:
+// releases from 2.9 onwards are published only to repo.akka.io, which answers
+// 403 to an anonymous request.
+//
+// LICENCE: BUSL-1.1, as for the sibling arm — carried into the published tables
+// next to the number.
+package build
+
+import mill.*
+import mill.scalalib.*
+
+object `package` extends ScalaModule:
+
+  // The newest patch of the current LTS line. The framework's `_3` artifacts
+  // carry TASTy from 3.2.2 (and Pekko's from 3.3.7); Scala 3 guarantees forward
+  // compatibility, so a newer compiler reads both. Pinned rather than floated:
+  // "Next" moves every few months and a benchmark baseline should not.
+  def scalaVersion = "3.3.8"
+
+  // Parity with the sibling's `--release 21`.
+  def scalacOptions = Seq("-java-output-version:21")
+
+  // Pinned rather than inherited, and identical to the sibling arm's — two arms
+  // whose whole purpose is to differ in the binding must not also differ in the
+  // JVM that runs them.
+  def jvmId = "zulu:21.0.10"
+
+  def mainClass = Some("comparison.Main")
+
+  def mvnDeps = Seq(
+    // `::` appends the Scala suffix, so this resolves akka-actor-typed_3. The
+    // sibling spells `_2.13` out because a Java module has no Scala version for
+    // Mill to append.
+    mvn"com.typesafe.akka::akka-actor-typed:2.8.8",
+    // A no-op SLF4J binding. Without one the framework prints a
+    // substitute-logger warning to stderr; with a real one the arm would be
+    // measuring its logger. Fairness rule 3 — logging off in every arm.
+    //
+    // 1.7.x, as on the sibling: Akka 2.8 binds the SLF4J 1.x API regardless of
+    // which language binding calls it.
+    mvn"org.slf4j:slf4j-nop:1.7.36",
+  )
+
+end `package`
