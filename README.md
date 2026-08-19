@@ -397,114 +397,67 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 
 ## Benchmarks
 
-How does it compare to the other options?  Measured, rather than asserted —
-same machine, same harness, same workload, ten interleaved rounds, and every
-row verified against work the system actually completed rather than work it
-was asked for.
+Measured rather than asserted: one machine, one harness, one workload, ten
+interleaved rounds, and every row verified against work the system actually
+completed rather than work it was asked for.  Each figure is the mean of those
+rounds; 🥇 marks the best value in its row.
 
-Each figure is the **mean of those ten rounds**, and 🥇 marks the best
-value in its row.  The spread the rounds varied by is in the full tables rather
-than here — a gap smaller than that spread is not a difference.
+Bun 1.3.1 · AMD Ryzen 9 7940HX.
 
-Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
+### Against JavaScript
 
-| scenario                    | actor-ts       | nact          | XState    |
+| Scenario                    | actor-ts       | nact          | XState    |
 | --------------------------- | -------------- | ------------- | --------- |
+| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 359k/s        | 185k/s    |
 | tell throughput (batch 10k) | **4.55M/s** 🥇 | 389k/s        | 183k/s    |
-| ask round-trip (p50)        | **3.5 µs** 🥇  | 6.7 µs        | 13.5 µs * |
 | ping-pong (10k exchanges)   | **504k/s** 🥇  | 166k/s        | 83k/s     |
 | spawn → started → stopped   | 75k/s          | **192k/s** 🥇 | 61k/s     |
+| ask round-trip (p50)        | **3.5 µs** 🥇  | 6.7 µs        | 13.5 µs * |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
-snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
+snapshot wait.</sub>
 
-actor-ts leads the JavaScript field on everything except spawning.  It stays
-behind there for a structural reason rather than a fixable one: nact
-constructs an actor synchronously inside `spawn()` and registers it in two
-maps, while this benchmark waits for a confirmed `preStart`, a `stop()` and a
-confirmed `postStop` — a supervision-aware lifecycle that notifies the parent
-on the way out.  The row measures what an actor system does, and doing it
-costs more than not doing it.
+### Against the JVM
 
-There is deliberately no "no framework" column.  One used to sit here, showing
-direct method calls as a floor; it was removed because a number two orders of
-magnitude above everything else is read as "these frameworks are wasteful"
-rather than as "a direct call does none of this work", and because it was the
-least stable figure in the suite.
+Each framework appears through both its Java and its Scala API at the same
+pinned version, so a gap inside a pair is the language binding.
 
-### And against the JVM and .NET
+| Scenario                    | actor-ts (Bun) | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) |
+| --------------------------- | -------------- | ----------- | ------------ | ------------ | ------------- |
+| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 2.11M/s     | 1.31M/s      | 1.71M/s      | 1.10M/s       |
+| tell throughput (batch 10k) | **4.55M/s** 🥇 | 3.14M/s     | 2.80M/s      | 3.04M/s      | 2.84M/s       |
+| ping-pong (10k exchanges)   | 504k/s         | 404k/s      | 369k/s       | 343k/s       | **603k/s** 🥇 |
+| spawn → started → stopped   | **75k/s** 🥇   | 28k/s       | 26k/s        | 27k/s        | 28k/s         |
+| ask round-trip (p50)        | **3.5 µs** 🥇  | 34.9 µs †   | 37.4 µs †    | 32.8 µs †    | 32.4 µs †     |
+| Licence                     | MIT            | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    |
 
-Kept in its own table on purpose: these are other virtual machines, measured by
-a harness that mirrors the JavaScript one rather than being it.
+<sub>† Asked from a non-actor thread, the JVM parks a thread on a future where
+an event loop waits on a microtask.<br/>
+The volley columns move by ±27 % to ±82 % between rounds — read that row's
+🥇 as "came out highest this time", not as a winner.</sub>
 
-Each JVM framework appears twice: through its **Java** API and through its
-**Scala 3** API, at the identical pinned version.  Reading down a column pair
-gives the licence question; reading across a pair gives the language binding.
+### Against .NET
 
-| scenario                    | actor-ts (Bun) | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) | Akka.NET (C#) | Orleans (C#) |
-| --------------------------- | -------------- | ----------- | ------------ | ------------ | ------------- | ------------- | ------------ |
-| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 2.11M/s     | 1.31M/s      | 1.71M/s      | 1.10M/s       | 1.38M/s       | 288k/s       |
-| tell throughput (batch 10k) | **4.55M/s** 🥇 | 3.14M/s     | 2.80M/s      | 3.04M/s      | 2.84M/s       | 1.36M/s       | 576k/s       |
-| ping-pong (10k exchanges)   | 504k/s         | 404k/s      | 369k/s       | 343k/s       | **603k/s** 🥇 | 415k/s        | 157k/s       |
-| spawn → started → stopped   | **75k/s** 🥇   | 28k/s       | 26k/s        | 27k/s        | 28k/s         | 34k/s         | 5k/s ‡       |
-| ask round-trip (p50)        | **3.5 µs** 🥇  | 34.9 µs †   | 37.4 µs †    | 32.8 µs †    | 32.4 µs †     | 7.2 µs        | 7.7 µs       |
-| licence                     | MIT            | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    | Apache-2.0    | MIT          |
+| Scenario                    | actor-ts (Bun) | Akka.NET (C#) | Orleans (C#) |
+| --------------------------- | -------------- | ------------- | ------------ |
+| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 1.38M/s       | 288k/s       |
+| tell throughput (batch 10k) | **4.55M/s** 🥇 | 1.36M/s       | 576k/s       |
+| ping-pong (10k exchanges)   | **504k/s** 🥇  | 415k/s        | 157k/s       |
+| spawn → started → stopped   | **75k/s** 🥇   | 34k/s         | 5k/s ‡       |
+| ask round-trip (p50)        | **3.5 µs** 🥇  | 7.2 µs        | 7.7 µs       |
+| Licence                     | MIT            | Apache-2.0    | MIT          |
 
-<sub>† Every arm drives the system from an external caller.  On an event loop
-that is a microtask and in .NET an `await`; on the JVM, from a non-actor
-thread, it is a thread parking on a future — which is why the two .NET arms
-land far better on this row than the JVM ones.<br/>
-‡ Orleans has no caller-visible create or stop; grains activate on first call,
-so that row is activation latency rather than a comparable lifecycle.</sub>
+<sub>‡ Orleans has no caller-visible create or stop; grains activate on first
+call, so that row is activation latency rather than a comparable lifecycle.</sub>
 
-This table used to say "expect roughly a third of the JVM's throughput", and
-that is no longer where the numbers land — most of the gap was a scheduling
-hop and an async state machine on the receive path rather than anything
-inherent to the runtime.  On bulk messaging actor-ts is now ahead of every JVM
-arm.  On the alternating volley nobody is: the round-to-round spread on those
-columns runs from ±27 % to ±82 %, so **read that row's 🥇 as "came out highest
-this time" rather than as a winner** — only the gap down to Orleans survives
-it.
+These are **ratios, not absolutes**, on one machine, over local in-process
+message paths only — nothing here says anything about clustering, persistence
+or a real network.
 
-**Two things the JVM columns say that a single column could not.**
-
-*The licence pair.*  Akka and Pekko are the same lineage either side of a
-licence change, and at the same binding they agree to within their spreads on
-every row.  **Staying on an OSI-approved licence costs nothing in throughput.**
-
-*The binding pair.*  Each framework is measured through its Java API and
-through its Scala 3 API at the identical version, so the gap between them is
-the language binding and nothing else.  On four of the five rows there is no
-gap worth the name.  On one there is: at a batch of 1 000 the Scala arms run
-**36–38 % behind their Java siblings** — both pairs, independently, and large
-enough to survive their spreads (t = 3.4 and 2.8).  That is the cost of the
-idiomatic functional style, where an actor advances its state by returning a
-new behavior per message rather than mutating a field.  The effect shrinks to
-7–11 % at a batch of 10 000, which is consistent with the JIT eliminating the
-allocation once it has enough profile to work with — that part is a plausible
-mechanism rather than something this benchmark measured.
-
-The same actor model appears on three runtimes, which is what makes the
-runtime's own contribution visible rather than inferred.
-
-The spreads are the other half of the story, and this table leaves them out on
-purpose — they are in the full tables below.  They also grew: the JVM arms now
-launch a fresh process per run rather than measuring inside their build tool's
-already-warm one, which is how every other arm has always been measured and is
-the fairer shape, but a cold JVM is a noisier one.  Treat those four columns as
-an order of magnitude, not a ranking.  Elsewhere: a 20 % gap is a difference, a
-10 % gap is a tie.
-
-These are **ratios, not absolutes**, on one machine.  Read the columns, treat
-the last digit as fiction, and note that a 10 % gap here is inside the
-run-to-run noise.  A benchmark measures the workload it contains: these are
-local, in-process, single-node message paths, which is the part of an actor
-system a microbenchmark can measure honestly.  Nothing here says anything
-about clustering, persistence, or a real network.
-
-**[Full tables, methodology and caveats](./benchmarks/comparison/RESULTS.md)** —
-including the pinned version of every arm above, and what is deliberately
-*not* measured yet (clustering, persistence) and why.  Reproduce with
+**[Full tables and methodology](./benchmarks/comparison/RESULTS.md)** ·
+**[what the numbers mean](https://actor-ts.dev/reference/benchmarks/)** — the
+spread behind every figure, the pinned version of every arm, and what is
+deliberately not measured yet.  Reproduce with
 `bun run bench:compare -- --rounds=10`.
 
 ---
