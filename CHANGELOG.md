@@ -11,6 +11,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The default dispatcher wakes actors on the microtask queue, with a
+  macrotask fairness budget** (#1205).
+
+  `HybridDispatcher` is new and is now the default; `actor-ts.dispatcher.default`
+  gains the value `"hybrid"`, and `"immediate"` still selects the previous
+  behaviour.
+
+  The scheduling hop was the larger half of a request/response round trip. A
+  `setImmediate` costs roughly 2.4 µs, which a flooded actor amortises across
+  the batch it handles per turn and a request/response actor cannot amortise at
+  all — its mailbox is empty between messages, so it pays the hop per message.
+  Measured on a 10 000-exchange volley: 8.1 µs per round trip, of which about
+  4.8 µs was the two hops. Switching to `queueMicrotask` alone measured almost
+  four times faster and is unusable, because a microtask queue that refills
+  itself never lets the event loop reach timers or I/O.
+
+  The hybrid counts consecutive microtask-scheduled units and sends every 64th
+  through `setImmediate`, so the loop advances at least every ~1 024 messages
+  and the worst case degrades to exactly what `ImmediateDispatcher` always did.
+  The count is per dispatcher rather than per actor, because the microtask chain
+  is the union across every actor scheduled on it. Ordering is preserved across
+  a yield: units handed over while one is in flight queue behind it instead of
+  overtaking it.
+
+  A fairness smoke case runs on all three runtimes, which is where the relative
+  ordering of microtasks, immediates and timers is actually decided, and the
+  unit test proving the budget works is paired with one proving the same probe
+  starves an unbounded microtask dispatcher.
+
+  **Two timing consequences are worth knowing**, both of which follow from actor
+  turns becoming cheaper rather than from any semantic change:
+
+  - A supervision decision can now come back *inside* a batch. A handler that
+    throws suspends the cell, and the supervisor's `Resume` may land before the
+    batch loop re-checks the cell state — so the batch continues rather than
+    ending at the failure. The re-check still happens and still refuses to
+    deliver to a suspended actor; it simply finds the actor running again.
+  - A hub-style actor can observe `context.children` still containing a child
+    that is finishing stopping. A connection actor reports its disconnect from
+    `postStop`, while the message that unregisters it from its parent is sent
+    afterwards, so a fast enough parent turn sees the hook first. Framework-level
+    bookkeeping — a WebSocket server's `clients`, for instance — is unaffected;
+    only the raw child list shows the transient.
+
+- **A router no longer hands work to a routee that is stopping** (#154 follow-up).
+  `smallestMailbox` skipped terminated routees but not terminating ones, which
+  read a mailbox depth of 0 and so looked like the most attractive member of the
+  pool. A message routed there is accepted and then dead-lettered from the
+  termination drain. Rare enough to be invisible while every actor turn cost a
+  macrotask; reachable once they got cheaper.
+
 - **The receive and lifecycle paths stop paying for instrumentation nobody
   switched on** (#411, #974).
 

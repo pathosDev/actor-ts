@@ -1,6 +1,6 @@
 ---
 title: Dispatchers
-description: The component that decides when actors run — microtask vs immediate vs throughput, what each trades off, and how to configure or replace it.
+description: The component that decides when actors run — hybrid vs microtask vs immediate vs throughput, what each trades off, and how to configure or replace it.
 ---
 
 A **dispatcher** schedules the execution of actor message-processing
@@ -15,20 +15,59 @@ for "do this later": the **microtask queue** (`queueMicrotask`,
 the choice has real consequences for throughput, fairness, and
 latency.
 
-## The three built-in dispatchers
+## The four built-in dispatchers
 
-The framework ships three, exposed as classes you instantiate and
+The framework ships four, exposed as classes you instantiate and
 pass to `ActorSystem.create`:
 
 | Dispatcher | Schedules via | Trade-off |
 | --- | --- | --- |
-| `MicrotaskDispatcher` | `queueMicrotask` | Fastest.  Can starve I/O and timers under sustained actor load. |
-| `ImmediateDispatcher` *(default)* | `setImmediate` or `setTimeout(0)` | Lets I/O + timers interleave between actor messages.  Slightly higher per-message latency. |
+| `HybridDispatcher` *(default)* | `queueMicrotask`, and every 64th unit `setImmediate` | Microtask speed with a bounded escape, so timers and I/O still get a turn. |
+| `MicrotaskDispatcher` | `queueMicrotask` | Fastest.  Starves I/O and timers under sustained actor load — see the warning below. |
+| `ImmediateDispatcher` | `setImmediate` or `setTimeout(0)` | The previous default.  Lets I/O and timers interleave between every actor turn, at roughly 2.4 µs a hop. |
 | `ThroughputDispatcher` | `setImmediate` with a configurable run-N-then-yield budget | Like `ImmediateDispatcher` but drains up to `throughput` queued *actor turns* back-to-back before yielding.  Balances throughput against fairness **across** actors. |
 
-The default is `ImmediateDispatcher` — fairness with I/O is the right
-default for HTTP servers and broker-backed actors, both of which are
-common in actor-ts applications.
+### Why the default is a hybrid
+
+The two obvious choices are each wrong half the time, and which half
+depends on a property of your workload you do not control.
+
+`setImmediate` costs about 2.4 µs. An actor flooded with messages
+amortises that across the batch it handles per turn, so the cost
+disappears. An actor answering one request at a time cannot amortise
+anything — its mailbox is empty between messages, so it pays the full
+hop *per message*. Measured on a 10 000-exchange request/response
+volley, that was 8.1 µs per round trip, of which roughly 4.8 µs was
+the two scheduling hops. The work was the smaller half.
+
+`queueMicrotask` removes that cost — the same volley measured almost
+four times faster — and is unusable on its own, because microtasks
+drain completely before the event loop reaches timers or I/O. Two
+actors volleying re-queue a microtask from inside a microtask forever,
+and nothing else in the process ever runs again.
+
+The hybrid takes the speed and bounds the unfairness. It counts
+consecutive units scheduled as microtasks, and on reaching 64 sends
+one through `setImmediate` instead, which lets the loop advance before
+the count starts over. A unit is one actor's turn, itself up to
+`actor-ts.actor.throughput` messages, so the loop gets a turn at least
+every ~1 024 messages. The worst case is exactly what
+`ImmediateDispatcher` always did — never anything new.
+
+The count lives on the dispatcher rather than on each actor, and that
+is the load-bearing detail: the microtask chain is the union across
+every actor scheduled on it, so a per-actor budget would read 1 for
+each of two actors volleying forever, undercounting in precisely the
+case the budget exists to bound.
+
+:::caution[`MicrotaskDispatcher` is a measurement tool, not a production choice]
+It has no escape at all. Any workload that keeps actors busy — a
+volley, a pipeline, a fan-out — will starve timers, sockets and HTTP
+responses indefinitely, and the symptom is a process that appears
+healthy while nothing outside the actor system makes progress. Reach
+for the hybrid instead; it is the same scheduling primitive with a
+bound on it.
+:::
 
 :::note[Two different throughput knobs]
 A dispatcher's `throughput` counts **queued turns**, and each turn belongs
@@ -61,8 +100,11 @@ const system = ActorSystem.create('mixed-workload', actorSystemOptions);
   // throughput at the cost of HTTP-response latency.
 ```
 
-`ThroughputDispatcher` is the only one of the three that holds a queue of
-its own — the other two hand each unit straight to the runtime.  That queue
+`ThroughputDispatcher` is the only one that holds a queue of its own for
+scheduling purposes — the others hand each unit straight to the runtime.
+(The hybrid keeps a short list too, but only while a yield is in flight, so
+that units handed over during the yield are not overtaken by ones that
+arrive after it.)  That queue
 is a [`RingBuffer`](/reference/utility-helpers/) for the same reason a
 mailbox is: it is drained from the front `throughput` times per tick and it
 holds every actor's pending unit, so it is deepest exactly when the system
@@ -77,12 +119,15 @@ isn't:
 
 - **Compute-heavy actor pipelines with no I/O.**  An ETL-style job
   that reads from a journal, transforms in actors, writes to another
-  journal — no live HTTP requests, no broker callbacks.  `MicrotaskDispatcher`
-  here removes ~50 % of per-message overhead vs. immediate.
+  journal — no live HTTP requests, no broker callbacks.  Raising the
+  hybrid's budget (`Dispatchers.Hybrid(1_000)`) trades the fairness
+  you are not using for fewer yields.
 - **Latency-sensitive HTTP servers.**  HTTP responses need to flush
   promptly; if your actors monopolize the event loop, response
-  latency grows.  Stay on `ImmediateDispatcher` (the default) or
-  drop to a smaller throughput budget.
+  latency grows.  The default already yields on a budget, but a
+  workload that is *all* actor work with hard latency targets can
+  yield on every turn with `ImmediateDispatcher`, or drop to a smaller
+  throughput budget.
 - **Tests that need deterministic ordering.**  Microtasks complete
   before the next macrotask, so `MicrotaskDispatcher` is preferred
   for tests that expect "send N messages, observe all N effects"

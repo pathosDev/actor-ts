@@ -28,7 +28,7 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import type { Dispatcher, DispatcherErrorSink } from '../../../src/Dispatcher.js';
+import { type Dispatcher, type DispatcherErrorSink, Dispatchers } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
@@ -68,7 +68,18 @@ let dispatcher: CountingDispatcher;
 beforeEach(() => {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
-    .withLogLevel(LogLevel.Off);
+    .withLogLevel(LogLevel.Off)
+    // The *system* dispatcher is pinned for the same reason the actor's is:
+    // this file makes turns observable in order to reason about them, and the
+    // guardian's scheduling decides when a supervision decision comes back.
+    // Under the default it comes back on a microtask, which can land inside
+    // the `await` between two messages of a batch — so a failure that suspends
+    // the cell can be resumed again before the loop re-checks, and the batch
+    // legitimately continues.  That is correct (the re-check still runs; it
+    // just finds `running`), and `Supervision.test.ts` covers it under the
+    // real default.  Here it would only make the break conditions
+    // unobservable, which is the one thing these tests exist to observe.
+    .withDispatcher(Dispatchers.Immediate());
   system = ActorSystem.create('batching-test', systemOptions);
   dispatcher = new CountingDispatcher();
 });

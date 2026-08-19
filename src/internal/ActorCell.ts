@@ -796,6 +796,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ============================== Internal API ============================== */
 
   /** @internal */ isTerminated(): boolean { return this.state === 'terminated'; }
+  /**
+   * @internal — terminated, or on the way there.
+   *
+   * The distinction from {@link isTerminated} is the whole point: a cell that
+   * has accepted its `PoisonPill` but has not finished stopping still enqueues
+   * what it is handed, and then dead-letters it from the termination drain.  So
+   * "will this actor still do work?" is answered by this predicate, not by that
+   * one — anything routing or balancing on liveness wants this.
+   */
+  isStopping(): boolean { return this.state === 'terminated' || this.state === 'terminating'; }
   /** @internal */ _nextChildUid(): number { return ++this._childUidCounter; }
 
   /**

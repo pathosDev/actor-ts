@@ -260,7 +260,15 @@ actor-ts {
   }
 
   dispatcher {
-    default = "immediate"   # immediate | microtask | throughput
+    # hybrid | immediate | microtask | throughput
+    #
+    # hybrid wakes actors on the microtask queue and spends every 64th unit on
+    # a macrotask so timers and I/O still run; immediate is the previous
+    # default, one setImmediate per turn — fair, and ~2.4 us a hop that a
+    # request/response actor cannot amortise.  microtask is the unbounded form
+    # and starves the event loop under a sustained volley; it is kept for
+    # measurement, not for production.
+    default = "hybrid"
     # Queued units a ThroughputDispatcher drains per tick, ACROSS actors —
     # see actor.throughput above for the per-actor batch.
     throughput = 16
