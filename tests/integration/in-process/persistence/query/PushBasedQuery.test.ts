@@ -21,16 +21,20 @@ import { offsetStart } from '../../../../../src/persistence/query/PersistenceQue
 import type { Journal } from '../../../../../src/persistence/Journal.js';
 import type { PersistentEvent } from '../../../../../src/persistence/JournalTypes.js';
 
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
- * Most sleeps here are the fixture, not a wait: the suite measures push
- * *latency*, so the producer closures deliberately append after a beat so
- * the consumer is already parked, and test 2's `sleep(50)` is the
- * "nothing further arrives" window.  Only the subscribe/unsubscribe
- * bookkeeping in test 4 is sleep-then-assert (#418).
+ * Every remaining sleep here is a fixture rather than a wait, and each says so
+ * at its own call site.
+ *
+ * Two shapes only.  In a producer closure the delay is what puts the append
+ * *after* the consumer parked on `next()` — the thing the latency assertion
+ * measures — and "the consumer is parked" is not observable from outside the
+ * iterator, so there is nothing to poll for.  In test 2 the delay is an absence
+ * window: no fourth event may arrive, which is already true at t=0 and has to
+ * still hold later.  The subscribe/unsubscribe bookkeeping in test 4 was the
+ * one real sleep-then-assert and is an `awaitCondition` (#418).
  */
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('Push-based PersistenceQuery — InMemoryJournal', () => {
   test('1. delivers a freshly-appended event in well under 100ms', async () => {
@@ -42,7 +46,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     // Schedule an append AFTER the iterator is already waiting.
     const t0 = Date.now();
     void (async (): Promise<void> => {
-      await sleep(10);
+      await sleep(10);  // append after the consumer parked — the fixture the latency below measures
       await journal.append('a', [{ event: { n: 42 } }], 0);
     })();
 
@@ -65,7 +69,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
 
     // Concurrently with subscribe + catch-up, append a third event.
     void (async (): Promise<void> => {
-      await sleep(5);
+      await sleep(5);  // land the third append inside the subscribe + catch-up window
       await journal.append('a', [{ event: { n: 3 } }], 2);
     })();
 
@@ -80,6 +84,8 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     // Make sure no fourth event slipped in.
     let extra: IteratorResult<PersistentEvent<{ n: number }>> | null = null;
     void (async (): Promise<void> => { extra = await it.next(); })();
+    // An absence: no fourth event may arrive, so the condition is already true
+    // at t=0 and has to still hold when it is read.  Nothing to poll for.
     await sleep(50);
     expect(extra).toBeNull();
 
@@ -94,7 +100,7 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
 
     const t0 = Date.now();
     void (async (): Promise<void> => {
-      await sleep(10);
+      await sleep(10);  // append after the consumer parked — the fixture the latency below measures
       await journal.append('a', [{ event: { message: 'one' }, tags: ['orders'] }], 0);
     })();
 
@@ -144,7 +150,7 @@ describe('Push-based PersistenceQuery — SqliteJournal', () => {
 
     const t0 = Date.now();
     void (async (): Promise<void> => {
-      await sleep(10);
+      await sleep(10);  // append after the consumer parked — the fixture the latency below measures
       await journal.append('z', [{ event: { k: 'hi' } }], 0);
     })();
 
@@ -198,7 +204,7 @@ describe('Push-based PersistenceQuery — fallback', () => {
     const it = stream[Symbol.asyncIterator]();
 
     void (async (): Promise<void> => {
-      await sleep(20);
+      await sleep(20);  // append after the consumer parked, inside the 50 ms poll window
       await noBusJournal.append('a', [{ event: { n: 7 } }], 0);
     })();
 

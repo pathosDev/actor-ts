@@ -14,6 +14,7 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
+import { gracefulStop } from '../../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type Command = { kind: 'add'; n: number };
@@ -104,10 +105,10 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       await awaitCondition(() => preStartSuccesses === 1, {
         timeoutMs: 4_000, label: 'the first actor registered its persistenceId',
       });
-      a1.stop();
-      // Precondition: postStop releases the registration and publishes no
-      // state of its own, so there is nothing to poll for here (#418).
-      await Bun.sleep(50);
+      // The registration is released in `postStop`, so the re-spawn below needs
+      // the termination itself — `gracefulStop` waits for exactly that, which is
+      // what the 50 ms was guessing at (#418).
+      expect(await gracefulStop(a1, 4_000)).toBe(true);
 
       // Fresh spawn with the same pid — no failure.  Waiting for the *second*
       // success is what makes `preStartFailures === 0` mean anything; a wait

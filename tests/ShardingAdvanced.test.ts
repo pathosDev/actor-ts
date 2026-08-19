@@ -23,17 +23,19 @@ import {
   LeaderChanged,
 } from '../src/cluster/index.js';
 import type { ActorRef } from '../src/index.js';
+import { awaitCondition, sleep } from './util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Every remaining fixed wait in this file is the same one: a *settle* after the
+ * member views have converged, so that each shard region has processed the last
+ * `MemberUp` before a message is routed.
+ *
+ * It cannot be a poll.  A region keeps its own copy of the member list and does
+ * not expose it, so there is no observable "the region caught up" — and routing
+ * a message one gossip round early lands it on the previous owner, which is a
+ * different test than the one written here (#418).
+ */
+const letRegionsSeeTheNewMembers = (): Promise<void> => sleep(150);
 
 type NodeContext<TMessage> = {
   system: ActorSystem;
@@ -89,7 +91,7 @@ test('Self events fire when own member transitions to Up', async () => {
   );
   let selfUp = 0;
   cluster.subscribe(e => { if (e instanceof SelfUp) selfUp++; });
-  await sleep(100);
+  await awaitCondition(() => selfUp >= 1, { label: 'the node saw its own SelfUp' });
   expect(selfUp).toBeGreaterThanOrEqual(1);
   await cluster.leave();
   await system.terminate();
@@ -125,13 +127,19 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
     sys2,
     clusterOptions2,
   );
-  await sleep(300);
+  await awaitCondition(
+    () => c1.upMembers().length === 2 && c2.upMembers().length === 2,
+    { timeoutMs: 4_000, label: 'both nodes see a 2-member cluster' },
+  );
 
   let leaderSeen: string | null = null;
   c2.subscribe(e => { if (e instanceof LeaderChanged) leaderSeen = e.leader.fold(() => null as string | null, l => l.address.toString()); });
 
   await c1.leave(); await sys1.terminate();
-  await waitFor(() => leaderSeen === 'leader-x@10.11.0.2:32002', 1_500);
+  await awaitCondition(() => leaderSeen === 'leader-x@10.11.0.2:32002', {
+    timeoutMs: 4_000,
+    label: 'the survivor was announced as the new leader',
+  });
   // Explicit `expect<T>`: the only writer is the `subscribe` callback, so
   // flow analysis still has `leaderSeen` at its `null` initialiser here.
   expect<string | null>(leaderSeen).toBe('leader-x@10.11.0.2:32002');
@@ -176,13 +184,25 @@ test('Role filter: entities only land on members with the matching role', async 
   const n2 = await startNode<CounterCommand>({ systemName: 'rl', host: '10.12.0.2', port: 33002, seeds: ['10.12.0.1:33001'], roles: [], sharding: spawnRegion('n2') });
   const n3 = await startNode<CounterCommand>({ systemName: 'rl', host: '10.12.0.3', port: 33003, seeds: ['10.12.0.1:33001'], roles: ['backend'], sharding: spawnRegion('n3') });
 
-  await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
-  await sleep(150);
+  await awaitCondition(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), {
+    timeoutMs: 4_000,
+    label: 'all three nodes see a 3-member cluster',
+  });
+  await letRegionsSeeTheNewMembers();
 
   for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
     n1.region.tell({ id, kind: 'increment' });
   }
-  await sleep(400);
+  const handledOnBackends = (): number =>
+    Array.from(seen.get('n1')?.values() ?? []).reduce((total, hits) => total + hits, 0)
+    + Array.from(seen.get('n3')?.values() ?? []).reduce((total, hits) => total + hits, 0);
+  // Waiting for the eight messages to be *handled* is also what gives the
+  // absence assertion below its meaning: under a fixed delay, "n2 saw nothing"
+  // could equally mean nothing had been routed anywhere yet.
+  await awaitCondition(() => handledOnBackends() >= 8, {
+    timeoutMs: 4_000,
+    label: 'all eight entities were handled on a role-carrying node',
+  });
 
   expect(seen.get('n2')).toBeUndefined(); // n2 has no backend role
   const n1Count = Array.from(seen.get('n1')?.values() ?? []).reduce((addressA, addressB) => addressA + addressB, 0);
@@ -226,13 +246,19 @@ test('Proxy region routes but never hosts entities', async () => {
     },
   });
 
-  await waitFor(() => host.cluster.upMembers().length === 2 && proxy.cluster.upMembers().length === 2, 2_000);
-  await sleep(150);
+  await awaitCondition(
+    () => host.cluster.upMembers().length === 2 && proxy.cluster.upMembers().length === 2,
+    { timeoutMs: 4_000, label: 'both nodes see a 2-member cluster' },
+  );
+  await letRegionsSeeTheNewMembers();
 
   // Send from proxy; must route to host.
   proxy.region.tell({ id: 'x', kind: 'increment' });
   proxy.region.tell({ id: 'y', kind: 'increment' });
-  await sleep(300);
+  await awaitCondition(() => hosted.size >= 2, {
+    timeoutMs: 4_000,
+    label: 'both entities materialised somewhere',
+  });
 
   expect(hosted.size).toBe(2); // both entities materialised on host
 
@@ -282,17 +308,26 @@ test('Passivation stops idle entity and buffers next message until re-create', a
     );
     },
   });
-  await sleep(100);
+  await awaitCondition(() => node.cluster.upMembers().length === 1, {
+    timeoutMs: 4_000,
+    label: 'the single node reached Up',
+  });
 
   node.region.tell({ id: '1', kind: 'work' });
   node.region.tell({ id: '1', kind: 'sleep' });
-  await sleep(200);
+  await awaitCondition(() => stopped >= 1, {
+    timeoutMs: 4_000,
+    label: 'the idle entity was passivated',
+  });
   expect(created).toBe(1);
   expect(stopped).toBe(1);
 
   // Next message should cause a fresh entity (created==2).
   node.region.tell({ id: '1', kind: 'work' });
-  await sleep(200);
+  await awaitCondition(() => created >= 2, {
+    timeoutMs: 4_000,
+    label: 'the buffered message re-created the entity',
+  });
   expect(created).toBe(2);
 
   await stopNode(node);
@@ -322,17 +357,27 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
   const n2 = await startNode<CounterCommand>({ systemName: 'lsa', host: '10.15.0.2', port: 36002, seeds: ['10.15.0.1:36001'], sharding: mk('n2') });
   const n3 = await startNode<CounterCommand>({ systemName: 'lsa', host: '10.15.0.3', port: 36003, seeds: ['10.15.0.1:36001'], sharding: mk('n3') });
 
-  await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
-  await sleep(150);
+  await awaitCondition(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), {
+    timeoutMs: 4_000,
+    label: 'all three nodes see a 3-member cluster',
+  });
+  await letRegionsSeeTheNewMembers();
 
   // Materialize an entity per shard from n1.
   const ids = Array.from({ length: 12 }, (_, i) => `e${i}`);
   for (const id of ids) n1.region.tell({ id, kind: 'increment' });
 
-  // Allow initial allocation + a rebalance pass.
-  await sleep(1_200);
+  // The claim is the spread, so wait on the spread — the 1 200 ms was one
+  // rebalance interval plus hope, and it read these same two numbers afterwards.
+  const currentLoads = (): number[] =>
+    [hosted.get('n1') ?? 0, hosted.get('n2') ?? 0, hosted.get('n3') ?? 0];
+  await awaitCondition(
+    () => currentLoads().reduce((total, load) => total + load, 0) >= 12
+      && currentLoads().every((load) => load > 0),
+    { timeoutMs: 4_000, label: 'all twelve shards were allocated across all three nodes' },
+  );
 
-  const loads = [hosted.get('n1') ?? 0, hosted.get('n2') ?? 0, hosted.get('n3') ?? 0];
+  const loads = currentLoads();
   const total = loads.reduce((addressA, addressB) => addressA + addressB, 0);
   expect(total).toBeGreaterThanOrEqual(12);
   // Strategy should spread reasonably across all 3 nodes.
@@ -369,13 +414,21 @@ test('rememberEntities re-creates entities on the new owner after node death', a
   const n2 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], sharding: mk('n2') });
   const n3 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.3', port: 37003, seeds: ['10.16.0.1:37001'], sharding: mk('n3') });
 
-  await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
-  await sleep(200);
+  await awaitCondition(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), {
+    timeoutMs: 4_000,
+    label: 'all three nodes see a 3-member cluster',
+  });
+  await letRegionsSeeTheNewMembers();
 
   // Create a handful of entities from n1 so the coordinator registers them.
   const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
   for (const id of ids) n1.region.tell({ id, kind: 'increment' });
-  await sleep(500);
+  // All eight materialised — deliberately not "n2 has one", so the assertion
+  // below still carries the claim that the allocation reached n2 at all.
+  await awaitCondition(
+    () => ['n1', 'n2', 'n3'].reduce((total, node) => total + (active.get(node)?.size ?? 0), 0) >= 8,
+    { timeoutMs: 4_000, label: 'all eight entities materialised' },
+  );
 
   // Identify one entity living on n2, then kill n2.
   const before = active.get('n2') ?? new Set();
@@ -383,7 +436,12 @@ test('rememberEntities re-creates entities on the new owner after node death', a
   const movedEntity = before.values().next().value as string;
 
   await stopNode(n2);
-  await sleep(1_200);
+  const resurrected = (): boolean =>
+    (active.get('n1')?.has(movedEntity) ?? false) || (active.get('n3')?.has(movedEntity) ?? false);
+  await awaitCondition(resurrected, {
+    timeoutMs: 4_000,
+    label: 'the remembered entity was re-created on a survivor',
+  });
 
   // The moved entity must show up on n1 or n3 without any new user message.
   const resurrection = [

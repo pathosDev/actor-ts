@@ -188,11 +188,13 @@ describe('Cluster.bootstrap', () => {
       clusterBootstrapOptions2,
     );
     try {
-      const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline) {
-        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
-        await Bun.sleep(25);
-      }
+      // The hand-rolled deadline loop this replaces fell through silently, so a
+      // convergence that never happened arrived at the assertion below as a bare
+      // `2 !== 1` with no hint that the wait had expired (#418).
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+        { timeoutMs: 4_000, intervalMs: 25, label: 'both nodes saw a two-member cluster' },
+      );
       expect(nodeA.cluster.upMembers().length).toBe(2);
       expect(nodeB.cluster.upMembers().length).toBe(2);
     } finally {

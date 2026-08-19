@@ -14,9 +14,7 @@ import {
   Router,
   Terminated,
 } from '../src/index.js';
-import { awaitCondition } from './util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from './util/AwaitCondition.js';
 
 function newSystem(name = 'test'): ActorSystem {
   const sysOptions = ActorSystemOptions.create()
@@ -33,7 +31,7 @@ test('delivers messages in order, one at a time', async () => {
   const sys = newSystem();
   const ref = sys.spawn(Collect, 'c');
   for (let i = 0; i < 10; i++) ref.tell(i);
-  await sleep(80);
+  await awaitCondition(() => received.length >= 10, { label: 'all ten messages were handled' });
   expect(received).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   await sys.terminate();
 });
@@ -43,6 +41,8 @@ test('awaiting onReceive serializes subsequent messages', async () => {
   class S extends Actor<number> {
     override async onReceive(n: number): Promise<void> {
       events.push(`start:${n}`);
+      // The awaiting handler *is* the subject: the delay is what makes the turn
+      // yield, so a second message would interleave here if the mailbox let it.
       await sleep(5);
       events.push(`end:${n}`);
     }
@@ -52,7 +52,7 @@ test('awaiting onReceive serializes subsequent messages', async () => {
   ref.tell(1);
   ref.tell(2);
   ref.tell(3);
-  await sleep(80);
+  await awaitCondition(() => events.length >= 6, { label: 'all three turns started and ended' });
   expect(events).toEqual(['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3']);
   await sys.terminate();
 });
@@ -67,9 +67,9 @@ test('preStart runs before first message, postStop runs after', async () => {
   const sys = newSystem();
   const ref = sys.spawn(Lifecycle, 'l');
   ref.tell('hi');
-  await sleep(30);
+  await awaitCondition(() => events.includes('recv:hi'), { label: 'the message was handled' });
   ref.stop();
-  await sleep(30);
+  await awaitCondition(() => events.includes('postStop'), { label: 'postStop ran' });
   expect(events).toEqual(['preStart', 'recv:hi', 'postStop']);
   await sys.terminate();
 });
@@ -118,7 +118,7 @@ test('supervisor restarts child on exception, default strategy', async () => {
   ref.tell(1);
   ref.tell(-1);
   ref.tell(2);
-  await sleep(50);
+  await awaitCondition(() => starts.length >= 2, { label: 'the child was restarted' });
   expect(starts.length).toBeGreaterThanOrEqual(2);
   await sys.terminate();
 });
@@ -163,7 +163,7 @@ test('watch delivers Terminated when target stops', async () => {
   }
   const sys = newSystem();
   sys.spawn(Watcher, 'parent');
-  await sleep(40);
+  await awaitCondition(() => seen.length >= 1, { label: 'the watcher saw a Terminated' });
   expect(seen).toEqual(['w']);
   await sys.terminate();
 });
@@ -181,7 +181,7 @@ test('become swaps behaviour', async () => {
   ref.tell('1');
   ref.tell('2');
   ref.tell('3');
-  await sleep(30);
+  await awaitCondition(() => out.length >= 3, { label: 'all three messages were handled' });
   expect(out).toEqual(['a:1', 'b:2', 'b:3']);
   await sys.terminate();
 });
@@ -197,7 +197,8 @@ test('router.roundRobin distributes evenly', async () => {
   const sys = newSystem();
   const pool = sys.spawn(Router.roundRobin(3, Worker), 'pool');
   for (let i = 0; i < 9; i++) pool.tell('go');
-  await sleep(40);
+  const delivered = (): number => [...hits.values()].reduce((total, n) => total + n, 0);
+  await awaitCondition(() => delivered() >= 9, { label: 'all nine messages reached a routee' });
   expect(hits.size).toBe(3);
   for (const v of hits.values()) expect(v).toBe(3);
   await sys.terminate();
@@ -211,7 +212,7 @@ test('Broadcast delivers to every routee', async () => {
   const sys = newSystem();
   const pool = sys.spawn(Router.roundRobin(4, W), 'p');
   pool.tell(new Broadcast('hello'));
-  await sleep(40);
+  await awaitCondition(() => count >= 4, { label: 'every routee received the broadcast' });
   expect(count).toBe(4);
   await sys.terminate();
 });
@@ -228,7 +229,7 @@ test('PoisonPill stops the actor after processing earlier messages', async () =>
   ref.tell('b');
   ref.tell(PoisonPill.instance as unknown as string);
   ref.tell('c'); // goes to dead letters
-  await sleep(30);
+  await awaitCondition(() => out.includes('stopped'), { label: 'the PoisonPill stopped the actor' });
   expect(out).toEqual(['a', 'b', 'stopped']);
   await sys.terminate();
 });
@@ -246,9 +247,11 @@ test('dead-letter event stream sees undeliverable messages', async () => {
   sys.spawn(Listener, 'listener');
   const ref = sys.spawn(Nothing, 'n');
   ref.stop();
-  await sleep(30);
+  await awaitCondition(() => sys._resolvePath(['user', 'n']).isNone(), {
+    label: 'the target reached the terminated state',
+  });
   ref.tell('too-late');
-  await sleep(30);
+  await awaitCondition(() => seen.includes('too-late'), { label: 'the dead letter reached the listener' });
   expect(seen).toContain('too-late');
   await sys.terminate();
 });
@@ -264,7 +267,7 @@ test('setReceiveTimeout fires ReceiveTimeout', async () => {
   }
   const sys = newSystem();
   sys.spawn(T, 't');
-  await sleep(80);
+  await awaitCondition(() => fired, { label: 'ReceiveTimeout fired' });
   expect(fired).toBe(true);
   await sys.terminate();
 });
