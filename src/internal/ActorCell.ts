@@ -1189,7 +1189,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         // System messages always come first, and they can change the state.
         while (this.mailbox.hasSystemMessages()) {
           const systemEnvelope = this.mailbox.dequeueSystem()!;
-          await this.handleSystemCommand(systemEnvelope.message as SystemCommand);
+          const handledSystem = this.handleSystemCommand(systemEnvelope.message as SystemCommand);
+          if (handledSystem !== undefined) await handledSystem;
           if (this.state === 'terminated') return;
         }
 
@@ -1215,7 +1216,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           this.handleThrottleExcess(env);
           break;
         }
-        await this.handleUserMessage(env);
+        // Await only what actually suspended.  A handler that returns nothing
+        // returns nothing all the way up, and the batch moves to the next
+        // message without a microtask in between.
+        const handled = this.handleUserMessage(env);
+        if (handled !== undefined) await handled;
       }
     } finally {
       this.processing = false;
@@ -1225,8 +1230,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async handleSystemCommand(command: SystemCommand): Promise<void> {
-    await match(command)
+  /**
+   * Returns whatever the matched arm returns, awaited by the caller only when
+   * it is thenable.  Four of the nine arms are synchronous — suspend, resume
+   * and the two watch-bookkeeping ones — and an unconditional `await` here
+   * charged each of them a microtask hop to hand back `undefined`.  Two run
+   * per actor lifecycle, so a spawn paid for it twice.
+   */
+  private handleSystemCommand(command: SystemCommand): void | Promise<void> {
+    return match(command)
       .with({ kind: 'create' }, () => this.onCreate())
       .with({ kind: 'terminate' }, () => this.onTerminate())
       .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
@@ -1235,7 +1247,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       .with({ kind: 'failure' }, (signal) => this.onFailure(signal))
       .with({ kind: 'childTerminated' }, (signal) => this.onChildTerminated(signal))
       .with({ kind: 'watchNotify' }, (signal) => this.onWatchNotify(signal))
-      .with({ kind: 'receiveTimeout' }, async () => this.onReceiveTimeout())
+      .with({ kind: 'receiveTimeout' }, () => this.onReceiveTimeout())
       .exhaustive();
   }
 
@@ -1280,10 +1292,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.postSignalEnvelope({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
   }
 
-  private async onReceiveTimeout(): Promise<void> {
-    if (this.state === 'running') {
-      await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
-    }
+  private onReceiveTimeout(): void | Promise<void> {
+    if (this.state !== 'running') return;
+    return this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
   }
 
   private async onCreate(): Promise<void> {
@@ -1609,12 +1620,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     ).inc();
   }
 
-  private async handleUserMessage(env: Envelope<TMessage>): Promise<void> {
+  /**
+   * Returns `void | Promise<void>` rather than always a promise, and every
+   * caller awaits only what is actually thenable.
+   *
+   * An `async` method allocates a promise and a heap frame and costs a
+   * microtask hop whether or not anything in it ever suspends — and the
+   * common receive handler does not suspend: it counts something, updates
+   * a field, forwards a message and returns nothing.  Three of these were
+   * stacked on the path of every message (this one, `_dispatchToBehavior`,
+   * and the `await` on the behavior itself), so a handler that returned
+   * `undefined` still paid for two promises, two frames and three microtask
+   * jobs before the next message could be touched.
+   */
+  private handleUserMessage(env: Envelope<TMessage>): void | Promise<void> {
     const message = env.message;
 
     if (message === (PoisonPill.instance as unknown as TMessage)) {
-      await this.onTerminate();
-      return;
+      return this.onTerminate();
     }
     if (message === (Kill.instance as unknown as TMessage)) {
       this.failToParent(new ActorKilledError(), message);
@@ -1754,11 +1777,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // context: `runReported` opens one `LogContext.runFresh` per turn, so the
     // `else` here means "no context", not "whatever store armed this turn"
     // (#718).  Reverse that and this branch silently inherits again.
+    // `LogContext.run` is `run<T>(context, () => T): T` — it hands back
+    // whatever the thunk returns, so a synchronous dispatch stays synchronous
+    // through the MDC branch as well as around it.
     if (env.context) {
-      await LogContext.run(env.context, () => this._dispatchToBehavior(env, span, tracer, metrics));
-    } else {
-      await this._dispatchToBehavior(env, span, tracer, metrics);
+      return LogContext.run(env.context, () => this._dispatchToBehavior(env, span, tracer, metrics));
     }
+    return this._dispatchToBehavior(env, span, tracer, metrics);
   }
 
   /**
@@ -1773,12 +1798,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * into {@link handleUserMessage} because the MDC branch needs to be able to
    * call it through `LogContext.run`.
    */
-  private async _dispatchToBehavior(
+  private _dispatchToBehavior(
     env: Envelope<TMessage>,
     span: Span | null,
     tracer: Tracer,
     metrics: MetricsRegistry | null,
-  ): Promise<void> {
+  ): void | Promise<void> {
     const message = env.message;
     this._currentSender = env.sender;
     this._currentEnvelope = env;
@@ -1788,129 +1813,187 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // recording?" would leave that message with no way to know when it began —
     // and `handleTimeMs` for it would have to be invented.  There is no cheaper
     // source for the answer; the start of the handler is only knowable by
-    // having read the clock at the start of the handler.  The end read below
-    // *is* gated, because nothing reads a duration nobody asked for.  See
-    // `tests/unit/devtools/ExplainPlan.test.ts` — "a recorder switched on
-    // mid-handling still gets a real atMs (#411)" is the test that forbids it.
+    // having read the clock at the start of the handler.  The end read in
+    // {@link _dispatchEpilogue} *is* gated, because nothing reads a duration
+    // nobody asked for.  See `tests/unit/devtools/ExplainPlan.test.ts` — "a
+    // recorder switched on mid-handling still gets a real atMs (#411)" is the
+    // test that forbids it.
     const startNs = performance.now();
     // Wall clock at the start — read only when a recorder is already on, so
     // the uninstrumented message still pays no `Date.now()` here (#411).
     //
-    // #411 dropped the read outright and rebuilt the stamp in the `finally`
-    // as `Date.now() - elapsedMs`.  That subtraction cannot be exact: the end
-    // read floors to whole milliseconds while `elapsedMs` is fractional, so
-    // the result sits up to 1 ms BEFORE the handling really began — always in
-    // that direction, since truncation is one-sided.  Invisible in `atMs`
-    // alone and fatal one field over, because `mailboxWaitMs` subtracts an
-    // integral `enqueuedAtMs` from it: an idle actor, whose true wait is
-    // microseconds, reported a negative wait for all but a handful of its
-    // messages, and stamps ran backwards through a ring the panel sorts by
-    // them.
+    // #411 dropped the read outright and rebuilt the stamp in the epilogue as
+    // `Date.now() - elapsedMs`.  That subtraction cannot be exact: the end read
+    // floors to whole milliseconds while `elapsedMs` is fractional, so the
+    // result sits up to 1 ms BEFORE the handling really began — always in that
+    // direction, since truncation is one-sided.  Invisible in `atMs` alone and
+    // fatal one field over, because `mailboxWaitMs` subtracts an integral
+    // `enqueuedAtMs` from it: an idle actor, whose true wait is microseconds,
+    // reported a negative wait for all but a handful of its messages, and
+    // stamps ran backwards through a ring the panel sorts by them.
     //
     // So the read comes back, gated on its only reader rather than
     // unconditional — which is what #411 was actually measuring.
-    //
-    // One local, not a `number` plus a `recording` boolean: this method is
-    // `async`, so everything live across the `await` is a slot in a
-    // heap-allocated frame, and `-1` says "no recorder when this started"
-    // without a second one.
     const startedAtMs = this._explain !== null ? Date.now() : -1;
-    let failure: Error | null = null;
     // What the behavior actually sees.  Differs from `message` only for a
     // `watchWith` registration, which swaps the signal for the watcher's
     // own domain message just below.
     let delivered = message;
+    let failure: Error | null = null;
+    // A `Terminated` we are not watching is consumed rather than delivered —
+    // but it is still a dispatch, so it still ends in the epilogue, exactly as
+    // it did when that epilogue was a `finally` and this was an early `return`
+    // through it.
+    let unwatched = false;
+    let result: void | Promise<void> = undefined;
     try {
       if (message instanceof Terminated) {
-        // Only deliver when we are actually watching.
         const key = watchKeyOf(message.actor);
         if (!this._watching.has(key)) {
-          this._currentSender = null;
-          this._currentEnvelope = null;
-          return;
-        }
-        this._watching.delete(key);
-        // The substitution belongs on the watcher, not on the dying cell:
-        // that one notifies through `_watchers`, a set of *refs*, and has no
-        // way to reach the per-watcher map.  Doing it here also covers the
-        // immediate `Terminated` that `_addWatcher` sends when the target is
-        // already gone, because `watchWith` records the message before it
-        // registers.  The envelope keeps the original signal, so a trace or
-        // an explain plan still shows the death that caused this dispatch.
-        if (this._watchWithMessages.has(key)) {
-          delivered = this._watchWithMessages.get(key) as TMessage;
-          this._watchWithMessages.delete(key);
+          unwatched = true;
+        } else {
+          this._watching.delete(key);
+          // The substitution belongs on the watcher, not on the dying cell:
+          // that one notifies through `_watchers`, a set of *refs*, and has no
+          // way to reach the per-watcher map.  Doing it here also covers the
+          // immediate `Terminated` that `_addWatcher` sends when the target is
+          // already gone, because `watchWith` records the message before it
+          // registers.  The envelope keeps the original signal, so a trace or
+          // an explain plan still shows the death that caused this dispatch.
+          if (this._watchWithMessages.has(key)) {
+            delivered = this._watchWithMessages.get(key) as TMessage;
+            this._watchWithMessages.delete(key);
+          }
         }
       }
-      const behavior = this.behaviorStack[this.behaviorStack.length - 1];
-      if (span) {
-        await tracer.withActiveSpan(span, () => behavior(delivered));
-      } else {
-        await behavior(delivered);
+      if (!unwatched) {
+        const behavior = this.behaviorStack[this.behaviorStack.length - 1];
+        result = span
+          ? tracer.withActiveSpan(span, () => behavior(delivered))
+          : behavior(delivered);
       }
-      this._resetReceiveTimer();
-      if (span) span.setStatus('ok');
     } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      failure = err;
-      if (span) {
-        span.recordException(err);
-        span.setStatus('error', err.message);
-      }
-      // The message supervision is told about is the one the handler
-      // actually choked on — under `watchWith` that is the domain message,
-      // not the `Terminated` it replaced.
-      this.failToParent(err, delivered);
-    } finally {
-      if (span) span.end();
-      // The second clock read, and the one that can be skipped: its three
-      // consumers below are each null-gated, so with metrics, the explain
-      // recorder and the dispatch observer all off, this was a `performance.now()`
-      // per message computing a number nobody would look at.  `schedule` has
-      // gated its own read this way since #411; this is the same pattern one
-      // method on.  `0` is never observed — every reader of `elapsedMs` sits
-      // behind the same condition that produced it.
-      const observer = this.system._dispatchObserver;
-      const elapsedMs = metrics !== null || this._explain !== null || observer !== null
-        ? performance.now() - startNs
-        : 0;
-      // Record handler duration in seconds — Prom convention.  Skipped
-      // entirely, not sent to a noop, so the two literals are not built for
-      // a call that discards them (#411).
-      if (metrics !== null) {
-        metrics.histogram(
-          'actor_message_handler_seconds', {},
-          { help: 'Time spent inside actor onReceive handlers, seconds.' },
-        ).observe(elapsedMs / 1000);
-      }
-      // One null check on the hot path; the recorder only exists
-      // while somebody is inspecting this actor.
-      //
-      // The stamp taken on the way in is used whenever there was one.  It is
-      // missing for exactly one message — the one whose own handler switched
-      // the recorder on, so `_explain` was null at the top and is not here —
-      // and for that one the end read minus the duration is the only estimate
-      // available.  `Math.ceil` undoes its bias rather than leaving it: the
-      // error is known to lie in [0, 1) ms and to be one-directional, so
-      // rounding up lands on the millisecond the clock would have shown at
-      // the start, or the one after, and never on the one before.  That is
-      // what keeps `mailboxWaitMs` from going negative here too.
-      if (this._explain !== null) {
-        this._recordExplain(
-          env,
-          startedAtMs >= 0 ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
-          elapsedMs,
-          failure,
-          span,
-        );
-      }
-      // The whole-system profiler (#226).  Read directly off the system rather
-      // than through the extension chain, and read once — the gate above needs
-      // the same answer this call does.
-      if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
-      this._currentSender = null;
-      this._currentEnvelope = null;
+      // A handler that threw synchronously — or the watch bookkeeping above,
+      // which stays inside the `try` so that a malformed `Terminated` reaches
+      // supervision rather than the dispatcher's error sink, as it always did.
+      failure = this._dispatchFailed(e, delivered, span);
     }
+
+    if (unwatched || failure !== null) {
+      this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, failure);
+      return;
+    }
+    // The fork, and the only place the two paths diverge.  `undefined` is the
+    // overwhelmingly common return of a receive handler, and testing for a
+    // `then` costs one property read — against the promise, the heap frame and
+    // the microtask that an `await` would have cost unconditionally.
+    if (result !== undefined && typeof (result as Promise<void>).then === 'function') {
+      return (result as Promise<void>).then(
+        () => {
+          this._dispatchSucceeded(span);
+          this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, null);
+        },
+        (e: unknown) => {
+          const asyncFailure = this._dispatchFailed(e, delivered, span);
+          this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, asyncFailure);
+        },
+      );
+    }
+    this._dispatchSucceeded(span);
+    this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, null);
+  }
+
+  /**
+   * The success tail, shared by both paths so that "the handler returned" has
+   * one implementation rather than two transcriptions of it.
+   */
+  private _dispatchSucceeded(span: Span | null): void {
+    this._resetReceiveTimer();
+    if (span) span.setStatus('ok');
+  }
+
+  /**
+   * The failure tail, shared the same way — a synchronous `throw` and a
+   * rejected promise have to reach supervision by the same route, carrying the
+   * same message identity, or the two paths are equivalent only until
+   * something goes wrong.
+   */
+  private _dispatchFailed(cause: unknown, delivered: TMessage, span: Span | null): Error {
+    const err = cause instanceof Error ? cause : new Error(String(cause));
+    if (span) {
+      span.recordException(err);
+      span.setStatus('error', err.message);
+    }
+    // The message supervision is told about is the one the handler
+    // actually choked on — under `watchWith` that is the domain message,
+    // not the `Terminated` it replaced.
+    this.failToParent(err, delivered);
+    return err;
+  }
+
+  /**
+   * Everything that has to happen once a dispatch is over, however it ended.
+   *
+   * This was a `finally` block, and a `finally` is precisely what a fork in the
+   * control flow costs you: the synchronous path and the promise path cannot
+   * share one.  A method keeps the guarantee the `finally` gave — every path
+   * runs it, exactly once — without either path owning a copy of it.
+   */
+  private _dispatchEpilogue(
+    env: Envelope<TMessage>,
+    span: Span | null,
+    metrics: MetricsRegistry | null,
+    startNs: number,
+    startedAtMs: number,
+    failure: Error | null,
+  ): void {
+    if (span) span.end();
+    // The second clock read, and the one that can be skipped: its three
+    // consumers below are each null-gated, so with metrics, the explain
+    // recorder and the dispatch observer all off, this was a `performance.now()`
+    // per message computing a number nobody would look at.  `schedule` has
+    // gated its own read this way since #411.  `0` is never observed — every
+    // reader of `elapsedMs` sits behind the same condition that produced it.
+    const observer = this.system._dispatchObserver;
+    const elapsedMs = metrics !== null || this._explain !== null || observer !== null
+      ? performance.now() - startNs
+      : 0;
+    // Record handler duration in seconds — Prom convention.  Skipped
+    // entirely, not sent to a noop, so the two literals are not built for
+    // a call that discards them (#411).
+    if (metrics !== null) {
+      metrics.histogram(
+        'actor_message_handler_seconds', {},
+        { help: 'Time spent inside actor onReceive handlers, seconds.' },
+      ).observe(elapsedMs / 1000);
+    }
+    // One null check on the hot path; the recorder only exists
+    // while somebody is inspecting this actor.
+    //
+    // The stamp taken on the way in is used whenever there was one.  It is
+    // missing for exactly one message — the one whose own handler switched
+    // the recorder on, so `_explain` was null at the top and is not here —
+    // and for that one the end read minus the duration is the only estimate
+    // available.  `Math.ceil` undoes its bias rather than leaving it: the
+    // error is known to lie in [0, 1) ms and to be one-directional, so
+    // rounding up lands on the millisecond the clock would have shown at
+    // the start, or the one after, and never on the one before.  That is
+    // what keeps `mailboxWaitMs` from going negative here too.
+    if (this._explain !== null) {
+      this._recordExplain(
+        env,
+        startedAtMs >= 0 ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
+        elapsedMs,
+        failure,
+        span,
+      );
+    }
+    // The whole-system profiler (#226).  Read directly off the system rather
+    // than through the extension chain, and read once — the gate above needs
+    // the same answer this call does.
+    if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
+    this._currentSender = null;
+    this._currentEnvelope = null;
   }
 
   /* =============================== Supervision ============================== */
