@@ -85,6 +85,12 @@ export abstract class ActorRef<TMessage = unknown> {
     // `msg.replyTo` work without the caller supplying it.  Recipients
     // that read `this.sender` see the same ref (passed via `tell`'s
     // second arg).
+    //
+    // The spread stays, and was measured rather than assumed: it is the last
+    // per-ask allocation of any size, and both ways around it are worse.
+    // Writing `replyTo` onto the caller's object is observable — callers reuse
+    // message objects — and a prototype-based stand-in breaks the wire, since
+    // serialising a remote ask walks own properties and would drop it.
     const enriched =
       typeof message === 'object' && message !== null
         ? ({ ...(message as object), replyTo: ref } as unknown as TMessage)
@@ -117,6 +123,29 @@ export abstract class ActorRef<TMessage = unknown> {
  * class has a concrete reply-ref to instantiate without any module-cycle
  * gymnastics — `AskResponseRef extends ActorRef`, both in the same file.
  */
+/**
+ * `actor-ts://<system>/temp`, one per system name.
+ *
+ * The reply ref's own segment still gets a fresh `ActorPath` — it has to, the
+ * name is different every time — but the two above it are constant, and
+ * rebuilding them meant running {@link ActorPath}'s name validation over
+ * `'temp'` on every ask forever.
+ *
+ * Keyed by system name and never evicted, which is sound because the key space
+ * is the set of `ActorSystem` names a process has created: one or two in an
+ * application, a few dozen across a test run, and each entry is a path object.
+ */
+const tempPathRoots = new Map<string, ActorPath>();
+
+function tempPathRootFor(systemName: string): ActorPath {
+  let root = tempPathRoots.get(systemName);
+  if (root === undefined) {
+    root = new ActorPath('', null, systemName).child(TEMP_SEGMENT);
+    tempPathRoots.set(systemName, root);
+  }
+  return root;
+}
+
 export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   readonly path: ActorPath;
   readonly promise: Promise<T>;
@@ -124,15 +153,32 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   private rejectFunction!: (err: Error) => void;
   private settled = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private readonly settleCallbacks: Array<() => void> = [];
+  /**
+   * `null` until something registers, which for a local ask is never.
+   *
+   * Only the cluster uses this — it hangs the teardown of its wire
+   * registration here — and every local ask was allocating the array anyway.
+   */
+  private settleCallbacks: Array<() => void> | null = null;
 
   constructor(systemName: string, name: string, timeoutMs: number, targetLabel: string) {
     super();
-    this.path = new ActorPath('', null, systemName).child(TEMP_SEGMENT).child(name);
+    // Two of the three path constructions per ask were the same constant
+    // prefix, rebuilt (and re-validated, character by character) every time.
+    // Cached per system name, which is the only thing that varies: a process
+    // has one or two, and a test suite a few dozen.
+    this.path = tempPathRootFor(systemName).child(name);
     this.promise = new Promise<T>((resolve, reject) => {
       this.resolveFunction = resolve;
       this.rejectFunction = reject;
     });
+    // One `setTimeout` per ask, kept deliberately.  A shared deadline wheel
+    // would amortise the pair across many asks, and would also change what a
+    // timeout *means*: a bucketed wheel fires up to one bucket late, so a
+    // 5 s ask could reject at 5.1 s.  That is a semantic change to buy back a
+    // small share of a setup cost the pooled entropy and the cached temp path
+    // have already taken most of.  Revisit only with a profile showing timers
+    // are still material.
     if (timeoutMs > 0) {
       this.timer = setTimeout(() => {
         if (this.settled) return;
@@ -162,14 +208,16 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
    */
   _onSettled(callback: () => void): void {
     if (this.settled) { callback(); return; }
-    this.settleCallbacks.push(callback);
+    (this.settleCallbacks ??= []).push(callback);
   }
 
   private settle(): void {
     this.settled = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    for (const callback of this.settleCallbacks) callback();
-    this.settleCallbacks.length = 0;
+    if (this.settleCallbacks !== null) {
+      for (const callback of this.settleCallbacks) callback();
+      this.settleCallbacks = null;
+    }
   }
 }
 
