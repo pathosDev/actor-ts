@@ -12,9 +12,8 @@ import {
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
 import { ActorStopped, Terminated } from '../../src/SystemMessages.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'watch-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())

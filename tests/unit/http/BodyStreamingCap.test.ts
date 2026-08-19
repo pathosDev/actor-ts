@@ -42,6 +42,7 @@ import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { completeJson, path, post, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { sleep } from '../../util/AwaitCondition.js';
 
 /** Small enough that the whole exchange fits in a few hundred milliseconds. */
 const CAP_BYTES = 16 * 1024;
@@ -98,8 +99,6 @@ async function start(backend: HttpServerBackend, routes: Route): Promise<number>
     throw e;
   }
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Status code off an HTTP/1.1 response line, or `null` if none arrived. */
 function statusOf(response: string): number | null {

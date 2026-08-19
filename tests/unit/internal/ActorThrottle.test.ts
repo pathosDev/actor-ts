@@ -12,12 +12,10 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ImmediateDispatcher, MicrotaskDispatcher } from '../../../src/Dispatcher.js';
 import type { Dispatcher } from '../../../src/Dispatcher.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 let sys: ActorSystem;
 beforeEach(() => {

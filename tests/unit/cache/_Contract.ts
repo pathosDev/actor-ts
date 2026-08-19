@@ -34,8 +34,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import type { Cache } from '../../../src/cache/Cache.js';
 import { acquireLock } from '../../../src/cache/CacheLock.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 export type CacheContractSpec = {
   /** Display name for the backend.  Used as the test-name prefix. */

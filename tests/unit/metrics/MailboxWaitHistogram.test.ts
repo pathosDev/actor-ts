@@ -20,10 +20,9 @@ import { MAILBOX_WAIT_BUCKETS_SECONDS } from '../../../src/metrics/Constants.js'
 import { DEFAULT_HISTOGRAM_BUCKETS } from '../../../src/metrics/Metrics.js';
 import type { MetricsRegistry, MetricSample } from '../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const WAIT = 'actor_mailbox_wait_seconds';
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 function samplesOf(registry: MetricsRegistry): ReadonlyArray<MetricSample> {
   return registry.collect().filter((s) => s.name === WAIT);

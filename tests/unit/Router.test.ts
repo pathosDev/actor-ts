@@ -24,9 +24,8 @@ import {
 import type { ActorRef } from '../../src/ActorRef.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../../src/util/Constants.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 /** Total deliveries recorded by the counting/registering routees. */
 const totalHits = (hits: Map<string, number>): number =>
   Array.from(hits.values()).reduce((sum, count) => sum + count, 0);

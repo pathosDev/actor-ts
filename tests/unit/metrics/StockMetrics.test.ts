@@ -16,9 +16,7 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 class Echo extends Actor<string> {
   override onReceive(_m: string): void { /* tick */ }

@@ -24,6 +24,7 @@ import {
   type WebsocketClientConstructor,
   type WebsocketLike,
 } from '../../../../src/http/websocket/WebsocketConstructor.js';
+import { sleep } from '../../../util/AwaitCondition.js';
 
 type Emitted = { readonly level: string; readonly message: string };
 
@@ -83,8 +84,6 @@ class OversizeClient extends WebsocketClientActor<string, string> {
   }
   onMessage(_message: string): void {}
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitUntil(condition: () => boolean, timeoutMs = 4000): Promise<void> {
   const start = Date.now();

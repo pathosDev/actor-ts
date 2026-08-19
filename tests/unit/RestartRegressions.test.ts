@@ -11,7 +11,7 @@ import {
   type ActorRef,
   type SupervisorStrategy,
 } from '../../src/index.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /**
  * Regressions from the restart-stops-children change (#634).  Each of these
@@ -21,7 +21,6 @@ import { awaitCondition } from '../util/AwaitCondition.js';
 
 const quiet = (): ActorSystemOptions =>
   ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off) as ActorSystemOptions;
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 describe('restart regressions', () => {
   test('terminate() settles when it races a parked restart — #1029', async () => {

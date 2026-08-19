@@ -3,7 +3,7 @@ import { acquireLock } from '../../../src/cache/CacheLock.js';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
 import { DEFAULT_MAX_ENTRIES, InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { runCacheContractTests } from './_Contract.js';
 
 // Backend-agnostic contract — every Cache impl must pass these.
@@ -15,8 +15,6 @@ describe('InMemoryCache — contract', () => {
     factory: async () => new InMemoryCache(),
   });
 });
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('InMemoryCache — get/set round-trip', () => {
   test('set then get returns the value', async () => {

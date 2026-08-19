@@ -30,9 +30,7 @@ import {
   type BackoffOptions,
 } from '../../../src/pattern/BackoffSupervisor.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 /** Records each `delayFor(n)` call so tests can assert exact restart counts. */
 class RecordingPolicy implements BackoffPolicy {

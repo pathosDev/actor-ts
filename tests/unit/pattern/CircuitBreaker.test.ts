@@ -6,8 +6,7 @@ import {
 } from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerOptions } from '../../../src/pattern/CircuitBreakerOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 describe('CircuitBreaker — basics', () => {
   test('starts closed and passes through successful calls', async () => {

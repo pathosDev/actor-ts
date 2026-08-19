@@ -26,9 +26,7 @@ import { ReceiveTimeout } from '../../src/SystemMessages.js';
 import type { LogContextEntry } from '../../src/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { ManualScheduler } from '../../src/testkit/ManualScheduler.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 describe('LogContext — actor-to-actor propagation', () => {
   test('tell from within run() carries the context to the receiver', async () => {

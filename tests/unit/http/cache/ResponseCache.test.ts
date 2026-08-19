@@ -3,8 +3,7 @@ import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { cached } from '../../../../src/http/cache/ResponseCache.js';
 import { complete, completeJson } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../../util/AwaitCondition.js';
 
 function makeRequest(path: string, params: Record<string, string> = {}): HttpRequest {
   return { method: 'GET', path, headers: {}, query: {}, params, body: null };

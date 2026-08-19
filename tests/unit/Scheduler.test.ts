@@ -2,9 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorPath } from '../../src/ActorPath.js';
 import { Scheduler } from '../../src/Scheduler.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Captures `tell` calls into an array for verification. */
 class RecordingRef<T = unknown> extends ActorRef<T> {

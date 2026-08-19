@@ -14,9 +14,7 @@ import type {
 } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * In-memory socket adapter with test hooks.  Like the real adapters, it

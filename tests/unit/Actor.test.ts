@@ -7,9 +7,7 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Directive } from '../../src/Supervision.js';
 import { Behaviors, same } from '../../src/typed/Behaviors.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 function newSystem(name = 'actor-unit'): ActorSystem {
   const sysOptions = ActorSystemOptions.create()

@@ -18,7 +18,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import type { Journal } from '../../../src/persistence/Journal.js';
 import type { JournalEntry } from '../../../src/persistence/JournalTypes.js';
@@ -51,8 +51,6 @@ type OrderData = {
   carrier: string | null;
   cancelReason: string | null;
 };
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * Wait until the journal holds exactly `count` events for `persistenceId`.
