@@ -5,6 +5,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { ActorContext } from '../../../src/ActorContext.js';
 import type { MessageExplain } from '../../../src/internal/Instrumentation.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 type Probe = {
   readonly plan: () => ReadonlyArray<MessageExplain>;
@@ -38,6 +39,9 @@ class RecordedActor extends Actor<string> {
     // would never show up as a completed handling.
     if (message === 'stash-me' && !this.accepting) { this.context.stash(); return; }
     if (message === 'unstash') { this.accepting = true; this.context.unstashAll(); return; }
+    // A fixture, not a wait: this handler has to genuinely take 40 ms, because
+    // the recorded `handleTimeMs` and the next message's `mailboxWaitMs` are
+    // both asserted `toBeGreaterThan(30)` against exactly this delay.
     if (message === 'slow') await new Promise((resolve) => setTimeout(resolve, 40));
   }
 }
@@ -65,10 +69,21 @@ async function spawnRecorded(
     () => new RecordedActor(capacity, (p) => { registered = p; }),
     'recorded',
   );
-  while (registered === null) await new Promise((resolve) => setTimeout(resolve, 5));
+  await awaitCondition(() => registered !== null, {
+    label: 'the recorded actor ran preStart and handed back its probe',
+  });
   return { probe: registered, ref };
 }
 
+/**
+ * Give the recorded actor time to work through everything told to it.
+ *
+ * A fixed delay rather than a poll on `probe.plan().length`, because most
+ * assertions below are on an *exact* plan (`toEqual([...])`, `toHaveLength(2)`)
+ * and several deliberately overrun a bounded ring.  A poll returns on the entry
+ * that reaches the expected length and never sees a surplus one, so it would
+ * turn every one of those into a test that cannot fail.
+ */
 const settle = (ms = 80): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('explain plan — recording', () => {
@@ -127,6 +142,9 @@ describe('explain plan — recording', () => {
             plan: () => this.context.explainPlan(),
             context: () => this.context,
           };
+          // A fixture: the handling has to still be in flight for a
+          // measurable span after the recorder was switched on, or there is
+          // no duration for #411's derived `atMs` to be reconstructed from.
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
       }
@@ -227,8 +245,7 @@ describe('explain plan — the start stamp is a clock reading', () => {
    * always in that direction — the truncation is one-sided.  Sub-millisecond
    * error is invisible in `atMs` on its own and fatal one field over.
    */
-  const settleFor = (ms: number): Promise<void> =>
-    new Promise((resolve) => setTimeout(resolve, ms));
+  const settleFor = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   test('an idle actor never reports a negative mailbox wait', async () => {
     // The defect this file exists to catch.  `mailboxWaitMs` is

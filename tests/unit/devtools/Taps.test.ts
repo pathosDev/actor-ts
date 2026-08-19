@@ -24,6 +24,8 @@ class IdleActor extends Actor<string> {
 
 class SlowActor extends Actor<string> {
   override async onReceive(): Promise<void> {
+    // A fixture: this actor exists to still be busy when the stats tap samples
+    // it, so the delay has to outlast the sampling window on purpose.
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
@@ -54,6 +56,15 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/**
+ * Give the taps time to publish whatever the step above should have produced.
+ *
+ * A fixed delay and not `awaitCondition`, because the sharpest call sites assert
+ * an *absence*: an unsubscribed tap and a below-threshold sample must both leave
+ * `payloads` empty (`toHaveLength(0)`), and that predicate is already true when
+ * the wait starts, so a poll would return immediately and check nothing.  The
+ * positive sites share the helper to wait the same span.
+ */
 const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**

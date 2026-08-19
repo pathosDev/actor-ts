@@ -56,6 +56,8 @@ describe('LogContext — basic scoping', () => {
     const observed: Array<Record<string, unknown>> = [];
     await LogContext.run({ requestId: 'r-1' }, async () => {
       observed.push({ ...LogContext.get() });
+      // The suspension IS the test: the context has to survive a real await
+      // boundary, so there has to be one.  Nothing is being waited for.
       await Bun.sleep(5);
       observed.push({ ...LogContext.get() });
     });
@@ -86,7 +88,11 @@ describe('LogContext — basic scoping', () => {
   });
 
   test('parallel branches don\'t leak context across promises', async () => {
+    // Equal delays on purpose: the two branches have to be suspended at the same
+    // time for "don't leak across promises" to be exercised at all.  These are
+    // the overlap, not a wait for either branch.
     const branchA = LogContext.run({ branch: 'A' }, () => Bun.sleep(10).then(() => LogContext.get()));
+    // Same delay, so B is still suspended while A is.
     const branchB = LogContext.run({ branch: 'B' }, () => Bun.sleep(10).then(() => LogContext.get()));
     const [contextA, contextB] = await Promise.all([branchA, branchB]);
     expect(contextA.branch).toBe('A');
@@ -134,6 +140,8 @@ describe('LogContext — runFresh drops the ambient context (#129)', () => {
     await LogContext.run({ tenant: 'acme' }, async () => {
       await LogContext.runFresh(async () => {
         observed.push({ ...LogContext.get() });
+        // The suspension IS the test: an await boundary is where the enclosing
+        // `run` context would leak back in if `runFresh` did not hold.
         await Bun.sleep(5);
         observed.push({ ...LogContext.get() });
       });
@@ -164,6 +172,8 @@ describe('LogContext — runFresh drops the ambient context (#129)', () => {
     LogContext.run({ tenant: 'acme' }, () => {
       // The classic leak shape: created inside a turn, resolved after it.
       detached = LogContext.runFresh(async () => {
+        // The delay is what makes the promise outlive the `run` turn that
+        // created it — that ordering is the leak shape under test.
         await Bun.sleep(5);
         observed = { ...LogContext.get() };
       });
@@ -210,6 +220,8 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
       [{ tenant: 'globex' }, 'b'],
     ]);
     await LogContext.runEach(entries, async () => {
+      // The suspension IS the test: each entry's context has to still be the
+      // installed one after its callback has crossed an await.
       await Bun.sleep(5);
       observed.push({ ...LogContext.get() });
     });
@@ -236,6 +248,8 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
     ]);
     await LogContext.runEach(entries, async (delayMs) => {
       order.push(`start-${delayMs}`);
+      // The delays ARE the assertion: 10 then 1, so a parallel `runEach` would
+      // have to interleave and the recorded order would give it away.
       await Bun.sleep(delayMs);
       order.push(`end-${delayMs}`);
     });
@@ -277,6 +291,8 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
   test('a rejected async callback propagates too', async () => {
     const entries = entriesOf([[{ tenant: 'acme' }, 'a']]);
     const drain = LogContext.runEach(entries, async () => {
+      // The suspension is the point: the rejection has to cross an await
+      // boundary, which is where a context-restoring wrapper could swallow it.
       await Bun.sleep(1);
       throw new Error('async handler failed');
     });
