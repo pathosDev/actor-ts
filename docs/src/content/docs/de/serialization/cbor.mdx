@@ -173,29 +173,36 @@ import { Aside } from '@astrojs/starlight/components';
   # cat events.cbor — Kauderwelsch
   ```
   Debugging braucht CBOR-Tools.  Für Staging / Dev erwäge JSON;
-  schalte erst in Produktion auf CBOR um.  Oder fahre beide:
-  JSON für On-Disk-Persistenz, CBOR für die Leitung.
+  schalte erst in Produktion auf CBOR um.  Oder fahre beide — die
+  Wahl gilt pro Store und pro Aufruf, ein CBOR-Journal kann also
+  neben einem JSON-Snapshot-Store stehen.  Der Cluster-Wire gehört
+  nicht zu den Wahlmöglichkeiten; er rahmt immer den getaggten
+  JSON-Tree.
 </Aside>
 
-<Aside type="caution" title="Empfänger muss denselben Serializer nutzen">
+<Aside type="caution" title="Jeder Leser eines Stores braucht denselben Serializer">
   ```ts
-  // Sender: CborSerializer; Empfänger: JsonSerializer
+  // Writer: withSerializer(new CborSerializer());  Leser: kein Serializer
   ```
-  Cross-Node-Nachrichten brauchen auf beiden Enden denselben
-  Serializer.  Rolle CBOR clusterweit aus, bevor du dich darauf
-  verlässt.
+  Eine über `withSerializer(...)` geschriebene Row nennt die
+  Serializer-ID, die sie braucht, und `decodePayload` wirft, statt
+  zu raten — jeder Prozess, der diesen Stream abspielt, braucht
+  also denselben Serializer konfiguriert.  Cross-Node-`tell`s sind
+  in keine Richtung betroffen: der Wire rahmt den getaggten
+  JSON-Tree, egal was die Registry hält.
 </Aside>
 
 <Aside type="caution" title="Float-Präzision in CBOR">
   ```ts
-  ref.tell({ price: 99.99 });
+  // Erreichbar pro Aufruf oder über withSerializer(...) eines Stores — nie per tell.
+  new CborSerializer().toBinary({ price: 99.99 });
   // JSON: "99.99" (string-präzise)
   // CBOR: IEEE-754-Double — `99.9900000000000091...`
   ```
   Floats serialisieren als IEEE 754.  Sowohl JSON als auch CBOR
   haben dieses Problem; bei CBOR ist es sichtbarer, weil die
   Bytes exakt sind.  Für Geldbeträge **nimm Strings oder
-  Integer-Cent** in Nachrichten.
+  Integer-Cent**.
 </Aside>
 
 ## Wohin als Nächstes

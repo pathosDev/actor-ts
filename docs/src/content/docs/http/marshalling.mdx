@@ -237,8 +237,9 @@ post(async (req) => {
 });
 ```
 
-For the cluster-wire serialization (between nodes, not HTTP), the
-`SerializationExtension` is the right hook — see
+The cluster wire (between nodes, not HTTP) has no equivalent hook:
+it always frames the tagged JSON tree and never consults the
+`SerializationExtension` — see
 [Serialization overview](/serialization/overview/).
 
 ## Encoding errors
