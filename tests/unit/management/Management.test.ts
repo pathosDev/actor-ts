@@ -172,6 +172,9 @@ describe('managementRoutes — cluster queries', () => {
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/leave`, { method: 'POST' });
     expect(response.status).toBe(202);
+    // `leave` is answered 202 before it has been applied, and what follows is a
+    // disjunction over three acceptable end states (gone, 'leaving', 'removed'),
+    // so there is no single condition to poll for.
     await Bun.sleep(100);
     // After leave, the cluster's started flag is cleared — getMembers() may still show self in 'leaving'.
     const members = cluster.getMembers();
@@ -337,6 +340,7 @@ describe('managementRoutes — cluster queries', () => {
     while (Date.now() < deadline) {
       const sees = clA.getMembers().some(m => m.address.equals(clB.selfAddress) && m.status === 'up');
       if (sees) break;
+      // The poll cadence of the loop above, not a wait.
       await Bun.sleep(20);
     }
     // Force-down B from A.

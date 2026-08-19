@@ -113,6 +113,8 @@ describe('adaptSqliteDatabase — transactions (#392)', () => {
 
     const first = p.withTransaction(async (transaction) => {
       await transaction.query('INSERT INTO t (id, v) VALUES (?, ?)', [1, 'first']);
+      // A fixture: the first transaction has to still be open when the second one
+      // starts and fails, which is the interleaving the case exists to rule out.
       await Bun.sleep(30);
       await transaction.query('INSERT INTO t (id, v) VALUES (?, ?)', [2, 'first-again']);
     });

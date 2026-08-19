@@ -69,10 +69,14 @@ describe('CoordinatedShutdown basics', () => {
     // time, or "within a phase run in parallel" has nothing to observe.  The
     // recorded start/end order and the elapsed bound below are the assertions.
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-1', async () => {
-      starts.push('1'); await sleep(30); ends.push('1');
+      starts.push('1');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('1');
     });
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-2', async () => {
-      starts.push('2'); await sleep(30); ends.push('2');
+      starts.push('2');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('2');
     });
 
     const t0 = Date.now();

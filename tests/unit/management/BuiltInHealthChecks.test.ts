@@ -268,6 +268,8 @@ describe('/ready gates on the transport check end-to-end (#655)', () => {
     const deadline = Date.now() + 5_000;
     let response = await fetch(`http://127.0.0.1:${binding.port}/ready`);
     while (Date.now() < deadline && cluster.getMembers().length < 2) {
+      // The poll cadence of the loop above, not a wait: each turn re-fetches, so
+      // `response` ends up being the one taken after the member view converged.
       await Bun.sleep(20);
       response = await fetch(`http://127.0.0.1:${binding.port}/ready`);
     }

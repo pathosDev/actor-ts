@@ -121,6 +121,8 @@ describe('idempotent — TTL / config guards', () => {
       return complete(Status.OK, { n: ran });
     });
     await handler(makeReq({ 'idempotency-key': 'short' }));
+    // The elapsed time IS the assertion: 50 ms outlasts the 30 ms record TTL, and
+    // the cache expires lazily, so there is no eviction event to poll for.
     await Bun.sleep(50);
     await handler(makeReq({ 'idempotency-key': 'short' }));
     expect(ran).toBe(2);

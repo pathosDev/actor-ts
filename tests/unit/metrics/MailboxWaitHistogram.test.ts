@@ -50,6 +50,9 @@ function newSystem(name: string): ActorSystem {
 /** Sleeps on `slow`, returns immediately otherwise. */
 class Sluggish extends Actor<string> {
   override async onReceive(message: string): Promise<void> {
+    // A fixture: this delay IS the mailbox wait the histogram is meant to record,
+    // so the handler has to genuinely occupy the actor while the next message
+    // queues behind it.
     if (message === 'slow') await sleep(80);
   }
 }
@@ -170,6 +173,9 @@ describe('actor_mailbox_wait_seconds', () => {
       const ref = system.spawn(Sluggish, 'a');
       ref.tell('slow');
       ref.tell('queued-behind-it');
+      // An absence: with metrics disabled the family must not exist at all, so the
+      // window is what would give a stray sample time to appear.  `toEqual([])` is
+      // already true when the wait starts.
       await sleep(150);
       // Nothing stamps and nothing observes: the registry is the noop, so
       // the family does not exist.  This is the #411 property the stamp is

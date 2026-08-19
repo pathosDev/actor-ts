@@ -158,6 +158,9 @@ async function awaitResponse(exchange: RawSocketExchange, timeoutMs: number): Pr
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (exchange.read().includes('\r\n\r\n')) return exchange.read();
+    // Deliberately not `awaitCondition`: reaching the deadline is a *valid
+    // outcome* here (the caller reports it as `never`), and `awaitCondition`
+    // throws instead of returning, which would lose that third case.
     await sleep(10);
   }
   return exchange.read().includes('\r\n\r\n') ? exchange.read() : null;
@@ -204,10 +207,15 @@ async function streamChunkedBody(port: number): Promise<ChunkedExchangeOutcome> 
       exchange.write(frame);
       chunksWritten += 1;
       bytesWritten += frame.length;
+      // A fixture: the writes have to be paced so the server gets turns to count
+      // the bytes as they land and can decide mid-stream.  Writing the whole
+      // body in one go would test a different thing.
       await sleep(5);
     }
 
     const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    // Same as `awaitResponse`: the deadline expiring is the `never` outcome the
+    // caller asserts on, so this cannot become an `awaitCondition` that throws.
     while (Date.now() < deadline && !exchange.answered() && !exchange.hungUp()) await sleep(10);
 
     // A readable answer beats a bare hangup, but both are the server deciding.

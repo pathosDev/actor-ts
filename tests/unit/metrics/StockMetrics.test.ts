@@ -375,6 +375,9 @@ describe('MetricsExtension — opt-in', () => {
     const sys = ActorSystem.create('m-noop', sysOptions);
     try {
       sys.spawn(Echo, 'a');
+      // An absence: without `enable()` the registry is the noop, so `collect()` must
+      // stay empty.  That is already true at t = 0; the window is what would let a
+      // stock metric registered during startup show up.
       await sleep(20);
       const reg = sys.extension(MetricsExtensionId).get();
       expect(reg.collect()).toEqual([]);

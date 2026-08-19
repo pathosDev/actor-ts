@@ -39,6 +39,10 @@ describe('CircuitBreaker — basics', () => {
     try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
     expect(breaker.state).toBe('open');
 
+    // The elapsed time IS the assertion: 60 ms outlasts the 40 ms reset timeout,
+    // which is the only thing that makes the next call half-open rather than
+    // rejected.  The breaker has no timer and no event — it compares clocks on
+    // `call()`, so there is nothing to poll for.
     await sleep(60);
     // First call after reset should move to half-open as part of .call().
     const value = await breaker.call(async () => 'ok');
@@ -49,6 +53,8 @@ describe('CircuitBreaker — basics', () => {
   test('half-open failure re-opens the breaker', async () => {
     const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 30 });
     try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    // The elapsed time IS the assertion: 50 ms outlasts the 30 ms reset timeout, so
+    // the failing call below is a half-open trial rather than a rejection.
     await sleep(50);
     try { await breaker.call(async () => { throw new Error('still flaky'); }); } catch { /* */ }
     expect(breaker.state).toBe('open');
@@ -82,6 +88,8 @@ describe('CircuitBreaker — filtering', () => {
     breaker.onStateChange((s) => states.push(s));
 
     try { await breaker.call(async () => { throw new Error('x'); }); } catch { /* */ }
+    // The elapsed time IS the assertion: 30 ms outlasts the 20 ms reset timeout, so
+    // the exact transition sequence below includes 'half-open'.
     await sleep(30);
     await breaker.call(async () => 'ok'); // half-open → closed
 

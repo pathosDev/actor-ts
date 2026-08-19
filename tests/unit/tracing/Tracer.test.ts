@@ -51,6 +51,9 @@ describe('RecordingTracer — async propagation', () => {
     const tracer = new RecordingTracer();
     const root = tracer.startSpan('root');
     const observed = await tracer.withActiveSpan(root, async () => {
+      // A fixture: the span has to survive a real await boundary, which is exactly
+      // where a tracer that stores the active span outside the async context loses
+      // it.  There is nothing to wait for.
       await Bun.sleep(5);
       return tracer.activeSpan()?.context().spanId;
     });

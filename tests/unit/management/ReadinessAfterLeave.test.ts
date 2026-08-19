@@ -73,6 +73,8 @@ async function readyWhen(
   let response = await fetch(`http://127.0.0.1:${port}/ready`);
   let body = await response.json() as ReadinessBody;
   while (Date.now() < deadline && response.status !== expected) {
+    // The poll cadence of the loop above, not a wait: `/ready` has to be asked
+    // again each turn, and the caller tolerates the deadline expiring.
     await Bun.sleep(20);
     response = await fetch(`http://127.0.0.1:${port}/ready`);
     body = await response.json() as ReadinessBody;

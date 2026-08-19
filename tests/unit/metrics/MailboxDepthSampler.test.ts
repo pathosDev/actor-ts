@@ -71,6 +71,10 @@ describe('MailboxDepthSampler (#1148)', () => {
     expect(before[0]!.labels.class).toBe('?');
     expect(before[0]!.value).toBeGreaterThanOrEqual(FLOOR);
 
+    // Give the cell time to learn its actor's class, so the second sample mints a
+    // different label tuple than the first.  Not pollable: the registry only
+    // changes when `sample()` runs, and calling it inside a predicate would be
+    // mutating the very thing the assertions below read.
     await Bun.sleep(10);
     sampler.sample();
 
@@ -115,6 +119,9 @@ describe('MailboxDepthSampler (#1148)', () => {
     const labels = spike[0]!.labels;
 
     release();
+    // Let the released backlog drain before the second sample.  Not pollable for
+    // the same reason as above: mailbox depth reaches the registry only through
+    // `sample()`, which is itself under test.
     await Bun.sleep(50);
     sampler.sample();
 

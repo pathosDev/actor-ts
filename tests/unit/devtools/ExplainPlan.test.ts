@@ -72,6 +72,10 @@ async function spawnRecorded(
   await awaitCondition(() => registered !== null, {
     label: 'the recorded actor ran preStart and handed back its probe',
   });
+  // `awaitCondition` cannot narrow `registered` the way the `while (registered
+  // === null)` loop it replaced did, and the callback assigning it is opaque to
+  // the compiler.  The wait has already thrown if the probe never arrived.
+  if (registered === null) throw new Error('unreachable: awaitCondition returned with no probe');
   return { probe: registered, ref };
 }
 

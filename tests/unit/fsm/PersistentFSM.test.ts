@@ -465,6 +465,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
         'pay',
       );
       ref.tell({ kind: 'authorize', amount: 0 });
+      // An absence, and the elapsed time is what makes it one: 200 ms outlasts
+      // the 60 ms state timeout, so the timer has certainly fired — and the
+      // claim is that the guard rejected it and the state did NOT move.
       await sleep(200);
 
       const final = await ref.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
