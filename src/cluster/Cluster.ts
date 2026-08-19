@@ -191,8 +191,14 @@ export class Cluster {
 
   /**
    * The highest {@link GossipMessage.sequence} accepted from each connection
-   * peer — the high-water mark that makes a captured gossip frame worthless
-   * on a second delivery (#112).
+   * peer — the high-water mark that makes a captured gossip frame worthless on
+   * a second delivery **to a receiver that holds a mark for its sender** (#112).
+   *
+   * That qualifier is the whole bound, and it is narrower than it looks:
+   * {@link rememberGossipSequence} is the only writer and it runs in the gossip
+   * path, so an entry exists for a peer this node has *accepted a frame from*
+   * and for no other address.  A member learned third-party has none — see the
+   * residuals on {@link admitsGossipSequence}.
    *
    * Keyed on the **connection's** peer, exactly like every authority rule
    * since #562, and not on the frame's `from` field: the payload is the one
@@ -1027,8 +1033,9 @@ export class Cluster {
 
   /**
    * Whether this frame is newer than the last one accepted from the same
-   * connection peer — the guard that makes a captured gossip frame worthless
-   * on a second delivery (#112).
+   * connection peer — the guard that makes a captured gossip frame worthless on
+   * a second delivery, **to a receiver that holds a mark for that sender**
+   * (#112).  The qualifier is load-bearing; see *What it does not close*.
    *
    * **What a replay buys without it.**  A gossip frame carries a snapshot of
    * the member map, and a member's `version` only moves when its status does,
@@ -1082,10 +1089,38 @@ export class Cluster {
    * decision that depends on it, for the reason `Member.fromData` re-checks
    * `status`.
    *
-   * **What it does not close.**  A peer that has earned standing can still
-   * *compose* a fresh frame naming a deleted address at its old version — that
-   * is not a replay, and refusing it needs a required incarnation identity on
-   * `NodeAddress` and therefore a wire break (#940, #823).
+   * **What it does not close.**  Three things, and the second is why the
+   * headline above carries a qualifier.
+   *
+   * 1. A peer that has earned standing can still *compose* a fresh frame naming
+   *    a deleted address at its old version — that is not a replay at all.
+   * 2. **A missing mark admits everything, and eviction of the sender is only
+   *    one of three ways to be missing one.**  {@link deleteMember} drops an
+   *    evicted member's mark; a fresh or restarted process starts with the map
+   *    empty; and a member learned **third-party** never had one, because
+   *    {@link rememberGossipSequence} only ever runs for the connection the
+   *    frame arrived on.  Gossip is epidemic — this node files C as `up` on B's
+   *    word — so that third case has the sender a full member throughout, with
+   *    nothing evicted anywhere.  Refusing a frame from a peer with no mark is
+   *    *not* the missing check: the first frame from every peer is one, so a
+   *    receiver that refused them would never converge.  What an empty mark
+   *    concedes is a two-frame bootstrap, the first frame installing the mark
+   *    off its own recorded number — and against a third-party-learned sender,
+   *    one frame, since the standing is already there.
+   * 3. Which is why 1 and 2 both stay open: nothing keyed on the sender's own
+   *    counter separates a recording from a live frame, because one counter
+   *    stamped both.  What separates them is *which process* emitted them, and
+   *    the only receiver-checkable statement of that is
+   *    {@link NodeAddress.incarnation} — deliberately optional today, so a
+   *    refusal resting on it is one an attacker opts out of by stripping the
+   *    field.  Requiring it breaks every address-bearing frame field at once and
+   *    waits on protocol versioning (#940, #823).  It would close a recording of
+   *    a *previous* incarnation, which is the restart case and the bulk of the
+   *    exposure; a node downed while still running, and a first sighting at a
+   *    receiver holding no earlier incarnation of the subject, would survive it.
+   *
+   * Both counterfactuals are asserted in
+   * `tests/unit/cluster/GossipReplayGuard.test.ts`.
    */
   private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
     if (!Number.isFinite(sequence) || sequence > Date.now() + this.maxVersionSkewMs) return false;
@@ -1095,6 +1130,14 @@ export class Cluster {
 
   /**
    * Raise the high-water mark for a peer whose frame was just merged.
+   *
+   * **The only writer of {@link acceptedGossipSequences}, and it runs only
+   * here** — inside the gossip path, for the connection the frame arrived on.
+   * So a mark tracks the peers this node has *heard from*, never the peers it
+   * merely knows about; that asymmetry is residual 2 on
+   * {@link admitsGossipSequence} and is not an oversight to be fixed in this
+   * method, because the number a third party reports about C says nothing about
+   * where C's own counter has reached.
    *
    * **Only for an address the member map holds**, which is what bounds this map
    * by the same caps as that one — the sender fallback above has already run, so
