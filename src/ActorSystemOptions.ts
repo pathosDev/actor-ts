@@ -13,6 +13,7 @@
  */
 import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
+import type { DeadLetterQueueOptions } from './deadletters/DeadLetterQueueOptions.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
 import type { LogSink } from './logging/LogSink.js';
@@ -64,6 +65,22 @@ export type ActorSystemOptionsType = {
     readonly journal?: Journal;
     readonly snapshotStore?: SnapshotStore;
   };
+  /**
+   * Dead-letter queue settings — the explicit layer over
+   * `actor-ts.dead-letters.*`.
+   *
+   * Needed because `system.deadLetterQueue` is built by the constructor and
+   * is `readonly`: without a slot here the publicly exported
+   * `DeadLetterQueueOptions` family had no reachable consumer at all.  A
+   * queue you construct yourself is never installed as the capture sink, so
+   * it is a correctly-configured object that receives nothing — which made
+   * HOCON the only way to configure the real queue, against the project's
+   * *explicit options > HOCON > built-in defaults* rule.
+   *
+   * Field-by-field, so setting one knob here does not blank the others out
+   * of the config file.
+   */
+  readonly deadLetters?: DeadLetterQueueOptions;
 };
 
 export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
@@ -121,6 +138,14 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
   /** Wire a real journal / snapshot store at system creation time. */
   withPersistence(persistence: NonNullable<ActorSystemOptionsType['persistence']>): this {
     return this.set('persistence' as keyof T, persistence as T[keyof T]);
+  }
+
+  /**
+   * Dead-letter queue settings, layered over `actor-ts.dead-letters.*`.
+   * Fields you leave unset still fall through to HOCON.
+   */
+  withDeadLetters(deadLetters: NonNullable<ActorSystemOptionsType['deadLetters']>): this {
+    return this.set('deadLetters' as keyof T, deadLetters as T[keyof T]);
   }
 }
 

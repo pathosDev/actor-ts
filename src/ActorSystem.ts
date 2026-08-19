@@ -14,6 +14,7 @@ import { ConfigKeys } from './config/ConfigKeys.js';
 import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
+import { mergeOptions } from './util/OptionsMerge.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
   Dispatcher,
@@ -39,7 +40,10 @@ import type { MetricsRegistry } from './metrics/Metrics.js';
 import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
-import { readDeadLetterQueueOptionsFromConfig } from './deadletters/DeadLetterQueueOptions.js';
+import {
+  readDeadLetterQueueOptionsFromConfig,
+  type DeadLetterQueueOptionsType,
+} from './deadletters/DeadLetterQueueOptions.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
   Guardian,
@@ -240,9 +244,19 @@ export class ActorSystem {
     // Built here, before the guardians exist, because the first dead letter
     // can be produced by the very first `spawn` — a queue installed later
     // would be missing exactly the letters an early failure produced.
+    //
+    // The built-in-defaults layer is empty on purpose: `DeadLetterQueue`'s
+    // constructor applies them itself, because a queue someone builds
+    // directly has to get them too.  So all this merge has to settle is
+    // explicit-over-HOCON, field by field — `withDeadLetters` naming one
+    // knob must not blank the rest of the config block out.
     this.deadLetterQueue = new DeadLetterQueue(
       this,
-      readDeadLetterQueueOptionsFromConfig(this.config),
+      mergeOptions<DeadLetterQueueOptionsType>(
+        {},
+        readDeadLetterQueueOptionsFromConfig(this.config),
+        { ...(options.deadLetters as Partial<DeadLetterQueueOptionsType> | undefined) },
+      ),
     );
     if (this.deadLetterQueue.store !== 'off') {
       deadLetterRef._setSink((deadLetter) => this.deadLetterQueue._capture(deadLetter));

@@ -59,17 +59,34 @@ actor-ts.dead-letters {
 }
 ```
 
-Dieselben Stellschrauben gibt es als Options-Familie, wenn du die Queue
-selbst baust:
+Dieselben Stellschrauben gibt es als Options-Familie, die dem System bei
+seiner Erzeugung übergeben wird:
 
 ```ts
-import { DeadLetterQueueOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, DeadLetterQueueOptions } from 'actor-ts';
 
 const deadLetterOptions = DeadLetterQueueOptions.create()
   .withStore('persistent')
   .withMaxEntries(5_000)
   .withRetentionMs(6 * 60 * 60 * 1_000);
+
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters(deadLetterOptions);
+
+const system = ActorSystem.create('orders', systemOptions);
 ```
+
+Die Vorrangregel ist die übliche — **explizite Options schlagen HOCON
+schlagen die eingebauten Standardwerte** — und sie gilt feldweise: eine im
+Code benannte Stellschraube lässt den Rest des Blocks
+`actor-ts.dead-letters` in Kraft.
+
+:::caution
+`withDeadLetters` ist der einzige Weg, die Queue zu konfigurieren, die das
+**System benutzt**. `new DeadLetterQueue(system, options)` erzeugt ein
+gültiges Objekt, aber niemand installiert es als Capture-Sink, es erhält
+also nie ein Letter — es gibt einen Sink-Slot, und den besitzt das System.
+:::
 
 :::note
 `store` ist eine **Speicher**-Entscheidung, keine Fehlerstrategie. Was eine

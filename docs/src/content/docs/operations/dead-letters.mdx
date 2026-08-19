@@ -58,17 +58,33 @@ actor-ts.dead-letters {
 }
 ```
 
-The same knobs are available as an options family when you build the queue
-yourself:
+The same knobs are available as an options family, handed to the system at
+creation time:
 
 ```ts
-import { DeadLetterQueueOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, DeadLetterQueueOptions } from 'actor-ts';
 
 const deadLetterOptions = DeadLetterQueueOptions.create()
   .withStore('persistent')
   .withMaxEntries(5_000)
   .withRetentionMs(6 * 60 * 60 * 1_000);
+
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters(deadLetterOptions);
+
+const system = ActorSystem.create('orders', systemOptions);
 ```
+
+Precedence is the usual one — **explicit options beat HOCON beat the
+built-in defaults** — and it applies field by field, so naming one knob in
+code leaves the rest of the `actor-ts.dead-letters` block in effect.
+
+:::caution
+`withDeadLetters` is the only way to configure the queue **the system
+uses**. `new DeadLetterQueue(system, options)` builds a valid object, but
+nothing installs it as the capture sink, so it never receives a letter —
+there is one sink slot and the system owns it.
+:::
 
 :::note
 `store` is a **storage** decision, not a failure strategy. What a
