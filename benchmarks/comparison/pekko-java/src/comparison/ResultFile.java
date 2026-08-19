@@ -32,7 +32,12 @@ final class ResultFile {
         json.name("schemaVersion").value(SCHEMA_VERSION);
 
         json.name("framework").beginObject()
-                .name("name").value("pekko")
+                // The binding is part of the identity: the same framework at the
+                // same version is also measured through its Scala 3 API, and two
+                // arms called "pekko" would collide on the published file name.
+                // `Main.outputPath()` spells the derived name out — keep them in
+                // step.
+                .name("name").value("pekko-java")
                 .name("version").value(pekkoVersion())
                 .name("language").value("Java")
                 // Apache-2.0 — the licence is the reason this arm exists next to the other

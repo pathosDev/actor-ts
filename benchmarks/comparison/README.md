@@ -146,7 +146,7 @@ not a finding.
 | **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
 | **Akka** (JVM, Java) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
-| **Pekko** (JVM) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
+| **Pekko** (JVM, Java) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
 | **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
 | **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
 
@@ -311,6 +311,7 @@ benchmarks/comparison/
     src/comparison/   harness, JSON writer, actors, entry point
     resources/        application.conf — logging off
   pekko-java/         the other JVM arm — same sources, different package prefix
+                      (same launcher files, byte for byte)
   akka-net/           the .NET arm — classic actor API, committed lock file
   orleans/            the virtual-actor arm — grains, single-silo localhost
   js/
