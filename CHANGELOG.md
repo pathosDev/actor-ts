@@ -11,6 +11,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **A spawn stops building things it does not need** (#1207).
+
+  A full lifecycle — spawn, confirmed `preStart`, `stop`, confirmed `postStop` —
+  is CPU-bound rather than scheduling-bound, so it needed a diet rather than a
+  faster dispatcher. Six items: the options blueprint is built once and
+  validated in place instead of copied twice, with a shared validator; anonymous
+  names and ask reply-refs draw from a pooled entropy buffer (599 ns → 216 ns per
+  identifier, same generator and same rejection sampling — only the call is
+  amortised, because both name families are addressable on the cluster wire and
+  a guessable one is a security defect); the per-cell logger and timer scheduler
+  are built on first use rather than at spawn; restart-window timestamps start
+  as `null`; and lifecycle events and death notifications are constructed only
+  when something is listening, for which `EventStream` gains `hasSubscribers`.
+
+  Measured on the comparison arm, six rounds interleaved: **spawn 48.6k → 65.4k
+  actors/second (+34 %, t = 12.5)**, ask +16 % with p50 4.63 µs → 4.12 µs, tell
+  +6 % at a batch of 10 000. The alternating volley is unchanged, as expected —
+  it spawns nothing.
+
+  Two candidates were measured and declined rather than skipped silently:
+  skipping name *validation* for framework-generated names is worth about 1 % of
+  a spawn and needs provenance threaded through the cell constructor, and the
+  watch maps and stash buffer would trade eight to twelve null-checked access
+  sites for one allocation each.
+
 - **`ReplayedResult.recipientPath` now reports where a replayed letter was
   actually sent rather than echoing the entry's recorded recipient, and the
   `recipient` label on `actor_dead_letters_total{outcome="replayed"}`
