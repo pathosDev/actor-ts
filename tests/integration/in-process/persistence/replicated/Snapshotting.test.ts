@@ -35,7 +35,7 @@ import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-s
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
 import type { ReplicatedEventEnvelope } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
@@ -62,8 +62,6 @@ class CountingCounter extends ReplicatedEventSourcedActor<Command, Event, State>
   /** Test hook — read state without ask(). */
   getValue(): number { return this.state.value; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 const WAIT = { timeoutMs: 4_000, intervalMs: 10 } as const;
 

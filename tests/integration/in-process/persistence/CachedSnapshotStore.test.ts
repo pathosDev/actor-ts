@@ -8,8 +8,7 @@ import type { PersistenceOptions } from '../../../../src/persistence/Persistence
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
 import type { Option } from '../../../../src/util/Option.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * Spy wrapper that counts loadLatest / save / delete calls on the
@@ -96,6 +95,8 @@ describe('CachedSnapshotStore — read-through behaviour', () => {
     await store.save('p', 1, { v: 1 });
     await store.loadLatest('p');
     expect(counting.loadLatestCalls).toBe(1);
+    // The elapsed time IS the assertion: the entry has to outlive the 30 ms TTL
+    // configured above, and only the clock can make that happen (#418).
     await sleep(50);
     await store.loadLatest('p');
     expect(counting.loadLatestCalls).toBe(2);

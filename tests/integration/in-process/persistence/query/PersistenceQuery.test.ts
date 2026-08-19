@@ -21,15 +21,20 @@ import {
   offsetGreaterOrEqual,
   offsetStart,
 } from '../../../../../src/persistence/query/PersistenceQuery.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
- * The `sleep(2)` calls between appends are deliberate and stay: the
- * offset comparator orders by millisecond timestamp, so the gap is the
- * fixture, not a wait for something to finish.  Load only ever makes
- * them longer, which is harmless (#418).
+ * Push the wall clock past the current millisecond, so the next append lands
+ * on a strictly greater offset timestamp.
+ *
+ * The elapsed time *is* the fixture here — the offset comparator orders by
+ * `(timestamp, persistenceId, sequenceNr)`, so two appends inside one
+ * millisecond tie on the first key and fall back to the id, which is not the
+ * append order these tests assert.  There is nothing to poll for: the clock is
+ * the only thing being waited on, and load only ever widens the gap, which is
+ * harmless (#418).
  */
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+const separateOffsetTimestamps = (): Promise<void> => sleep(2);
 
 describe('Offset comparator', () => {
   test('orders by (timestamp, persistenceId, sequenceNr)', () => {
@@ -76,11 +81,11 @@ describe('InMemoryQuery — currentEventsByTag', () => {
   test('returns only events tagged with the requested tag, ordered globally', async () => {
     const journal = new InMemoryJournal();
     await journal.append('alice', [{ event: { message: 'a1' }, tags: ['accounts'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('bob', [{ event: { message: 'b1' }, tags: ['accounts', 'vip'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('alice', [{ event: { message: 'a2' }, tags: ['internal'] }], 1);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('bob', [{ event: { message: 'b2' }, tags: ['accounts'] }], 1);
 
     const query = new InMemoryQuery(journal);
@@ -94,7 +99,7 @@ describe('InMemoryQuery — currentEventsByTag', () => {
   test('fromOffset skips events at-or-before the cursor', async () => {
     const journal = new InMemoryJournal();
     await journal.append('a', [{ event: { message: '1' }, tags: ['t'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('a', [{ event: { message: '2' }, tags: ['t'] }], 1);
     const query = new InMemoryQuery(journal);
 
@@ -158,9 +163,9 @@ describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
     await journal.append('a', [{ event: { x: 1 }, tags: ['foo'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('b', [{ event: { x: 2 }, tags: ['foobar'] }], 0);  // must NOT match 'foo'
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('c', [{ event: { x: 3 }, tags: ['foo', 'extra'] }], 0);
     const query = new SqliteQuery(journal);
 
@@ -215,15 +220,15 @@ describe('PersistenceQuery — currentPersistenceIds', () => {
  */
 async function seedFilterCorpus(journal: { append(persistenceId: string, entries: ReadonlyArray<{ event: unknown; tags?: string[] }>, expected: number): Promise<unknown> }): Promise<void> {
   await journal.append('order-1', [{ event: { id: 1 }, tags: ['type:Order',   'tenant:t1'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await journal.append('order-2', [{ event: { id: 2 }, tags: ['type:Order',   'tenant:t2'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await journal.append('order-3', [{ event: { id: 3 }, tags: ['type:Order',   'tenant:t1', 'archived'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await journal.append('inv-1', [{ event: { id: 4 }, tags: ['type:Invoice', 'tenant:t1'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await journal.append('inv-2', [{ event: { id: 5 }, tags: ['type:Invoice', 'tenant:t2', 'archived'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await journal.append('event-1', [{ event: { id: 6 }, tags: ['type:Event',   'tenant:t1'] }], 0);
 }
 

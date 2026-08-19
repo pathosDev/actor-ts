@@ -28,24 +28,25 @@ import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuer
 import { tagFilterCursorKey } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { offsetGreater, offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { InMemoryDurableStateStore } from '../../../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * Push the wall clock past the current millisecond, so the next append lands on
+ * a strictly greater offset timestamp.
+ *
+ * The elapsed time *is* the fixture in every by-tag test below: a projection
+ * cursor is an `Offset`, which orders by millisecond timestamp, so two appends
+ * inside one millisecond tie on the first key and the delivery order the test
+ * asserts is no longer defined.  Nothing to poll for — the clock is the only
+ * thing being waited on (#418).
+ */
+const separateOffsetTimestamps = (): Promise<void> => sleep(2);
 
 function newSystem(name: string): ActorSystem {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   return ActorSystem.create(name, sysOptions);
-}
-
-async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
 describe('ProjectionActor — by persistence id', () => {
@@ -63,11 +64,19 @@ describe('ProjectionActor — by persistence id', () => {
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref = ProjectionActor.byPersistenceId<{ n: number }>(sys, projectionOptions);
 
-    await waitFor(() => seen.length === 3);
+    await awaitCondition(() => seen.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the three pre-existing events reached the handler',
+    });
 
     // Append more after the projection is running — pull-model must catch them.
+    // Waiting on the drain above is what makes this the live path rather than
+    // one batch of five.
     await journal.append('alice', [{ event: { n: 4 } }, { event: { n: 5 } }], 3);
-    await waitFor(() => seen.length === 5);
+    await awaitCondition(() => seen.length >= 5, {
+      timeoutMs: 4_000,
+      label: 'the two live appends reached the handler',
+    });
 
     expect(seen).toEqual([1, 2, 3, 4, 5]);
 
@@ -92,7 +101,10 @@ describe('ProjectionActor — by persistence id', () => {
       .withHandle((ev) => { seen1.push(ev.event.n); })
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref1 = ProjectionActor.byPersistenceId<{ n: number }>(sys1, projectionOptions);
-    await waitFor(() => seen1.length === 3);
+    await awaitCondition(() => seen1.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the first instance projected all three events',
+    });
     ref1.stop();
     // The resumption below is only meaningful once the cursor is durable —
     // that, not a wall-clock margin, is what the 80 ms stood for (#418).
@@ -115,7 +127,10 @@ describe('ProjectionActor — by persistence id', () => {
       .withHandle((ev) => { seen2.push(ev.event.n); })
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref2 = ProjectionActor.byPersistenceId<{ n: number }>(sys2, projection2Options);
-    await waitFor(() => seen2.length === 2);
+    await awaitCondition(() => seen2.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the second instance projected the two events appended while it was down',
+    });
 
     expect(seen2).toEqual([4, 5]);   // NOT [1, 2, 3, 4, 5]
 
@@ -160,7 +175,10 @@ describe('ProjectionActor — by persistence id', () => {
     // retried three times and the projection stopped, instead of blocking
     // n=3 for the life of the process.  Every strategy's behaviour is
     // covered in tests/unit/persistence/ProjectionFailureStrategy.test.ts.
-    await waitFor(() => seen.length === 3);
+    await awaitCondition(() => seen.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'n=2 was retried and n=3 followed it',
+    });
     expect(seen).toEqual([1, 2, 3]);
 
     ref.stop();
@@ -173,11 +191,11 @@ describe('ProjectionActor — by tag', () => {
     const journal = new InMemoryJournal();
     // Mix of tags across two pids.
     await journal.append('a', [{ event: { s: 'a1' }, tags: ['orders'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('b', [{ event: { s: 'b1' }, tags: ['orders', 'vip'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('a', [{ event: { s: 'a2' }, tags: ['internal'] }], 1);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('b', [{ event: { s: 'b2' }, tags: ['orders'] }], 1);
 
     const sys = newSystem('proj-tag');
@@ -190,7 +208,10 @@ describe('ProjectionActor — by tag', () => {
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
 
-    await waitFor(() => seen.length === 3);
+    await awaitCondition(() => seen.length >= 3, {
+      timeoutMs: 4_000,
+      label: "the three 'orders' events reached the handler",
+    });
     expect(seen).toEqual(['a1', 'b1', 'b2']);
 
     ref.stop();
@@ -202,7 +223,7 @@ describe('ProjectionActor — by tag', () => {
     const offsetStore = new DurableStateOffsetStore(new InMemoryDurableStateStore());
 
     await journal.append('a', [{ event: { s: 'a1' }, tags: ['t'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('b', [{ event: { s: 'b1' }, tags: ['t'] }], 0);
 
     const sys1 = newSystem('proj-tag-resume-1');
@@ -215,7 +236,10 @@ describe('ProjectionActor — by tag', () => {
       .withHandle((ev) => { seen1.push(ev.event.s); })
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref1 = ProjectionActor.byTag<{ s: string }>(sys1, projectionOptions);
-    await waitFor(() => seen1.length === 2);
+    await awaitCondition(() => seen1.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the first instance projected both tagged events',
+    });
     ref1.stop();
     await awaitCondition(
       async () => offsetGreater(await offsetStore.loadOffset('tag-resume', 't'), offsetStart),
@@ -224,7 +248,7 @@ describe('ProjectionActor — by tag', () => {
     await sys1.terminate();
 
     // While the projection is down, append more.
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('a', [{ event: { s: 'a2' }, tags: ['t'] }], 1);
 
     // Restart the projection — should NOT replay a1/b1.
@@ -238,7 +262,10 @@ describe('ProjectionActor — by tag', () => {
       .withHandle((ev) => { seen2.push(ev.event.s); })
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref2 = ProjectionActor.byTag<{ s: string }>(sys2, projection2Options);
-    await waitFor(() => seen2.length === 1);
+    await awaitCondition(() => seen2.length >= 1, {
+      timeoutMs: 4_000,
+      label: 'the restarted projection delivered something',
+    });
     expect(seen2).toEqual(['a2']);
 
     ref2.stop();
@@ -264,7 +291,10 @@ describe('ProjectionActor — by tag', () => {
       .withHandle((ev) => { seen.push(ev.event.s); })
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
-    await waitFor(() => seen.length === 2);
+    await awaitCondition(() => seen.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the offsetStart cursor replayed both events',
+    });
     expect(seen).toEqual(['a1', 'a2']);
 
     ref.stop();
@@ -292,12 +322,18 @@ describe('ProjectionActor — concurrent writers', () => {
     const writers = ['w1', 'w2'].map(async (persistenceId) => {
       for (let i = 1; i <= target; i++) {
         await journal.append(persistenceId, [{ event: { persistenceId, n: i }, tags: ['shared'] }], i - 1);
+        // Both the interleaving and the offset separation this test needs: the
+        // two writer loops hand off to each other here, and each append lands
+        // on its own millisecond so the projection sees a defined order.
         await sleep(5);
       }
     });
     await Promise.all(writers);
 
-    await waitFor(() => seen.length === target * 2, 5_000);
+    await awaitCondition(() => seen.length >= target * 2, {
+      timeoutMs: 4_000,
+      label: 'every event from both concurrent writers reached the projection',
+    });
 
     // Every event from both writers must show up — order across pids
     // is not strictly defined (timestamp + pid tiebreaker), so we
@@ -357,9 +393,9 @@ describe('byTag projection — TagFilter support (#393)', () => {
   test('a not-filter projection skips the excluded events end to end', async () => {
     const journal = new InMemoryJournal();
     await journal.append('a', [{ event: { s: 'kept' }, tags: ['orders'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('b', [{ event: { s: 'dropped' }, tags: ['orders', 'cancelled'] }], 0);
-    await sleep(2);
+    await separateOffsetTimestamps();
     await journal.append('c', [{ event: { s: 'kept-2' }, tags: ['orders'] }], 0);
 
     const sys = newSystem('proj-tag-filter');
@@ -372,7 +408,10 @@ describe('byTag projection — TagFilter support (#393)', () => {
       .withLiveOptions({ pollIntervalMs: 30 });
     const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
 
-    await waitFor(() => seen.length === 2);
+    await awaitCondition(() => seen.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'both kept events reached the handler',
+    });
     expect(seen).toEqual(['kept', 'kept-2']);
 
     ref.stop();
