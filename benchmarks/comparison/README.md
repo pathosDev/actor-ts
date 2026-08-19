@@ -146,6 +146,7 @@ not a finding.
 | **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
 | **Akka** (JVM, Java) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
+| **Akka** (JVM, Scala 3) | the same framework through its native-language API | the binding question: what does the idiomatic Scala style cost against the Java one, at the same version? |
 | **Pekko** (JVM, Java) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
 | **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
 | **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
@@ -234,6 +235,37 @@ Two more things about the Akka arm are decisions rather than defaults:
   (fairness rule 7): "the same code ran on both sides" is a claim only the
   JavaScript arms can make.
 
+### The Scala 3 arms
+
+`akka-scala/` and `pekko-scala/` measure the *same frameworks at the same
+versions* as the Java arms — the `_3` artifacts of 2.8.8 and 1.6.0 sit on Maven
+Central beside the `_2.13` ones — through the Scala API, built by the same
+launcher on the same pinned JDK.  Everything is held constant except the
+binding, which is what makes the gap between a pair readable as the binding.
+
+**They are written in the idiomatic functional style, not as a transliteration
+of the Java arm.**  State is carried in behavior parameters and advanced by
+returning a new behavior; the Java arms use `AbstractBehavior` subclasses with
+mutable fields.  Porting the Java shape into Scala would have measured javadsl
+idioms spoken with a Scala accent and answered nothing the Java arm does not
+already answer.  Measuring what people actually write is the point of having
+the arm at all.
+
+That choice has a cost, and it is disclosed rather than absorbed: a counter
+that recurses allocates a behavior and a closure per message where a mutable
+field allocates nothing.  The three rows where that can move a number — both
+tell cases and the volley — carry a note saying so, and the note is
+byte-identical in both Scala arms so the report prints it once.  The *sending*
+side is deliberately identical: the Scala arms hoist a single `Increment` out
+of the send loop exactly as the Java arms hoist their single `new Increment()`,
+because a pair that differs in two things measures neither.
+
+Brace-less indentation syntax throughout, on Scala **3.3.8** — the newest patch
+of the current LTS line.  The framework artifacts carry TASTy from older 3.x
+compilers (3.2.2 and 3.3.7 respectively) and Scala 3 guarantees forward
+compatibility, so a newer compiler reads both; the pin is there because "Next"
+moves every few months and a benchmark baseline should not.
+
 **Read the JVM ask rows with care.**  Every arm drives the system under test
 from an external caller.  On a JavaScript event loop that is a microtask; in
 .NET it is an `await`; on the JVM, from a non-actor thread, it is a real thread
@@ -310,8 +342,12 @@ benchmarks/comparison/
     build.mill        pinned dependency, JDK and the reasoning behind both
     src/comparison/   harness, JSON writer, actors, entry point
     resources/        application.conf — logging off
+  akka-scala/         the same framework through its Scala 3 API
+    build.mill        the `_3` artifact of the identical version
+    src/comparison/   functional scaladsl, brace-less
   pekko-java/         the other JVM arm — same sources, different package prefix
                       (same launcher files, byte for byte)
+  pekko-scala/        and its Scala 3 binding — the second pair
   akka-net/           the .NET arm — classic actor API, committed lock file
   orleans/            the virtual-actor arm — grains, single-silo localhost
   js/
