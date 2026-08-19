@@ -402,17 +402,18 @@ same machine, same harness, same workload, ten interleaved rounds, and every
 row verified against work the system actually completed rather than work it
 was asked for.
 
-Each figure is the **mean of those ten rounds**, with the spread they varied
-by — a gap smaller than the spread beside it is not a difference.
+Each figure is the **mean of those ten rounds**, and 🥇 marks the best
+value in its row.  The spread the rounds varied by is in the full tables rather
+than here — a gap smaller than that spread is not a difference.
 
 Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
 
-| scenario                    | actor-ts         | nact            | XState      |
-| --------------------------- | ---------------- | --------------- | ----------- |
-| tell throughput (batch 10k) | **4.55M/s** ±8 % | 389k/s ±3 %     | 183k/s ±9 % |
-| ask round-trip (p50)        | **3.5 µs**       | 6.7 µs          | 13.5 µs *   |
-| ping-pong (10k exchanges)   | **504k/s** ±6 %  | 166k/s ±10 %    | 83k/s ±13 % |
-| spawn → started → stopped   | 75k/s ±10 %      | **192k/s** ±7 % | 61k/s ±4 %  |
+| scenario                    | actor-ts       | nact          | XState    |
+| --------------------------- | -------------- | ------------- | --------- |
+| tell throughput (batch 10k) | **4.55M/s** 🥇 | 389k/s        | 183k/s    |
+| ask round-trip (p50)        | **3.5 µs** 🥇  | 6.7 µs        | 13.5 µs * |
+| ping-pong (10k exchanges)   | **504k/s** 🥇  | 166k/s        | 83k/s     |
+| spawn → started → stopped   | 75k/s          | **192k/s** 🥇 | 61k/s     |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
@@ -440,14 +441,14 @@ Each JVM framework appears twice: through its **Java** API and through its
 **Scala 3** API, at the identical pinned version.  Reading down a column pair
 gives the licence question; reading across a pair gives the language binding.
 
-| scenario                    | actor-ts (Bun)   | Akka (Java)   | Akka (Scala 3) | Pekko (Java)  | Pekko (Scala 3) | Akka.NET      | Orleans      |
-| --------------------------- | ---------------- | ------------- | -------------- | ------------- | --------------- | ------------- | ------------ |
-| tell throughput (batch 1k)  | **2.90M/s** ±6 % | 2.11M/s ±27 % | 1.31M/s ±37 %  | 1.71M/s ±28 % | 1.10M/s ±45 %   | 1.38M/s ±9 %  | 288k/s ±19 % |
-| tell throughput (batch 10k) | **4.55M/s** ±8 % | 3.14M/s ±9 %  | 2.80M/s ±16 %  | 3.04M/s ±13 % | 2.84M/s ±47 %   | 1.36M/s ±18 % | 576k/s ±26 % |
-| ping-pong (10k exchanges)   | 504k/s ±6 %      | 404k/s ±40 %  | 369k/s ±42 %   | 343k/s ±27 %  | 603k/s ±82 %    | 415k/s ±21 %  | 157k/s ±7 %  |
-| spawn → started → stopped   | **75k/s** ±10 %  | 28k/s ±10 %   | 26k/s ±6 %     | 27k/s ±14 %   | 28k/s ±13 %     | 34k/s ±6 %    | 5k/s ±13 % ‡ |
-| ask round-trip (p50)        | **3.5 µs**       | 34.9 µs †     | 37.4 µs †      | 32.8 µs †     | 32.4 µs †       | 7.2 µs        | 7.7 µs       |
-| licence                     | MIT              | BUSL-1.1      | BUSL-1.1       | Apache-2.0    | Apache-2.0      | Apache-2.0    | MIT          |
+| scenario                    | actor-ts (Bun) | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) | Akka.NET (C#) | Orleans (C#) |
+| --------------------------- | -------------- | ----------- | ------------ | ------------ | ------------- | ------------- | ------------ |
+| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 2.11M/s     | 1.31M/s      | 1.71M/s      | 1.10M/s       | 1.38M/s       | 288k/s       |
+| tell throughput (batch 10k) | **4.55M/s** 🥇 | 3.14M/s     | 2.80M/s      | 3.04M/s      | 2.84M/s       | 1.36M/s       | 576k/s       |
+| ping-pong (10k exchanges)   | 504k/s         | 404k/s      | 369k/s       | 343k/s       | **603k/s** 🥇 | 415k/s        | 157k/s       |
+| spawn → started → stopped   | **75k/s** 🥇   | 28k/s       | 26k/s        | 27k/s        | 28k/s         | 34k/s         | 5k/s ‡       |
+| ask round-trip (p50)        | **3.5 µs** 🥇  | 34.9 µs †   | 37.4 µs †    | 32.8 µs †    | 32.4 µs †     | 7.2 µs        | 7.7 µs       |
+| licence                     | MIT            | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    | Apache-2.0    | MIT          |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
 that is a microtask and in .NET an `await`; on the JVM, from a non-actor
@@ -460,8 +461,10 @@ This table used to say "expect roughly a third of the JVM's throughput", and
 that is no longer where the numbers land — most of the gap was a scheduling
 hop and an async state machine on the receive path rather than anything
 inherent to the runtime.  On bulk messaging actor-ts is now ahead of every JVM
-arm; on the alternating volley the JVM spreads are wide enough (±27 % to ±82 %)
-that only the ordering against Orleans and XState is safe to read at all.
+arm.  On the alternating volley nobody is: the round-to-round spread on those
+columns runs from ±27 % to ±82 %, so **read that row's 🥇 as "came out highest
+this time" rather than as a winner** — only the gap down to Orleans survives
+it.
 
 **Two things the JVM columns say that a single column could not.**
 
@@ -484,13 +487,13 @@ mechanism rather than something this benchmark measured.
 The same actor model appears on three runtimes, which is what makes the
 runtime's own contribution visible rather than inferred.
 
-The spreads are the other half of the story, and they grew: the JVM arms now
+The spreads are the other half of the story, and this table leaves them out on
+purpose — they are in the full tables below.  They also grew: the JVM arms now
 launch a fresh process per run rather than measuring inside their build tool's
 already-warm one, which is how every other arm has always been measured and is
-the fairer shape — but a cold JVM is a noisier one, and the volley row in
-particular moves by a third to four fifths between rounds.  Treat those four
-columns as an order of magnitude, not a ranking.  Elsewhere: a 20 % gap is a
-difference, a 10 % gap is a tie.
+the fairer shape, but a cold JVM is a noisier one.  Treat those four columns as
+an order of magnitude, not a ranking.  Elsewhere: a 20 % gap is a difference, a
+10 % gap is a tie.
 
 These are **ratios, not absolutes**, on one machine.  Read the columns, treat
 the last digit as fiction, and note that a 10 % gap here is inside the
