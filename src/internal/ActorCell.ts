@@ -1284,12 +1284,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
-      // Stock metric: count actor creations.  Cheap when metrics are
-      // disabled — `metricsOf(...)` returns the noop registry.
-      metricsOf(this.system).counter(
-        'actor_created_total', {},
-        { help: 'Cumulative count of actors successfully started.' },
-      ).inc();
+      // Stock metric: count actor creations.  Read off the system rather than
+      // through `metricsOf`, which walks the extension chain — its own JSDoc
+      // reserves it for once-per-event sites, and an actor's creation is
+      // precisely the event a spawn benchmark counts.  `null` here is not "use
+      // the noop": it is "do not build the arguments", the same distinction
+      // the receive path makes for its counters (#411).
+      const metrics = this.system._metricsRegistry;
+      if (metrics !== null) {
+        metrics.counter(
+          'actor_created_total', {},
+          { help: 'Cumulative count of actors successfully started.' },
+        ).inc();
+      }
       this.system.eventStream.publish(
         new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
       );
@@ -1382,10 +1389,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.system.eventStream.unsubscribe(this.self);
 
     // Stock metric: count terminations (clean stop OR post-failure path).
-    metricsOf(this.system).counter(
-      'actor_terminated_total', {},
-      { help: 'Cumulative count of actors that have been stopped.' },
-    ).inc();
+    // Gated like its counterpart in `onCreate`, and for the same reason.
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) {
+      metrics.counter(
+        'actor_terminated_total', {},
+        { help: 'Cumulative count of actors that have been stopped.' },
+      ).inc();
+    }
     this.system.eventStream.publish(new ActorStopped(this.self));
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
@@ -1574,8 +1585,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * mint a path-labelled series they have sized their own monitoring for.
    */
   private _onMailboxDrop(reason: MailboxDropReason): void {
+    // The one metric site here that is hot exactly when the system is in
+    // trouble: a mailbox sheds load under saturation, so this runs per dropped
+    // message.  Walking the extension chain to reach a registry that may not
+    // exist is the wrong thing to do in that moment (#974).
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return;
     const className = this.actor?.constructor.name ?? 'unknown';
-    metricsOf(this.system).counter(
+    metrics.counter(
       'actor_mailbox_dropped_total',
       { class: className, reason },
       { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
@@ -2007,8 +2024,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ========================= Receive-timeout plumbing ======================= */
 
   private _resetReceiveTimer(): void {
+    // Asked before clearing, because this runs after every successfully handled
+    // message and almost no actor sets a receive timeout.  The order is safe by
+    // invariant rather than by luck: `_receiveTimeoutHandle` is only ever armed
+    // below, after this same check, and the only two writers of
+    // `_receiveTimeoutMs` — `setReceiveTimeout` and `cancelReceiveTimeout` —
+    // both clear the handle on their way to a non-positive value.  So a
+    // non-positive timeout always means there is no handle to clear.
+    if (this._receiveTimeoutMs <= 0) {
+      this._clearReceiveTimer();
+      return;
+    }
     this._clearReceiveTimer();
-    if (this._receiveTimeoutMs <= 0) return;
     this._receiveTimeoutHandle = setTimeout(() => {
       this.enqueueSystem({ kind: 'receiveTimeout' });
     }, this._receiveTimeoutMs);
