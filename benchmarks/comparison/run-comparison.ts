@@ -97,12 +97,12 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
   { kind: 'javascript', name: 'xstate', file: 'xstate.ts' },
   {
     kind: 'external',
-    name: 'akka',
-    directory: 'akka',
+    name: 'akka-java',
+    directory: 'akka-java',
     resolveFrom: 'directory',
-    executable: mavenWrapper(),
-    args: ['-q', '-B', 'compile', 'exec:java'],
-    toolchain: 'JDK 21 + Maven wrapper',
+    executable: millWrapper(),
+    args: ['--ticker', 'false', 'run'],
+    toolchain: 'JDK 21 + Mill wrapper',
   },
   // Its Apache-licensed fork, measured next to it on purpose: the two differ
   // only in their dependency, so any gap between them is the fork rather than
@@ -151,6 +151,20 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
  */
 function mavenWrapper(): string {
   return process.platform === 'win32' ? 'mvnw.cmd' : 'mvnw';
+}
+
+/**
+ * The Mill wrapper's file name differs by platform for the same reason the
+ * Maven one does — and for one more: on Windows the `.bat` is not a
+ * convenience but the only entry point.  The POSIX `mill` script refuses to
+ * run anywhere that is not Linux or macOS, so a Git Bash invocation of `./mill`
+ * exits rather than falling back, which `mvnw` did not do.
+ *
+ * Invoked through its absolute path, like the Maven wrapper: a bare name is on
+ * neither the PATH nor cmd.exe's search of the child's working directory.
+ */
+function millWrapper(): string {
+  return process.platform === 'win32' ? 'mill.bat' : 'mill';
 }
 
 const COMPARISON_ROOT = resolve(import.meta.dirname ?? '.', '.');

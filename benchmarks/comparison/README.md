@@ -145,7 +145,7 @@ not a finding.
 | **actor-ts** | this project | the reference implementation of all four scenarios |
 | **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
-| **Akka** (JVM) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
+| **Akka** (JVM, Java) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
 | **Pekko** (JVM) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
 | **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
 | **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
@@ -160,11 +160,51 @@ dispatcher turn.
 
 ### The JVM arms
 
-`akka/` and `pekko/` are Maven subprojects built against the respective Typed
-**Java** APIs, so the JDK is the only extra toolchain.  Their Java sources are
-identical apart from the package prefix — same harness, same actors, same
-result schema — which is the point: the two arms differ only in their
-dependency, so any gap between them is the fork rather than the benchmark.
+`akka-java/` and `pekko-java/` are Mill modules built against the respective
+Typed **Java** APIs, so the JDK is the only extra toolchain.  Their Java
+sources are identical apart from the package prefix — same harness, same
+actors, same result schema — which is the point: the two arms differ only in
+their dependency, so any gap between them is the fork rather than the
+benchmark.
+
+The directory names carry the binding because the framework name alone stopped
+being enough to identify an arm — see *The build tool* below for why they moved
+to Mill, and note that the published result files, table columns and
+`--framework` keys moved with them.
+
+#### The build tool
+
+Mill, and the same one for every JVM arm here.  Three build tools across four
+cross-language arms was a variable with nothing to do with what is measured.
+
+The launcher is committed the way the Maven wrapper was: two scripts, `mill`
+and `mill.bat`, and no binary in the tree — on first run it downloads itself
+from Maven Central, then the dependency closure from the same place.  On
+Windows the `.bat` is not a convenience but the only entry point: the POSIX
+script refuses to run anywhere that is not Linux or macOS, which is why the
+driver picks between them rather than relying on a shebang.
+
+**`.mill-version` is mandatory, not tidiness.**  The launcher scripts carry a
+nightly development build as their fallback default, so a tree without the pin
+would silently build with whatever that happens to be.
+
+The JDK is pinned too, in each `build.mill`.  Mill provisions one through
+coursier's JVM index rather than using whatever is on the machine; naming the
+version makes that a decision rather than a default, and means two machines
+measure on the same build.  The result files record the JVM either way.
+
+**One consequence is measurement-visible and worth stating plainly.**  The
+Maven goal these arms used ran the benchmark *inside Maven's own JVM* — warm,
+its JIT already exercised, its heap already grown.  `run` forks a clean
+process, which is what every other arm in this suite has always done.  Isolated
+by running the same compiled classes three ways, the difference is not the
+build tool and not the JDK: it is the fork, and it costs the alternating-volley
+row roughly a third to a half of the figure the warm host was producing.  The
+other four scenarios do enough of their own warmup not to notice.  So the JVM
+volley numbers published before this change were flattered by a harness
+artefact, and removing it is a correction rather than a regression — fairness
+rule 4 ("one framework per subprocess") was true of these two arms only in
+letter until now.
 
 Pekko is pinned to **1.6.0**, the newest *stable* release.  2.0.0-M3 exists and
 is newer; publishing a comparison against a milestone would measure a released
@@ -175,7 +215,7 @@ is the fork the community took up after the other project moved to BUSL-1.1;
 the two rows together answer what staying on an OSI-approved licence costs in
 throughput.
 
-Three things about the Akka arm are decisions rather than defaults:
+Two more things about the Akka arm are decisions rather than defaults:
 
 - **Version 2.8.8, from Maven Central.**  Releases from 2.9 onwards are
   published only to `repo.akka.io`, which answers **403** to an anonymous
@@ -264,11 +304,13 @@ benchmarks/comparison/
   tsconfig.json       the only config that type-checks this tree
   run-comparison.ts   driver — one framework per subprocess
   report.ts           validates results/ and generates RESULTS.md
-  akka/               a JVM arm — Maven, Akka Typed Java API
-    mvnw, mvnw.cmd    Maven wrapper, `only-script` — no binary jar committed
-    pom.xml           pinned dependency + the reasoning behind the version
-    src/main/java/    harness, JSON writer, actors, entry point
-  pekko/              the other JVM arm — same sources, different package prefix
+  akka-java/          a JVM arm — Mill, Akka Typed Java API
+    mill, mill.bat    Mill launcher, script-only — no binary committed
+    .mill-version     pins the launcher; its baked-in default is a nightly
+    build.mill        pinned dependency, JDK and the reasoning behind both
+    src/comparison/   harness, JSON writer, actors, entry point
+    resources/        application.conf — logging off
+  pekko-java/         the other JVM arm — same sources, different package prefix
   akka-net/           the .NET arm — classic actor API, committed lock file
   orleans/            the virtual-actor arm — grains, single-silo localhost
   js/

@@ -24,6 +24,9 @@ bun.lockb
 benchmarks/comparison/**/target/
 benchmarks/comparison/**/bin/
 benchmarks/comparison/**/obj/
+# The JVM arms' build cache.  It appears before a build even starts — the
+# committed launcher script downloads itself into it (#1229).
+benchmarks/comparison/**/out/
 
 # Bun + benchmark artefacts
 .bun-cache/
