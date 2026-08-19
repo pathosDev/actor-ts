@@ -536,11 +536,15 @@ describe('gossip-interval validators', () => {
     })).not.toThrow();
   });
 
-  test('DistributedData: non-positive gossipInterval', () => {
+  test('DistributedData: non-positive gossipInterval / fractional maxGossipBytes', () => {
     const check = (s: Partial<DistributedDataOptionsType>): void =>
       new DistributedDataOptionsValidator().validate(s);
     expect(() => check({ gossipInterval: -1 })).toThrow(/gossipInterval/);
     expect(() => check({ gossipInterval: 1_000 })).not.toThrow();
+    // A byte budget compared against a frame length has to be a whole number;
+    // `0` is the documented "no budget" spelling and stays legal.
+    expect(() => check({ maxGossipBytes: 1.5 })).toThrow(/maxGossipBytes/);
+    expect(() => check({ maxGossipBytes: 0 })).not.toThrow();
   });
 });
 

@@ -367,10 +367,17 @@ actor-ts {
   # the unsettled set itself: every entry holds a promise, a timer and a
   # target set until its deadline passes, so refusing past the cap turns what
   # would be a timeout storm into immediate, attributable rejections.
+  #
+  # max-gossip-bytes bounds one outbound gossip frame instead; a larger store
+  # is pushed a slice per tick.  It is clamped down to remote.max-frame-bytes,
+  # because a frame past that cap is rejected on its length prefix and costs
+  # the whole peer association -- heartbeats included.  0 removes the budget
+  # (the clamp still applies).
   distributed-data {
     gossip-interval = 1s
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
+    max-gossip-bytes = 1M
   }
 
   remote {

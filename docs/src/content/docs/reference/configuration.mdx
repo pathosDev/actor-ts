@@ -69,6 +69,7 @@ actor-ts {
     gossip-interval             = 1s
     max-pending-quorum-requests = 1000    # 0 = no cap
     max-quorum-timeout          = 30s     # 0 = no ceiling
+    max-gossip-bytes            = 1M      # per gossip frame; 0 = no budget
   }
 
   remote {
@@ -213,9 +214,21 @@ released by death watch and do not count against either cap.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `distributed-data.gossip-interval` | `1s` | How often a replica pushes its full key set to a random peer. |
+| `distributed-data.gossip-interval` | `1s` | How often a replica pushes its key set to a random peer. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
+| `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
+
+`max-gossip-bytes` is always **clamped down to `remote.max-frame-bytes`**, so
+lowering the wire cap lowers the gossip budget with it and no setting can put
+gossip back over the edge.  It matters because the two failures are not
+comparable: a frame past the wire cap is rejected on its 4-byte length prefix
+and the receiving transport drops the whole peer association — heartbeats,
+membership gossip and every cross-node `tell` along with it — while a budget
+merely spreads the same state over more ticks.  A single key whose own encoding
+exceeds the budget cannot be sliced; it is skipped with a rate-limited warning
+naming the key and both sizes, counted in
+`distributed_data_gossip_skipped_keys_total`, and it does **not** converge.
 
 The block is top-level rather than under `cluster.*` (where `pub-sub` and
 `receptionist` live) because the module is: `DistributedData` ships from

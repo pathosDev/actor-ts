@@ -257,11 +257,17 @@ export const ConfigKeys = {
    * against the mailbox underneath — see
    * `DEFAULT_MAX_PENDING_QUORUM_REQUESTS` for why that framing was dropped
    * (#1078, #1148).
+   *
+   * `max-gossip-bytes` bounds the third thing: what one *outbound* frame may
+   * carry.  It reads as a size (`1M`), and it is clamped down to
+   * `remote.max-frame-bytes` at consume time — a budget above the wire cap is
+   * the configuration that reintroduces #691, so it is not expressible (#691).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
+    maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',
   },
 
   /**
