@@ -11,6 +11,111 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The nine test modules under tests/unit/cluster, tests/unit/crdt,
+  tests/unit/coordination and tests/unit/discovery that declared their own
+  `const sleep = (ms) => Bun.sleep(ms)` now import the shared portable
+  `sleep` from tests/util/AwaitCondition.ts, and the four that hand-rolled a
+  `waitFor` deadline loop delegate to `awaitCondition` instead. A wait that
+  expires now names the condition that never became true and how long it
+  really waited; the old loops fell through their `while` silently and
+  reported only the budget. (#418).**
+
+- **Five fixed-delay waits in those trees became state polls, each on the
+  same object the following assertion reads rather than one mailbox hop
+  upstream of it: the KubernetesLease renewal-loop case now polls the record
+  stored in the fake API server, its two onLost cases poll the reason the
+  assertion reads, and the two DistributedData decode-isolation merges poll
+  for the merged key's presence rather than its value, so the exact-count
+  assertions still do the checking. The remaining 27 keep their fixed delay
+  and state the reason in a comment at the call site — eleven are absence
+  assertions that cannot be polled at all, two are cases where the elapsed
+  time is itself the thing under test, seven are startup settles with no
+  readiness flag to wait on, and two position a write inside a window on
+  purpose. (#418).**
+
+- **The in-process persistence suites and the four remaining root-level test
+  files (Actor, Cluster, ClusterBootstrap, ShardingAdvanced) now wait on
+  observable state instead of a fixed delay (#418).**
+
+  In those 23 files, 88 unexplained fixed-delay waits go to 0, 18 per-file
+  `Bun.sleep` shims are replaced by the shared `sleep` from
+  `tests/util/AwaitCondition.ts`, and 3 hand-rolled `waitFor` deadline
+  loops — each of which fell through silently on expiry, so a convergence
+  that never happened surfaced as a bare `2 !== 3` — are gone. Repo-wide
+  that is `await sleep(` 555 to 480, shim modules 94 to 76,
+  `awaitCondition(` 912 to 975. Six stop-then-respawn sites now use
+  `gracefulStop(ref, timeoutMs)` and carry no delay at all. Waits that
+  legitimately stay — an absence assertion, a TTL window, a wall-clock gap
+  that gives two journal appends distinct offset timestamps, a settle that
+  lets a shard region see the last MemberUp — state their reason at the
+  call site. No library behaviour changes; test coverage is unchanged or
+  stronger.
+
+- **The broker and WebSocket integration suites under
+  tests/integration/in-process/io/ and .../http/ now wait on observable
+  state instead of on elapsed time (#418).**
+
+  Across twelve files the fixed-delay waits drop from 181 to 87,
+  awaitCondition call sites rise from 28 to 123, all twelve local
+  Bun.sleep/setTimeout shims are replaced by the shared
+  tests/util/AwaitCondition.ts export, and one hand-rolled waitUntil
+  deadline loop that fell through silently is gone. Every wait that
+  remains states at the call site why it has to: it guards an absence that
+  cannot be polled for, the elapsed time is itself the assertion, it is a
+  settle window restoring the upper half of an exact-count claim a poll
+  can only ever half-check, or it is a drain before teardown whose subject
+  is not observable. Three of the conversions needed a new observable
+  rather than a substitution, because the obvious predicate was already
+  true at t=0 — most sharply the reconnect: false case, where polling
+  connectAttempts === 1 returns on the first attempt and can never see the
+  second attempt the test exists to rule out. No assertion was added,
+  removed or altered: the in-scope expect() count is unchanged at 529.
+
+- **The unit test suite outside the cluster, CRDT, coordination and
+  discovery trees now takes its waits from the one shared helper. 31 modules
+  that each re-declared a private one-line `sleep` import `sleep` from
+  `tests/util/AwaitCondition.js` instead, and two hand-rolled polling
+  helpers are gone: a `waitUntil` whose only diagnostic was the string
+  "waitUntil timed out" became four labelled `awaitCondition` calls, and a
+  26-call-site `waitFor` keeps its name and signature while forwarding to
+  `awaitCondition`, so a timeout there now reports the elapsed time and the
+  poll count instead of only the budget it was given. Six further fixed
+  delays became polls on the state the following assertion reads, including
+  one in the WebSocket server suite where the hub's own connect callback was
+  already observable and one in the devtools explain-plan suite that had no
+  deadline at all and would have hung until the runner killed it. (#418).**
+
+- **Every fixed-delay wait remaining in those suites states why it is a wait
+  and not a poll, which is what makes the sweep auditable rather than a
+  snapshot: 131 unexplained waits across 54 files are now zero (#418).**
+
+  The reasons fall into four kinds and the distinction is load-bearing,
+  because roughly nine in ten of these waits cannot become polls at all.
+  Where the assertion is an absence the predicate is already true when the
+  wait starts, so a poll returns immediately and the test stops checking
+  anything. Where it is an exact count or array, a poll returns on the
+  delivery that reaches the count and can never see the surplus the
+  assertion exists to catch. Where the elapsed time is itself the claim,
+  as with a circuit breaker that compares clocks inside `call()` or a
+  cache TTL that expires lazily, there is no event to wait on even in
+  principle. And a slow handler that exists to overrun a mailbox, keep a
+  transaction open, or hold two async contexts suspended at once is a
+  fixture rather than a wait.
+
+- **The cluster integration and multi-node test suites now share one wait
+  helper (#418).**
+
+  Twenty-three hand-rolled waitFor / awaitConvergence deadline loops —
+  each with its own timeout, its own poll step and a message naming the
+  elapsed budget but not the awaited state — forward their bodies to
+  awaitCondition, keeping every call site unchanged; twenty-three per-file
+  Bun.sleep shims are gone in favour of the portable sleep; and every
+  fixed-delay wait that legitimately stays now states why on the line
+  above it. No assertion was weakened and no budget changed in either
+  direction. This takes all three SleepRatchet ledgers to zero for
+  tests/integration/in-process/cluster/ and tests/multi-node/: 89
+  unexplained waits, 23 shim declarations, 23 rival polling helpers.
+
 - **AGENTS.md gains a measured-hot-path exemption to the pattern-matching rule,
   and one site uses it** (#1209). Where a benchmark in this repository has
   measured a path as hot, a `match(…)` may be a `switch` on `kind` — arms still
@@ -2181,6 +2286,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **The parallel pubsub end-to-end test waited for its two subscribers by
+  polling drain, which empties the probe it reads, so the round in which one
+  subscriber had the message and the other did not discarded the first one's
+  copy and the loop could only succeed when both deliveries landed inside
+  one 80 ms window; when they did not, it fell through silently and failed
+  on an empty array. It now polls a non-destructive count and drains once.
+  (#418).**
 
 - **The dead-letter queue's shutdown flush was covered by nothing (#433).**
 
