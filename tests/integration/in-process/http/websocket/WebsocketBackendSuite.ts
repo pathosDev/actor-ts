@@ -293,7 +293,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       // sockets, and this delay is the losing arm of the race that proves it.
       const done = await Promise.race([
         binding.unbind(500).then(() => 'unbound'),
-        sleep(4000).then(() => 'timeout'),
+        sleep(4000).then(() => 'timeout'),  // the elapsed time IS the assertion
       ]);
       expect(done).toBe('unbound');
     });

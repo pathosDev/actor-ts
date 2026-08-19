@@ -149,7 +149,7 @@ async function awaitReceived(target: CapturingTarget, count: number, what: strin
   await awaitCondition(() => target.received.length >= count, {
     timeoutMs: 4_000, label: `${what}: ${count} message(s) reached the target`,
   });
-  await sleep(SETTLE_MS);
+  await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
 }
 
 type Booted = {
@@ -272,7 +272,7 @@ describe('NatsActor — subscriptions on the live connection', () => {
       await awaitCondition(() => actor.connection.subscriptions.length >= 2, {
         timeoutMs: 4_000, label: 'the swap issued a second subscribe on the connection',
       });
-      await sleep(SETTLE_MS);
+      await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
       // Exactly one live handle for the subject — the old one was revoked.
       expect(actor.connection.liveSubjects).toEqual(['events']);
 
