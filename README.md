@@ -407,12 +407,12 @@ by — a gap smaller than the spread beside it is not a difference.
 
 Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
 
-| scenario                       | actor-ts          | nact 7.6.2      | XState 5.32.5   |
-| ------------------------------ | ----------------- | --------------- | --------------- |
-| tell throughput (batch 10k)    | **4.55M/s** ±8 %  | 389k/s ±3 %     | 183k/s ±9 %     |
-| ask round-trip (p50)           | **3.5 µs**        | 6.7 µs          | 13.5 µs *       |
-| ping-pong (10k exchanges)      | **504k/s** ±6 %   | 166k/s ±10 %    | 83k/s ±13 %     |
-| spawn → started → stopped      | 75k/s ±10 %       | **192k/s** ±7 % | 61k/s ±4 %      |
+| scenario                    | actor-ts         | nact            | XState      |
+| --------------------------- | ---------------- | --------------- | ----------- |
+| tell throughput (batch 10k) | **4.55M/s** ±8 % | 389k/s ±3 %     | 183k/s ±9 % |
+| ask round-trip (p50)        | **3.5 µs**       | 6.7 µs          | 13.5 µs *   |
+| ping-pong (10k exchanges)   | **504k/s** ±6 %  | 166k/s ±10 %    | 83k/s ±13 % |
+| spawn → started → stopped   | 75k/s ±10 %      | **192k/s** ±7 % | 61k/s ±4 %  |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
@@ -440,14 +440,14 @@ Each JVM framework appears twice: through its **Java** API and through its
 **Scala 3** API, at the identical pinned version.  Reading down a column pair
 gives the licence question; reading across a pair gives the language binding.
 
-| scenario                    | actor-ts (Bun)   | Akka 2.8.8 (Java) | Akka (Scala 3)  | Pekko 1.6.0 (Java) | Pekko (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
-| --------------------------- | ---------------- | ----------------- | --------------- | ------------------ | --------------- | --------------- | -------------- |
-| tell throughput (batch 1k)  | **2.90M/s** ±6 % | 2.11M/s ±27 %     | 1.31M/s ±37 %   | 1.71M/s ±28 %      | 1.10M/s ±45 %   | 1.38M/s ±9 %    | 288k/s ±19 %   |
-| tell throughput (batch 10k) | **4.55M/s** ±8 % | 3.14M/s ±9 %      | 2.80M/s ±16 %   | 3.04M/s ±13 %      | 2.84M/s ±47 %   | 1.36M/s ±18 %   | 576k/s ±26 %   |
-| ping-pong (10k exchanges)   | 504k/s ±6 %      | 404k/s ±40 %      | 369k/s ±42 %    | 343k/s ±27 %       | 603k/s ±82 %    | 415k/s ±21 %    | 157k/s ±7 %    |
-| spawn → started → stopped   | **75k/s** ±10 %  | 28k/s ±10 %       | 26k/s ±6 %      | 27k/s ±14 %        | 28k/s ±13 %     | 34k/s ±6 %      | 5k/s ±13 % ‡   |
-| ask round-trip (p50)        | **3.5 µs**       | 34.9 µs †         | 37.4 µs †       | 32.8 µs †          | 32.4 µs †       | 7.2 µs          | 7.7 µs         |
-| licence                     | MIT              | BUSL-1.1          | BUSL-1.1        | Apache-2.0         | Apache-2.0      | Apache-2.0      | MIT            |
+| scenario                    | actor-ts (Bun)   | Akka (Java)   | Akka (Scala 3) | Pekko (Java)  | Pekko (Scala 3) | Akka.NET      | Orleans      |
+| --------------------------- | ---------------- | ------------- | -------------- | ------------- | --------------- | ------------- | ------------ |
+| tell throughput (batch 1k)  | **2.90M/s** ±6 % | 2.11M/s ±27 % | 1.31M/s ±37 %  | 1.71M/s ±28 % | 1.10M/s ±45 %   | 1.38M/s ±9 %  | 288k/s ±19 % |
+| tell throughput (batch 10k) | **4.55M/s** ±8 % | 3.14M/s ±9 %  | 2.80M/s ±16 %  | 3.04M/s ±13 % | 2.84M/s ±47 %   | 1.36M/s ±18 % | 576k/s ±26 % |
+| ping-pong (10k exchanges)   | 504k/s ±6 %      | 404k/s ±40 %  | 369k/s ±42 %   | 343k/s ±27 %  | 603k/s ±82 %    | 415k/s ±21 %  | 157k/s ±7 %  |
+| spawn → started → stopped   | **75k/s** ±10 %  | 28k/s ±10 %   | 26k/s ±6 %     | 27k/s ±14 %   | 28k/s ±13 %     | 34k/s ±6 %    | 5k/s ±13 % ‡ |
+| ask round-trip (p50)        | **3.5 µs**       | 34.9 µs †     | 37.4 µs †      | 32.8 µs †     | 32.4 µs †       | 7.2 µs        | 7.7 µs       |
+| licence                     | MIT              | BUSL-1.1      | BUSL-1.1       | Apache-2.0    | Apache-2.0      | Apache-2.0    | MIT          |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
 that is a microtask and in .NET an `await`; on the JVM, from a non-actor
@@ -500,8 +500,9 @@ system a microbenchmark can measure honestly.  Nothing here says anything
 about clustering, persistence, or a real network.
 
 **[Full tables, methodology and caveats](./benchmarks/comparison/RESULTS.md)** —
-including what is deliberately *not* measured yet (clustering, persistence)
-and why.  Reproduce with `bun run bench:compare -- --rounds=10`.
+including the pinned version of every arm above, and what is deliberately
+*not* measured yet (clustering, persistence) and why.  Reproduce with
+`bun run bench:compare -- --rounds=10`.
 
 ---
 ## Roadmap & status

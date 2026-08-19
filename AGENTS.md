@@ -104,8 +104,34 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    `package.json` and move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`;
    commit (`chore(release): vX.Y.Z`). Merge it into `develop` (`--no-ff`) and
    push `develop`.
-2. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
-3. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
+2. **Re-measure the comparison benchmarks and carry the figures to every
+   surface that quotes them.** Those numbers name the version that produced
+   them — `environment.actorTsVersion` in each result file comes from
+   `package.json`, and the docs tables label their columns with it — so a
+   release that skips this ships figures attributed to a version that never
+   ran. **Order matters:** bump and commit first (step 1), *then* measure, so
+   the results carry the new version and a clean commit rather than recording
+   themselves as `-dirty`.
+
+   ```sh
+   bun run bench:compare -- --rounds=10   # every arm, machine otherwise idle
+   bun run bench:compare:report           # regenerates RESULTS.md
+   ```
+
+   Then update the five hand-maintained surfaces in a second commit on the
+   release branch: `README.md`, `docs/.../reference/benchmarks.mdx` (EN + DE)
+   and the `tell`/`ask` figures quoted in `docs/.../reference/faq.mdx`
+   (EN + DE). **Version labels belong in the docs tables and in `RESULTS.md`,
+   never in `README.md`** — the README is the summary and links to the full
+   tables for the pins. #1322.
+
+   The cross-language arms need a JDK and a .NET SDK; if a toolchain is
+   missing, re-measure the arms you can rather than skipping the step. Each
+   result file carries its own date and commit and `RESULTS.md` prints one
+   environment row per arm, precisely so a stale arm is visible as stale
+   instead of averaging in silently.
+3. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
+4. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
    `--prerelease`) with **emoji-sectioned notes** (`## 🚀 New features`,
    `## ⚠️ Breaking changes`, `## 🔒 Security`, `## 🐛 Fixed`, …) matching the
    style of prior releases.
