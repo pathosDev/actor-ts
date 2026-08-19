@@ -22,9 +22,7 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 describe('Actor tracing — auto-instrumentation', () => {
   test('actor.receive span has the caller\'s span as parent', async () => {
@@ -157,6 +155,8 @@ describe('Actor tracing — auto-instrumentation', () => {
     try {
       const actorRef = sys.spawn(R, 'r');
       actorRef.tell('x');
+      // An absence: with tracing off, `recorded()` must stay empty.  Already true
+      // at t = 0, so only a real window can catch a span opened a turn later.
       await sleep(30);
       expect(tracer.recorded()).toEqual([]);
     } finally {
@@ -265,6 +265,8 @@ describe('Actor tracing — switched on and off under load (#411)', () => {
         timeoutMs: 4_000,
         label: 'the whole backlog drained',
       });
+      // The settle window itself: a second recorded span is an absence, and the poll
+      // above returns on the sixth handled message without ever seeing one.
       await sleep(30);
       // Only `m0`, whose span was opened before the switch — nothing behind it.
       expect(tracer.recorded().length).toBe(1);
@@ -301,6 +303,8 @@ describe('Actor tracing — tooling actors', () => {
         String(recorded.attributes['actor.path'] ?? '').endsWith('/application')),
       { timeoutMs: 4_000, label: 'the application actor was traced' },
     );
+    // The settle window named above: the tooling span *not* appearing is an
+    // absence, and the poll returns as soon as the application span is there.
     await sleep(40);
 
     const paths = tracer.recorded()

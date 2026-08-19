@@ -12,17 +12,18 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(25);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout
+ * message instead of only the elapsed budget.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  label = 'the awaited cross-node state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: 25, label });
 
 type Node = {
   readonly sys: ActorSystem;
@@ -161,6 +162,10 @@ describe('ActorRef serialisation across cluster nodes', () => {
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
+    // Give sharding a moment to allocate initial shards — the tell from the
+    // non-hoster node otherwise races the coordinator.  Nothing is asserted on
+    // the wait itself; `waitFor(seen.length >= 1)` below is the real signal, so
+    // an allocation still in flight is absorbed rather than misread.
     await sleep(300);
 
     // Forge a RemoteActorRef pointing at some OTHER (fake) third node and
@@ -216,6 +221,9 @@ describe('ActorRef serialisation across cluster nodes', () => {
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
+    // Same initial-allocation warm-up as above; `waitFor(observed.nobody)`
+    // carries the real budget, so this only keeps the tell from racing the
+    // coordinator.
     await sleep(300);
     bRegion.tell({ attempt: Nobody });
 

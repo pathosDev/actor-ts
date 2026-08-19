@@ -40,6 +40,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { GossipMessage, MemberData } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { MetricsExtensionId, metricsOf } from '../../../src/metrics/MetricsExtension.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const MINUTE_MS = 60 * 1_000;
 
@@ -112,14 +113,15 @@ function markFor(cluster: Cluster, address: NodeAddress): number | undefined {
   return internals(cluster).acceptedGossipSequences.get(address.toString());
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(20);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Thin wrapper over the shared helper (#418) — this file predates it and had
+ * its own deadline loop, which fell through silently once the deadline passed
+ * and named neither the condition nor how long it really waited.  The one call
+ * site sits in a test with a 15 s cap, so the 5 s budget still reports before
+ * the runner does.
+ */
+const waitFor = (predicate: () => boolean, label: string): Promise<void> =>
+  awaitCondition(predicate, { timeoutMs: 5_000, intervalMs: 20, label });
 
 let nodes: NodeHandle[] = [];
 
@@ -332,7 +334,10 @@ describe('a mark does not outlive its member', () => {
     gossipFrom(node.cluster, peer, sequence, [selfRecord(peer)]);
     expect(markFor(node.cluster, peer)).toBe(sequence);
 
-    await waitFor(() => !internals(node.cluster).members.has(peer.toString()));
+    await waitFor(
+      () => !internals(node.cluster).members.has(peer.toString()),
+      'the failure detector deleted the peer',
+    );
     expect(markFor(node.cluster, peer)).toBeUndefined();
 
     // And the peer comes back on a *lower* number, exactly as a restarted

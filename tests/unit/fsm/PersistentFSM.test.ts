@@ -18,7 +18,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import type { Journal } from '../../../src/persistence/Journal.js';
 import type { JournalEntry } from '../../../src/persistence/JournalTypes.js';
@@ -51,8 +51,6 @@ type OrderData = {
   carrier: string | null;
   cancelReason: string | null;
 };
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * Wait until the journal holds exactly `count` events for `persistenceId`.
@@ -467,6 +465,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
         'pay',
       );
       ref.tell({ kind: 'authorize', amount: 0 });
+      // An absence, and the elapsed time is what makes it one: 200 ms outlasts
+      // the 60 ms state timeout, so the timer has certainly fired — and the
+      // claim is that the guard rejected it and the state did NOT move.
       await sleep(200);
 
       const final = await ref.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);

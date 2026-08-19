@@ -24,9 +24,8 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * `Ledger` replies to every command, so the reply count *is* the
@@ -113,10 +112,11 @@ describe('compaction round-trip', () => {
     // #629: the snapshot the compaction compacted past must still be there.
     expect((await snapshots.loadLatest('ledger-1')).isSome()).toBe(true);
 
-    first.stop();
-    // Precondition, not an assertion: nothing downstream reads state that
-    // `postStop` produces, so there is no condition to poll for (#418).
-    await sleep(80);
+    // The restart below recovers the same persistenceId, so the first instance
+    // has to be really gone and not merely asked to stop.  `gracefulStop`
+    // resolves on the termination itself, which is what the 80 ms was guessing
+    // at (#418).
+    expect(await gracefulStop(first, 4_000)).toBe(true);
 
     // Restart: state comes from the snapshot, and the sequence must line up
     // with what the journal remembers.
@@ -151,8 +151,7 @@ describe('compaction round-trip', () => {
 
     await journal.delete('ledger-2', 2);
     await snapshots.delete('ledger-2', 2);
-    first.stop();
-    await sleep(80);
+    expect(await gracefulStop(first, 4_000)).toBe(true);
 
     reports.length = 0;
     const second = system.spawn(() => new Ledger('ledger-2', collect), 'second');

@@ -16,9 +16,19 @@ import {
 import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
 import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
 import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const enc = new TextEncoder();
+
+/**
+ * The window in which one *too many* of something shows up.
+ *
+ * Several assertions here are exact — `toHaveLength(1)`, `toEqual([…])` — and a
+ * poll returns on the arrival that reaches the number, so it can only ever see
+ * the lower half of such a claim.  Polling `>=` and then holding still for this
+ * long is what restores the upper half.
+ */
+const SETTLE_MS = 20;
 
 /* ----------------------- matchesMqttPattern ------------------------ */
 
@@ -166,7 +176,15 @@ async function boot<T, TSelf>(
   name = 'mqtt',
 ): Promise<MqttRef<T, TSelf>> {
   const ref = sys.spawn(() => actor, name);
-  await sleep(30); // let preStart connect (autoConnect fires on the next tick)
+  // `connectedCount` is the *last* thing a connect produces, which is what makes
+  // it the right thing to wait on: `connectImplementation` replays the whole
+  // subscription registry onto the fresh client and only then tells itself
+  // `mqtt-connected`, so a bumped counter means the subscribes the callers
+  // assert on have already been issued — and, because the signal is handled
+  // after `preStart` returns, that the state machine reads `connected` too.
+  await awaitCondition(() => actor.connectedCount >= 1, {
+    timeoutMs: 4_000, label: `${name}: preStart connected and applied its subscriptions`,
+  });
   return ref as MqttRef<T, TSelf>;
 }
 
@@ -239,7 +257,10 @@ describe('MqttActor inbound routing', () => {
       });
       await boot(sys, actor);
       actor.module.last().fireMessage('sensors/1/temp', enc.encode('{"v":21}'));
-      await sleep(20);
+      await awaitCondition(() => actor.inbound.length >= 1, {
+        timeoutMs: 4_000, label: 'the inbound message reached onMessage',
+      });
+      await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
       expect(actor.inbound).toHaveLength(1);
       expect(actor.inbound[0]!.topic).toBe('sensors/1/temp');
       const decoded = actor.inbound[0]!.payload.entity();
@@ -265,7 +286,13 @@ describe('MqttActor inbound routing', () => {
       });
       await boot(sys, actor);
       actor.module.last().fireMessage('a/b', enc.encode('hi'));
-      await sleep(20);
+      // The claim is "exactly once despite two matching patterns", so the
+      // second copy is what a bug produces — poll for the first, then hold
+      // still long enough for a second to arrive if the dedupe is broken.
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the external target received the message',
+      });
+      await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
       // Two matching patterns, one ref → delivered exactly once.
       expect(inbox.received).toHaveLength(1);
       expect(inbox.received[0]!.payload.text()).toBe('hi');
@@ -284,10 +311,16 @@ describe('MqttActor inbound routing', () => {
       const actor = new TestMqttActor({ options: mqttOptions });
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'subscribe', topic: 'x/#' });
-      await sleep(20);
+      await awaitCondition(
+        () => actor.module.last().subscribes.some((s) => s.topic === 'x/#'),
+        { timeoutMs: 4_000, label: 'the subscribe command reached the broker' },
+      );
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('x/#');
       actor.module.last().fireMessage('x/y', enc.encode('yo'));
-      await sleep(20);
+      await awaitCondition(() => actor.inbound.length >= 1, {
+        timeoutMs: 4_000, label: 'the message for the runtime subscription reached onMessage',
+      });
+      await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
       expect(actor.inbound.map((m) => m.topic)).toEqual(['x/y']);
     } finally {
       await sys.terminate();
@@ -312,7 +345,12 @@ describe('MqttActor reconnect + subscription persistence', () => {
       actor.module.last().fireClose();
       // Subscribe arrives while disconnected: recorded, not yet on the broker.
       ref.tell({ kind: 'subscribe', topic: 'late/#', qos: 1 });
-      await sleep(60); // let the reconnect fire + apply the registry
+      await awaitCondition(
+        () => actor.module.clients.length >= 2 && actor.module.last().subscribes.length >= 1,
+        { timeoutMs: 4_000, label: 'the reconnect applied the registry to a second client' },
+      );
+      // The subscribe list is asserted exactly; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       const latest = actor.module.last();
       expect(actor.module.clients.length).toBeGreaterThanOrEqual(2);
       expect(latest.subscribes).toEqual([{ topic: 'late/#', qos: 1 }]);
@@ -333,11 +371,18 @@ describe('MqttActor reconnect + subscription persistence', () => {
       });
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'subscribe', topic: 'run/#' });
-      await sleep(20);
+      await awaitCondition(
+        () => actor.module.last().subscribes.some((s) => s.topic === 'run/#'),
+        { timeoutMs: 4_000, label: 'the runtime subscribe reached the first client' },
+      );
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('run/#');
       // Reconnect → the new client must re-receive the runtime subscription.
       actor.module.last().fireClose();
-      await sleep(60);
+      await awaitCondition(
+        () => actor.module.clients.length >= 2
+          && actor.module.last().subscribes.some((s) => s.topic === 'run/#'),
+        { timeoutMs: 4_000, label: 'the second client re-received the runtime subscription' },
+      );
       const latest = actor.module.last();
       expect(actor.module.clients.length).toBeGreaterThanOrEqual(2);
       expect(latest.subscribes.map((s) => s.topic)).toContain('run/#');
@@ -358,7 +403,10 @@ describe('MqttActor reconnect + subscription persistence', () => {
       await boot(sys, actor);
       expect(actor.connectedCount).toBe(1);
       actor.module.last().fireClose();
-      await sleep(60);
+      await awaitCondition(
+        () => actor.disconnectedCount >= 1 && actor.connectedCount >= 2,
+        { timeoutMs: 4_000, label: 'both lifecycle hooks fired across the reconnect' },
+      );
       expect(actor.disconnectedCount).toBeGreaterThanOrEqual(1);
       expect(actor.connectedCount).toBeGreaterThanOrEqual(2);
     } finally {
@@ -385,11 +433,17 @@ describe('MqttActor deathwatch cleanup (bug #3)', () => {
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('watched/#');
       // Stop the target → Terminated flows to the actor → registry pruned.
       inboxRef.stop();
-      await sleep(40);
+      await awaitCondition(
+        () => actor.module.last().unsubscribes.includes('watched/#'),
+        { timeoutMs: 4_000, label: 'the pruned pattern was unsubscribed at the broker' },
+      );
       expect(actor.module.last().unsubscribes).toContain('watched/#');
       // A subsequent message must not reach the stopped inbox.
       actor.module.last().fireMessage('watched/x', enc.encode('gone'));
-      await sleep(20);
+      // An absence cannot be polled — `received` is already empty, so a
+      // predicate over it returns at t=0 and proves nothing.  This is the turn
+      // in which a message that should not be routed would arrive.
+      await sleep(SETTLE_MS);
       expect(inbox.received).toHaveLength(0);
     } finally {
       await sys.terminate();
@@ -412,13 +466,19 @@ describe('MqttActor onInvalidMessage', () => {
       actor.decodeOnReceive = true;
       await boot(sys, actor);
       actor.module.last().fireMessage('j/1', enc.encode('{ broken'));
-      await sleep(20);
+      await awaitCondition(() => actor.decodeErrors.length >= 1, {
+        timeoutMs: 4_000, label: 'the malformed payload reached onInvalidMessage',
+      });
+      // One error, not one per restart attempt; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(actor.decodeErrors).toHaveLength(1);
       expect(actor.decodeErrors[0]!.error.topic).toBe('j/1');
       // Actor is still alive and processing: a valid message still lands.
       actor.decodeOnReceive = false;
       actor.module.last().fireMessage('j/2', enc.encode('"ok"'));
-      await sleep(20);
+      await awaitCondition(() => actor.inbound.some((m) => m.topic === 'j/2'), {
+        timeoutMs: 4_000, label: 'the actor still delivers after the decode failure',
+      });
       expect(actor.inbound.map((m) => m.topic)).toContain('j/2');
     } finally {
       await sys.terminate();
@@ -440,7 +500,13 @@ describe('MqttActor onSelfMessage', () => {
       const ref = await boot(sys, actor);
       ref.tell({ kind: 'tick', n: 7 });
       ref.tell({ kind: 'subscribe', topic: 's/#' });
-      await sleep(20);
+      await awaitCondition(
+        () => actor.selfMessages.length >= 1
+          && actor.module.last().subscribes.some((s) => s.topic === 's/#'),
+        { timeoutMs: 4_000, label: 'the app message and the command were both dispatched' },
+      );
+      // The self-message list is asserted exactly; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(actor.selfMessages).toEqual([{ kind: 'tick', n: 7 }]);
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('s/#');
     } finally {
@@ -462,7 +528,9 @@ describe('MqttActor publish', () => {
       actor.doPublish('t/str', 'hello');
       actor.doPublish('t/bin', enc.encode('bin'));
       actor.doPublish('t/obj', { a: 1 });
-      await sleep(20);
+      await awaitCondition(() => actor.module.last().publishes.length >= 3, {
+        timeoutMs: 4_000, label: 'all three publishes reached the client',
+      });
       const byTopic = new Map(actor.module.last().publishes.map((publish) => [publish.topic, publish.payload]));
       expect(byTopic.get('t/str')).toBe('hello');
       expect(new TextDecoder().decode(byTopic.get('t/bin') as Uint8Array)).toBe('bin');
@@ -480,7 +548,10 @@ describe('MqttActor publish', () => {
       const actor = new TestMqttActor({ options: mqttOptions });
       await boot(sys, actor);
       actor.doPublish('t/entity', actor.encodeEntity('pong'));
-      await sleep(20);
+      await awaitCondition(
+        () => actor.module.last().publishes.some((x) => x.topic === 't/entity'),
+        { timeoutMs: 4_000, label: 'the pre-encoded entity reached the client' },
+      );
       const publish = actor.module.last().publishes.find((x) => x.topic === 't/entity')!;
       expect(new TextDecoder().decode(publish.payload as Uint8Array)).toBe('"pong"');
     } finally {
@@ -498,7 +569,11 @@ describe('MqttActor publish', () => {
       const circular: Record<string, unknown> = {};
       circular.self = circular;
       const ok = actor.doPublish('t/bad', circular);
-      await sleep(20);
+      // Both claims are absences — `ok` is already false when `doPublish`
+      // returns, and the point of the second is that no publish EVER reaches
+      // the client.  A predicate over either holds at t=0, so this is a turn
+      // in which a wrongly-enqueued publish would surface, not a wait.
+      await sleep(SETTLE_MS);
       expect(ok).toBe(false);
       expect(actor.module.last().publishes.find((x) => x.topic === 't/bad')).toBeUndefined();
     } finally {
@@ -520,7 +595,14 @@ describe('MqttActor publish', () => {
       // Buffered while disconnected.
       ref.tell({ kind: 'publish', publish: { topic: 'buf/1', payload: 'one' } });
       ref.tell({ kind: 'publish', publish: { topic: 'buf/2', payload: 'two' } });
-      await sleep(60);
+      await awaitCondition(
+        () => actor.module.last().publishes
+          .filter((publish) => publish.topic.startsWith('buf/')).length >= 2,
+        { timeoutMs: 4_000, label: 'the reconnect flushed both buffered publishes' },
+      );
+      // The flushed list is asserted exactly — a third copy is what a broken
+      // drain produces; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       const flushed = actor.module.last().publishes.filter((publish) => publish.topic.startsWith('buf/'));
       expect(flushed.map((publish) => publish.topic)).toEqual(['buf/1', 'buf/2']);
     } finally {

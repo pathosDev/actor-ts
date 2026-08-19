@@ -277,7 +277,10 @@ describe('DeadLetterQueue — persistent store across a restart', () => {
 
     const second = newSystem(journal, {});
     await deadLetterTo(second, 'two', 'second');
-    await Bun.sleep(30);
+    await awaitCondition(async () => (await second.deadLetterQueue.list()).length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second letter joined the restored one',
+    });
     await second.terminate();
 
     const third = newSystem(journal, {});

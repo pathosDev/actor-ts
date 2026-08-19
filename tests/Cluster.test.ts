@@ -21,18 +21,7 @@ import {
   moduloAllocator,
   rendezvousAllocator,
 } from '../src/cluster/index.js';
-import { awaitCondition } from './util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+import { awaitCondition, sleep } from './util/AwaitCondition.js';
 
 type NodeHandle = {
   system: ActorSystem;
@@ -99,7 +88,10 @@ test('three nodes discover each other and transition to Up', async () => {
   const n2 = await startNode('cluster-a', '10.0.0.2', 5002, ['10.0.0.1:5001']);
   const n3 = await startNode('cluster-a', '10.0.0.3', 5003, ['10.0.0.1:5001']);
 
-  await sleep(600);
+  await awaitCondition(
+    () => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3),
+    { timeoutMs: 4_000, label: 'all three nodes see a 3-member cluster' },
+  );
 
   for (const n of [n1, n2, n3]) {
     const ups = n.cluster.upMembers().map(m => m.address.toString()).sort();
@@ -118,13 +110,18 @@ test('sharded entities route to exactly one node', async () => {
   const n2 = await startNode('cluster-b', '10.0.1.2', 6002, ['10.0.1.1:6001']);
   const n3 = await startNode('cluster-b', '10.0.1.3', 6003, ['10.0.1.1:6001']);
   // Wait until every node agrees on the Up set — same cardinality AND set.
-  await waitFor(() => {
-    const sets = [n1, n2, n3].map(n =>
-      n.cluster.upMembers().map(m => m.address.toString()).sort().join('|'),
-    );
-    return sets[0] === sets[1] && sets[1] === sets[2] && sets[0].split('|').length === 3;
-  }, 2_000);
-  // Tiny extra cushion so each region processes the last MemberUp event.
+  await awaitCondition(
+    () => {
+      const sets = [n1, n2, n3].map(n =>
+        n.cluster.upMembers().map(m => m.address.toString()).sort().join('|'),
+      );
+      return sets[0] === sets[1] && sets[1] === sets[2] && sets[0].split('|').length === 3;
+    },
+    { timeoutMs: 4_000, label: 'all three nodes agree on the same 3-member Up set' },
+  );
+  // A settle rather than a poll: each shard region keeps its own view of the
+  // member list and does not expose it, so "every region processed the last
+  // MemberUp" has nothing observable to poll for (#418).
   await sleep(150);
 
   const entityIds = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
@@ -135,7 +132,14 @@ test('sharded entities route to exactly one node', async () => {
     n2.region.tell({ id, kind: 'increment' });
     n3.region.tell({ id, kind: 'increment' });
   }
-  await sleep(500);
+  const handled = (): number => entityIds.reduce(
+    (total, id) => total + (n1.counts.get(id) ?? 0) + (n2.counts.get(id) ?? 0) + (n3.counts.get(id) ?? 0),
+    0,
+  );
+  await awaitCondition(() => handled() >= entityIds.length * 3, {
+    timeoutMs: 4_000,
+    label: 'every entity id was handled once per sending node',
+  });
 
   for (const id of entityIds) {
     const hits = [n1.counts.get(id) ?? 0, n2.counts.get(id) ?? 0, n3.counts.get(id) ?? 0];
@@ -241,14 +245,22 @@ test('rendezvousAllocator keeps most shards stable when one node leaves', async 
 test('leader is the address-sorted first up-member', async () => {
   const n1 = await startNode('cluster-d', '10.0.3.1', 8001);
   const n2 = await startNode('cluster-d', '10.0.3.2', 8002, ['10.0.3.1:8001']);
-  await sleep(400);
+  // Leadership is only defined once both nodes are in the Up set — reading it
+  // before that is what the 400 ms was hoping to avoid.
+  await awaitCondition(
+    () => n1.cluster.upMembers().length === 2 && n2.cluster.upMembers().length === 2,
+    { timeoutMs: 4_000, label: 'both nodes see a 2-member cluster' },
+  );
 
   // Sorted by address string — "10.0.3.1:8001" < "10.0.3.2:8002".
   expect(n1.cluster.isLeader()).toBe(true);
   expect(n2.cluster.isLeader()).toBe(false);
 
   await stopNode(n1);
-  await sleep(800);
+  await awaitCondition(() => n2.cluster.isLeader(), {
+    timeoutMs: 4_000,
+    label: 'the survivor took leadership',
+  });
   expect(n2.cluster.isLeader()).toBe(true);
 
   await stopNode(n2);
@@ -264,13 +276,22 @@ test('leader is the address-sorted first up-member', async () => {
 test('leadership follows address order, not join order', async () => {
   // The seed joins first and has the HIGHER address.
   const first = await startNode('cluster-d2', '10.0.4.2', 8002);
-  await waitFor(() => first.cluster.isLeader(), 2_000);
+  await awaitCondition(() => first.cluster.isLeader(), {
+    timeoutMs: 4_000,
+    label: 'the seed leads on its own',
+  });
 
   const later = await startNode('cluster-d2', '10.0.4.1', 8001, ['10.0.4.2:8002']);
-  await waitFor(() => later.cluster.upMembers().length === 2, 2_000);
+  await awaitCondition(() => later.cluster.upMembers().length === 2, {
+    timeoutMs: 4_000,
+    label: 'the newcomer sees a 2-member cluster',
+  });
 
   // The newcomer takes leadership from the node that was there first.
-  await waitFor(() => later.cluster.isLeader(), 2_000);
+  await awaitCondition(() => later.cluster.isLeader(), {
+    timeoutMs: 4_000,
+    label: 'the lower-addressed newcomer took leadership',
+  });
   expect(first.cluster.isLeader()).toBe(false);
 
   await stopNode(later);
@@ -290,15 +311,18 @@ test('a node that gracefully left can rejoin on the same address', async () => {
   const n2 = await startNode(SYS, '10.0.5.2', 5102, [ADDR1]);
   const n3 = await startNode(SYS, '10.0.5.3', 5103, [ADDR1]);
 
-  await waitFor(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), 2_000);
+  await awaitCondition(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), {
+    timeoutMs: 4_000,
+    label: 'all three nodes see a 3-member cluster',
+  });
 
   // Graceful leave for n1 — survivors tombstone its address.
   await stopNode(n1);
-  await waitFor(
+  await awaitCondition(
     () => [n2, n3].every(n =>
       !n.cluster.upMembers().some(m => m.address.toString() === `${SYS}@${ADDR1}`),
     ),
-    2_000,
+    { timeoutMs: 4_000, label: 'both survivors tombstoned the leaver' },
   );
   expect(n2.cluster.upMembers().length).toBe(2);
   expect(n3.cluster.upMembers().length).toBe(2);
@@ -307,9 +331,9 @@ test('a node that gracefully left can rejoin on the same address', async () => {
   // tombstone; without the mergeMember fix the rejoin gossip would
   // be rejected and n1 would never reach Up in their views.
   const n1b = await startNode(SYS, '10.0.5.1', 5101, [`10.0.5.2:5102`]);
-  await waitFor(
+  await awaitCondition(
     () => [n1b, n2, n3].every(n => n.cluster.upMembers().length === 3),
-    3_000,
+    { timeoutMs: 4_000, label: 'the rejoined node reached Up in every view' },
   );
   for (const n of [n1b, n2, n3]) {
     const ups = n.cluster.upMembers().map(m => m.address.toString()).sort();
@@ -339,11 +363,17 @@ test('MemberUp and departure events fire on the cluster subscription', async () 
   });
 
   const n2 = await startNode('cluster-e', '10.0.4.2', 9002, ['10.0.4.1:9001']);
-  await sleep(400);
+  await awaitCondition(() => seenUp.includes('cluster-e@10.0.4.2:9002'), {
+    timeoutMs: 4_000,
+    label: 'the subscription saw MemberUp for the joiner',
+  });
   expect(seenUp).toContain('cluster-e@10.0.4.2:9002');
 
   await stopNode(n2);
-  await sleep(600);
+  await awaitCondition(
+    () => seenLeft.concat(seenDown).includes('cluster-e@10.0.4.2:9002'),
+    { timeoutMs: 4_000, label: 'the subscription saw the departure' },
+  );
   // Graceful leave emits MemberLeft; ungraceful crash would emit MemberDown.
   expect(seenLeft.concat(seenDown)).toContain('cluster-e@10.0.4.2:9002');
 
@@ -417,17 +447,26 @@ describe('Cluster tombstone pruning (#75)', () => {
       SYS, '10.0.6.2', 6002, ['10.0.6.1:6001'],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
+    await awaitCondition(
+      () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+      { timeoutMs: 4_000, label: 'both nodes see a 2-member cluster' },
+    );
 
     // B leaves gracefully → A holds a tombstone for B.
     await nodeB.cluster.leave();
     await nodeB.system.terminate();
-    await waitFor(() => peek(nodeA.cluster).members.has(`${SYS}@10.0.6.2:6002`)
-      && peek(nodeA.cluster).members.get(`${SYS}@10.0.6.2:6002`)!.status === 'removed', 2000);
+    await awaitCondition(
+      () => peek(nodeA.cluster).members.has(`${SYS}@10.0.6.2:6002`)
+        && peek(nodeA.cluster).members.get(`${SYS}@10.0.6.2:6002`)!.status === 'removed',
+      { timeoutMs: 4_000, label: 'A holds a tombstone for the leaver' },
+    );
     expect(peek(nodeA.cluster).members.size).toBe(2); // 1 live + 1 tombstone
 
     // Wait for TTL + one prune interval — the tombstone must be gone.
-    await waitFor(() => peek(nodeA.cluster).members.size === 1, 1500);
+    await awaitCondition(() => peek(nodeA.cluster).members.size === 1, {
+      timeoutMs: 4_000,
+      label: 'the tombstone was pruned',
+    });
     expect(peek(nodeA.cluster).members.size).toBe(1);
     expect(nodeA.cluster.upMembers().length).toBe(1);
 
@@ -447,7 +486,10 @@ describe('Cluster tombstone pruning (#75)', () => {
       SYS, '10.0.6.10', 6010, [],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
+    await awaitCondition(() => nodeA.cluster.upMembers().length === 1, {
+      timeoutMs: 4_000,
+      label: 'the single node reached Up',
+    });
 
     // Drive the private mergeMember via a synthesized gossip frame.
     // The sender is given standing on purpose: without it the authority rule
@@ -482,7 +524,10 @@ describe('Cluster tombstone pruning (#75)', () => {
       SYS, '10.0.6.20', 6020, [],
       { tombstoneTtlMs: 100, tombstonePruneIntervalMs: 50, tombstoneMinRetentionMs: 50 },
     );
-    await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
+    await awaitCondition(() => nodeA.cluster.upMembers().length === 1, {
+      timeoutMs: 4_000,
+      label: 'the single node reached Up',
+    });
 
     const gossipSender = new NodeAddress(SYS, '10.0.6.22', 6022);
     const oldPeer = new NodeAddress(SYS, '10.0.6.21', 6021);
@@ -499,7 +544,8 @@ describe('Cluster tombstone pruning (#75)', () => {
     // guard only triggers when `removedAt` IS set.
     expect(peek(nodeA.cluster).members.has(oldPeer.toString())).toBe(true);
 
-    // Wait several prune intervals — tombstone must persist.
+    // An absence, so a fixed wait: the tombstone has to survive several 50 ms
+    // prune passes, and that is already true at t=0 (#418).
     await sleep(300);
     expect(peek(nodeA.cluster).members.has(oldPeer.toString())).toBe(true);
     expect(peek(nodeA.cluster).members.get(oldPeer.toString())!.status).toBe('removed');

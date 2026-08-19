@@ -11,8 +11,8 @@ import {
 } from '../../src/CoordinatedShutdown.js';
 import { EVENT_LOOP_KEEPALIVE_INTERVAL_MS } from '../../src/Constants.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'cs-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -65,11 +65,18 @@ describe('CoordinatedShutdown basics', () => {
     const starts: string[] = [];
     const ends: string[] = [];
 
+    // Equal delays are the fixture: both tasks have to be in flight at the same
+    // time, or "within a phase run in parallel" has nothing to observe.  The
+    // recorded start/end order and the elapsed bound below are the assertions.
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-1', async () => {
-      starts.push('1'); await sleep(30); ends.push('1');
+      starts.push('1');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('1');
     });
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-2', async () => {
-      starts.push('2'); await sleep(30); ends.push('2');
+      starts.push('2');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('2');
     });
 
     const t0 = Date.now();
@@ -126,6 +133,8 @@ describe('CoordinatedShutdown error handling', () => {
     // the race must reject via timeout and the pipeline must continue.
     cs.setPhaseTimeout(Phases.ServiceUnbind, 5);
     const seen: string[] = [];
+    // The 50 ms IS the assertion: it has to outrun the 5 ms phase budget set
+    // above, which is what makes the timeout fire.
     cs.addTask(Phases.ServiceUnbind, 'slow', () => Bun.sleep(50));
     cs.addTask(Phases.ServiceRequestsDone, 'next', () => { seen.push('next'); });
     await cs.run();
@@ -378,6 +387,8 @@ describe('ActorSystem.runUntilTerminated', () => {
     system.extension(CoordinatedShutdownId).addTask(
       Phases.ActorSystemTerminate,
       'slow-sibling',
+      // The delay is the fixture: it is what keeps the sibling in flight past
+      // the point `whenTerminated()` alone would have resolved.
       async () => { await sleep(30); sibling = true; },
     );
 

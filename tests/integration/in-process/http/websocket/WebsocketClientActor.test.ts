@@ -12,6 +12,7 @@ import { WebsocketClientActor } from '../../../../../src/http/websocket/Websocke
 import { WebsocketClientOptions } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
 import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type CMessage = { kind: 'ping'; n: number };
 type SMessage = { kind: 'pong'; n: number };
@@ -37,14 +38,6 @@ class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
   protected override onDisconnected(): void { this.rec.events.push('disconnected'); }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-async function waitUntil(cond: () => boolean, timeoutMs = 4000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out');
-    await sleep(25);
-  }
-}
 
 describe('WebsocketClientActor', () => {
   const systems: ActorSystem[] = [];
@@ -76,7 +69,9 @@ describe('WebsocketClientActor', () => {
     const cliSys = mkSystem('cli');
     cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
-    await waitUntil(() => rec.messages.length >= 1);
+    await awaitCondition(() => rec.messages.length >= 1, {
+      timeoutMs: 4_000, label: 'the first pong reached the client',
+    });
     expect(rec.events).toContain('connected');
     expect(rec.messages[0]).toEqual({ kind: 'pong', n: 1 });
   });
@@ -91,9 +86,13 @@ describe('WebsocketClientActor', () => {
     const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
       cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
-    await waitUntil(() => rec.events.includes('connected'));
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 4_000, label: 'the client reported its first connect',
+    });
     clientRef.tell(websocketSend({ kind: 'ping', n: 99 }));
-    await waitUntil(() => rec.messages.some((m) => m.n === 99));
+    await awaitCondition(() => rec.messages.some((m) => m.n === 99), {
+      timeoutMs: 4_000, label: 'the pong for the pushed ping reached the client',
+    });
     expect(rec.messages.some((m) => m.n === 99)).toBe(true);
   });
 
@@ -106,22 +105,34 @@ describe('WebsocketClientActor', () => {
     const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli3');
     cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${port}/ws`, rec), 'client');
-    await waitUntil(() => rec.events.includes('connected'));
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 4_000, label: 'the client reported its first connect',
+    });
 
     // Take the server down; the client should notice and start reconnecting.
     await b1.unbind();
-    await waitUntil(() => rec.events.includes('disconnected'), 6000);
+    await awaitCondition(() => rec.events.includes('disconnected'), {
+      timeoutMs: 6_000, label: 'the client noticed the server going away',
+    });
 
     // Bring a fresh server up on the same port; the client should reconnect.
     const srvSys2 = mkSystem('cli-srv3b');
     const server2 = srvSys2.spawn(PingServer, 'srv');
     await bindServer(srvSys2, websocket('/ws', server2), '127.0.0.1', port);
 
-    await waitUntil(() => rec.events.filter((e) => e === 'connected').length >= 2, 8000);
+    await awaitCondition(() => rec.events.filter((e) => e === 'connected').length >= 2, {
+      timeoutMs: 8_000, label: 'the client reconnected to the replacement server',
+    });
     const connects = rec.events.filter((e) => e === 'connected').length;
     expect(connects).toBeGreaterThanOrEqual(2);
     // A ping was sent on the second connect → expect a matching pong.
-    await waitUntil(() => rec.messages.some((m) => m.n >= 2), 4000);
+    await awaitCondition(() => rec.messages.some((m) => m.n >= 2), {
+      timeoutMs: 4_000, label: 'the pong for the second connect reached the client',
+    });
     expect(rec.messages.some((m) => m.n >= 2)).toBe(true);
-  });
+    // The 8 000 ms budget above is the largest here, and bun kills a test at
+    // 5 000 ms unless told otherwise — so without this third argument the
+    // reconnect budget could never report its own label
+    // (`tests/unit/ci/AwaitConditionBudgets.test.ts`).
+  }, 15_000);
 });

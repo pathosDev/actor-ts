@@ -33,7 +33,7 @@ import { CassandraQuery } from '../../../../../src/persistence/query/CassandraQu
 import { FakeCassandraClient } from '../FakeCassandraClient.js';
 import { FakePgPool } from '../FakePgPool.js';
 import { FakeMsSqlPool } from '../FakeMsSqlPool.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /** Ids chosen so sorted order differs from insertion order in every test. */
 const CORPUS = ['order-9', 'account-1', 'user-x', 'order-10', 'account-2'];
@@ -293,11 +293,13 @@ describe('allPersistenceIds — poll path (journal without an event bus)', () =>
     })();
 
     await awaitCondition(() => seen.length === 2, { label: 'both ids were delivered' });
-    // Let several more sweeps run; a stream that re-emitted would grow here.
-    await awaitCondition(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return true;
-    }, { label: 'several poll intervals elapsed' });
+    // An absence, and therefore a fixed wait: a stream that re-emitted would
+    // grow `seen` over the next several 5 ms sweeps.  The condition is already
+    // true at t=0 and has to still hold afterwards, so there is nothing to poll
+    // for — the previous shape wrapped this very sleep in an `awaitCondition`
+    // that returned `true` unconditionally, which is a sleep with extra steps
+    // (#418).
+    await sleep(30);
     await iterator.return!();
     await consumer;
     expect(seen).toEqual(['a', 'b']);

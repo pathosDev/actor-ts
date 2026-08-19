@@ -10,7 +10,7 @@ import {
   PersistentActor,
 } from '../../../../src/persistence/index.js';
 import type { Lease } from '../../../../src/coordination/Lease.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * Fencing for `PersistentActor` (#1166).
@@ -39,8 +39,6 @@ type Event = WrittenEvent;
 
 type State = { total: number };
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
 function makeSystem(name: string): { system: ActorSystem; journal: InMemoryJournal } {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -59,6 +57,13 @@ let sideEffects = 0;
 class Ledger extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
   lastError: Error | null = null;
+  /**
+   * Recovery is the precondition every race below needs: a second instance
+   * that recovers *after* the first write sees the moved head and no longer
+   * loses.  A fixed sleep only guessed at it, so the flag makes the
+   * precondition observable and the wait a poll on it (#418).
+   */
+  recovered = false;
 
   constructor(persistenceId: string, private readonly leaseImpl: Lease | null = null) {
     super();
@@ -71,6 +76,8 @@ class Ledger extends PersistentActor<Command, Event, State> {
   get holds(): boolean { return this.isLeaseHolder; }
 
   initialState(): State { return { total: 0 }; }
+
+  override onRecoveryComplete(): void { this.recovered = true; }
 
   onEvent(state: State, event: Event): State {
     return match(event)
@@ -134,7 +141,7 @@ class SingleHolderLease implements Lease {
 describe('PersistentActor fencing (#1166)', () => {
   test('without a lease, the loser of a race stops instead of restarting into a zombie', async () => {
     sideEffects = 0;
-    const { system } = makeSystem('fencing-none');
+    const { system, journal } = makeSystem('fencing-none');
 
     // Two live instances of one persistence-id — the state a partition plus a
     // rebalance produces.
@@ -142,12 +149,19 @@ describe('PersistentActor fencing (#1166)', () => {
     const second = new Ledger('ledger-1');
     const firstRef = system.spawn(() => first, 'first');
     const secondRef = system.spawn(() => second, 'second');
-    await sleep(50);
+    await awaitCondition(() => first.recovered && second.recovered, {
+      timeoutMs: 3_000,
+      label: 'both instances recovered while the head was still at 0',
+    });
 
     // The first write moves the head; the second instance still holds the old
-    // sequence and loses its conditional append.
+    // sequence and loses its conditional append.  The head having moved is the
+    // whole precondition, so wait on the journal rather than on a delay.
     firstRef.tell({ kind: 'write', amount: 10 });
-    await sleep(50);
+    await awaitCondition(async () => (await journal.highestSeq('ledger-1')) === 1, {
+      timeoutMs: 3_000,
+      label: "the winner's write moved the head to 1",
+    });
     secondRef.tell({ kind: 'write', amount: 5 });
 
     await awaitCondition(() => second.lastError !== null, {
@@ -173,7 +187,7 @@ describe('PersistentActor fencing (#1166)', () => {
   test('with a lease, the non-owner never writes at all', async () => {
     sideEffects = 0;
     SingleHolderLease.reset();
-    const { system } = makeSystem('fencing-lease');
+    const { system, journal } = makeSystem('fencing-lease');
 
     const ownerLease = new SingleHolderLease('ledger-2');
     const intruderLease = new SingleHolderLease('ledger-2');
@@ -183,12 +197,17 @@ describe('PersistentActor fencing (#1166)', () => {
     const ownerRef = system.spawn(() => owner, 'owner');
     await awaitCondition(() => ownerLease.held, { label: 'the owner took the lease' });
     const intruderRef = system.spawn(() => intruder, 'intruder');
+    // An absence: the intruder must *never* take the lease, and a predicate over
+    // `held === false` is already true at t=0, so there is nothing to poll (#418).
     await sleep(50);
 
     expect(intruderLease.held).toBe(false);
 
     ownerRef.tell({ kind: 'write', amount: 10 });
-    await sleep(50);
+    await awaitCondition(async () => (await journal.highestSeq('ledger-2')) === 1, {
+      timeoutMs: 3_000,
+      label: "the owner's write moved the head to 1",
+    });
 
     // The intruder refuses up front — this is the difference that matters:
     // it is turned away *before* the journal is touched, so an entity whose
@@ -227,14 +246,22 @@ describe('PersistentActor fencing (#1166)', () => {
   test('no lease configured keeps the previous behaviour', async () => {
     // The default must stay exactly as it was: `lease()` returns null, every
     // instance is its own writer, nothing acquires anything.
-    const { system } = makeSystem('fencing-default');
+    const { system, journal } = makeSystem('fencing-default');
     const ledger = new Ledger('ledger-4');
     const ref = system.spawn(() => ledger, 'plain');
-    await sleep(50);
+    await awaitCondition(() => ledger.recovered, {
+      timeoutMs: 3_000,
+      label: 'the plain instance recovered',
+    });
 
     ref.tell({ kind: 'write', amount: 7 });
     ref.tell({ kind: 'write', amount: 3 });
-    await sleep(100);
+    // Both writes are durable, or one of them recorded an error — either way the
+    // outcome is settled, which is what the 100 ms was waiting for.
+    await awaitCondition(
+      async () => (await journal.highestSeq('ledger-4')) === 2 || ledger.lastError !== null,
+      { timeoutMs: 3_000, label: 'both writes were answered' },
+    );
 
     expect(ledger.lastError).toBeNull();
     expect(ledger.holds).toBe(true);

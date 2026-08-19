@@ -215,6 +215,15 @@ function fakeServer(): {
   };
 }
 
+/**
+ * Give a live `PersistentActor` time to persist the events told to it before the
+ * replay RPCs are asked to reconstruct state from them.
+ *
+ * A fixed delay rather than a poll on the journal: the assertions afterwards read
+ * a *replayed* state at a chosen sequence number, so the journal is the thing
+ * under test rather than an independent signal to wait on — polling it would let
+ * the test define its own expectation.
+ */
 const settle = (ms = 80): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('TimeTravelMethods', () => {

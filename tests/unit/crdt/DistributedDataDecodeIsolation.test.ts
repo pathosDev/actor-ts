@@ -21,8 +21,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DistributedDataId, GCounter } from '../../../src/crdt/index.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const systems: ActorSystem[] = [];
 const clusters: Cluster[] = [];
@@ -60,6 +59,9 @@ describe('DistributedData decode isolation', () => {
   test('twelve malformed gossip entries do not kill the replica (#699)', async () => {
     const victim = await startNode('decode-victim', 48_201);
     const data = victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and buffers frames in the actor's mailbox until
+    // `preStart` has run, so there is nothing observable to wait on here.
     await sleep(80);
 
     const evil = await attacker('decode-evil', 48_202);
@@ -71,6 +73,11 @@ describe('DistributedData decode isolation', () => {
         entries: { [`bad-${round}`]: { kind: 'NotACrdtKind', nonsense: round } },
       } as unknown as WireMessage);
     }
+    // Every one of the twelve has to be *handled* before the good frame goes
+    // out, and a dropped entry leaves no trace the test can see — the
+    // `droppedFrames` counter is private to the actor.  So this is an absence
+    // window by construction: nothing observable changes, and the point is
+    // that the twelfth did not terminate the replica.
     await sleep(300);
 
     // The replica is still alive, and still merges a well-formed value from
@@ -82,7 +89,12 @@ describe('DistributedData decode isolation', () => {
       from: new NodeAddress('decode-evil', 'h', 48_202).toJSON(),
       entries: { good: GCounter.empty().increment('decode-evil', 7).toJSON() },
     } as unknown as WireMessage);
-    await sleep(200);
+    // Poll the presence of the key, not its value: the exact count is what the
+    // assertion is for, and a predicate reading `=== 7` would make it a
+    // restatement of the wait.
+    await awaitCondition(() => data.get<GCounter>('good') !== undefined, {
+      label: 'the well-formed value from the same peer was merged',
+    });
 
     expect(data.get<GCounter>('good')?.value()).toBe(7);
   });
@@ -90,6 +102,7 @@ describe('DistributedData decode isolation', () => {
   test('a malformed entry does not cost the other entries of the same frame (#699)', async () => {
     const victim = await startNode('decode-victim2', 48_211);
     const data = victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll — see the note in the test above.
     await sleep(80);
 
     const evil = await attacker('decode-evil2', 48_212);
@@ -104,7 +117,13 @@ describe('DistributedData decode isolation', () => {
         last: GCounter.empty().increment('decode-evil2', 5).toJSON(),
       },
     } as unknown as WireMessage);
-    await sleep(250);
+    // `onGossip` merges the whole frame in one turn without awaiting, so `last`
+    // becoming visible means `first` and `broken` have both been through
+    // `decodeOrDrop` already.  Presence, not value: the two exact assertions
+    // below are the test.
+    await awaitCondition(() => data.get<GCounter>('last') !== undefined, {
+      label: 'the frame carrying the broken middle entry was merged',
+    });
 
     expect(data.get<GCounter>('first')?.value()).toBe(3);
     expect(data.get<GCounter>('last')?.value()).toBe(5);

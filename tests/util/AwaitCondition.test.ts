@@ -61,6 +61,7 @@ describe('sleep', () => {
   test('resolves after roughly the requested delay', async () => {
     const nominalMs = 30;
     const t0 = performance.now();
+    // The elapsed time IS the assertion here — this test is `sleep`'s contract.
     await sleep(nominalMs);
     expect(performance.now() - t0).toBeGreaterThanOrEqual(minimumElapsedMs(nominalMs));
   });

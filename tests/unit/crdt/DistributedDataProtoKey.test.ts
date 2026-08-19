@@ -38,17 +38,16 @@ import {
 import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(20);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Thin wrapper over the shared helper (#418) — this file predates it and had
+ * its own deadline loop, which named neither the condition nor how long it
+ * really waited.  The budget bounds only the broken case; a passing wait
+ * returns on the first poll that holds.
+ */
+const waitFor = (predicate: () => boolean, label: string): Promise<void> =>
+  awaitCondition(predicate, { timeoutMs: 4_000, intervalMs: 20, label });
 
 const systems: ActorSystem[] = [];
 const clusters: Cluster[] = [];
@@ -100,10 +99,17 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
   test('reaches the peer it is gossiped to', async () => {
     const a = await startNode('proto-a', 48_301);
     const b = await startNode('proto-b', 48_302, ['proto-a@h:48301']);
-    await waitFor(() => a.upMembers().length >= 2 && b.upMembers().length >= 2);
+    await waitFor(
+      () => a.upMembers().length >= 2 && b.upMembers().length >= 2,
+      'the two-node cluster converged',
+    );
 
     const dataA = a.system.extension(DistributedDataId).start(a);
     const dataB = b.system.extension(DistributedDataId).start(b);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and neither replica exposes a "ready" flag, so
+    // there is nothing observable here.  The 4 s `waitFor` below is what
+    // actually bounds the replication.
     await sleep(60);
 
     // The one key an application can hold and never replicate.  It was also
@@ -111,7 +117,7 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
     // and suppress the whole tick — A stopped gossiping rather than gossiping
     // an incomplete frame.
     dataA.update('__proto__', GCounter.empty, (c) => c.increment(dataA.selfReplicaId(), 4));
-    await waitFor(() => dataB.keys().includes('__proto__'));
+    await waitFor(() => dataB.keys().includes('__proto__'), "B's view holds the `__proto__` key");
 
     expect(dataB.get<GCounter>('__proto__')?.value()).toBe(4);
   });
@@ -142,10 +148,14 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
     // tells anyone else — converging nowhere while looking healthy.
     const a = await startNode('proto-relay-a', 48_311);
     const b = await startNode('proto-relay-b', 48_312, ['proto-relay-a@h:48311']);
-    await waitFor(() => a.upMembers().length >= 2 && b.upMembers().length >= 2);
+    await waitFor(
+      () => a.upMembers().length >= 2 && b.upMembers().length >= 2,
+      'the two-node relay cluster converged',
+    );
 
     const dataA = a.system.extension(DistributedDataId).start(a);
     const dataB = b.system.extension(DistributedDataId).start(b);
+    // A startup settle with no state to poll — see the note in the first test.
     await sleep(60);
 
     const evil = await attacker('proto-evil', 48_313);
@@ -155,8 +165,8 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
       `{"kind":"ddata-gossip","from":${from},"entries":{"__proto__":${planted}}}`,
     ));
 
-    await waitFor(() => dataA.keys().includes('__proto__'));
-    await waitFor(() => dataB.keys().includes('__proto__'));
+    await waitFor(() => dataA.keys().includes('__proto__'), 'the planted key landed on A');
+    await waitFor(() => dataB.keys().includes('__proto__'), 'A re-gossiped the planted key to B');
     expect(dataB.get<GCounter>('__proto__')?.value()).toBe(6);
   });
 });

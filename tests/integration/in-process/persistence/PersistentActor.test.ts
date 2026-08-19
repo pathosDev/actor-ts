@@ -10,9 +10,7 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /** Shared domain types for the tests. */
 type DepositCommand = { kind: 'deposit'; amount: number };
@@ -363,7 +361,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
     const events: unknown[] = [];
     system.spawn(() => new Account('tampered-2', (m) => events.push(m)), 't2');
-    await sleep(150);
+    await sleep(150);  // an absence, as in the first `tampered-*` test — nothing to poll (#418)
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
   });
@@ -375,7 +373,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
     const events: unknown[] = [];
     system.spawn(() => new Account('tampered-3', (m) => events.push(m)), 't3');
-    await sleep(150);
+    await sleep(150);  // an absence, as in the first `tampered-*` test — nothing to poll (#418)
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
   });
@@ -394,7 +392,7 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
     const events: unknown[] = [];
     system.spawn(() => new Account('tampered-4', (m) => events.push(m)), 't4');
-    await sleep(150);
+    await sleep(150);  // an absence, as in the first `tampered-*` test — nothing to poll (#418)
     expect(events.find((e) => (e as { ready?: number }).ready !== undefined)).toBeUndefined();
     await system.terminate();
   });

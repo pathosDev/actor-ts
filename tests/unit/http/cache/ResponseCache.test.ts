@@ -3,8 +3,7 @@ import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { cached } from '../../../../src/http/cache/ResponseCache.js';
 import { complete, completeJson } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../../util/AwaitCondition.js';
 
 function makeRequest(path: string, params: Record<string, string> = {}): HttpRequest {
   return { method: 'GET', path, headers: {}, query: {}, params, body: null };
@@ -43,6 +42,8 @@ describe('cached — basic round-trip', () => {
       () => { calls++; return complete(Status.OK, 'x'); },
     );
     await handler(makeRequest('/'));
+    // The elapsed time IS the assertion: 50 ms outlasts the 30 ms entry TTL, which
+    // is what makes the handler run a second time.
     await sleep(50);
     await handler(makeRequest('/'));
     expect(calls).toBe(2);
@@ -85,6 +86,8 @@ describe('cached — stampede protection', () => {
     const cache = new InMemoryCache();
     let calls = 0;
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'hot' })(
+      // A fixture: the handler has to stay in flight while the other 99 requests
+      // arrive, or there is no stampede for the protection to collapse.
       async () => { calls++; await sleep(20); return completeJson(Status.OK, { n: calls }); },
     );
     const results = await Promise.all(Array.from({ length: 100 }, () => handler(makeRequest('/'))));
@@ -96,6 +99,8 @@ describe('cached — stampede protection', () => {
     const cache = new InMemoryCache();
     let calls = 0;
     const handler = cached({ cache, ttlMs: 5_000, key: () => 'k' })(
+      // A fixture: the first call has to take measurable time, so that the second
+      // request is answered from the cache rather than from a still-empty one.
       async () => { calls++; await sleep(20); return complete(Status.OK, String(calls)); },
     );
     await handler(makeRequest('/'));

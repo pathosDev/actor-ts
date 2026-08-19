@@ -30,9 +30,7 @@ import {
   type BackoffOptions,
 } from '../../../src/pattern/BackoffSupervisor.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 /** Records each `delayFor(n)` call so tests can assert exact restart counts. */
 class RecordingPolicy implements BackoffPolicy {
@@ -408,6 +406,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
         timeoutMs: 4_000,
         label: 'the child stopped itself cleanly',
       });
+      // The settle window named above: 'no respawn' is an absence, so this is the
+      // span in which a respawn would have moved `lifecycleSpawns`.
       await sleep(60);
       expect(lifecycleStops).toBe(1);
       // No respawn happened: spawn count stays put.
@@ -451,6 +451,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
         timeoutMs: 4_000,
         label: 'the child handled the crash message',
       });
+      // The settle window: the assertion is that the spawn count did NOT move, and
+      // the poll above returns on the crash itself, before a respawn could happen.
       await sleep(60);
       expect(lifecycleSpawns).toBe(spawnsBeforeCrash);
     } finally {
@@ -483,8 +485,11 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       // gets stashed — and stays there across subsequent crashes —
       // until the eventually-successful child drains the queue.
       const firstAsk = supervisor.ask<number>({ kind: 'echo', value: 1 }, 4_000,).then((r) => replies.push(r));
+      // Staggering the asks IS the fixture: each one has to land at a different
+      // point of the crash/respawn cascade for the stash to be exercised at all.
       await sleep(50);
       const secondAsk = supervisor.ask<number>({ kind: 'echo', value: 2 }, 4_000,).then((r) => replies.push(r));
+      // Same: the third ask has to arrive a cascade step later than the second.
       await sleep(50);
       const thirdAsk = supervisor.ask<number>({ kind: 'echo', value: 3 }, 4_000,).then((r) => replies.push(r));
 

@@ -170,6 +170,8 @@ describe('a batch ends early rather than skipping the condition that ended it', 
     ref.tell('c');
     ref.tell('d');
     await awaitCondition(() => seen.length >= 2);
+    // The settle window itself: 'c' and 'd' arriving after the poison pill is
+    // an absence, and the poll above returns on 'b' and could never see them.
     await Bun.sleep(30);
 
     expect(seen).toEqual(['a', 'b']);

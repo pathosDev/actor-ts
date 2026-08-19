@@ -2,9 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import type { HelloMessage, WireMessage } from '../../src/cluster/Protocol.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 function newTransport(port: number): InMemoryTransport {
   return new InMemoryTransport(new NodeAddress('imt', 'localhost', port));
@@ -70,6 +68,9 @@ describe('InMemoryTransport', () => {
     await transportB.start();
     await transportA.shutdown();
     transportA.send(transportB.self, helloFrom(40301));
+    // An absence, so it cannot be polled: a shut-down transport must drop the
+    // send.  `seen` is empty when the wait starts and has to still be empty
+    // after a window long enough for a delivery to have happened.
     await sleep(20);
     expect(seen).toEqual([]);
     await transportB.shutdown();

@@ -27,6 +27,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { DistributedDataId } from '../../../../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../../../../src/crdt/DistributedDataOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { sleep } from '../../../../util/AwaitCondition.js';
 
 const sample: CoordinatorStateData = {
   leader: 'sys@h:1234',
@@ -100,7 +101,7 @@ describe('CoordinatorStateStore', () => {
     await store.save('entity', sample);
     // DD writes are funnelled through the actor mailbox; give one tick
     // for the update to land in the in-memory view.
-    await Bun.sleep(20);
+    await sleep(20);
 
     const loaded = await store.load('entity');
     expect(loaded).toEqual(sample);

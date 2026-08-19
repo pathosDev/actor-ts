@@ -26,6 +26,7 @@ import type { ActorRef } from '../../src/ActorRef.js';
 import { ReceptionistId } from '../../src/discovery/Receptionist.js';
 import { Find, Listing, Register } from '../../src/discovery/ReceptionistMessages.js';
 import { ServiceKey } from '../../src/discovery/ServiceKey.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Stand-in for a registered service — it only has to exist and have a path. */
 class ProbeActor extends Actor {
@@ -60,14 +61,18 @@ async function stopNode(node: NodeHandle): Promise<void> {
   try { await node.system.terminate(); } catch { /* */ }
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await Bun.sleep(20);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which is where the poll cadence, the diagnostic
+ * message and the "check before the first sleep" rule now live.  The old
+ * hand-rolled deadline loop threw a message that named neither the awaited
+ * state nor how long it actually waited.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+  label = 'the victim node reached the awaited membership state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: 20, label });
 
 /* ----- access helper: invoke the private handleWire via type cast ----- */
 
@@ -794,7 +799,10 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
       sequence: nextGossipSequence(),
       members: [{ address: ghost.toJSON(), status: 'pwned' as never, version: Date.now() }],
     });
-    await Bun.sleep(60);
+    // An absence: the claim is that the ghost never enters the member map, and
+    // a poll over "is it absent" is already true at t=0.  The window is what
+    // gives the frame a chance to be (wrongly) merged.
+    await sleep(60);
 
     // Survived, and the ghost never entered the member map — so there is
     // nothing for the next gossip tick to propagate.
@@ -818,7 +826,10 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
         { address: good.toJSON(), status: 'pwned' as never, version: Date.now() },
       ],
     });
-    await Bun.sleep(60);
+    // An absence: the well-formed half must not be merged either.  Nothing
+    // becomes true here, so there is nothing to poll — the window only gives
+    // the batch a chance to be accepted.
+    await sleep(60);
 
     // The whole frame is refused — a batch is validated before any of it is
     // merged, so a poisoned entry cannot be smuggled in behind a valid one.
@@ -840,7 +851,9 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     for (const frame of [null, 'hello', 42, []]) {
       attacker.send(victim.address, frame as unknown as WireMessage);
     }
-    await Bun.sleep(60);
+    // An absence: the assertion is that the node did *not* die.  Survival is
+    // already true at t=0 — the window is what would expose a throw.
+    await sleep(60);
 
     // Still serving: the node knows itself and answers introspection.
     expect(victim.cluster.getMembers().some(m => m.address.equals(victim.address))).toBe(true);
@@ -858,7 +871,9 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
       kind: 'leave',
       node: { systemName: 'csecwire4', host: 'h', port: String(port) as unknown as number },
     });
-    await Bun.sleep(60);
+    // An absence: self must *not* transition to 'removed'.  Its status is
+    // already right at t=0, so only elapsed time can disprove the claim.
+    await sleep(60);
 
     const self = victim.cluster.getMembers().find(m => m.address.equals(victim.address));
     expect(self).toBeDefined();
@@ -1007,12 +1022,18 @@ describe('Extensions survive what a peer can address to them (#713)', () => {
     const receptionist = node.system.extension(ReceptionistId).start(node.cluster);
     const probe = node.system.spawnAnonymous(ProbeActor);
     receptionist.tell(new Register(serviceKey, probe));
-    await Bun.sleep(40);
+    // Positioning, not a wait on an outcome: the registration has to be in
+    // place *before* the garbage arrives, or "its state survived" would be
+    // vacuous.  There is no observable for it short of the `Find` this test
+    // ends with, and issuing that early would change what is exercised.
+    await sleep(40);
 
     // Exactly the shape a remote peer's envelope body has: no class identity.
     receptionist.tell({ kind: 'not-a-receptionist-message' } as never);
     receptionist.tell(null as never);
-    await Bun.sleep(60);
+    // An absence: the receptionist must *not* fail.  Nothing becomes true, so
+    // the window is the whole experiment.
+    await sleep(60);
 
     // Still alive and still holding the registration — the actor did not fail,
     // so its state survived and it keeps answering.

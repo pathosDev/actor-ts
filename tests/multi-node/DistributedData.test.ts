@@ -26,6 +26,7 @@ import {
 } from '../../src/crdt/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -55,16 +56,19 @@ async function withSpec(
   }
 }
 
-async function awaitConvergence(
-  check: () => boolean, timeoutMs = 4_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await Bun.sleep(50);
-  }
-  if (!check()) throw new Error(`convergence timeout after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418).  Polling for convergence is the correct shape —
+ * a CRDT merge is monotone, so the converged value is terminal and a poll
+ * cannot catch an intermediate one and miss a later arrival.  What the
+ * hand-rolled loop lost was the diagnostic: `convergence timeout after 4000ms`
+ * named neither the key nor how long it really waited.
+ */
+const awaitConvergence = (
+  check: () => boolean,
+  timeoutMs = 4_000,
+  label = 'every replica converged on the merged value',
+): Promise<void> => awaitCondition(check, { timeoutMs, intervalMs: 50, label });
 
 describe('DistributedData — convergence', () => {
   test('GCounter from three nodes converges to the sum', async () => {

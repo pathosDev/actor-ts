@@ -9,8 +9,7 @@ import type {
   K8sRequestOptions,
   K8sResponse,
 } from '../../../src/coordination/leases/K8sApi.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const TEST_CREDS = {
   apiServerUrl: 'https://kubernetes.test',
@@ -271,6 +270,9 @@ describe('KubernetesLease — acquire (no existing lease)', () => {
     const stored = server.peek('default', 'test-lease');
     expect(stored).toBeDefined();
     const renewTimeAfterRelease = stored!.spec.renewTime;
+    // The assertion is an absence: `renewTime` must be the same string four
+    // 20 ms renewal ticks later.  A poll cannot express that — the condition
+    // holds at t=0 and has to still hold afterwards.
     await sleep(80);
     expect(server.peek('default', 'test-lease')?.spec.renewTime).toBe(renewTimeAfterRelease);
   });
@@ -420,7 +422,14 @@ describe('KubernetesLease — renewal loop', () => {
     const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     await lease.acquire();
     const t1 = server.peek('default', 'test-lease')!.spec.renewTime!;
-    await sleep(120);
+    // Poll the record the assertion below reads, not the interval it was
+    // configured with: the renewal is a PUT to the fake API server, so the
+    // stored `renewTime` is the only thing that proves a tick landed.
+    await awaitCondition(
+      () => new Date(server.peek('default', 'test-lease')!.spec.renewTime!).getTime()
+        > new Date(t1).getTime(),
+      { label: 'the renewal loop wrote a newer renewTime' },
+    );
     const t2 = server.peek('default', 'test-lease')!.spec.renewTime!;
     expect(new Date(t2).getTime()).toBeGreaterThan(new Date(t1).getTime());
     await lease.release();
@@ -432,7 +441,11 @@ describe('KubernetesLease — renewal loop', () => {
     lease.onLost((reason) => { lostReason = reason; });
     await lease.acquire();
     server.forceConflictNext = true;
-    await sleep(80);
+    // `fireLost` clears `held` before it calls the handlers, so a non-null
+    // reason already implies the `checkAlive()` assertion below.
+    await awaitCondition(() => lostReason !== null, {
+      label: 'the renewal 409 fired onLost',
+    });
     // Written only by the `onLost` callback, so flow analysis still has
     // `lostReason` at its `null` initialiser here.
     expect<string | null>(lostReason).toContain('lease lost');
@@ -449,7 +462,9 @@ describe('KubernetesLease — renewal loop', () => {
     // backing server forgets it.  The next renewal-loop tick sends a
     // PUT and gets a 404, which is mapped to lease-lost.
     server.deleteForTest('default', 'test-lease');
-    await sleep(80);
+    await awaitCondition(() => lostReason !== null, {
+      label: 'the renewal 404 fired onLost',
+    });
     expect(lostReason).not.toBeNull();
     expect(lease.checkAlive()).toBe(false);
     await lease.release();
@@ -462,6 +477,8 @@ describe('KubernetesLease — renewal loop', () => {
     await lease.acquire();
     unregister();
     server.forceConflictNext = true;
+    // The assertion is an absence: the unregistered handler must never fire, so
+    // the wait has to outlive the 30 ms renewal tick that would have called it.
     await sleep(80);
     expect(calls).toBe(0);
     await lease.release();
@@ -515,6 +532,9 @@ describeMaybe('KubernetesLease — live integration (set K8S_LEASE_LIVE=1)', () 
       k8sLeaseOptions,
     );
     expect(await lease.acquire()).toBe(true);
+    // The elapsed time IS the assertion: `checkAlive()` is already true here,
+    // so what is under test is that it is still true after half the 5 s TTL —
+    // i.e. that the 1 s renewal loop reached a real API server twice.
     await sleep(2_500);
     expect(lease.checkAlive()).toBe(true);
     await lease.release();

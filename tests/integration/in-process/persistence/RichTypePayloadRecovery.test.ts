@@ -14,9 +14,8 @@ import {
   type SnapshotPolicy,
 } from '../../../../src/persistence/index.js';
 
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * End-to-end proof for #888: rich payload types (Set/Map/Date) survive the
@@ -101,9 +100,10 @@ describe('PersistentActor — rich payload types through a real store (#888)', (
     const storedSnapshot = (await snapshots.loadLatest<State>('roster-1')).toNullable();
     expect(storedSnapshot?.sequenceNr).toBe(2);
 
-    system.stop(writer);
-    // Precondition only — nothing reads what postStop produces.
-    await sleep(50);
+    // The reader below recovers the same persistenceId, so the writer has to be
+    // really gone and not merely asked to stop.  `gracefulStop` resolves on the
+    // termination itself, which is what the 50 ms was guessing at (#418).
+    expect(await gracefulStop(writer, 4_000)).toBe(true);
 
     let recovered: State | undefined;
     system.spawn(() => new Roster('roster-1', (s) => { recovered = s; }), 'reader');

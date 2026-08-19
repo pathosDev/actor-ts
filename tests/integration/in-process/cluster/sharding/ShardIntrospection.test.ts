@@ -14,6 +14,7 @@ import { shardRegionName } from '../../../../../src/internal/SystemPaths.js';
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type IncrementCommand = { id: string; kind: 'increment' };
 type GetCommand = { id: string; kind: 'get' };
@@ -38,16 +39,17 @@ class CounterEntity extends Actor<Command> {
   private onGet(): void { this.sender.forEach((s) => s.tell(this.value)); }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 20): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 20,
+  label = 'the awaited shard-introspection state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -98,6 +100,10 @@ describe('Shard actors', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     // Two ids that hash into different shards, so at least one of them very
@@ -131,6 +137,10 @@ describe('ShardMapChanged', () => {
     }
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     for (const entityId of ['m-1', 'm-2', 'm-3', 'm-4']) {
@@ -171,6 +181,10 @@ describe('ClusterSharding.shards', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     const entityIds = ['s-1', 's-2', 's-3', 's-4', 's-5', 's-6'];
@@ -222,6 +236,8 @@ describe('ClusterSharding.shardRefFor', () => {
     const seed = await startNode(systemName, base);
 
     await waitFor(() => seed.cluster.upMembers().length === 1);
+    // Same coordinator-registration settle as the two-node cases: the region's
+    // registration has no observable, and the asks below carry their own budget.
     await sleep(100);
 
     const before = await seed.cluster.sharding.shards<Command>(TYPE_NAME);
@@ -242,6 +258,8 @@ describe('ClusterSharding.shardRefFor', () => {
     const seed = await startNode(systemName, base);
 
     await waitFor(() => seed.cluster.upMembers().length === 1);
+    // Same coordinator-registration settle as the two-node cases: the region's
+    // registration has no observable, and the asks below carry their own budget.
     await sleep(100);
 
     const entityId = 'stats-1';
@@ -271,6 +289,10 @@ describe('ClusterSharding.shardRefFor', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     const candidates = ['r-1', 'r-2', 'r-3', 'r-4', 'r-5', 'r-6', 'r-7', 'r-8'];
@@ -294,12 +316,14 @@ describe('ClusterSharding.shardRefFor', () => {
     // The envelope and the query travel through different refs, so poll for
     // the increment rather than assuming they arrive in order.
     const entity = seed.cluster.sharding.entityRefFor<Command>(TYPE_NAME, remoteId);
+    // `=== 2` is safe to poll on even though it is an exact count: the entity is
+    // sent exactly two increments and the counter only grows, so 2 is the
+    // terminal value rather than one a later arrival could exceed.
     let value = 0;
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline && value !== 2) {
-      value = await entity.ask<number>({ kind: 'get' } as Command, 3_000);
-      if (value !== 2) await sleep(25);
-    }
+    await awaitCondition(
+      async () => (value = await entity.ask<number>({ kind: 'get' } as Command, 3_000)) === 2,
+      { timeoutMs: 5_000, intervalMs: 25, label: 'both increments reached the remote entity' },
+    );
     expect(value).toBe(2);
 
     await stopAll(nodes);
@@ -313,6 +337,8 @@ describe('ClusterSharding.entityRefFor', () => {
     const seed = await startNode(systemName, base);
 
     await waitFor(() => seed.cluster.upMembers().length === 1);
+    // Same coordinator-registration settle as the two-node cases: the region's
+    // registration has no observable, and the asks below carry their own budget.
     await sleep(100);
 
     const entity = seed.cluster.sharding.entityRefFor<Command>(TYPE_NAME, 'counter-1');
@@ -333,6 +359,10 @@ describe('ClusterSharding.entityRefFor', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     // Warm every candidate id from the seed, then pick one the *other* node

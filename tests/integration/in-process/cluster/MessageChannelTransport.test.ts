@@ -7,9 +7,7 @@ import {
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * `MessagePort` delivery is a task, not a microtask, and under load the
@@ -195,6 +193,9 @@ describe('WorkerBroker', () => {
 
     broker.unregister(addrB);
     tA.send(addrB, { kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0 });
+    // An absence, like the sibling case above: the claim is that an
+    // unregistered peer receives nothing, and `seen.length === 0` is already
+    // true at t=0.
     await sleep(10);
     expect(seen.length).toBe(0);
 

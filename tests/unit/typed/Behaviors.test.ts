@@ -15,9 +15,8 @@ import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (name = 'typed-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -492,6 +491,8 @@ describe('Behaviors.supervise — the strategy restart budget (#638)', () => {
 
     // And it stays stopped — nothing revives it behind the assertion.
     ref.tell('d');
+    // An absence: after the budget is spent the actor stays stopped, so this is
+    // the window in which a revived one would have logged a fourth init.
     await sleep(60);
     expect(initializations).toEqual(['init#1', 'init#2', 'init#3']);
     await sys.terminate();
@@ -826,6 +827,8 @@ describe('Behaviors.empty / Behaviors.ignore', () => {
     const sys = newSys();
     const ref = sys.spawnTypedAnonymous(Behaviors.ignore);
     ref.tell('a' as never); ref.tell('b' as never);
+    // An absence: `Behaviors.ignore` must drop both messages without failing the
+    // actor, so the window is what would give a crash time to surface.
     await sleep(20);
     // No crash and the actor still exists — that's the contract.
     expect(ref.path.name.length).toBeGreaterThan(0);
@@ -1062,6 +1065,8 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     expect(seen).toEqual(['watched-child-died', 'post-stop']);
 
     ref.tell('ignored — the parent stopped itself');
+    // An absence: the parent stopped itself, so the message must be dropped and
+    // `seen` must not grow.  Already true at t = 0, so only a window can show it.
     await sleep(40);
     expect(seen).toEqual(['watched-child-died', 'post-stop']);
 

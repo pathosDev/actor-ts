@@ -67,6 +67,16 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/**
+ * Let the mailboxes empty before the next measurement starts.
+ *
+ * A fixed delay and not `awaitCondition`, because what this file measures is a
+ * *slope* — work per message, from two runs at different message counts — and
+ * every call site's assertion is about a count that must NOT have grown
+ * (`lookups`, allocations, observations).  There is no rising value to poll on;
+ * the whole claim is that these numbers stay put, which only a real window can
+ * show.
+ */
 const drain = (): Promise<void> => Bun.sleep(150);
 
 function valueFor(registry: MetricsRegistry, name: string): number {

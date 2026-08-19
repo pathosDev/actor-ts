@@ -12,6 +12,7 @@ import {
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import type { CellInspection } from '../../../src/internal/Instrumentation.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 class LeafActor extends Actor<string> {
   override onReceive(message: string): void {
@@ -52,6 +53,17 @@ function lifecycleProbe(system: ActorSystem): {
   return { events, ref };
 }
 
+/**
+ * Give the lifecycle events time to reach the subscribed probe, and the spawned
+ * actors time to reach the state `_inspectTree` is asked about.
+ *
+ * A fixed delay and not `awaitCondition`, because the strongest call site is an
+ * *absence*: "subscribing to one variant does not deliver the others" waits and
+ * then asserts `expect(seen).toHaveLength(0)`, having deliberately caused
+ * several `ActorStarted` events in between.  A poll cannot express that — the
+ * predicate is already true at t = 0 — so the window has to be a real one.  The
+ * positive sites share the helper so that all of them wait the same span.
+ */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 60));
 
 describe('actor lifecycle events', () => {
@@ -205,12 +217,19 @@ describe('ActorSystem._inspectTree', () => {
     try {
       class BlockedActor extends Actor<string> {
         override async onReceive(): Promise<void> {
+          // A fixture: the handler must still be running when the tree is
+          // inspected, or there is no backlog left to report.
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }
       const ref = system.spawn(BlockedActor, 'blocked');
       for (let i = 0; i < 5; i++) ref.tell(`m${i}`);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // Poll the field the assertion reads, not the actor's presence in the
+      // tree: the actor is in the tree the moment it is spawned, so that would
+      // return before the first `tell` had been enqueued (#1145).
+      await awaitCondition(() => (byName(system._inspectTree(), 'blocked')?.mailboxSize ?? 0) > 0, {
+        label: 'the blocked actor reported a backlog',
+      });
 
       const blocked = byName(system._inspectTree(), 'blocked')!;
       expect(blocked.mailboxSize).toBeGreaterThan(0);

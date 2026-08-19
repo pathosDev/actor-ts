@@ -13,8 +13,19 @@ import { CassandraQuery } from '../../../../src/persistence/query/CassandraQuery
 import { offsetStart } from '../../../../src/persistence/query/PersistenceQuery.js';
 import { tagIndexDdl } from '../../../../src/persistence/journals/CassandraClient.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+import { sleep } from '../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * Push the wall clock past the current millisecond, so the next append lands on
+ * a strictly greater offset timestamp.
+ *
+ * The elapsed time *is* the fixture: `Offset` orders by millisecond timestamp
+ * and the journal stamps one `Date.now()` per append, so without the gap the
+ * corpus has no defined order and the oracle comparison below would be over two
+ * arbitrarily ordered result sets.  Nothing to poll for — the clock is the only
+ * thing being waited on (#418).
+ */
+const separateOffsetTimestamps = (): Promise<void> => sleep(2);
 
 type CorpusEvent = { id: number };
 
@@ -37,15 +48,15 @@ type CorpusEvent = { id: number };
  */
 async function seedCorpus(j: CassandraJournal): Promise<void> {
   await j.append('order-1', [{ event: { id: 1 }, tags: ['type:Order', 'tenant:t1'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await j.append('order-2', [{ event: { id: 2 }, tags: ['type:Order', 'tenant:t2'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await j.append('order-3', [{ event: { id: 3 }, tags: ['type:Order', 'tenant:t1', 'archived'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await j.append('inv-1', [{ event: { id: 4 }, tags: ['type:Invoice', 'tenant:t1'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await j.append('inv-2', [{ event: { id: 5 }, tags: ['type:Invoice', 'tenant:t2', 'archived'] }], 0);
-  await sleep(2);
+  await separateOffsetTimestamps();
   await j.append('event-1', [{ event: { id: 6 }, tags: ['type:Event',  'tenant:t1'] }], 0);
 }
 
