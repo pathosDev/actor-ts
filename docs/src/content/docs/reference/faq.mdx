@@ -139,7 +139,7 @@ comparison against other frameworks:
   `tell()` call on its own returns faster still — it only enqueues — so
   "how long does `tell` take" and "how many messages per second" are
   different questions with answers an order of magnitude apart.
-- **`ask` round trip** — **3.6 µs** at p50, depth 1.
+- **`ask` round trip** — **3.5 µs** at p50, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
   cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
   measured; the cluster benchmarks do not leave the process.
