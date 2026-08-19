@@ -11,6 +11,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Every published benchmark figure is re-measured** (#1210). Ten interleaved
+  rounds, all seven arms, one machine, every row verified against work the
+  system completed. README, the benchmarks reference (EN + DE), both FAQ
+  performance sections and the generated `RESULTS.md` now carry the same run.
+
+  Across the programme, on the comparison arm:
+
+  | scenario | before | after | |
+  |---|---|---|---|
+  | tell, batch 10k | 890k/s | **4.68M/s** | 5.3x |
+  | tell, batch 1k | 780k/s | **3.00M/s** | 3.8x |
+  | ping-pong, 10k | 123k/s | **503k/s** | 4.1x |
+  | ask | 92.5k/s | **215k/s** | 2.3x |
+  | ask p50 | 8.5 µs | **3.7 µs** | 2.3x faster |
+  | spawn | 41k/s | **76k/s** | 1.9x |
+
+  Two published claims were wrong afterwards and are corrected rather than
+  quietly dropped. The README and both benchmark pages said to expect roughly a
+  third of a JVM actor system's throughput; bulk messaging is now ahead of both
+  JVM arms, and the alternating volley sits inside Pekko's spread, which is a
+  tie. And the FAQ's per-message figure of about 1 µs is now about 210 ns, with
+  the caveat that matters attached: a deep mailbox amortises the wakeup across
+  a batch and a request/response actor cannot, which is why the same system
+  reports hundreds of nanoseconds for a flooded `tell` and microseconds for an
+  ask.
+
+  Spawning remains behind the minimal JavaScript library, by about two and a
+  half times, and the pages now say why in terms of what the row measures: a
+  confirmed `preStart`, a `stop()`, a confirmed `postStop`, and a teardown that
+  notifies the parent so supervision stays correct.
+
 - **AGENTS.md gains a measured-hot-path exemption to the pattern-matching rule,
   and one site uses it** (#1209). Where a benchmark in this repository has
   measured a path as hot, a `match(…)` may be a `switch` on `kind` — arms still

@@ -24,11 +24,11 @@ than the spread beside it is not a difference.
 
 | scenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
 | -------- | -------- | ---------- | ------------- |
-| tell throughput, batch 1k  | **780k/s** ±10 % | 366k/s ±3 % | 157k/s ±12 % |
-| tell throughput, batch 10k | **890k/s** ±8 % | 379k/s ±6 % | 168k/s ±17 % |
-| ask round-trip, p50        | 8.5 µs | **7.3 µs** | 12.1 µs |
-| ping-pong, 10k exchanges   | 123k/s ±7 % | **182k/s** ±5 % | 88k/s ±10 % |
-| spawn → started → stopped  | 41k/s ±7 % | **176k/s** ±8 % | 51k/s ±20 % |
+| tell throughput, batch 1k  | **3.00M/s** ±9 % | 366k/s ±4 % | 166k/s ±6 % |
+| tell throughput, batch 10k | **4.68M/s** ±5 % | 386k/s ±2 % | 179k/s ±5 % |
+| ask round-trip, p50        | **3.7 µs** | 7.1 µs | 11.7 µs |
+| ping-pong, 10k exchanges   | **503k/s** ±5 % | 191k/s ±2 % | 93k/s ±4 % |
+| spawn → started → stopped  | 76k/s ±6 % | **188k/s** ±8 % | 53k/s ±10 % |
 
 ### Cross-language — another virtual machine, mirrored harness
 
@@ -38,18 +38,21 @@ hand, on a different runtime, and that is a weaker claim.
 
 | scenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
 | -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell throughput, batch 10k | 890k/s ±8 % | 2.97M/s ±8 % | **3.13M/s** ±15 % | 1.13M/s ±17 % | 603k/s ±21 % |
-| ping-pong, 10k exchanges   | 123k/s ±7 % | 466k/s ±28 % | **468k/s** ±32 % | 403k/s ±13 % | 173k/s ±8 % |
-| spawn → started → stopped  | 41k/s ±7 % | 26k/s ±12 % | 24k/s ±13 % | **31k/s** ±9 % | 5k/s ±7 % |
-| ask round-trip, p50        | 8.5 µs | 39.5 µs | 43.4 µs | 8.2 µs | **6.9 µs** |
+| tell throughput, batch 10k | **4.68M/s** ±5 % | 2.83M/s ±5 % | 3.23M/s ±16 % | 1.29M/s ±22 % | 723k/s ±18 % |
+| ping-pong, 10k exchanges   | 503k/s ±5 % | 459k/s ±13 % | 526k/s ±9 % | 413k/s ±13 % | 176k/s ±3 % |
+| spawn → started → stopped  | **76k/s** ±6 % | 27k/s ±8 % | 25k/s ±8 % | 34k/s ±6 % | 5k/s ±11 % |
+| ask round-trip, p50        | **3.7 µs** | 38.6 µs | 37.0 µs | 8.0 µs | 6.0 µs |
 | licence                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
 Three things are readable from this table that no single row shows.
 
 **The same actor model appears on three runtimes** — JVM, CLR and JavaScript —
 which is what makes the runtime's own contribution visible rather than
-inferred.  The JVM leads bulk throughput, .NET sits between it and actor-ts,
-and actor-ts is roughly a third of the JVM.
+inferred.  It is also the finding that survived least intact: this paragraph
+used to say the JVM led bulk throughput with actor-ts at roughly a third of
+it.  Most of that gap turned out to be a scheduling hop and an async state
+machine on the receive path rather than anything the runtime imposed, and
+removing them moved the JavaScript arm past both JVM ones.
 
 **The two JVM columns are the same framework either side of its licence
 change**: the Apache-licensed fork against the BUSL-1.1 original.  They agree
@@ -58,7 +61,7 @@ nothing in throughput** — and because those two arms differ only in which
 dependency they pull, each is a control on the other.
 
 **The ask row splits by runtime, not by framework.**  Both JVM arms sit near
-40-47 µs while both .NET arms and both JavaScript arms sit under 11 µs.  That
+37-39 µs while both .NET arms and actor-ts sit under 8 µs.  That
 is the external caller, not the frameworks: on an event loop the wait is a
 microtask and in .NET an `await`, but on the JVM from a non-actor thread it is
 a thread parking on a future.  The JVM arms lead the tell rows by a wide
@@ -66,31 +69,33 @@ margin, which is the same frameworks measured without that cost in the path.
 
 ### What the numbers say
 
-**actor-ts leads the JavaScript field on bulk message throughput** — 2.3× nact
-and 5.3× XState at a batch of 10 000 — and is close to nact on ask latency,
-where the gap is inside the run-to-run noise.
+**actor-ts leads the JavaScript field on every row except spawning** — twelve
+times nact and twenty-six times XState at a batch of 10 000, roughly twice its
+throughput on the alternating volley, and half the ask latency.
 
-**It trails on spawning and on ping-pong**, and for one reason in both cases.
-actor-ts routes actor creation through a `create` system message and each
-message through a dispatcher turn; nact constructs actors synchronously on the
-calling stack.  Per-message batching pays for itself when a mailbox has depth
-— that is the tell-throughput column — and does nothing at all when a volley
-alternates so that no mailbox ever holds more than one message.  The same
-mechanism explains both directions.
+**It trails on spawning**, by about two and a half times, and the reason is
+structural rather than a missing optimisation.  nact constructs an actor
+synchronously inside `spawn()` and puts it in two maps.  This row waits for a
+confirmed `preStart`, then a `stop()`, then a confirmed `postStop`, and the
+teardown notifies the parent so supervision stays correct.  Those are the
+things an actor system does, and a benchmark that skipped them would be
+measuring a different feature.
 
-**Against the JVM, expect roughly a third of the throughput.**  Against .NET
-the gap is narrower, and against the virtual-actor model actor-ts is ahead on
-bulk messaging (897k/s against 600k/s) while well behind on request/response,
-where a grain call is the native operation.  That is the
-answer to the question this comparison was opened to settle, and it is not a
-flattering one: a mature JVM actor system moves about three times the messages
-per second.  Two things belong next to it.  First, actor-ts wins the spawn row
-and the ask row — the latter because every arm drives the system from an
-external caller, which on an event loop is a microtask and on the JVM is a
-thread parking on a future, costing tens of microseconds regardless of
-framework quality.  Second, Akka 2.7 and later ship under BUSL-1.1, which
-restricts production use; that belongs in the same decision as the throughput
-figure.
+**Against the JVM the answer changed**, and it is worth saying plainly that it
+changed rather than quietly restating it.  This section previously read
+"expect roughly a third of the throughput", which was accurate when it was
+written.  Most of that gap was not the runtime: it was a `setImmediate` per
+actor turn, which an actor answering one request at a time cannot amortise,
+and three nested `async` functions on the delivery path that a handler
+returning nothing still paid for.  With those gone, bulk messaging is ahead of
+both JVM arms and the alternating volley is inside Pekko's spread — a tie, and
+it should be read as one rather than as a win.
+
+What has not changed is that this is a local, in-process, single-node
+measurement on one machine.  A JVM actor system has two decades of work in its
+clustering, persistence and back-pressure paths, none of which appears here.
+And Akka 2.7 and later ship under BUSL-1.1, which restricts production use;
+that belongs in the same decision as any throughput figure.
 
 **There is deliberately no "no framework" column.**  One used to close these
 tables — plain objects and direct method calls, meant as a floor showing what

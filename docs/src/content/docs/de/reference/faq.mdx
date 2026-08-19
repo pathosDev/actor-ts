@@ -143,28 +143,37 @@ Gemessen auf Bun 1.3.1, einem Ryzen 9 7940HX, Mittelwert aus zehn Runden —
 Methodik und Vergleich mit anderen Frameworks stehen unter
 [Benchmarks](/de/reference/benchmarks/):
 
-- **`tell`, Ende zu Ende** — rund **1 µs** pro Nachricht bei einer
-  Mailbox mit Tiefe (grob eine Million Nachrichten/Sekunde dauerhaft).  Das
+- **`tell`, Ende zu Ende** — rund **210 ns** pro Nachricht bei einer
+  Mailbox mit Tiefe (grob 4,7 Millionen Nachrichten/Sekunde dauerhaft).  Das
   ist der gesamte Pfad: einreihen, einplanen, zustellen, behandeln.
-  Der `tell()`-Aufruf selbst kehrt deutlich schneller zurück — er
-  reiht nur ein.  „Wie lange dauert `tell`?" und „wie viele
-  Nachrichten pro Sekunde?" sind also zwei Fragen, deren Antworten
-  zwei Größenordnungen auseinanderliegen.
-- **`ask`-Roundtrip** — **8,5 µs** im p50, Tiefe 1.
+  Der `tell()`-Aufruf selbst kehrt noch schneller zurück — er reiht nur
+  ein.  „Wie lange dauert `tell`?" und „wie viele Nachrichten pro
+  Sekunde?" sind also zwei Fragen, deren Antworten eine Größenordnung
+  auseinanderliegen.
+- **`ask`-Roundtrip** — **3,7 µs** im p50, Tiefe 1.
 - **Cross-Cluster `tell`** — begrenzt durch Netzwerk- +
   Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost, ms-Bereich
   über LAN.  Noch nicht gemessen; die Cluster-Benchmarks verlassen den
   Prozess nicht.
 
-Was Du für diese Mikrosekunde bekommst, ist eine Queue, ein Scheduler,
-Supervision und Ortstransparenz — nichts davon leistet ein direkter
-Methodenaufruf.  Beide zu vergleichen, als wären sie Alternativen, ist
-genau der Grund, warum die Benchmarks keine „ohne Framework"-Zahl mehr
-veröffentlichen: sie ist keine der Optionen, zwischen denen Du wählst.
+**Den größten Teil der ersten Zahl leistet die Mailbox-Tiefe**, und dieser
+Unterschied gehört verstanden, bevor man darauf hin entwirft.  Ein Actor
+arbeitet pro Scheduling-Durchlauf einen Batch eingereihter Nachrichten ab,
+eine tiefe Mailbox verteilt das Aufwecken also über den ganzen Batch.  Ein
+Actor, der eine Anfrage nach der anderen beantwortet, kann nichts verteilen —
+seine Mailbox ist zwischen zwei Nachrichten leer.  Genau deshalb misst sich
+der ask-Roundtrip in Mikrosekunden und ein geflutetes `tell` in Hunderten von
+Nanosekunden.  Keine der beiden Zahlen ist falsch; sie beschreiben
+verschiedene Lastformen.
 
-Die Zahl, gegen die man tatsächlich entwirft: rund eine Million
-Nachrichten pro Sekunde durch einen Actor ist erreichbar, hundert
-Millionen nicht.
+Was Du für diese Zeit bekommst, ist eine Queue, ein Scheduler, Supervision und
+Ortstransparenz — nichts davon leistet ein direkter Methodenaufruf.  Beide zu
+vergleichen, als wären sie Alternativen, ist genau der Grund, warum die
+Benchmarks keine „ohne Framework"-Zahl mehr veröffentlichen: sie ist keine der
+Optionen, zwischen denen Du wählst.
+
+Die Zahl, gegen die man tatsächlich entwirft: einige Millionen Nachrichten pro
+Sekunde durch einen Actor sind erreichbar, hundert Millionen nicht.
 
 <Aside type="note" title="Der Dispatch-Stil ist auch nicht umsonst">
 Diese Zahlen verwenden eine einfache `if`-Verzweigung im Handler.

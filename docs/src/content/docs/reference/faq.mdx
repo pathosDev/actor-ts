@@ -133,26 +133,34 @@ Measured on Bun 1.3.1, a Ryzen 9 7940HX, mean of ten rounds — see
 [Benchmarks](/reference/benchmarks/) for the methodology and the
 comparison against other frameworks:
 
-- **`tell`, end to end** — about **1 µs** per message with a mailbox
-  that has depth (roughly a million messages/second sustained).  That is the
-  cost of the whole path: enqueue, schedule, deliver, handle.  The
-  `tell()` call on its own returns far faster than that — it only
-  enqueues — so "how long does `tell` take" and "how many messages per
-  second" are different questions with answers two orders of magnitude
-  apart.
-- **`ask` round trip** — **8.5 µs** at p50, depth 1.
+- **`tell`, end to end** — about **210 ns** per message with a mailbox
+  that has depth (roughly 4.7 million messages/second sustained).  That is
+  the cost of the whole path: enqueue, schedule, deliver, handle.  The
+  `tell()` call on its own returns faster still — it only enqueues — so
+  "how long does `tell` take" and "how many messages per second" are
+  different questions with answers an order of magnitude apart.
+- **`ask` round trip** — **3.7 µs** at p50, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
   cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
   measured; the cluster benchmarks do not leave the process.
 
-What you are buying for that microsecond is a queue, a scheduler,
-supervision and location transparency — none of which a direct method
-call does.  Comparing the two as though they were alternatives is the
-reason the benchmarks no longer publish a "no framework" figure at all:
-it is not one of the options you are choosing between.
+**A mailbox with depth is doing most of the work in that first figure**, and
+the difference is worth understanding before designing around it.  An actor
+handles a batch of queued messages per scheduling turn, so a deep mailbox
+amortises the wakeup across the batch.  An actor answering one request at a
+time cannot amortise anything — its mailbox is empty between messages — which
+is why the ask round trip is measured in microseconds while a flooded `tell`
+is measured in hundreds of nanoseconds.  Neither number is wrong; they
+describe different shapes of load.
 
-The number that *is* worth designing against: roughly a million messages
-a second through one actor is reachable, a hundred million is not.
+What you are buying for that time is a queue, a scheduler, supervision and
+location transparency — none of which a direct method call does.  Comparing
+the two as though they were alternatives is the reason the benchmarks no
+longer publish a "no framework" figure at all: it is not one of the options
+you are choosing between.
+
+The number that *is* worth designing against: several million messages a
+second through one actor is reachable, a hundred million is not.
 
 <Aside type="note" title="Dispatch style is not free either">
 These figures use plain conditional dispatch in the message handler.
