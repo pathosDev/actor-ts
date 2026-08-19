@@ -20,3 +20,4 @@ export {
   REDIS_CACHE_PLUGIN_ID,
   MEMCACHED_CACHE_PLUGIN_ID,
 } from './CacheExtension.js';
+export type { CacheFactory } from './CacheExtension.js';

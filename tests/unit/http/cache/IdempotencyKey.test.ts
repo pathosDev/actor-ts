@@ -137,6 +137,12 @@ describe('idempotent — TTL / config guards', () => {
     expect(() => idempotent({ cache, maxKeyLength: 0 })).toThrow();
     expect(() => idempotent({ cache, maxKeyLength: 1.5 })).toThrow();
   });
+
+  test('rejects invalid maxScopeLength', () => {
+    const cache = new InMemoryCache();
+    expect(() => idempotent({ cache, maxScopeLength: 0 })).toThrow();
+    expect(() => idempotent({ cache, maxScopeLength: 1.5 })).toThrow();
+  });
 });
 
 /* ------------------------- security: bounding the minted key ----------------------- */

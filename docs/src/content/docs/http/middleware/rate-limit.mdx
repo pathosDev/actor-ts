@@ -196,14 +196,32 @@ import { Aside } from '@astrojs/starlight/components';
   windows.  It does not rank guarantees against each other, though: on
   an instance shared with `idempotent`, a flood of attacker-chosen
   `Idempotency-Key`s is a flood of claims, and once the map holds
-  nothing cheaper the counters go too.  The flooder's own counter is
-  safe either way: `incr` marks it most-recently-used on every request,
-  so it is never the victim.
+  nothing cheaper the counters go too.
+
+  **A flooder can reset its own limit, but only from outside the
+  limiter.**  Requests that pass *through* this middleware run `incr`
+  before the `max` comparison, which marks the flooder's counter
+  most-recently-used, so a flood travelling through the limiter can
+  never evict its own counter — not even after the 429s start.  A
+  key-minting route on the same `Cache` that the limiter does **not**
+  wrap gives no such bump: the counter ages like everyone else's, and if
+  the flood carries a guarantee of its own (a flood of `idempotent`
+  claims, say) the counters are what is left to take once the
+  opportunistic half is empty.  Measured on one shared
+  `maxEntries: 4` instance: a client answered 429 by `max: 2` was
+  answered 200 again after twenty off-limiter `Idempotency-Key`
+  requests.
 
   Pass a dedicated instance — or `ext.cache('rate-limit')` — and size
   its `maxEntries` above the number of distinct keys you expect inside
-  one `windowMs`; a client with an IPv6 `/64` mints them all day, and
-  every one is a counter the cache protects.  See
+  one `windowMs`, under that cache's own name:
+
+  ```hocon
+  actor-ts.cache.rate-limit.in-memory.maxEntries = 50000
+  ```
+
+  A client with an IPv6 `/64` mints them all day, and every one is a
+  counter the cache protects.  See
   [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
 </Aside>
 

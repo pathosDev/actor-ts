@@ -28,9 +28,18 @@
  *     cheaper to drop.
  *   - `idempotent`'s own key space is attacker-controlled, so a flood
  *     through the SAME middleware still evicts another caller's record.
+ *   - And that residual reaches the FLOODER's own rate-limit counter as
+ *     soon as the flood does not travel through the limiter, which the
+ *     middleware JSDoc used to deny without qualification.  The last two
+ *     tests of the rate-limit block are the two halves of the corrected
+ *     claim (#607).
  *
  * Deliberately NOT covered here: per-prefix quotas, which would rank one
- * consumer's guarantee above another's.  That is #607's remaining half.
+ * consumer's guarantee above another's.  Nothing in #607 or #1080 decided
+ * that, and it needs a public `Cache` API decision (a per-write priority,
+ * or a cap the cache enforces per key prefix) rather than a tweak to
+ * `evictIfNeeded`; the three characterisation tests below are what it
+ * would flip.
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
@@ -171,20 +180,26 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
   });
 
   /**
-   * The issue body claimed a flood also resets the FLOODER's own limit
-   * (429 back to 200).  It does not, and the distinction matters for
-   * anyone reasoning about the exposure: `incr` bumps the counter to
-   * most-recently-used on every request, so a flood that travels
-   * through the limiter can never evict its own counter.  Only OTHER
-   * clients' counters are reachable.  Pinned so the JSDoc's claim that
-   * "the flooder's own counter is safe from this" stays true.
+   * The flooder's own counter, in the two wirings that decide its fate.
+   * The middleware JSDoc used to claim immunity without qualification —
+   * "`incr` bumps it to most-recently-used on every request, so it is
+   * never the victim" — and one of these two reproduces the opposite, so
+   * the pair is what the corrected claim rests on (#607).
+   *
+   * `max` is deliberately set *above* the flood in the immune case.  With
+   * `max` below it the limiter short-circuits from the third request on,
+   * the flood mints two response-cache entries instead of twenty, the map
+   * never reaches its cap, and the test passes without a single eviction
+   * having run — asserting the 429s rather than the invariant behind them.
    */
-  test('the flooder cannot reset its own counter by flooding through the limiter', async () => {
+  test('a flood THROUGH the limiter cannot evict its own counter', async () => {
     const shared = newCache();
+    // `max` == the flood, so every flooding request passes (each one mints
+    // an `rsp:` key AND bumps the counter) and the next one is the first 429.
     const limited = rateLimit({
       cache: shared,
       windowMs: 60_000,
-      max: 2,
+      max: FLOOD_SIZE,
       key: (request) => request.remoteAddress ?? 'unknown',
     })(floodHandler(shared));
 
@@ -192,9 +207,58 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
     for (let i = 0; i < FLOOD_SIZE; i++) {
       statuses.push((await limited(makeRequest({}, `/public/${i}`, '192.0.2.5'))).status);
     }
+    expect(statuses.every((s) => s === Status.OK)).toBe(true);
+    // The flood really did turn the map over — otherwise no eviction ran and
+    // the assertion below would hold for the wrong reason.
+    expect(shared.sizeForTest()).toBe(MAX_ENTRIES);
 
-    expect(statuses.slice(0, 2)).toEqual([Status.OK, Status.OK]);
-    expect(statuses.slice(2).every((s) => s === Status.TooManyRequests)).toBe(true);
+    // Counter never lost: the (FLOOD_SIZE + 1)-th request is over `max`.
+    // Had it been evicted mid-flood, the window would have restarted and
+    // this would be another 200.
+    expect((await limited(makeRequest({}, '/public/x', '192.0.2.5'))).status)
+      .toBe(Status.TooManyRequests);
+
+    await shared.close();
+  });
+
+  /**
+   * The correction.  Immunity comes from the `incr` bump, and the bump
+   * only happens on a request the limiter *wraps* — `rateLimit` calls
+   * `incr` in exactly one place, inside `limited`.  A key-minting route on
+   * the same `Cache` that the limiter does not wrap therefore ages the
+   * flooder's counter like anybody else's, and it is then reachable.
+   *
+   * The flood has to carry a guarantee of its own for that to bite, which
+   * is why this uses `idempotent` and not `cached`: since #1080 a `cached`
+   * flood is opportunistic and drained first, so the same wiring with
+   * `cached` leaves the counter alone (verified — it answers 429 after the
+   * flood).  A flood of `idempotent` claims empties the opportunistic half
+   * and then takes the least-recently-used guarantee, which is the counter
+   * nobody has bumped.
+   */
+  test('a flood BYPASSING the limiter resets the flooder\'s own counter', async () => {
+    const shared = newCache();
+    const limited = rateLimit({
+      cache: shared,
+      windowMs: 60_000,
+      max: 2,
+      key: (request) => request.remoteAddress ?? 'unknown',
+    })(() => complete(Status.OK, { ok: true }));
+    // The off-limiter endpoint: same client, same shared cache, no limiter
+    // in front of it — the shape the "one shared ext.cache()" wiring produces.
+    const pay = idempotent({ cache: shared })(() => complete(Status.OK, { ok: true }));
+
+    const attacker = makeRequest({}, '/api', '192.0.2.5');
+    expect((await limited(attacker)).status).toBe(Status.OK);                  // count 1
+    expect((await limited(attacker)).status).toBe(Status.OK);                  // count 2
+    expect((await limited(attacker)).status).toBe(Status.TooManyRequests);     // count 3 → limited
+
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      await pay(makeRequest({ 'idempotency-key': `flood-${i}` }));
+    }
+
+    // SELF-RESET: the counter is gone, so the window restarts at 1.
+    expect((await limited(attacker)).status).toBe(Status.OK);
 
     await shared.close();
   });
@@ -209,8 +273,8 @@ describe('shared cache — the policy does not rank one guarantee above another'
    * before.  A caller with an IPv6 `/64` mints rate-limit counters all
    * day, and every one of them is a counter the policy protects.
    *
-   * Ranking one consumer's guarantee above another's is per-prefix quotas
-   * — #607's remaining half — and this test is what it would flip.
+   * Ranking one consumer's guarantee above another's is per-prefix quotas,
+   * which nothing has decided, and this test is what it would flip.
    */
   test('a flood of rate-limit counters still evicts an idempotency record from the same instance', async () => {
     const shared = newCache();

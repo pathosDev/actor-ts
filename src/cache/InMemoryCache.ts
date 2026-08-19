@@ -51,8 +51,11 @@ type Entry = {
  * exactly as before.  Which is also the limit of the guarantee: size
  * `maxEntries` above the number of claims, counters and locks live inside one
  * TTL, give each consumer its own named cache (`ext.cache('rate-limit')`,
- * `ext.cache('idempotency')`), and where the guarantee must hold against an
- * adversary use `RedisCache` — a cache the framework does not evict at all.
+ * `ext.cache('idempotency')`) and size *that* instance for its own key space
+ * under `actor-ts.cache.<name>.in-memory` (#607 — before it, the name reached
+ * the registry but not the settings, so every named instance shared one
+ * bound), and where the guarantee must hold against an adversary use
+ * `RedisCache` — a cache the framework does not evict at all.
  *
  * Three things this deliberately does not do.  A guarantee you store yourself
  * with `set` is indistinguishable from a cached body and is *not* protected —
@@ -79,8 +82,10 @@ type Entry = {
  * rather than at the end of its consumer's retry window.
  *
  * Configure via an {@link InMemoryCacheOptions} builder or plain object; through
- * the {@link CacheExtension} the same fields resolve from the HOCON path
- * `actor-ts.cache.in-memory` instead.  Out-of-range values throw `OptionsError`.
+ * the {@link CacheExtension} the same fields resolve from the HOCON block
+ * `actor-ts.cache.in-memory` (every in-memory instance) with
+ * `actor-ts.cache.<name>.in-memory` layered on top (just the instance resolved
+ * as `<name>`).  Out-of-range values throw `OptionsError`.
  *
  * Suitable for tests, single-process dev servers, and as a per-process
  * front-end to a slower remote cache.  Not suitable for multi-process
