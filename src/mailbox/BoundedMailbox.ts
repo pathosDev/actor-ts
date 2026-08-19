@@ -1,4 +1,3 @@
-import { match } from 'ts-pattern';
 import type { Envelope } from '../internal/Mailbox.js';
 import { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
 import { BoundedMailboxOptionsValidator, type BoundedMailboxOptions, type BoundedMailboxOptionsType, type BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
@@ -27,10 +26,26 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
   }
 
+  /**
+   * A `switch` rather than a `match`, deliberately.
+   *
+   * The pattern-matching convention governs dispatch of an incoming *message,
+   * event or command*; `overflow` is none of those — it is a configuration
+   * value fixed at construction, and this is the shape the codebase already
+   * uses for a closed string-literal union (see `decodeCrdt` in
+   * `crdt/DistributedData.ts`, which documents itself as the reference).
+   *
+   * It matters here because of *when* this branch runs.  A matcher plus one
+   * closure per arm was being built for every message that arrived at a full
+   * mailbox — that is, once per shed message, at the exact moment the system
+   * is already past its capacity and least able to afford it (#974).
+   * Exhaustiveness is not lost, only moved: the `never` assignment below fails
+   * to compile if a fourth policy is added without an arm here.
+   */
   override enqueue(env: Envelope<T>): void {
     if (this.size >= this.capacity) {
-      match(this.overflow)
-        .with('drop-head', () => {
+      switch (this.overflow) {
+        case 'drop-head': {
           // `removeOldest` rather than `dequeueUser`: the latter returns
           // undefined while the mailbox is suspended, which used to make this
           // whole arm a no-op — the queue grew past capacity and the drop was
@@ -45,11 +60,19 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
           const dropped = super.removeOldest();
           if (dropped !== undefined) this.reportDrop('drop-head');
           super.enqueue(env);
-        })
-        .with('drop-new', () => this.reportDrop('drop-new'))
-        .with('reject', () => { throw new MailboxFullError(this.capacity); })
-        .exhaustive();
-      return;
+          return;
+        }
+        case 'drop-new':
+          this.reportDrop('drop-new');
+          return;
+        case 'reject':
+          throw new MailboxFullError(this.capacity);
+        default: {
+          const _exhaustive: never = this.overflow;
+          void _exhaustive;
+          throw new MailboxFullError(this.capacity);
+        }
+      }
     }
     super.enqueue(env);
   }
