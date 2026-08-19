@@ -40,14 +40,24 @@ below are built on.
 
 ## Turning the queue on
 
-`system.deadLetterQueue` always exists and, by default, keeps nothing.
-Three stores:
+`system.deadLetterQueue` always exists and, by default, keeps nothing. Four
+stores, one axis — how much of the letter is kept:
 
 | `store` | Keeps | Survives a restart |
 | --- | --- | --- |
 | `off` (default) | nothing | — |
+| `metrics` | a counter, no payload | — |
 | `memory` | a bounded ring | no |
 | `persistent` | the same ring, plus an append-only journal log | yes |
+
+`metrics` is there because **retaining a payload is a different decision
+from observing a rate**. A ring holds a strong reference to every
+undeliverable message, which is a data-protection question the moment a
+payload says anything about a person; a counter is not. `list()` stays
+empty and `replay` answers `unknown-entry` for every id — nothing was kept,
+so there is nothing to hand back. You cannot approximate it with a tiny
+ring: `max-entries` must be positive, so even the smallest one keeps a live
+payload for a whole retention window.
 
 ```hocon
 actor-ts.dead-letters {
@@ -58,17 +68,33 @@ actor-ts.dead-letters {
 }
 ```
 
-The same knobs are available as an options family when you build the queue
-yourself:
+The same knobs are available as an options family, handed to the system at
+creation time:
 
 ```ts
-import { DeadLetterQueueOptions } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, DeadLetterQueueOptions } from 'actor-ts';
 
 const deadLetterOptions = DeadLetterQueueOptions.create()
   .withStore('persistent')
   .withMaxEntries(5_000)
   .withRetentionMs(6 * 60 * 60 * 1_000);
+
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters(deadLetterOptions);
+
+const system = ActorSystem.create('orders', systemOptions);
 ```
+
+Precedence is the usual one — **explicit options beat HOCON beat the
+built-in defaults** — and it applies field by field, so naming one knob in
+code leaves the rest of the `actor-ts.dead-letters` block in effect.
+
+:::caution
+`withDeadLetters` is the only way to configure the queue **the system
+uses**. `new DeadLetterQueue(system, options)` builds a valid object, but
+nothing installs it as the capture sink, so it never receives a letter —
+there is one sink slot and the system owns it.
+:::
 
 :::note
 `store` is a **storage** decision, not a failure strategy. What a
@@ -78,6 +104,13 @@ and friends. Once a projection has skipped an event it publishes a dead
 letter, and this setting decides whether anything keeps it. The two
 compose; neither replaces the other.
 :::
+
+Every key in this block decides **what is retained**, which is why they live
+under `actor-ts.dead-letters` and not beside the eventual logging and
+rate-limiting knobs: those decide how loudly a letter is *announced*, are
+read on the publish path rather than by the queue, and sit downstream of
+capture by design — so a suppression setting can never quietly make this
+record incomplete.
 
 ## Inspecting
 
@@ -127,11 +160,42 @@ Every outcome is named, so nothing fails quietly:
 
 | `kind` | Meaning |
 | --- | --- |
-| `replayed` | Handed back; the entry left the queue. |
+| `replayed` | Handed back; the entry left the queue. `recipientPath` is where it actually went. |
 | `unknown-entry` | No such id — already replayed, or aged out. |
-| `unresolved-recipient` | Still nothing at that path; the entry stays. |
+| `unresolved-recipient` | Nothing at the destination path; the entry stays. |
 | `degraded-payload` | Provenance only; there is nothing to redeliver. |
 | `quarantined` | Already replayed `max-replays` times. |
+
+### Replaying to a different recipient
+
+A second argument sends the letter somewhere other than the address it was
+originally sent to — the actor was renamed, the shard moved, the path was a
+typo:
+
+```ts
+const result = await system.deadLetterQueue.replay(
+  entry.id,
+  'actor-ts://orders/user/checkout-v2',
+);
+```
+
+Three things about a redirect are worth knowing:
+
+- **Only the destination changes.** The sender stays the recorded one, so
+  the recipient's `sender` still answers the actor that sent the message and
+  a reply goes where a reply always would.
+- **The recorded path is not resolved at all.** Redirecting is most useful
+  exactly when the original address is gone for good, so requiring it to
+  still exist would refuse the cases that need it most.
+- **The replay cap still applies.** `max-replays` bounds how often *this
+  letter* is redelivered, not how often one recipient is asked — a
+  quarantined letter stays refused however it is addressed. Otherwise
+  alternating between two paths would hand back the unbounded retry loop the
+  cap exists to close.
+
+If the letter dead-letters again at the alternate it comes back as the same
+entry, now recording the alternate as its `recipientPath` — that is where
+the message failed this time.
 
 ### Poison messages cannot grow the queue
 
@@ -146,8 +210,10 @@ looked like a first. Past `max-replays` the letter is quarantined and
 
 With `store = "persistent"` the queue writes an append-only log to the
 configured [journal](/persistence/overview/) and reads it back on the next
-start, so a redeploy does not lose what the previous process captured. Two
-details worth knowing:
+start, so a redeploy does not lose what the previous process captured.
+
+What ships is **graceful-shutdown durability, not crash durability**, and
+the difference is worth being precise about:
 
 - **The stream is derived from the system name**, so two systems sharing
   one journal keep separate queues. Override it with
@@ -156,9 +222,18 @@ details worth knowing:
   the `before-actor-system-terminate` phase of
   [CoordinatedShutdown](/fundamentals/coordinated-shutdown/), and again
   after the actor tree is down, because the teardown itself produces dead
-  letters after the last phase has run. A **hard kill** can still lose the
-  writes that were in flight; the queue is a diagnostic record, not a
-  transactional outbox.
+  letters after the last phase has run. Anything captured before a
+  `terminate()` is in the journal after it, however large the burst.
+- **A hard kill loses the backlog, which is not the same as losing one
+  write.** `tell` is synchronous and cannot wait for a journal, so appends
+  are issued fire-and-forget onto a *serialized* chain. A burst arriving
+  faster than the journal accepts it therefore leaves many un-settled
+  appends outstanding, and a `SIGKILL`, a power loss or an OOM kill loses
+  all of them — not just the one in flight.
+
+The queue is a diagnostic record, not a transactional outbox. If you need a
+letter to survive an uncontrolled stop, the journal write has to be on the
+sending path, which is a different design and not what this is.
 
 ## Metrics
 

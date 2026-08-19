@@ -224,10 +224,14 @@ than here.
 Only present once
 [`actor-ts.dead-letters.store`](/operations/dead-letters/) is something
 other than `off` — the counter is minted by the queue, so a system that
-keeps nothing counts nothing.  `outcome` is one of:
+captures nothing counts nothing.  `store = "metrics"` is the setting for
+this counter and nothing else: it counts every letter and retains no
+payload.  `outcome` is one of:
 
 - `captured` — a new letter entered the queue.
-- `replayed` — a letter was handed back to its original recipient.
+- `replayed` — a letter was handed back.  The `recipient` label is where it
+  actually went, which for a replay to an alternate recipient is not the
+  path the letter was originally addressed to.
 - `replay-failed` — a replayed letter came back, i.e. the recipient
   still cannot take it.  A rising `replay-failed` against a flat
   `captured` is a poison message being retried, not a new outage.

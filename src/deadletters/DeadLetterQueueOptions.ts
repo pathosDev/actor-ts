@@ -6,6 +6,11 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 /**
  * Where captured dead letters are kept.
  *
+ * One axis, four rungs, ordered by **how much of the letter is retained**:
+ * nothing at all, the bare fact aggregated into a counter, the whole letter
+ * in a bounded ring, that ring plus a durable log.  Each rung costs strictly
+ * more than the one below and answers strictly more questions.
+ *
  * A *storage* vocabulary on purpose, and deliberately not a second copy of
  * the failure vocabulary `ProjectionOptions` introduced
  * (`retry-and-fail` / `retry-and-skip` / `fail` / `skip`).  That one answers
@@ -15,17 +20,30 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
  * it — so folding them into one enum would have made two independent
  * decisions look like one.
  *
+ * `metrics` exists because *retaining a payload is a different decision from
+ * observing a rate*.  Under `memory` the queue holds a strong reference to
+ * every undeliverable message, which is a data-protection question the
+ * moment a payload carries anything about a person — and a counter is not.
+ * There is no way to approximate the posture with the other rungs:
+ * `maxEntries` is validated `positiveInt`, so the smallest ring still keeps
+ * one live payload for a whole retention window.  An operator who wants the
+ * alert without the evidence locker has to be able to say so.
+ *
  * There is no `log` arm.  Dead letters are not logged today and never were:
  * `DeadLetterRef` holds no logger, it publishes on the event stream and
  * returns.  Naming the default after a log line the framework does not emit
  * would document a behaviour into existence (#1000 tracks the docs that
  * already claim it).
  */
-export type DeadLetterStore = 'off' | 'memory' | 'persistent';
+export type DeadLetterStore = 'off' | 'metrics' | 'memory' | 'persistent';
 
-/** Accepted values of {@link DeadLetterQueueOptionsType.store}. */
+/**
+ * Accepted values of {@link DeadLetterQueueOptionsType.store}, in
+ * increasing order of what they retain.
+ */
 export const DEAD_LETTER_STORES: ReadonlyArray<DeadLetterStore> = [
   'off',
+  'metrics',
   'memory',
   'persistent',
 ];
@@ -76,6 +94,8 @@ export type DeadLetterQueueOptionsType = {
    * Most letters the queue holds.  Capturing the oldest one past the cap
    * evicts it — the queue is a diagnostic ring, and an unbounded one turns
    * a delivery outage into an out-of-memory.
+   *
+   * Ignored by the `off` and `metrics` stores, which hold no letters.
    */
   readonly maxEntries?: number;
   /** Drop letters older than this many milliseconds.  `0` disables ageing. */
@@ -96,7 +116,7 @@ export class DeadLetterQueueOptionsBuilder extends OptionsBuilder<DeadLetterQueu
     return new DeadLetterQueueOptionsBuilder();
   }
 
-  /** Where captured letters are kept — `off`, `memory` or `persistent`. */
+  /** Where captured letters are kept — `off`, `metrics`, `memory` or `persistent`. */
   withStore(store: DeadLetterStore): this {
     return this.set('store', store);
   }

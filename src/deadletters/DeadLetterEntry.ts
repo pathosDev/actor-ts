@@ -83,16 +83,36 @@ export type DeadLetterFilter = {
   readonly limit?: number;
 };
 
-/** The letter was handed back to its original recipient. */
+/** The letter was handed back and has left the queue. */
 export type ReplayedResult = {
   readonly kind: 'replayed';
+  /**
+   * Where the letter was **actually sent** — the alternate path when
+   * {@link DeadLetterQueue.replay} was given one, and otherwise the recorded
+   * {@link DeadLetterEntry.recipientPath}.
+   *
+   * Reporting the destination rather than echoing the entry's own field is
+   * the only honest choice once a redirect is possible: a caller that logged
+   * `recipientPath` from this result would otherwise name the actor that
+   * never received the message.
+   */
   readonly recipientPath: string;
 };
 /** No entry with that id — already replayed, evicted, or never captured. */
 export type UnknownEntryResult = { readonly kind: 'unknown-entry' };
-/** The recipient path still resolves to no actor, so the letter stays put. */
+/**
+ * The destination resolves to no actor, so the letter stays put.
+ *
+ * Deliberately one variant and not two.  A redirect that misses reports the
+ * alternate here rather than through a separate
+ * `unresolved-alternate-recipient` kind, because the caller is the one who
+ * chose the destination and already knows which path it named — a second
+ * variant would carry no information the call site does not have, while every
+ * consumer would have to handle both to mean the same thing.
+ */
 export type UnresolvedRecipientResult = {
   readonly kind: 'unresolved-recipient';
+  /** The path that was attempted — the alternate when one was given. */
   readonly recipientPath: string;
 };
 /** The payload was not storable, so there is nothing to redeliver. */
