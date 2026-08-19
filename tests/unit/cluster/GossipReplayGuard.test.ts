@@ -20,6 +20,14 @@
  *   `version` must not reappear one field to the left;
  * - the mark must not **outlive its member**, or the address's next
  *   incarnation — whose counter starts from its own clock — would be refused.
+ *
+ * The last block pins the **boundary** instead: the guard holds for a sender
+ * this receiver has heard a frame from, and a mark exists for nobody else.
+ * Those two counterfactuals are what the standing texts got wrong — they name
+ * eviction of the sender as the one disarming condition — and neither is
+ * closable without a **required** incarnation identity on the wire (#940, #823).
+ * `tests/unit/cluster/GossipReplayBoundDocumented.test.ts` holds the prose to
+ * what they measure.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -344,5 +352,104 @@ describe('a mark does not outlive its member', () => {
     const seeded = internals(node.cluster).gossipSequence;
     expect(seeded).toBeGreaterThan(Date.now() - MINUTE_MS);
     expect(seeded).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe('what the guard leaves open: a mark exists only where a frame arrived (#823)', () => {
+  /**
+   * The two counterfactuals that fix #112's real bound, and the reason the
+   * shipped texts overstated it.
+   *
+   * `acceptedGossipSequences.set` has exactly one caller — `onGossip`, through
+   * `rememberGossipSequence` — so a mark exists only for a peer that has
+   * gossiped to **this** receiver directly.  A missing mark admits everything,
+   * and eviction of the sender is only one of three ways to be missing one:
+   * a fresh process starts with the map empty, and a member learned
+   * *third-party* (which is how epidemic gossip works at all) never had one.
+   *
+   * Both are asserted rather than left implicit, for the reason the forgery
+   * counterfactual in `tests/multi-node/ClusterSecurity.test.ts` is: a boundary
+   * nobody wrote down is a boundary that gets claimed away.  Neither closes
+   * without a **required** incarnation on `NodeAddress`, because the only thing
+   * separating a recording from a live frame is which process emitted it, and
+   * the wire carries no field that says so — the optional one #940 added is
+   * bypassed by stripping it, and requiring it breaks every address-bearing
+   * frame field at once (#823).  Both invert when that lands.
+   */
+  test('exploit: a sender learned third-party has no mark, so its recording lands', async () => {
+    const node = await startNode('replay-third-party', 9_410);
+    nodes.push(node);
+    node.system.extension(MetricsExtensionId).enable();
+    const gossiper = new NodeAddress('replay-third-party', '10.0.112.2', 9_490);
+    const sender = new NodeAddress('replay-third-party', '10.0.112.3', 9_491);
+    const victim = new NodeAddress('replay-third-party', '10.0.112.4', 9_492);
+
+    // `gossiper` earns standing the ordinary way, so the receiver holds a mark
+    // for *it* — the configuration the guard is claimed to hold in.
+    const gossiperSequence = Date.now();
+    gossipFrom(node.cluster, gossiper, gossiperSequence, [selfRecord(gossiper)]);
+    expect(markFor(node.cluster, gossiper)).toBe(gossiperSequence);
+
+    // …and then reports `sender` as a third party, which is what epidemic
+    // gossip is: the receiver files an `up` member whose frames it has never
+    // seen, and therefore holds no mark for.
+    gossipFrom(node.cluster, gossiper, gossiperSequence + 1, [
+      { address: sender.toJSON(), status: 'up', version: Date.now(), roles: [] },
+    ]);
+    expect(internals(node.cluster).members.get(sender.toString())?.status).toBe('up');
+    expect(markFor(node.cluster, sender)).toBeUndefined();
+
+    // The recording: one frame `sender` really emitted, captured off its link
+    // to some other peer while `victim` was still up.  Its number is far below
+    // everything `sender` has sent since, and the receiver cannot tell.
+    const captured: MemberData[] = [
+      { address: victim.toJSON(), status: 'up', version: Date.now() - MINUTE_MS, roles: ['payments'] },
+    ];
+    const capturedSequence = gossiperSequence - 5 * MINUTE_MS;
+    gossipFrom(node.cluster, sender, capturedSequence, captured);
+
+    // Admitted whole: the victim is back `up`, carrying the roles shard
+    // placement, singleton hosting and downing quorums are computed from —
+    // with the sender a full member throughout, and nothing evicted anywhere.
+    expect(internals(node.cluster).members.get(victim.toString())?.status).toBe('up');
+    expect(node.cluster.upMembersWithRole('payments')).toHaveLength(1);
+
+    // The guard arms only *after* the damage, off the recording's own number:
+    // the identical frame delivered a second time is refused.
+    expect(markFor(node.cluster, sender)).toBe(capturedSequence);
+    gossipFrom(node.cluster, sender, capturedSequence, captured);
+    const refused = metricsOf(node.system)
+      .counter('cluster_gossip_records_refused_total', { reason: 'replayed-frame' });
+    expect(refused.value).toBe(1);
+  });
+
+  test('exploit: a receiver that never met the sender replays it in capture order', async () => {
+    // The disarming condition the standing texts name is "once the **sender**
+    // has itself been evicted".  Nothing is evicted here, and nothing was ever
+    // downed: the receiver has simply never held a mark for this address, which
+    // is the state every process starts in and returns to on restart.
+    //
+    // Two frames, because a sender with no standing cannot speak for a third
+    // party yet (#562) — `senderStatus` is snapshotted before the merge, so the
+    // recording's first frame buys the standing and installs the mark, and its
+    // second frame out-numbers the mark its own predecessor just set.
+    const node = await startNode('replay-cold-start', 9_411);
+    nodes.push(node);
+    const sender = new NodeAddress('replay-cold-start', '10.0.112.2', 9_490);
+    const victim = new NodeAddress('replay-cold-start', '10.0.112.3', 9_491);
+
+    const recordedAt = Date.now() - 10 * MINUTE_MS;
+    gossipFrom(node.cluster, sender, recordedAt, [
+      { address: sender.toJSON(), status: 'up', version: recordedAt, roles: [] },
+    ]);
+    expect(internals(node.cluster).members.get(sender.toString())?.status).toBe('up');
+    expect(markFor(node.cluster, sender)).toBe(recordedAt);
+
+    gossipFrom(node.cluster, sender, recordedAt + 1, [
+      { address: victim.toJSON(), status: 'up', version: recordedAt, roles: ['payments'] },
+    ]);
+
+    expect(internals(node.cluster).members.get(victim.toString())?.status).toBe('up');
+    expect(node.cluster.upMembersWithRole('payments')).toHaveLength(1);
   });
 });
