@@ -409,10 +409,10 @@ Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
 
 | scenario                       | actor-ts          | nact 7.6.2      | XState 5.32.5   |
 | ------------------------------ | ----------------- | --------------- | --------------- |
-| tell throughput (batch 10k)    | **4.50M/s** ±11 % | 404k/s ±4 %     | 192k/s ±8 %     |
-| ask round-trip (p50)           | **3.6 µs**        | 6.6 µs          | 13.7 µs *       |
-| ping-pong (10k exchanges)      | **521k/s** ±8 %   | 183k/s ±7 %     | 83k/s ±12 %     |
-| spawn → started → stopped      | 79k/s ±9 %        | **196k/s** ±13 %| 65k/s ±8 %      |
+| tell throughput (batch 10k)    | **4.55M/s** ±8 %  | 389k/s ±3 %     | 183k/s ±9 %     |
+| ask round-trip (p50)           | **3.5 µs**        | 6.7 µs          | 13.5 µs *       |
+| ping-pong (10k exchanges)      | **504k/s** ±6 %   | 166k/s ±10 %    | 83k/s ±13 %     |
+| spawn → started → stopped      | 75k/s ±10 %       | **192k/s** ±7 % | 61k/s ±4 %      |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
@@ -436,13 +436,18 @@ least stable figure in the suite.
 Kept in its own table on purpose: these are other virtual machines, measured by
 a harness that mirrors the JavaScript one rather than being it.
 
-| scenario                    | actor-ts (Bun)   | Akka 2.8.8      | Pekko 1.6.0      | Akka.NET 1.5.70  | Orleans 10.2.2 |
-| --------------------------- | ---------------- | --------------- | ---------------- | ---------------- | -------------- |
-| tell throughput (batch 10k) | **4.50M/s** ±11 %| 3.12M/s ±6 %    | 3.33M/s ±15 %    | 1.31M/s ±36 %    | 528k/s ±16 %   |
-| ping-pong (10k exchanges)   | 521k/s ±8 %      | 450k/s ±24 %    | 452k/s ±34 %     | 433k/s ±21 %     | 164k/s ±4 %    |
-| spawn → started → stopped   | **79k/s** ±9 %   | 26k/s ±7 %      | 25k/s ±12 %      | 32k/s ±27 %      | 5k/s ±10 % ‡   |
-| ask round-trip (p50)        | **3.6 µs**       | 38.9 µs †       | 40.8 µs †        | 6.8 µs           | 7.9 µs         |
-| licence                     | MIT              | BUSL-1.1        | Apache-2.0       | Apache-2.0       | MIT            |
+Each JVM framework appears twice: through its **Java** API and through its
+**Scala 3** API, at the identical pinned version.  Reading down a column pair
+gives the licence question; reading across a pair gives the language binding.
+
+| scenario                    | actor-ts (Bun)   | Akka 2.8.8 (Java) | Akka (Scala 3)  | Pekko 1.6.0 (Java) | Pekko (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| --------------------------- | ---------------- | ----------------- | --------------- | ------------------ | --------------- | --------------- | -------------- |
+| tell throughput (batch 1k)  | **2.90M/s** ±6 % | 2.11M/s ±27 %     | 1.31M/s ±37 %   | 1.71M/s ±28 %      | 1.10M/s ±45 %   | 1.38M/s ±9 %    | 288k/s ±19 %   |
+| tell throughput (batch 10k) | **4.55M/s** ±8 % | 3.14M/s ±9 %      | 2.80M/s ±16 %   | 3.04M/s ±13 %      | 2.84M/s ±47 %   | 1.36M/s ±18 %   | 576k/s ±26 %   |
+| ping-pong (10k exchanges)   | 504k/s ±6 %      | 404k/s ±40 %      | 369k/s ±42 %    | 343k/s ±27 %       | 603k/s ±82 %    | 415k/s ±21 %    | 157k/s ±7 %    |
+| spawn → started → stopped   | **75k/s** ±10 %  | 28k/s ±10 %       | 26k/s ±6 %      | 27k/s ±14 %        | 28k/s ±13 %     | 34k/s ±6 %      | 5k/s ±13 % ‡   |
+| ask round-trip (p50)        | **3.5 µs**       | 34.9 µs †         | 37.4 µs †       | 32.8 µs †          | 32.4 µs †       | 7.2 µs          | 7.7 µs         |
+| licence                     | MIT              | BUSL-1.1          | BUSL-1.1        | Apache-2.0         | Apache-2.0      | Apache-2.0      | MIT            |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
 that is a microtask and in .NET an `await`; on the JVM, from a non-actor
@@ -454,22 +459,38 @@ so that row is activation latency rather than a comparable lifecycle.</sub>
 This table used to say "expect roughly a third of the JVM's throughput", and
 that is no longer where the numbers land — most of the gap was a scheduling
 hop and an async state machine on the receive path rather than anything
-inherent to the runtime.  On bulk messaging actor-ts is now ahead of both JVM
-arms; on the alternating volley it and the two JVM arms are inside each
-other's spreads, which is a tie and should be read as one.  Two independent
-ten-round runs put actor-ts at 503k and 521k and the closest JVM arm at 526k
-and 452k — the ordering flipped between them, which is what a tie looks like
-when you measure it twice.
+inherent to the runtime.  On bulk messaging actor-ts is now ahead of every JVM
+arm; on the alternating volley the JVM spreads are wide enough (±27 % to ±82 %)
+that only the ordering against Orleans and XState is safe to read at all.
 
-Two things worth reading off this table beyond the raw numbers.  The two JVM
-columns are the same framework either side of its licence change, and they
-agree to within the noise — **staying on an OSI-approved licence costs nothing
-in throughput.**  And the same actor model appears on three runtimes, which is
-what makes the runtime's own contribution visible rather than inferred.
+**Two things the JVM columns say that a single column could not.**
 
-The spreads are the other half of the story: some of these figures move by more
-than 15 % between rounds, so treat a 20 % gap as a difference and a 10 % gap as
-a tie.
+*The licence pair.*  Akka and Pekko are the same lineage either side of a
+licence change, and at the same binding they agree to within their spreads on
+every row.  **Staying on an OSI-approved licence costs nothing in throughput.**
+
+*The binding pair.*  Each framework is measured through its Java API and
+through its Scala 3 API at the identical version, so the gap between them is
+the language binding and nothing else.  On four of the five rows there is no
+gap worth the name.  On one there is: at a batch of 1 000 the Scala arms run
+**36–38 % behind their Java siblings** — both pairs, independently, and large
+enough to survive their spreads (t = 3.4 and 2.8).  That is the cost of the
+idiomatic functional style, where an actor advances its state by returning a
+new behavior per message rather than mutating a field.  The effect shrinks to
+7–11 % at a batch of 10 000, which is consistent with the JIT eliminating the
+allocation once it has enough profile to work with — that part is a plausible
+mechanism rather than something this benchmark measured.
+
+The same actor model appears on three runtimes, which is what makes the
+runtime's own contribution visible rather than inferred.
+
+The spreads are the other half of the story, and they grew: the JVM arms now
+launch a fresh process per run rather than measuring inside their build tool's
+already-warm one, which is how every other arm has always been measured and is
+the fairer shape — but a cold JVM is a noisier one, and the volley row in
+particular moves by a third to four fifths between rounds.  Treat those four
+columns as an order of magnitude, not a ranking.  Elsewhere: a 20 % gap is a
+difference, a 10 % gap is a tie.
 
 These are **ratios, not absolutes**, on one machine.  Read the columns, treat
 the last digit as fiction, and note that a 10 % gap here is inside the

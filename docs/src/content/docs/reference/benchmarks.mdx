@@ -24,11 +24,11 @@ than the spread beside it is not a difference.
 
 | scenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
 | -------- | -------- | ---------- | ------------- |
-| tell throughput, batch 1k  | **2.96M/s** ±9 % | 376k/s ±4 % | 193k/s ±5 % |
-| tell throughput, batch 10k | **4.50M/s** ±11 % | 404k/s ±4 % | 192k/s ±8 % |
-| ask round-trip, p50        | **3.6 µs** | 6.6 µs | 13.7 µs |
-| ping-pong, 10k exchanges   | **521k/s** ±8 % | 183k/s ±7 % | 83k/s ±12 % |
-| spawn → started → stopped  | 79k/s ±9 % | **196k/s** ±13 % | 65k/s ±8 % |
+| tell throughput, batch 1k  | **2.90M/s** ±6 % | 359k/s ±3 % | 185k/s ±4 % |
+| tell throughput, batch 10k | **4.55M/s** ±8 % | 389k/s ±3 % | 183k/s ±9 % |
+| ask round-trip, p50        | **3.5 µs** | 6.7 µs | 13.5 µs |
+| ping-pong, 10k exchanges   | **504k/s** ±6 % | 166k/s ±10 % | 83k/s ±13 % |
+| spawn → started → stopped  | 75k/s ±10 % | **192k/s** ±7 % | 61k/s ±4 % |
 
 ### Cross-language — another virtual machine, mirrored harness
 
@@ -36,15 +36,21 @@ Kept in its own table on purpose.  The JavaScript arms above all run through
 *literally the same* measurement code; this one reproduces the protocol by
 hand, on a different runtime, and that is a weaker claim.
 
-| scenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
-| -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell throughput, batch 10k | **4.50M/s** ±11 % | 3.12M/s ±6 % | 3.33M/s ±15 % | 1.31M/s ±36 % | 528k/s ±16 % |
-| ping-pong, 10k exchanges   | 521k/s ±8 % | 450k/s ±24 % | 452k/s ±34 % | 433k/s ±21 % | 164k/s ±4 % |
-| spawn → started → stopped  | **79k/s** ±9 % | 26k/s ±7 % | 25k/s ±12 % | 32k/s ±27 % | 5k/s ±10 % |
-| ask round-trip, p50        | **3.6 µs** | 38.9 µs | 40.8 µs | 6.8 µs | 7.9 µs |
-| licence                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
+Each JVM framework appears twice — through its **Java** API and through its
+**Scala 3** API, at the identical pinned version, built by the same toolchain
+on the same pinned JDK.  Everything is held constant except the binding, which
+is what lets the gap inside a pair be read as the binding.
 
-Three things are readable from this table that no single row shows.
+| scenario | actor-ts (Bun) | Akka 2.8.8 (Java) | Akka (Scala 3) | Pekko 1.6.0 (Java) | Pekko (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | -------------- | ----------------- | -------------- | ------------------ | --------------- | --------------- | -------------- |
+| tell throughput, batch 1k  | **2.90M/s** ±6 % | 2.11M/s ±27 % | 1.31M/s ±37 % | 1.71M/s ±28 % | 1.10M/s ±45 % | 1.38M/s ±9 % | 288k/s ±19 % |
+| tell throughput, batch 10k | **4.55M/s** ±8 % | 3.14M/s ±9 % | 2.80M/s ±16 % | 3.04M/s ±13 % | 2.84M/s ±47 % | 1.36M/s ±18 % | 576k/s ±26 % |
+| ping-pong, 10k exchanges   | 504k/s ±6 % | 404k/s ±40 % | 369k/s ±42 % | 343k/s ±27 % | 603k/s ±82 % | 415k/s ±21 % | 157k/s ±7 % |
+| spawn → started → stopped  | **75k/s** ±10 % | 28k/s ±10 % | 26k/s ±6 % | 27k/s ±14 % | 28k/s ±13 % | 34k/s ±6 % | 5k/s ±13 % |
+| ask round-trip, p50        | **3.5 µs** | 34.9 µs | 37.4 µs | 32.8 µs | 32.4 µs | 7.2 µs | 7.7 µs |
+| licence                    | MIT | BUSL-1.1 | BUSL-1.1 | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
+
+Four things are readable from this table that no single row shows.
 
 **The same actor model appears on three runtimes** — JVM, CLR and JavaScript —
 which is what makes the runtime's own contribution visible rather than
@@ -52,16 +58,28 @@ inferred.  It is also the finding that survived least intact: this paragraph
 used to say the JVM led bulk throughput with actor-ts at roughly a third of
 it.  Most of that gap turned out to be a scheduling hop and an async state
 machine on the receive path rather than anything the runtime imposed, and
-removing them moved the JavaScript arm past both JVM ones.
+removing them moved the JavaScript arm past every JVM one.
 
-**The two JVM columns are the same framework either side of its licence
+**The language binding costs on exactly one row.**  Each JVM framework is
+measured through both its Java and its Scala 3 API at the same version, so a
+gap inside a pair is the binding.  On four rows of five there is none worth the
+name.  On the fifth there is: at a batch of 1 000 the Scala arms run **36–38 %
+behind their Java siblings**, in both pairs independently, and far enough
+outside their spreads to stand (t = 3.4 and 2.8).  That is what the idiomatic
+functional style costs — an actor that advances its state by returning a new
+behavior allocates one per message where a mutable field allocates none.  The
+gap narrows to 7–11 % at a batch of 10 000; the plausible reading is that the
+JIT eliminates the allocation once it has enough profile, but that is a
+mechanism this benchmark suggests rather than one it measured.
+
+**The two JVM lineages are the same framework either side of its licence
 change**: the Apache-licensed fork against the BUSL-1.1 original.  They agree
 to within the noise on every row, so **staying on an OSI-approved licence costs
 nothing in throughput** — and because those two arms differ only in which
 dependency they pull, each is a control on the other.
 
-**The ask row splits by runtime, not by framework.**  Both JVM arms sit near
-39-41 µs while both .NET arms and actor-ts sit under 8 µs.  That
+**The ask row splits by runtime, not by framework.**  All four JVM arms sit
+near 32-38 µs while both .NET arms and actor-ts sit under 8 µs.  That
 is the external caller, not the frameworks: on an event loop the wait is a
 microtask and in .NET an `await`, but on the JVM from a non-actor thread it is
 a thread parking on a future.  The JVM arms lead the tell rows by a wide
@@ -88,11 +106,12 @@ written.  Most of that gap was not the runtime: it was a `setImmediate` per
 actor turn, which an actor answering one request at a time cannot amortise,
 and three nested `async` functions on the delivery path that a handler
 returning nothing still paid for.  With those gone, bulk messaging is ahead of
-both JVM arms, and the alternating volley is inside the JVM arms' spreads — a
-tie, and it should be read as one rather than as a win.  Two independent
-ten-round runs put actor-ts at 503k and 521k against the closest JVM arm's 526k
-and 452k; the ordering flipped between them, which is what a tie looks like
-when it is measured twice.
+every JVM arm, and the alternating volley is inside their spreads — a tie, and
+it should be read as one rather than as a win.  Those spreads have since grown
+rather than shrunk, because the JVM arms now fork a clean process instead of
+measuring inside a warm one; the volley column varies by a third to four fifths
+between rounds, which is wide enough that the honest statement is that nobody
+is clearly ahead.
 
 What has not changed is that this is a local, in-process, single-node
 measurement on one machine.  A JVM actor system has two decades of work in its
@@ -183,8 +202,28 @@ request/response is what a grain call *is*.
 **Akka.NET** is the classic actor API on the CLR, the model its own
 documentation leads with.
 
+**The Scala 3 arms** measure the same frameworks at the same versions through
+their native-language API, in the idiomatic functional style: state carried in
+behavior parameters and advanced by returning a new behavior, rather than the
+mutable fields the Java arms use.  Transliterating the Java shape would have
+measured Java idioms spoken with a Scala accent and answered nothing the Java
+arms do not.  The rows where that style can move a number carry a note saying
+so.  Brace-less Scala 3.3.8, and the *sending* side is deliberately identical
+to the Java arms — both hoist a single message instance out of the send loop,
+because a pair that differs in two things measures neither.
+
+**All four JVM arms fork a clean process.**  They used to run inside their
+build tool's own JVM, which was warm — its JIT exercised, its heap grown —
+while every other arm in this suite started fresh.  Isolating it by running the
+same compiled classes three ways showed the difference is the fork rather than
+the tool or the JDK, and it was worth up to half of the alternating-volley
+figure.  So the JVM volley numbers published before this change were flattered
+by the harness, and these are lower and noisier: a cold JVM is a more variable
+one, which is why those columns carry spreads from ±27 % to ±82 % and should be
+read as an order of magnitude rather than a ranking.
+
 **Akka and Pekko** are the same lineage either side of a licence change, and
-are measured from Java sources that are identical apart from the package
+at the same binding are measured from sources identical apart from the package
 prefix — so any gap between them is the fork rather than the benchmark.  Akka
 is measured at 2.8.8, the newest release still published to Maven Central,
 since 2.9 and later live only on a repository that refuses anonymous
@@ -212,7 +251,7 @@ a comparison of everything:
 - **No persistence.**  The persistence benchmarks cover in-memory and SQLite
   only, so a comparable arm would be a storage-engine comparison wearing a
   framework label.
-- **Four cross-language arms, all on one machine.**  Cross-language rows stay
+- **Six cross-language arms, all on one machine.**  Cross-language rows stay
   in their own table because they are a weaker claim than same-harness ones,
   and are never mixed into the JavaScript ranking.
 - **One runtime.**  Every arm runs on Bun.  The measurement harness reaches

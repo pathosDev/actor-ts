@@ -329,9 +329,10 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Documentation
 
 - ~~Performance benchmarks vs JVM actor frameworks (#27)~~ — done.
-  `benchmarks/comparison/` measures actor-ts against six arms (nact, XState,
-  Akka, Pekko, Akka.NET and Orleans) and publishes to the README,
-  `reference/benchmarks` (EN+DE) and a generated `RESULTS.md`
+  `benchmarks/comparison/` measures actor-ts against eight arms (nact, XState,
+  Akka and Pekko each through both their Java and Scala 3 APIs, Akka.NET and
+  Orleans) and publishes to the README, `reference/benchmarks` (EN+DE) and a
+  generated `RESULTS.md`
 
 ## Explicitly out of scope
 

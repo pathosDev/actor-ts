@@ -24,11 +24,11 @@ kein Unterschied.
 
 | Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
 | -------- | -------- | ---------- | ------------- |
-| tell-Durchsatz, Batch 1k  | **2,96M/s** ±9 % | 376k/s ±4 % | 193k/s ±5 % |
-| tell-Durchsatz, Batch 10k | **4,50M/s** ±11 % | 404k/s ±4 % | 192k/s ±8 % |
-| ask-Roundtrip, p50        | **3,6 µs** | 6,6 µs | 13,7 µs |
-| Ping-Pong, 10k Wechsel    | **521k/s** ±8 % | 183k/s ±7 % | 83k/s ±12 % |
-| spawn → gestartet → gestoppt | 79k/s ±9 % | **196k/s** ±13 % | 65k/s ±8 % |
+| tell-Durchsatz, Batch 1k  | **2,90M/s** ±6 % | 359k/s ±3 % | 185k/s ±4 % |
+| tell-Durchsatz, Batch 10k | **4,55M/s** ±8 % | 389k/s ±3 % | 183k/s ±9 % |
+| ask-Roundtrip, p50        | **3,5 µs** | 6,7 µs | 13,5 µs |
+| Ping-Pong, 10k Wechsel    | **504k/s** ±6 % | 166k/s ±10 % | 83k/s ±13 % |
+| spawn → gestartet → gestoppt | 75k/s ±10 % | **192k/s** ±7 % | 61k/s ±4 % |
 
 ### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
 
@@ -36,15 +36,22 @@ Bewusst in einer eigenen Tabelle.  Die JavaScript-Arme oben laufen alle durch
 *buchstäblich denselben* Messcode; dieser hier bildet das Protokoll von Hand
 nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
 
-| Szenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
-| -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell-Durchsatz, Batch 10k | **4,50M/s** ±11 % | 3,12M/s ±6 % | 3,33M/s ±15 % | 1,31M/s ±36 % | 528k/s ±16 % |
-| Ping-Pong, 10k Wechsel    | 521k/s ±8 % | 450k/s ±24 % | 452k/s ±34 % | 433k/s ±21 % | 164k/s ±4 % |
-| spawn → gestartet → gestoppt | **79k/s** ±9 % | 26k/s ±7 % | 25k/s ±12 % | 32k/s ±27 % | 5k/s ±10 % |
-| ask-Roundtrip, p50        | **3,6 µs** | 38,9 µs | 40,8 µs | 6,8 µs | 7,9 µs |
-| Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
+Jedes JVM-Framework erscheint zweimal — über seine **Java**-API und über seine
+**Scala-3**-API, bei identisch gepinnter Version, gebaut mit derselben
+Toolchain auf derselben gepinnten JDK.  Alles ausser der Bindung ist
+konstant gehalten, und genau das macht den Abstand innerhalb eines Paares als
+Bindung lesbar.
 
-Drei Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
+| Szenario | actor-ts (Bun) | Akka 2.8.8 (Java) | Akka (Scala 3) | Pekko 1.6.0 (Java) | Pekko (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | -------------- | ----------------- | -------------- | ------------------ | --------------- | --------------- | -------------- |
+| tell-Durchsatz, Batch 1k  | **2,90M/s** ±6 % | 2,11M/s ±27 % | 1,31M/s ±37 % | 1,71M/s ±28 % | 1,10M/s ±45 % | 1,38M/s ±9 % | 288k/s ±19 % |
+| tell-Durchsatz, Batch 10k | **4,55M/s** ±8 % | 3,14M/s ±9 % | 2,80M/s ±16 % | 3,04M/s ±13 % | 2,84M/s ±47 % | 1,36M/s ±18 % | 576k/s ±26 % |
+| Ping-Pong, 10k Wechsel    | 504k/s ±6 % | 404k/s ±40 % | 369k/s ±42 % | 343k/s ±27 % | 603k/s ±82 % | 415k/s ±21 % | 157k/s ±7 % |
+| spawn → gestartet → gestoppt | **75k/s** ±10 % | 28k/s ±10 % | 26k/s ±6 % | 27k/s ±14 % | 28k/s ±13 % | 34k/s ±6 % | 5k/s ±13 % |
+| ask-Roundtrip, p50        | **3,5 µs** | 34,9 µs | 37,4 µs | 32,8 µs | 32,4 µs | 7,2 µs | 7,7 µs |
+| Lizenz                    | MIT | BUSL-1.1 | BUSL-1.1 | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
+
+Vier Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
 zeigt.
 
 **Dasselbe Aktorenmodell erscheint auf drei Runtimes** — JVM, CLR und
@@ -53,9 +60,23 @@ ihn zu unterstellen — und es ist zugleich der Befund, der am wenigsten Bestand
 hatte.  Hier stand, die JVM führe beim Massendurchsatz und actor-ts erreiche
 etwa ein Drittel davon.  Der größte Teil dieses Abstands war nicht die
 Runtime, sondern ein Scheduling-Sprung und eine async-Zustandsmaschine im
-Empfangspfad; ohne sie zieht der JavaScript-Arm an beiden JVM-Armen vorbei.
+Empfangspfad; ohne sie zieht der JavaScript-Arm an allen JVM-Armen vorbei.
 
-**Die beiden JVM-Spalten sind dasselbe Framework beiderseits seines
+**Die Sprach-Bindung kostet auf genau einer Zeile.**  Jedes JVM-Framework wird
+über seine Java- und über seine Scala-3-API bei derselben Version gemessen, ein
+Abstand innerhalb eines Paares ist also die Bindung.  Auf vier von fünf Zeilen
+gibt es keinen nennenswerten.  Auf der fünften schon: bei einem Batch von 1 000
+liegen die Scala-Arme **36–38 % hinter ihren Java-Geschwistern**, in beiden
+Paaren unabhängig voneinander und weit genug ausserhalb ihrer Streuungen, dass
+es Bestand hat (t = 3,4 und 2,8).  Das ist der Preis des idiomatisch
+funktionalen Stils: ein Actor, der seinen Zustand durch Rückgabe eines neuen
+Behaviors fortschreibt, allokiert pro Nachricht eines, wo ein veränderliches
+Feld gar nichts allokiert.  Bei einem Batch von 10 000 schrumpft der Abstand
+auf 7–11 %; die plausible Lesart ist, dass der JIT die Allokation eliminiert,
+sobald er genug Profil hat — das ist allerdings ein Mechanismus, den dieser
+Benchmark nahelegt, nicht einer, den er gemessen hat.
+
+**Die beiden JVM-Linien sind dasselbe Framework beiderseits seines
 Lizenzwechsels**: der Apache-lizenzierte Fork gegen das BUSL-1.1-Original.  Sie
 stimmen in jeder Zeile innerhalb des Rauschens überein — **auf einer
 OSI-konformen Lizenz zu bleiben kostet also keinen Durchsatz**.  Und weil sich
@@ -63,7 +84,7 @@ diese beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
 Kontrolle für den anderen.
 
 **Die ask-Zeile trennt sich nach Runtime, nicht nach Framework.**  Beide
-JVM-Arme liegen bei 39-41 µs, während beide .NET-Arme und actor-ts unter 8 µs
+JVM-Arme liegen bei 32-38 µs, während beide .NET-Arme und actor-ts unter 8 µs
 bleiben.  Das ist der externe Aufrufer, nicht das
 Framework: im Event-Loop ist das Warten ein Microtask und in .NET ein `await`,
 auf der JVM aus einem Nicht-Aktor-Thread aber ein Thread, der sich an einem
@@ -92,12 +113,13 @@ geschrieben wurde.  Der größte Teil dieses Abstands war nicht die Runtime: es
 war ein `setImmediate` pro Aktor-Durchlauf, den ein Aktor, der eine Anfrage
 nach der anderen beantwortet, nicht amortisieren kann, und drei verschachtelte
 `async`-Funktionen im Zustellpfad, die auch ein Handler ohne Rückgabewert
-bezahlte.  Ohne sie liegt das Massen-Messaging vor beiden JVM-Armen, und das
-Ping-Pong liegt innerhalb der Streuung der JVM-Arme — ein Gleichstand, und als
-solcher zu lesen, nicht als Sieg.  Zwei unabhängige Zehn-Runden-Läufe ergaben
-für actor-ts 503k und 521k, für den nächstliegenden JVM-Arm 526k und 452k; die
-Reihenfolge kippte dazwischen, und genau so sieht ein Gleichstand aus, wenn man
-ihn zweimal misst.
+bezahlte.  Ohne sie liegt das Massen-Messaging vor allen JVM-Armen, und das
+Ping-Pong liegt innerhalb ihrer Streuung — ein Gleichstand, und als solcher zu
+lesen, nicht als Sieg.  Diese Streuungen sind seither eher gewachsen als
+geschrumpft, weil die JVM-Arme jetzt einen frischen Prozess forken statt in
+einem warmen zu messen; die Ping-Pong-Spalte schwankt zwischen den Runden um
+ein Drittel bis vier Fünftel, was weit genug ist, dass die ehrliche Aussage
+lautet: dort liegt niemand klar vorn.
 
 Was sich nicht geändert hat: das ist eine lokale, prozessinterne
 Einzelknoten-Messung auf einer Maschine.  In den Clustering-, Persistenz- und
@@ -197,6 +219,28 @@ zweimal gesehen: Request/Response *ist* ein Grain-Aufruf.
 **Akka.NET** ist die klassische Actor-API auf der CLR — das Modell, das seine
 eigene Dokumentation voranstellt.
 
+**Die Scala-3-Arme** messen dieselben Frameworks bei denselben Versionen über
+ihre native Sprach-API, im idiomatisch funktionalen Stil: Zustand in
+Behavior-Parametern, fortgeschrieben durch Rückgabe eines neuen Behaviors,
+statt der veränderlichen Felder der Java-Arme.  Eine Transliteration der
+Java-Gestalt hätte Java-Idiome mit Scala-Akzent gemessen und nichts
+beantwortet, was die Java-Arme nicht schon beantworten.  Die Zeilen, auf denen
+dieser Stil eine Zahl bewegen kann, tragen eine entsprechende Notiz.
+Klammerloses Scala 3.3.8 — und die *Sendeseite* ist bewusst identisch zu den
+Java-Armen: beide heben eine einzelne Nachrichteninstanz aus der Sendeschleife,
+denn ein Paar, das sich in zwei Dingen unterscheidet, misst keines von beiden.
+
+**Alle vier JVM-Arme forken einen frischen Prozess.**  Früher liefen sie in der
+JVM ihres eigenen Build-Tools, die warm war — JIT geübt, Heap gewachsen —,
+während jeder andere Arm dieser Suite frisch startet.  Isoliert dadurch,
+dieselben kompilierten Klassen auf drei Wegen zu fahren, zeigte sich: der
+Unterschied ist der Fork, nicht das Werkzeug und nicht die JDK — und er war bis
+zur Hälfte der Ping-Pong-Zahl wert.  Die zuvor publizierten JVM-Ping-Pong-Werte
+waren also vom Harness begünstigt; diese hier sind niedriger und verrauschter,
+denn eine kalte JVM ist eine variablere.  Deshalb tragen jene Spalten
+Streuungen von ±27 % bis ±82 % und sind als Größenordnung zu lesen, nicht als
+Rangfolge.
+
 **Akka und Pekko** sind dieselbe Linie beiderseits eines Lizenzwechsels und
 werden aus Java-Quellen gemessen, die sich nur im Paketpräfix unterscheiden —
 jede Differenz zwischen ihnen ist also der Fork und nicht der Benchmark.  Akka
@@ -227,7 +271,7 @@ ausgeführt hat, liest sich als Vergleich von allem:
 - **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
   SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
   Framework-Etikett.
-- **Vier sprachübergreifende Arme, alle auf einer Maschine.**  Sprachübergreifende Zeilen bleiben in
+- **Sechs sprachübergreifende Arme, alle auf einer Maschine.**  Sprachübergreifende Zeilen bleiben in
   ihrer eigenen Tabelle, weil sie eine schwächere Aussage sind als
   Messungen durch denselben Harness — sie werden nie in die
   JavaScript-Rangfolge gemischt.

@@ -11,6 +11,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The comparison gains two Scala 3 arms, and all four JVM arms move to one
+  build tool** (#1229).
+
+  Akka and Pekko are now each measured twice — through their Java API and
+  through their Scala 3 API, at the identical pinned version, built by the same
+  committed launcher on the same pinned JDK. Reading down a pair gives the
+  licence question the suite already answered; reading across one gives the
+  language binding. The Scala arms are written in the idiomatic functional
+  style (state advanced by returning a new behavior) in brace-less indentation
+  syntax, because transliterating the Java shape would have measured Java
+  idioms with a Scala accent.
+
+  **The binding costs on exactly one row.** At a batch of 1 000 the Scala arms
+  run 36–38 % behind their Java siblings — in both pairs independently, and far
+  enough outside their spreads to stand (t = 3.4 and 2.8). That is the
+  per-message behavior allocation the functional style implies, and the rows
+  where it can appear carry a note saying so. It narrows to 7–11 % at a batch
+  of 10 000; the plausible reading is that the JIT eliminates the allocation
+  once it has enough profile, which this benchmark suggests rather than
+  measures. Spawn, ask and the volley show no binding effect at all.
+
+  **A measurement artefact was removed along the way, and it moves published
+  numbers.** The JVM arms used to run inside their build tool's own JVM —
+  warm, its JIT exercised — while every other arm in the suite starts a fresh
+  process. Isolating it by running the same compiled classes three ways showed
+  the cause is the fork rather than the tool or the JDK, and it was worth up to
+  half of the alternating-volley figure. The JVM volley numbers published
+  before this change were flattered by the harness; these are lower and
+  noisier, because a cold JVM is a more variable one. Those columns now carry
+  spreads from ±27 % to ±82 % and should be read as an order of magnitude
+  rather than a ranking.
+
+  All nine arms were re-measured in one ten-round run; README, the benchmarks
+  reference in both languages, both FAQ sections and the generated `RESULTS.md`
+  carry it. The two JVM arms' result files are renamed to name their binding
+  (`akka-java-jvm.json`, `pekko-java-jvm.json`), and the `--framework` keys and
+  directories move with them.
+
 - **Every published benchmark figure is re-measured** (#1210). Ten interleaved
   rounds, all seven arms, one machine, every row verified against work the
   system completed. README, the benchmarks reference (EN + DE), both FAQ
