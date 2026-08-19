@@ -6,6 +6,7 @@ import { Config } from '../../../src/config/Config.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
+  DEAD_LETTER_STORES,
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
   DEFAULT_DEAD_LETTER_RETENTION_MS,
@@ -24,11 +25,19 @@ const check = (s: Partial<DeadLetterQueueOptionsType>): void =>
   new DeadLetterQueueOptionsValidator().validate(s);
 
 describe('DeadLetterQueueOptionsValidator', () => {
-  test('rejects a store outside the three known values', () => {
+  test('rejects a store outside the four known values', () => {
     expect(() => check({ store: 'log-only' as never })).toThrow(OptionsError);
+    expect(() => check({ store: 'metrics' })).not.toThrow();
     expect(() => check({ store: 'memory' })).not.toThrow();
     expect(() => check({ store: 'persistent' })).not.toThrow();
     expect(() => check({ store: 'off' })).not.toThrow();
+  });
+
+  test('the accepted values are the ladder, in retention order', () => {
+    // The order is the documented meaning of the enum — "one axis, four
+    // rungs, ordered by how much of the letter is retained" — so it is
+    // asserted rather than left to the declaration's incidental sequence.
+    expect(DEAD_LETTER_STORES).toEqual(['off', 'metrics', 'memory', 'persistent']);
   });
 
   test('rejects a non-positive or fractional maxEntries', () => {

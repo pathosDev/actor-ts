@@ -241,11 +241,15 @@ Event-Loop-Aushungerung, nicht hierher.
 Nur vorhanden, sobald
 [`actor-ts.dead-letters.store`](/de/operations/dead-letters/) etwas
 anderes als `off` ist — der Counter wird von der Queue erzeugt, ein System,
-das nichts aufbewahrt, zählt also nichts. `outcome` ist eines von:
+das nichts erfasst, zählt also nichts. `store = "metrics"` ist die
+Einstellung für genau diesen Counter und nichts weiter: sie zählt jedes
+Letter und bewahrt keine Payload auf. `outcome` ist eines von:
 
 - `captured` — ein neues Letter kam in die Queue.
-- `replayed` — ein Letter wurde an seinen ursprünglichen Empfänger
-  zurückgegeben.
+- `replayed` — ein Letter wurde zurückgegeben. Das Label `recipient` nennt,
+  wohin es tatsächlich ging — bei einer Zustellung an einen alternativen
+  Empfänger also nicht den Pfad, an den das Letter ursprünglich adressiert
+  war.
 - `replay-failed` — ein erneut zugestelltes Letter kam zurück, der
   Empfänger kann es also weiterhin nicht annehmen. Ein steigendes
   `replay-failed` bei flachem `captured` ist eine giftige Nachricht, die

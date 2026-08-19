@@ -85,6 +85,11 @@ type StoredEntry = {
  * `DropReportingMailbox.observeDrops` — deliberately out of scope here
  * rather than papered over.
  *
+ * **Not every store retains a letter.**  Under `metrics` the counter is the
+ * only record: `list` stays empty and `replay` answers `unknown-entry` for
+ * every id, which is honest rather than degraded — nothing was kept, so
+ * there is nothing to hand back.
+ *
  * **Persistence is resolved lazily**, through a dynamic import, so that a
  * consumer importing `Actor` does not pull a journal — and its codec, and
  * its plugin registry — into their bundle for a feature they left `off`.
@@ -314,6 +319,17 @@ export class DeadLetterQueue {
   /* ------------------------------ capture ------------------------------ */
 
   private captureUnguarded(deadLetter: DeadLetter): void {
+    if (this.settings.store === 'metrics') {
+      // Counted and dropped, and deliberately ahead of the entry below: the
+      // whole point of this store is to observe the rate without retaining
+      // the message, so minting a uuid and doing the ring bookkeeping for an
+      // entry nothing will ever read would be the cost an operator chose it
+      // to avoid.  Nothing is replayable here, so the replay bookkeeping is
+      // unreachable too and the outcome is always `captured`.
+      this.count('captured', deadLetter.recipient.path.toString());
+      return;
+    }
+
     const message = deadLetter.message;
     const previous = this.replayed.get(message);
     if (previous !== undefined) this.replayed.delete(message);

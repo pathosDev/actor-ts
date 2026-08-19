@@ -279,7 +279,11 @@ actor-ts {
   # published on the event stream either way -- this decides whether anything
   # KEEPS them, which by default nothing does.
   dead-letters {
+    # One axis, ordered by how much of the letter is kept:
     # off        = publish only, keep nothing (the behaviour before #433)
+    # metrics    = count them and keep no payload, for the alert without the
+    #              evidence locker (retaining a message is a data-protection
+    #              decision; observing a rate is not)
     # memory     = keep in a bounded ring, lost with the process
     # persistent = additionally write to the configured journal, so the queue
     #              is still there after a restart
@@ -287,6 +291,7 @@ actor-ts {
 
     # Letters held before the oldest is evicted.  The queue is a diagnostic
     # ring: an unbounded one turns a delivery outage into an out-of-memory.
+    # Ignored by the off and metrics stores, which hold no letters.
     max-entries = 1000
 
     # Age letters out after this long.  0 disables ageing and leaves

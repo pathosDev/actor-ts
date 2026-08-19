@@ -42,13 +42,24 @@ erneute Zustellen weiter unten auf.
 ## Die Queue einschalten
 
 `system.deadLetterQueue` existiert immer und bewahrt standardmäßig nichts
-auf. Drei Stores:
+auf. Vier Stores, eine Achse — wie viel vom Letter aufbewahrt wird:
 
 | `store` | Bewahrt auf | Übersteht einen Neustart |
 | --- | --- | --- |
 | `off` (Standard) | nichts | — |
+| `metrics` | einen Counter, keine Payload | — |
 | `memory` | einen begrenzten Ring | nein |
 | `persistent` | denselben Ring, plus ein Append-only-Log im Journal | ja |
+
+`metrics` gibt es, weil **eine Payload aufzubewahren eine andere
+Entscheidung ist, als eine Rate zu beobachten**. Ein Ring hält eine starke
+Referenz auf jede unzustellbare Nachricht — eine Datenschutzfrage, sobald
+eine Payload etwas über eine Person aussagt; ein Counter nicht. `list()`
+bleibt leer und `replay` antwortet für jede id mit `unknown-entry`: es wurde
+nichts aufbewahrt, es gibt also nichts zurückzugeben. Mit einem winzigen
+Ring lässt sich das nicht annähern — `max-entries` muss positiv sein, also
+bewahrt selbst der kleinste eine lebende Payload für ein ganzes
+Retention-Fenster auf.
 
 ```hocon
 actor-ts.dead-letters {

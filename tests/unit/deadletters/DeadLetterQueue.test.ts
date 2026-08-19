@@ -48,6 +48,67 @@ describe('DeadLetterQueue — default behaviour is unchanged', () => {
   });
 });
 
+describe('DeadLetterQueue — metrics store', () => {
+  test('counts the letter and keeps no payload', async () => {
+    // The posture #433's Scope calls "counters per recipient": the alert
+    // without the evidence locker.  A ring holds a strong reference to every
+    // undeliverable message, which is a data-protection question the moment
+    // a payload says anything about a person; a counter is not.
+    const sys = newSystem('dlq-metrics', { store: 'metrics' });
+    const registry = sys.extension(MetricsExtensionId).enable();
+    try {
+      expect(sys.deadLetterQueue.store).toBe('metrics');
+      await deadLetterTo(sys, 'gone', 'lost');
+      await awaitCondition(
+        () => registry.collect().some((s) => s.name === 'actor_dead_letters_total'),
+        { timeoutMs: 4_000, label: 'the counter saw the letter' },
+      );
+      const sample = registry.collect().find((s) => s.name === 'actor_dead_letters_total')!;
+      expect(sample.labels.outcome).toBe('captured');
+      expect(String(sample.labels.recipient)).toContain('/user/gone');
+
+      // The whole point: counted, and not retained.
+      expect(await sys.deadLetterQueue.list()).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('nothing is retained, so there is nothing to replay', async () => {
+    const sys = newSystem('dlq-metrics-replay', { store: 'metrics' });
+    try {
+      await deadLetterTo(sys, 'gone', 'lost');
+      // An absence: the letter must not appear however long we wait, so
+      // there is no condition to poll for — this settles instead.
+      await Bun.sleep(30);
+      expect(await sys.deadLetterQueue.list()).toEqual([]);
+      expect((await sys.deadLetterQueue.replay('anything')).kind).toBe('unknown-entry');
+      expect(await sys.deadLetterQueue.get('anything')).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a tiny ring is not the same posture — memory with max-entries 1 keeps the payload', async () => {
+    // Pins the reason the arm exists rather than trusting the prose:
+    // `max-entries` is validated positive, so the smallest `memory` ring
+    // still holds one live payload.  If this ever stops being true the
+    // rationale for `metrics` needs rewriting, not the arm removing.
+    const sys = newSystem('dlq-metrics-vs-tiny-ring', { store: 'memory', 'max-entries': 1 });
+    try {
+      await deadLetterTo(sys, 'gone', 'lost');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the one-entry ring kept the payload',
+      });
+      expect((await sys.deadLetterQueue.list())[0]!.payload)
+        .toEqual({ kind: 'captured', message: 'lost' });
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
 describe('DeadLetterQueue — memory store', () => {
   test('captures the letter with the recipient path and a stable id', async () => {
     const sys = newSystem('dlq-memory', { store: 'memory' });

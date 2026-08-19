@@ -40,14 +40,24 @@ below are built on.
 
 ## Turning the queue on
 
-`system.deadLetterQueue` always exists and, by default, keeps nothing.
-Three stores:
+`system.deadLetterQueue` always exists and, by default, keeps nothing. Four
+stores, one axis — how much of the letter is kept:
 
 | `store` | Keeps | Survives a restart |
 | --- | --- | --- |
 | `off` (default) | nothing | — |
+| `metrics` | a counter, no payload | — |
 | `memory` | a bounded ring | no |
 | `persistent` | the same ring, plus an append-only journal log | yes |
+
+`metrics` is there because **retaining a payload is a different decision
+from observing a rate**. A ring holds a strong reference to every
+undeliverable message, which is a data-protection question the moment a
+payload says anything about a person; a counter is not. `list()` stays
+empty and `replay` answers `unknown-entry` for every id — nothing was kept,
+so there is nothing to hand back. You cannot approximate it with a tiny
+ring: `max-entries` must be positive, so even the smallest one keeps a live
+payload for a whole retention window.
 
 ```hocon
 actor-ts.dead-letters {
