@@ -22,8 +22,15 @@ import {
   type NatsSubscriptionLike,
 } from '../../../../../src/io/broker/NatsActor.js';
 import { NatsOptions } from '../../../../../src/io/broker/NatsOptions.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * Every count assertion in this file is exact, and a poll returns on the
+ * delivery that *reaches* the target — so the surplus a bug would produce is
+ * invisible to it.  This is the window in which one too many shows up; it is
+ * the upper half of every "exactly N" claim here.
+ */
+const SETTLE_MS = 20;
 
 /* --------------------------- Mocks ----------------------------- */
 
@@ -80,6 +87,19 @@ class MockConnection implements NatsConnectionLike {
 class MockNatsActor extends NatsActor {
   readonly connections: MockConnection[] = [];
   failNextConnects = 0;
+  /**
+   * True once `preStart` returned — i.e. the first connect attempt settled,
+   * whether it connected or fell into backoff.  `connectionState` cannot
+   * carry that: it reads `disconnected` both *before* the attempt starts and
+   * *after* it failed, so a poll on it would return at t=0 and the boot would
+   * not have been waited for at all.
+   */
+  firstConnectSettled = false;
+
+  override async preStart(): Promise<void> {
+    await super.preStart();
+    this.firstConnectSettled = true;
+  }
 
   protected override async createNatsConnection(): Promise<NatsConnectionLike> {
     if (this.failNextConnects > 0) {
@@ -117,6 +137,21 @@ function spawnTarget(
   return { ref: ref as ActorRef<NatsMessage>, target };
 }
 
+/**
+ * Wait until `count` messages reached `target`, then settle.
+ *
+ * Polls `>=` and keeps {@link SETTLE_MS} deliberately: every caller then
+ * asserts an exact length, and a straight `=== count` poll would return on the
+ * arrival that reaches the number and never see the duplicate a broken
+ * subscription swap produces.
+ */
+async function awaitReceived(target: CapturingTarget, count: number, what: string): Promise<void> {
+  await awaitCondition(() => target.received.length >= count, {
+    timeoutMs: 4_000, label: `${what}: ${count} message(s) reached the target`,
+  });
+  await sleep(SETTLE_MS);
+}
+
 type Booted = {
   readonly ref: ActorRef<NatsCommand>;
   readonly actor: MockNatsActor;
@@ -141,7 +176,9 @@ async function bootActor(
     return actor as unknown as Actor<NatsCommand>;
   });
   const actor = await ready;
-  await sleep(30);
+  await awaitCondition(() => actor.firstConnectSettled, {
+    timeoutMs: 4_000, label: "the actor's first connect attempt settled",
+  });
   return { ref: ref as ActorRef<NatsCommand>, actor };
 }
 
@@ -149,8 +186,17 @@ async function bootActor(
 async function reconnect(actor: MockNatsActor): Promise<void> {
   const connectionCount = actor.connections.length;
   actor.connection.simulateClose(new Error('server restarted'));
-  for (let i = 0; i < 60 && actor.connections.length === connectionCount; i++) await sleep(10);
-  await sleep(20);
+  // `connected` is set only after `connectImplementation` returned, and that
+  // is where `applyDesiredSubscriptions` runs — so this waits for the replayed
+  // subscriptions the callers read, not merely for the new connection object
+  // to appear one turn earlier (#1145).
+  await awaitCondition(
+    () => actor.connections.length > connectionCount
+      && actor.publicConnectionState() === 'connected',
+    { timeoutMs: 4_000, label: 'the reconnect opened a connection and replayed its subscriptions' },
+  );
+  // One caller counts the connections exactly; see SETTLE_MS.
+  await sleep(SETTLE_MS);
 }
 
 const baseOptions = (): ReturnType<typeof NatsOptions.create> => NatsOptions.create()
@@ -174,7 +220,7 @@ describe('NatsActor — subscriptions on the live connection', () => {
       expect(actor.connection.liveSubjects).toEqual(['orders.new']);
 
       actor.connection.deliver('orders.new', 'hello', 'reply.1');
-      await sleep(20);
+      await awaitReceived(target, 1, 'configured subscription');
       expect(target.received).toHaveLength(1);
       expect(new TextDecoder().decode(target.received[0]!.payload)).toBe('hello');
       expect(target.received[0]!.replyTo).toBe('reply.1');
@@ -194,7 +240,12 @@ describe('NatsActor — subscriptions on the live connection', () => {
       expect(actor.publicDesiredCount()).toBe(1);
 
       natsRef.tell({ kind: 'unsubscribe', subject: 'audit.*' });
-      await sleep(20);
+      // Both reads below drop to zero in the same `forgetSubscription` call,
+      // and both are 1 at t=0 — so this is a real transition to poll for, not
+      // a condition that already holds.
+      await awaitCondition(() => actor.publicDesiredCount() === 0, {
+        timeoutMs: 4_000, label: 'the unsubscribe removed the desired entry',
+      });
       expect(actor.connection.liveSubjects).toEqual([]);
       expect(actor.publicDesiredCount()).toBe(0);
     } finally {
@@ -213,12 +264,23 @@ describe('NatsActor — subscriptions on the live connection', () => {
       );
 
       natsRef.tell({ kind: 'subscribe', subject: 'events', target: second.ref });
-      await sleep(20);
+      // `liveSubjects` is already `['events']` before the swap, so polling on
+      // it would return at t=0 and prove nothing.  The second `subscribe` on
+      // the connection is the observable event, and `rememberSubscription`
+      // revokes the old handle *before* issuing it — so once two exist, the
+      // revocation has happened.
+      await awaitCondition(() => actor.connection.subscriptions.length >= 2, {
+        timeoutMs: 4_000, label: 'the swap issued a second subscribe on the connection',
+      });
+      await sleep(SETTLE_MS);
       // Exactly one live handle for the subject — the old one was revoked.
       expect(actor.connection.liveSubjects).toEqual(['events']);
 
       actor.connection.deliver('events', 'payload');
-      await sleep(20);
+      // Waiting on the *new* target's count is what makes "the old target saw
+      // nothing" mean anything: under a fixed sleep an empty `first` could
+      // equally mean the delivery had not happened yet.
+      await awaitReceived(second.target, 1, 'swapped target');
       expect(first.target.received).toHaveLength(0);
       expect(second.target.received).toHaveLength(1);
     } finally {
@@ -246,7 +308,7 @@ describe('NatsActor — subscriptions across a reconnect (#504)', () => {
 
       // And it actually delivers — not just a handle sitting in a map.
       actor.connection.deliver('orders.new', 'after-reconnect');
-      await sleep(20);
+      await awaitReceived(target, 1, 'replayed subscription');
       expect(target.received).toHaveLength(1);
       expect(new TextDecoder().decode(target.received[0]!.payload)).toBe('after-reconnect');
     } finally {
@@ -265,14 +327,18 @@ describe('NatsActor — subscriptions across a reconnect (#504)', () => {
       );
 
       natsRef.tell({ kind: 'subscribe', subject: 'audit.trail', target: audit.ref });
-      await sleep(20);
+      await awaitCondition(() => actor.connection.liveSubjects.length >= 2, {
+        timeoutMs: 4_000, label: 'the runtime subscribe reached the connection',
+      });
+      // The assertion is an exact set; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(actor.connection.liveSubjects).toEqual(['audit.trail', 'orders.new']);
 
       await reconnect(actor);
       expect(actor.connection.liveSubjects).toEqual(['audit.trail', 'orders.new']);
 
       actor.connection.deliver('audit.trail', 'still-here');
-      await sleep(20);
+      await awaitReceived(audit.target, 1, 'runtime subscription after reconnect');
       expect(audit.target.received).toHaveLength(1);
     } finally {
       await system.terminate();
@@ -293,17 +359,24 @@ describe('NatsActor — subscriptions across a reconnect (#504)', () => {
       expect(actor.connections).toHaveLength(0);
 
       natsRef.tell({ kind: 'subscribe', subject: 'late.arrival', target: ref });
-      await sleep(20);
+      await awaitCondition(() => actor.publicDesiredCount() >= 1, {
+        timeoutMs: 4_000, label: 'the offline subscribe was remembered',
+      });
+      // The count assertion is exact; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       // Nothing to apply it to yet — but it is remembered, not dropped.
       expect(actor.publicDesiredCount()).toBe(1);
 
-      for (let i = 0; i < 40 && actor.connections.length === 0; i++) await sleep(10);
-      await sleep(20);
+      // `connected` is set after `applyDesiredSubscriptions` ran, so it is the
+      // condition that covers `liveSubjects` below rather than a proxy for it.
+      await awaitCondition(() => actor.publicConnectionState() === 'connected', {
+        timeoutMs: 4_000, label: 'the backoff retry connected and applied the remembered subscribe',
+      });
       expect(actor.publicConnectionState()).toBe('connected');
       expect(actor.connection.liveSubjects).toEqual(['late.arrival']);
 
       actor.connection.deliver('late.arrival', 'made-it');
-      await sleep(20);
+      await awaitReceived(target, 1, 'subscription applied on the retry');
       expect(target.received).toHaveLength(1);
     } finally {
       await system.terminate();
@@ -320,7 +393,12 @@ describe('NatsActor — subscriptions across a reconnect (#504)', () => {
       );
 
       natsRef.tell({ kind: 'unsubscribe', subject: 'orders.new' });
-      await sleep(20);
+      // Not a cosmetic wait: the unsubscribe has to be *processed* before the
+      // reconnect, or the test proves that a reconnect replays a subscription
+      // nobody dropped yet.
+      await awaitCondition(() => actor.publicDesiredCount() === 0, {
+        timeoutMs: 4_000, label: 'the unsubscribe landed before the reconnect',
+      });
       await reconnect(actor);
       // Seeding from the options is once-only — the runtime unsubscribe wins.
       expect(actor.connection.liveSubjects).toEqual([]);
@@ -337,7 +415,11 @@ describe('NatsActor — publish', () => {
     try {
       const { ref: natsRef, actor } = await bootActor(system, baseOptions());
       natsRef.tell({ kind: 'publish', publish: { subject: 'greet', payload: 'hi', replyTo: 'r' } });
-      await sleep(30);
+      await awaitCondition(() => actor.connection.published.length >= 1, {
+        timeoutMs: 4_000, label: 'the publish reached the connection',
+      });
+      // The count assertion is exact; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(actor.connection.published).toHaveLength(1);
       const published = actor.connection.published[0]!;
       expect(published.subject).toBe('greet');

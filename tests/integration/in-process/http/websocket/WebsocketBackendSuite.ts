@@ -25,7 +25,7 @@ import { WebsocketServerActor } from '../../../../../src/http/websocket/Websocke
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketRouteOptions } from '../../../../../src/http/websocket/WebsocketRouteOptions.js';
 import type { WebsocketConnection } from '../../../../../src/http/websocket/WebsocketConnection.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };
 type SOut = { kind: 'pong'; n: number } | { kind: 'bcast'; text: string };
@@ -45,8 +45,6 @@ class TestServer extends WebsocketServerActor<SOut, SIn> {
     this.events.push(`disconnect:${c.id}`);
   }
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function wsOpen(url: string, timeoutMs = 3000): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -290,6 +288,9 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const { base, binding } = await bindServer([], (s) => websocket('/ws', s));
       await wsOpen(`${base}/ws`);
       await wsOpen(`${base}/ws`);
+      // Not a wait before an assertion — the elapsed time IS the assertion:
+      // the claim is that `unbind` resolves rather than hanging on the two open
+      // sockets, and this delay is the losing arm of the race that proves it.
       const done = await Promise.race([
         binding.unbind(500).then(() => 'unbound'),
         sleep(4000).then(() => 'timeout'),

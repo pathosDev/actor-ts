@@ -15,8 +15,7 @@ import {
   type MqttModuleLike,
 } from '../../../../../src/io/broker/MqttActor.js';
 import type { MqttMessage } from '../../../../../src/io/broker/MqttMessages.js';
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 describe('MqttOptions builder', () => {
   test('each withX sets the right options key', () => {
@@ -72,7 +71,18 @@ describe('MqttOptions builder', () => {
 /* ------------------- merge precedence (builder > HOCON > defaults) --- */
 
 class ProbeActor extends MqttActor {
+  /**
+   * The options as `preStart` resolved them, published here rather than read
+   * through `BrokerActor.options` — that getter *throws* until preStart has
+   * run, and a throwing predicate fails an `awaitCondition` outright instead
+   * of polling on.  `null` is therefore the observable "not resolved yet".
+   */
+  resolved: MqttOptionsType | null = null;
   constructor(options: MqttOptions) { super(options); }
+  override async preStart(): Promise<void> {
+    await super.preStart();
+    this.resolved = this.options;
+  }
   protected override mqttModule(): Promise<MqttModuleLike> {
     // Minimal fake module that connects immediately.
     const client = {
@@ -82,7 +92,6 @@ class ProbeActor extends MqttActor {
     return Promise.resolve({ connect: () => client } as unknown as MqttModuleLike);
   }
   override onMessage(_msg: MqttMessage): void {}
-  get resolved(): MqttOptionsType { return this.options; }
 }
 
 describe('MqttOptions HOCON merge precedence', () => {
@@ -107,8 +116,10 @@ describe('MqttOptions HOCON merge precedence', () => {
         .withClientId('ctor-client');
       const actor = new ProbeActor(mqttOptions);
       sys.spawn(() => actor, 'probe');
-      await sleep(30);
-      const resolved = actor.resolved;
+      await awaitCondition(() => actor.resolved !== null, {
+        label: 'the probe resolved its options in preStart',
+      });
+      const resolved = actor.resolved!;
       expect(resolved.clientId).toBe('ctor-client');            // builder wins
       expect(resolved.brokerUrl).toBe('mqtt://from-hocon:1883'); // HOCON supplies
       expect(resolved.keepAlive).toBe(30);                       // HOCON supplies
@@ -165,15 +176,23 @@ describe('MqttOptions validation fires at actor start (all input paths)', () => 
       .withConfig(hocon ?? {});
     const sys = ActorSystem.create('mqtt-opts-validate', sysOptions);
     let captured: Error | null = null;
+    /**
+     * Polled instead of `captured`, because one caller asserts that nothing
+     * was captured: waiting on `captured !== null` would return on the first
+     * poll for the three failing cases and time out for the passing one.
+     * Settling is the observable fact both cases share.
+     */
+    let settled = false;
     try {
       const actor = new ProbeActor(settings);
       const orig = actor.preStart.bind(actor);
       actor.preStart = async (): Promise<void> => {
         try { await orig(); }
         catch (e) { captured = e as Error; }
+        settled = true;
       };
       sys.spawn(() => actor, 'probe');
-      await sleep(30);
+      await awaitCondition(() => settled, { label: "the probe's preStart settled" });
     } finally {
       await sys.terminate();
     }

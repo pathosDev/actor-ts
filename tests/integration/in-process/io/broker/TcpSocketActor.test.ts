@@ -7,9 +7,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { TcpSocketActor } from '../../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../../src/io/broker/TcpSocketOptions.js';
 import { BrokerConnected } from '../../../../../src/io/broker/BrokerEvents.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * Settle window for the assertions that also carry an *upper* bound
