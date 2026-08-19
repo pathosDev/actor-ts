@@ -25,7 +25,17 @@ import {
 import { KafkaOptions, KafkaOptionsBuilder } from '../../../../../src/io/broker/KafkaOptions.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+
+/**
+ * The window in which one *too many* of something shows up.
+ *
+ * A poll returns on the arrival that reaches the number it is waiting for, so
+ * it can only ever confirm the lower half of an exact claim — `toHaveLength(1)`,
+ * `toBe(3)`, `toEqual([…])`.  Polling `>=` and then holding still for this long
+ * is what restores the upper half.
+ */
+const SETTLE_MS = 20;
 
 /* --------------------------- Mocks ----------------------------- */
 
@@ -172,6 +182,13 @@ class MockKafkaActor extends KafkaActor {
   /** Real kafkajs surfaces a drop through a failing send / pump. */
   publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated broker loss')); }
   publicConnectionState(): string { return this.connectionState; }
+  /**
+   * How many topics the actor *wants* subscribed, independent of any one
+   * consumer.  A `subscribe` that arrives during an outage lands here and
+   * nowhere else, so it is the only way to observe that it was remembered
+   * rather than dropped — before the reconnect that applies it.
+   */
+  publicDesiredCount(): number { return this.desiredSubscriptionCount; }
 }
 
 /* --------------------------- Helpers ---------------------------- */
@@ -179,6 +196,23 @@ class MockKafkaActor extends KafkaActor {
 class CapturingTarget extends Actor<KafkaRecord> {
   readonly received: KafkaRecord[] = [];
   override onReceive(rec: KafkaRecord): void { this.received.push(rec); }
+}
+
+/**
+ * Wait until the pump forwarded `count` record(s) to the target.
+ *
+ * `eachMessage` tells the target and registers the pending commit in the same
+ * synchronous block, and the tell is delivered in a *later* actor turn — so a
+ * record arriving at the target means the pending entry that a `commit`,
+ * `negativeAcknowledgment` or `heartbeat` has to find is already in place.
+ * That is what makes this the right thing to wait on before driving one, and
+ * why it is not merely a proxy for the sleep it replaces.
+ */
+function awaitForwarded(target: CapturingTarget, count: number): Promise<void> {
+  return awaitCondition(() => target.received.length >= count, {
+    timeoutMs: 4_000,
+    label: `${count} record(s) reached the target, so their commits are pending`,
+  });
 }
 
 async function bootActor(
@@ -198,8 +232,14 @@ async function bootActor(
     },
     'kafka',
   );
-  // Wait until preStart has fired connectImplementation + run() registration.
-  await sleep(60);
+  // `connected` is set only after `connectImplementation` returned, and that
+  // method subscribes every desired topic and calls `run()` before it does —
+  // so this one condition covers the whole boot, including the `run()`
+  // registration a later `push()` depends on.
+  await awaitCondition(
+    () => ref.current !== null && ref.current.publicConnectionState() === 'connected',
+    { timeoutMs: 4_000, label: 'the Kafka actor connected and started its consumer pump' },
+  );
   return {
     actor: actor as ActorRef<KafkaCommand>, mock: ref.current!.mock,
     target, instance: ref.current!,
@@ -210,8 +250,17 @@ async function bootActor(
 async function reconnect(instance: MockKafkaActor): Promise<void> {
   const consumerCount = instance.mock.consumers.length;
   instance.publicSimulateLoss();
-  for (let i = 0; i < 60 && instance.mock.consumers.length === consumerCount; i++) await sleep(10);
-  await sleep(20);
+  // Both halves matter: a fresh consumer object appears one turn *before* its
+  // subscriptions are replayed, and `connected` is what the base class sets
+  // after `connectImplementation` — and so after `applyDesiredSubscriptions`
+  // — returned.  Waiting on the object alone is the #1145 shape.
+  await awaitCondition(
+    () => instance.mock.consumers.length > consumerCount
+      && instance.publicConnectionState() === 'connected',
+    { timeoutMs: 4_000, label: 'the reconnect built a fresh consumer and replayed its topics' },
+  );
+  // Callers count the consumers exactly; see SETTLE_MS.
+  await sleep(SETTLE_MS);
 }
 
 /* ============================================================== */
@@ -234,8 +283,11 @@ describe('KafkaActor — auto-commit (default)', () => {
       const tracker = mock.consumer_.push('orders', 0, '42');
       await tracker.promise;
       expect(tracker.resolved).toBe(true);
-      // Tell delivery is async via the mailbox — let it drain.
-      await sleep(20);
+      // Tell delivery is async via the mailbox — wait for it, then hold still:
+      // "exactly one record, zero commits" is the claim, and a poll alone
+      // cannot see a second of either.
+      await awaitForwarded(target, 1);
+      await sleep(SETTLE_MS);  // the upper half of "exactly one"; see SETTLE_MS
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.offset).toBe('42');
       // Auto-mode → kafkajs handles commits internally; no commitOffsets call.
@@ -261,7 +313,11 @@ describe('KafkaActor — manual commit (#2)', () => {
       expect(mock.consumer_.manualCommitConfigured).toBe(true);
 
       const tracker = mock.consumer_.push('orders', 0, '42');
-      await sleep(40);   // mailbox drain + pump enters await
+      // Waiting on the forwarded record is what makes the two "still pending"
+      // assertions below mean anything: under a fixed sleep an unresolved
+      // tracker could equally mean the pump had not run yet.
+      await awaitForwarded(target, 1);
+      await sleep(SETTLE_MS);  // the two "still pending" claims are absences
       expect(target.received).toHaveLength(1);
       // Still pending — manual mode hasn't received commit yet.
       expect(tracker.resolved).toBe(false);
@@ -289,9 +345,9 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 1, '7');
-      await sleep(20);
+      await awaitForwarded(target, 1);
       actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
@@ -336,6 +392,9 @@ describe('KafkaActor — manual commit (#2)', () => {
       const { actor, mock } = await bootActor(sys, kafkaOptions);
       // No push — no pending entry.  Commit shouldn't throw.
       actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: '0' });
+      // An absence cannot be polled: `committed` is already empty, so a
+      // predicate over it returns at t=0.  This is the turn in which a commit
+      // for an offset nobody is waiting on would show up.
       await sleep(30);
       expect(mock.consumer_.committed).toEqual([]);
     } finally {
@@ -353,11 +412,15 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const t1 = mock.consumer_.push('orders', 0, '10');
       const t2 = mock.consumer_.push('orders', 1, '20');
       const t3 = mock.consumer_.push('orders', 2, '30');
-      await sleep(20);
+      // All three pumps have run by the time all three records landed; the
+      // assertion below is then an absence — none of them may have resolved
+      // without a commit — so it gets a settle rather than a poll.
+      await awaitForwarded(target, 3);
+      await sleep(SETTLE_MS);  // "none resolved" is an absence, so it is a settle
       expect(t1.resolved || t2.resolved || t3.resolved).toBe(false);
 
       // Commit them out of order to verify the map doesn't care.
@@ -384,9 +447,9 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const pushed = mock.consumer_.push('orders', 0, '5');
-      await sleep(20);
+      await awaitForwarded(target, 1);
       actor.stop();
       await pushed.promise;
       expect(pushed.rejected).toBe(true);
@@ -406,12 +469,12 @@ describe('KafkaActor — manual commit (#2)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       // Offset close to Number.MAX_SAFE_INTEGER + a few — Number arithmetic
       // would lose precision; BigInt arithmetic stays exact.
       const big = '9007199254740993';   // 2^53 + 1
       const tracker = mock.consumer_.push('orders', 0, big);
-      await sleep(20);
+      await awaitForwarded(target, 1);
       actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: big });
       await tracker.promise;
       expect(mock.consumer_.committed[0]?.offset).toBe('9007199254740994');
@@ -494,7 +557,11 @@ describe('KafkaActor — subscriptions across a reconnect (#504)', () => {
       const { actor, mock, instance } = await bootActor(sys, kafkaOptions);
 
       actor.tell({ kind: 'subscribe', topic: 'audit' });
-      await sleep(30);
+      await awaitCondition(() => mock.consumer_.subscribedTopics.length >= 2, {
+        timeoutMs: 4_000, label: 'the runtime topic reached the live consumer',
+      });
+      // The topic set is asserted exactly; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(mock.consumer_.subscribedTopics).toEqual(['audit', 'orders']);
 
       await reconnect(instance);
@@ -518,10 +585,19 @@ describe('KafkaActor — subscriptions across a reconnect (#504)', () => {
       instance.publicSimulateLoss();
       expect(instance.publicConnectionState()).toBe('disconnected');
       actor.tell({ kind: 'subscribe', topic: 'audit' });
-      await sleep(20);
-
-      for (let i = 0; i < 40 && mock.consumers.length < 2; i++) await sleep(10);
-      await sleep(20);
+      // The desired set is the only place an offline subscribe can be seen —
+      // there is no consumer to apply it to yet.  Waiting for it here is what
+      // makes the reconnect below prove a *replay* rather than a fresh
+      // subscribe that happened to arrive after the new consumer existed.
+      await awaitCondition(() => instance.publicDesiredCount() >= 2, {
+        timeoutMs: 4_000, label: 'the offline subscribe was remembered',
+      });
+      await awaitCondition(
+        () => mock.consumers.length >= 2 && instance.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the backoff retry connected and applied the remembered topic' },
+      );
+      // The topic set is asserted exactly; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(instance.publicConnectionState()).toBe('connected');
       // Not dropped on the floor while offline — applied on the reconnect.
       expect(mock.consumer_.subscribedTopics).toEqual(['audit', 'orders']);
@@ -559,15 +635,19 @@ describe('KafkaActor — heartbeat (#78)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 0, '7');
-      await sleep(20);
+      await awaitForwarded(target, 1);
 
       // Three heartbeats while the handler is "busy".
       actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
       actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
       actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '7' });
-      await sleep(30);
+      await awaitCondition(() => tracker.heartbeats >= 3, {
+        timeoutMs: 4_000, label: 'all three heartbeats reached the kafkajs callback',
+      });
+      // Three commands, three heartbeats — not four; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(tracker.heartbeats).toBe(3);
 
       // Commit completes the in-flight cleanly — heartbeat must not have
@@ -596,7 +676,9 @@ describe('KafkaActor — heartbeat (#78)', () => {
       // racing handler must not crash the actor.
       actor.tell({ kind: 'heartbeat', topic: 'orders', partition: 0, offset: '999' });
       actor.tell({ kind: 'heartbeat', topic: 'unknown', partition: 5, offset: '0' });
-      await sleep(20);
+      // An absence, and one whose observable side is a *crash* that did not
+      // happen — there is nothing to poll for, only a turn to give away.
+      await sleep(SETTLE_MS);
       expect(mock.consumer_.committed).toEqual([]);
     } finally {
       await sys.terminate();
@@ -613,14 +695,17 @@ describe('KafkaActor — heartbeat (#78)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual', commitTimeoutMs: 1_000 })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 0, '11');
-      await sleep(20);
+      await awaitForwarded(target, 1);
 
-      // Tight 25ms cadence so a 120ms body fires ~4-5 heartbeats.
+      // Tight 25ms cadence so a 120ms body fires ~4-5 heartbeats.  The body's
+      // delay IS the assertion here: the claim is that a handler that runs
+      // this long gets that many heartbeats, so it cannot be shortened into a
+      // poll without deleting what is under test.
       const result = await withAutoHeartbeat(
         { kafka: actor, record: { topic: 'orders', partition: 0, offset: '11' }, everyMs: 25 },
-        async () => { await sleep(120); return 'done'; },
+        async () => { await sleep(120); return 'done'; },  // the elapsed time IS the assertion
       );
       expect(result).toBe('done');
       // Heartbeats fire on a setInterval — count is approximate but
@@ -630,9 +715,11 @@ describe('KafkaActor — heartbeat (#78)', () => {
       actor.tell({ kind: 'commit', topic: 'orders', partition: 0, offset: '11' });
       await tracker.promise;
       // After commit the timer is gone — wait a full cadence and
-      // verify no more heartbeats fired.
+      // verify no more heartbeats fired.  An absence over elapsed time: the
+      // counter staying flat is only meaningful *because* more than one
+      // 25 ms cadence passed, so this is the assertion, not a wait before it.
       const finalCount = tracker.heartbeats;
-      await sleep(60);
+      await sleep(60);  // more than one cadence with no new heartbeat — an absence
       expect(tracker.heartbeats).toBe(finalCount);
     } finally {
       await sys.terminate();
@@ -649,13 +736,15 @@ describe('KafkaActor — heartbeat (#78)', () => {
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1', commitMode: 'manual' })
         .withTopics(['orders']);
-      const { actor, mock } = await bootActor(sys, kafkaOptions);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 0, '13');
-      await sleep(20);
+      await awaitForwarded(target, 1);
 
+      // The body's delay is the fixture: it has to outlast the 20 ms cadence,
+      // or the timer under test never fires before the throw.
       await expect(withAutoHeartbeat(
         { kafka: actor, record: { topic: 'orders', partition: 0, offset: '13' }, everyMs: 20 },
-        async () => { await sleep(50); throw new Error('boom'); },
+        async () => { await sleep(50); throw new Error('boom'); },  // must outlast the cadence
       )).rejects.toThrow('boom');
 
       // Brief drain so any heartbeat `tell()`s already on the actor's

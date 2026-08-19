@@ -21,14 +21,24 @@ import { Actor } from '../../../../../src/Actor.js';
 import { Terminated } from '../../../../../src/SystemMessages.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../../src/Scheduler.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /** `Terminated` arrives via `onReceive` but is not in the typed command union. */
 function isTerminated(message: unknown): message is Terminated {
   return message instanceof Terminated;
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * The window in which one *too many* of something shows up.
+ *
+ * A poll returns on the event that reaches the number it waits for, so it can
+ * only confirm the lower half of an exact claim — `toBe(2)`, `toEqual(['m1',
+ * 'm2'])`.  Polling `>=` and then holding still for this long restores the
+ * upper half.  It is only needed where a surplus is actually reachable: after a
+ * *successful* first connect nothing is scheduled that could produce a second
+ * attempt, so those assertions need no settle.
+ */
+const SETTLE_MS = 20;
 
 interface FakeOptions extends BrokerCommonOptionsType {
   readonly endpoint?: string;
@@ -181,6 +191,24 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
     this.postStopCalls++;
   }
 
+  /**
+   * True once `preStart` returned — the first connect attempt has settled,
+   * whether it connected or fell into backoff.
+   *
+   * Nothing else in this class can express that.  `connectionState` reads
+   * `disconnected` both *before* the attempt starts and *after* it failed, so a
+   * poll on it returns at t=0 and waits for nothing.  `connectAttempts === 1`
+   * is worse than useless here: it returns on attempt 1 and structurally
+   * cannot see the attempt 2 that the `reconnect: false` test exists to rule
+   * out, so the test would assert nothing at all (#418).
+   */
+  firstConnectSettled = false;
+
+  override async preStart(): Promise<void> {
+    await super.preStart();
+    this.firstConnectSettled = true;
+  }
+
   override onReceive(command: FakeCommand): void {
     // Exactly the seam `subscribeRef`'s docs prescribe: the base class cannot
     // route `Terminated` itself, because `onReceive` is abstract and every
@@ -244,6 +272,27 @@ function spawnFake(
   return { ref: ref as ActorRef<FakeCommand>, brokerReady };
 }
 
+/**
+ * Wait for `preStart`'s first connect attempt to settle, either way.
+ *
+ * `brokerReady` resolves inside the spawn factory — i.e. *before* `preStart`
+ * runs — so it hands back the instance and nothing more.  See
+ * {@link FakeBroker.firstConnectSettled} for why that flag, and not the
+ * connection state or the attempt count, is the honest condition here.
+ */
+function awaitFirstConnect(broker: FakeBroker): Promise<void> {
+  return awaitCondition(() => broker.firstConnectSettled, {
+    timeoutMs: 4_000, label: "the broker's first connect attempt settled",
+  });
+}
+
+/** Wait for a `stop()` to have run all the way through `postStop`. */
+function awaitStopped(broker: FakeBroker, expected = 1): Promise<void> {
+  return awaitCondition(() => broker.postStopCalls >= expected, {
+    timeoutMs: 4_000, label: 'the broker finished postStop',
+  });
+}
+
 /* ---------------------------- Options tests ---------------------------- */
 
 describe('BrokerActor — options resolution', () => {
@@ -253,7 +302,7 @@ describe('BrokerActor — options resolution', () => {
     });
     const { brokerReady } = spawnFake(sys, { endpoint: 'ctor.local' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     expect(broker.connectAttempts).toBe(1);
     expect((broker as unknown as { options: FakeOptions }).options.endpoint).toBe('ctor.local');
     await sys.terminate();
@@ -265,7 +314,7 @@ describe('BrokerActor — options resolution', () => {
     });
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     const options = (broker as unknown as { options: FakeOptions }).options;
     expect(options.endpoint).toBe('cfg.local');
     expect(options.tag).toBe('from-config');
@@ -278,7 +327,7 @@ describe('BrokerActor — options resolution', () => {
     });
     const { brokerReady } = spawnFake(sys);
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     const options = (broker as unknown as { options: FakeOptions }).options;
     expect(options.tag).toBe('default');  // from builtInDefaultOptions
     await sys.terminate();
@@ -297,7 +346,9 @@ describe('BrokerActor — options resolution', () => {
       };
       return broker as unknown as Actor<FakeCommand>;
     });
-    await sleep(20);
+    await awaitCondition(() => captured !== null, {
+      timeoutMs: 4_000, label: 'preStart rejected the incomplete options',
+    });
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('missing required options');
     expect((captured as unknown as Error).message).toContain('endpoint');
@@ -319,7 +370,12 @@ describe('BrokerActor — lifecycle', () => {
     );
     const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
     const broker = await brokerReady;
-    await sleep(30);
+    // The event travels through the stream to a subscriber actor, so it lands
+    // a turn *after* the connect — which makes it the furthest-downstream of
+    // the three things asserted below.
+    await awaitCondition(() => connectedCount >= 1, {
+      timeoutMs: 4_000, label: 'BrokerConnected reached its subscriber',
+    });
     expect(broker.connectAttempts).toBe(1);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(connectedCount).toBe(1);
@@ -337,9 +393,9 @@ describe('BrokerActor — lifecycle', () => {
     );
     const { ref, brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     ref.stop();
-    await sleep(30);
+    await awaitStopped(broker);
     expect(broker.disconnects).toBe(1);
     expect(broker.publicConnectionState()).toBe('disconnected');
     void disconnectedCount;  // BrokerDisconnected only on connection-lost, not graceful stop
@@ -358,7 +414,13 @@ describe('BrokerActor — reconnect', () => {
     });
     const broker = await brokerReady;
     broker.failNextConnects = 2;
-    await sleep(200);  // attempt-1 fails, ~30ms wait, attempt-2 fails, ~60ms wait, attempt-3 OK
+    // Attempt 1 fails, ~30 ms wait, attempt 2 fails, ~60 ms wait, attempt 3 is
+    // let through — so the third attempt landing is the observable, not the
+    // ~200 ms the backoff schedule happens to add up to.
+    await awaitCondition(
+      () => broker.connectAttempts >= 3 && broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the third connect attempt succeeded' },
+    );
     expect(broker.connectAttempts).toBeGreaterThanOrEqual(3);
     expect(broker.publicConnectionState()).toBe('connected');
     await sys.terminate();
@@ -372,7 +434,14 @@ describe('BrokerActor — reconnect', () => {
     });
     const broker = await brokerReady;
     broker.failNextConnects = 1;
-    await sleep(80);
+    await awaitFirstConnect(broker);
+    // Now an absence, and the one this file most needs to keep as a delay: the
+    // claim is that a second attempt NEVER happens, and a poll on
+    // `connectAttempts === 1` returns on the first one and can never see a
+    // second — the test would then assert nothing at all.  250 ms is chosen to
+    // exceed `DEFAULT_RECONNECT.initialDelayMs` (200 ms), so a retry that the
+    // `reconnect: false` option failed to disable would have fired by now.
+    await sleep(250);
     expect(broker.connectAttempts).toBe(1);
     expect(broker.publicConnectionState()).toBe('disconnected');
     await sys.terminate();
@@ -392,11 +461,15 @@ describe('BrokerActor — reconnect', () => {
       reconnect: { initialDelayMs: 20, maxDelayMs: 50 },
     });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     expect(broker.publicConnectionState()).toBe('connected');
     broker.publicSimulateLoss();
     expect(broker.publicConnectionState()).toBe('disconnected');
-    await sleep(80);
+    await awaitCondition(
+      () => broker.connectAttempts >= 2 && broker.publicConnectionState() === 'connected'
+        && reconnectAttempts >= 1,
+      { timeoutMs: 4_000, label: 'the steady-state loss was followed by a successful reconnect' },
+    );
     expect(broker.connectAttempts).toBeGreaterThanOrEqual(2);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(reconnectAttempts).toBeGreaterThanOrEqual(1);
@@ -589,13 +662,18 @@ describe('BrokerActor — transport teardown (#504)', () => {
       reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
     });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     expect(broker.publicConnectionState()).toBe('connected');
     // First connect had nothing to tear down.
     expect(broker.disconnects).toBe(0);
 
     broker.publicSimulateLoss();
-    await sleep(60);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected' && broker.connectAttempts >= 2,
+      { timeoutMs: 4_000, label: 'the second connect attempt completed' },
+    );
+    // Both counts below are exact; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(broker.publicConnectionState()).toBe('connected');
     // The dead connection was closed before the new one was built.
     expect(broker.disconnects).toBe(1);
@@ -611,7 +689,10 @@ describe('BrokerActor — transport teardown (#504)', () => {
       (broker) => { broker.failNextConnects = 2; },
     );
     const broker = await brokerReady;
-    await sleep(120);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected' && broker.connectAttempts >= 3,
+      { timeoutMs: 4_000, label: 'the third attempt connected after two teardowns' },
+    );
     expect(broker.publicConnectionState()).toBe('connected');
     expect(broker.connectAttempts).toBeGreaterThanOrEqual(3);
     // Attempts 2 and 3 each cleaned up after the previous failure.
@@ -628,13 +709,13 @@ describe('BrokerActor — transport teardown (#504)', () => {
       reconnect: { initialDelayMs: 10_000 },
     });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     broker.publicSimulateLoss();
     expect(broker.publicConnectionState()).toBe('disconnected');
     expect(broker.disconnects).toBe(0);
 
     ref.stop();
-    await sleep(40);
+    await awaitStopped(broker);
     expect(broker.disconnects).toBe(1);
     await sys.terminate();
   });
@@ -651,12 +732,17 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       (broker) => { broker.configuredSubscriptions = [['orders', 'a'], ['audit', 'b']]; },
     );
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     expect(broker.appliedSubscriptions).toEqual(['orders=a', 'audit=b']);
     expect(broker.publicDesiredCount()).toBe(2);
 
     broker.publicSimulateLoss();
-    await sleep(60);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the reconnect finished its subscription replay pass' },
+    );
+    // The subscription list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(broker.appliedSubscriptions).toEqual(['orders=a', 'audit=b']);
     await sys.terminate();
   });
@@ -668,12 +754,17 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
     });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     await broker.publicRemember('runtime', 'x');
     expect(broker.appliedSubscriptions).toEqual(['runtime=x']);
 
     broker.publicSimulateLoss();
-    await sleep(60);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the reconnect finished its subscription replay pass' },
+    );
+    // The subscription list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(broker.appliedSubscriptions).toEqual(['runtime=x']);
     await sys.terminate();
   });
@@ -686,14 +777,22 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       (broker) => { broker.failNextConnects = 1; },
     );
     const broker = await brokerReady;
-    await sleep(10);
+    // The first connect is configured to fail, so this settles into
+    // `disconnected` — which `awaitFirstConnect` waits for without needing to
+    // guess how long the failure takes.
+    await awaitFirstConnect(broker);
     expect(broker.publicConnectionState()).toBe('disconnected');
     await broker.publicRemember('offline', 'y');
     // Recorded, not dropped — nothing to apply it to yet.
     expect(broker.publicDesiredCount()).toBe(1);
     expect(broker.appliedSubscriptions).toEqual([]);
 
-    await sleep(120);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the backoff retry connected and replayed the offline entry' },
+    );
+    // The subscription list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(broker.appliedSubscriptions).toEqual(['offline=y']);
     await sys.terminate();
@@ -703,7 +802,7 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
     const sys = makeSystem('ds-4');
     const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     await broker.publicRemember('topic', 'first');
     await broker.publicRemember('topic', 'second');
     expect(broker.revokedSubscriptions).toEqual(['topic']);
@@ -720,13 +819,18 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       (broker) => { broker.configuredSubscriptions = [['orders', 'a']]; },
     );
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     await broker.publicForget('orders');
     expect(broker.revokedSubscriptions).toEqual(['orders']);
     expect(broker.publicDesiredCount()).toBe(0);
 
     broker.publicSimulateLoss();
-    await sleep(60);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the reconnect finished its subscription replay pass' },
+    );
+    // The subscription list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     // Seeding is once-only, so the options don't bring it back.
     expect(broker.appliedSubscriptions).toEqual([]);
     await sys.terminate();
@@ -739,7 +843,7 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
     });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
 
     // Park the next connect *after* its replay pass, so the actor sits in
     // `connecting` with a working connection.  The reconnect cycle runs on
@@ -749,15 +853,24 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
     let releaseConnect!: () => void;
     broker.connectGate = new Promise<void>((resolve) => { releaseConnect = resolve; });
     broker.publicSimulateLoss();
-    for (let i = 0; i < 40 && broker.connectAttempts < 2; i++) await sleep(5);
-    await sleep(10);
+    // The hand-rolled 40x5 ms loop this replaces fell through silently.  Both
+    // halves matter: the second attempt must have started AND the actor must
+    // still be inside it — `connecting` is only reachable while the connect is
+    // parked on the gate.
+    await awaitCondition(
+      () => broker.connectAttempts >= 2 && broker.publicConnectionState() === 'connecting',
+      { timeoutMs: 4_000, label: 'the second connect parked after its replay pass' },
+    );
     expect(broker.publicConnectionState()).toBe('connecting');
 
     await broker.publicRemember('in-the-gap', 'z');
     expect(broker.appliedSubscriptions).toEqual(['in-the-gap=z']);
 
     releaseConnect();
-    await sleep(20);
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected',
+      { timeoutMs: 4_000, label: 'the parked connect completed once released' },
+    );
     expect(broker.publicConnectionState()).toBe('connected');
     await sys.terminate();
   });
@@ -766,7 +879,7 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
     const sys = makeSystem('ds-6');
     const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     await broker.publicForget('never-subscribed');
     expect(broker.revokedSubscriptions).toEqual([]);
     await sys.terminate();
@@ -784,7 +897,7 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
       },
     );
     const broker = await brokerReady;
-    await sleep(30);
+    await awaitFirstConnect(broker);
     // One bad subject must not fail the connection or block its siblings.
     expect(broker.publicConnectionState()).toBe('connected');
     expect(broker.appliedSubscriptions).toEqual(['good=a', 'also-good=c']);
@@ -807,11 +920,19 @@ describe('BrokerActor — outbound buffer', () => {
     });
     const broker = await brokerReady;
     broker.failNextConnects = 1;
-    await sleep(10);  // attempt 1 has run and failed, state is disconnected
+    // The enqueues below only exercise the buffer if the actor is genuinely
+    // disconnected first, and attempt 1 is configured to fail — so waiting for
+    // that attempt to settle is the fixture, not a guess at how long it takes.
+    await awaitFirstConnect(broker);
     broker.publicEnqueue('m1');
     broker.publicEnqueue('m2');
     expect(broker.publicBufferSize()).toBe(2);
-    await sleep(120);  // wait for reconnect + drain
+    await awaitCondition(
+      () => broker.publicConnectionState() === 'connected' && broker.dispatched.length >= 2,
+      { timeoutMs: 4_000, label: 'the reconnect drained both buffered messages' },
+    );
+    // The dispatched list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(broker.dispatched).toEqual(['m1', 'm2']);
     expect(broker.publicBufferSize()).toBe(0);
@@ -834,12 +955,16 @@ describe('BrokerActor — outbound buffer', () => {
     });
     const broker = await brokerReady;
     broker.failNextConnects = 1;  // stay disconnected
-    await sleep(10);
+    await awaitFirstConnect(broker);
     expect(broker.publicEnqueue('a')).toBe(true);
     expect(broker.publicEnqueue('b')).toBe(true);
     expect(broker.publicEnqueue('c')).toBe(true);  // overflow → drop 'a'
     expect(broker.publicBufferSize()).toBe(2);
-    await sleep(20);
+    await awaitCondition(() => overflows >= 1, {
+      timeoutMs: 4_000, label: 'BrokerBufferOverflow reached its subscriber',
+    });
+    // One overflow, not one per enqueue; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(overflows).toBe(1);
     await sys.terminate();
   });
@@ -860,10 +985,14 @@ describe('BrokerActor — outbound buffer', () => {
     });
     const broker = await brokerReady;
     broker.failNextConnects = 1;
-    await sleep(10);
+    await awaitFirstConnect(broker);
     expect(broker.publicEnqueue('a')).toBe(false);
     expect(broker.publicBufferSize()).toBe(0);
-    await sleep(10);
+    await awaitCondition(() => notConnected >= 1, {
+      timeoutMs: 4_000, label: 'BrokerNotConnected reached its subscriber',
+    });
+    // One event, not one per retry; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(notConnected).toBe(1);
     await sys.terminate();
   });
@@ -880,13 +1009,19 @@ describe('BrokerActor — subscribers', () => {
     );
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     broker.publicSubscribe('foo', refs[0]!);
     broker.publicSubscribe('foo', refs[1]!);
     broker.publicSubscribe('bar', refs[1]!);
     broker.publicFanOut('foo', { hello: 1 });
     broker.publicFanOut('bar', { hello: 2 });
-    await sleep(20);
+    // The second probe is the one that must see both topics, so its count is
+    // the last thing the two fan-outs produce.
+    await awaitCondition(() => probes[1]!.received.length >= 2, {
+      timeoutMs: 4_000, label: 'both fan-outs reached the probe subscribed to both topics',
+    });
+    // Both lists are asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(probes[0]!.received).toEqual([{ hello: 1 }]);
     expect(probes[1]!.received).toEqual([{ hello: 1 }, { hello: 2 }]);
     await sys.terminate();
@@ -898,12 +1033,17 @@ describe('BrokerActor — subscribers', () => {
     const probeRef = sys.spawnAnonymous(() => probe as unknown as Actor<unknown>);
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     broker.publicSubscribe('foo', probeRef);
     broker.publicFanOut('foo', 1);
     broker.publicUnsubscribe('foo', probeRef);
     broker.publicFanOut('foo', 2);
-    await sleep(20);
+    // Waiting on the first message is what makes 'and not the second' mean
+    // anything: an empty probe could otherwise mean neither had arrived yet.
+    await awaitCondition(() => probe.received.length >= 1, {
+      timeoutMs: 4_000, label: 'the fan-out before the unsubscribe reached the probe',
+    });
+    await sleep(SETTLE_MS);  // the second fan-out must NOT arrive; see SETTLE_MS
     expect(probe.received).toEqual([1]);
     expect(broker.publicSubscriberCount('foo')).toBe(0);
     await sys.terminate();
@@ -915,12 +1055,16 @@ describe('BrokerActor — subscribers', () => {
     const probeRef = sys.spawnAnonymous(() => probe as unknown as Actor<unknown>);
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
     broker.publicSubscribe('a', probeRef);
     broker.publicSubscribe('b', probeRef);
     broker.publicFanOut('a', 1);
     broker.publicFanOut('b', 2);
-    await sleep(20);
+    await awaitCondition(() => probe.received.length >= 2, {
+      timeoutMs: 4_000, label: 'both topics fanned out to the one ref',
+    });
+    // The received list is asserted exactly; see SETTLE_MS.
+    await sleep(SETTLE_MS);
     expect(probe.received).toEqual([1, 2]);
     broker.publicUnsubscribe('a', probeRef);
     expect(broker.publicSubscriberCount('a')).toBe(0);
@@ -940,7 +1084,7 @@ describe('BrokerActor — subscribers', () => {
     const survivorRef = sys.spawnAnonymous(() => survivor as unknown as Actor<unknown>);
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
-    await sleep(20);
+    await awaitFirstConnect(broker);
 
     broker.publicSubscribe('a', doomedRef);
     broker.publicSubscribe('b', doomedRef);
@@ -958,7 +1102,12 @@ describe('BrokerActor — subscribers', () => {
 
     broker.publicFanOut('a', 'after');
     broker.publicFanOut('b', 'after');
-    await sleep(20);
+    // The survivor's message is the observable; the pruned subscriber seeing
+    // nothing is the absence that only means something once it has arrived.
+    await awaitCondition(() => survivor.received.length >= 1, {
+      timeoutMs: 4_000, label: 'the fan-out after the prune reached the survivor',
+    });
+    await sleep(SETTLE_MS);  // the pruned subscriber must stay empty; see SETTLE_MS
     expect(survivor.received).toEqual(['after']);
     expect(doomed.received).toEqual([]);
 

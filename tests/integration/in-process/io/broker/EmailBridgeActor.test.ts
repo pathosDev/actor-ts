@@ -28,7 +28,16 @@ import {
   type EmailBridgeOptionsType,
 } from '../../../../../src/io/broker/EmailBridgeOptions.js';
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+
+/**
+ * The window in which one *too many* of something shows up.
+ *
+ * A poll returns on the arrival that reaches the number it waits for, so it can
+ * only confirm the lower half of an exact claim — `toBe(1)`, `toEqual([…])`.
+ * Polling `>=` and then holding still for this long restores the upper half.
+ */
+const SETTLE_MS = 20;
 
 /* ---------------------------- pure helpers ---------------------------- */
 
@@ -370,6 +379,34 @@ class TestEmailBridgeActor extends EmailBridgeActor {
   get resolvedOptions(): EmailBridgeOptionsType { return this.options; }
   get state(): string { return this.connectionState; }
   get bufferedOutbound(): number { return this.outboundBufferSize; }
+
+  /**
+   * True once `preStart` returned — the first connect attempt has settled,
+   * whether it connected or fell into backoff.
+   *
+   * `connectionState` cannot express that: it reads `disconnected` both
+   * *before* the attempt starts and *after* it failed, so a poll on it returns
+   * at t=0 and the boot is not waited for at all.  One test here depends on the
+   * failed case specifically — a send issued while the bridge is between
+   * attempts.
+   */
+  firstConnectSettled = false;
+
+  override async preStart(): Promise<void> {
+    await super.preStart();
+    this.firstConnectSettled = true;
+  }
+}
+
+/**
+ * Wait for `preStart`'s first connect attempt to settle, either way — see
+ * {@link TestEmailBridgeActor.firstConnectSettled} for why that flag and not
+ * the connection state.
+ */
+function awaitFirstConnect(actor: TestEmailBridgeActor): Promise<void> {
+  return awaitCondition(() => actor.firstConnectSettled, {
+    timeoutMs: 4_000, label: "the bridge's first connect attempt settled",
+  });
 }
 
 /** Collects inbound mail; optionally acknowledges each message immediately. */
@@ -437,7 +474,10 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(120);
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the unseen mail was swept and delivered',
+      });
+      await sleep(SETTLE_MS);  // the counts below are exact; see SETTLE_MS
 
       expect(inbox.received.length).toBe(1);
       expect(inbox.received[0]!.subject).toBe('fresh alert');
@@ -465,7 +505,11 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(150);
+      await awaitCondition(
+        () => imapModule.clients.length > 0 && imapModule.last().flagAdds.length >= 1,
+        { timeoutMs: 4_000, label: 'the acknowledgment reached the server as a flag add' },
+      );
+      await sleep(SETTLE_MS);  // later sweeps must not redeliver; see SETTLE_MS
 
       expect(imapModule.last().flagAdds).toEqual([{ uid: '7', flags: ['\\Seen'] }]);
       // Settled, so later sweeps must not deliver it again.
@@ -491,7 +535,11 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(150);
+      await awaitCondition(
+        () => imapModule.clients.length > 0 && imapModule.last().moves.length >= 1,
+        { timeoutMs: 4_000, label: 'the acknowledgment moved the message' },
+      );
+      await sleep(SETTLE_MS);  // no flag add and no second move; see SETTLE_MS
 
       expect(imapModule.last().moves).toEqual([{ uid: '3', destination: 'Processed' }]);
       expect(imapModule.last().flagAdds).toEqual([]);
@@ -518,7 +566,8 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(80);
+      await awaitFirstConnect(actor);
+      await sleep(SETTLE_MS);  // exactly one create, not one per sweep; see SETTLE_MS
 
       expect(imapModule.last().mailboxCreates).toEqual(['Processed']);
       expect(actor.state).toBe('connected');
@@ -543,7 +592,8 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(80);
+      await awaitFirstConnect(actor);
+      await sleep(SETTLE_MS);  // 'no reconnect cycle' is an absence; see SETTLE_MS
 
       expect(actor.state).toBe('connected');
       expect(imapModule.clients.length).toBe(1); // no reconnect cycle
@@ -564,7 +614,8 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(80);
+      await awaitFirstConnect(actor);
+      await sleep(SETTLE_MS);  // 'no create at all' is an absence; see SETTLE_MS
 
       expect(imapModule.last().mailboxCreates).toEqual([]);
     } finally {
@@ -586,7 +637,9 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(200);
+      await awaitCondition(() => inbox.received.length > 1, {
+        timeoutMs: 4_000, label: 'the refused message came back on a later sweep',
+      });
 
       expect(imapModule.last().flagAdds).toEqual([]);
       expect(inbox.received.length).toBeGreaterThan(1);
@@ -610,7 +663,11 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(150);
+      await awaitCondition(
+        () => imapModule.clients.length > 0 && imapModule.last().flagAdds.length >= 1,
+        { timeoutMs: 4_000, label: 'the dropping negative acknowledgment still settled the message' },
+      );
+      await sleep(SETTLE_MS);  // both counts below are exact; see SETTLE_MS
 
       expect(imapModule.last().flagAdds).toEqual([{ uid: '11', flags: ['\\Seen'] }]);
       expect(inbox.received.length).toBe(1);
@@ -641,7 +698,9 @@ describe('EmailBridgeActor — inbound sweep', () => {
       expect(inbox.received.length).toBe(1);
 
       // Past the deadline the bridge gives up waiting and the sweep finds it again.
-      await sleep(180);
+      await awaitCondition(() => inbox.received.length > 1, {
+        timeoutMs: 4_000, label: 'the acknowledgment deadline expired and a sweep re-found the message',
+      });
       expect(inbox.received.length).toBeGreaterThan(1);
       expect(imapModule.last().flagAdds).toEqual([]);
     } finally {
@@ -666,12 +725,18 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
+      // An empty mailbox delivers nothing — an absence, so a settle rather
+      // than a poll.
+      await sleep(SETTLE_MS);
       expect(inbox.received.length).toBe(0);
 
       imapModule.last().addMail(textMail(21, 'urgent', 'now'));
       imapModule.last().fireExists();
-      await sleep(80);
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the EXISTS notification triggered a sweep that delivered the mail',
+      });
+      await sleep(SETTLE_MS);  // the counts below are exact; see SETTLE_MS
 
       expect(inbox.received.length).toBe(1);
       expect(inbox.received[0]!.subject).toBe('urgent');
@@ -695,10 +760,13 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       imapModule.last().addMail(textMail(31, 'polled', 'body'));
-      await sleep(100);
+      await awaitCondition(() => inbox.received.some((m) => m.subject === 'polled'), {
+        timeoutMs: 4_000, label: 'the poll loop found the new mail without IDLE',
+      });
+      await sleep(SETTLE_MS);  // 'no IDLE call at all' is an absence; see SETTLE_MS
 
       expect(imapModule.last().idleCalls).toBe(0);
       expect(imapModule.last().noopCalls).toBeGreaterThan(0);
@@ -722,7 +790,11 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(120);
+      await awaitCondition(
+        () => imapModule.clients.length > 0 && imapModule.last().noopCalls > 0,
+        { timeoutMs: 4_000, label: 'the bridge fell back to polling' },
+      );
+      await sleep(SETTLE_MS);  // 'no IDLE call at all' is an absence; see SETTLE_MS
 
       expect(imapModule.last().idleCalls).toBe(0);
       expect(imapModule.last().noopCalls).toBeGreaterThan(0);
@@ -746,7 +818,9 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(150);
+      await awaitCondition(() => inbox.received.some((m) => m.subject === 'fine'), {
+        timeoutMs: 4_000, label: 'the sibling message was delivered past the broken one',
+      });
 
       expect(inbox.received.map((m) => m.subject)).toContain('fine');
       // The connection survived — a bad message is not an outage.
@@ -772,7 +846,10 @@ describe('EmailBridgeActor — inbound sweep', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(150);
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the oversized body was delivered truncated',
+      });
+      await sleep(SETTLE_MS);  // the counts below are exact; see SETTLE_MS
 
       expect(inbox.received.length).toBe(1);
       expect(inbox.received[0]!.text).toBe('abcd');
@@ -801,12 +878,18 @@ describe('EmailBridgeActor — connection lifecycle', () => {
         imapModule,
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(120);
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the first sweep delivered the unacknowledged message',
+      });
+      await sleep(SETTLE_MS);  // the counts below are exact; see SETTLE_MS
       expect(inbox.received.length).toBe(1);
       expect(imapModule.clients.length).toBe(1);
 
       imapModule.last().fireClose();
-      await sleep(200);
+      await awaitCondition(
+        () => imapModule.clients.length > 1 && inbox.received.length > 1,
+        { timeoutMs: 4_000, label: 'a second client was built and re-delivered the message' },
+      );
 
       // A second client was built, and the never-acknowledged message —
       // still unflagged — came back on its first sweep.
@@ -834,12 +917,18 @@ describe('EmailBridgeActor — connection lifecycle', () => {
         imapModule,
       );
       bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(120);
+      await awaitCondition(() => inbox.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the message was delivered before the mailbox was renumbered',
+      });
+      await sleep(SETTLE_MS);  // the counts below are exact; see SETTLE_MS
       expect(inbox.received.length).toBe(1);
 
       // The server renumbered the mailbox: this UID is now someone else's mail.
       imapModule.last().uidValidity = 99n;
       bridgeRef.tell({ kind: 'acknowledgment', ackToken: inbox.received[0]!.ackToken });
+      // An absence: the acknowledgment must NOT flag a UID that now belongs to
+      // someone else's mail.  `flagAdds` is already empty, so there is nothing
+      // to poll — only a turn to give the wrong flag a chance to appear.
       await sleep(60);
 
       expect(imapModule.last().flagAdds).toEqual([]);
@@ -863,14 +952,17 @@ describe('EmailBridgeActor — connection lifecycle', () => {
         imapModule,
       );
       const ref = system.spawn(() => actor, 'bridge');
-      await sleep(80);
+      await awaitFirstConnect(actor);
       const client = imapModule.last();
 
       ref.stop();
-      // Long enough for postStop to run and the loop to unwind.  The count is
-      // taken after that, not before the stop: `stop()` travels through the
-      // mailbox, so a sweep may still start in between and prove nothing.
-      await sleep(100);
+      // `logoutCalls` is what postStop does, so waiting on it *is* waiting for
+      // the stop to have run — and the count below has to be taken after that,
+      // not before the stop: `stop()` travels through the mailbox, so a sweep
+      // may still start in between and prove nothing.
+      await awaitCondition(() => client.logoutCalls >= 1, {
+        timeoutMs: 4_000, label: 'postStop logged the IMAP client out',
+      });
       const sweepsAfterStop = client.searches.length;
       await sleep(150); // several poll intervals
 
@@ -897,10 +989,13 @@ describe('EmailBridgeActor — outbound', () => {
         smtpModule,
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       ref.tell({ kind: 'send', email: { to: 'ops@example.test', subject: 'hi', text: 'body' } });
-      await sleep(60);
+      await awaitCondition(() => smtpModule.last().sent.length >= 1, {
+        timeoutMs: 4_000, label: 'the message reached the pooled transport',
+      });
+      await sleep(SETTLE_MS);  // one verify and one send, not two; see SETTLE_MS
 
       const transporter = smtpModule.last();
       expect(transporter.options.pool).toBe(true);
@@ -927,10 +1022,12 @@ describe('EmailBridgeActor — outbound', () => {
         smtpModule,
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       ref.tell({ kind: 'send', email: { to: 'ops@example.test', from: 'alerts@example.test' } });
-      await sleep(60);
+      await awaitCondition(() => smtpModule.last().sent.length >= 1, {
+        timeoutMs: 4_000, label: 'the message with an explicit From was sent',
+      });
 
       expect(smtpModule.last().sent[0]!.from).toBe('alerts@example.test');
     } finally {
@@ -951,9 +1048,12 @@ describe('EmailBridgeActor — outbound', () => {
         smtpModule,
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       ref.tell({ kind: 'send', email: { to: 'ghost@example.test' } });
+      // Every claim below is an absence — the connection did NOT drop, nothing
+      // was re-queued, no second transport was built — so this is a window in
+      // which the wrong reaction would show up, not a wait for a result.
       await sleep(80);
 
       // Dropped: the pool stayed up and nothing was re-queued.
@@ -984,10 +1084,14 @@ describe('EmailBridgeActor — outbound', () => {
         smtpModule,
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       ref.tell({ kind: 'send', email: { to: 'ops@example.test', subject: 'retried' } });
-      await sleep(250);
+      await awaitCondition(
+        () => smtpModule.transporters.length > 1 && smtpModule.last().sent.length >= 1,
+        { timeoutMs: 4_000, label: 'the re-queued message went out on the second transport' },
+      );
+      await sleep(SETTLE_MS);  // the sent list is asserted exactly; see SETTLE_MS
 
       // The second transport carries the message the first one could not.
       expect(smtpModule.transporters.length).toBeGreaterThan(1);
@@ -1016,11 +1120,17 @@ describe('EmailBridgeActor — outbound', () => {
         smtpModule,
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(20);
+      // The first connect's verify() is configured to fail, so this settles into
+      // `disconnected` — and `firstConnectSettled` is the only condition that can
+      // tell that apart from not having started yet.
+      await awaitFirstConnect(actor);
 
       // The first connect failed, so the bridge is between attempts here.
       ref.tell({ kind: 'send', email: { to: 'ops@example.test', subject: 'buffered' } });
-      await sleep(250);
+      await awaitCondition(() => smtpModule.last().sent.length >= 1, {
+        timeoutMs: 4_000, label: 'the buffered message went out on the working transport',
+      });
+      await sleep(SETTLE_MS);  // the sent list is asserted exactly; see SETTLE_MS
 
       expect(smtpModule.last().sent.map((m) => m.subject)).toEqual(['buffered']);
     } finally {
@@ -1037,9 +1147,11 @@ describe('EmailBridgeActor — outbound', () => {
         EmailBridgeOptions.create().withImap(fastImap).withTarget(inboxRef),
       );
       const ref = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       ref.tell({ kind: 'send', email: { to: 'ops@example.test' } });
+      // Both claims are absences — nothing buffered, no transport built — so
+      // this is the turn in which the wrong reaction would appear.
       await sleep(60);
 
       expect(actor.bufferedOutbound).toBe(0);
@@ -1092,7 +1204,7 @@ describe('EmailBridgeActor — options', () => {
           .withTarget(inboxRef),
       );
       system.spawn(() => actor, 'bridge');
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       const resolved = actor.resolvedOptions;
       expect(resolved.imap?.host).toBe('imap.from-code.test');
@@ -1152,7 +1264,7 @@ describe('EmailBridgeActor — options', () => {
       const inboxRef = system.spawn(() => inbox, 'inbox');
       const actor = new TestEmailBridgeActor(EmailBridgeOptions.create().withTarget(inboxRef));
       system.spawn(() => actor, 'bridge');
-      await sleep(60);
+      await awaitFirstConnect(actor);
 
       expect(actor.resolvedOptions.imap).toEqual({
         host: 'imap.example.test',
