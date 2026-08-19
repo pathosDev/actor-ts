@@ -15,6 +15,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../src/testkit/ParallelMultiNodeSpec.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 // Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
 // Bun there cannot respawn functional worker threads after the first
@@ -54,22 +55,28 @@ describeMns('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
       // PubSub gossip needs ~2 rounds to propagate the subscriptions
       // across all three mediators.  At 100 ms gossip × 5 rounds we
       // have 99% confidence the subscriber-set is stable.
-      await Bun.sleep(500);
+      await sleep(500);
 
       // Publish from a.
       await spec.runIn('a', 'publish', { topic: 'orders', message: { sku: 'XYZ-1' } });
 
-      // Drain probes — each side should have received the published
-      // message.
-      const deadline = Date.now() + 3_000;
-      let bMessages: unknown[] = [];
-      let cMessages: unknown[] = [];
-      while (Date.now() < deadline) {
-        bMessages = await spec.runIn<unknown[]>('b', 'drain', { topic: 'orders' });
-        cMessages = await spec.runIn<unknown[]>('c', 'drain', { topic: 'orders' });
-        if (bMessages.length > 0 && cMessages.length > 0) break;
-        await Bun.sleep(80);
-      }
+      // Poll `buffered`, which counts without consuming, then drain once.
+      // Polling `drain` — as this loop used to — is destructive: the round in
+      // which b had the message and c did not *emptied b's probe*, and every
+      // later round then read b as empty, so the loop could only ever succeed
+      // when both messages happened to land inside one 80 ms window.
+      //
+      // `>= 1` rather than `=== 1` on purpose (#418): exactly one publish
+      // happens, so the drain below still binds the count — but a poll that
+      // demanded the exact number would return on the arrival that reaches it
+      // and could never have seen a surplus.
+      await awaitCondition(
+        async () => await spec.runIn<number>('b', 'buffered', { topic: 'orders' }) >= 1
+          && await spec.runIn<number>('c', 'buffered', { topic: 'orders' }) >= 1,
+        { timeoutMs: 3_000, intervalMs: 80, label: 'both subscribers buffered the published message' },
+      );
+      const bMessages = await spec.runIn<unknown[]>('b', 'drain', { topic: 'orders' });
+      const cMessages = await spec.runIn<unknown[]>('c', 'drain', { topic: 'orders' });
       expect(bMessages).toEqual([{ sku: 'XYZ-1' }]);
       expect(cMessages).toEqual([{ sku: 'XYZ-1' }]);
     } finally {
