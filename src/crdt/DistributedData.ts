@@ -10,6 +10,7 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
 import {
+  DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
   DistributedDataOptionsValidator,
@@ -22,7 +23,8 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
-import { MAX_CRDT_NESTING_DEPTH } from './Constants.js';
+import { GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_CRDT_NESTING_DEPTH } from './Constants.js';
+import { encodeJsonTree } from '../serialization/JsonTree.js';
 import { CrdtDecodeError } from './CrdtWireValidation.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import { GCounterMap, type GCounterMapJson } from './GCounterMap.js';
@@ -241,8 +243,17 @@ export type ReadConsistency = WriteConsistency;
  *   const cart = dd.get<ORSet<string>>('cart-42');
  *
  * **Limits / non-goals (v1):**
- *   - Full-state push on every gossip tick — fine for small stores.
- *   - No durable persistence: the store lives in memory.
+ *   - Full-state push on every gossip tick, sliced to fit one frame.
+ *     There is no delta tracking and no per-peer receipt history, so
+ *     gossip volume follows total state rather than update rate; a
+ *     store larger than `maxGossipBytes` is pushed a slice at a time
+ *     and converges over several ticks instead of one (#691).  Delta
+ *     replication is #444.
+ *   - A single key whose own encoding exceeds that budget cannot be
+ *     sliced any further — it is skipped and warned about, and it does
+ *     not converge.  See `DistributedDataOptionsType.maxGossipBytes`.
+ *   - Durability is opt-in: without `durableStore` the replica lives
+ *     in memory and a full cluster restart starts every node empty.
  *   - No tombstone delete; `delete(key)` is best-effort and can be
  *     undone by an in-flight gossip from a peer who still has the
  *     key.  Plan a workload-specific tombstone pattern (typically
@@ -610,6 +621,39 @@ type PendingRead = {
 /** Which of the two quorum flavours a metric series belongs to. */
 type QuorumOperation = 'write' | 'read';
 
+/** Why a local key could not travel in the frame being packed. */
+type GossipSkipReason = 'oversize' | 'unserialisable';
+
+/**
+ * One entry's wire form together with what it costs the frame — paired so the
+ * packer never serialises the same CRDT twice, once to measure and once to
+ * send.
+ */
+type MeasuredGossipEntry = {
+  readonly json: CrdtJson;
+  readonly bytes: number;
+};
+
+/**
+ * What one tick had to leave behind, accumulated for the rate-limited warning.
+ *
+ * Mutable and tick-local: the warning wants totals and the single worst
+ * offender, not a line per key, so the packing loop folds into this and the
+ * reporter reads it once.
+ */
+type GossipSkipTally = {
+  oversize: number;
+  unserialisable: number;
+  largest: { readonly key: string; readonly bytes: number } | null;
+};
+
+/**
+ * Shared encoder for the gossip byte accounting.  One instance rather than one
+ * per measurement: the packer measures every key on every tick, and a fresh
+ * `TextEncoder` per entry would allocate more than the strings it is sizing.
+ */
+const utf8 = new TextEncoder();
+
 class DistributedDataActor extends Actor<ActorMessage> {
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
@@ -637,6 +681,34 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * without a metrics backend being wired up at all.
    */
   private droppedFrames = 0;
+  /** `0` removes the budget.  Still clamped to the transport's frame cap. */
+  private readonly maxGossipBytes: number;
+  /**
+   * Where the next gossip tick resumes in the key list — an index, not a key.
+   *
+   * A store too large for one frame is swept in slices, and the cursor is what
+   * makes the sweep cover the whole key set: it advances by exactly as many
+   * positions as the tick consumed and wraps at the end.  Keys are visited in
+   * `Map` insertion order, so a concurrent insert or delete shifts the window
+   * by one slot and a key can be missed on one sweep; it is picked up on the
+   * next, because the cursor always advances and always wraps.  That is enough
+   * for a state-based CRDT, where a missed round costs latency and a repeated
+   * one costs nothing (merge is idempotent).
+   */
+  private gossipCursor = 0;
+  /**
+   * Keys skipped because their own encoding exceeds the gossip budget, and
+   * when that was last said out loud.
+   *
+   * Both fields exist for the log line rather than for the logic: the
+   * condition recurs on every tick for as long as the key does, so the
+   * warning is rate-limited to {@link GOSSIP_SKIP_WARN_INTERVAL_MS} and
+   * carries the running total, which is what tells one fat key from a
+   * workload steadily producing them.  The per-occurrence series lives in
+   * `distributed_data_gossip_skipped_keys_total`.
+   */
+  private gossipSkips = 0;
+  private lastGossipSkipWarnAtMs = 0;
 
   constructor(public readonly options: {
     cluster: Cluster;
@@ -649,6 +721,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.maxPendingQuorumRequests =
       options.options.maxPendingQuorumRequests ?? DEFAULT_MAX_PENDING_QUORUM_REQUESTS;
     this.maxQuorumTimeoutMs = options.options.maxQuorumTimeout ?? DEFAULT_MAX_QUORUM_TIMEOUT_MS;
+    this.maxGossipBytes = options.options.maxGossipBytes ?? DEFAULT_MAX_GOSSIP_BYTES;
     this.durable = options.options.durableStore
       ? new DurableDistributedDataStore(
           options.options.durableStore,
@@ -1134,19 +1207,36 @@ class DistributedDataActor extends Actor<ActorMessage> {
       });
   }
 
+  /**
+   * Push local state to one random peer — as much of it as fits one frame.
+   *
+   * This used to serialise the whole key set unconditionally, and nothing on
+   * the send path checked a size: `Transport.writeFrame` guards
+   * serialisability only, and `encodeFrame` writes the length into the header
+   * without comparing it to anything.  Past the receiver's `maxFrameBytes` the
+   * frame is then rejected on its 4-byte length prefix, *before* a single
+   * payload byte is buffered, and the transport answers that decoder throw by
+   * dropping the association.  So an oversized store did not gossip slowly: it
+   * did not gossip at all — no key ever reached `onGossip` — while killing one
+   * peer link per tick, taking heartbeats, membership gossip and every
+   * cross-node `tell` on that connection with it, then reconnecting and doing
+   * it again a second later (#691).
+   *
+   * Slicing is sound here and only here.  `onGossip` merges **per key** and
+   * treats an absent key as "no information" — there is no deletion pass and
+   * no wholesale replacement — so a partial `entries` map costs a round rather
+   * than agreement, and CRDT merge being idempotent means a key re-sent on the
+   * next sweep costs nothing.  The sibling gossip paths in `Receptionist` and
+   * `DistributedPubSubMediator` replace a peer's contribution wholesale, so
+   * the same trick would read as deregistration there.
+   */
   private gossipTick(): void {
     const peers = this.cluster.upMembers()
       .filter((m) => !m.address.equals(this.cluster.selfAddress));
     if (peers.length === 0) return;
     if (this.view.state.size === 0) return;
-    // `Object.fromEntries`, not `out[key] = …`: a store key is an application
-    // string, and for the one value `__proto__` an assignment invokes the
-    // inherited setter instead of creating a property.  The key vanished from
-    // every outbound frame while `get`/`keys` still reported it locally — a
-    // replica diverging from the cluster with nothing logged anywhere (#767).
-    const entries = Object.fromEntries(
-      Array.from(this.view.state, ([key, crdt]) => [key, crdt.toJSON() as CrdtJson] as const),
-    ) as Record<string, CrdtJson>;
+    const entries = this.packGossipEntries();
+    if (entries === null) return;
     const payload: DDataGossipMessage = {
       kind: 'ddata-gossip',
       from: this.cluster.selfAddress.toJSON(),
@@ -1154,6 +1244,191 @@ class DistributedDataActor extends Actor<ActorMessage> {
     };
     const target = peers[Math.floor(Math.random() * peers.length)]!;
     this.cluster.transport.send(target.address, payload as unknown as WireMessage);
+  }
+
+  /**
+   * Fill one gossip frame from the cursor onwards, or `null` when not one key
+   * could go in it.
+   *
+   * The accounting is per entry and deliberately errs high — see
+   * {@link measureGossipEntry} — so the frame `encodeFrame` goes on to produce
+   * is never larger than the budget this measured against.  Measuring the
+   * assembled frame instead would be exact and useless: by then the only
+   * available answer is "too big", with nothing to say about which key to
+   * leave behind.
+   */
+  private packGossipEntries(): Record<string, CrdtJson> | null {
+    const keys = Array.from(this.view.state.keys());
+    if (keys.length === 0) return null;
+    const budget = this.gossipBudgetBytes();
+    const envelopeBytes = this.gossipEnvelopeBytes();
+    const packed: Array<readonly [string, CrdtJson]> = [];
+    const skips: GossipSkipTally = { oversize: 0, unserialisable: 0, largest: null };
+    const start = this.gossipCursor % keys.length;
+    let used = envelopeBytes;
+    let advance = 0;
+    for (let visited = 0; visited < keys.length; visited++) {
+      const key = keys[(start + visited) % keys.length]!;
+      const measured = this.measureGossipEntry(key);
+      if (measured === null) {
+        skips.unserialisable++;
+        this.countGossipSkip('unserialisable');
+        advance++;
+        continue;
+      }
+      // Order matters: a key too large for a frame of its own has to be
+      // stepped over, not waited for.  Treated as "does not fit right now" it
+      // would park the cursor on itself, and every key behind it would starve
+      // for the life of the process — turning one divergent key into a store
+      // that stops converging, which is the defect this method exists to fix.
+      if (envelopeBytes + measured.bytes > budget) {
+        skips.oversize++;
+        if (!skips.largest || measured.bytes > skips.largest.bytes) {
+          skips.largest = { key, bytes: measured.bytes };
+        }
+        this.countGossipSkip('oversize');
+        advance++;
+        continue;
+      }
+      if (used + measured.bytes > budget) break;
+      used += measured.bytes;
+      packed.push([key, measured.json] as const);
+      advance++;
+    }
+    // Advance by exactly what this tick consumed, wrapping — that is what
+    // makes successive ticks sweep the whole key set instead of re-sending the
+    // same head of it forever.
+    this.gossipCursor = (start + advance) % keys.length;
+    this.reportGossipSkips(skips, budget);
+    if (packed.length === 0) return null;
+    // `Object.fromEntries`, not `out[key] = …`: a store key is an application
+    // string, and for the one value `__proto__` an assignment invokes the
+    // inherited setter instead of creating a property.  The key vanished from
+    // every outbound frame while `get`/`keys` still reported it locally — a
+    // replica diverging from the cluster with nothing logged anywhere (#767).
+    return Object.fromEntries(packed) as Record<string, CrdtJson>;
+  }
+
+  /**
+   * What one entry adds to the frame's payload, or `null` when it cannot be
+   * encoded at all.
+   *
+   * The measurement mirrors `encodeFrame` exactly — `encodeJsonTree` with
+   * `undefinedValues: 'omit'`, then `JSON.stringify`, then UTF-8 — because a
+   * budget checked against a different serialisation than the one that reaches
+   * the socket is not a budget.  The tagged-tree walk matters: a `Date` or a
+   * `Uint8Array` inside an `LWWRegister` value encodes to a wrapper object
+   * several times its `JSON.stringify` length, so measuring the plain form
+   * would come in low on exactly the payloads that overflow.
+   *
+   * `"key":value,` — the trailing comma is counted for every entry, so the sum
+   * lands one byte *above* what the encoder emits (it writes one comma fewer
+   * than there are entries).  Erring high is the property that has to hold:
+   * the receiver's cap is compared with `>`, so a bound that could come in low
+   * would let the frame through at the exact size that kills the link.
+   *
+   * `null` rather than a throw because the caller is a timer with nothing to
+   * unwind into, and because a throw here would be strictly worse than what it
+   * replaced: `writeFrame` catches the same failure today and drops the
+   * *entire* frame, so one unserialisable user value inside an `LWWRegister`
+   * silences every other key that travelled with it.
+   */
+  private measureGossipEntry(key: string): MeasuredGossipEntry | null {
+    const crdt = this.view.state.get(key);
+    if (!crdt) return null;
+    try {
+      const json = crdt.toJSON() as CrdtJson;
+      const encoded = JSON.stringify(encodeJsonTree(json, { undefinedValues: 'omit' }));
+      const bytes = utf8.encode(JSON.stringify(key)).byteLength + 1
+        + utf8.encode(encoded).byteLength + 1;
+      return { json, bytes };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Effective budget for one gossip frame's payload.
+   *
+   * The smaller of the configured budget and the transport's own per-frame
+   * cap, and the clamp is the load-bearing half.  Lowering
+   * `actor-ts.remote.max-frame-bytes` is the documented advice for a network
+   * crossing a semi-trusted boundary (`ClusterOptions.maxFrameBytes`), and a
+   * DistributedData budget that ignored it would keep emitting frames the peer
+   * now rejects on the length prefix — the original defect, reachable purely
+   * by configuration.
+   *
+   * Read per tick rather than resolved once: the transport is a constructor
+   * argument to `Cluster` and could be replaced by a caller between ticks, and
+   * one property read is not worth a staleness hazard.
+   *
+   * `undefined` from the transport means it frames nothing — the in-memory,
+   * `MessageChannel` and multi-node transports hand the message object over —
+   * so there is no length prefix to overflow and only the configured budget
+   * applies.
+   */
+  private gossipBudgetBytes(): number {
+    const configured = this.maxGossipBytes === 0
+      ? Number.POSITIVE_INFINITY
+      : this.maxGossipBytes;
+    const frameCap = this.cluster.transport.maxFrameBytes ?? Number.POSITIVE_INFINITY;
+    return Math.min(configured, frameCap);
+  }
+
+  /**
+   * Payload bytes a gossip frame costs before any entry goes into it — the
+   * `kind`, the sender address and the empty `entries` object.  Subtracted
+   * from the budget so the per-entry sum is compared against the room that
+   * actually exists, and measured rather than estimated because the sender
+   * address is a variable-length host and port.
+   */
+  private gossipEnvelopeBytes(): number {
+    const empty: DDataGossipMessage = {
+      kind: 'ddata-gossip',
+      from: this.cluster.selfAddress.toJSON(),
+      entries: {},
+    };
+    const encoded = JSON.stringify(encodeJsonTree(empty, { undefinedValues: 'omit' }));
+    return utf8.encode(encoded).byteLength;
+  }
+
+  /**
+   * Say once per {@link GOSSIP_SKIP_WARN_INTERVAL_MS} that keys are being
+   * left out, and what it costs.
+   *
+   * Loud on purpose, and rate-limited for the same reason: a key past the
+   * budget does not converge, which is a silent divergence unless something
+   * says so — but the condition is rediscovered on every gossip tick and
+   * persists for as long as the key does, so per-occurrence logging would be a
+   * line a second forever and end with the category filtered out.  The running
+   * total is carried in the line so a suppressed window still shows up in the
+   * next one; the exact series is
+   * `distributed_data_gossip_skipped_keys_total`.
+   */
+  private reportGossipSkips(skips: GossipSkipTally, budget: number): void {
+    const total = skips.oversize + skips.unserialisable;
+    if (total === 0) return;
+    this.gossipSkips += total;
+    const now = Date.now();
+    if (now - this.lastGossipSkipWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastGossipSkipWarnAtMs = now;
+    const largest = skips.largest;
+    this.log.warn(
+      `DistributedData: left ${total} of ${this.view.state.size} key(s) out of gossip — `
+      + `${skips.oversize} above the ${budget}-byte frame budget, `
+      + `${skips.unserialisable} unserialisable (${this.gossipSkips} since start)`
+      + (largest ? `; largest is "${largest.key}" at ${largest.bytes} bytes` : '')
+      + `. Such a key cannot be gossiped at all, so this replica will not `
+      + `converge on it: raise actor-ts.distributed-data.max-gossip-bytes `
+      + `(and actor-ts.remote.max-frame-bytes with it) or split the value.`,
+    );
+  }
+
+  private countGossipSkip(reason: GossipSkipReason): void {
+    metricsOf(this.system).counter(
+      'distributed_data_gossip_skipped_keys_total', { reason },
+      { help: 'Local keys a gossip frame could not carry — over the frame budget, or unserialisable.' },
+    ).inc();
   }
 }
 

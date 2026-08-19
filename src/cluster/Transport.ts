@@ -34,6 +34,30 @@ export type { TlsTransportOptionsType };
  */
 export interface Transport {
   readonly self: NodeAddress;
+  /**
+   * Per-frame payload cap this transport enforces, when it enforces one —
+   * `undefined` where framing does not apply at all.
+   *
+   * Published so a *sender* can size its own payload before handing it over.
+   * Nothing else on this interface reports failure: `send` is fire-and-forget
+   * and the cap is checked on the far side, by a `FrameDecoder` whose throw
+   * costs {@link TcpTransport} the whole association — heartbeats, membership
+   * gossip and every cross-node `tell` along with the offending frame.  A
+   * sender that keeps producing oversized frames therefore kills the link once
+   * per attempt and never learns that it did (#691).
+   *
+   * Optional rather than a number every implementation must invent, because
+   * three of the four in this repository genuinely frame nothing: the
+   * in-memory, `MessageChannel` and multi-node transports hand the message
+   * *object* to the peer, so there is no length prefix to overflow and any
+   * figure here would be fiction.  Read it as "the cap this transport will
+   * reject on", not "how large a message may be".
+   *
+   * It is the *local* cap.  There is no protocol negotiation yet (#823), so a
+   * peer configured lower than this node is still able to reject a frame this
+   * node considered safe; homogeneous configuration is the assumption.
+   */
+  readonly maxFrameBytes?: number;
   start(): Promise<void>;
   shutdown(): Promise<void>;
   setHandler(handler: WireHandler): void;
@@ -123,8 +147,12 @@ export class TcpTransport implements Transport {
      * {@link FrameDecoder}.  Default: {@link DEFAULT_MAX_FRAME_BYTES}
      * (16 MiB).  Raise it only if you genuinely send larger
      * envelopes; the cap is per-frame, not aggregate.
+     *
+     * Public because a sender has to be able to read it — see
+     * {@link Transport.maxFrameBytes} for why the send side needs the number
+     * at all.
      */
-    private readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }

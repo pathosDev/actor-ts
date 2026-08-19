@@ -5,9 +5,10 @@ description: How DistributedData gossips state between nodes — periodic full-s
 
 DistributedData replicates state by **gossip**:
 
-- Every `gossipIntervalMs`, each node picks one random peer.
+- Every `gossipInterval`, each node picks one random peer.
 - The node sends a **full snapshot** of every key it currently
-  holds.
+  holds — or as much of it as fits one frame, resuming next tick
+  (see [What gets gossiped](#what-gets-gossiped)).
 - The peer merges each entry; if its state changed, notify local
   subscribers.
 
@@ -40,7 +41,7 @@ const dd = system.extension(DistributedDataId).start(
 );
 ```
 
-The default `gossipIntervalMs` is 1 second — chosen as a balance
+The default `gossipInterval` is 1 second — chosen as a balance
 between propagation speed and gossip-bandwidth cost.  Lower
 intervals → faster convergence + more chatter.  Higher → less
 chatter, slower convergence.
@@ -66,20 +67,46 @@ for the rest of the block.
 
 ## What gets gossiped
 
-**The full state** — each tick, DistributedData serializes every
-key in its local replica and pushes the whole snapshot to one
-random peer.  There's no delta tracking and no per-peer receipt
-history; every gossip carries the complete set.
+**The full state, sliced to fit one frame** — each tick,
+DistributedData serializes as many keys as fit
+`max-gossip-bytes` and pushes them to one random peer, resuming
+next tick where this one stopped.  There's no delta tracking and no
+per-peer receipt history, so a store that fits the budget travels
+whole on every tick.
 
 This makes gossip volume proportional to **total state size**, not
 update rate.  A million-entry map costs its full serialized size
 every time it's gossiped, whether or not it changed; a small
 counter costs almost nothing no matter how often it increments.
 
-It's deliberately simple — no digest, no delta — which is cheap to
-implement and good enough for the small-to-medium stores
-DistributedData is meant for.  If your store grows large, raise
-`gossipIntervalMs` to spread the cost over time.
+Slicing is safe because merging is **per key**, and a key absent
+from a frame means "no information about it this round" — not
+"deleted".  CRDT merge is idempotent and commutative, so a key that
+arrives a tick later, or twice, changes nothing about where the
+cluster converges; it only changes when.
+
+### Why the budget exists
+
+`max-gossip-bytes` defaults to 1 MiB and is always **clamped down
+to `remote.max-frame-bytes`** (16 MiB by default).  Without it a
+large store produced one frame past the wire cap, and that frame is
+rejected by the receiver on its 4-byte **length prefix** — before a
+single key is parsed.  The receiving transport answers that by
+dropping the connection, which carries heartbeats, membership
+gossip and every cross-node `tell` as well.  So the store did not
+converge slowly; it did not converge at all, while killing one peer
+link per tick.
+
+A single key whose own encoding exceeds the budget cannot be sliced
+any further — the unit is one key's full state.  It is skipped, and
+the replica warns (rate-limited, naming the key and both sizes) and
+increments `distributed_data_gossip_skipped_keys_total`.  **That
+key does not converge.**  Split the value, or raise both
+`max-gossip-bytes` and `remote.max-frame-bytes`.
+
+If your store grows large, raising `gossip-interval` spreads the
+cost over time; lowering `max-gossip-bytes` spreads one tick's cost
+over more ticks.
 
 ## Per-peer round selection
 
@@ -149,19 +176,21 @@ over the next few ticks.
 
 Rough shape for a 10-node cluster, default 1-second gossip:
 
-- **Per tick, per node** — one message carrying the full
-  serialized store goes to a single random peer.  Its size is set
-  by **total state**, not by how much changed since the last tick,
-  so an idle store still pays this each tick; the cost just doesn't
-  grow with write rate.
-- **Scaling knobs** — store size drives the per-message cost and
-  `gossipIntervalMs` drives how often you pay it.  A large store on
-  a fast interval is the expensive combination.
+- **Per tick, per node** — one message carrying up to
+  `max-gossip-bytes` of serialized store goes to a single random
+  peer.  Its size is set by **total state**, not by how much changed
+  since the last tick, so an idle store still pays this each tick;
+  the cost just doesn't grow with write rate.
+- **Scaling knobs** — store size drives the per-message cost,
+  `gossip-interval` drives how often you pay it, and
+  `max-gossip-bytes` caps any single payment.  A large store on a
+  fast interval is the expensive combination; a large store with a
+  small budget is the slow-convergence one.
 
 For very-large clusters (50+ nodes), gossip volume can become
 significant.  The framework's gossip is **anti-entropy** style —
 all-to-all over time — which scales O(N) per node per round.
-Bigger clusters may want larger `gossipIntervalMs` or a different
+Bigger clusters may want larger `gossipInterval` or a different
 gossip topology (not currently configurable; an issue if needed).
 
 ## Diagnosing slow propagation
@@ -178,7 +207,7 @@ If this surprises you:
 
 1. **Wait a gossip round** (1 s default).  Most apparent staleness
    resolves within 1-2 gossip cycles.
-2. **Check gossipIntervalMs** — if set higher than default, the
+2. **Check `gossipInterval`** — if set higher than default, the
    wait is proportional.
 3. **Use `getAsync` with `consistency: 'majority'`** for reads
    that must reflect the latest known state across replicas.

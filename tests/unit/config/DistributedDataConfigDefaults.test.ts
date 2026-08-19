@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
+import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DistributedDataOptionsValidator,
@@ -24,6 +25,7 @@ describe('readDistributedDataOptionsFromConfig', () => {
         gossip-interval             = 250ms
         max-pending-quorum-requests = 32
         max-quorum-timeout          = 4s
+        max-gossip-bytes            = 512K
       }
     `);
 
@@ -31,6 +33,7 @@ describe('readDistributedDataOptionsFromConfig', () => {
       gossipInterval: 250,
       maxPendingQuorumRequests: 32,
       maxQuorumTimeout: 4_000,
+      maxGossipBytes: 512 * 1024,
     });
   });
 
@@ -52,7 +55,22 @@ describe('readDistributedDataOptionsFromConfig', () => {
       gossipInterval: 1_000,
       maxPendingQuorumRequests: 1_000,
       maxQuorumTimeout: 30_000,
+      maxGossipBytes: 1024 * 1024,
     });
+  });
+
+  test('the shipped gossip budget sits well under the shipped wire cap', () => {
+    // The relationship, not the numbers.  A gossip budget *at* the frame cap
+    // would still be correct — the clamp holds either way — but it would put a
+    // 16 MiB frame on the association that also carries heartbeats, and
+    // `failure-detector.unreachable-after` is 2 s.  So the budget being the
+    // smaller of the two is the property, and an order of magnitude is the
+    // margin the default was chosen for (#691).
+    const distributedData = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+    const frameCap = Config.parseString(REFERENCE_CONF).getBytes(ConfigKeys.remote.maxFrameBytes);
+
+    expect(distributedData.maxGossipBytes).toBeGreaterThan(0);
+    expect(distributedData.maxGossipBytes! * 8).toBeLessThanOrEqual(frameCap);
   });
 
   test('the shipped cap is low enough to fire before a timeout storm forms', () => {
@@ -88,6 +106,14 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
   test('rejects a negative quorum-timeout ceiling', () => {
     expect(() => new DistributedDataOptionsValidator().validate({ maxQuorumTimeout: -5 }))
       .toThrow(OptionsError);
+  });
+
+  test('accepts 0 for the gossip budget and rejects a negative or fractional one', () => {
+    const validator = new DistributedDataOptionsValidator();
+
+    expect(() => validator.validate({ maxGossipBytes: 0 })).not.toThrow();
+    expect(() => validator.validate({ maxGossipBytes: -1 })).toThrow(/maxGossipBytes/);
+    expect(() => validator.validate({ maxGossipBytes: 1.5 })).toThrow(/maxGossipBytes/);
   });
 
   test('an unset optional always passes', () => {
