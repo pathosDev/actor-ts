@@ -47,7 +47,7 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         ActorSystem<Actors.GuardianCommand> system =
-                ActorSystem.create(Actors.guardian(), "comparison-akka");
+                ActorSystem.create(Actors.guardian(), "comparison-akka-java");
 
         try {
             Actors.Refs refs = ask(system, system, Actors.GetRefs::new);
@@ -130,12 +130,21 @@ public final class Main {
      * <p>With {@code ACTOR_TS_COMPARISON_ROUND} set it lands in
      * {@code results/.rounds/} under a round-suffixed name, exactly like the
      * JavaScript arms, so the driver's median merge picks it up unchanged.
+     *
+     * <p><b>This name is written twice.</b>  It is spelled out here, and it is
+     * derived independently by {@code resultFileName()} in
+     * {@code js/result-file.ts} as {@code slug(framework.name)-slug(runtime.name)}
+     * — which is what the round merge uses.  They have to agree: if they do not,
+     * the rounds land under one name and the merged file appears under another,
+     * and nothing complains.  {@code framework.name} is {@code akka-java} in
+     * {@link ResultFile} and {@code runtime.name} is {@code jvm}, so this reads
+     * {@code akka-java-jvm}.
      */
     private static Path outputPath() {
         Path results = Path.of(System.getProperty("user.dir")).resolve("..").resolve("results").normalize();
         String round = System.getenv("ACTOR_TS_COMPARISON_ROUND");
         return round == null || round.isBlank()
-                ? results.resolve("akka-jvm.json")
-                : results.resolve(".rounds").resolve("akka-jvm-r" + round + ".json");
+                ? results.resolve("akka-java-jvm.json")
+                : results.resolve(".rounds").resolve("akka-java-jvm-r" + round + ".json");
     }
 }

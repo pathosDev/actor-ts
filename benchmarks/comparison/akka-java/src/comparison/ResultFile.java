@@ -32,7 +32,12 @@ final class ResultFile {
         json.name("schemaVersion").value(SCHEMA_VERSION);
 
         json.name("framework").beginObject()
-                .name("name").value("akka")
+                // The binding is part of the identity: the same framework at the
+                // same version is also measured through its Scala 3 API, and two
+                // arms called "akka" would collide on the published file name.
+                // `Main.outputPath()` spells the derived name out — keep them in
+                // step.
+                .name("name").value("akka-java")
                 .name("version").value(akkaVersion())
                 .name("language").value("Java")
                 // Akka 2.7 and later are BSL 1.1, not Apache 2.0. It travels with

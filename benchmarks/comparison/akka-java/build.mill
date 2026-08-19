@@ -1,0 +1,63 @@
+// The Java-binding JVM arm of the framework comparison (#27, #1229).
+//
+// Version 2.8.8 is deliberate and is the newest one that can be resolved
+// WITHOUT credentials: releases from 2.9 onwards are published only to
+// repo.akka.io, which answers 403 to an anonymous request.  A benchmark
+// nobody else can reproduce is not evidence, so this arm stays on the newest
+// publicly available artifact and says so.
+//
+// LICENCE: Akka 2.7 and later ship under the Business Source Licence 1.1, not
+// Apache 2.0.  Benchmarking is covered by its non-production grant, and the
+// licence is carried into the published tables next to the numbers, because a
+// reader comparing frameworks is usually also choosing one.
+//
+// Built by a build tool rather than bare javac because `akka-actor-typed`
+// pulls in scala-library, typesafe-config and slf4j transitively;
+// hand-managing that closure would be neither simple nor reproducible.
+//
+// **Mill rather than Maven, and the same across all four JVM arms.**  Three
+// build tools between four arms was a variable with nothing to do with what is
+// being measured.  The launcher is committed the way the Maven wrapper was —
+// two scripts, no binary — and `.mill-version` pins it, which here is not
+// optional: the scripts carry a nightly development build as their fallback
+// default, so an unpinned tree would silently build with whatever that is.
+//
+// One consequence worth knowing when reading the numbers: `mvn exec:java` ran
+// the benchmark inside Maven's own JVM, and `run` forks a clean one.  That is
+// the fairer shape — all four JVM arms now start identically — but it means
+// this arm's figures are not comparable across the change without a
+// re-measurement, which is why one covers every arm at once.
+package build
+
+import mill.*
+import mill.javalib.*
+
+object `package` extends JavaModule:
+
+  // Parity with the outgoing <maven.compiler.release>21</maven.compiler.release>.
+  def javacOptions = Seq("--release", "21")
+
+  // The JDK is pinned, not inherited.  Mill provisions one through coursier's
+  // JVM index by default; naming it here makes that a decision rather than a
+  // default, and means two machines measure on the same build instead of on
+  // whatever each developer happens to have installed.  The result file records
+  // it either way, so a reader can always see which JVM produced a number.
+  def jvmId = "zulu:21.0.10"
+
+  def mainClass = Some("comparison.Main")
+
+  def mvnDeps = Seq(
+    // A single `:` — the Scala suffix is spelled out rather than derived,
+    // because this is a Java module and Mill has no Scala version to append.
+    // The sibling `akka-scala` arm takes the `_3` build of the same release.
+    mvn"com.typesafe.akka:akka-actor-typed_2.13:2.8.8",
+    // A no-op SLF4J binding.  Without a binding Akka prints a substitute-logger
+    // warning to stderr on every run; with a real one it would be measuring its
+    // logger.  Fairness rule 3: logging off in every arm.
+    //
+    // 1.7.x: Akka 2.8 binds the SLF4J 1.x API; a 2.x binding leaves a
+    // StaticLoggerBinder warning on stderr.
+    mvn"org.slf4j:slf4j-nop:1.7.36",
+  )
+
+end `package`

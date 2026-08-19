@@ -117,7 +117,7 @@ public final class Harness {
     private static long requireComplete(String scenario, String caseName, int expected, long completed) {
         if (completed != expected) {
             throw new IllegalStateException(
-                    "akka / " + scenario + " / " + caseName + ": completed " + completed
+                    "akka-java / " + scenario + " / " + caseName + ": completed " + completed
                     + " of " + expected + " operations. A comparison row may not be published "
                     + "for work that did not happen (#1027).");
         }
