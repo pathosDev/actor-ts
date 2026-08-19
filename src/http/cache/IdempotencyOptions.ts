@@ -25,8 +25,31 @@ import type { HttpRequest } from '../Types.js';
  * cache the whole application depends on, and an attacker chooses how
  * much of it each minted key consumes.  It does NOT bound how MANY keys
  * a caller can mint — see the eviction note in {@link idempotent}.
+ *
+ * It also does not bound the *other* half of the key: see
+ * {@link DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH}.
  */
 export const DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH = 255;
+
+/**
+ * Longest {@link IdempotencyOptionsType.identity} result folded into the
+ * cache key before the request is refused with 400.
+ *
+ * A separate number from {@link DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH} rather
+ * than one cap over the composed key, so the header cap stays exactly
+ * Stripe's 255 and a tenant with a long id cannot spend an honest client's
+ * header budget.  Same value, because a scope is an authenticated
+ * principal — a UUID, a tenant slug, an API-key id — and 255 is generous
+ * for every one of those.
+ *
+ * The bound exists because the scope reaches the key from the same place
+ * the header does.  `identity`'s own documented recipe reads a raw client
+ * header, so a 64 KiB `x-account-id` and a two-character
+ * `Idempotency-Key` composed a 64 KiB cache key under a middleware whose
+ * documented cap was 255 — the header was checked, the scope was
+ * concatenated four lines later unchecked (#607).
+ */
+export const DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH = 255;
 
 /** Plain options-object shape accepted by {@link idempotent}. */
 export type IdempotencyOptionsType = {
@@ -52,6 +75,12 @@ export type IdempotencyOptionsType = {
    */
   readonly maxKeyLength?: number;
   /**
+   * Longest accepted {@link identity} result; a longer one is refused with
+   * 400 rather than stored.  Default:
+   * {@link DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH} (255).
+   */
+  readonly maxScopeLength?: number;
+  /**
    * What to do when the request lacks the header.  Default: `'reject'`
    * (respond 400).  Setting `'pass-through'` runs the handler unchanged
    * — useful when only some clients use idempotency and you don't want
@@ -67,6 +96,14 @@ export type IdempotencyOptionsType = {
    * caller would get the first caller's data / `Set-Cookie`).  Return the
    * authenticated principal (user / tenant / API-key id), e.g.
    * `identity: (request) => request.headers['x-account-id'] ?? 'anon'`.
+   *
+   * **Return an id, not free text.**  The result is concatenated into the
+   * cache key, so it is held to the same two rules as the header value:
+   * at most {@link maxScopeLength} characters, and no ASCII control
+   * character or space.  Anything else is refused with 400 (#607) — which
+   * matters most for the recipe above, where the value is a raw client
+   * header and the client picks its size.  Deriving the scope from a
+   * validated session or token instead keeps the check inert.
    */
   readonly identity?: (request: HttpRequest) => string | Promise<string>;
 };
@@ -107,6 +144,11 @@ export class IdempotencyOptionsBuilder extends OptionsBuilder<IdempotencyOptions
     return this.set('maxKeyLength', maxKeyLength);
   }
 
+  /** Longest accepted `identity` result folded into the key.  Default: 255. */
+  withMaxScopeLength(maxScopeLength: number): this {
+    return this.set('maxScopeLength', maxScopeLength);
+  }
+
   /** Behaviour when the request lacks the header.  Default: `'reject'`. */
   withMissingHeader(missingHeader: 'reject' | 'pass-through'): this {
     return this.set('missingHeader', missingHeader);
@@ -121,9 +163,9 @@ export class IdempotencyOptionsBuilder extends OptionsBuilder<IdempotencyOptions
 /**
  * Validates resolved {@link IdempotencyOptionsType} settings: `ttlMs` (the
  * response-retention window) must be a positive finite number of
- * milliseconds, `maxKeyLength` a positive integer, and `missingHeader` one
- * of its allowed literals.  (Presence of `cache` is a required-field
- * concern, not a validity one.)
+ * milliseconds, `maxKeyLength` and `maxScopeLength` positive integers, and
+ * `missingHeader` one of its allowed literals.  (Presence of `cache` is a
+ * required-field concern, not a validity one.)
  */
 export class IdempotencyOptionsValidator extends OptionsValidator<IdempotencyOptionsType> {
   constructor() {
@@ -132,6 +174,7 @@ export class IdempotencyOptionsValidator extends OptionsValidator<IdempotencyOpt
   protected rules(_s: Partial<IdempotencyOptionsType>): void {
     this.positiveNumber('ttlMs');
     this.positiveInt('maxKeyLength');
+    this.positiveInt('maxScopeLength');
     this.oneOf('missingHeader', ['reject', 'pass-through']);
   }
 }

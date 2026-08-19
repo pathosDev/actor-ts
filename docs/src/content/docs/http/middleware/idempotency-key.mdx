@@ -59,9 +59,10 @@ type IdempotencyOptions = {
   ttlMs?:         number;                              // default 24h
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
-  maxKeyLength?:  number;                              // default 255
-  missingHeader?: 'reject' | 'pass-through';           // default 'reject'
-  identity?:      (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
+  maxKeyLength?:   number;                             // default 255
+  maxScopeLength?: number;                             // default 255
+  missingHeader?:  'reject' | 'pass-through';          // default 'reject'
+  identity?:       (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
 };
 ```
 
@@ -72,8 +73,9 @@ type IdempotencyOptions = {
 | `headerName` | Customize the header name (case-insensitive match).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-key namespace.  Default `'idem:'` so multiple idempotency wrappers in the same Redis don't collide. |
 | `maxKeyLength` | Longest accepted header value.  Default 255 (Stripe's cap); a longer key is refused with 400. |
+| `maxScopeLength` | Longest accepted `identity` result.  Default 255; a longer scope is refused with 400. |
 | `missingHeader` | What to do when the header is absent.  Default `'reject'` (400); set `'pass-through'` to run the handler without dedup when only some clients use idempotency. |
-| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4). |
+| `identity` | Optional per-caller scope folded into the cache key so a cached, identity-specific response is never replayed to a different caller — e.g. `(req) => req.headers['x-account'] ?? 'anon'`.  Without it, two callers reusing the same key for the same method + path + query + body share one cached response; safe only for identity-agnostic endpoints (security audit HTTP-4).  **Return an id, not free text** — the result is held to the same two rules as the header value. |
 
 The wrapper also stores a **SHA-256 fingerprint of the request**
 — method, path, query string and body — alongside each cached
@@ -113,9 +115,29 @@ Real clients send a UUID or a short opaque token, so neither rule costs
 honest traffic anything.  Raise `maxKeyLength` only for a client fleet
 you control that genuinely mints longer keys.
 
-Note what this bounds: how much cache **one** minted key costs, not how
-**many** a caller can mint.  The eviction caution below is the other
-half.
+**Both rules apply to the `identity` scope too**, bounded by
+`maxScopeLength` (also 255 by default), because the scope is the other
+half of the same composed key:
+
+```
+idem:<scope>:<Idempotency-Key>
+```
+
+That matters most for the recipe the `identity` row above shows — a raw
+client header, where the client picks the size.  A two-character
+`Idempotency-Key` with a 64 KiB `x-account` used to be accepted with 200
+and stored a 64 KiB cache key under a middleware whose documented cap is
+255.  Deriving the scope from a validated session or token instead keeps
+the check inert.
+
+The two caps are separate numbers rather than one cap over the composed
+key, so a tenant with a long id cannot spend an honest client's header
+budget: 255 + 255 is accepted, and `maxKeyLength` stays exactly Stripe's
+published figure.
+
+Note what all of this bounds: how much cache **one** minted key costs,
+not how **many** a caller can mint.  The eviction caution below is the
+other half.
 
 ## What gets cached
 
@@ -266,8 +288,8 @@ import { Aside } from '@astrojs/starlight/components';
     policy does not rank guarantees against each other.
   - This middleware's own key space is attacker-controlled, so a flood
     of distinct `Idempotency-Key`s evicts *other* callers' records out
-    of the same instance.  `maxKeyLength` bounds how big each minted
-    key is, not how many there are.
+    of the same instance.  `maxKeyLength` and `maxScopeLength` bound how
+    big each minted key is, not how many there are.
   - A record is only marked most-recently-used when it is **read**.
     `setIfAbsent` does not count, so a claimed key that nobody has
     retried yet is the first thing dropped once the cap is reached.
