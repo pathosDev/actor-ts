@@ -244,6 +244,93 @@ export const DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS = 10_000;
 export const SINGLETON_HAND_OVER_BUFFER_SIZE = 1_000;
 
 /**
+ * Largest warm-hand-over snapshot a singleton will put on the wire, before it
+ * declines to ship one and lets the successor start cold (#194).
+ *
+ * Here rather than in an `XOptions.ts` for the same reason as
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS}: it defaults a field on
+ * **two** options types.
+ *
+ * One mebibyte, which is *not* the frame cap and deliberately nowhere near it.
+ * Three reasons, in order of how much they cost to get wrong:
+ *
+ * - The frame cap is a hard failure, not a fallback.  A snapshot is base64 in
+ *   a JSON frame, so it inflates by a third, and a frame over the receiver's
+ *   cap makes the receiver drop the whole inter-node connection — heartbeats
+ *   and gossip with it.  `handOverStateFitsFrame` in
+ *   `singleton/WarmHandOver.ts` is the check that keeps this default from ever
+ *   being the thing that trips it, and it derives from the live transport's
+ *   number rather than from this one.
+ * - The snapshot travels on the critical path of a host move, while the
+ *   singleton is running nowhere.  Shipping ten megabytes to save a recovery
+ *   is a slower outage, not a shorter one.
+ * - A cap that declines is safe: declining is a cold start, which is what
+ *   every singleton did before this feature existed.
+ *
+ * Raise it with `withMaxHandOverStateBytes` when a measured snapshot genuinely
+ * needs more — the number that matters then is the transport's frame cap, not
+ * this one.
+ */
+export const DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES = 1_024 * 1_024;
+
+/**
+ * How long a singleton manager keeps a warm-hand-over snapshot for a successor
+ * that has not asked for it yet (#194).
+ *
+ * The order this covers is the ordinary one.  Both nodes reconcile from their
+ * own gossip, so the outgoing host often stops its instance *before* the
+ * incoming host's request arrives — it reacted to the same membership change
+ * and did not need to be asked.  Without a short retention the snapshot taken at
+ * that moment has nobody to hand to, and the request a moment later is answered
+ * with nothing; warm hand-over then works or not depending on which of two
+ * independent gossip deliveries won.
+ *
+ * **Short on purpose, and the direction of the risk is why.**  A stale snapshot
+ * is the one outcome worse than a cold start: it restores a generation of state
+ * the cluster has already moved past, silently.  Two seconds is several
+ * multiples of the round trip a genuine successor needs — it re-asks every
+ * 500 ms, so it gets four attempts inside this window — and far too short for
+ * another node to have hosted, run and stopped in between.  The snapshot is
+ * also single-use and dropped the moment this node hosts again, so this bound is
+ * the last of three rather than the only one.
+ */
+export const SINGLETON_HAND_OVER_STATE_RETENTION_MS = 2_000;
+
+/**
+ * How long a singleton manager holds a message routed to it while it does not
+ * (yet) consider itself the host, before dead-lettering it (#637).
+ *
+ * A backstop, not the expected duration.  The window it covers is the two
+ * sides of one election disagreeing: a joining node is an `up` member carrying
+ * the role in its *peers'* views a gossip round before it is one in its own,
+ * so every proxy already routes there while the node itself still answers
+ * `wantHosted() === false` and has neither a child nor a hand-over to hold the
+ * message against.  Those messages were dead-lettered, which is
+ * "zero dropped messages" failing on the very transition #637 is about.
+ *
+ * The buffer is normally discharged by an *event* rather than by this timer —
+ * the next reconcile either takes over hosting (the messages flush into the
+ * new instance) or concludes this node is not the host (they dead-letter at
+ * once, so a node that genuinely will not host is no slower to report than it
+ * was).  This number only bounds the case where no further cluster event
+ * arrives at all.
+ *
+ * Two seconds — two gossip intervals at the default cadence
+ * (`DEFAULT_GOSSIP_INTERVAL_MS` in `src/util/Constants.ts`), because that is
+ * the quantity the window is made of.  Written as a literal rather than
+ * derived from it, because this module imports nothing by design (see the
+ * header) and a cluster configured with a slower gossip has the reconcile
+ * discharge above to fall back on, which does not depend on this number at
+ * all.
+ *
+ * Deliberately far below {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS}: that
+ * one waits on another node's cooperation, this one waits on our own view
+ * catching up.  If two rounds of gossip have not delivered that, holding
+ * longer is holding a message for a host that is not coming.
+ */
+export const SINGLETON_HOST_DISAGREEMENT_HOLD_MS = 2_000;
+
+/**
  * How often an outstanding {@link SingletonHandOverRequest} is re-sent while
  * the hand-over is still waiting (#949).
  *

@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **`ReplayedResult.recipientPath` now reports where a replayed letter was
+  actually sent rather than echoing the entry's recorded recipient, and the
+  `recipient` label on `actor_dead_letters_total{outcome="replayed"}`
+  follows it (#433).**
+
+  Without that, a caller logging the result after a redirect would name
+  the actor that received nothing. Anything that read the field before a
+  redirect was possible sees an unchanged value.
+
+- **Documented which durability the persistent dead-letter store provides
+  (#433).**
+
+  It is graceful-shutdown durability, not crash durability, and the
+  previous wording understated the boundary: because appends are issued
+  fire-and-forget onto a serialized chain, a burst arriving faster than
+  the journal accepts it leaves many un-settled appends outstanding, so a
+  hard kill loses all of them and not just the one in flight. Anything
+  captured before a `terminate()` is in the journal after it, however
+  large the burst.
+
+- **Settled the `actor-ts.dead-letters.*` namespace, with the reasoning
+  recorded at the key definition instead of only in a commit body (#433).**
+
+  It shipped while #1179 and #867 were open, which made it look like a
+  decision taken rather than made. Neither issue asks for the retention
+  keys to move and the two do not agree with each other: #1179 sketches a
+  publish-path token bucket under `actor-ts.diagnostics.*`, #867 sketches
+  dead-letter logging toggles at the root. The dividing line is the reader
+  — these keys are read by the queue and decide what is retained, those
+  are read on the publish side and decide how loudly a letter is announced
+  — so merging them would give one block two readers in two subsystems and
+  make a suppression knob look like it gates capture, which the code
+  prevents by capturing before publishing.
+
 - **A synchronous receive handler no longer pays for the async machinery**
   (#1206).
 
@@ -977,6 +1011,78 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **Dead letters can now be replayed to a recipient other than the one they
+  were addressed to — `deadLetterQueue.replay(id, alternateRecipientPath)`
+  (#433).**
+
+  The recorded path is not resolved at all when an alternate is given,
+  because redirecting is most useful exactly when the original address is
+  gone for good (a renamed actor, a shard that moved, a typo in a spawn).
+  Only the destination changes: the sender stays the recorded one, so the
+  recipient's `sender` still answers the actor that sent the message.
+  `max-replays` still applies, so a quarantined letter stays refused
+  however it is addressed — otherwise alternating between two paths would
+  hand back the unbounded retry loop the cap exists to close. If the
+  letter dead-letters again at the alternate it returns as the same entry,
+  now recording the alternate as its `recipientPath`.
+
+- **`ActorSystemOptions.withDeadLetters(...)` configures the dead-letter
+  queue the system actually uses (#433).**
+
+  The `DeadLetterQueueOptions` family shipped complete and publicly
+  exported with no reachable consumer: `system.deadLetterQueue` is
+  readonly, its only construction site read HOCON and nothing else, and
+  nothing installed a hand-built queue as the capture sink — so `new
+  DeadLetterQueue(system, options)` produced a correctly-configured object
+  that never received a letter, which the docs nevertheless advertised.
+  Explicit options now beat HOCON field by field, so naming one knob in
+  code leaves the rest of the `actor-ts.dead-letters` block in effect.
+
+- **A `metrics` dead-letter store: `actor-ts.dead-letters.store = "metrics"`
+  counts every undeliverable message and retains no payload (#433).**
+
+  `store` is now one axis with four rungs ordered by how much is kept —
+  `off`, `metrics`, `memory`, `persistent`. The arm exists because
+  retaining a payload is a different decision from observing a rate: a
+  ring holds a strong reference to every undeliverable message, which is a
+  data-protection question the moment a payload says anything about a
+  person, and a counter is not. It cannot be approximated with a small
+  ring, since `max-entries` must be positive and even the tightest one
+  keeps a live payload for a whole retention window.
+
+- **A named cache can now be sized for its own key space (#607).**
+
+  `CacheExtension`'s in-memory factory reads
+  `actor-ts.cache.<name>.in-memory` layered over the global
+  `actor-ts.cache.in-memory`, leaf by leaf, so `cache('idempotency')` and
+  `cache('rate-limit')` no longer share one `maxEntries`. That is what
+  makes the one-cache-per-consumer advice in three JSDoc headers and six
+  doc pages actionable: sizing one named instance previously required
+  hand-constructing an `InMemoryCache` and injecting it with `setCache`,
+  which nothing recommended for that purpose. The cache factory type
+  `CacheFactory` gains a second `name` parameter so a third-party plugin
+  can read its own per-name block the same way; a one-parameter factory
+  still satisfies it, so existing `registerCache` callers are unaffected.
+  The path carries no `reference.conf` leaf because the name belongs to
+  the application, exactly as `actor-ts.cache.<name>.plugin` does not.
+
+- **Warm hand-over for cluster singletons: a singleton actor that implements
+  `serializeForHandOver()` and `restoreFromHandOver(bytes)` hands its
+  in-memory state to its successor, so a singleton with expensive recovery —
+  thousands of events to replay, a large cache — no longer starts cold every
+  time the host moves. The state rides on the hand-over acknowledgment
+  introduced in #949, which is emitted at the only instant it is final: once
+  the outgoing instance's postStop has completed. The restore runs after the
+  constructor and before preStart, which is the only position from which
+  recovery can still be skipped. It is opted into on the actor rather than
+  through an option, so an actor written before this release is untouched,
+  and it is best-effort throughout: no hooks, an oversized snapshot, a
+  serializer or restore that throws, an instance that died unexpectedly, or
+  a predecessor that was downed rather than asked all fall back to today's
+  cold start with a warning. The snapshot is capped by a new
+  `maxHandOverStateBytes` (1 MiB default) and, independently, by whether it
+  fits the transport's live frame cap once base64-encoded. (#194).**
 
 - **`bun run test:coverage:gate` now enforces per-module line-coverage
   floors on top of the aggregate one (#541).**
@@ -2013,6 +2119,55 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **The dead-letter queue's shutdown flush was covered by nothing (#433).**
+
+  The whole restart suite stayed green with `flush()` stubbed out to do
+  nothing, because the in-memory journal's appends resolve promptly enough
+  that the serialized write chain drained by itself before termination
+  started — so the four cases the "letters survive a restart" criterion
+  rests on were passing for an unrelated reason. A journal with a delayed
+  append plus a burst of captures makes the backlog real at shutdown time,
+  and that case now fails when the flush is removed while the other eight
+  stay green.
+
+- **The stock-metrics pages claimed that "a system that keeps nothing counts
+  nothing", which the new `metrics` store falsifies, and still described the
+  replayed counter as naming the original recipient, which stopped being
+  true when replay grew an alternate destination. Both languages corrected.
+  (#433).**
+
+- **A rate-limit regression test asserted the right conclusion for the wrong
+  reason (#607).**
+
+  With `max` set below the flood size, the limiter short-circuited from
+  the third request on, so the flood minted two response-cache entries
+  instead of twenty, the map never reached its cap, and no eviction ran at
+  all in the test that claimed to prove a counter survives eviction. It
+  now floods with `max` at the flood size and asserts the map is full
+  before drawing any conclusion.
+
+- **BREAKING — A cluster singleton no longer dead-letters messages routed to
+  it while it is the elected host but has no instance yet (#637).**
+
+  Three ways into that state were uncovered: a hand-over is outstanding
+  and a peer has not finished standing down, `lease.acquire()` has not
+  resolved (a round trip to Kubernetes, etcd or Redis), or the node is
+  already the host in a peer's view and not yet in its own — a joining
+  member is `up` to its peers a gossip round before it is `up` to itself.
+  Measured on the three-node role-restricted fixture the issue names,
+  seven of seventeen messages sent across a take-over were lost with no
+  failure of any kind in play. Such messages are now held, capped at 1000
+  and expiring after two seconds, and flushed into the instance in send
+  order the moment it spawns. The hold is deliberately not conditional on
+  the manager agreeing that it hosts, because the window exists precisely
+  because it does not agree yet; a manager that has opted out of hosting
+  via restartOnTermination is the one case that still dead-letters at
+  once.
+
+  *Migration:* A message routed to a manager that will genuinely never
+  host now reaches deadLetters up to two seconds later than before; a test
+  or alert that asserted an immediate dead letter needs a longer wait.
 
 - **Documentation that misstated where serialization happens, in both
   directions (#450).**
@@ -3581,6 +3736,77 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **The gossip replay guard's documented bound is corrected: a recorded
+  frame is refused to a receiver that holds a high-water mark for that
+  sender, not "while its sender is still a member" (#112).**
+
+  The map that holds those marks has one writer and it runs in the gossip
+  path, so a mark exists only for a peer this node has accepted a frame
+  from directly. There are three ways to hold none, and only one is the
+  sender's eviction: an evicted member's mark is dropped with it, a fresh
+  or restarted process starts with none, and a member learned third-party
+  never had one. That last case is the ordinary one rather than an edge —
+  gossip is epidemic, so a node files C as `up` on B's word and has still
+  never seen a frame from C, and one recorded frame from C then merges
+  with the sender a full member and nothing evicted anywhere. Both
+  remaining cases are now asserted by execution as counterfactuals in
+  tests/unit/cluster/GossipReplayGuard.test.ts, and
+  tests/unit/cluster/GossipReplayBoundDocumented.test.ts holds the prose
+  in `admitsGossipSequence` and on the cluster-security page (both
+  languages) to what those tests measure. No behaviour changed: refusing a
+  frame from a peer with no mark refuses the first frame from every peer,
+  which was measured and is why it is not the missing check. Closing
+  either case needs a required incarnation identity on the wire and
+  therefore waits on #823; a required incarnation would refuse a recording
+  of a previous incarnation outright, while a node downed while still
+  running and a first sighting at a receiver holding no earlier
+  incarnation of the subject would survive even that.
+
+- **BREAKING — `idempotent` now bounds the whole cache key it composes, not
+  just the header half (#607).**
+
+  `maxKeyLength` ran on the `Idempotency-Key` value; the `identity` scope
+  was concatenated into the same key four lines later with no check at
+  all, and `identity`'s own documented recipe reads a raw client header. A
+  request carrying a two-character `Idempotency-Key` and a 64 KiB
+  `x-account-id` was accepted with 200 and stored a 64 KiB cache key under
+  a middleware whose documented cap is 255 characters. The scope is now
+  held to the header's two rules — a length bound and no ASCII control
+  character or space — with its own `maxScopeLength` option (default 255)
+  so a long tenant id cannot spend an honest client's header budget and
+  `maxKeyLength` stays exactly Stripe's published figure. An empty scope
+  passes both rules, so a configuration with no `identity` is unchanged.
+
+  *Migration:* An `identity` returning more than 255 characters, or one
+  containing a space or control character, now answers 400 instead of
+  storing the key; raise `maxScopeLength`, or derive the scope from the
+  account id rather than free text such as a display name.
+
+- **Corrected a false absolute claim about the rate limiter (#607).**
+
+  `src/http/cache/RateLimit.ts` and the rate-limit page in both languages
+  stated without qualification that a flooding client cannot reset its own
+  limit, because `incr` bumps its counter to most-recently-used on every
+  request. The premise holds and the conclusion does not: `rateLimit`
+  calls `incr` in exactly one place, inside the handler it wraps, so a
+  flood that bypasses the limiter never bumps anything. Measured on one
+  shared `InMemoryCache({ maxEntries: 4 })`, a client answered 429 by
+  `max: 2` was answered 200 again after twenty requests to an `idempotent`
+  route the limiter does not wrap. The text now separates the two cases
+  and names the measurement, and a new test suite both re-runs the
+  reproduction and reads the three files so the unqualified wording cannot
+  return silently.
+
+- **The warm-hand-over payload is the one field of the singleton wire
+  protocol that reaches user code, so the inbound guard now rejects an
+  acknowledgment whose `state` is not a Uint8Array, and rejects the whole
+  frame rather than stripping the field. Unknown wire kinds pass validation
+  by design and the cluster wire carries no credential, so a peer that puts
+  something else there is a peer to disbelieve rather than a frame to
+  sanitise. The snapshot only reaches the hook from a socket-authenticated
+  peer that this node itself asked to stand down, and its size is bounded
+  before it is decoded. (#194).**
 
 - **Replaces the existing CHANGELOG.md line 4005, inside the [Unreleased]
   Security section, which currently reads "`bun.lock`, a CycloneDX SBOM on

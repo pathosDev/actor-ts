@@ -373,9 +373,23 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ ...required, bufferSize: 1.5 })).toThrow(/bufferSize/);
   });
 
+  test('rejects a non-positive or fractional maxHandOverStateBytes (#194)', () => {
+    // A byte count, so fractional is as meaningless as negative.  Zero is worth
+    // rejecting rather than reading as "never ship state": warm hand-over is
+    // turned off by not implementing the hooks, and a cap that silently means
+    // "off" would leave an actor that does implement them looking broken.
+    expect(() => check({ ...required, maxHandOverStateBytes: 0 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: -1 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: 1.5 })).toThrow(/maxHandOverStateBytes/);
+  });
+
   test('accepts a valid singleton config', () => {
     expect(() => check({
-      ...required, acquireRetryIntervalMs: 5_000, handOverTimeoutMs: 10_000, bufferSize: 10,
+      ...required,
+      acquireRetryIntervalMs: 5_000,
+      handOverTimeoutMs: 10_000,
+      maxHandOverStateBytes: 65_536,
+      bufferSize: 10,
     })).not.toThrow();
   });
 });
@@ -412,9 +426,21 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
     expect(() => check({ ...required, handOverTimeoutMs: -1 })).toThrow(OptionsError);
   });
 
+  test('rejects a non-positive maxHandOverStateBytes (#194)', () => {
+    // Same reasoning as `handOverTimeoutMs` above: the extension copies this
+    // field across by hand, so a bound only one of the two surfaces enforces is
+    // a bound a caller can walk around.
+    expect(() => check({ ...required, maxHandOverStateBytes: 0 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: 1.5 })).toThrow(OptionsError);
+  });
+
   test('accepts a valid manager config', () => {
     expect(() => check({
-      ...required, role: 'worker', acquireRetryIntervalMs: 1_000, handOverTimeoutMs: 10_000,
+      ...required,
+      role: 'worker',
+      acquireRetryIntervalMs: 1_000,
+      handOverTimeoutMs: 10_000,
+      maxHandOverStateBytes: 65_536,
     })).not.toThrow();
   });
 });

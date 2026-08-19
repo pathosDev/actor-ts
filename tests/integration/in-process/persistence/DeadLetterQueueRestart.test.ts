@@ -6,7 +6,8 @@ import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { InMemoryJournal } from '../../../../src/persistence/journals/InMemoryJournal.js';
 import type { Journal } from '../../../../src/persistence/Journal.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import type { JournalEntry, PersistentEvent } from '../../../../src/persistence/JournalTypes.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * The acceptance criterion #433 leads with: **captured letters survive a
@@ -29,6 +30,59 @@ function newSystem(journal: Journal, deadLetters: ConfigObject): ActorSystem {
 }
 
 class Nothing extends Actor<unknown> { override onReceive(_m: unknown): void {} }
+
+/**
+ * A journal whose `append` takes a measurable moment, so that a burst of
+ * captures leaves writes genuinely **outstanding** when the shutdown starts.
+ *
+ * Needed because `InMemoryJournal.append` resolves promptly enough that the
+ * queue's serialized write chain drains by itself, which makes every
+ * durability assertion in this file pass whether the shutdown flush works or
+ * not.  Only `append` is delayed: the point is to widen the window between
+ * "the letter was captured" and "the letter is in the journal", which is the
+ * only window a shutdown flush exists to close.
+ */
+class SlowAppendJournal implements Journal {
+  constructor(
+    private readonly delegate: Journal,
+    private readonly appendDelayMs: number,
+  ) {}
+
+  async append<E = unknown>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    // The elapsed time IS the point here — this is injected latency, not a
+    // wait for something that could be polled for.  Nothing has happened yet
+    // that a condition could observe: the delay is the slow journal being
+    // simulated, and it is what leaves the queue's write chain outstanding
+    // when the shutdown starts.  Poll instead and there is no backlog left to
+    // assert on.
+    await sleep(this.appendDelayMs);
+    return this.delegate.append(persistenceId, entries, expectedSeq);
+  }
+
+  read<E = unknown>(
+    persistenceId: string,
+    fromSeq: number,
+    toSeq?: number,
+  ): Promise<PersistentEvent<E>[]> {
+    return this.delegate.read(persistenceId, fromSeq, toSeq);
+  }
+
+  highestSeq(persistenceId: string): Promise<number> {
+    return this.delegate.highestSeq(persistenceId);
+  }
+
+  delete(persistenceId: string, toSeq: number): Promise<void> {
+    return this.delegate.delete(persistenceId, toSeq);
+  }
+
+  persistenceIds(): Promise<string[]> {
+    return this.delegate.persistenceIds();
+  }
+}
 
 /** Produce one genuine dead letter addressed to `/user/<name>`. */
 async function deadLetterTo(system: ActorSystem, name: string, message: unknown): Promise<void> {
@@ -90,6 +144,88 @@ describe('DeadLetterQueue — persistent store across a restart', () => {
     const second = newSystem(journal, {});
     try {
       expect(await second.deadLetterQueue.list()).toEqual([]);
+    } finally {
+      await second.terminate();
+    }
+  });
+
+  test('a restored letter replays, and the recipient gets the original payload', async () => {
+    // AC1 x AC2 — the crossing an operator actually performs after an
+    // incident, and the one the rest of this suite never reached: the
+    // letters survive a restart (proved above) and replay redelivers the
+    // payload untouched (proved in the unit suite), but each half was only
+    // ever shown on its own.  A `persistent` payload makes the round trip
+    // through the tagged-JSON codec, so "untouched" is a claim about a
+    // decode here, not about an object reference that never left memory.
+    const journal = new InMemoryJournal();
+    const sent = { kind: 'order', id: 7, lines: ['a', 'b'], paid: false };
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'worker', sent);
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the letter reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    try {
+      const received: unknown[] = [];
+      class Recorder extends Actor<unknown> {
+        override onReceive(m: unknown): void { received.push(m); }
+      }
+      const [restored] = await second.deadLetterQueue.list();
+      expect(restored!.payload.kind).toBe('captured');
+
+      second.spawn(Recorder, 'worker');
+      expect((await second.deadLetterQueue.replay(restored!.id)).kind).toBe('replayed');
+      await awaitCondition(() => received.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the restored letter was redelivered',
+      });
+      // Structurally equal to what was originally sent, nested values and
+      // the `false` included — a codec that dropped a falsy field or
+      // flattened the array would still have "delivered something".
+      expect(received[0]).toEqual(sent);
+      expect(await second.deadLetterQueue.list()).toEqual([]);
+    } finally {
+      await second.terminate();
+    }
+  });
+
+  test('a restored letter can be replayed to an alternate recipient', async () => {
+    // The redirect over the durable path.  Worth its own case because the
+    // restored entry's `recipientPath` came back through a decode, and the
+    // redirect deliberately never resolves it — so a queue that had lost or
+    // mangled that field would still redirect correctly here while failing
+    // every replay to the original.
+    const journal = new InMemoryJournal();
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'worker', 'work');
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the letter reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    try {
+      const received: unknown[] = [];
+      class Recorder extends Actor<unknown> {
+        override onReceive(m: unknown): void { received.push(m); }
+      }
+      const [restored] = await second.deadLetterQueue.list();
+      // '/user/worker' is never respawned in this run.
+      second.spawn(Recorder, 'standby');
+      const standbyPath = `actor-ts://${SYSTEM_NAME}/user/standby`;
+
+      const result = await second.deadLetterQueue.replay(restored!.id, standbyPath);
+      expect(result).toEqual({ kind: 'replayed', recipientPath: standbyPath });
+      await awaitCondition(() => received.includes('work'), {
+        timeoutMs: 4_000,
+        label: 'the restored letter reached the alternate recipient',
+      });
     } finally {
       await second.terminate();
     }
@@ -186,6 +322,62 @@ describe('DeadLetterQueue — persistent store across a restart', () => {
       expect(messages.sort()).toEqual(['first', 'second', 'third']);
     } finally {
       await third.terminate();
+    }
+  });
+
+  test('the shutdown settles a whole outstanding write backlog, not just one append', async () => {
+    // What "durable" actually means here, pinned against a journal slow
+    // enough for the claim to have content.
+    //
+    // Writes are fire-and-forget onto a SERIALIZED chain: `tell` is
+    // synchronous and cannot wait for a journal, so a burst captured faster
+    // than the journal accepts it leaves a backlog of up to N un-settled
+    // appends — not one.  The guarantee is that a graceful shutdown settles
+    // that whole backlog.
+    //
+    // Against `InMemoryJournal` this is untestable and every other case in
+    // this file is silent about it: its `append` resolves so promptly that
+    // the chain drains on its own before `terminate()` gets anywhere, so the
+    // suite stays green even with `flush()` stubbed out to do nothing.  The
+    // delay below is what makes the backlog real at shutdown time, and it is
+    // why this case exists separately from the four above.
+    //
+    // Scope of the binding, measured rather than assumed: stubbing `flush()`
+    // out entirely fails this case and only this case.  Reducing it to a
+    // SINGLE `await this.writeTail` does not fail anything — the two flush
+    // call sites (the CoordinatedShutdown task and the drain after the actor
+    // tree is down) each await once, so the second round inside `flush` is
+    // defence in depth rather than load-bearing.  Do not read this test as
+    // covering it.
+    const journal = new SlowAppendJournal(new InMemoryJournal(), 4);
+    const count = 20;
+    const names = Array.from({ length: count }, (_, index) => `worker-${index}`);
+
+    const first = newSystem(journal, {});
+    // Every actor stopped first, then every letter sent in one tight loop —
+    // a burst, rather than 20 separately-settled writes.  Awaiting anything
+    // between the sends would drain the chain incrementally and hand the
+    // shutdown nothing to do, which is the shape that made the other cases
+    // pass vacuously.
+    const refs = names.map((name) => first.spawn(Nothing, name));
+    for (const ref of refs) ref.stop();
+    await awaitCondition(
+      () => names.every((name) => first._resolvePath(['user', name]).isNone()),
+      { timeoutMs: 4_000, label: 'every recipient reached the terminated state' },
+    );
+    for (const [index, ref] of refs.entries()) ref.tell(`letter-${index}`);
+
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    try {
+      const messages = (await second.deadLetterQueue.list())
+        .map((e) => (e.payload as { message: unknown }).message)
+        .sort();
+      const expected = Array.from({ length: count }, (_, index) => `letter-${index}`).sort();
+      expect(messages).toEqual(expected);
+    } finally {
+      await second.terminate();
     }
   });
 

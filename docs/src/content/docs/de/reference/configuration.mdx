@@ -134,14 +134,17 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `dead-letters.store` | `"off"` | `off` = nur publishen, nichts aufbewahren / `memory` = ein begrenzter Ring / `persistent` = zusätzlich ins Journal schreiben, sodass die Queue einen Neustart übersteht. |
-| `dead-letters.max-entries` | `1000` | Aufbewahrte Letters, bevor das älteste verdrängt wird. |
+| `dead-letters.store` | `"off"` | Geordnet danach, wie viel aufbewahrt wird: `off` = nur publishen, nichts aufbewahren / `metrics` = zählen, keine Payload aufbewahren / `memory` = ein begrenzter Ring / `persistent` = zusätzlich ins Journal schreiben, sodass die Queue einen Neustart übersteht. |
+| `dead-letters.max-entries` | `1000` | Aufbewahrte Letters, bevor das älteste verdrängt wird.  Von `off` und `metrics` ignoriert, die keine aufbewahren. |
 | `dead-letters.retention` | `1h` | Letters nach dieser Zeit altern lassen.  `0` schaltet das Altern ab und lässt `max-entries` als einzige Schranke. |
 | `dead-letters.max-replays` | `3` | Wie oft ein Letter erneut zugestellt werden darf, bevor es in Quarantäne kommt. |
 | `dead-letters.persistence-id` | `""` | Journal-Stream, in den der `persistent`-Store schreibt.  Leer leitet ihn aus dem Systemnamen ab, sodass zwei Systeme mit gemeinsamem Journal getrennte Queues behalten. |
 
-Siehe [Dead Letters](/de/operations/dead-letters/) dafür, was die Queue
-enthält und wie man daraus erneut zustellt.
+Jeder Key hier ist auch im Code setzbar, feldweise, über
+`ActorSystemOptions.withDeadLetters(…)` — was diesen Block überstimmt, wie
+explizite Options es immer tun. Siehe [Dead
+Letters](/de/operations/dead-letters/) dafür, was die Queue enthält und wie
+man daraus erneut zustellt.
 
 ### `actor-ts.cluster`
 
@@ -395,9 +398,17 @@ des SQLite-Journals.  Siehe jede Journal-Seite in
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Intervall (ms) des Hintergrund-Sweeps für abgelaufene Einträge. |
+| `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben zwei Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt. |
+| `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+Die beiden `<name>`-Pfade nehmen den Namen, den dein Code an
+`cache(name)` übergibt, und lassen sich deshalb nicht in
+`reference.conf` aufzählen.  Einen Consumer allein für seinen eigenen
+Key-Raum zu dimensionieren ist genau das, was die Empfehlung [ein Cache
+pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 
 ### `actor-ts.sharding`
 

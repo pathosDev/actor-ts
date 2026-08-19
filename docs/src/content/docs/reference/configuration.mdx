@@ -132,14 +132,17 @@ Place this at the project root.  The framework auto-loads it on
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `dead-letters.store` | `"off"` | `off` = publish only, keep nothing / `memory` = a bounded ring / `persistent` = also write to the journal, so the queue survives a restart. |
-| `dead-letters.max-entries` | `1000` | Letters held before the oldest is evicted. |
+| `dead-letters.store` | `"off"` | Ordered by how much is kept: `off` = publish only, keep nothing / `metrics` = count them, keep no payload / `memory` = a bounded ring / `persistent` = also write to the journal, so the queue survives a restart. |
+| `dead-letters.max-entries` | `1000` | Letters held before the oldest is evicted.  Ignored by `off` and `metrics`, which hold none. |
 | `dead-letters.retention` | `1h` | Age letters out after this long.  `0` disables ageing and leaves `max-entries` as the only bound. |
 | `dead-letters.max-replays` | `3` | How often one letter may be replayed before it is quarantined. |
 | `dead-letters.persistence-id` | `""` | Journal stream the `persistent` store writes to.  Empty derives it from the system name, so two systems sharing a journal keep separate queues. |
 
-See [Dead letters](/operations/dead-letters/) for what the queue holds and
-how to replay from it.
+Every key here is also settable in code, field by field, through
+`ActorSystemOptions.withDeadLetters(…)` — which wins over this block, as
+explicit options always do. See [Dead
+letters](/operations/dead-letters/) for what the queue holds and how to
+replay from it.
 
 ### `actor-ts.cluster`
 
@@ -380,9 +383,16 @@ the per-plugin keys.
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
+| `cache.<name>.in-memory.*` | *(the block above)* | Same two leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf. |
+| `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
 
 Redis and Memcached caches read their connection settings from
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+The two `<name>` paths take the name your code asks `cache(name)` for,
+so they cannot be enumerated in `reference.conf`.  Sizing one consumer
+for its own key space is what the [one cache per
+consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 
 ### `actor-ts.sharding`
 

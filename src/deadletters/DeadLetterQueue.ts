@@ -85,6 +85,11 @@ type StoredEntry = {
  * `DropReportingMailbox.observeDrops` — deliberately out of scope here
  * rather than papered over.
  *
+ * **Not every store retains a letter.**  Under `metrics` the counter is the
+ * only record: `list` stays empty and `replay` answers `unknown-entry` for
+ * every id, which is honest rather than degraded — nothing was kept, so
+ * there is nothing to hand back.
+ *
  * **Persistence is resolved lazily**, through a dynamic import, so that a
  * consumer importing `Actor` does not pull a journal — and its codec, and
  * its plugin registry — into their bundle for a feature they left `off`.
@@ -174,7 +179,8 @@ export class DeadLetterQueue {
   }
 
   /**
-   * Hand a captured letter back to the actor it was addressed to.
+   * Hand a captured letter back — to the actor it was addressed to, or to
+   * `alternateRecipientPath` instead.
    *
    * Removes the entry *before* redelivering, and remembers the message so
    * that a second failure comes back as the **same** entry with a higher
@@ -183,8 +189,29 @@ export class DeadLetterQueue {
    * each attempt still looked like a first — the queue growing on exactly
    * the letters it should be refusing.  Past `maxReplays` the letter is
    * quarantined and this refuses to send it.
+   *
+   * **The alternate replaces the destination and nothing else.**  The sender
+   * is still the recorded one, so the recipient's `sender` answers the actor
+   * that originally sent the message and a reply goes where a reply always
+   * would.  The recorded path is *not* resolved at all when an alternate is
+   * given: redirecting is most useful precisely when the original address is
+   * gone for good — a renamed actor, a shard that moved, a typo in a
+   * `spawn` — and requiring the dead address to still exist would refuse
+   * exactly those cases.
+   *
+   * **An alternate does not reset `maxReplays`.**  The cap bounds how many
+   * times *this letter* is redelivered, not how many times one recipient is
+   * asked, so a quarantined letter stays refused however it is addressed.
+   * Letting a different path grant a fresh budget would hand the unbounded
+   * retry loop back to any operator willing to alternate between two paths —
+   * which is the loop the cap exists to close.
+   *
+   * If the letter dead-letters again at the alternate it returns as the same
+   * entry, now recording the alternate as its `recipientPath`: that is where
+   * the message actually failed this time, and it is what the next person
+   * reading the queue needs to see.
    */
-  async replay(id: string): Promise<DeadLetterReplayResult> {
+  async replay(id: string, alternateRecipientPath?: string): Promise<DeadLetterReplayResult> {
     await this._restore();
     this.expire();
     const index = this.entries.findIndex((stored) => stored.entry.id === id);
@@ -197,9 +224,10 @@ export class DeadLetterQueue {
       return { kind: 'quarantined', replayCount: entry.replayCount };
     }
 
-    const recipient = this.resolve(entry.recipientPath);
+    const destinationPath = alternateRecipientPath ?? entry.recipientPath;
+    const recipient = this.resolve(destinationPath);
     if (recipient === null) {
-      return { kind: 'unresolved-recipient', recipientPath: entry.recipientPath };
+      return { kind: 'unresolved-recipient', recipientPath: destinationPath };
     }
 
     this.entries.splice(index, 1);
@@ -211,8 +239,12 @@ export class DeadLetterQueue {
       replayCount: entry.replayCount + 1,
     });
     recipient.tell(entry.payload.message as never, this.resolve(entry.senderPath));
-    this.count('replayed', entry.recipientPath);
-    return { kind: 'replayed', recipientPath: entry.recipientPath };
+    // Labelled with the destination, not the recorded path: the counter
+    // answers "where did we hand letters back to", and a redirect that
+    // reported the dead address would attribute the delivery to an actor
+    // that received nothing.
+    this.count('replayed', destinationPath);
+    return { kind: 'replayed', recipientPath: destinationPath };
   }
 
   /** Forget everything held.  The durable log is compacted to match. */
@@ -287,6 +319,17 @@ export class DeadLetterQueue {
   /* ------------------------------ capture ------------------------------ */
 
   private captureUnguarded(deadLetter: DeadLetter): void {
+    if (this.settings.store === 'metrics') {
+      // Counted and dropped, and deliberately ahead of the entry below: the
+      // whole point of this store is to observe the rate without retaining
+      // the message, so minting a uuid and doing the ring bookkeeping for an
+      // entry nothing will ever read would be the cost an operator chose it
+      // to avoid.  Nothing is replayable here, so the replay bookkeeping is
+      // unreachable too and the outcome is always `captured`.
+      this.count('captured', deadLetter.recipient.path.toString());
+      return;
+    }
+
     const message = deadLetter.message;
     const previous = this.replayed.get(message);
     if (previous !== undefined) this.replayed.delete(message);

@@ -237,7 +237,26 @@ const responseCache    = extension.cache('response-cache');
 
 Jeder Name löst zu einer eigenen Instanz auf, eine Flut durch den einen
 erreicht die anderen also überhaupt nicht.  Dimensioniere `maxEntries`
-jeweils allein für den Key-Raum dieses Consumers.
+jeweils allein für den Key-Raum dieses Consumers — unter dem Namen des
+Caches selbst:
+
+```hocon
+actor-ts.cache {
+  in-memory { maxEntries = 10000 }              # every in-memory instance
+
+  idempotency.in-memory { maxEntries = 200000 } # just cache('idempotency')
+  rate-limit.in-memory  { maxEntries = 50000 }  # just cache('rate-limit')
+}
+```
+
+Der Block je Name gewinnt Blatt für Blatt gegen den globalen, ein
+Override setzt also nur, was er nennt, und der Rest fällt weiterhin
+durch.  Der Name gehört dir, deshalb sind diese Pfade nicht in
+[reference.conf](/de/reference/reference-conf/) aufgeführt — aus dem
+gleichen Grund, aus dem `actor-ts.cache.<name>.plugin` es nicht ist.
+Ein ungültiger Wert wird beim ersten `cache(name)` mit einem
+`OptionsError` abgelehnt, statt die Map still auf den Default zu
+dimensionieren.
 
 Das verkleinert den Explosionsradius, beseitigt ihn aber nicht: eine
 Middleware, deren eigener Key-Raum angreiferkontrolliert ist, kann
@@ -275,6 +294,10 @@ actor-ts.cache.in-memory {
   cleanupMs  = 30000   # background sweep interval, ms (0 disables)
 }
 ```
+
+Dieser Block gilt für jede In-Memory-Instanz;
+`actor-ts.cache.<name>.in-memory` überschreibt ihn für eine einzelne —
+siehe [ein Cache pro Consumer](#ein-cache-pro-consumer).
 
 Für einen Wegwerf-Cache konstruiere einfach direkt
 `new InMemoryCache()` — keine Extension nötig.

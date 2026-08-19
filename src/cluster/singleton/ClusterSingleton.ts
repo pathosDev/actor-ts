@@ -294,6 +294,9 @@ export class ClusterSingleton implements Extension {
       if (options.handOverTimeoutMs !== undefined) {
         managerOptions.withHandOverTimeoutMs(options.handOverTimeoutMs);
       }
+      if (options.maxHandOverStateBytes !== undefined) {
+        managerOptions.withMaxHandOverStateBytes(options.maxHandOverStateBytes);
+      }
       if (options.restartOnTermination !== undefined) {
         managerOptions.withRestartOnTermination(options.restartOnTermination);
       }

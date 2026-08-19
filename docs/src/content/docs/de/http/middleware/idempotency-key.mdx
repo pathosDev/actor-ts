@@ -59,9 +59,10 @@ type IdempotencyOptions = {
   ttlMs?:         number;                              // Default 24 h
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
-  maxKeyLength?:  number;                              // Default 255
-  missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
-  identity?:      (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
+  maxKeyLength?:   number;                             // Default 255
+  maxScopeLength?: number;                             // Default 255
+  missingHeader?:  'reject' | 'pass-through';          // Default 'reject'
+  identity?:       (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
 };
 ```
 
@@ -72,8 +73,9 @@ type IdempotencyOptions = {
 | `headerName` | Header-Namen anpassen (case-insensitive).  Default `'idempotency-key'`. |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'idem:'`, damit mehrere Idempotency-Wrapper im selben Redis nicht kollidieren. |
 | `maxKeyLength` | Längster akzeptierter Header-Wert.  Default 255 (Stripes Schranke); ein längerer Key wird mit 400 abgelehnt. |
+| `maxScopeLength` | Längstes akzeptiertes `identity`-Ergebnis.  Default 255; ein längerer Scope wird mit 400 abgelehnt. |
 | `missingHeader` | Was tun, wenn der Header fehlt.  Default `'reject'` (400); auf `'pass-through'` setzen, um den Handler ohne Dedup laufen zu lassen, wenn nur manche Clients Idempotency nutzen. |
-| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4). |
+| `identity` | Optionaler Scope pro Aufrufer, der in den Cache-Key gefaltet wird, damit eine gecachte, identitätsspezifische Response nie an einen anderen Aufrufer ausgeliefert wird — z. B. `(req) => req.headers['x-account'] ?? 'anon'`.  Ohne ihn teilen sich zwei Aufrufer mit gleichem Key + Methode + Pfad + Query + Body eine Response; nur für identitätsunabhängige Endpunkte sicher (security audit HTTP-4).  **Gib eine ID zurück, keinen Freitext** — das Ergebnis unterliegt denselben zwei Regeln wie der Header-Wert. |
 
 Der Wrapper speichert zusätzlich einen **SHA-256-Fingerprint des
 Requests** — Methode, Pfad, Query-String und Body — neben jeder
@@ -116,9 +118,30 @@ beiden Regeln kostet ehrlichen Traffic also etwas.  Erhöhe
 `maxKeyLength` nur für eine Client-Flotte, die du kontrollierst und die
 tatsächlich längere Keys erzeugt.
 
-Beachte, was das begrenzt: wie viel Cache **ein** erzeugter Key kostet
-— nicht, **wie viele** ein Aufrufer erzeugen kann.  Die Eviction-Warnung
-unten ist die andere Hälfte.
+**Beide Regeln gelten auch für den `identity`-Scope**, begrenzt durch
+`maxScopeLength` (ebenfalls Default 255), denn der Scope ist die andere
+Hälfte desselben zusammengesetzten Keys:
+
+```
+idem:<scope>:<Idempotency-Key>
+```
+
+Das zählt vor allem für das Rezept aus der `identity`-Zeile oben — einen
+rohen Client-Header, bei dem der Client die Größe wählt.  Ein
+zweizeichiger `Idempotency-Key` mit einem 64-KiB-`x-account` wurde
+früher mit 200 akzeptiert und speicherte einen 64 KiB großen Cache-Key,
+unter einer Middleware mit dokumentierter Schranke 255.  Leitest du den
+Scope stattdessen aus einer validierten Session oder einem Token ab,
+bleibt die Prüfung wirkungslos.
+
+Die beiden Schranken sind getrennte Zahlen statt einer Schranke über den
+zusammengesetzten Key, damit ein Mandant mit langer ID nicht das Budget
+eines ehrlichen Clients verbraucht: 255 + 255 wird akzeptiert, und
+`maxKeyLength` bleibt exakt Stripes veröffentlichte Zahl.
+
+Beachte, was all das begrenzt: wie viel Cache **ein** erzeugter Key
+kostet — nicht, **wie viele** ein Aufrufer erzeugen kann.  Die
+Eviction-Warnung unten ist die andere Hälfte.
 
 ## Was gecacht wird
 
@@ -272,8 +295,9 @@ import { Aside } from '@astrojs/starlight/components';
     und die Politik ordnet Garantien nicht gegeneinander.
   - Der eigene Key-Raum dieser Middleware ist angreiferkontrolliert:
     eine Flut eindeutiger `Idempotency-Key`s evictet die Records
-    *anderer* Aufrufer aus derselben Instanz.  `maxKeyLength` begrenzt,
-    wie groß ein erzeugter Key ist, nicht wie viele es sind.
+    *anderer* Aufrufer aus derselben Instanz.  `maxKeyLength` und
+    `maxScopeLength` begrenzen, wie groß ein erzeugter Key ist, nicht wie
+    viele es sind.
   - Ein Record wird nur als zuletzt genutzt markiert, wenn er
     **gelesen** wird.  `setIfAbsent` zählt nicht, ein beanspruchter
     Key, den noch niemand erneut angefragt hat, ist also das Erste, was
@@ -281,8 +305,14 @@ import { Aside } from '@astrojs/starlight/components';
 
   Übergib eine eigene Instanz — oder `ext.cache('idempotency')` — und
   dimensioniere deren `maxEntries` für die Keys, die du innerhalb eines
-  `ttlMs` erwartest.  Wo die Garantie gegen einen Angreifer halten muss,
-  hinterlege sie mit Redis statt mit einer prozesslokalen LRU.  Siehe
+  `ttlMs` erwartest, unter dem Namen dieses Caches:
+
+  ```hocon
+  actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+  ```
+
+  Wo die Garantie gegen einen Angreifer halten muss, hinterlege sie mit
+  Redis statt mit einer prozesslokalen LRU.  Siehe
   [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 

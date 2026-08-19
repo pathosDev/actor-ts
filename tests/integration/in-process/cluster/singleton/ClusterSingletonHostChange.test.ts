@@ -136,6 +136,31 @@ class CensusMarker extends Actor<string> {
 }
 
 /**
+ * A census marker whose `postStop` takes a configurable while.
+ *
+ * The lever that turns the take-over window from a coin flip into a
+ * measurement.  Since #949 the incoming host waits for every eligible peer to
+ * confirm its instance is *gone*, and a peer confirms only after its own
+ * `postStop` has completed — so this delay is, to within a round trip, the
+ * width of the window in which the new host is elected everywhere and hosts
+ * nothing.  With an instant `postStop` that window is a millisecond or two and
+ * traffic aimed at it lands there by luck.
+ */
+class SlowStoppingCensusMarker extends CensusMarker {
+  constructor(census: SingletonCensus, where: string, private readonly stopDelayMs = 0) {
+    super(census, where);
+  }
+
+  override async postStop(): Promise<void> {
+    // The elapsed time *is* the fixture: this delay is the width of the window
+    // under test, not a wait for something to happen, so there is nothing to
+    // poll for — see the class comment above.
+    if (this.stopDelayMs > 0) await sleep(this.stopDelayMs);
+    super.postStop();
+  }
+}
+
+/**
  * A census marker that treats `'die'` as a terminal stop — paired with
  * `restartOnTermination: false` it leaves the manager elected but hosting
  * nothing, which is the state the dead-letter test needs to hold still.
@@ -243,6 +268,141 @@ describe('ClusterSingleton — the host moves without a leader change (#637)', (
 
     await stopNode(nodeC); await stopNode(nodeB); await stopNode(nodeA);
   }, 30_000);
+
+  test('traffic sent across the take-over is delivered, exactly once, with nothing dropped', async () => {
+    // The second half of #637's acceptance criterion — *"exactly one live
+    // singleton child cluster-wide **and zero dropped messages**"* — in the
+    // scenario the criterion names.  The first test in this file covers the
+    // first half and is structurally unable to cover this one: it sends its
+    // single message *after* the take-over has fully settled, so it exercises
+    // steady-state routing and never the window the host actually moves in.
+    //
+    // Its own test rather than an extension of that one, because the property
+    // is different in kind.  That test asserts *where* the singleton lives and
+    // that the leader never moved; this one asserts that a message in flight
+    // while it moves is neither lost nor duplicated — which needs traffic
+    // straddling the move, and a dead-letter collector on every node to prove
+    // "not delivered" and "delivered elsewhere" apart.
+    //
+    // The window is real and it is one the framework opens itself: the incoming
+    // host is elected in the *sender's* view a gossip round before its own
+    // manager has an instance, and since #949 it deliberately holds its spawn
+    // until every eligible peer has confirmed its instance is gone.  Everything
+    // routed there in between has to be held and flushed, not dead-lettered —
+    // paying for "at most one instance" with loss on every host move is not the
+    // trade being made.
+    const systemName = 'sng-host-move-traffic';
+    const seeds = [`${systemName}@h:52540`];
+    const nodeA = await startNode({ systemName, port: 52540, seeds: [], roles: [] });
+    const nodeB = await startNode({ systemName, port: 52560, seeds, roles: ['worker'] });
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2);
+
+    // On every node, not just the sender: a message lost on the *receiving*
+    // side lands on that node's dead-letter stream, and the criterion is that
+    // no such letter exists anywhere in the cluster.  Collecting only on the
+    // sender is how this hole stayed invisible — the loss is entirely on the
+    // incoming host's side.
+    const dead: unknown[] = [];
+    nodeA.system.spawn(() => new DeadLetterCollector(dead), 'dead-letter-collector');
+    nodeB.system.spawn(() => new DeadLetterCollector(dead), 'dead-letter-collector');
+
+    const census = new SingletonCensus();
+    const startOn = (node: Node, where: string, stopDelayMs = 0): ActorRef<string> => {
+      const singletonOptions = StartSingletonOptions.create<string>()
+        .withTypeName('needs-worker-traffic')
+        .withRole('worker')
+        .withActor(() => new SlowStoppingCensusMarker(census, where, stopDelayMs));
+      return node.cluster.singleton.start(singletonOptions);
+    };
+
+    // A hosts nothing — it carries no role — so every send below crosses the
+    // wire, which is the case the criterion is about.
+    //
+    // B's instance takes 400 ms to stop, which is what makes this test a
+    // measurement rather than a coin flip.  The window under test is "C is the
+    // host in A's view and has no instance yet", and its width is exactly how
+    // long B takes to confirm it has stood down: B answers the hand-over only
+    // once its own `postStop` has completed (#949).  With an instant `postStop`
+    // the window is a millisecond or two and the pump misses it more often than
+    // it hits it.
+    const fromLeader = startOn(nodeA, 'a') as ClusterSingletonProxy<string>;
+    startOn(nodeB, 'b', 400);
+    await waitFor(() => census.liveOn('b') === 1);
+
+    const sent: string[] = [];
+    const pump = async (): Promise<void> => {
+      const payload = `m${sent.length}`;
+      sent.push(payload);
+      fromLeader.tell(payload);
+      // A real timer between sends, and this is the one detail that decides
+      // whether the test measures anything at all: `InMemoryTransport` delivers
+      // by `queueMicrotask`, so a pump that only yielded microtasks would be
+      // starved to zero sends across the take-over — it completes inside a
+      // single microtask drain.  The reported figure would then be "nothing
+      // dropped out of nothing in flight".
+      await sleep(5);
+    };
+
+    // C joins and starts its singleton *before* any traffic is aimed at it, so
+    // what is measured is the framework's own window and not a deployment that
+    // routes to a node which never called `start()`.  Both are real; only this
+    // one is #637's.
+    const nodeC = await startNode({ systemName, port: 52550, seeds, roles: ['worker'] });
+    nodeC.system.spawn(() => new DeadLetterCollector(dead), 'dead-letter-collector');
+
+    // C's own view has to know about B before C's manager first reconciles, and
+    // that is a precondition rather than tidiness.  `takeOverHosting` asks the
+    // peers *its own view* calls eligible: a manager that starts before gossip
+    // has delivered B finds nobody to ask, spawns at once, and the window this
+    // test exists to cover never opens (it also runs two instances for a
+    // moment, which is #949's staleness gap and not this test's subject).
+    await waitFor(() => nodeC.cluster.upMembersWithRole('worker').length === 2);
+    startOn(nodeC, 'c');
+
+    // Phase 1 — pump until C's instance exists.  Bounded by that rather than by
+    // a message count, so the traffic spans the window on a loaded machine as
+    // well as an idle one; the cap only turns a take-over that never happens
+    // into a failed assertion instead of a hang.
+    while (census.liveOn('c') === 0 && sent.length < 400) await pump();
+    const sentBeforeHostExisted = sent.length;
+
+    // Phase 2 — a short tail once C is hosting, so the steady state after the
+    // move is covered too.
+    for (let index = 0; index < 5; index++) await pump();
+
+    await waitFor(() => census.received.length === sent.length, 10_000);
+    // An absence, so it cannot be polled for: the counts are already equal
+    // above, and what this proves is that they *stay* equal — no duplicate
+    // arrives late from a second instance, and no held message is flushed
+    // twice.
+    await sleep(300);
+
+    // Every payload exactly once, wherever it landed.  A sorted multiset and
+    // not a set: a buffer flushed twice is the failure mode holding introduces,
+    // and a set comparison would hide exactly that.
+    const arrived = census.received.map((entry) => entry.slice(entry.indexOf(':') + 1));
+    expect([...arrived].sort()).toEqual([...sent].sort());
+    expect(arrived.length).toBe(sent.length);
+
+    // The criterion's second half, on both sides of the wire.
+    expect(fromLeader.droppedCount).toBe(0);
+    expect(dead).toEqual([]);
+
+    // And the measurement was not vacuous.  Without this the test would pass
+    // just as happily by sending everything after the dust had settled — which
+    // is precisely the gap in the first test in this file that this one exists
+    // to fill, so leaving it unasserted would reproduce that gap one test
+    // further down.
+    // B's `postStop` takes 400 ms and the pump sends every 5 ms, so this is
+    // dozens in practice; the assertion is loose because what matters is that
+    // the window was entered at all, not how wide it was on this machine.
+    expect(sentBeforeHostExisted).toBeGreaterThan(5);
+    expect(census.liveOn('c')).toBe(1);
+    expect(census.total()).toBe(1);
+    expect(nodeA.cluster.isLeader()).toBe(true);
+
+    await stopNode(nodeC); await stopNode(nodeB); await stopNode(nodeA);
+  }, 60_000);
 
   test('the proxy buffer drains when the first role member joins', async () => {
     // The deterministic half of the defect.  With one role-less node the

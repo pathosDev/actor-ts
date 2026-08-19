@@ -46,3 +46,97 @@ describe('idempotent — identity scoping (HTTP-4)', () => {
     expect(bob.body).toEqual({ who: 'alice' });   // bob replays alice's response
   });
 });
+
+/**
+ * The scope is the other half of the composed cache key, and it used to be
+ * the unbounded half (#607).  `maxKeyLength` ran on the header value alone;
+ * four lines later the scope was concatenated in with no check, and
+ * `identity`'s own documented recipe reads a raw client header — so a
+ * request with a two-character `Idempotency-Key` and a 64 KiB `x-account`
+ * was accepted with 200 and stored a 64 KiB key under a middleware whose
+ * documented cap is 255 characters.
+ *
+ * The two rules are the header's, applied to the scope: a length bound and
+ * no ASCII control character or space.  Both matter for the same reason —
+ * whichever half is weaker is the one an attacker uses.
+ */
+describe('idempotent — the identity scope is bounded too (#607)', () => {
+  /** How large a scope an attacker would send if nothing checked it. */
+  const OVERSIZED_SCOPE = 'A'.repeat(64 * 1024);
+
+  test('an oversized scope is refused with 400 and nothing is stored', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({
+      cache,
+      identity: (r) => r.headers['x-account'] ?? 'anon',
+    })(() => complete(Status.OK, { ok: true }));
+
+    const response = await handler(request(OVERSIZED_SCOPE));
+    expect(response.status).toBe(Status.BadRequest);
+    expect(cache.sizeForTest()).toBe(0);          // never reached the cache
+    await cache.close();
+  });
+
+  test('the rejection names the limit without echoing the scope back', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({
+      cache,
+      identity: (r) => r.headers['x-account'] ?? 'anon',
+    })(() => complete(Status.OK, { ok: true }));
+
+    const response = await handler(request(OVERSIZED_SCOPE));
+    const error = (response.body as { error: string }).error;
+    expect(error).toContain('255-character limit');
+    expect(error).not.toContain('AAAA');          // reflecting it is the payload
+    await cache.close();
+  });
+
+  test('a scope with a control character or space is refused with 400', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({
+      cache,
+      identity: (r) => r.headers['x-account'] ?? 'anon',
+    })(() => complete(Status.OK, { ok: true }));
+
+    // A space and a CR: Memcached command delimiters, and the classic
+    // header-injection byte.  The header value is refused for both already.
+    expect((await handler(request('tenant a'))).status).toBe(Status.BadRequest);
+    expect((await handler(request('tenant\ra'))).status).toBe(Status.BadRequest);
+    expect(cache.sizeForTest()).toBe(0);
+    await cache.close();
+  });
+
+  test('maxScopeLength moves the bound, and a scope inside it still works', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({
+      cache,
+      maxScopeLength: 8,
+      identity: (r) => r.headers['x-account'] ?? 'anon',
+    })(() => complete(Status.OK, { ok: true }));
+
+    expect((await handler(request('12345678'))).status).toBe(Status.OK);
+    expect((await handler(request('123456789'))).status).toBe(Status.BadRequest);
+    await cache.close();
+  });
+
+  test('the header keeps its own budget — a long scope does not spend it', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({
+      cache,
+      identity: (r) => r.headers['x-account'] ?? 'anon',
+    })(() => complete(Status.OK, { ok: true }));
+
+    // 255 + 255, both at their cap: one cap over the composed key would
+    // reject this, and the header cap is Stripe's published 255.
+    const response = await handler(request('t'.repeat(255), 'k'.repeat(255)));
+    expect(response.status).toBe(Status.OK);
+    await cache.close();
+  });
+
+  test('no identity configured means no scope to check (unchanged behaviour)', async () => {
+    const cache = new InMemoryCache();
+    const handler = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+    expect((await handler(request('irrelevant'))).status).toBe(Status.OK);
+    await cache.close();
+  });
+});

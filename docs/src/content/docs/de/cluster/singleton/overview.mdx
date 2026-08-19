@@ -292,6 +292,83 @@ Ohne eine dieser Lösungen ist jedes Failover ein Frischstart. Für
 einen kurzlebigen Koordinator, der nur eingehende Arbeit routet,
 ist das oft in Ordnung; für stateful Workflows persistiere.
 
+### Warme Übergabe
+
+Einen Fall beantwortet keine der drei Lösungen gut: Zustand, der
+*teuer wiederherzustellen, aber billig zu kopieren* ist — tausende
+Events zum Replay, ein großer Read-Through-Cache. Persistenz lässt
+den Zustand überleben; schnell macht sie den Nachfolger nicht, denn
+der muss trotzdem replayen.
+
+Die warme Übergabe schließt diese Lücke bei einem **geplanten**
+Wechsel. Implementiere zwei Methoden, und der Zustand der
+abgehenden Instanz reist auf der Übergabe mit, die ohnehin
+stattfindet:
+
+```ts
+import { Actor } from 'actor-ts';
+import { SingletonKey, type WarmHandOverActor } from 'actor-ts/cluster';
+
+class PriceCacheActor extends Actor<PriceCommand> implements WarmHandOverActor {
+  static readonly singleton = SingletonKey.of<PriceCommand>('price-cache');
+  private prices = new Map<string, number>();
+
+  override async preStart(): Promise<void> {
+    // Skipped entirely when a predecessor handed its cache over.
+    if (this.prices.size === 0) await this.loadEveryPrice();
+  }
+
+  serializeForHandOver(): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify([...this.prices]));
+  }
+
+  restoreFromHandOver(state: Uint8Array): void {
+    this.prices = new Map(JSON.parse(new TextDecoder().decode(state)));
+  }
+}
+```
+
+Auf die Bedingung in `preStart` kommt es an. `restoreFromHandOver`
+läuft **nach dem Konstruktor und vor `preStart`** — die einzige
+Position, von der aus die Wiederherstellung noch übersprungen werden
+kann. Ein `preStart`, das bedingungslos wiederherstellt, zahlt die
+Kosten trotzdem und überschreibt danach das Angekommene.
+
+Vier Dinge solltest du wissen, bevor du dich darauf verlässt:
+
+- **Aktiviert wird sie am Actor, nicht in den Options.** Es gibt
+  kein Flag. Ein Actor, der nicht beide Methoden implementiert,
+  verhält sich genau wie vorher.
+- **Sie darf ausbleiben.** Keine Hooks, ein Snapshot über der
+  Grenze, ein Serializer oder ein Restore, der wirft, ein Host, der
+  gedownt statt gefragt wurde, ein Peer, der nie geantwortet hat —
+  jeder dieser Fälle fällt auf den heutigen Kaltstart zurück und
+  loggt auf `warn`. Schreibe niemals einen Singleton, dessen
+  Korrektheit vom Ankommen des Zustands abhängt; ein Singleton, der
+  den Verlust seines Hosts nicht übersteht, kann seine Aufgabe nicht
+  erfüllen.
+- **`serializeForHandOver` wird nach `postStop` gerufen**, der
+  Snapshot ist also endgültig: Keine weitere Nachricht wird noch
+  eingerechnet, und was in der Mailbox lag, ist in Dead Letters
+  gegangen statt hinein. Eine Instanz, die an einem Crash oder einem
+  erschöpften Supervision-Budget gestorben ist, wird nie gefragt —
+  der Zustand, der so einen Tod übersteht, ist der Zustand, der ihn
+  verursacht hat.
+- **Der Snapshot ist begrenzt, standardmäßig auf 1 MiB**
+  (`withMaxHandOverStateBytes`). Er reist, während der Singleton
+  nirgends läuft — ein sehr großer verlängert den Ausfall also,
+  statt ihn zu verkürzen. Ein Snapshot liegt als base64 in einem
+  JSON-Frame und kostet auf der Leitung rund ein Drittel mehr; einer,
+  der nicht in `maxFrameBytes` des Transports passt, wird unabhängig
+  von der Grenze abgelehnt, denn ein zu großer Frame kostet die
+  ganze Node-zu-Node-Verbindung und nicht bloß die Nachricht.
+
+Bei einem `PersistentActor`-Singleton kommt ein Gedanke hinzu: Eine
+warm gestartete Instanz hält Zustand, der nie aus einem Replay kam —
+ihre Sequenznummer muss also mit im Snapshot reisen. Sonst schreibt
+ihr erstes `persist` an eine Position, die das Journal schon benutzt
+hat, und genau das liest das Fencing korrekt als zweiten Writer.
+
 ## Split-Brain und die optionale Lease
 
 Wenn der Cluster partitioniert wird, könnten zwei Hälften jeweils

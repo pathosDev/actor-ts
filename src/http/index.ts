@@ -182,6 +182,7 @@ export {
   RateLimitOptionsValidator,
   idempotent,
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
+  DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
   IdempotencyOptions,
   IdempotencyOptionsBuilder,
   IdempotencyOptionsValidator,
