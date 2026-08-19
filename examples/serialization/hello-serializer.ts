@@ -17,6 +17,8 @@ class Greeting {
 }
 
 function main(): void {
+  // Constructed directly because this demo has no ActorSystem; an application
+  // reaches the per-system registry with `system.extension(SerializationExtensionId)`.
   const ext = new SerializationExtension();
 
   // Default fallback is JSON — everything goes through it unless bound.
@@ -28,7 +30,8 @@ function main(): void {
   console.log('JSON bytes  :', asJson.bytes.byteLength, 'bytes');
   console.log('             ', new TextDecoder().decode(asJson.bytes));
 
-  // Bind this exact class to CBOR for compact binary transport.
+  // Bind this exact class to CBOR.  The binding reaches `ext.encode` below and
+  // nothing else — not the cluster wire, not a persistence store (#450).
   ext.bind(Greeting, 2);
   const greet = new Greeting('world', new Date('2024-01-02T03:04:05Z'));
   const encoded = ext.encode(greet);

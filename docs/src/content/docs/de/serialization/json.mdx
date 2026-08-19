@@ -133,9 +133,11 @@ import { Aside } from '@astrojs/starlight/components';
   `Uint8Array` als echte Instanzen wieder her — aber über
   actor-ts-spezifische Tags.  Ein Nicht-actor-ts-Consumer, der das
   rohe JSON liest, sieht die Tag-Form, keinen blanken Wert.  Der
-  **Cluster-Wire** nutzt rohes `JSON.stringify` (nicht diesen
-  Serializer), sodass Cross-Node-`tell`s diesen Round-Trip **nicht**
-  bekommen — siehe die [Übersicht](/de/serialization/overview/).
+  **Cluster-Wire** rahmt denselben getaggten Tree, ein
+  Cross-Node-`tell` bekommt diesen Round-Trip also *doch* — aber
+  nicht über diesen Serializer: `encodeFrame` ruft die Tree-Walker
+  direkt auf und konsultiert den pluggable `Serializer` nie — siehe
+  die [Übersicht](/de/serialization/overview/).
 </Aside>
 
 <Aside type="caution" title="`undefined`, Funktionen und Symbole werfen">

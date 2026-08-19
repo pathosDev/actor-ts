@@ -177,12 +177,15 @@ Multi-Node-Test-Harness — verwendet, um Multi-Node-Cluster in
 - **Latenz.** Die Zustellung ist synchron innerhalb einer
   Event-Loop-Drehung.
 - **Serialisierung.** Nachrichten werden per Referenz, nicht in
-  Bytes übergeben. Um den echten Framing-Round-Trip (`encodeFrame` /
-  `FrameDecoder`) zu üben, nutze stattdessen `TcpTransport` über
-  Loopback — das gibt dir das JSON-Framing, das jeder
-  Cluster-Transport verwendet. Der CBOR-Codec ist von *keinem*
-  Cluster-Transport aus erreichbar; teste ihn direkt oder über
-  [HTTP-Marshalling](/de/http/marshalling/).
+  Bytes übergeben — und `TcpTransport` ist der einzige Transport,
+  der überhaupt serialisiert: `MessageChannelTransport` reicht das
+  Envelope an `postMessage`, dieser hier gibt das Objekt direkt an
+  den Handler des Empfängers. Um also den echten
+  Framing-Round-Trip (`encodeFrame` / `FrameDecoder`, der einen
+  **getaggten JSON-Tree** rahmt, nicht rohes JSON) zu üben,
+  brauchst du `TcpTransport` über Loopback. Der CBOR-Codec ist von
+  *keinem* Cluster-Transport aus erreichbar; teste ihn direkt oder
+  über [HTTP-Marshalling](/de/http/marshalling/).
 
 ## Eigener Transport
 

@@ -1,6 +1,6 @@
 ---
 title: Serialization overview
-description: How actor-ts converts in-memory values to bytes for cluster wire + persistence. JSON by default; CBOR for compact binary; custom serializers for protocols (Protobuf, Avro). One `SerializationExtension` chooses by class binding.
+description: How actor-ts converts in-memory values to bytes for cluster wire + persistence. JSON by default; CBOR for compact binary; custom serializers for protocols (Protobuf, Avro). The wire and the stores both write one tagged JSON tree — a `SerializationExtension` class binding reaches only `ext.encode`.
 ---
 
 Two scenarios require turning JS values into bytes:
@@ -225,7 +225,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Upgrading a running cluster">
   ```ts
-  // node-A on 0.15, node-B on 0.16: a Map crosses A→B, not B→A
+  // node-A on 0.16 (bare JSON), node-B on 0.17 (tagged tree)
+  // B→A: a Map arrives at A as {__map__: [[…]]} — plain data, not a Map
+  // A→B: plain data is carried through; a legacy {__map__: …} body is not
   ```
   The wire moved from raw `JSON.stringify` to the tagged tree
   ([#450](https://github.com/pathosDev/actor-ts/issues/450)), which
@@ -255,4 +257,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Messages](/fundamentals/messages/)** — what
   shapes survive serialization.
 - **[Refs across nodes](/cluster/refs-across-nodes/)** —
-  the cluster wire that consumes serializers.
+  what the cluster wire actually frames.

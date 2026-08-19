@@ -26,11 +26,15 @@ import type { LogContextData } from '../../../src/LogContext.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, type EnvelopeMessage, type WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
+import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
+import { SerializationExtension } from '../../../src/serialization/SerializationExtension.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
 interface MockSocket {
   writes: Uint8Array[];
+  /** `dropConnection` is the only thing that ends a socket mid-test — see the legacy-frame cases. */
+  ended: boolean;
   write(data: Uint8Array): void;
   end(): void;
 }
@@ -38,9 +42,27 @@ interface MockSocket {
 function mockSocket(): MockSocket {
   return {
     writes: [],
+    ended: false,
     write(data: Uint8Array): void { this.writes.push(data); },
-    end(): void {},
+    end(): void { this.ended = true; },
   };
+}
+
+/**
+ * A frame exactly as a pre-#450 node wrote it: `JSON.stringify` with no tree
+ * walk, behind the same 4-byte big-endian length prefix.
+ *
+ * This is the *sender* half of the rolling-upgrade hazard, and it cannot be
+ * produced by `encodeFrame` — which is the point.  Anything that goes through
+ * today's encoder gets the `__literal__` escape wrapped around a body that
+ * happens to look like a tag; a legacy peer had no escape to apply.
+ */
+function legacyFrame(message: unknown): Uint8Array {
+  const payload = new TextEncoder().encode(JSON.stringify(message));
+  const frame = new Uint8Array(4 + payload.byteLength);
+  new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+  frame.set(payload, 4);
+  return frame;
 }
 
 /** The private socket callbacks these tests feed inbound bytes through. */
@@ -253,20 +275,134 @@ describe('the wire codec cannot be talked into misreading data', () => {
     await withLink((link) => {
       // Exactly the bytes `JSON.stringify(envelope)` produced before this
       // change: the rolling-upgrade direction that has to keep working.
-      const legacy = JSON.stringify({
+      const frame = legacyFrame({
         kind: 'envelope', to: '/user/target', from: null,
         body: { when: '2026-08-15T10:20:30.400Z', list: [1, 2], nested: { ok: true } },
       });
-      const payload = new TextEncoder().encode(legacy);
-      const frame = new Uint8Array(4 + payload.byteLength);
-      new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
-      frame.set(payload, 4);
 
       (link.receiver as unknown as TransportInternals).onData(link.receiverSocket, frame);
       expect(link.received).toHaveLength(1);
       expect((link.received[0] as EnvelopeMessage).body).toEqual({
         when: '2026-08-15T10:20:30.400Z', list: [1, 2], nested: { ok: true },
       });
+    });
+  });
+});
+
+/**
+ * The hazardous half of that rolling upgrade, which the benign case above says
+ * nothing about (#450).
+ *
+ * `encodeFrame`'s JSDoc, the `[Unreleased]` CHANGELOG entry and
+ * `docs/…/serialization/overview.mdx` all describe what a legacy body shaped
+ * like a reserved tag costs — in three different wordings, asserted nowhere.
+ * These two tests are what makes those paragraphs falsifiable, and they are the
+ * reason the mixed-version window is documented as a hazard rather than a
+ * supported state: the throwing tags cost the link, and the two silent tags
+ * cost the data without anyone noticing.
+ *
+ * Both pin *current, documented* behaviour, not desired behaviour.  When #823
+ * gives the protocol a version handshake and #450's framing lands on top, these
+ * are the tests that have to move, deliberately and with the docs.
+ */
+describe('a legacy body shaped like a reserved tag', () => {
+  test('costs the connection, and every frame batched into the same chunk', async () => {
+    await withLink((link) => {
+      // Two legacy frames in one chunk, which is what a real socket read
+      // delivers when a peer wrote them back to back.
+      const healthy = legacyFrame({
+        kind: 'envelope', to: '/user/target', from: null, body: { n: 1 },
+      });
+      // A legacy `Map`-shaped body, nested — `decodeJsonTree` reads a tag at any
+      // depth, so burying it does not help.
+      const poison = legacyFrame({
+        kind: 'envelope', to: '/user/target', from: null,
+        body: { outer: { inner: { __map__: 'not really a map' } } },
+      });
+      const chunk = new Uint8Array(healthy.byteLength + poison.byteLength);
+      chunk.set(healthy, 0);
+      chunk.set(poison, healthy.byteLength);
+
+      expect(link.receiver.peers()).toHaveLength(1);
+
+      (link.receiver as unknown as TransportInternals).onData(link.receiverSocket, chunk);
+
+      // The healthy frame decoded first and is lost anyway: `push` throws
+      // instead of returning the array it had already filled, so `onData` never
+      // reaches the dispatch loop at all.  This is the part that makes one bad
+      // frame more expensive than it looks — it is *not* the per-frame skip
+      // `validateWireFrame` gives a malformed-but-decodable frame (#705, #711).
+      expect(link.received).toEqual([]);
+      // And the link is gone: `dropConnection` ended the socket and handed back
+      // the peer slot, so the sender's next `tell` has nowhere to go.
+      expect(link.receiverSocket.ended).toBe(true);
+      expect(link.receiver.peers()).toEqual([]);
+    });
+  });
+
+  test('or corrupts the value silently, when the tag is one that cannot throw', async () => {
+    await withLink((link) => {
+      const frame = legacyFrame({
+        kind: 'envelope', to: '/user/target', from: null,
+        body: { token: { __bytes__: 'not base64!!!' }, when: { __date__: 'whenever' } },
+      });
+
+      (link.receiver as unknown as TransportInternals).onData(link.receiverSocket, frame);
+
+      // No throw, no dropped connection, no log line — the frame is accepted
+      // and both values have changed type in flight.  `fromBase64` is
+      // `Buffer.from(s, 'base64')`, which discards non-alphabet characters
+      // instead of rejecting them, so thirteen characters become six bytes; and
+      // `new Date('whenever')` is an Invalid Date, not an error.
+      expect(link.received).toHaveLength(1);
+      const body = (link.received[0] as EnvelopeMessage).body as Record<string, unknown>;
+      expect(body.token).toBeInstanceOf(Uint8Array);
+      expect([...(body.token as Uint8Array)]).toEqual([158, 139, 91, 106, 199, 186]);
+      expect(body.when).toBeInstanceOf(Date);
+      expect(Number.isNaN((body.when as Date).getTime())).toBe(true);
+      // Which is worse than the dropped link above, because nothing reports it.
+      expect(link.receiverSocket.ended).toBe(false);
+      expect(link.receiver.peers()).toHaveLength(1);
+    });
+  });
+});
+
+/**
+ * What the documentation now asserts about the registry, made falsifiable.
+ *
+ * The wire half of #450 is fixed and the *titular* half is not: a
+ * `SerializationExtension` class binding still reaches `ext.encode` and nothing
+ * else.  That was mis-documented in both directions at once — the frontmatter of
+ * `serialization/overview.mdx` and `serialization/custom.mdx` claimed the
+ * extension chose the wire format, `http/marshalling.mdx` called it "the right
+ * hook" for it, and `serialization/cbor.mdx` described rolling CBOR out
+ * cluster-wide — so the corrected prose needs something behind it.  Prose is not
+ * gated by anything; this is.
+ *
+ * Like the legacy-frame cases above, it pins today's behaviour on purpose.  When
+ * bindings do reach the wire, this test goes red, and that is the reminder to
+ * move those pages with the code.
+ */
+describe('a SerializationExtension binding does not reach the wire', () => {
+  test('a class bound to CBOR still crosses as the tagged JSON tree', async () => {
+    class Order {
+      constructor(readonly id: string, readonly placedAt: Date) {}
+    }
+    const cbor = new CborSerializer();
+    const registry = new SerializationExtension();
+    registry.bind(Order, cbor.id);
+    // The binding is live in the registry it was made in — so what follows is
+    // about reach, not about a binding that failed to register.
+    expect(registry.findFor(new Order('order-1', new Date(0))).id).toBe(cbor.id);
+
+    await withLink((link) => {
+      const placedAt = new Date('2026-08-16T09:00:00.000Z');
+      const arrived = sendBody(link, new Order('order-1', placedAt));
+      // Not CBOR bytes — the frame is the same tagged tree every other case
+      // here goes through, so the `Date` survives and the class does not.
+      expect(arrived).not.toBeInstanceOf(Uint8Array);
+      expect(arrived).not.toBeInstanceOf(Order);
+      expect(arrived).toEqual({ id: 'order-1', placedAt });
     });
   });
 });

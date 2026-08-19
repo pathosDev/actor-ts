@@ -1,6 +1,6 @@
 ---
 title: Serialization im Überblick
-description: Wie actor-ts In-Memory-Werte zu Bytes konvertiert für Cluster-Wire + Persistenz. Standardmäßig JSON; CBOR für kompaktes Binärformat; eigene Serializer für Protokolle (Protobuf, Avro). Eine `SerializationExtension` wählt anhand von Klassenbindungen.
+description: Wie actor-ts In-Memory-Werte zu Bytes konvertiert für Cluster-Wire + Persistenz. Standardmäßig JSON; CBOR für kompaktes Binärformat; eigene Serializer für Protokolle (Protobuf, Avro). Wire und Stores schreiben beide einen getaggten JSON-Tree — eine Klassenbindung der `SerializationExtension` erreicht nur `ext.encode`.
 ---
 
 Zwei Szenarien erfordern es, JS-Werte in Bytes zu verwandeln:
@@ -231,7 +231,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Einen laufenden Cluster aktualisieren">
   ```ts
-  // node-A auf 0.15, node-B auf 0.16: eine Map kreuzt A→B, nicht B→A
+  // node-A auf 0.16 (rohes JSON), node-B auf 0.17 (getaggter Tree)
+  // B→A: eine Map kommt bei A als {__map__: [[…]]} an — Plain-Data, keine Map
+  // A→B: Plain-Data kommt durch; ein Legacy-{__map__: …}-Body nicht
   ```
   Der Wire ist von rohem `JSON.stringify` auf den getaggten Tree
   gewechselt
@@ -264,4 +266,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Nachrichten](/de/fundamentals/messages/)** — welche
   Formen Serialisierung überleben.
 - **[Refs zwischen Nodes](/de/cluster/refs-across-nodes/)** —
-  der Cluster-Wire, der Serializer konsumiert.
+  was der Cluster-Wire tatsächlich rahmt.

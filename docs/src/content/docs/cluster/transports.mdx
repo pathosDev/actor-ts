@@ -170,12 +170,15 @@ process**.
   For fault injection, you'd implement a custom `Transport` with drop /
   delay / reorder logic.
 - **Latency.**  Delivery is synchronous within an event-loop turn.
-- **Serialization.**  Messages are passed by reference, not bytes.
-  To exercise the real framing round-trip (`encodeFrame` /
-  `FrameDecoder`), use `TcpTransport` over loopback instead — that
-  gives you the JSON framing every cluster transport uses.  The CBOR
-  codec is not reachable from *any* cluster transport; test it
-  directly, or through [HTTP marshalling](/http/marshalling/).
+- **Serialization.**  Messages are passed by reference, not bytes —
+  and `TcpTransport` is the only transport that serializes at all:
+  `MessageChannelTransport` hands the envelope to `postMessage`, and
+  this one hands the object straight to the recipient's handler.  So
+  to exercise the real framing round-trip (`encodeFrame` /
+  `FrameDecoder`, which frames a **tagged JSON tree**, not bare
+  JSON) you need `TcpTransport` over loopback.  The CBOR codec is
+  not reachable from *any* cluster transport; test it directly, or
+  through [HTTP marshalling](/http/marshalling/).
 
 ## Custom transport
 
