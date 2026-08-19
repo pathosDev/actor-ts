@@ -54,9 +54,12 @@ import {
  * So hand this middleware a cache nothing else writes to —
  * `ext.cache('idempotency')` resolves a separate named instance — and
  * size that cache's `maxEntries` for the number of in-flight keys you
- * expect times the TTL.  Naming a separate cache narrows the blast
- * radius; it does not remove it.  Where the guarantee has to hold under
- * an adversary, back it with Redis rather than an in-process LRU.
+ * expect times the TTL, under `actor-ts.cache.idempotency.in-memory`
+ * (#607: that per-name block is what makes the advice reachable; before
+ * it, every named instance shared the one global bound).  Naming a
+ * separate cache narrows the blast radius; it does not remove it.  Where
+ * the guarantee has to hold under an adversary, back it with Redis
+ * rather than an in-process LRU.
  */
 
 type CachedResponse = {

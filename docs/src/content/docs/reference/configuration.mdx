@@ -380,9 +380,16 @@ the per-plugin keys.
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
+| `cache.<name>.in-memory.*` | *(the block above)* | Same two leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf. |
+| `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
 
 Redis and Memcached caches read their connection settings from
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+The two `<name>` paths take the name your code asks `cache(name)` for,
+so they cannot be enumerated in `reference.conf`.  Sizing one consumer
+for its own key space is what the [one cache per
+consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 
 ### `actor-ts.sharding`
 

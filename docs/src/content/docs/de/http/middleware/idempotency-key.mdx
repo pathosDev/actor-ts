@@ -281,8 +281,14 @@ import { Aside } from '@astrojs/starlight/components';
 
   Übergib eine eigene Instanz — oder `ext.cache('idempotency')` — und
   dimensioniere deren `maxEntries` für die Keys, die du innerhalb eines
-  `ttlMs` erwartest.  Wo die Garantie gegen einen Angreifer halten muss,
-  hinterlege sie mit Redis statt mit einer prozesslokalen LRU.  Siehe
+  `ttlMs` erwartest, unter dem Namen dieses Caches:
+
+  ```hocon
+  actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+  ```
+
+  Wo die Garantie gegen einen Angreifer halten muss, hinterlege sie mit
+  Redis statt mit einer prozesslokalen LRU.  Siehe
   [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 

@@ -427,6 +427,13 @@ actor-ts {
       maxEntries = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
       cleanupMs  = 60000   # background expired-entry sweep interval, ms (0 disables the sweep)
     }
+    # Per-instance overrides live under the cache's own name and win over the
+    # block above, so one consumer can be sized for its own key space:
+    #
+    #   actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+    #
+    # The name is the application's, so these paths cannot be listed here.
+    # actor-ts.cache.<name>.plugin selects the backend the same way.
   }
 
   persistence {

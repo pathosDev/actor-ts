@@ -87,6 +87,13 @@ export const ConfigKeys = {
 
   /** Cache plugin-ids — `actor-ts.cache.*`. */
   cache: {
+    /**
+     * The block every named cache hangs under.  `CacheExtension` composes two
+     * per-name paths from it that cannot be static leaves because the name is
+     * the caller's: `<root>.<name>.plugin` selects the backend and
+     * `<root>.<name>.in-memory` overrides that instance's settings.
+     */
+    root: 'actor-ts.cache',
     inMemory: 'actor-ts.cache.in-memory',
     redis: 'actor-ts.cache.redis',
     memcached: 'actor-ts.cache.memcached',

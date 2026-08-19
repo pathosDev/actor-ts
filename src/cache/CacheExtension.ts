@@ -1,6 +1,7 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { InMemoryCache } from './InMemoryCache.js';
 import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 import type { Cache } from './Cache.js';
@@ -15,37 +16,71 @@ import type { Cache } from './Cache.js';
  * `InMemoryCache` — handy for tests and dev.  Registering a different
  * factory under `'default'` (or selecting via the HOCON path
  * `actor-ts.cache.default.plugin`) replaces it.
+ *
+ * **Each name is a separate instance with separate settings.**  The name a
+ * caller asks for reaches the factory, so an in-memory cache resolved as
+ * `cache('rate-limit')` reads `actor-ts.cache.rate-limit.in-memory` on top
+ * of the global `actor-ts.cache.in-memory` block.  That is what makes the
+ * one-cache-per-consumer advice the middleware pages give actionable
+ * (#607): sizing a named cache for its own key space used to require
+ * hand-constructing an `InMemoryCache` and injecting it with
+ * {@link setCache}, because the factory ignored the name and every named
+ * instance shared one bound.
  */
 export class CacheExtension implements Extension {
-  private readonly factories = new Map<string, (system: ActorSystem) => Cache>();
+  private readonly factories = new Map<string, CacheFactory>();
   private readonly instances = new Map<string, Cache>();
 
   constructor(private readonly system: ActorSystem) {
-    this.factories.set(ConfigKeys.cache.inMemory, () => new InMemoryCache(this.inMemoryCacheOptions()));
+    this.factories.set(ConfigKeys.cache.inMemory, (_system, name) => new InMemoryCache(this.inMemoryCacheOptions(name)));
   }
 
   /**
-   * Read the default in-memory cache options from HOCON
-   * (`actor-ts.cache.in-memory`).  Unset leaves fall through to
-   * {@link InMemoryCache}'s built-in defaults; present values are validated
-   * there (`OptionsError` on a bad value).
+   * In-memory cache options for the instance resolved as `name`, layered in
+   * the project's precedence order: the per-name block
+   * `actor-ts.cache.<name>.in-memory` overrides the global
+   * `actor-ts.cache.in-memory`, and an unset leaf in either falls through to
+   * {@link InMemoryCache}'s built-in defaults (which is why the lowest layer
+   * here is empty rather than a copy of them — the constructor owns them, and
+   * duplicating them would give the same number two homes).
+   *
+   * The per-name path is nested rather than a flat
+   * `actor-ts.cache.<name>.maxEntries` so the plugin *selector*
+   * (`<name>.plugin`) and the selected plugin's *settings* stay in separate
+   * blocks — the shape a Redis or Memcached instance needs too.  It carries no
+   * `reference.conf` leaf for the same reason `<name>.plugin` carries none:
+   * the name is the application's, so the path cannot be enumerated.
+   *
+   * Present values are validated in the constructor (`OptionsError` on a bad
+   * one), so a typo'd override fails at the first `cache(name)` rather than
+   * silently sizing the map at the default.
    */
-  private inMemoryCacheOptions(): InMemoryCacheOptionsType {
-    const root = ConfigKeys.cache.inMemory;
+  private inMemoryCacheOptions(name: string): InMemoryCacheOptionsType {
+    return mergeOptions<InMemoryCacheOptionsType>(
+      {},
+      this.inMemoryCacheLeaves(ConfigKeys.cache.inMemory),
+      this.inMemoryCacheLeaves(`${ConfigKeys.cache.root}.${name}.in-memory`),
+    );
+  }
+
+  /** The two `InMemoryCacheOptionsType` leaves under `root`, omitting absent ones. */
+  private inMemoryCacheLeaves(root: string): Partial<InMemoryCacheOptionsType> {
     const config = this.system.config;
-    const options: { maxEntries?: number; cleanupMs?: number } = {};
-    if (config.hasPath(`${root}.maxEntries`)) options.maxEntries = config.getInt(`${root}.maxEntries`);
-    if (config.hasPath(`${root}.cleanupMs`)) options.cleanupMs = config.getDuration(`${root}.cleanupMs`);
-    return options;
+    const leaves: { maxEntries?: number; cleanupMs?: number } = {};
+    if (config.hasPath(`${root}.maxEntries`)) leaves.maxEntries = config.getInt(`${root}.maxEntries`);
+    if (config.hasPath(`${root}.cleanupMs`)) leaves.cleanupMs = config.getDuration(`${root}.cleanupMs`);
+    return leaves;
   }
 
   /**
    * Register a cache factory under `pluginId`.  The factory runs lazily
    * on the first `cache(name)` call that resolves to this plugin via
-   * config.  Re-registering the same id replaces the factory and forces
+   * config, and receives that name so it can read per-name settings the
+   * way the built-in in-memory factory does.
+   * Re-registering the same id replaces the factory and forces
    * a re-instantiation on next access.
    */
-  registerCache(pluginId: string, factory: (system: ActorSystem) => Cache): void {
+  registerCache(pluginId: string, factory: CacheFactory): void {
     this.factories.set(pluginId, factory);
     // Force re-resolution if any active instance was built from this plugin.
     for (const [name, _inst] of this.instances) {
@@ -65,9 +100,9 @@ export class CacheExtension implements Extension {
     const pluginId = this.pluginIdFor(name);
     const factory = this.factories.get(pluginId)
       ?? this.factories.get(ConfigKeys.cache.inMemory)!;
-    const inst = factory(this.system);
-    this.instances.set(name, inst);
-    return inst;
+    const instance = factory(this.system, name);
+    this.instances.set(name, instance);
+    return instance;
   }
 
   /** Replace the cache instance for `name` directly — useful for tests. */
@@ -83,12 +118,19 @@ export class CacheExtension implements Extension {
   }
 
   private pluginIdFor(name: string): string {
-    const path = `actor-ts.cache.${name}.plugin`;
+    const path = `${ConfigKeys.cache.root}.${name}.plugin`;
     return this.system.config.hasPath(path)
       ? this.system.config.getString(path)
       : ConfigKeys.cache.inMemory;
   }
 }
+
+/**
+ * Builds one cache instance.  `name` is the name the caller resolved, so a
+ * plugin can read its own per-name settings; ignoring it is fine and is what
+ * a factory that needs no configuration does.
+ */
+export type CacheFactory = (system: ActorSystem, name: string) => Cache;
 
 export const CacheExtensionId: ExtensionId<CacheExtension> = extensionId(
   'CacheExtension',

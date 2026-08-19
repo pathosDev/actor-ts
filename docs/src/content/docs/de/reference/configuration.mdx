@@ -395,9 +395,17 @@ des SQLite-Journals.  Siehe jede Journal-Seite in
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Intervall (ms) des Hintergrund-Sweeps für abgelaufene Einträge. |
+| `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben zwei Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt. |
+| `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+Die beiden `<name>`-Pfade nehmen den Namen, den dein Code an
+`cache(name)` übergibt, und lassen sich deshalb nicht in
+`reference.conf` aufzählen.  Einen Consumer allein für seinen eigenen
+Key-Raum zu dimensionieren ist genau das, was die Empfehlung [ein Cache
+pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 
 ### `actor-ts.sharding`
 
