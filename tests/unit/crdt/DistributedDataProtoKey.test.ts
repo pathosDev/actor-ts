@@ -106,6 +106,10 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
 
     const dataA = a.system.extension(DistributedDataId).start(a);
     const dataB = b.system.extension(DistributedDataId).start(b);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and neither replica exposes a "ready" flag, so
+    // there is nothing observable here.  The 4 s `waitFor` below is what
+    // actually bounds the replication.
     await sleep(60);
 
     // The one key an application can hold and never replicate.  It was also
@@ -151,6 +155,7 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
 
     const dataA = a.system.extension(DistributedDataId).start(a);
     const dataB = b.system.extension(DistributedDataId).start(b);
+    // A startup settle with no state to poll — see the note in the first test.
     await sleep(60);
 
     const evil = await attacker('proto-evil', 48_313);

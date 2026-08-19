@@ -64,6 +64,10 @@ describe('DistributedData wire authority', () => {
     // `Connection.pending` buffer that is never drained and never reclaimed.
     const victim = await startNode('victim', 48_101);
     victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and buffers frames in the actor's mailbox until
+    // `preStart` has run, so there is nothing observable to wait on.  What
+    // actually bounds the reply is the 4 s poll further down.
     await sleep(80);
 
     const evil = await attacker('evil', 48_102);
@@ -87,6 +91,8 @@ describe('DistributedData wire authority', () => {
       timeoutMs: 4_000,
       label: 'the write-ack came back to the sender',
     });
+    // The negative half is an absence — `receivedByInnocent` must still be
+    // empty — so it can only be settled for, never polled.
     await sleep(40);
 
     expect(receivedByEvil).toContain('ddata-write-ack');
@@ -96,6 +102,7 @@ describe('DistributedData wire authority', () => {
   test('a read-request is answered down the connection it arrived on (#723)', async () => {
     const victim = await startNode('victim2', 48_111);
     victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll — see the note in the test above.
     await sleep(80);
 
     const evil = await attacker('evil2', 48_112);
@@ -115,6 +122,8 @@ describe('DistributedData wire authority', () => {
       timeoutMs: 4_000,
       label: 'the read-response came back to the sender',
     });
+    // The negative half is an absence — `receivedByInnocent` must still be
+    // empty — so it can only be settled for, never polled.
     await sleep(40);
 
     expect(receivedByEvil).toContain('ddata-read-response');
@@ -143,6 +152,9 @@ describe('DistributedData wire authority', () => {
 
     const handle = a.system.extension(DistributedDataId).start(a);
     b.system.extension(DistributedDataId).start(b);
+    // A startup settle with no state to poll: both replicas register their wire
+    // handlers synchronously, and neither exposes a "ready" flag the quorum
+    // write below could wait on.
     await sleep(120);
 
     const evil = await attacker('qevil', 48_123);
@@ -155,6 +167,9 @@ describe('DistributedData wire authority', () => {
       timeoutMs: 900,
     });
 
+    // Positioning, not waiting: the forged acks have to arrive while the
+    // genuine quorum is still pending, and its own 900 ms budget is the window.
+    // Polling the pending promise would defeat the point of the test.
     await sleep(60);
     for (const claimed of ['qb@h:48122', 'qevil@h:48123']) {
       evil.send(a.selfAddress, {

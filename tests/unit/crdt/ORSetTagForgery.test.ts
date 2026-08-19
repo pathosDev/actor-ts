@@ -138,6 +138,10 @@ describe('DistributedData ORSet over the wire (#722)', () => {
   test("forged tombstones do not erase the victim's write", async () => {
     const victim = await startNode('orset-victim', 47_401);
     const data = victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and buffers frames in the actor's mailbox until
+    // `preStart` has run, so there is nothing observable to wait on.  The 4 s
+    // `waitFor` below is what actually bounds the merge.
     await sleep(80);
 
     const evil = await attacker('orset-evil', 47_402);

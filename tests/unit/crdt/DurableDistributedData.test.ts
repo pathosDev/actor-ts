@@ -216,8 +216,13 @@ describe('DurableDistributedData — actor integration', () => {
       (c) => c.increment(dd1.selfReplicaId(), 1));
     dd1.update<GCounter>('to-delete', GCounter.empty,
       (c) => c.increment(dd1.selfReplicaId(), 99));
+    // Both saves are fire-and-forget with no completion the handle exposes, and
+    // the delete has to land *after* the write it removes — otherwise the
+    // restart below would prove nothing, because the key was never saved.
     await sleep(60);
     dd1.delete('to-delete');
+    // Same, for the delete's own save: it has to reach the store before
+    // `stopNode` tears the actor down.
     await sleep(60);
     await stopNode(a1);
 
