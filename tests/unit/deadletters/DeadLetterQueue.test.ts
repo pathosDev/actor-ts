@@ -219,6 +219,179 @@ describe('DeadLetterQueue — replay', () => {
     }
   });
 
+  test('an alternate recipient receives the letter, and the original does not', async () => {
+    // The Scope bullet #433 asks for in as many words: "replay to the
+    // original OR an alternate recipient".  The original is deliberately
+    // alive here so the assertion is that the letter went somewhere ELSE,
+    // not merely that it went somewhere.
+    const sys = newSystem('dlq-replay-alternate', { store: 'memory' });
+    try {
+      const original: string[] = [];
+      const alternate: string[] = [];
+      class Original extends Actor<string> {
+        override onReceive(m: string): void { original.push(m); }
+      }
+      class Alternate extends Actor<string> {
+        override onReceive(m: string): void { alternate.push(m); }
+      }
+
+      await deadLetterTo(sys, 'worker', 'work');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the letter reached the queue',
+      });
+      const [entry] = await sys.deadLetterQueue.list();
+
+      sys.spawn(Original, 'worker');
+      sys.spawn(Alternate, 'standby');
+      const alternatePath = `actor-ts://${sys.name}/user/standby`;
+      const result = await sys.deadLetterQueue.replay(entry!.id, alternatePath);
+
+      // The result names where the letter actually went — not the entry's
+      // own recipientPath, which would name the actor that got nothing.
+      expect(result).toEqual({ kind: 'replayed', recipientPath: alternatePath });
+      await awaitCondition(() => alternate.includes('work'), {
+        timeoutMs: 4_000,
+        label: 'the alternate recipient received the redirected letter',
+      });
+      expect(original).toEqual([]);
+      expect(await sys.deadLetterQueue.list()).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an alternate is redelivered even though the recorded path is gone', async () => {
+    // The case a redirect is actually FOR: the original address is gone for
+    // good — a renamed actor, a shard that moved — so resolving it as a
+    // precondition would refuse exactly the letters worth redirecting.
+    const sys = newSystem('dlq-replay-alternate-gone', { store: 'memory' });
+    try {
+      const alternate: string[] = [];
+      class Alternate extends Actor<string> {
+        override onReceive(m: string): void { alternate.push(m); }
+      }
+
+      await deadLetterTo(sys, 'worker', 'work');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the letter reached the queue',
+      });
+      const [entry] = await sys.deadLetterQueue.list();
+
+      // '/user/worker' is never respawned — only the standby exists.
+      sys.spawn(Alternate, 'standby');
+      const result = await sys.deadLetterQueue
+        .replay(entry!.id, `actor-ts://${sys.name}/user/standby`);
+
+      expect(result.kind).toBe('replayed');
+      await awaitCondition(() => alternate.includes('work'), {
+        timeoutMs: 4_000,
+        label: 'the redirected letter arrived although its recorded path is dead',
+      });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an alternate that resolves to nothing names the alternate and keeps the letter', async () => {
+    const sys = newSystem('dlq-replay-alternate-unresolved', { store: 'memory' });
+    try {
+      await deadLetterTo(sys, 'worker', 'work');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the letter reached the queue',
+      });
+      const [entry] = await sys.deadLetterQueue.list();
+
+      // The recorded recipient IS resolvable, so a refusal here can only
+      // come from the alternate — which is the point being pinned.
+      sys.spawn(Nothing, 'worker');
+      const nowhere = `actor-ts://${sys.name}/user/nowhere`;
+      const result = await sys.deadLetterQueue.replay(entry!.id, nowhere);
+
+      expect(result).toEqual({ kind: 'unresolved-recipient', recipientPath: nowhere });
+      expect((await sys.deadLetterQueue.list()).length).toBe(1);
+      expect((await sys.deadLetterQueue.list())[0]!.replayCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a quarantined letter stays refused when an alternate is named', async () => {
+    // Closes the loop the cap exists for.  If a different path granted a
+    // fresh replay budget, an operator (or a script) could alternate between
+    // two addresses forever — the unbounded retry maxReplays is there to
+    // stop, reachable again through the redirect.
+    //
+    // Note for anyone reverting the redirect to see this fail: it will not.
+    // Before `replay` grew a second parameter the extra argument was simply
+    // ignored, so the refusal was already unconditional — the invariant is
+    // behaviour-identical either side of that change.  This guards the
+    // *decision* against a future "an alternate deserves a fresh chance"
+    // patch, not the code that introduced the parameter; the four tests
+    // around it are the ones bound to that.
+    const sys = newSystem('dlq-replay-alternate-quarantined', {
+      store: 'memory',
+      'max-replays': 0,
+    });
+    try {
+      class Alternate extends Actor<string> {
+        override onReceive(_m: string): void {}
+      }
+      await deadLetterTo(sys, 'worker', 'work');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the letter reached the queue',
+      });
+      const [entry] = await sys.deadLetterQueue.list();
+      sys.spawn(Alternate, 'standby');
+
+      const refused = await sys.deadLetterQueue
+        .replay(entry!.id, `actor-ts://${sys.name}/user/standby`);
+      expect(refused).toEqual({ kind: 'quarantined', replayCount: 0 });
+      expect((await sys.deadLetterQueue.list()).length).toBe(1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a bounce at the alternate returns as the same entry, recording the alternate', async () => {
+    // Where the letter failed THIS time is what the next person reading the
+    // queue needs; the identity has to stay put so the replay count keeps
+    // counting the letter rather than the address.
+    const sys = newSystem('dlq-replay-alternate-bounce', { store: 'memory' });
+    try {
+      class Refuser extends Actor<string> {
+        override onReceive(m: string): void {
+          this.system.deadLetters.tell(new DeadLetter(m, null, this.self));
+        }
+      }
+      await deadLetterTo(sys, 'worker', 'work');
+      await awaitCondition(async () => (await sys.deadLetterQueue.list()).length === 1, {
+        timeoutMs: 4_000,
+        label: 'the letter reached the queue',
+      });
+      const [entry] = await sys.deadLetterQueue.list();
+
+      sys.spawn(Refuser, 'standby');
+      const standbyPath = `actor-ts://${sys.name}/user/standby`;
+      expect((await sys.deadLetterQueue.replay(entry!.id, standbyPath)).kind).toBe('replayed');
+
+      await awaitCondition(async () => {
+        const [bounced] = await sys.deadLetterQueue.list();
+        return bounced !== undefined && bounced.replayCount === 1;
+      }, { timeoutMs: 4_000, label: 'the letter bounced back from the alternate' });
+
+      const entries = await sys.deadLetterQueue.list();
+      expect(entries.length).toBe(1);
+      expect(entries[0]!.id).toBe(entry!.id);
+      expect(entries[0]!.recipientPath).toBe(standbyPath);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('a poison message comes back as the SAME entry and is then quarantined', async () => {
     // The re-poisoning guard.  An actor that cannot process this particular
     // message bounces it back on every attempt; without the bookkeeping each

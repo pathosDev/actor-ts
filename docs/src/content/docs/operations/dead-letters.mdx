@@ -127,11 +127,42 @@ Every outcome is named, so nothing fails quietly:
 
 | `kind` | Meaning |
 | --- | --- |
-| `replayed` | Handed back; the entry left the queue. |
+| `replayed` | Handed back; the entry left the queue. `recipientPath` is where it actually went. |
 | `unknown-entry` | No such id — already replayed, or aged out. |
-| `unresolved-recipient` | Still nothing at that path; the entry stays. |
+| `unresolved-recipient` | Nothing at the destination path; the entry stays. |
 | `degraded-payload` | Provenance only; there is nothing to redeliver. |
 | `quarantined` | Already replayed `max-replays` times. |
+
+### Replaying to a different recipient
+
+A second argument sends the letter somewhere other than the address it was
+originally sent to — the actor was renamed, the shard moved, the path was a
+typo:
+
+```ts
+const result = await system.deadLetterQueue.replay(
+  entry.id,
+  'actor-ts://orders/user/checkout-v2',
+);
+```
+
+Three things about a redirect are worth knowing:
+
+- **Only the destination changes.** The sender stays the recorded one, so
+  the recipient's `sender` still answers the actor that sent the message and
+  a reply goes where a reply always would.
+- **The recorded path is not resolved at all.** Redirecting is most useful
+  exactly when the original address is gone for good, so requiring it to
+  still exist would refuse the cases that need it most.
+- **The replay cap still applies.** `max-replays` bounds how often *this
+  letter* is redelivered, not how often one recipient is asked — a
+  quarantined letter stays refused however it is addressed. Otherwise
+  alternating between two paths would hand back the unbounded retry loop the
+  cap exists to close.
+
+If the letter dead-letters again at the alternate it comes back as the same
+entry, now recording the alternate as its `recipientPath` — that is where
+the message failed this time.
 
 ### Poison messages cannot grow the queue
 

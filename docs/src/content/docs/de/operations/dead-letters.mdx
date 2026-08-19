@@ -129,11 +129,44 @@ Jeder Ausgang hat einen Namen, damit nichts still scheitert:
 
 | `kind` | Bedeutung |
 | --- | --- |
-| `replayed` | Zurückgegeben; der Eintrag hat die Queue verlassen. |
+| `replayed` | Zurückgegeben; der Eintrag hat die Queue verlassen. `recipientPath` ist, wohin es tatsächlich ging. |
 | `unknown-entry` | Keine solche id — bereits zugestellt oder gealtert. |
-| `unresolved-recipient` | Unter dem Pfad ist weiterhin nichts; der Eintrag bleibt. |
+| `unresolved-recipient` | Unter dem Zielpfad ist nichts; der Eintrag bleibt. |
 | `degraded-payload` | Nur Herkunft; es gibt nichts erneut zuzustellen. |
 | `quarantined` | Bereits `max-replays`-mal erneut zugestellt. |
+
+### An einen anderen Empfänger zustellen
+
+Ein zweites Argument schickt das Letter an eine andere Adresse als die, an
+die es ursprünglich gesendet wurde — der Actor wurde umbenannt, der Shard ist
+umgezogen, der Pfad war ein Tippfehler:
+
+```ts
+const result = await system.deadLetterQueue.replay(
+  entry.id,
+  'actor-ts://orders/user/checkout-v2',
+);
+```
+
+Drei Dinge sind an einer Umleitung wissenswert:
+
+- **Nur das Ziel ändert sich.** Der Sender bleibt der aufgezeichnete, sodass
+  `sender` beim Empfänger weiterhin den Actor nennt, der die Nachricht
+  gesendet hat, und eine Antwort dorthin geht, wo eine Antwort immer
+  hingeht.
+- **Der aufgezeichnete Pfad wird überhaupt nicht aufgelöst.** Eine Umleitung
+  ist genau dann am nützlichsten, wenn die ursprüngliche Adresse endgültig
+  weg ist — zu verlangen, dass sie noch existiert, würde also gerade die
+  Fälle verweigern, die sie am meisten brauchen.
+- **Die Replay-Schranke gilt weiter.** `max-replays` begrenzt, wie oft
+  *dieses Letter* erneut zugestellt wird, nicht wie oft ein Empfänger
+  gefragt wird — ein Letter in Quarantäne bleibt verweigert, egal wie es
+  adressiert wird. Sonst gäbe abwechselndes Zustellen an zwei Pfade die
+  unbegrenzte Wiederholungsschleife zurück, die die Schranke schließen soll.
+
+Landet das Letter beim alternativen Empfänger wieder im Dead Letter, kommt es
+als derselbe Eintrag zurück, der nun den alternativen Pfad als
+`recipientPath` führt — dort ist die Nachricht dieses Mal gescheitert.
 
 ### Giftige Nachrichten können die Queue nicht wachsen lassen
 

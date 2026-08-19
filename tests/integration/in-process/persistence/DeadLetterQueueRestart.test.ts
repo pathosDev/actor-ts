@@ -95,6 +95,88 @@ describe('DeadLetterQueue — persistent store across a restart', () => {
     }
   });
 
+  test('a restored letter replays, and the recipient gets the original payload', async () => {
+    // AC1 x AC2 — the crossing an operator actually performs after an
+    // incident, and the one the rest of this suite never reached: the
+    // letters survive a restart (proved above) and replay redelivers the
+    // payload untouched (proved in the unit suite), but each half was only
+    // ever shown on its own.  A `persistent` payload makes the round trip
+    // through the tagged-JSON codec, so "untouched" is a claim about a
+    // decode here, not about an object reference that never left memory.
+    const journal = new InMemoryJournal();
+    const sent = { kind: 'order', id: 7, lines: ['a', 'b'], paid: false };
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'worker', sent);
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the letter reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    try {
+      const received: unknown[] = [];
+      class Recorder extends Actor<unknown> {
+        override onReceive(m: unknown): void { received.push(m); }
+      }
+      const [restored] = await second.deadLetterQueue.list();
+      expect(restored!.payload.kind).toBe('captured');
+
+      second.spawn(Recorder, 'worker');
+      expect((await second.deadLetterQueue.replay(restored!.id)).kind).toBe('replayed');
+      await awaitCondition(() => received.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the restored letter was redelivered',
+      });
+      // Structurally equal to what was originally sent, nested values and
+      // the `false` included — a codec that dropped a falsy field or
+      // flattened the array would still have "delivered something".
+      expect(received[0]).toEqual(sent);
+      expect(await second.deadLetterQueue.list()).toEqual([]);
+    } finally {
+      await second.terminate();
+    }
+  });
+
+  test('a restored letter can be replayed to an alternate recipient', async () => {
+    // The redirect over the durable path.  Worth its own case because the
+    // restored entry's `recipientPath` came back through a decode, and the
+    // redirect deliberately never resolves it — so a queue that had lost or
+    // mangled that field would still redirect correctly here while failing
+    // every replay to the original.
+    const journal = new InMemoryJournal();
+
+    const first = newSystem(journal, {});
+    await deadLetterTo(first, 'worker', 'work');
+    await awaitCondition(async () => (await first.deadLetterQueue.list()).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the letter reached the queue',
+    });
+    await first.terminate();
+
+    const second = newSystem(journal, {});
+    try {
+      const received: unknown[] = [];
+      class Recorder extends Actor<unknown> {
+        override onReceive(m: unknown): void { received.push(m); }
+      }
+      const [restored] = await second.deadLetterQueue.list();
+      // '/user/worker' is never respawned in this run.
+      second.spawn(Recorder, 'standby');
+      const standbyPath = `actor-ts://${SYSTEM_NAME}/user/standby`;
+
+      const result = await second.deadLetterQueue.replay(restored!.id, standbyPath);
+      expect(result).toEqual({ kind: 'replayed', recipientPath: standbyPath });
+      await awaitCondition(() => received.includes('work'), {
+        timeoutMs: 4_000,
+        label: 'the restored letter reached the alternate recipient',
+      });
+    } finally {
+      await second.terminate();
+    }
+  });
+
   test('an unserialisable payload is kept as provenance and refuses replay', async () => {
     // The degraded branch.  The tagged-JSON encoder refuses a function
     // rather than degrading it silently, so a queue that must not lose the
