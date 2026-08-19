@@ -21,4 +21,10 @@ export {
 } from './ClusterSingletonManagerOptions.js';
 export type { ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 export type { SingletonDeliver } from './ClusterSingletonManager.js';
+export { AuthenticatedSingletonMessage, isSingletonMessage } from './SingletonProtocol.js';
+export type {
+  SingletonHandOverAcknowledgment,
+  SingletonHandOverRequest,
+  SingletonMessage,
+} from './SingletonProtocol.js';
 export { ClusterSingletonProxy } from './ClusterSingletonProxy.js';

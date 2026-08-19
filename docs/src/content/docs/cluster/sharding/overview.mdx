@@ -321,6 +321,25 @@ Two consequences worth knowing:
 - Setting `actor-ts.sharding.number-of-shards` in a config file shared
   by every node is the least error-prone way to keep them in step.
 
+The refusal also survives a
+[`coordinatorStateStore`](/cluster/sharding/introspection/).  That store
+lets an incoming leader skip the reallocation storm by adopting its
+predecessor's allocation map, and every shard id in such a snapshot was
+produced under the *writing* coordinator's count — so a snapshot is now
+stamped with that count and one taken under a different (or, for a
+snapshot written before the stamp existed, an unstated) count is dropped
+whole, with a `WARN` naming both numbers.  A region the coordinator has
+already refused is skipped even when the snapshot names it.  Without
+either check the load path put the refused regions straight back into the
+placement pool: a rolling deploy that changes the count would re-establish
+the split routing through the snapshot rather than through the
+registration handshake, which is the one place the counts are compared.
+
+Dropping a snapshot costs one reallocation pass, which is exactly what
+every cluster without a store already does on a leader change — and the
+next allocation change under the new leader writes a stamped snapshot, so
+it happens once.
+
 Starting the same type twice on one node — `start()` after
 `startProxy()`, or the reverse — throws.  The second call used to return
 the region the first one made, so a node that asked for a hosting region

@@ -109,20 +109,39 @@ export function contentLengthExceeds(header: string | undefined, cap: number): b
  * The payload limit to install on the one transport a server's WebSocket
  * routes share — the largest frame any of them admits.
  *
- * `max` rather than per route because the transport is not per route: Express
- * builds one `WebSocketServer` for the whole app, `@fastify/websocket` is
- * registered once, and Bun's `maxPayloadLength` belongs to the entire
- * `Bun.serve`.  A single number therefore has to serve every route, and the
- * only safe direction is the widest of them: taking the smallest would cut a
- * route off below its own configured cap, which is a silent wrong answer,
- * while the widest merely leaves a stricter route's surplus frames to the
- * connection actor — which refuses them with a clean 1009 exactly as it did
- * before this existed.
+ * `max` rather than per route because every shipped backend puts all of its
+ * routes behind a single transport.  For two of the three that is imposed from
+ * outside: `@fastify/websocket` is registered once per instance, and Bun's
+ * `maxPayloadLength` belongs to the entire `Bun.serve`.  On Express it is this
+ * backend's own structure rather than something `ws` dictates — one `noServer`
+ * `WebSocketServer` is built for the app, though `completeUpgrade` does already
+ * hold the matched registration when it calls `handleUpgrade`, so a server per
+ * route is structurally available there.  It buys no *uniform* guarantee while
+ * Fastify cannot follow, so one number per server it is.
+ *
+ * Given one number, the only safe direction is the widest: taking the smallest
+ * would cut a route off below its own configured cap, which is a silent wrong
+ * answer, while the widest merely leaves a stricter route's surplus frames to
+ * the connection actor — which refuses them with a clean 1009 exactly as it
+ * did before this existed.  The cost is real and worth naming: a 64 KiB route
+ * sharing a server with an 8 MiB one gets an 8 MiB buffering window, which is
+ * the allocation amplification the cap exists to prevent for that route.
  *
  * What this buys is the part that was missing: the number is now the
  * application's, so *lowering* `maxFrameBytes` (per route or in HOCON) really
  * does narrow the buffering window, and raising it above 1 MiB is no longer
  * silently undone by the transport.
+ *
+ * **One pair does not honour it.**  On Bun the `ws` specifier resolves to
+ * Bun's built-in shim, which stores `maxPayload`, reads it back unchanged, and
+ * enforces nothing — so on Bun with the Express or Fastify backend this number
+ * is installed and ignored, and the frame is buffered in full before the
+ * connection actor refuses it.  Returning a smaller number cannot repair that,
+ * and the shim leaves no seam a backend could use instead; the guarantee that
+ * survives there is the actor's, which is per route and unaffected.
+ * `tests/integration/in-process/http/websocket/BackendTransportFrameCap.test.ts`
+ * pins both halves, so the day the shim enforces the option that test goes red
+ * and the caveat in the WebSocket docs can be lifted.
  *
  * An empty list falls back to the built-in default; no shipped backend calls
  * it that way, but the answer has to be a bound rather than `-Infinity`.

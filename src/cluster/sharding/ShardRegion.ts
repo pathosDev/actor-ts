@@ -7,6 +7,7 @@ import { ActorPath } from '../../ActorPath.js';
 import { DEFAULT_NUM_SHARDS, DEFAULT_PASSIVATION_IDLE_MS } from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Terminated } from '../../SystemMessages.js';
 import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
@@ -150,7 +151,6 @@ export class ShardRegion<TMessage = unknown>
   private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
-  private registered = false;
   /**
    * Set when the coordinator refused this region's `numShards` (#633).  A
    * refused region must stop hammering the register loop — the count is fixed
@@ -759,7 +759,6 @@ export class ShardRegion<TMessage = unknown>
   private onRegisterAcknowledgment(message: RegisterAcknowledgment, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
     this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
-    this.registered = true;
     this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
@@ -774,10 +773,17 @@ export class ShardRegion<TMessage = unknown>
    * which is the fail-stop the alternative lacks — an accepted mismatch routes
    * the same entity id into two different shards and runs two live instances
    * of it, one per node, at paths that never collide.
+   *
+   * This message *is* the whole of the issue's "clear rejection" criterion, and
+   * it named a HOCON key that does not exist — `actor-ts.sharding.num-shards`,
+   * against a `reference.conf` that ships `number-of-shards`.  It is built from
+   * {@link ConfigKeys} now rather than spelled out, because that is the one
+   * source of truth for a key path and no test can catch a wrong string in a
+   * free-text log line: `NoDeadConfigKeys` walks `reference.conf` →
+   * `ConfigKeys`, so an *invented* key is outside its direction of travel.
    */
   private onRegisterRefused(message: RegisterRefused, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
-    this.registered = false;
     this.registerRefused = true;
     this.registerTimer?.cancel();
     this.registerTimer = null;
@@ -787,7 +793,7 @@ export class ShardRegion<TMessage = unknown>
       + `${message.regionNumShards} and the coordinator governs the type with ${message.numShards}. `
       + `No shard will be allocated here and messages for this type will keep buffering until the `
       + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
-      + `(explicitly, or via actor-ts.sharding.num-shards).`,
+      + `(explicitly, or via ${ConfigKeys.sharding.numberOfShards}).`,
     );
   }
 
@@ -804,6 +810,50 @@ export class ShardRegion<TMessage = unknown>
     this.log.warn(
       `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
       + `outside 0..${this.config.numShards - 1}`,
+    );
+    return false;
+  }
+
+  /**
+   * Whether a `HandOff` for `shardId` has anything to hand off (#584).
+   *
+   * The origin gate answers *who* may order a handoff; this answers *what* one
+   * can be ordered for, and the arm had neither an ownership nor an idempotence
+   * precondition.  A `HandOff` for a shard this region does not own still marked
+   * it `'handing-off'`, acknowledged, and — since `shards.get(shardId)` was
+   * `undefined` — fell straight into `completeHandOff`, which deletes
+   * `shardHomes`, `shardHomeNodes` and `shardState` for the id and announces a
+   * `HandOffComplete`.  That is a routing-cache eviction for a shard the region
+   * was never handing off, reachable by replaying one authentic frame: the
+   * coordinator issues `HandOff` once per rebalance, but `Transport` flushes
+   * frames buffered before a handshake completed, so a genuine one can also
+   * land *late*, long after the coordinator's `handOffTimeoutMs` already
+   * force-reallocated the shard.
+   *
+   * `localShards`, deliberately not `shards`: a shard whose actor has passivated
+   * (#901) has no `shards` entry and is still legitimately owned, so it must
+   * still hand off.  `handingOff` covers the window in between — the shard actor
+   * is stopping and `handleShardTerminated` will complete the handoff, so a
+   * second directive has nothing left to add.
+   *
+   * The cost of refusing is bounded and self-healing: the coordinator only ever
+   * sends `HandOff` to the region its own `shardHome` names, so a refusal means
+   * the two disagree about ownership — and the `handOffTimeoutMs` fallback
+   * (`ShardCoordinator.beginHandOff`) exists for exactly that, force-reallocating
+   * the shard instead of waiting forever.
+   */
+  private ownsShardToHandOff(shardId: number): boolean {
+    if (this.handingOff.has(shardId)) {
+      this.log.debug(
+        `[sharding] shard ${shardId} of '${this.config.typeName}' is already handing off; `
+        + `ignoring the duplicate directive`,
+      );
+      return false;
+    }
+    if (this.localShards.has(shardId)) return true;
+    this.log.warn(
+      `[sharding] refusing to hand off shard ${shardId} of '${this.config.typeName}' — `
+      + `this region does not own it, so there is nothing to give up`,
     );
     return false;
   }
@@ -1032,6 +1082,7 @@ export class ShardRegion<TMessage = unknown>
     // never got it, so an out-of-range id still walked into `completeHandOff`
     // and deleted cache entries under a shard that cannot exist.
     if (!this.isKnownShardId(message.shardId)) return;
+    if (!this.ownsShardToHandOff(message.shardId)) return;
     const shardId = message.shardId;
     const entityIds = Array.from(this.shardEntities.get(shardId) ?? []);
     this.log.debug(
@@ -1260,7 +1311,6 @@ export class ShardRegion<TMessage = unknown>
   /* -------------------------------- Misc ------------------------------ */
 
   private onLeaderChanged(): void {
-    this.registered = false;
     this.coordinatorRef = null;
     // Nobody is believed to host the coordinator until `ensureRegistered`
     // re-reads the leader — a directive arriving in that gap has no authority

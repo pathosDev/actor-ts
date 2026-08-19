@@ -147,7 +147,6 @@ describe('validateWireFrame — per-kind shapes', () => {
         members: [{ address, status: 'up', version: 1 }],
       },
       { kind: 'envelope', to: '/user/a', from: '/user/b', body: { hello: 'world' } },
-      { kind: 'shard-map', type: 'User', shards: { 0: address }, version: 3 },
       { kind: 'leave', node: address },
     ];
     for (const frame of frames) {

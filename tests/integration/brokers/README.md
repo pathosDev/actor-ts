@@ -85,6 +85,15 @@ Failure mode is loud: the test runner's first `import` of the
 missing package throws "Cannot find module" before any scenario
 even starts.
 
+That loud failure only covers peers that HAVE a suite here, though —
+a driver with no suite directory is declared in no manifest at all
+and nothing says so.  `tests/unit/ci/OptionalPeerDeclarations.test.ts`
+is the quiet half: it asserts every optional peer is declared either
+in this manifest or in the root `devDependencies`, so the gap is a
+failing test rather than a discovery years later (#676).  Which of the
+two contexts a given peer belongs in is the rule in AGENTS.md,
+*Runtime portability*.
+
 Every suite directory has the same three files:
 
 ```
