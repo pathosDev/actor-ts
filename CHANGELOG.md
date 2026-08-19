@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The coverage floors are now a ratchet with the policy written down in
+  AGENTS.md: raise freely, never lower silently, and record the measurement
+  that forces a lowering beside the number (#541).**
+
+  `tests/unit/ci/CoverageGate.test.ts` makes that enforceable — it pins
+  the aggregate floor across all three places that quote it (the gate
+  script, `test.yml` and AGENTS.md) and puts a lower bound under every
+  floor. Nothing under `tests/` previously even named COVERAGE_LINE_FLOOR,
+  so lowering the floor was one token in one file. The gate's own
+  docstring also stopped claiming that CI uses it and that it shares a
+  single source of truth with `test.yml`; neither was true.
+
 - **The default dispatcher wakes actors on the microtask queue, with a
   macrotask fairness budget** (#1205).
 
@@ -926,6 +938,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **`bun run test:coverage:gate` now enforces per-module line-coverage
+  floors on top of the aggregate one (#541).**
+
+  `src/cluster/` at 90 % and `src/persistence/` at 90 %, computed as the
+  weighted sum of lcov's LH over LF for every record under the path prefix
+  rather than as an average of bun's per-file percentages, which would
+  cancel a ten-line barrel against a thousand-line coordinator. Measured
+  on 2026-08-19 with the CI population (ACTOR_TS_SKIP_FLAKY_MNS=1, 7695
+  tests, bun 1.3.1) the two modules sit at 97.39 % and 95.35 %. The gate
+  also accepts `--log=<bun-test.log> --lcov=<lcov.info>` to gate the
+  artifacts of a run that already happened instead of running the suite
+  itself — both flags or neither, so half the gate can never report as all
+  of it.
+
+- **actor-ts.distributed-data.max-gossip-bytes (default 1M) and the matching
+  DistributedDataOptions.withMaxGossipBytes, bounding one gossip frame's
+  payload (#691).**
+
+  The effective budget is always the smaller of this and the transport's
+  own maxFrameBytes, so lowering the wire cap for a semi-trusted network
+  lowers the gossip budget with it and no setting can put gossip back over
+  the edge. 0 removes the DistributedData-side budget; the clamp still
+  applies.
+
+- **A new counter, distributed_data_gossip_skipped_keys_total, labelled by
+  reason (oversize or unserialisable), plus a rate-limited warning naming
+  the key, its measured size, the budget and the store size (#691).**
+
+  A single key whose own encoding exceeds the budget cannot be sliced —
+  one key's full state is the smallest unit gossip sends, and
+  MAX_CRDT_ENTRIES bounds an entry count rather than a byte size — so it
+  is skipped and does not converge. Making that observable was chosen over
+  a silent skip; it is documented on the replication and stock-metrics
+  pages in both languages.
+
+- **Transport now publishes an optional readonly maxFrameBytes, and
+  TcpTransport's field is public (#691).**
+
+  A sender needs the number before it builds a frame, because nothing on
+  the interface reports failure: send is fire-and-forget and the cap is
+  enforced on the far side. Optional rather than mandatory, since the
+  in-memory, MessageChannel and multi-node transports hand the message
+  object to the peer and enforce no frame cap at all.
 
 - **`handOverTimeoutMs` on `StartSingletonOptions` and
   `ClusterSingletonManagerOptions` (default 10 s, builder
@@ -1918,6 +1974,89 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **Documentation that misstated where serialization happens, in both
+  directions (#450).**
+
+  Six pages plus their German twins claimed either too little or too much
+  about the cluster wire. serialization/json.mdx said the wire uses raw
+  JSON.stringify so a cross-node tell gets no tag round-trip (it does now,
+  through the same tagged tree); cluster/transports.mdx called
+  TcpTransport over loopback "the JSON framing every cluster transport
+  uses" (it is a tagged tree, and neither InMemoryTransport nor
+  MessageChannelTransport frames anything at all); and the migration aside
+  in serialization/overview.mdx gave the affected release pair as 0.15 to
+  0.16 when the change is not an ancestor of v0.16.0, and illustrated it
+  with an example that was wrong in both directions. In the other
+  direction, http/marshalling.mdx still called the SerializationExtension
+  "the right hook" for cluster-wire serialization, and the frontmatter
+  descriptions of serialization/overview.mdx and serialization/custom.mdx
+  still said the extension chooses the format by class binding,
+  contradicting their own page bodies. Three CBOR asides described hazards
+  that cannot occur because a binding never reaches the wire; they are
+  re-aimed at the boundary where the hazard is real, a persistence row
+  written through withSerializer(...) that names the serializer id it
+  needs.
+
+- **The SerializationExtension class JSDoc, which TypeDoc republishes
+  verbatim into the API reference (#450).**
+
+  It claimed the class would graduate to an ExtensionId once the
+  Extensions mechanism landed and that it is constructed directly inside
+  ActorSystem; both halves are false, the ExtensionId is declared in the
+  same file and ActorSystem neither imports nor constructs the class. It
+  now states how the registry is reached and how far a binding registered
+  in it actually gets. The example
+  examples/serialization/hello-serializer.ts no longer says its binding is
+  "for compact binary transport".
+
+- **Test coverage for the hazardous half of the wire-format rolling upgrade,
+  which three separate prose descriptions asserted and no test pinned
+  (#450).**
+
+  A legacy frame carrying a reserved-tag shape at any depth throws out of
+  the decoder and costs the whole connection plus every frame batched into
+  the same TCP chunk, because the decoder throws rather than returning the
+  frames it had already decoded; and the two tags that cannot throw,
+  __bytes__ and __date__, corrupt the value silently instead, a malformed
+  base64 string becoming a six-byte Uint8Array and a malformed date an
+  Invalid Date. A third case pins that a class binding registered in a
+  SerializationExtension does not reach the wire, so the corrected prose
+  has something behind it.
+
+- **BREAKING — DistributedData gossip is now bounded by a per-frame byte
+  budget and sweeps a larger store across successive ticks (#691).**
+
+  Previously gossipTick serialised the whole key set into one ddata-gossip
+  frame with no size check on the send path, so a store past the
+  receiver's remote.max-frame-bytes produced a frame rejected on its
+  4-byte length prefix before any payload byte was buffered. The transport
+  answers that decoder throw by dropping the connection, so the store did
+  not converge slowly, it did not converge at all — no key ever reached
+  the merge — while one peer association died per gossip interval, taking
+  heartbeats, membership gossip and every cross-node tell with it, then
+  reconnecting to die again. Slicing is safe because merge is per key and
+  an absent key means no information rather than deletion.
+
+  *Migration:* A store larger than 1 MiB now converges over several gossip
+  ticks instead of one frame; set
+  actor-ts.distributed-data.max-gossip-bytes higher (or 0) to restore
+  single-frame gossip, bearing in mind it is still clamped to
+  remote.max-frame-bytes.
+
+- **An unserialisable value inside an LWWRegister (a function, a Promise)
+  now costs only its own key in a gossip round (#691).**
+
+  Transport.writeFrame catches the same failure but drops the entire
+  frame, so one bad value silenced every other key that travelled with it.
+
+- **Documentation corrections found while editing the same pages: the
+  DistributedData class doc still promised full-state push was fine for
+  small stores without defining small and still claimed no durable
+  persistence, which has been untrue since durableStore landed; and both
+  language versions of the replication page told readers to raise
+  gossipIntervalMs, which is not the option's name (it is gossipInterval,
+  HOCON actor-ts.distributed-data.gossip-interval). (#691).**
 
 - **The WebSocket transport frame cap that Express and Fastify install is
   now asserted directly rather than only end-to-end (#373).**
@@ -3403,6 +3542,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **Replaces the existing CHANGELOG.md line 4005, inside the [Unreleased]
+  Security section, which currently reads "`bun.lock`, a CycloneDX SBOM on
+  every release, and a `SECURITY.md` that" (#539).**
+
+  Corrected wording for that line and the one after it: "`bun.lock`, a
+  CycloneDX SBOM from the next release onward, and a `SECURITY.md` that
+  names a channel (#539).**" The claim as written is false for every
+  release that exists — the SBOM jobs landed in publish.yml five and a
+  half hours after the v0.16.0 publish run had already finished.
+
+- **Replaces the existing CHANGELOG.md line 4052, inside the [Unreleased]
+  Security section, which currently reads "Every GitHub Release now carries
+  a CycloneDX SBOM (#539).**
+
+  `--provenance`". Corrected opening for that paragraph: "The release
+  pipeline now builds a CycloneDX SBOM and attaches it to the GitHub
+  Release. The two jobs landed after v0.16.0 had already been published,
+  so the first release to carry the asset is the next one; v0.16.0 and
+  everything before it have none. `--provenance` already answered who
+  built a tarball; the SBOM answers what is inside it, so" — the rest of
+  the paragraph from "already answered who built a tarball" onward is
+  unchanged and still accurate. Note the triage report named a single
+  CHANGELOG line at 2543; its line numbers were stale and there are in
+  fact two overclaiming lines, 4005 and 4052, both needing the correction.
 
 - **The known limitation that Bun's built-in `ws` shim accepts `maxPayload`
   and enforces nothing is now test-bound instead of documented only

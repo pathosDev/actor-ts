@@ -102,8 +102,11 @@ This document tracks the planned direction.  Nothing here is committed work — 
   - **What the wave narrowed rather than closed**, so it is not re-derived:
     #545's POSIX process-group teardown has never executed (the development
     machine is Windows) and its proof is the first CI run; #539's workflows
-    and #538's nightly cannot be green before a push; #612's rollback floor
-    is in-process and does not survive a restart; #631 fixes the code and
+    and #538's nightly have both been green since 2026-08-16 — CodeQL 8/8
+    on develop with zero open alerts, and the nightly green on 08-17 and
+    08-18, 2 of the 14 consecutive nights its exit criterion needs;
+    #612's rollback floor is in-process and does not survive a restart;
+    #631 fixes the code and
     leaves existing journals holding the collapsed tags
   - **Three counts were wrong in the direction that flatters, and got
     measured.** #663's report claimed four sleeps remained under `examples/`
