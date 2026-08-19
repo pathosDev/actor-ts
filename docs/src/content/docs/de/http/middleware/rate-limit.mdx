@@ -201,15 +201,33 @@ import { Aside } from '@astrojs/starlight/components';
   gegeneinander: in einer mit `idempotent` geteilten Instanz ist eine
   Flut angreiferseitig gewählter `Idempotency-Key`s eine Flut von
   Claims, und sobald die Map nichts Billigeres mehr hält, gehen die
-  Zähler mit.  Der eigene Zähler des Fluters bleibt in beiden Fällen
-  verschont: `incr` markiert ihn bei jedem Request als zuletzt genutzt,
-  er ist also nie das Opfer.
+  Zähler mit.
+
+  **Ein Fluter kann sein eigenes Limit zurücksetzen — aber nur von
+  außerhalb des Limiters.**  Requests, die *durch* diese Middleware
+  laufen, führen `incr` vor dem `max`-Vergleich aus und markieren den
+  Zähler des Fluters damit als zuletzt genutzt; eine Flut durch den
+  Limiter kann ihren eigenen Zähler also nie evictieren — auch nicht,
+  nachdem die 429er begonnen haben.  Eine Key-erzeugende Route am
+  gleichen `Cache`, die der Limiter **nicht** umschließt, liefert diesen
+  Bump nicht: der Zähler altert wie jeder andere, und trägt die Flut
+  selbst eine Garantie (etwa eine Flut von `idempotent`-Claims), sind die
+  Zähler das, was bleibt, sobald die opportunistische Hälfte leer ist.
+  Gemessen an einer geteilten Instanz mit `maxEntries: 4`: ein Client,
+  den `max: 2` gerade mit 429 abgewiesen hatte, bekam nach zwanzig
+  `Idempotency-Key`-Requests außerhalb des Limiters wieder 200.
 
   Übergib eine eigene Instanz — oder `ext.cache('rate-limit')` — und
   dimensioniere deren `maxEntries` oberhalb der Zahl eindeutiger Keys,
-  die du innerhalb eines `windowMs` erwartest; ein Client mit einem
-  IPv6-`/64` erzeugt sie beliebig, und jeder davon ist ein Zähler, den
-  der Cache schützt.  Siehe
+  die du innerhalb eines `windowMs` erwartest, unter dem Namen dieses
+  Caches:
+
+  ```hocon
+  actor-ts.cache.rate-limit.in-memory.maxEntries = 50000
+  ```
+
+  Ein Client mit einem IPv6-`/64` erzeugt sie beliebig, und jeder davon
+  ist ein Zähler, den der Cache schützt.  Siehe
   [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
 </Aside>
 

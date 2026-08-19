@@ -44,11 +44,31 @@ import {
  * clients' windows.  It does not rank guarantees against each other,
  * though: on an instance shared with `idempotent`, an attacker-chosen
  * `Idempotency-Key` flood is a flood of claims, and once the map holds
- * nothing cheaper the counters go with them.  The flooder's own counter
- * is safe either way: `incr` bumps it to most-recently-used on every
- * request, so it is never the victim.  Pass a dedicated instance
- * (`ext.cache('rate-limit')`) and size its `maxEntries` above the number
- * of distinct keys you expect to see within one `windowMs` — a client
+ * nothing cheaper the counters go with them.
+ *
+ * **A flooder can reset its OWN limit, but only from outside the
+ * limiter** (#607).  Two cases, and the difference is which of them the
+ * flood's requests pass through:
+ *
+ *   - *Through this limiter* — safe.  Every wrapped request runs `incr`
+ *     first, which bumps the flooder's counter to most-recently-used, so
+ *     it is never the least-recently-used victim however long the flood
+ *     runs.  This holds even after the limiter starts answering 429: the
+ *     `incr` happens before the `max` comparison.
+ *   - *Bypassing this limiter* — not safe.  A key-minting route on the
+ *     same `Cache` that the limiter does not wrap never bumps the
+ *     counter, so it ages like anyone else's.  Whether it survives then
+ *     depends on what the flood writes: a `cached` flood is
+ *     opportunistic and is drained first, but a flood of `idempotent`
+ *     claims carries a guarantee too, and once the opportunistic half is
+ *     empty the counters are what is left to take.  Measured on one
+ *     shared `maxEntries: 4` instance: a client answered 429 by
+ *     `max: 2` was answered 200 again after twenty off-limiter
+ *     `Idempotency-Key` requests.
+ *
+ * Pass a dedicated instance (`ext.cache('rate-limit')`) and size its
+ * `maxEntries` above the number of distinct keys you expect to see within
+ * one `windowMs`, under `actor-ts.cache.rate-limit.in-memory` — a client
  * with an IPv6 `/64` mints them freely, and every one is a counter this
  * cache protects.
  *
