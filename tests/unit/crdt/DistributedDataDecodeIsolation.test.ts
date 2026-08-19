@@ -21,8 +21,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DistributedDataId, GCounter } from '../../../src/crdt/index.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const systems: ActorSystem[] = [];
 const clusters: Cluster[] = [];

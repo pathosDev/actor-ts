@@ -9,8 +9,7 @@ import type {
   K8sRequestOptions,
   K8sResponse,
 } from '../../../src/coordination/leases/K8sApi.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const TEST_CREDS = {
   apiServerUrl: 'https://kubernetes.test',

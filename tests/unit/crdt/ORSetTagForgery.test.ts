@@ -27,17 +27,15 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DistributedDataId, ORSet } from '../../../src/crdt/index.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(20);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Thin wrapper over the shared helper (#418) — this file predates it and had
+ * its own deadline loop, which named neither the condition nor how long it
+ * really waited.  The budget bounds only the broken case.
+ */
+const waitFor = (predicate: () => boolean, label: string): Promise<void> =>
+  awaitCondition(predicate, { timeoutMs: 4_000, intervalMs: 20, label });
 
 const systems: ActorSystem[] = [];
 const clusters: Cluster[] = [];
@@ -158,11 +156,14 @@ describe('DistributedData ORSet over the wire (#722)', () => {
     } as unknown as WireMessage;
 
     evil.send(victim.selfAddress, hostileFrame);
-    await waitFor(() => data.keys().includes('cart-42'));
+    await waitFor(() => data.keys().includes('cart-42'), 'the hostile frame installed the key');
 
     // An honest local write, which used to report success and then vanish.
     data.update('cart-42', () => ORSet.empty<string>(), (set) => set.add(replica, 'apple'));
-    await waitFor(() => data.get<ORSet<string>>('cart-42')?.has('apple') === true);
+    await waitFor(
+      () => data.get<ORSet<string>>('cart-42')?.has('apple') === true,
+      'the honest write is visible in the victim\'s own view',
+    );
 
     // The same tombstones again — one more merge is all it took.
     evil.send(victim.selfAddress, hostileFrame);

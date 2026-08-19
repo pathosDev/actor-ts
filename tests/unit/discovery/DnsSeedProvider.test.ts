@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
 import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 describe('DnsSeedProvider — basic lookup', () => {
   test('A-record mode pairs IPs with the configured port', async () => {

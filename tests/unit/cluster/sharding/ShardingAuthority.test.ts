@@ -45,7 +45,7 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { regionSegments } from '../../../util/SystemPaths.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -66,8 +66,6 @@ class Entity extends Actor<Command> {
 
   private onWork(): void { delivered++; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type Victim = {
   system: ActorSystem;
