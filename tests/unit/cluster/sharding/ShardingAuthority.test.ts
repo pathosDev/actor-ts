@@ -45,7 +45,7 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { regionSegments } from '../../../util/SystemPaths.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -66,8 +66,6 @@ class Entity extends Actor<Command> {
 
   private onWork(): void { delivered++; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type Victim = {
   system: ActorSystem;
@@ -217,6 +215,9 @@ describe('ShardRegion coordinator authority (#584)', () => {
 
     const evil = await attacker('evil', 47_311);
     forge(evil, victim, victim.regionPath, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    // The assertion is an absence: give the region a turn to act on the forged
+    // frame, then prove it did not.  A poll cannot express this — the condition
+    // is already true at t=0 and must still hold later.
     await sleep(200);
 
     // The whole finding in one assertion: one 100-byte frame used to stop every
@@ -239,6 +240,9 @@ describe('ShardRegion coordinator authority (#584)', () => {
     const evil = await attacker('evil-bypass', 47_321);
 
     forge(evil, victim, `${victim.regionPath}/`, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    // The assertion is an absence: give the region a turn to act on the forged
+    // frame, then prove it did not.  A poll cannot express this — the condition
+    // is already true at t=0 and must still hold later.
     await sleep(200);
 
     expect(entityIsUp(victim)).toBe(true);
@@ -254,6 +258,9 @@ describe('ShardRegion coordinator authority (#584)', () => {
       region: '/system/cluster/sharding/region-entity',
       node: new NodeAddress('evil-home', 'h', 47_331).toJSON(),
     });
+    // The assertion is an absence: the routing cache must be unchanged, so the
+    // forged frame only gets a turn.  A poll cannot express that — the shard
+    // already resolves locally at t=0 and has to still resolve locally later.
     await sleep(200);
 
     // Had the region adopted it, routing would leave the node: the tell would
@@ -275,6 +282,9 @@ describe('ShardRegion coordinator authority (#584)', () => {
       shardId: victim.shardId,
       entityIds: ['ghost-1', 'ghost-2'],
     });
+    // The assertion is an absence: the two ghosts must never exist, so the
+    // forged frame only gets a turn.  A poll cannot express that — the
+    // condition is already true at t=0 and must still hold later.
     await sleep(200);
 
     expect(entityIsUp(victim, 'ghost-1')).toBe(false);
@@ -302,6 +312,9 @@ describe('ShardRegion coordinator authority (#584)', () => {
         shardCount: 1,
       }],
     });
+    // The assertion is an absence: no `ShardMapChanged` for the forged type may
+    // ever reach a local subscriber, so the forged frame only gets a turn.  A
+    // poll cannot express that — the condition holds at t=0 and must hold later.
     await sleep(200);
 
     // The coordinator's own broadcasts still arrive, so assert on the forgery

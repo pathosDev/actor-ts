@@ -1,8 +1,7 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { InMemoryLease, LeaseOptions, inMemoryLeaseStore } from '../../../src/coordination/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 beforeEach(() => {
   inMemoryLeaseStore._clear();

@@ -23,8 +23,8 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /** Predates the shared helper (#418); a wrapper so the call sites read the same. */
-const waitFor = (pred: () => boolean, label: string): Promise<void> =>
-  awaitCondition(pred, { timeoutMs: 4_000, intervalMs: 25, label });
+const waitFor = (predicate: () => boolean, label: string): Promise<void> =>
+  awaitCondition(predicate, { timeoutMs: 4_000, intervalMs: 25, label });
 
 /**
  * Poll a node's receptionist until its listing for `key` holds `count` refs.
