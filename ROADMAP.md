@@ -51,6 +51,18 @@ This document tracks the planned direction.  Nothing here is committed work — 
   `KeepMajority` leaves both sides running on an exact tie (#1170), a
   singleton that exhausts its restart budget is never re-spawned (#1175),
   and `ShardCoordinator` ignores the configured shard count (#1026).
+- **Wave 3 (2026-08-18/19) left eighteen tracked residuals, #1211–#1228.**
+  Three are worth reading first, because each is a defect the wave measured
+  rather than inferred and then deliberately did not fold in: a broker
+  connection survives a CoordinatedShutdown `service-stop` and is never
+  closed, on the path `runUntilTerminated()` installs (#1223); the
+  coordinator's per-shard `GetShardHome` queue is uncapped and any
+  authenticated member can grow it (#1219); and a gRPC stream whose peer
+  never closes it is never reaped, which is why #577 stayed open until
+  #1222 existed.  Four more (#1224–#1226, #1227) are behaviour the wave
+  shipped that no test binds — found by reverting one line at a time, not
+  by reading — and they are the honest measure of what a green suite did
+  not prove.
 - ~6 250 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
