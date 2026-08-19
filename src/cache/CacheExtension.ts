@@ -83,7 +83,7 @@ export class CacheExtension implements Extension {
   registerCache(pluginId: string, factory: CacheFactory): void {
     this.factories.set(pluginId, factory);
     // Force re-resolution if any active instance was built from this plugin.
-    for (const [name, _inst] of this.instances) {
+    for (const name of this.instances.keys()) {
       if (this.pluginIdFor(name) === pluginId) this.instances.delete(name);
     }
   }
