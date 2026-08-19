@@ -64,11 +64,16 @@ export type ShardHome = {
   readonly node: NodeAddressData;
 };
 
-export type BeginHandOff = {
-  readonly kind: 'sharding.BeginHandOff';
-  readonly shardId: number;
-};
-
+/**
+ * The region's answer to a `HandOff`, sent the moment it starts giving the shard
+ * up rather than when it is done — `HandOffComplete` is the second leg.
+ *
+ * There is no request type to match the name.  A `BeginHandOff` existed as a
+ * declaration and nothing else: never constructed, never sent, never matched, in
+ * any release (#681).  The live sequence has always been `HandOff` →
+ * `BeginHandOffAcknowledgment` → `HandOffComplete`, and the coordinator's
+ * handler for this leg is informational.
+ */
 export type BeginHandOffAcknowledgment = {
   readonly kind: 'sharding.BeginHandOffAcknowledgment';
   readonly shardId: number;
@@ -338,7 +343,6 @@ export type ShardingMessage =
   | RegisterRefused
   | GetShardHome
   | ShardHome
-  | BeginHandOff
   | BeginHandOffAcknowledgment
   | HandOff
   | HandOffComplete

@@ -45,6 +45,52 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   proving: inverting each new guard turns tests red rather than leaving them
   green — three for the duration gate, 34 for the publish guard, two for the
   receive-timeout check, one for the creation counter.
+- **The optional-peer rule in AGENTS.md now matches the two-manifest design
+  the tree has implemented since #540 (#676).**
+
+  It had said to add a matching devDependency "so the test suite can
+  exercise them", which contradicted `tsconfig.dev.json` (which states the
+  broker drivers are absent from the root install by design) and did not
+  hold on its own terms: nothing in tests/ is conditioned on module
+  availability and every adapter runs against a fake, so installing a
+  package flips no suite from skipped to running. The rule now names both
+  dependency contexts, makes the choice follow from how the adapter is
+  exercised (in-process under `bun test` versus against a live broker in
+  Docker), and states what a root devDependency actually buys — a test
+  importing the real module to check the structural stub against upstream.
+  Two new guards under tests/unit/ci enforce the split, so an optional
+  peer declared in neither manifest is a failing test rather than a
+  discovery years later.
+
+- **scripts/check-doc-samples.mjs now reports what it was hiding (#470).**
+
+  A parse error suppresses TypeScript's semantic pass for the whole
+  program, and four unmarked fences were enough to reduce the script to a
+  four-line syntax report that read as a pass; it now compiles twice,
+  dropping the syntactically broken fences and re-checking the rest. Each
+  emitted fence also carries a one-line page-continuity prologue, so a
+  fence that continues an earlier one on its page is no longer counted as
+  broken, and a carried name that was imported from actor-ts or node: is
+  re-imported rather than stubbed, which keeps the continuation genuinely
+  type-checked. The leftover cannot-find-name bucket is split by whether
+  the corpus imports the name anywhere: a name nothing imports is a prose
+  placeholder and reported as a fragment, a name other pages do import is
+  a missing import and stays an error. The script exposes its pure half
+  for testing, adds --report for the per-code and per-page tallies, prints
+  the reason on each no-compile exemption, and accepts --docs and --out so
+  it can be driven over a fixture tree. It is still deliberately not a CI
+  gate.
+
+- **Cluster singleton: the envelope-router claim on a singleton's manager
+  path belongs to the `ClusterSingleton` extension rather than to the
+  manager actor, and is taken by `start()` or by `ref()`, whichever comes
+  first (#949).**
+
+  A proxy-only node is still asked to hand the singleton over when the
+  host moves, and with nothing registered it was indistinguishable from an
+  unreachable one. One visible consequence: a user message routed to a
+  node that never called `start()` now reaches `deadLetters` instead of
+  only a Cluster-level log line.
 
 - **The comparison drops its no-framework arm and averages its rounds** (#27).
   Two changes to how the benchmark is measured and read.
@@ -829,6 +875,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   language mirrors.
 
 ### Added
+
+- **`handOverTimeoutMs` on `StartSingletonOptions` and
+  `ClusterSingletonManagerOptions` (default 10 s, builder
+  `withHandOverTimeoutMs`): how long an incoming singleton host waits for
+  every eligible peer to confirm it is not hosting before hosting anyway.
+  Reaching it means the uniqueness invariant could not be proven —
+  availability is chosen over it and the manager says so at `warn`. No HOCON
+  leaf yet; that belongs to #855, whose proposed retry-count keys are
+  superseded by this single timeout. (#949).**
 
 - **A scheduled task that throws is now reported instead of vanishing onto
   the console (#678).**
@@ -1812,6 +1867,177 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nowhere else.
 
 ### Fixed
+
+- **The WebSocket transport frame cap that Express and Fastify install is
+  now asserted directly rather than only end-to-end (#373).**
+
+  Six cases read the limit off the transport itself — Express's `noServer`
+  `WebSocketServer` and, on Fastify, the `websocketServer` decoration
+  `@fastify/websocket` adds — and pin that it is the route's own resolved
+  `maxFrameBytes`, that it drops below the framework default when a route
+  lowers it, that two routes on one server reconcile to the widest, and
+  that a HOCON-only setting reaches it with no route option at all.
+  Reverting either backend to the built-in constant turns all six red;
+  before this, nothing anywhere checked the number either backend hands
+  `ws`, because every discriminating test for the change binds the Hono
+  backend and the shared backend suite's raised-cap case passes on Bun
+  whether or not the fix is present.
+
+- **Two comments that described behaviour their subject does not have
+  (#373).**
+
+  `transportFrameCapOf`'s rationale claimed a per-route cap is impossible
+  because "Express builds one `WebSocketServer` for the whole app" — true
+  of Fastify's single plugin registration and of `Bun.serve`, but a
+  property of this backend on Express, where `completeUpgrade` already
+  holds the matched registration when it calls `handleUpgrade`. It now
+  says the shipped backends share one transport, names the cost of taking
+  the widest (a 64 KiB route beside an 8 MiB one gets an 8 MiB buffering
+  window), and records where the installed number is ignored. And the
+  shared WebSocket backend suite explained its oversize-frame assertion
+  with "this frame no longer reaches the connection actor at all: `ws`
+  (Express, Fastify) answers the protocol violation with a clean 1009" —
+  on Bun, the only runtime that executes that file, the frame does reach
+  the actor and the 1009 is the actor's. The assertion was correct; the
+  explanation was not.
+
+- **A `ShardRegion` now hands off only a shard it currently owns, and only
+  once (#584).**
+
+  `onHandOff` had an origin gate and no precondition behind it, so a
+  duplicate or late `HandOff` — authentic, from the coordinator's own
+  node, which is what `Transport` produces when frames buffered before a
+  handshake finally flush — marked the id `handing-off`, acknowledged, and
+  fell straight into `completeHandOff`, deleting the region's cached
+  "shard X lives on node N" entries for a shard it was never handing off.
+  Ownership is judged by allocation, not by whether the shard actor is
+  running, so a shard that passivated for being idle still hands off. The
+  coordinator does not stall on a refusal: it only ever sends `HandOff` to
+  the region its own allocation map names, and `handOffTimeoutMs` is the
+  existing fallback for a disagreement. The correlation nonce echoed from
+  `BeginHandOff` that the issue also proposed is recorded as won't-do:
+  replaying a genuine `HandOff` needs an on-path position on a plaintext
+  link, and that same position reads the nonce off the same link, while
+  mTLS already binds the address claim to the peer certificate.
+
+- **The `numShards` refusal now names a configuration key that exists
+  (#633).**
+
+  The region's rejection message told the operator to set
+  `actor-ts.sharding.num-shards`; `reference.conf` ships
+  `number-of-shards`. That message is the whole of the issue's "clear
+  rejection" criterion, and it survived because no test looked at it and
+  because `NoDeadConfigKeys` walks reference.conf to `ConfigKeys` — an
+  invented key inside a free-text log string is outside its direction of
+  travel. The path is now interpolated from `ConfigKeys` rather than
+  spelled out, and a test asserts on the emitted line.
+
+- **BREAKING — A persisted coordinator-state snapshot can no longer route
+  around a `numShards` refusal (#633).**
+
+  `loadCoordinatorState` wrote regions straight from the snapshot into the
+  placement pool, filtered only by cluster membership, so with a
+  `coordinatorStateStore` configured a leader change onto a differently
+  configured node adopted its predecessor's allocation map and
+  re-established the split routing through the load path — the one path
+  where the registration handshake that compares the counts never runs.
+  `CoordinatorStateData` now carries the shard count it was written under,
+  and a snapshot taken under a different count is dropped whole rather
+  than entry by entry, because every id in it was produced by
+  `hash(entityId) % numShards` under the writer's modulus. A region
+  already refused this term is skipped even when the snapshot names it,
+  and that check sits inside the restore loop because the load is
+  fire-and-forget.
+
+  *Migration:* A snapshot written before this change states no shard
+  count, so the first leader change after upgrading falls back to
+  rebuilding from region registrations — one reallocation pass, which is
+  what every cluster without a store already does; the next allocation
+  change writes a stamped snapshot. A custom `CoordinatorStateStore` must
+  round-trip `CoordinatorStateData` whole rather than reconstructing it
+  field by field, or it drops `numShards` and disables the fast path
+  permanently.
+
+- **The `ws` optional peer is now a declared root devDependency (#676).**
+
+  It was resolvable only as a transitive dependency of
+  `@fastify/websocket` and `@hono/node-ws`, so the Express WebSocket
+  upgrade suite and the cross-runtime `20-express-upgrade-middleware`
+  smoke case passed on hoisting luck; dropping either upstream edge would
+  have failed both with a "Cannot find module" pointing nowhere near a
+  missing declaration. `memjs` and `fzstd` were in the same undeclared
+  state and are now declared too, each with a test that imports the real
+  module and asserts the surface its adapter destructures. `fzstd`'s
+  covers the interoperability the documented pure-JS zstd read fallback
+  rests on — it decodes a frame written by the native compress path —
+  which was previously untestable because the package was never installed.
+
+- **The documented-defaults guard no longer lets a new reference.conf block
+  ship unasserted (#470).**
+
+  Its only completeness check was a floor on the table's length, which a
+  growing table clears by growing, and the whole actor-ts.dead-letters.*
+  block was published one day after the guard landed with four
+  DEFAULT_DEAD_LETTER_* constants behind it and no entry. The guard now
+  partitions REFERENCE_CONF: every leaf must be in the assertion table, in
+  the recorded deliberate divergences, or in one of four named unasserted
+  groups (log-level names, empty-string placeholders, feature switches,
+  values that are a literal at the read site). Walking the config also
+  turned up seven more leaves with a constant behind them, so the table
+  grows by eleven and coverage goes from 93 of 166 leaves to 104 asserted
+  plus 2 divergences plus 60 explicitly unasserted.
+
+- **The Node runtime page carried a package.json snippet inside a TypeScript
+  fence, in both languages (#470).**
+
+  It is a json fence now, which is what it always was, and the fence no
+  longer takes the whole doc-sample check's semantic pass down with it.
+
+- **BREAKING — Cluster singleton: a routine scale-up no longer runs two
+  instances (#949).**
+
+  Every node used to compute the host from its own gossip view and act on
+  it alone — the incoming host promoted itself off its own `SelfUp`, which
+  fires locally before gossip has told any peer anything, while the
+  incumbent stopped its instance with a `PoisonPill` queued behind that
+  instance's whole mailbox. No failure and no partition was needed,
+  because the host is the lowest-addressed up-member. Both reconcile paths
+  now send a `singleton.HandOverRequest` to every eligible peer and host
+  only once each has confirmed its instance has actually terminated.
+
+  *Migration:* Taking over hosting now costs one network round trip, so a
+  singleton appears on its new host a few milliseconds later than before;
+  a node that is eligible to host but never calls `start()` or `ref()`
+  cannot answer and costs the incoming host the full `handOverTimeoutMs` —
+  give the singleton a `role`, or call `ref()` on those nodes.
+
+- **Cluster singleton with a lease: `lease.release()` is no longer called
+  before the outgoing instance's `Terminated` has been observed (#949).**
+
+  It used to be awaited directly behind `stopChild`, which returns as soon
+  as the `PoisonPill` is enqueued — so a follower could win the lease and
+  spawn while the previous instance was still draining, which gives away
+  the entire guarantee the lease exists to provide.
+
+- **Cluster singleton with a lease: a lost lease is re-acquired only after
+  the stopped instance is gone (#949).**
+
+  Re-entering `acquiring` immediately could resolve the acquire
+  mid-`postStop`; the spawn behind it early-returned because a stop was
+  still in flight; and the reconcile after `Terminated` read "lease held"
+  as "already running" and did nothing. The manager then renewed a lease
+  over no singleton at all, permanently, and no other node could take over
+  — the #1175 shape reached by a path #1175 did not close.
+
+- **Cluster singleton: a `tell` through a proxy now reaches a host whose
+  ActorSystem is named differently from the sender's (#949).**
+
+  The proxy addressed the manager path with its own system name, so the
+  frame missed the recipient's per-path handler and arrived unwrapped
+  through generic path resolution — logged as an unrecognised message and
+  dropped, with nothing on the dead-letter stream to say a message had
+  been lost. This affects any cluster whose members do not share one
+  system name, which is what `MultiNodeSpec` sets up.
 
 - **The shared persistence contract suite no longer fails a journal that
   legitimately omits the optional `raiseCompactionMark` (#536).**
@@ -3126,6 +3352,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **The known limitation that Bun's built-in `ws` shim accepts `maxPayload`
+  and enforces nothing is now test-bound instead of documented only
+  (#373).**
+
+  Two cases assert positively that an oversize frame never reaches the
+  application on Express, and pin which layer refused it via the
+  disconnect's `initiatedBy` — `server` when the connection actor's
+  post-materialisation check closed the socket, `client` when the
+  transport refused it off the wire. Measured on this tree: Bun 1.3.1
+  stores both `maxPayload` and Bun's own `maxPayloadLength`, reads both
+  back unchanged, and delivers a 4096-byte frame against a 1024-byte cap
+  to the handler without closing, while Node 26.7.0 with `ws` 8.20.0
+  refuses the same frame with `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH` and
+  1009. The real package cannot be reached on Bun as a workaround — the
+  specifier is shadowed and `ws`'s own `exports` field blocks its
+  subpaths. Pinning the outcome per runtime makes these a canary on the
+  peer rather than an endorsement: when the shim starts enforcing the
+  option they go red, and that is the signal to lift the caveat in the
+  WebSocket docs.
+
+- **A cluster singleton hand-over request is honoured only from the peer
+  address the transport authenticated, carried to the manager inside an
+  `AuthenticatedSingletonMessage` — a class, so `instanceof` is proof the
+  frame came through the per-path handler and not out of a payload a peer
+  chose. A node that believes it hosts additionally stands down only for a
+  peer that sorts before it under the shared election rule. Without both, a
+  request that stops the singleton would be a remote kill switch available
+  to anyone who can reach the cluster, which is the shape #584 leaves open
+  in `ShardRegion` on a wire that carries no credential (#964). (#949).**
 
 - **A captured gossip frame can no longer be replayed by rewriting one field
   (#940).**
@@ -4576,6 +4832,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and a Node application with no `websocket()` route never reaches the bridge.
 
 ### Removed
+
+- **BREAKING — The `shard-map` wire kind (`ShardMapMessage`) is gone from
+  `WireMessage`, together with its per-field arm in wire validation and the
+  `Cluster.onUnhandledWire` comment that claimed the wire-handler registry
+  handled it — nothing ever registered it, so such a frame was validated,
+  forwarded and dropped. Its live replacement is the sharding-level
+  `ShardMapUpdate`, which carries more and travels inside an envelope. There
+  is no wire-format change: no release ever emitted a `shard-map` frame, so
+  node-to-node interoperability is untouched. (#681).**
+
+  *Migration:* `WireMessage` is re-exported from the cluster barrel and
+  narrows by one member, so code that constructs a `{ kind: 'shard-map',
+  ... }` value and assigns it to `WireMessage` — a custom `Transport`,
+  most plausibly — stops compiling. Reading or forwarding a `WireMessage`
+  is unaffected.
+
+- **The sharding kind `sharding.BeginHandOff` and the private
+  `ShardRegion.registered` field (#681).**
+
+  `BeginHandOff` was declared, listed in the `ShardingMessage` union, and
+  never constructed, sent or matched in any release; the live sequence has
+  always been `HandOff` then `BeginHandOffAcknowledgment` then
+  `HandOffComplete`, and the acknowledgment leg stays. `registered` was
+  assigned in three places and read in none — its sibling
+  `registerRefused` looks like the same kind of flag, is read in
+  `ensureRegistered`, and stays. Neither name was exported from any
+  barrel, so there is no public surface change.
 
 - **BREAKING — the ClusterClient envelope no longer carries a sender field**
   (#121).  `cluster-client-envelope` used to repeat, on every message, the

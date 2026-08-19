@@ -226,19 +226,38 @@ When the host node leaves the cluster:
    `MemberRemoved` for the leaving node.
 2. **Election**: the cluster elects a new leader (deterministic
    based on member sort order).
-3. **Spawn**: the new leader's manager spawns the singleton.
-4. **Routing shift**: proxies on every node see the leader
+3. **Hand-over**: the new leader's manager asks every node eligible
+   to host to stand down, and waits for each to confirm its instance
+   has actually terminated.
+4. **Spawn**: only then does it spawn the singleton.
+5. **Routing shift**: proxies on every node see the leader
    change and update their forwarding target.
 
 In flight messages during the transition land in dead letters
 unless you've configured durability — see "State across failover"
-below.
+below.  Messages that reach the *incoming* host while it is waiting
+on step 3 are held and handed to the new instance.
 
 The transition window is bounded by the failure detector's
 timeout (typically a few seconds for unreachable detection).
 Singletons aren't a low-latency-failover tool; they trade
-some unavailability during failover for the strong invariant
-of "exactly one instance."
+some unavailability during failover for uniqueness.
+
+**How strong that uniqueness is depends on what you configure**, and
+it is worth knowing which one you have:
+
+- **Default (no lease).** The hand-over makes "at most one instance"
+  hold whenever the outgoing host can be *reached and answers*.  When
+  it cannot — it is unreachable, or a partition split the cluster —
+  the incoming host waits `handOverTimeoutMs` (10 s) and then hosts
+  anyway, logging a warning: availability is chosen over an invariant
+  it could not prove.  Two instances are possible for the length of
+  that condition.
+- **With a `lease`.** Arbitration moves to a third party both sides
+  can reach, so exactly one of them holds it — and the lease is
+  released only once the outgoing instance has genuinely terminated.
+  This is the configuration to use when dual execution would do real
+  damage.  See [Singleton with lease](/cluster/singleton/with-lease/).
 
 ## State across failover
 

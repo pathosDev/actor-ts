@@ -185,12 +185,19 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const closed = nextClose(ws);
       ws.send(JSON.stringify({ kind: 'broadcast', text: 'x'.repeat(80 * 1024) }));
       // Which layer refuses it — and therefore which close code the client
-      // sees — is a property of the runtime, not of the guarantee.  Since
-      // #373 the transport is capped at the route's own 64 KiB rather than at
-      // the 1 MiB framework default, so this frame no longer reaches the
-      // connection actor at all: `ws` (Express, Fastify) answers the protocol
-      // violation with a clean 1009, while Bun drops the connection and the
-      // client synthesises 1006.  Both mean "refused before it was decoded".
+      // sees — is a property of the runtime, not of the guarantee.  Since #373
+      // the transport is asked for the route's own 64 KiB rather than the 1 MiB
+      // framework default, and where that is honoured the frame never reaches
+      // the connection actor: Hono on Bun drops the connection and the client
+      // synthesises 1006, Hono on Node gets a clean 1009 out of `ws`.  On
+      // **Bun with Express or Fastify** it is not honoured — `ws` is Bun's
+      // built-in shim there and ignores `maxPayload` — so the frame is
+      // buffered whole and the connection actor sends the 1009 itself.  That
+      // is the only runtime this suite ever executes on
+      // (`package.json`: `test = bun test`), so on two of the three backends
+      // the code below is the actor's, not the transport's.  Either way the
+      // frame is refused before it is decoded, which is what this pins;
+      // `BackendTransportFrameCap.test.ts` is where the layers are told apart.
       expect([1006, 1009]).toContain(await closed);
     });
 

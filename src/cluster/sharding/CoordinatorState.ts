@@ -27,6 +27,29 @@ export type CoordinatorStateData = {
   readonly regions: ReadonlyArray<RegionInfoData>;
   /** Allocation map.  `[shardId, regionKey][]` — Map's wire shape. */
   readonly shardHome: ReadonlyArray<readonly [number, string]>;
+  /**
+   * The shard count the writing coordinator governed the type with (#633).
+   *
+   * Both halves of this snapshot are modulus-dependent: a shard id is
+   * `hash(entityId) % numShards`, so `shardHome` and every `RegionInfoData.shards`
+   * are only meaningful against the count that produced them.  Adopting a
+   * snapshot written under another count re-establishes precisely the split
+   * routing a `numShards` refusal exists to prevent, and it does so through the
+   * load path, where the `Register` handshake — the only place the counts are
+   * ever compared — never runs.  A rolling deploy that changes the count is the
+   * ordinary way to get there: the outgoing leader's last snapshot is written
+   * under the old count and the incoming leader reads it under the new one.
+   *
+   * Stamped at snapshot level rather than per region, because a snapshot from
+   * another modulus has a `shardHome` map that is unusable *in its entirety*,
+   * not entry by entry.
+   *
+   * Optional only for reading: a snapshot already sitting in `DistributedData`
+   * from before this field existed still parses.  It is not adopted, though —
+   * an unstated modulus cannot be checked, and the fallback is the
+   * rebuild-from-`Register` path every default configuration already runs.
+   */
+  readonly numShards?: number;
 };
 
 /** JSON-friendly mirror of the in-memory `RegionInfo`. */

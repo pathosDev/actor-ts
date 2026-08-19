@@ -201,3 +201,66 @@ export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
  * matters in the failure case it damps.
  */
 export const SINGLETON_RESTART_BACKOFF_MS = 1_000;
+
+/**
+ * How long an incoming singleton host waits for every eligible peer to confirm
+ * it is not running an instance, before hosting anyway (#949).
+ *
+ * Here rather than in an `XOptions.ts` because the field it defaults is on
+ * **two** options types — `StartSingletonOptionsType` (what
+ * `cluster.singleton.start` accepts) and `ClusterSingletonManagerOptionsType`
+ * (what the extension builds from it).  Co-location would put the number in
+ * both, which is the duplication this module exists to prevent.
+ *
+ * Ten seconds, matching `DEFAULT_HAND_OFF_TIMEOUT_MS` in
+ * `sharding/ShardCoordinatorOptions.ts`, and generous on purpose in the
+ * direction that costs less.  The wait ends the moment the last peer answers,
+ * so in a healthy cluster it is one network round trip and this number is
+ * never reached.  What it has to survive is a *legitimately* slow stand-down:
+ * the outgoing instance answers only after its `PoisonPill` has worked through
+ * the whole mailbox and its `postStop` has run, and cutting that short is
+ * precisely the second live singleton being avoided.  Reaching the timeout
+ * means the invariant could not be proven — availability is chosen over it,
+ * and the manager says so at `warn`.
+ */
+export const DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS = 10_000;
+
+/**
+ * How many messages a singleton manager holds while a hand-over it started is
+ * still outstanding, before it starts dead-lettering them (#949).
+ *
+ * The hand-over introduces a window that did not exist before: this node is
+ * the elected host, every proxy already routes here, and the child is not
+ * spawned yet because a peer has not finished standing down.  Without a buffer
+ * the protocol would trade a second live singleton for message loss on every
+ * host move, which is not the trade being made.
+ *
+ * Not an option, unlike the proxy's `bufferSize`: this window is bounded by
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS} rather than by an outage of
+ * unknown length, so there is no deployment in which the useful value differs.
+ * A cap all the same — a sender in a hot loop must not be able to turn a
+ * ten-second wait into an out-of-memory.
+ */
+export const SINGLETON_HAND_OVER_BUFFER_SIZE = 1_000;
+
+/**
+ * How often an outstanding {@link SingletonHandOverRequest} is re-sent while
+ * the hand-over is still waiting (#949).
+ *
+ * A cadence rather than a count, and **not optional**, because it is not a
+ * tuning knob — it is what makes the exchange correct at all. `Cluster._sendEnvelope`
+ * is fire-and-forget: a frame sent while a handshake is still open competes for
+ * {@link MAX_PENDING_FRAMES} and the oldest are dropped, so a single request can
+ * simply never arrive.  Without a re-send that is indistinguishable from a peer
+ * refusing to stand down, and the incoming host pays the whole
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS} before hosting anyway.
+ *
+ * It also covers a peer whose manager appears *after* the request was sent —
+ * a node calling `start()` or `ref()` a moment later than the incoming host.
+ *
+ * Half a second gives twenty attempts inside the default timeout, which is the
+ * same order as the fifteen retries the singleton config block proposes (#855),
+ * and re-sending is free of side effects: a peer with no instance acknowledges
+ * again, and a peer already standing down is already on the requester's list.
+ */
+export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;

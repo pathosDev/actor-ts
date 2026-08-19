@@ -7,8 +7,15 @@ import { SystemGroups, singletonManagerName, systemActorPath } from '../../inter
 import { fromNullable, type Option } from '../../util/Option.js';
 import type { Cluster } from '../Cluster.js';
 import type { Member } from '../Member.js';
+import type { NodeAddress } from '../NodeAddress.js';
 import { ClusterSingletonManagerOptionsValidator } from './ClusterSingletonManagerOptions.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
+import { AuthenticatedSingletonMessage } from './SingletonProtocol.js';
+import type {
+  SingletonHandOverAcknowledgment,
+  SingletonHandOverRequest,
+  SingletonMessage,
+} from './SingletonProtocol.js';
 import type { ClusterEvent } from '../ClusterEvents.js';
 import {
   LeaderChanged,
@@ -18,7 +25,12 @@ import {
   MemberUp,
   SelfUp,
 } from '../ClusterEvents.js';
-import { SINGLETON_RESTART_BACKOFF_MS } from '../Constants.js';
+import {
+  DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
+  SINGLETON_HAND_OVER_BUFFER_SIZE,
+  SINGLETON_HAND_OVER_RETRY_INTERVAL_MS,
+  SINGLETON_RESTART_BACKOFF_MS,
+} from '../Constants.js';
 
 /**
  * Path at which every node hosts its ClusterSingletonManager for a given
@@ -156,16 +168,48 @@ export type SingletonDeliver = {
  * The lease-aware path uses internal events instead of inline awaits so
  * cluster-event triggers can't interleave their `reconcile` calls with
  * an in-flight `lease.acquire()`.  Every state transition arrives as a
- * single message in this manager's own mailbox.
+ * single message in this manager's own mailbox — including the two that
+ * originate on a scheduler tick, which fires outside a message turn.
  */
-type ManagerEvent =
-  | { kind: 'reconcile' }
-  | { kind: 'lease-acquire-result'; got: boolean; error?: Error }
-  | { kind: 'lease-lost'; reason: string }
-  | { kind: 'acquire-retry' }
-  | { kind: 'restart-child' };
+type ReconcileEvent = { readonly kind: 'reconcile' };
+type LeaseAcquireResultEvent = {
+  readonly kind: 'lease-acquire-result';
+  readonly got: boolean;
+  readonly error?: Error;
+};
+type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
+type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
+type RestartChildEvent = { readonly kind: 'restart-child' };
+type HandOverTimeoutEvent = { readonly kind: 'hand-over-timeout' };
+type HandOverRetryEvent = { readonly kind: 'hand-over-retry' };
 
-type Inbox = SingletonDeliver | ManagerEvent | Terminated;
+type ManagerEvent =
+  | ReconcileEvent
+  | LeaseAcquireResultEvent
+  | LeaseLostEvent
+  | AcquireRetryEvent
+  | RestartChildEvent
+  | HandOverTimeoutEvent
+  | HandOverRetryEvent;
+
+type Inbox = SingletonDeliver | ManagerEvent | Terminated | AuthenticatedSingletonMessage;
+
+/**
+ * The peers a started hand-over is still waiting on, and the deadline that
+ * ends the wait whether they answer or not.
+ *
+ * A set of address strings rather than of `NodeAddress`, because `NodeAddress`
+ * has no value identity — the whole cluster keys on `toString()` for exactly
+ * this reason.
+ */
+type PendingHandOver = {
+  readonly awaiting: Set<string>;
+  readonly timer: Cancellable;
+  /** Re-sends the request to whoever is still on {@link awaiting}. */
+  readonly retryTimer: Cancellable;
+  /** Messages routed here while the wait is on; flushed into the child on spawn. */
+  readonly held: unknown[];
+};
 
 /**
  * Runs on every node.  Watches cluster events and (re)spawns the singleton
@@ -176,14 +220,31 @@ type Inbox = SingletonDeliver | ManagerEvent | Terminated;
  *
  * **Two paths:**
  *
- * - **No lease (default).**  Synchronous reconcile — spawn the moment
- *   cluster gossip says we're leader.  Same behaviour the manager has
- *   shipped since v1.
+ * - **No lease (default).**  Reconcile straight from the cluster-event
+ *   subscriber, so a change of host is visible the moment the event fires.
  * - **With lease.**  Async reconcile that gates child-spawn on
  *   `lease.acquire()`, watches `lease.onLost(...)` for revocation, and
  *   `release()`s on graceful handover.  All state transitions go through
  *   the manager's own mailbox so concurrent cluster events can't race
  *   with an in-flight acquire.
+ *
+ * **Both paths ask before they host** (#949).  Deciding locally is what
+ * produced two live singletons on a routine scale-up: the incoming host
+ * promotes itself off its own `SelfUp` — before gossip has told any peer
+ * anything — while the incumbent stops its child with a `PoisonPill` that sits
+ * behind that child's whole mailbox.  So `spawn()` is now reached through
+ * {@link takeOverHosting}, which first sends a
+ * {@link SingletonHandOverRequest} to every eligible peer and waits for each
+ * to confirm its instance is gone.
+ *
+ * The wait is bounded by `handOverTimeoutMs` and **ends in a spawn either
+ * way**: a peer that cannot answer is a peer that cannot be asked to stand
+ * down, so on the no-lease path "hosted somewhere" and "at most one" cannot
+ * both be guaranteed — availability is the one chosen, with a `warn` saying
+ * the invariant was not proven.  Where it must be, that is what the lease path
+ * is for; and there the invariant does not rest on the timeout at all, because
+ * the lease is only released once the outgoing child's `Terminated` has
+ * actually been observed.
  */
 export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private child: ActorRef<T> | null = null;
@@ -211,6 +272,31 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private leaseState: 'none' | 'acquiring' | 'held' = 'none';
 
   /**
+   * The hand-over this node started, while peers are still answering it —
+   * `null` whenever no request is outstanding.  See {@link takeOverHosting}.
+   */
+  private handOver: PendingHandOver | null = null;
+
+  /**
+   * Peers that asked *this* node to hand over while it still had an instance
+   * running, keyed by address string.  Each is answered once the child's
+   * `Terminated` lands — never when the `PoisonPill` is merely enqueued, which
+   * is the difference between a hand-over and a hope.
+   */
+  private readonly handOverRequesters = new Map<string, NodeAddress>();
+
+  /**
+   * Whether `lease.release()` still owes the outgoing child a `Terminated`.
+   *
+   * Releasing is what lets a follower acquire and spawn, so releasing while
+   * this node's instance is still draining hands the lease's whole guarantee
+   * away — the follower's `acquire()` succeeds against a singleton that is
+   * still running (#949).  Set on the step-down path and discharged in
+   * {@link handleTerminated}.
+   */
+  private releaseLeaseWhenChildStops = false;
+
+  /**
    * Latched when the child died unexpectedly while `restartOnTermination` was
    * off — see {@link onChildDiedUnexpectedly}.
    *
@@ -232,9 +318,6 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   /** Latch for the "routed here but not hosting" warning — see {@link warnNotHostedOnce}. */
   private warnedNotHosted = false;
-
-  /** Callback the extension hands us so we can release the envelope path on stop. */
-  _envelopeUnsub: (() => void) | null = null;
 
   /**
    * Callback the extension hands us so it can drop this manager from its
@@ -295,7 +378,6 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   override async postStop(): Promise<void> {
     this.unsubscribeCluster?.();
     this.unsubscribeLeaseLost?.();
-    this._envelopeUnsub?.();
     this._onStopped?.();
     this.retryTimer?.cancel();
     this.restartTimer?.cancel();
@@ -304,6 +386,13 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // tear it down regardless, and we no longer need to react to its
     // Terminated message.
     this.pendingStop = null;
+    // A hand-over this node was waiting on can no longer end in a spawn, and
+    // whatever it was holding for that spawn has nowhere to go.  Peers that
+    // asked *us* to stand down are answered: a manager going away is the
+    // strongest form of "not hosting" there is, and leaving them to time out
+    // would make an orderly `cluster.singleton.stop()` slower than a crash.
+    this.abandonHandOver('the manager is stopping');
+    this.answerHandOverRequesters();
     // Release the lease if held — the holder leaving cleanly lets a
     // follower acquire faster than waiting for the TTL to expire.
     if (this.options.lease && this.leaseState === 'held') {
@@ -314,8 +403,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   override onReceive(message: Inbox): void | Promise<void> {
     if (message instanceof Terminated) {
-      this.handleTerminated(message);
-      return;
+      return this.handleTerminated(message);
+    }
+    // Not a `match` arm: a class instance is what proves the frame came
+    // through the authenticated per-path handler, and `ts-pattern`'s
+    // `P.instanceOf` beside object patterns would make that provenance check
+    // read like one more shape test among equals.  See
+    // {@link AuthenticatedSingletonMessage}.
+    if (message instanceof AuthenticatedSingletonMessage) {
+      return this.onAuthenticatedSingletonMessage(message);
     }
     return match(message)
       .with({ kind: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
@@ -324,6 +420,17 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
       .with({ kind: 'restart-child' }, () => this.onRestartChild())
+      .with({ kind: 'hand-over-timeout' }, () => this.onHandOverTimeout())
+      .with({ kind: 'hand-over-retry' }, () => this.onHandOverRetry())
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  /** One of {@link SingletonMessage}, stamped with the peer it arrived from. */
+  private onAuthenticatedSingletonMessage(envelope: AuthenticatedSingletonMessage): void {
+    match(envelope.message)
+      .with({ kind: 'singleton.HandOverRequest' }, (m) => this.onHandOverRequest(m, envelope.peer))
+      .with({ kind: 'singleton.HandOverAcknowledgment' }, (m) =>
+        this.onHandOverAcknowledgment(m, envelope.peer))
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -354,13 +461,29 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * from the parent's children map).  At that point it's safe to
    * spawn a fresh child, so we re-run the reconcile logic — if we're
    * still the leader, a new child will be created here.
+   *
+   * It is also the **only** honest moment for the two things a hand-over turns
+   * on: answering a peer that asked us to stand down, and releasing a lease we
+   * were holding.  Both used to happen as soon as the `PoisonPill` was
+   * enqueued, which says nothing at all about whether the instance is gone
+   * (#949).
+   *
+   * `async` so the reconcile that follows cannot start before the release has
+   * settled — a mailbox turn is awaited, so nothing else interleaves.
    */
-  private handleTerminated(t: Terminated): void {
+  private async handleTerminated(t: Terminated): Promise<void> {
     if (this.pendingStop && t.actor.equals(this.pendingStop)) {
       this.log.debug(
         `previous child '${this.options.typeName}' fully terminated — re-running reconcile`,
       );
       this.pendingStop = null;
+      // Now, and not when `stopChild` returned: this is the instant at which
+      // this node has genuinely stopped hosting.
+      this.answerHandOverRequesters();
+      if (this.releaseLeaseWhenChildStops) {
+        this.releaseLeaseWhenChildStops = false;
+        await this.releaseLease();
+      }
       // Re-trigger the appropriate reconcile path; either branch is
       // safe to call when the singleton state is "no child running".
       if (this.options.lease) {
@@ -372,6 +495,11 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     }
     if (this.child && t.actor.equals(this.child)) {
       this.onChildDiedUnexpectedly();
+      // After, not before: `onChildDiedUnexpectedly` is what clears
+      // `this.child`, and the answer is only true once it has.  A death nobody
+      // asked for still ends the hosting, so a peer waiting on our hand-over
+      // must not be left to time out over it.
+      this.answerHandOverRequesters();
     }
   }
 
@@ -417,14 +545,19 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       + `restartOnTermination is off — not re-spawning`,
     );
     this.terminallyStopped = true;
-    void this.releaseLeaseAfterTerminalStop();
+    void this.releaseLease();
   }
 
-  /** Best-effort lease release on the no-restart path.  Never throws. */
-  private async releaseLeaseAfterTerminalStop(): Promise<void> {
+  /**
+   * Give the lease up, best-effort — never throws, and a no-op unless one is
+   * held.
+   *
+   * `leaseState` goes to `'none'` **ahead of the await**, not after it: a
+   * reconcile landing in the await window would otherwise still read `'held'`
+   * and issue a second release.
+   */
+  private async releaseLease(): Promise<void> {
     if (!this.options.lease || this.leaseState !== 'held') return;
-    // Ahead of the await, not after it: a reconcile landing in the await
-    // window would otherwise still read 'held' and issue a second release.
     this.leaseState = 'none';
     try { await this.options.lease.release(); }
     catch (e) { this.log.warn(`lease release failed`, e); }
@@ -473,6 +606,12 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private onSingletonDeliver(message: SingletonDeliver): void {
     if (message.kind !== 'singleton-deliver') return;
     if (!this.child) {
+      // This node *is* the elected host and the child is merely not spawned
+      // yet, because a peer has not finished standing down.  Holding is not a
+      // nicety here: the hand-over wait is a window this manager opened
+      // itself, so dead-lettering through it would pay for "at most one
+      // instance" with message loss on every host move (#949).
+      if (this.handOver !== null && this.holdUntilHandOverCompletes(message.body)) return;
       this.warnNotHostedOnce();
       // The manager, not `/deadLetters`, is the recipient: this node was
       // addressed as the singleton's host and could not deliver, and the
@@ -511,7 +650,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       `reconcile '${this.options.typeName}': want=${want} child=${this.child !== null} pendingStop=${this.pendingStop !== null}`,
     );
     if (want && !this.child) {
-      this.spawn();
+      this.takeOverHosting();
     } else if (!want && this.child) {
       this.stopChild('leader moved away or role lost');
     }
@@ -523,7 +662,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     if (!this.options.lease) { this.reconcileSync(); return; }
     const want = this.wantHosted();
     if (want) {
-      if (this.leaseState === 'held') return;          // already running
+      if (this.leaseState === 'held') {
+        // `'held'` is **not** `'running'`, and reading it as "already running"
+        // was a live dead end (#949).  `onLeaseLost` and an unexpected child
+        // death both leave the lease held with no child; a `spawn()` racing a
+        // still-set `pendingStop` early-returns; and every reconcile after that
+        // returned here — so the manager renewed a lease over nothing,
+        // permanently, and no other node could host either.  That is the
+        // #1175 shape reached by a path #1175 did not close.  `onRestartChild`
+        // already had to sidestep this branch for the same reason.
+        this.takeOverHosting();
+        return;
+      }
       if (this.leaseState === 'acquiring') return;     // already in flight
       // Cancel a retry if one is pending — we're starting a fresh attempt now.
       this.retryTimer?.cancel();
@@ -533,9 +683,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     } else {
       if (this.leaseState === 'held') {
         this.stopChild('leader moved away or role lost');
-        try { await this.options.lease.release(); }
-        catch (e) { this.log.warn(`lease release failed`, e); }
-        this.leaseState = 'none';
+        // The release is deferred until the child's `Terminated` arrives —
+        // releasing now is handing a follower permission to spawn against an
+        // instance that is still draining, which is the whole failure the
+        // lease exists to prevent (#949).  `handleTerminated` discharges it.
+        //
+        // `pendingStop` and not "did `stopChild` have a child": six events
+        // reconcile, so a *second* one lands while the first one's instance is
+        // still draining, finds `child` already null, and would read that as
+        // "nothing to wait for" — releasing exactly as early as the code this
+        // replaced.
+        if (this.pendingStop) { this.releaseLeaseWhenChildStops = true; return; }
+        await this.releaseLease();
       } else if (this.leaseState === 'acquiring') {
         // Let the in-flight acquire finish — `onLeaseAcquireResult` will
         // re-check `wantHosted` and immediately release if it succeeded
@@ -558,7 +717,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     }
   }
 
-  private onLeaseAcquireResult(message: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(message: LeaseAcquireResultEvent): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — manager was reset or stopped while we were
       // awaiting.  If we somehow got the lease, release it best-effort
@@ -583,18 +742,396 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       return;
     }
     this.leaseState = 'held';
-    this.spawn();
+    // Through the hand-over rather than straight to `spawn()`, even though the
+    // lease already serialises: a previous holder that *lost* the lease rather
+    // than releasing it never observed its own child's `Terminated`, so
+    // holding the lease is not by itself proof that no instance is left
+    // running.  In the ordinary case every peer answers at once, because the
+    // release the acquire waited on already implied a completed `postStop`.
+    this.takeOverHosting();
   }
 
-  private onLeaseLost(message: { reason: string }): void {
+  private onLeaseLost(message: LeaseLostEvent): void {
     if (this.leaseState !== 'held') return;     // stale callback
     this.log.warn(`singleton '${this.options.typeName}': lease lost — ${message.reason}; stopping child`);
     this.stopChild(`lease lost: ${message.reason}`);
     this.leaseState = 'none';
-    // If we're still the elected leader, kick a fresh reconcile so we
-    // try to re-acquire.  Cluster events would eventually do this on
-    // their own, but a missed re-acquire here is annoying.
-    this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+    // If we're still the elected leader, kick a fresh reconcile so we try to
+    // re-acquire — but **not before the child is gone**.  Re-entering
+    // `acquiring` here is how the manager used to end up holding a fresh lease
+    // over no child at all: the acquire can resolve while the old instance is
+    // still in `postStop`, and the `spawn()` that followed early-returned on
+    // `pendingStop` (#949).  `handleTerminated` posts the reconcile once
+    // `Terminated` lands, so only the nothing-to-wait-for case needs one here —
+    // and that is `pendingStop`, not "did `stopChild` have a child": an instance
+    // already mid-stop when the lease went is still an instance to wait for.
+    if (!this.pendingStop) this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
+  }
+
+  /* ------------------------ the hand-over ------------------------ */
+
+  /**
+   * The one door to `spawn()` on a change of host: ask every eligible peer to
+   * stand down, and host once each has confirmed it has (#949).
+   *
+   * Idempotent, and deliberately re-entered rather than queued — a second
+   * cluster event landing while a request is outstanding must not start a
+   * second one, because the peers would then answer a wait that is no longer
+   * being counted.
+   *
+   * `onRestartChild` keeps going straight to `spawn()`, and that is not an
+   * oversight: a backoff respawn after this node's *own* instance died is not a
+   * change of host, so no other node has anything to stand down from.
+   */
+  private takeOverHosting(): void {
+    // `spawn()`'s own two guards, checked before spending a round trip: with a
+    // child there is nothing to take over, and with a `pendingStop` the spawn
+    // would early-return and `handleTerminated` reconciles again anyway.
+    if (this.child || this.pendingStop) return;
+    if (this.handOver !== null) return;
+    const peers = this.handOverPeers();
+    if (peers.length === 0) {
+      // Single eligible node — nobody to ask, so the v1 timing guarantee is
+      // untouched: the child exists the moment gossip says this node hosts.
+      this.spawn();
+      return;
+    }
+    const timeoutMs = this.options.handOverTimeoutMs ?? DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS;
+    // Never longer than the deadline it lives inside — a caller that configures
+    // a 100 ms timeout must still get at least one attempt.
+    const retryIntervalMs = Math.min(SINGLETON_HAND_OVER_RETRY_INTERVAL_MS, timeoutMs);
+    this.handOver = {
+      awaiting: new Set(peers.map((peer) => peer.toString())),
+      // Through the mailbox, not acted on in the callback: a scheduler tick
+      // fires outside a message turn, and every other transition in this
+      // manager arrives as a message for that reason.
+      timer: this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+        this.self.tell({ kind: 'hand-over-timeout' } satisfies ManagerEvent);
+      }),
+      retryTimer: this.system.scheduler.scheduleAtFixedRateFunction(
+        retryIntervalMs, retryIntervalMs,
+        () => this.self.tell({ kind: 'hand-over-retry' } satisfies ManagerEvent),
+      ),
+      held: [],
+    };
+    this.log.debug(
+      `singleton '${this.options.typeName}': asking ${peers.length} peer(s) to hand over `
+      + `— [${peers.map((peer) => peer.toString()).join(', ')}]`,
+    );
+    this.sendHandOverRequestTo(peers);
+  }
+
+  /**
+   * Re-ask whoever has not answered yet — and stop waiting on anyone who has
+   * meanwhile left the set that could be hosting.
+   *
+   * The re-send is load-bearing rather than belt-and-braces; see
+   * {@link SINGLETON_HAND_OVER_RETRY_INTERVAL_MS}.  The pruning is the other
+   * half of the same problem: a peer that goes `down` or `leaving` mid-hand-over
+   * will never answer, and by this node's own view it can no longer be hosting
+   * — so continuing to wait on it would spend the whole `handOverTimeoutMs` on a
+   * question that has already been settled, and end in the warning that says the
+   * invariant could not be proven when in fact it was.
+   */
+  private onHandOverRetry(): void {
+    const pending = this.handOver;
+    if (pending === null) return;
+    const eligible = this.handOverPeers();
+    const stillEligible = new Set(eligible.map((address) => address.toString()));
+    for (const awaited of [...pending.awaiting]) {
+      if (!stillEligible.has(awaited)) {
+        this.log.debug(
+          `singleton '${this.options.typeName}': ${awaited} left the eligible set — `
+          + 'no longer waiting on its hand-over',
+        );
+        pending.awaiting.delete(awaited);
+      }
+    }
+    if (pending.awaiting.size === 0) { this.completeHandOver(); return; }
+    this.sendHandOverRequestTo(
+      eligible.filter((address) => pending.awaiting.has(address.toString())),
+    );
+  }
+
+  private sendHandOverRequestTo(peers: readonly NodeAddress[]): void {
+    const request: SingletonHandOverRequest = {
+      kind: 'singleton.HandOverRequest',
+      typeName: this.options.typeName,
+    };
+    for (const peer of peers) this.sendToPeer(peer, request);
+  }
+
+  /**
+   * Every node other than this one that could currently be running the
+   * singleton, from this node's own view.
+   *
+   * The eligible set — up members, or up members carrying the role — rather
+   * than a remembered predecessor, for two reasons the issue's own sketch does
+   * not cover.  A node that has just *joined* has no remembered predecessor at
+   * all, and joining is the common case (a node promotes itself off its own
+   * `SelfUp`).  And a remembered one is stale exactly when it matters, which is
+   * the failure this protocol exists to close.  The eligible set is by contract
+   * the set of nodes running a manager — the docs require `start()` on every
+   * node that may become the host, and a host that never called it hosts
+   * nothing — and the outgoing host is by definition its first member, so
+   * asking all of them cannot miss it.
+   *
+   * Unreachable members are absent, because `upMembers()` drops them.  That is
+   * the honest shape of the guarantee: a node this one cannot reach cannot be
+   * asked to stand down, and pretending otherwise is what
+   * {@link changesSingletonHost} refuses to do for the same reason.
+   */
+  private handOverPeers(): NodeAddress[] {
+    const cluster = this.options.cluster;
+    const eligible = this.options.role === undefined
+      ? cluster.upMembers()
+      : cluster.upMembersWithRole(this.options.role);
+    return eligible
+      .map((member) => member.address)
+      .filter((address) => !address.equals(cluster.selfAddress));
+  }
+
+  /**
+   * A peer confirmed it is not running the singleton.  Hosting begins once the
+   * last outstanding one has answered.
+   */
+  private onHandOverAcknowledgment(
+    message: SingletonHandOverAcknowledgment,
+    peer: NodeAddress,
+  ): void {
+    const pending = this.handOver;
+    if (pending === null) return;                                // timed out, or never asked
+    if (message.typeName !== this.options.typeName) return;
+    // An answer from someone we did not ask is not evidence about anyone we
+    // did, so it must not shrink the wait.
+    if (!pending.awaiting.delete(peer.toString())) return;
+    if (pending.awaiting.size > 0) return;
+    this.log.debug(`singleton '${this.options.typeName}': hand-over acknowledged by every peer`);
+    this.completeHandOver();
+  }
+
+  /**
+   * Nobody answered in time.  **Host anyway**, and say so.
+   *
+   * This is the deliberate choice between the two properties that cannot both
+   * be had here.  A peer that does not answer is either unreachable — in which
+   * case asking it to stand down is precisely what failed — or it believes it
+   * is still the host and declined.  Waiting forever would leave the singleton
+   * hosted nowhere for the length of the outage; hosting means the uniqueness
+   * invariant was *not proven*, which is a different thing from being upheld.
+   *
+   * Where the invariant has to survive that, the answer is a `lease`: a third
+   * party both sides can reach is the only arbiter available when the two
+   * cannot reach each other.
+   */
+  private onHandOverTimeout(): void {
+    const pending = this.handOver;
+    if (pending === null) return;                                // already settled
+    const timeoutMs = this.options.handOverTimeoutMs ?? DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS;
+    this.log.warn(
+      `singleton '${this.options.typeName}': [${[...pending.awaiting].join(', ')}] did not `
+      + `acknowledge the hand-over within ${timeoutMs}ms — hosting anyway.  Availability was `
+      + 'chosen over uniqueness: those peers are unreachable from here, or still believe they '
+      + 'host, so a second live instance is possible until membership converges.  Configure a '
+      + 'lease if "at most one" has to hold through this.',
+    );
+    this.completeHandOver();
+  }
+
+  /** Discharge the wait — flush what it held, then host. */
+  private completeHandOver(): void {
+    const pending = this.handOver;
+    if (pending === null) return;
+    pending.timer.cancel();
+    pending.retryTimer.cancel();
+    this.handOver = null;
+    // Re-checked rather than trusted: membership can move, and a lease can be
+    // lost, while the request is outstanding.
+    if (!this.wantHosted()) { this.dropHeld(pending.held, 'the host moved away again'); return; }
+    if (this.options.lease && this.leaseState !== 'held') {
+      this.dropHeld(pending.held, 'the lease was lost while the hand-over was outstanding');
+      return;
+    }
+    this.spawn();
+    if (this.child === null) {
+      // `spawn()` refused — a `pendingStop` appeared during the wait.  Its
+      // `Terminated` reconciles again, but this buffer cannot survive to that
+      // spawn without becoming an unbounded second queue.
+      this.dropHeld(pending.held, "this node's own previous instance is still stopping");
+      return;
+    }
+    for (const body of pending.held) this.child.tell(body as never);
+  }
+
+  /**
+   * Abandon a wait that can no longer end in a spawn.  Only the manager
+   * stopping gets here — every other exit goes through
+   * {@link completeHandOver}, which is what keeps "the wait always ends" true.
+   */
+  private abandonHandOver(reason: string): void {
+    const pending = this.handOver;
+    if (pending === null) return;
+    pending.timer.cancel();
+    pending.retryTimer.cancel();
+    this.handOver = null;
+    this.dropHeld(pending.held, reason);
+  }
+
+  /**
+   * Hold a routed message for the duration of the wait, up to
+   * {@link SINGLETON_HAND_OVER_BUFFER_SIZE}.  `false` means the cap is reached
+   * and the caller should dead-letter instead.
+   *
+   * Drops the *newest* past the cap, like the proxy's own buffer and for the
+   * same reason: the buffer exists to preserve the order the caller sent in,
+   * and dropping from the front hands the singleton a torn prefix of it.
+   */
+  private holdUntilHandOverCompletes(body: unknown): boolean {
+    const pending = this.handOver;
+    if (pending === null) return false;
+    if (pending.held.length >= SINGLETON_HAND_OVER_BUFFER_SIZE) return false;
+    pending.held.push(body);
+    return true;
+  }
+
+  /** Everything a wait was holding, to dead letters, with the reason in the log. */
+  private dropHeld(held: readonly unknown[], reason: string): void {
+    if (held.length === 0) return;
+    this.log.warn(
+      `singleton '${this.options.typeName}': ${held.length} message(s) held for the hand-over `
+      + `are going to dead letters — ${reason}`,
+    );
+    for (const body of held) {
+      this.system.deadLetters.tell(new DeadLetter(body, null, this.self));
+    }
+  }
+
+  /**
+   * A peer says it is taking over.  Stop hosting, and answer only once the
+   * instance is genuinely gone.
+   */
+  private onHandOverRequest(message: SingletonHandOverRequest, peer: NodeAddress): void {
+    if (message.typeName !== this.options.typeName) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': ignoring a hand-over request for `
+        + `'${message.typeName}' from ${peer} — the envelope path and its body disagree`,
+      );
+      return;
+    }
+    if (!this.admitsHandOverFrom(peer)) return;
+    if (this.child) {
+      if (this.wantHosted()) {
+        // Worth a line: this node's own view still names it the host, so the
+        // two views disagree.  Standing down is right — the requester outranks
+        // this node under the shared election rule, so this view is the stale
+        // one — but a cluster where this recurs has a gossip problem.
+        this.log.warn(
+          `singleton '${this.options.typeName}': ${peer} claims the hand-over while this node's `
+          + 'own view still names it the host — standing down, since that peer sorts first',
+        );
+      }
+      this.handOverRequesters.set(peer.toString(), peer);
+      this.stopChild(`hand-over requested by ${peer}`);
+      return;
+    }
+    if (this.pendingStop) {
+      // Already on the way out; the answer is owed, just not yet true.
+      this.handOverRequesters.set(peer.toString(), peer);
+      return;
+    }
+    this.answerHandOver(peer);
+  }
+
+  /**
+   * Whether `peer` may tell this node to stop hosting.
+   *
+   * The socket-verified `NodeAddress` is the only sender identity the cluster
+   * wire offers today — it carries no credential at all (#964) — so this is
+   * the whole of the check, and it has to be enough to keep a hand-over from
+   * becoming a remote kill switch for the singleton.  `ShardRegion.onHandOff`
+   * acting on the word of any peer is the same shape, unfixed (#584).
+   *
+   * Two conditions, and both fall out of the election rule the managers already
+   * share:
+   *
+   * - **`peer` is a member of this cluster.**  Not merely someone who
+   *   completed a handshake.
+   * - **`peer` could plausibly be the host.**  A node that believes it hosts
+   *   only stands down for a peer that sorts *before* it, because the host is
+   *   the first address-ordered member of the eligible set — so a legitimate
+   *   incoming host always sorts before the outgoing one, role restriction or
+   *   not.  A node that does *not* believe it hosts has no claim to defend and
+   *   stands down for anyone: that is the case where the previous host left and
+   *   the new one sorts after it.
+   *
+   * What this cannot stop is a peer that already sorts first, and it does not
+   * need to: such a node can become the host by being a member at all.  What it
+   * does stop is any *other* member forcing a restart of the singleton at will.
+   */
+  private admitsHandOverFrom(peer: NodeAddress): boolean {
+    const cluster = this.options.cluster;
+    const known = cluster.getMembers().some((member) => member.address.equals(peer));
+    if (!known) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': refusing a hand-over request from ${peer} — `
+        + 'not a member of this cluster',
+      );
+      return false;
+    }
+    if (this.wantHosted() && peer.compareTo(cluster.selfAddress) > 0) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': refusing a hand-over request from ${peer} — `
+        + `this node hosts and sorts before it, so ${peer} cannot be the elected host`,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** Answer every peer whose hand-over this node now genuinely satisfies. */
+  private answerHandOverRequesters(): void {
+    if (this.handOverRequesters.size === 0) return;
+    if (this.child || this.pendingStop) return;
+    const requesters = [...this.handOverRequesters.values()];
+    this.handOverRequesters.clear();
+    for (const peer of requesters) this.answerHandOver(peer);
+  }
+
+  private answerHandOver(peer: NodeAddress): void {
+    const acknowledgment: SingletonHandOverAcknowledgment = {
+      kind: 'singleton.HandOverAcknowledgment',
+      typeName: this.options.typeName,
+    };
+    this.sendToPeer(peer, acknowledgment);
+  }
+
+  /**
+   * One hand-over frame to one peer's manager.
+   *
+   * `peer.systemName` and **not** `this.system.name`: the manager path embeds
+   * the *hosting* system's name, and a cluster's members do not have to share
+   * one.  `MultiNodeSpec` gives every node a system named after its role
+   * precisely so a test can tell them apart, and there the two spellings differ
+   * — a frame addressed with the sender's name misses the recipient's per-path
+   * handler entirely, falls through to `Cluster.dispatchEnvelope`'s generic path
+   * resolution, and arrives at the manager as a bare body with no authenticated
+   * peer attached.  Which the manager then, correctly, refuses to act on.
+   *
+   * `from: null` like the proxy's own sends, and for a sharper reason than
+   * symmetry: `EnvelopeMessage.from` is an actor *path*, and the only path this
+   * exchange knows is the recipient's — so filling it in would name the wrong
+   * end.  The sender that matters is the socket-verified `NodeAddress` the
+   * receiving `Cluster` supplies to the per-path handler, which no payload can
+   * forge.
+   */
+  private sendToPeer(peer: NodeAddress, message: SingletonMessage): void {
+    this.options.cluster._sendEnvelope(peer, {
+      kind: 'envelope',
+      to: singletonManagerPath(peer.systemName, this.options.typeName),
+      from: null,
+      body: message,
+      tag: 'Singleton',
+    });
   }
 
   /* -------------------------- helpers -------------------------- */

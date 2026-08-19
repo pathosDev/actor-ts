@@ -148,12 +148,14 @@ runner-agnostisch**.
 actor-ts liefert **ESM** (`type: "module"` in package.json). In
 Node:
 
-```ts
+```json
 // In der package.json deiner App:
 {
   "type": "module"
 }
+```
 
+```ts
 // actor-ts importieren:
 import { ActorSystem } from 'actor-ts';
 ```

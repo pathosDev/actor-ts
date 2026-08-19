@@ -42,6 +42,25 @@ export type StartSingletonOptionsType<T> = {
    */
   readonly acquireRetryIntervalMs?: number;
   /**
+   * How long this node waits for every other eligible node to confirm it is
+   * not running the singleton, before hosting it anyway.  Default: `10_000` ms.
+   *
+   * The wait is what makes "at most one instance" a cluster property: without
+   * it the incoming host spawns off its own gossip view while the incumbent is
+   * still draining the instance it was told to stop, so a routine scale-up
+   * runs two (#949).  A healthy hand-over costs one network round trip and
+   * never reaches this number.
+   *
+   * Reaching it means some eligible peer did not answer — it is unreachable,
+   * or it believes it is still the host and declined.  The manager then
+   * **spawns anyway** and logs at `warn`: availability is chosen over an
+   * invariant it could not prove.  Where the invariant must survive that,
+   * configure a {@link StartSingletonOptionsType.lease} — a third party both
+   * sides can reach is the only thing that can arbitrate when reaching the
+   * incumbent is what failed.
+   */
+  readonly handOverTimeoutMs?: number;
+  /**
    * Whether the singleton is re-spawned after its instance dies
    * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
    * — as opposed to the planned teardown of a handover.  Default: `true`.
@@ -112,6 +131,11 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
     return this.set('acquireRetryIntervalMs', ms);
   }
 
+  /** How long to wait for eligible peers to stand down before hosting.  Default 10 s. */
+  withHandOverTimeoutMs(ms: number): this {
+    return this.set('handOverTimeoutMs', ms);
+  }
+
   /** Re-spawn the singleton after an unexpected instance death?  Default `true`. */
   withRestartOnTermination(restartOnTermination: boolean): this {
     return this.set('restartOnTermination', restartOnTermination);
@@ -138,6 +162,7 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('handOverTimeoutMs');
     this.positiveInt('bufferSize');
   }
 }

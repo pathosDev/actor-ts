@@ -112,6 +112,24 @@ for every buffered shard on the next leader or membership event, so
 a directive dropped during a leadership handover is re-requested
 rather than lost.
 
+A third condition is about the shard rather than the sender: the
+region only hands off a shard it currently **owns**, and only once.
+A `HandOff` it has already begun acting on, or one naming a shard
+that lives somewhere else, is ignored — previously such a frame
+still emptied the region's cached "shard `X` lives on node N"
+entries, so an authentic directive arriving *twice*, or arriving
+late after the coordinator had already force-reallocated the shard,
+cost every other node's traffic an extra round trip to the
+coordinator. Ownership is judged by allocation, not by whether the
+shard actor happens to be running: a shard that passivated for being
+idle is still owned and still hands off.
+
+The coordinator does not stall on the refusal. It only ever sends
+`HandOff` to the region its own allocation map names, so a refusal
+means the two disagree about ownership — and `handOffTimeoutMs`
+below is exactly the fallback for that, force-reallocating the shard
+instead of waiting forever.
+
 :::note[This is authorization, not authentication]
 The check says *"only the coordinator's node"*, and on a cluster
 without peer certificates any party that can reach the port can

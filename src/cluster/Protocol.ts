@@ -91,7 +91,6 @@ export type WireMessage =
   | HeartbeatAcknowledgmentMessage
   | GossipMessage
   | EnvelopeMessage
-  | ShardMapMessage
   | LeaveMessage;
 
 export type HelloMessage = {
@@ -171,13 +170,6 @@ export type EnvelopeMessage = {
    * (#10 — cross-node distributed tracing).
    */
   trace?: { readonly traceparent: string; readonly tracestate?: string };
-};
-
-export type ShardMapMessage = {
-  kind: 'shard-map';
-  type: string;
-  shards: Record<number, NodeAddressData>;
-  version: number;
 };
 
 export type LeaveMessage = {
