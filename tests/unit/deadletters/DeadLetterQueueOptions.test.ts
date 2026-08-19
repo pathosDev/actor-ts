@@ -135,12 +135,12 @@ describe('ActorSystemOptions.withDeadLetters — the explicit layer', () => {
     hocon: ConfigObject,
     explicit?: DeadLetterQueueOptionsBuilder,
   ): ActorSystem {
-    const sysOptions = ActorSystemOptions.create()
+    const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withConfig({ 'actor-ts': { 'dead-letters': hocon } });
-    if (explicit !== undefined) sysOptions.withDeadLetters(explicit);
-    return ActorSystem.create(name, sysOptions);
+    if (explicit !== undefined) systemOptions.withDeadLetters(explicit);
+    return ActorSystem.create(name, systemOptions);
   }
 
   test('the builder turns the live queue on, and it actually captures', async () => {
@@ -224,12 +224,12 @@ describe('ActorSystemOptions.withDeadLetters — the explicit layer', () => {
     // `mergeOptions` treats undefined as "not set", not "explicitly clear".
     // A destructured default or a spread partial reaching the slot must not
     // silently blank the config file underneath it.
-    const sysOptions = ActorSystemOptions.create()
+    const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withConfig({ 'actor-ts': { 'dead-letters': { store: 'memory' } } })
       .withDeadLetters({ store: undefined, maxEntries: 3 });
-    const sys = ActorSystem.create('dlq-explicit-undefined', sysOptions);
+    const sys = ActorSystem.create('dlq-explicit-undefined', systemOptions);
     try {
       expect(sys.deadLetterQueue.store).toBe('memory');
     } finally {

@@ -210,7 +210,7 @@ export class WorkerCluster {
   }
 
   private async spawnOne(index: number): Promise<void> {
-    const addr = new NodeAddress(
+    const address = new NodeAddress(
       this.options.systemName,
       this.options.hostname,
       this.options.basePort + index,
@@ -222,18 +222,18 @@ export class WorkerCluster {
       : new URL(this.options.bootstrap);
     const worker = backend.spawn(url, { name: `worker-${index}` });
     this.starting.add(worker);
-    const handle: WorkerHandle = { id: index, address: addr, worker };
+    const handle: WorkerHandle = { id: index, address, worker };
 
     const init: WorkerInitMessage = {
       kind: 'worker-init',
-      self: addr.toJSON(),
+      self: address.toJSON(),
       systemName: this.options.systemName,
       data: this.options.initData,
     };
     try {
       // Handshake first (so only one 'message' listener is live during hello/ready),
       // then wire up the broker — otherwise Bun's multiple-listener path is finicky.
-      await this.handshake(worker, init, addr);
+      await this.handshake(worker, init, address);
     } catch (error) {
       // The worker is referenced by two locals and nothing else; letting the
       // rejection propagate used to drop both and leave the thread running for
@@ -253,10 +253,10 @@ export class WorkerCluster {
     }
 
     const brokerPort = this.brokerFacade(worker);
-    this.broker.register(addr, brokerPort);
+    this.broker.register(address, brokerPort);
 
     this.handles.push(handle);
-    this.attachFailureHandlers(index, worker, addr);
+    this.attachFailureHandlers(index, worker, address);
   }
 
   /** Create a PortLike wrapper that speaks the BrokeredMessage protocol
@@ -281,11 +281,11 @@ export class WorkerCluster {
     } as PortLike;
   }
 
-  private handshake(worker: WorkerLike, init: WorkerInitMessage, addr: NodeAddress): Promise<void> {
+  private handshake(worker: WorkerLike, init: WorkerInitMessage, address: NodeAddress): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unsubscribe();
-        reject(new Error(`Worker ${addr} did not become ready within ${this.options.readyTimeoutMs}ms`));
+        reject(new Error(`Worker ${address} did not become ready within ${this.options.readyTimeoutMs}ms`));
       }, this.options.readyTimeoutMs);
       const unsubscribe = (): void => {
         clearTimeout(timeout);
@@ -308,7 +308,7 @@ export class WorkerCluster {
        */
       const onError = (e: WorkerErrorEvent): void => {
         unsubscribe();
-        reject(new Error(`Worker ${addr} failed during startup: ${e.message ?? 'unknown error'}`));
+        reject(new Error(`Worker ${address} failed during startup: ${e.message ?? 'unknown error'}`));
       };
       const onMessage = (e: { data?: unknown }): void => {
         const message = (e.data ?? undefined) as { kind?: string } | undefined;
@@ -337,13 +337,13 @@ export class WorkerCluster {
    * runtimes.  Whichever event arrives first consumes the latch; the other is
    * dropped.
    */
-  private attachFailureHandlers(index: number, worker: WorkerLike, addr: NodeAddress): void {
+  private attachFailureHandlers(index: number, worker: WorkerLike, address: NodeAddress): void {
     let consumed = false;
     const onClose = (e: WorkerCloseEvent): void => {
       if (consumed) return;
       consumed = true;
       const crashed = typeof e?.code === 'number' ? e.code !== 0 : true;
-      this.onWorkerDown(index, addr, crashed, undefined);
+      this.onWorkerDown(index, address, crashed, undefined);
     };
     const onError = (e: WorkerErrorEvent): void => {
       if (consumed) return;
@@ -351,25 +351,25 @@ export class WorkerCluster {
       // Not reported during shutdown: killing a worker is allowed to make it
       // complain, and that is not a diagnostic anyone wants.
       if (this.closed) return;
-      reportWorkerFailure(`worker ${index} (${addr}) failed`, e.error ?? e.message);
-      this.onWorkerDown(index, addr, true, e.error ?? e.message);
+      reportWorkerFailure(`worker ${index} (${address}) failed`, e.error ?? e.message);
+      this.onWorkerDown(index, address, true, e.error ?? e.message);
     };
     worker.addEventListener('close', onClose);
     worker.addEventListener('error', onError);
   }
 
   /** Apply `restartPolicy` to a worker that has gone away, and free its slot. */
-  private onWorkerDown(index: number, addr: NodeAddress, crashed: boolean, error: unknown): void {
+  private onWorkerDown(index: number, address: NodeAddress, crashed: boolean, error: unknown): void {
     if (this.closed) return;
     const should =
       this.options.restartPolicy === 'always' ||
       (this.options.restartPolicy === 'on-failure' && crashed);
     if (!should) return;
-    const i = this.handles.findIndex(h => h.address.equals(addr));
+    const i = this.handles.findIndex(h => h.address.equals(address));
     if (i < 0) return;
-    this.broker.unregister(addr);
+    this.broker.unregister(address);
     this.handles.splice(i, 1);
-    this.requestRestart(index, addr, error);
+    this.requestRestart(index, address, error);
   }
 
   /**
@@ -381,12 +381,12 @@ export class WorkerCluster {
    * bootstrap that always fails are the same shape and used to be equally
    * unbounded (#734).
    */
-  private requestRestart(index: number, addr: NodeAddress, error: unknown): void {
+  private requestRestart(index: number, address: NodeAddress, error: unknown): void {
     const state = this.restartStateFor(index);
     if (state.retired) return;
     if (!state.budget.registerRestart()) {
       state.retired = true;
-      this.reportPermanentlyDown(index, addr, state.budget.recordedRestarts, error);
+      this.reportPermanentlyDown(index, address, state.budget.recordedRestarts, error);
       return;
     }
     // `recordedRestarts` and not a private counter: the budget prunes it with
@@ -399,7 +399,7 @@ export class WorkerCluster {
       // `terminate()` may have run during the backoff.
       if (this.closed) return;
       this.spawnOne(index).catch((respawnError: unknown) => {
-        this.onRespawnFailed(index, addr, respawnError);
+        this.onRespawnFailed(index, address, respawnError);
       });
     }, delayMs);
     state.timer = timer;
@@ -415,12 +415,12 @@ export class WorkerCluster {
    * through the same budget, which is what makes a permanently broken bootstrap
    * stop rather than loop.
    */
-  private onRespawnFailed(index: number, addr: NodeAddress, error: unknown): void {
+  private onRespawnFailed(index: number, address: NodeAddress, error: unknown): void {
     // A respawn that lost the race with `terminate()` rejects by design — the
     // worker it started is already terminated by `spawnOne`'s own guard.
     if (this.closed) return;
-    reportWorkerFailure(`respawning worker ${index} (${addr}) failed`, error);
-    this.requestRestart(index, addr, error);
+    reportWorkerFailure(`respawning worker ${index} (${address}) failed`, error);
+    this.requestRestart(index, address, error);
   }
 
   private reportPermanentlyDown(

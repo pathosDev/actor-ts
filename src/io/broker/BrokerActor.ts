@@ -748,10 +748,12 @@ export abstract class BrokerActor<
 
   /** Called when the connection drops (from inside `dispatchOutgoing` or by the subclass). */
   protected handleConnectionLost(cause?: Error): void {
-    // `_stopped` is not implied by the state check below: a connection that
-    // escaped a stop leaves the actor reading `connected`, so a driver
-    // callback firing from it would pass the state guard and start a
-    // reconnect cycle on a terminated actor (#708).
+    // Defence in depth, and deliberately not justified by the escaped-connection
+    // case: `_abandonConnection` leaves the actor `disconnected`, so that path
+    // can no longer reach the state guard below.  What this does still catch is
+    // a subclass driver callback the base class does not control, firing after
+    // `postStop` set `_stopped` — a reconnect cycle on a terminated actor (#708).
+    // No test pins it, because reaching it needs a subclass that misbehaves.
     if (this._stopped) return;
     if (this._state !== 'connected' && this._state !== 'connecting') return;
     this._state = 'disconnected';
