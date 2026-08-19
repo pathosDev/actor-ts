@@ -9,8 +9,14 @@
 # The user is declared up front rather than left to GreenMail's
 # auto-create: the bridge authenticates, and a server that invents
 # accounts on demand would make a wrong credential look like a pass.
-# The login IS the full address (`greenmail.users=<login>:<password>@<domain>`
-# creates the mailbox `<login>@<domain>` and authenticates under that name).
+#
+# `greenmail.users=<local-part>:<password>@<domain>` creates the mailbox
+# `<local-part>@<domain>`, but the login it authenticates under is the
+# **local part alone** — GreenMail's default is `users.login=local_part`,
+# and has been since 1.6.1.  Hence the explicit `users.login=email` below:
+# the bridge logs in with the full address, the way a real provider expects,
+# and bending the client to a test server's default would be fitting the
+# wrong way round.
 #
 # Run locally:
 #   bun run test:integration:email
@@ -30,6 +36,7 @@ services:
         -Dgreenmail.setup.test.all
         -Dgreenmail.hostname=0.0.0.0
         -Dgreenmail.users=bridge:secret@example.test
+        -Dgreenmail.users.login=email
         -Dgreenmail.verbose
     networks:
       mailnet: {}
