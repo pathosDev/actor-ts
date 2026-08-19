@@ -164,6 +164,35 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   error go away: the rule is a *different manifest*, not a difficult error.
 - **`bun test`** is green. Line coverage floor is **≥ 80 %** —
   `bun run test:coverage:gate`.
+
+  That command enforces **two** floors, from the two artifacts of one
+  `bun test --coverage` run. The aggregate ≥ 80 % comes from the `All files`
+  row of bun's text table, which is also what `test.yml` parses in bash and
+  what CI actually enforces. Per-module floors — **`src/cluster/` ≥ 90 %** and
+  **`src/persistence/` ≥ 90 %** — come from the lcov report, as
+  `Σ LH / Σ LF` per path prefix, because a rollup of bun's per-file
+  percentages would average a ten-line barrel against a thousand-line
+  coordinator. The module floors are configured in
+  `scripts/coverage-gate.mjs` and nowhere else, deliberately: an environment
+  override in a workflow file is a second place the number lives and a way to
+  loosen the gate without the loosening showing up in a diff of the gate.
+  The module floors are **not wired into CI yet** — that needs #1016, which
+  owns inverting this script so `test.yml` can gate the run it already made
+  instead of running the suite a second time. #541.
+
+  **Ratchet policy: a floor may be raised, never lowered silently.** Raising
+  one is ordinary work — do it when a release is cut, or when a module has
+  held well above its floor for a while. Lowering one requires the measured
+  figure that forces it, written down beside the number, and it is worth
+  asking first whether the honest change is a test rather than a floor. The
+  history here is the reason: the aggregate floor was 89 until `83b0a4af`
+  dropped it to 80, because quarantining the worker-thread suites (#538) had
+  taken hosted CI to 86 % — a defensible call, but one whose reasoning lived
+  only in a commit message, with nothing under `tests/` even naming
+  `COVERAGE_LINE_FLOOR`. Both floors are now pinned from below by
+  `tests/unit/ci/CoverageGate.test.ts`, which also fails when the script, the
+  workflow and this file stop quoting the same aggregate number — so lowering
+  a floor means editing that test, in the same commit, on purpose.
 - **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
   `test.yml`, `multi-runtime.yml` and `publish.yml` skips
   `tests/multi-node/LeaseMajority.test.ts`,

@@ -450,7 +450,10 @@ On reaching it, un-quarantine in one commit:
    benchmark is excluded for exactly the same cause, and is easy to forget
    because it is not a test.
 5. Revisit `test.yml`'s pragmatic `COVERAGE_LINE_FLOOR: '80'`, lowered for
-   the same reason.
+   the same reason — and the per-module floors in `scripts/coverage-gate.mjs`
+   with it.  `src/cluster/` measures below its true line coverage for as long
+   as `LeaseMajority` cannot run, so its floor is set against the quarantined
+   population and not against the real one.
 6. Keep the nightly job.  It becomes the regression guard for the
    un-quarantining.
 
