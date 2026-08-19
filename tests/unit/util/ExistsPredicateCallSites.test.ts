@@ -20,6 +20,7 @@ import { Actor } from '../../../src/Actor.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { ORSet } from '../../../src/crdt/ORSet.js';
 import { _nextAskIdForTest } from '../../../src/cluster/ClusterClient.js';
+import { _resetEntropyPool } from '../../../src/util/RandomString.js';
 
 const realGetRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
 const realRandomUuid = globalThis.crypto.randomUUID.bind(globalThis.crypto);
@@ -35,6 +36,11 @@ function freezeRandomBytes(): void {
     if (array !== null) new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(0);
     return array;
   }) as typeof globalThis.crypto.getRandomValues;
+  // `randomId` buffers entropy in bulk, so bytes drawn from the real generator
+  // before this substitution would still be handed out after it — the stub
+  // would be ignored for the next few hundred identifiers, and the determinism
+  // this function exists to provide would arrive several tests late.
+  _resetEntropyPool();
 }
 
 function freezeRandomUuid(value: string): void {
@@ -44,6 +50,9 @@ function freezeRandomUuid(value: string): void {
 afterEach(() => {
   globalThis.crypto.getRandomValues = realGetRandomValues;
   globalThis.crypto.randomUUID = realRandomUuid;
+  // Symmetric: drop the all-zero bytes the stub left behind, so no later test
+  // draws a "random" identifier that is entirely predictable.
+  _resetEntropyPool();
 });
 
 describe('ORSet.add draws its tag against live tags and tombstones', () => {
