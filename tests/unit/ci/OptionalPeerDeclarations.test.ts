@@ -98,6 +98,23 @@ const DELIBERATELY_UNDECLARED: readonly string[] = ['cassandra-driver'];
 const FOREIGN_MANIFEST_TREES: readonly string[] = ['integration/brokers'];
 
 /**
+ * Sources whose content IS sample code rather than code, so a specifier in
+ * them is data and says nothing about the install.
+ *
+ * `DocSampleHarness.test.ts` exercises the documentation-sample compiler by
+ * feeding it fenced samples as string literals, and those samples import the
+ * packages the documentation tells a reader to install — `import Redis from
+ * 'ioredis'` among them. Nothing in that file resolves a module.
+ *
+ * A file-level exclusion for the same reason `withoutCommentLines` stops at
+ * line level: separating a quoted specifier from a real one needs a string
+ * parser, and a guard whose own machinery needs a test is not a guard. Adding
+ * to this list is a claim that the whole file is fixture text, which is
+ * verifiable by reading it; anything narrower would not be.
+ */
+const SAMPLE_FIXTURE_SOURCES: readonly string[] = ['unit/docs/DocSampleHarness.test.ts'];
+
+/**
  * Drop whole-line comments before scanning for imports.
  *
  * Not fussiness — without it the scan reports the opposite of the truth twice
@@ -126,6 +143,7 @@ function rootScopedTestSources(): readonly string[] {
     .map((entry) => entry.replaceAll('\\', '/'))
     .filter((entry) => entry.endsWith('.ts') || entry.endsWith('.mjs'))
     .filter((entry) => !FOREIGN_MANIFEST_TREES.some((tree) => entry.startsWith(`${tree}/`)))
+    .filter((entry) => !SAMPLE_FIXTURE_SOURCES.includes(entry))
     .map((entry) => withoutCommentLines(readFileSync(join(testsRoot, entry), 'utf8')));
 }
 
