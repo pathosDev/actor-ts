@@ -7,9 +7,7 @@ import {
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from '../../src/Dispatcher.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 describe('MicrotaskDispatcher', () => {
   test('executes the work asynchronously (not synchronously)', async () => {

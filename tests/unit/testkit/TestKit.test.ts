@@ -25,6 +25,9 @@ describe('TestKit', () => {
       }
       const ref = tk.system.spawn(Loud, 'loud');
       ref.tell('world');
+      // An absence: the TestKit's default logger must print nothing.  `lines` is
+      // empty when the wait starts, so the window is the only thing that can catch
+      // a line written a turn later.
       await Bun.sleep(30);
       expect(lines).toEqual([]);
       await tk.shutdown();

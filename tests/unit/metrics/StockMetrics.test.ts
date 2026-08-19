@@ -16,9 +16,7 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 class Echo extends Actor<string> {
   override onReceive(_m: string): void { /* tick */ }
@@ -377,6 +375,9 @@ describe('MetricsExtension — opt-in', () => {
     const sys = ActorSystem.create('m-noop', sysOptions);
     try {
       sys.spawn(Echo, 'a');
+      // An absence: without `enable()` the registry is the noop, so `collect()` must
+      // stay empty.  That is already true at t = 0; the window is what would let a
+      // stock metric registered during startup show up.
       await sleep(20);
       const reg = sys.extension(MetricsExtensionId).get();
       expect(reg.collect()).toEqual([]);

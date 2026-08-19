@@ -2,9 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorPath } from '../../src/ActorPath.js';
 import { Scheduler } from '../../src/Scheduler.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Captures `tell` calls into an array for verification. */
 class RecordingRef<T = unknown> extends ActorRef<T> {
@@ -34,6 +32,9 @@ describe('Scheduler.scheduleOnceFunction', () => {
     const cancellable = scheduler.scheduleOnceFunction(20, () => { fired = true; });
     expect(cancellable.cancel()).toBe(true);
     expect(cancellable.isCancelled).toBe(true);
+    // An absence, so it cannot be polled: the window has to outlast the 20 ms
+    // the cancelled timer was armed for, and `fired === false` is already true
+    // when the wait starts.
     await sleep(50);
     expect(fired).toBe(false);
   });
@@ -50,6 +51,8 @@ describe('Scheduler.scheduleOnceFunction', () => {
     let fired = false;
     scheduler.scheduleOnceFunction(30, () => { fired = true; });
     scheduler.shutdown();
+    // An absence: the wait has to outlast the 30 ms delay so that a timer the
+    // shutdown failed to clear would have fired by now.
     await sleep(60);
     expect(fired).toBe(false);
   });
@@ -92,6 +95,8 @@ describe('Scheduler.scheduleOnce (message to actor)', () => {
     const ref = new RecordingRef<string>();
     const cancellable = scheduler.scheduleOnce(10, ref, 'hi');
     cancellable.cancel();
+    // An absence: the wait outlasts the 10 ms delay so a `tell` the cancel
+    // failed to prevent would have landed in `received` by now.
     await sleep(30);
     expect(ref.received).toEqual([]);
   });
@@ -108,6 +113,8 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     });
     cancellable.cancel();
     const snapshot = count;
+    // An absence: two further 20 ms periods would have elapsed, so a schedule
+    // the cancel did not clear would have moved `count` past the snapshot.
     await sleep(50);
     expect(snapshot).toBeGreaterThanOrEqual(3);
     // After cancel the count must not grow further.
@@ -140,6 +147,8 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     });
     scheduler.shutdown();
     const snapshot = count;
+    // An absence: four further 20 ms periods would have elapsed, so a schedule
+    // the shutdown did not suppress would have moved `count` past the snapshot.
     await sleep(80);
     expect(count).toBe(snapshot);
   });
@@ -201,6 +210,8 @@ describe('Scheduler.shutdown', () => {
     expect(once.isCancelled).toBe(true);
     expect(repeating.isCancelled).toBe(true);
 
+    // An absence: the wait outlasts both the 20 ms one-shot and several 10 ms
+    // periods, so anything the shutdown failed to clear would be in `fired`.
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(fired).toEqual([]);
   });
@@ -210,6 +221,8 @@ describe('Scheduler.shutdown', () => {
     let fired = false;
     scheduler.scheduleOnceFunction(15, () => { fired = true; });
     scheduler.shutdown();
+    // An absence: the wait outlasts the 15 ms the timer was armed for, so a
+    // firing the shutdown did not prevent would have happened by now.
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(fired).toBe(false);
   });

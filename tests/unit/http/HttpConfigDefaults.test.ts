@@ -107,6 +107,9 @@ describe('actor-ts.http.client', () => {
     const binding = await system.extension(HttpExtensionId)
       .newServerAt('127.0.0.1', 0)
       .bind(get(async () => {
+        // The elapsed time IS the assertion: the handler has to outlast the
+        // 50 ms client deadline configured above by a wide margin, so that the
+        // client aborting rather than resolving is unambiguous.
         await new Promise((resolve) => setTimeout(resolve, 2_000));
         return complete(Status.OK, 'late');
       }));

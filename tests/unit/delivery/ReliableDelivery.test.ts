@@ -12,9 +12,7 @@ import {
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 /** A silent TestKit — every case here would otherwise log its own warnings. */
 const quietKit = (name: string): TestKit => TestKit.create(name, TestKitOptions.create()

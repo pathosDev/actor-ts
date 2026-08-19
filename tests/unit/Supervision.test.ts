@@ -373,6 +373,9 @@ describe('resume after a failure', () => {
 
     const parent = sys().spawn(Parent, 'resume-subtree');
     parent.tell('boom');
+    // `Resume` leaves nothing behind to poll on — no restart, no stop, no event.
+    // The window is simply "long enough for the failure to have been supervised"
+    // before the next message probes whether the subtree survived it.
     await Bun.sleep(60);
 
     // The whole branch must still be live — child *and* grandchild.

@@ -162,6 +162,9 @@ describe('terminate drains the user tree', () => {
     // has nothing to do with #663.
     const recorderOptions = ActorOptions.create<string>().withThroughput(1);
     const ref = system.spawn(() => new Recorder(seen), 'recorder', recorderOptions);
+    // The cell has to be fully started before the 25 messages are enqueued, or
+    // the two-hop cascade arithmetic below counts a different race.  Starting
+    // leaves nothing observable here — `seen` is still empty either way.
     await Bun.sleep(20);
 
     for (let index = 0; index < 25; index++) ref.tell(`m${index}`);

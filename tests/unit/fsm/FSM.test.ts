@@ -89,6 +89,10 @@ describe('FSM', () => {
     const kit = TestKit.create('fsm-missing', kitOptions);
     const ref = kit.system.spawnAnonymous(Broken);
     ref.tell('anything');
+    // An absence: a state with no handler must swallow the message rather than
+    // fail the actor.  The window is what would give a crash time to surface,
+    // and there is nothing to poll for — the expected outcome is that nothing
+    // happens at all.
     await Bun.sleep(20);
     // The actor is still alive — subsequent tells don't throw.
     expect(true).toBe(true);

@@ -7,8 +7,7 @@ import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { minimumElapsedMs } from '../../util/TimerTolerance.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 describe('pipeTo', () => {
   test('resolves pipe the value as Success by default', async () => {

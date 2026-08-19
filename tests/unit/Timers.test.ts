@@ -3,9 +3,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'timers-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -31,6 +30,8 @@ describe('context.timers.startSingleTimer', () => {
       timeoutMs: 4_000,
       label: 'the one-shot timer delivered its message',
     });
+    // The settle window named above: "once" is an absence, and a poll that
+    // stopped at the first tick could never observe a second.
     await sleep(30);
     expect(seen).toEqual(['tick']);
     await sys.terminate();
@@ -85,6 +86,8 @@ describe('context.timers.startSingleTimer', () => {
       timeoutMs: 4_000,
       label: 'the cancel message was handled',
     });
+    // The window named above, and it has to stay a sleep: outliving the 40 ms
+    // delay is exactly what proves the cancelled timer never fired.
     await sleep(80);
     expect(seen).toEqual([]);
     await sys.terminate();
@@ -140,6 +143,9 @@ describe('context.timers.startTimerWithFixedDelay', () => {
       timeoutMs: 4_000,
       label: 'the cancel message was handled',
     });
+    // The fade budget named above: "at most two more ticks after the cancel" is
+    // an upper bound, so the window has to be a real one — a poll would return
+    // before the ticks it is meant to rule out could have arrived.
     await sleep(60);
     expect(snapshot).toBeGreaterThanOrEqual(3);
     expect(count - snapshot).toBeLessThanOrEqual(2); // graceful fade after cancel
@@ -335,6 +341,9 @@ describe('timer bookkeeping after a one-shot fires', () => {
         async () => {
           keyCount = -1;
           ref.tell('check');
+          // Inside the predicate: `check` is answered in the actor's own turn, so
+          // the reply has to be given a turn to land before it can be read.  The
+          // enclosing `awaitCondition` is what bounds the whole thing.
           await sleep(5);
           return keyCount === 0;
         },

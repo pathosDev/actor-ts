@@ -48,6 +48,16 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/**
+ * Give the target actor time to handle everything already told to it.
+ *
+ * Deliberately a fixed delay and not `awaitCondition`: what the assertions
+ * read is a *bounded ring* of recorded entries, and the interesting cases tell
+ * the actor more messages than the ring holds.  A poll on "the ring has N
+ * entries" would return the moment it filled — i.e. before the messages that
+ * prove the cap were handled at all — so the exact-count assertion after it
+ * would pass without testing anything.
+ */
 const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('ExplainMethods', () => {

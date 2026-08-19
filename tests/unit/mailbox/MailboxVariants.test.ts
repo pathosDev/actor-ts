@@ -14,9 +14,7 @@ import {
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 describe('BoundedMailbox — overflow policies', () => {
   test('drop-head replaces the oldest queued message', () => {
@@ -620,6 +618,8 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     const kit = TestKit.create('mbox-overflow-option', kitOptions);
 
     class Slow extends Actor<number> {
+      // A fixture: the handler has to still be busy while the sends arrive, or the
+      // capacity-2 mailbox never overflows and `reject` is never exercised.
       override async onReceive(_m: number): Promise<void> { await sleep(50); }
     }
     const options = ActorOptions.create<number>()
@@ -813,6 +813,8 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
 
     class Slow extends Actor<number> {
       override async onReceive(m: number): Promise<void> {
+        // A fixture: the handler has to be slow enough that the eight sends below
+        // overrun a capacity-3 mailbox, which is the case under test.
         await sleep(10);
         received.push(m);
       }
@@ -822,6 +824,9 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     const ref = kit.system.spawnAnonymous(Slow, options);
 
     for (let i = 0; i < 8; i++) ref.tell(i);
+    // An upper bound, so it cannot be polled: `received.length` has to end up in
+    // [1, 8] once the sends are over, and a poll on ">= 1" returns on the first
+    // delivery, long before drop-new has decided anything.
     await sleep(200);
 
     // At most (capacity + already-processed) messages will land — the

@@ -12,12 +12,10 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ImmediateDispatcher, MicrotaskDispatcher } from '../../../src/Dispatcher.js';
 import type { Dispatcher } from '../../../src/Dispatcher.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 let sys: ActorSystem;
 beforeEach(() => {
@@ -66,6 +64,8 @@ describe('ActorContext.throttle (#83)', () => {
     // Configure throttle from inside the actor (one of the two
     // valid contexts — the other being a behavior-injection wrapper).
     ref.tell({ kind: 'configure-throttle' });
+    // The limiter has to be installed before the ticks are sent, and installing
+    // it leaves nothing observable to poll — `throttle()` only mutates the cell.
     await sleep(10);
 
     // Send 10 ticks back-to-back.  With qps=10 / burst=2:
@@ -102,12 +102,17 @@ describe('ActorContext.throttle (#83)', () => {
     }
     const dc = new DropCounter();
     const ref = sys.spawn(() => dc, 'drop-mode');
+    // `preStart` installs the limiter; it has no observable, so the ticks below
+    // must simply not be sent before it can have run.
     await sleep(10);
 
     // Fire 20 ticks at once.  Burst=2 means 2 process, the other
     // 18 hit the empty bucket and are dropped.  No backpressure,
     // no waiting — count stays at 2.
     for (let i = 0; i < 20; i++) ref.tell({ kind: 'tick' });
+    // Not pollable: the claim is that exactly the burst got through and the
+    // other 18 were dropped.  A poll on `count >= 2` returns on the second tick
+    // and can never see a third leak past the empty bucket.
     await sleep(50);
     expect(dc.count).toBe(2);
 
@@ -138,10 +143,15 @@ describe('ActorContext.throttle (#83)', () => {
     const counter = new Counter();
     const ref = sys.spawn(() => counter, 'cancel-throttle');
     ref.tell({ kind: 'configure-throttle' }); // qps=10, burst=2
+    // The limiter has to be installed before the four ticks join the queue, and
+    // installing it leaves nothing observable to poll.
     await sleep(10);
 
     // 4 ticks under the throttle — burst 2 + 2 paused.
     for (let i = 0; i < 4; i++) ref.tell({ kind: 'tick' });
+    // An absence, so it cannot be polled: the claim is that the throttle has
+    // NOT let all four through yet.  `count < 4` holds at t = 0 and has to still
+    // hold once the window has actually elapsed.
     await sleep(50);
     expect(counter.count).toBeLessThan(4);
 
@@ -174,10 +184,14 @@ describe('ActorContext.throttle (#83)', () => {
       override postStop(): void { stopped.value = true; }
     }
     const ref = sys.spawn(Strict, 'strict');
+    // `preStart` installs the qps=1 limiter; it has no observable, so the tick
+    // below must not be sent before it can have run.
     await sleep(20);
 
-    // Drain the burst.
     ref.tell({ kind: 'tick' });
+    // Drain the burst: the point of the test is that `stop()` gets through with
+    // the bucket *empty*, so the emptiness has to be real before the stop is
+    // sent.  Nothing to poll — an empty token bucket is an absence.
     await sleep(20);
 
     // Stop — system messages are not subject to the bucket.  `postStop` is the

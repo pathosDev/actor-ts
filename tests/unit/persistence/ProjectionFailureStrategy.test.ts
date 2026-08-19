@@ -36,6 +36,7 @@ import {
 import { InMemoryQuery } from '../../../src/persistence/query/InMemoryQuery.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 type CountedEvent = { n: number };
 
@@ -151,18 +152,27 @@ async function seedThreeEvents(journal: InMemoryJournal): Promise<void> {
  * scheduler released still completes asynchronously.  Poll on wall time for
  * the *expected* outcome, and use {@link settle} only for the negative
  * assertions where there is nothing to wait for.
+ *
+ * A two-line wrapper over `awaitCondition` (#418) rather than its own deadline
+ * loop, which keeps all 26 call sites byte-identical while a timeout starts
+ * reporting the elapsed time and the poll count instead of only the budget.
+ * The label stays generic on purpose: the second positional argument here is
+ * `timeoutMs`, so threading a per-site label through would mean touching every
+ * one of those call sites for a message they already imply.
  */
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(2);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+  await awaitCondition(predicate, {
+    timeoutMs,
+    intervalMs: 2,
+    label: 'the projection reached the awaited state',
+  });
 }
 
 /** Give any queued work a generous chance to run before asserting it did not. */
 async function settle(): Promise<void> {
+  // Fifteen turns of 2 ms, not a poll: every caller of `settle` asserts that the
+  // projection made NO further progress, and an absence has no condition to wait
+  // on — it is already true when the window opens.
   for (let i = 0; i < 15; i++) await Bun.sleep(2);
 }
 

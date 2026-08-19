@@ -26,9 +26,7 @@ import { ReceiveTimeout } from '../../src/SystemMessages.js';
 import type { LogContextEntry } from '../../src/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { ManualScheduler } from '../../src/testkit/ManualScheduler.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 describe('LogContext — actor-to-actor propagation', () => {
   test('tell from within run() carries the context to the receiver', async () => {
@@ -241,6 +239,9 @@ class LeakingCollector extends Actor<CollectorMessage> {
   private onDrain(): void {
     void (async () => {
       for (const item of this.buffered.splice(0)) {
+        // A fixture: the drain has to cross an await boundary per item, because
+        // that is where a context restored per item would differ from one
+        // captured once for the whole loop.
         await sleep(1);
         this.sink.tell(item);
       }
@@ -272,6 +273,8 @@ class IsolatingCollector extends Actor<CollectorMessage> {
     // unhandled — fatal by default on Node since v15.  The same shape the
     // logging docs teach since #1063, and the reason they had to change.
     LogContext.runEach(this.buffered.splice(0), async (item) => {
+      // A fixture: the suspension is where `runEach` has to re-install this
+      // item's own captured context rather than whatever was current.
       await sleep(1);
       this.sink.tell(item);
     }).catch((error) => this.log.error('drain failed', error as Error));
@@ -284,6 +287,8 @@ class DetachedWorker extends Actor<string> {
 
   override onReceive(_m: string): void {
     LogContext.runFresh(async () => {
+      // A fixture: the work has to resume *after* the enclosing turn has ended,
+      // which is the shape in which a turn's context leaks into detached work.
       await sleep(1);
       this.observed.push({ ...LogContext.get() });
     }).catch((error) => this.log.error('detached work failed', error as Error));

@@ -39,6 +39,8 @@ describe('runtime/detect', () => {
 
   test('highResNow output scale is nanoseconds (~1e9 per second)', async () => {
     const first = highResNow();
+    // The elapsed time IS the assertion: 10 ms of real time is what the nanosecond
+    // delta below is checked against (~1e7 ns, inside a deliberately wide band).
     await new Promise((r) => setTimeout(r, 10));
     const second = highResNow();
     const delta = second - first;

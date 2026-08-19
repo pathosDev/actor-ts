@@ -145,12 +145,16 @@ describe('TestProbe integrates with real actors', () => {
 describe('TestKit.within', () => {
   test('passes when the body finishes inside the window', async () => {
     const tk = TestKit.create();
+    // The elapsed time IS the assertion: the body has to finish inside the 100 ms
+    // window, so it needs to take a real but smaller amount of time.
     await tk.within(100, async () => { await Bun.sleep(10); });
     await tk.shutdown();
   });
 
   test('throws when the body exceeds the window', async () => {
     const tk = TestKit.create();
+    // The elapsed time IS the assertion, in the other direction: the body has to
+    // overrun the 20 ms window for `within` to reject.
     await expect(tk.within(20, async () => { await Bun.sleep(50); }))
       .rejects.toThrow(/exceeded/);
     await tk.shutdown();

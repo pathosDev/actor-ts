@@ -4,6 +4,11 @@ import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.j
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
+/**
+ * A slow handler, not a wait: the elapsed time IS what every case here asserts
+ * on — whether the middleware's budget expires before the handler resolves.  A
+ * poll has nothing to poll for, because the awaited thing is meant not to happen.
+ */
 const delay = <T>(ms: number, value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 
 describe('requestTimeout', () => {

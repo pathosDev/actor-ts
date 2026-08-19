@@ -11,7 +11,7 @@ import {
   type ActorRef,
   type SupervisorStrategy,
 } from '../../src/index.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /**
  * Regressions from the restart-stops-children change (#634).  Each of these
@@ -21,7 +21,6 @@ import { awaitCondition } from '../util/AwaitCondition.js';
 
 const quiet = (): ActorSystemOptions =>
   ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off) as ActorSystemOptions;
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 describe('restart regressions', () => {
   test('terminate() settles when it races a parked restart — #1029', async () => {
@@ -29,6 +28,8 @@ describe('restart regressions', () => {
     class Kid extends Actor<string> {
       override preStart(): void { kidStarted.value = true; }
       override onReceive(): void {}
+      // The 60 ms is the fixture for the whole case: a child that stops slowly
+      // is what makes the parent's restart park long enough to race `terminate`.
       override async postStop(): Promise<void> { await sleep(60); }
     }
     class Parent extends Actor<string> {
@@ -48,6 +49,8 @@ describe('restart regressions', () => {
 
     const settled = await Promise.race([
       system.terminate().then(() => 'settled' as const),
+      // Not a wait but the losing arm of a race: this is the failure budget for
+      // "terminate never settled", and it resolves only when the test is broken.
       sleep(4_000).then(() => 'hung' as const),
     ]);
     expect(settled).toBe('settled');
@@ -109,6 +112,8 @@ describe('restart regressions', () => {
       timeoutMs: 4_000,
       label: 'the restarted pool routed all six messages',
     });
+    // The settle window itself: a seventh delivery is an absence and cannot be
+    // polled for, so this is the span in which one would show up.
     await sleep(30);
     expect(delivered).toBe(6);
     await system.terminate();
@@ -155,6 +160,8 @@ describe('restart regressions', () => {
       timeoutMs: 4_000,
       label: 'the retained child handled messages again after the restart',
     });
+    // The settle window itself: a fourth delivery is an absence and cannot be
+    // polled for, so this is the span in which one would show up.
     await sleep(30);
     expect(delivered).toBe(3);
     await system.terminate();
@@ -195,6 +202,8 @@ describe('restart regressions', () => {
       timeoutMs: 4_000,
       label: 'the holder restarted once',
     });
+    // The settle window itself: a third start is an absence and cannot be polled
+    // for, so this is the span in which the broken version would overshoot.
     await sleep(50);
     expect(starts).toBe(2);
     await system.terminate();
