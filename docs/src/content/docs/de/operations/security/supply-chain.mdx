@@ -1,6 +1,6 @@
 ---
 title: Supply Chain
-description: Was die Release-Pipeline über eine veröffentlichte actor-ts-Version garantiert — npm-Provenance, eine CycloneDX-SBOM an jedem Release, CodeQL-Analyse und ein Advisory-Gate über die echte Lockfile — und wie du jeden Punkt selbst nachprüfst.
+description: Was die Release-Pipeline über eine veröffentlichte actor-ts-Version garantiert — npm-Provenance, eine CycloneDX-SBOM ab dem nächsten Release, CodeQL-Analyse und ein Advisory-Gate über die echte Lockfile — und wie du jeden Punkt selbst nachprüfst.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,8 +14,18 @@ an `actor-ts` kannst du nachprüfen, statt es zu glauben?**
 | Artefakt | Wo | Was es beweist |
 | --- | --- | --- |
 | **npm-Provenance-Attestation** | Die npm-Registry, am veröffentlichten Tarball | Welcher Commit und welcher Workflow-Run diese Bytes erzeugt hat. |
-| **CycloneDX-SBOM** | Am GitHub-Release als `actor-ts-sbom.cyclonedx.json` | Die exakte Dependency-Closure, die beim Bauen des Releases installiert war. |
+| **CycloneDX-SBOM** | Am GitHub-Release als `actor-ts-sbom.cyclonedx.json`, ab dem nächsten Release | Die exakte Dependency-Closure, die beim Bauen des Releases installiert war. |
 | **CHANGELOG-Eintrag** | `CHANGELOG.md` | Sicherheitsrelevante Änderungen bekommen einen eigenen `Security`-Abschnitt. |
+
+<Aside type="note" title="Die SBOM beginnt mit dem nächsten Release">
+Die beiden Jobs, die sie bauen und anhängen, sind *nach* der
+Veröffentlichung von v0.16.0 in `publish.yml` gelandet — kein Release,
+das du heute herunterladen kannst, trägt das Asset also:
+`gh release view v0.16.0 --json assets` antwortet mit einer leeren Liste.
+Das erste Release aus der aktuellen Pipeline ist das erste, das sie
+mitbringt. Die anderen beiden Zeilen gelten für jedes bereits
+veröffentlichte Release.
+</Aside>
 
 Veröffentlicht wird über **npm Trusted Publishing (OIDC)** — der
 Workflow tauscht ein kurzlebiges GitHub-Identity-Token gegen ein
@@ -34,11 +44,17 @@ jedes installierten Pakets, dieses eingeschlossen.
 
 ### Die SBOM lesen
 
-Die SBOM ist ein Release-Asset, braucht also keine Installation:
+Die SBOM ist ein Release-Asset, braucht also keine Installation. Setze
+das Release ein, um das es dir geht:
 
 ```sh
-gh release download v0.16.0 --pattern 'actor-ts-sbom.cyclonedx.json'
+gh release download vX.Y.Z --pattern 'actor-ts-sbom.cyclonedx.json'
 ```
+
+Jedes Release bis einschließlich v0.16.0 ist älter als die Jobs, die das
+Asset erzeugen — dort gibt es also nichts zu holen. `gh release view
+vX.Y.Z --json assets` sagt dir vorher, ob ein bestimmtes Release es
+mitbringt.
 
 Es ist ein CycloneDX-1.x-JSON-Dokument, das jedes SCA-Tool liest.
 Der Sinn: Du kannst "war Release X von Advisory Y betroffen?"
@@ -58,8 +74,10 @@ installierten Baum erzeugt.
 
 ## Was CI absichert
 
-Vier Checks stehen zwischen einer Änderung und einem Release. Alle
-laufen auf Pull Requests; die beiden, die ohne einen Commit
+Vier Checks stehen zwischen einer Änderung und einem Release. Sie laufen
+auf Pull Requests — das Advisory-Gate nur, wenn der Pull Request `src/**`
+oder ein Manifest berührt, das ist sein Path-Filter, ein reiner
+Docs-Request wartet also nicht darauf; die beiden, die ohne einen Commit
 veralten können, laufen zusätzlich nach Zeitplan.
 
 ### CodeQL
