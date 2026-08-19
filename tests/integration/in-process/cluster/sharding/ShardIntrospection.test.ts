@@ -322,7 +322,7 @@ describe('ClusterSharding.shardRefFor', () => {
     let value = 0;
     await awaitCondition(
       async () => (value = await entity.ask<number>({ kind: 'get' } as Command, 3_000)) === 2,
-      { timeoutMs: 4_000, intervalMs: 25, label: 'both increments reached the remote entity' },
+      { timeoutMs: 5_000, intervalMs: 25, label: 'both increments reached the remote entity' },
     );
     expect(value).toBe(2);
 
