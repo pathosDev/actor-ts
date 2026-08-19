@@ -1284,12 +1284,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
-      // Stock metric: count actor creations.  Cheap when metrics are
-      // disabled — `metricsOf(...)` returns the noop registry.
-      metricsOf(this.system).counter(
-        'actor_created_total', {},
-        { help: 'Cumulative count of actors successfully started.' },
-      ).inc();
+      // Stock metric: count actor creations.  Read off the system rather than
+      // through `metricsOf`, which walks the extension chain — its own JSDoc
+      // reserves it for once-per-event sites, and an actor's creation is
+      // precisely the event a spawn benchmark counts.  `null` here is not "use
+      // the noop": it is "do not build the arguments", the same distinction
+      // the receive path makes for its counters (#411).
+      const metrics = this.system._metricsRegistry;
+      if (metrics !== null) {
+        metrics.counter(
+          'actor_created_total', {},
+          { help: 'Cumulative count of actors successfully started.' },
+        ).inc();
+      }
       this.system.eventStream.publish(
         new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
       );
@@ -1382,10 +1389,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.system.eventStream.unsubscribe(this.self);
 
     // Stock metric: count terminations (clean stop OR post-failure path).
-    metricsOf(this.system).counter(
-      'actor_terminated_total', {},
-      { help: 'Cumulative count of actors that have been stopped.' },
-    ).inc();
+    // Gated like its counterpart in `onCreate`, and for the same reason.
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) {
+      metrics.counter(
+        'actor_terminated_total', {},
+        { help: 'Cumulative count of actors that have been stopped.' },
+      ).inc();
+    }
     this.system.eventStream.publish(new ActorStopped(this.self));
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
@@ -1574,8 +1585,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * mint a path-labelled series they have sized their own monitoring for.
    */
   private _onMailboxDrop(reason: MailboxDropReason): void {
+    // The one metric site here that is hot exactly when the system is in
+    // trouble: a mailbox sheds load under saturation, so this runs per dropped
+    // message.  Walking the extension chain to reach a registry that may not
+    // exist is the wrong thing to do in that moment (#974).
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return;
     const className = this.actor?.constructor.name ?? 'unknown';
-    metricsOf(this.system).counter(
+    metrics.counter(
       'actor_mailbox_dropped_total',
       { class: className, reason },
       { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
@@ -1662,7 +1679,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // envelope can arrive from a peer that traces while this node does not,
     // and `startSpan` returning `NOOP_SPAN` is what keeps that message's
     // explain entry the shape it has always been.
-    const tracer = this.system._tracer ?? NOOP_TRACER;
+    // Held separately from the noop fallback below: the span condition has to
+    // be able to ask "is anything tracing at all?" without making a call.
+    const activeTracer = this.system._tracer;
+    const tracer = activeTracer ?? NOOP_TRACER;
     // Open a server-kind `actor.receive` span when tracing is enabled
     // and either we have a parent in the envelope or we're starting a
     // root.  Span is the "active" one for the duration of `behavior(message)`
@@ -1685,11 +1705,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // opposite: `||` short-circuits on a *truthy* operand, so on the ordinary
     // path — no `env.trace`, no root recording — both earlier terms are falsy
     // and the third one ran, resolving the tracing extension a second time for
-    // every message (#411).  With `tracer` already in hand it is now a method
-    // call on an object we hold, and the noop's `activeSpan()` returns `null`
-    // without doing anything.
+    // every message (#411).  With `tracer` already in hand it became a method
+    // call on an object we hold — but on the ordinary path that object is the
+    // noop, so it was still a virtual call per message to be told `null`.  The
+    // null check in front of it answers the same question by reading a field
+    // and short-circuits before the call whenever nothing is tracing.
     let span: Span | null = null;
-    if (!this._internal && (env.trace || this.system._traceRootSpans || tracer.activeSpan())) {
+    if (!this._internal
+      && (env.trace || this.system._traceRootSpans || (activeTracer !== null && activeTracer.activeSpan()))) {
       // The sender and the payload are what turn a flame graph into a
       // readable message trail; the payload only when something is
       // watching, since serialising every message is not free.
@@ -1749,6 +1772,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const message = env.message;
     this._currentSender = env.sender;
     this._currentEnvelope = env;
+    // This one read stays unconditional, and the reason is a requirement rather
+    // than an oversight: a recorder switched on from *inside* this handler was
+    // off when the message started, so gating the read on "is anything
+    // recording?" would leave that message with no way to know when it began —
+    // and `handleTimeMs` for it would have to be invented.  There is no cheaper
+    // source for the answer; the start of the handler is only knowable by
+    // having read the clock at the start of the handler.  The end read below
+    // *is* gated, because nothing reads a duration nobody asked for.  See
+    // `tests/unit/devtools/ExplainPlan.test.ts` — "a recorder switched on
+    // mid-handling still gets a real atMs (#411)" is the test that forbids it.
     const startNs = performance.now();
     // Wall clock at the start — read only when a recorder is already on, so
     // the uninstrumented message still pays no `Date.now()` here (#411).
@@ -1820,7 +1853,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.failToParent(err, delivered);
     } finally {
       if (span) span.end();
-      const elapsedMs = performance.now() - startNs;
+      // The second clock read, and the one that can be skipped: its three
+      // consumers below are each null-gated, so with metrics, the explain
+      // recorder and the dispatch observer all off, this was a `performance.now()`
+      // per message computing a number nobody would look at.  `schedule` has
+      // gated its own read this way since #411; this is the same pattern one
+      // method on.  `0` is never observed — every reader of `elapsedMs` sits
+      // behind the same condition that produced it.
+      const observer = this.system._dispatchObserver;
+      const elapsedMs = metrics !== null || this._explain !== null || observer !== null
+        ? performance.now() - startNs
+        : 0;
       // Record handler duration in seconds — Prom convention.  Skipped
       // entirely, not sent to a noop, so the two literals are not built for
       // a call that discards them (#411).
@@ -1851,10 +1894,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           span,
         );
       }
-      // A second null check, for the whole-system profiler (#226).
-      // Reading the field directly avoids an extension lookup per
-      // message.
-      const observer = this.system._dispatchObserver;
+      // The whole-system profiler (#226).  Read directly off the system rather
+      // than through the extension chain, and read once — the gate above needs
+      // the same answer this call does.
       if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
       this._currentSender = null;
       this._currentEnvelope = null;
@@ -1982,8 +2024,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ========================= Receive-timeout plumbing ======================= */
 
   private _resetReceiveTimer(): void {
+    // Asked before clearing, because this runs after every successfully handled
+    // message and almost no actor sets a receive timeout.  The order is safe by
+    // invariant rather than by luck: `_receiveTimeoutHandle` is only ever armed
+    // below, after this same check, and the only two writers of
+    // `_receiveTimeoutMs` — `setReceiveTimeout` and `cancelReceiveTimeout` —
+    // both clear the handle on their way to a non-positive value.  So a
+    // non-positive timeout always means there is no handle to clear.
+    if (this._receiveTimeoutMs <= 0) {
+      this._clearReceiveTimer();
+      return;
+    }
     this._clearReceiveTimer();
-    if (this._receiveTimeoutMs <= 0) return;
     this._receiveTimeoutHandle = setTimeout(() => {
       this.enqueueSystem({ kind: 'receiveTimeout' });
     }, this._receiveTimeoutMs);

@@ -156,15 +156,20 @@ export class EventStream {
    * cleanup that believed it had done its job (#645, #763).
    */
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean {
+    // Resolved *before* the emptiness check below, not after: an invalid
+    // channel has to throw whether or not anything is subscribed.  Otherwise a
+    // cleanup with a typo in it reports success against an empty stream and
+    // only starts failing once somebody subscribes — which is the shape of
+    // #645 and #763, one layer up.
+    const scoped = channel !== undefined ? resolveChannel(channel, 'unsubscribe') : null;
     const before = this.subs.length;
-    if (channel !== undefined) {
-      const { channelId } = resolveChannel(channel, 'unsubscribe');
-      this.subs = this.subs.filter(
-        (s) => !(s.subscriber.equals(subscriber) && s.channelId === channelId),
-      );
-    } else {
-      this.subs = this.subs.filter((s) => !s.subscriber.equals(subscriber));
-    }
+    // Nothing subscribed: `filter` would allocate a second empty array to say
+    // so, and a `false` return needs no array at all.  Every actor stop calls
+    // this to drop the subscriptions it may never have made.
+    if (before === 0) return false;
+    this.subs = scoped !== null
+      ? this.subs.filter((s) => !(s.subscriber.equals(subscriber) && s.channelId === scoped.channelId))
+      : this.subs.filter((s) => !s.subscriber.equals(subscriber));
     return this.subs.length !== before;
   }
 
@@ -202,6 +207,12 @@ export class EventStream {
    * an API that does not throw by contract, into one that did.
    */
   publish(event: object): void {
+    // The snapshot below exists to fix the recipient set for the duration of
+    // the loop.  An empty stream has no set to fix, and this is the ordinary
+    // state of a system nobody is observing — yet `publish` runs on every
+    // actor start, every actor stop, every restart and every dead letter, so
+    // the copy was an allocation per lifecycle event to iterate nothing.
+    if (this.subs.length === 0) return;
     for (const subscription of [...this.subs]) {
       try {
         if (!this.accepts(subscription, event)) continue;

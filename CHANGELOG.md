@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The receive and lifecycle paths stop paying for instrumentation nobody
+  switched on** (#411, #974).
+
+  Five costs that ran regardless of whether anything was collecting. The
+  end-of-dispatch `performance.now()` fed three consumers — the handler
+  histogram, the explain recorder and the dispatch observer — each already
+  behind a null check, so with all three off it computed a number nobody read.
+  The tracer probe called `activeSpan()` on the noop tracer once per message to
+  be told `null`. The `actor_created_total` and `actor_terminated_total`
+  counters walked the extension chain and built two argument objects for a
+  registry that discards them, twice per actor lifetime; `actor_mailbox_dropped_total`
+  did the same per shed message, which is hottest exactly when a mailbox is
+  already over capacity. `EventStream.publish` copied its subscriber array
+  before iterating — on every start, stop, restart and dead letter, including
+  when that array was empty — and `unsubscribe` allocated a second empty array
+  to report that an empty stream removed nothing. `BoundedMailbox.enqueue`
+  built a pattern matcher and one closure per arm for every message arriving at
+  a full mailbox.
+
+  The *start* clock read stays unconditional, and the code now says why: a
+  recorder switched on from inside a handler was off when the message began, so
+  gating that read would leave it with no knowable start and its handling time
+  would have to be invented.
+
+  Measured on the comparison arm, five rounds interleaved against the previous
+  build: **+6.2 % on the 10 000-message flood**, the case where per-message cost
+  dominates an iteration. Every other scenario moved less than the round-to-round
+  spread — spawn and the alternating volley are bound by scheduling rather than
+  by this work, and say so.
+
+  Behaviour with instrumentation *enabled* is unchanged, which is the half worth
+  proving: inverting each new guard turns tests red rather than leaving them
+  green — three for the duration gate, 34 for the publish guard, two for the
+  receive-timeout check, one for the creation counter.
 - **The optional-peer rule in AGENTS.md now matches the two-manifest design
   the tree has implemented since #540 (#676).**
 
