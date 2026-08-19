@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **AGENTS.md gains a measured-hot-path exemption to the pattern-matching rule,
+  and one site uses it** (#1209). Where a benchmark in this repository has
+  measured a path as hot, a `match(…)` may be a `switch` on `kind` — arms still
+  one-line `onXxx` delegations, exhaustiveness restored by a `never` assignment
+  in the `default`, and a mandatory comment naming the benchmark and the delta.
+  The comment is what makes the exemption per-site and evidence-carrying, and
+  what the conformance sweep (#494) recognises so it does not convert these
+  back.
+
+  `ActorCell.handleSystemCommand` is the converted site: two of its arms run per
+  actor lifecycle, so a nine-arm matcher and its closures were built twice per
+  spawn. Measured over six interleaved rounds: **spawn +16.9 % (t = 2.7)**, with
+  every other scenario inside the noise — the shape to expect, since nothing
+  else issues system commands at that rate.
+
+  Exhaustiveness moves from run time to compile time and was verified rather
+  than assumed: adding a tenth `SystemCommand` variant fails the build at the
+  `never` assignment.
+
 - **An ask stops rebuilding its own address** (#1208). `AskResponseRef` built
   three `ActorPath` objects per call, two of which were the same constant
   `actor-ts://<system>/temp` prefix — rebuilt and re-validated character by
