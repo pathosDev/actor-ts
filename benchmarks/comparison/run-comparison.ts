@@ -129,6 +129,17 @@ const ARMS: ReadonlyArray<ComparisonArm> = [
     args: ['--ticker', 'false', 'run'],
     toolchain: 'JDK 21 + Mill wrapper',
   },
+  // And the fork's Scala binding — the fourth corner of a two-by-two. Reading
+  // down a column gives the licence question, across a row the binding one.
+  {
+    kind: 'external',
+    name: 'pekko-scala',
+    directory: 'pekko-scala',
+    resolveFrom: 'directory',
+    executable: millWrapper(),
+    args: ['--ticker', 'false', 'run'],
+    toolchain: 'JDK 21 + Mill wrapper',
+  },
   // The .NET side. `--nologo -v q` keeps the build chatter out of the run;
   // Release matters, since a Debug build measures the absence of the JIT's
   // optimiser rather than the framework.

@@ -148,6 +148,7 @@ not a finding.
 | **Akka** (JVM, Java) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
 | **Akka** (JVM, Scala 3) | the same framework through its native-language API | the binding question: what does the idiomatic Scala style cost against the Java one, at the same version? |
 | **Pekko** (JVM, Java) | its Apache-licensed fork | what staying on Apache-2.0 costs — and a control on the JVM arm itself |
+| **Pekko** (JVM, Scala 3) | the fork through *its* native-language API | the fourth corner: down a column is the licence question, across a row the binding one |
 | **Akka.NET** (.NET) | the same actor model on the CLR | a third runtime for the same design, which is what makes the runtime's own contribution visible |
 | **Orleans** (.NET) | virtual actors | the one genuinely different model here — grains activate on call, and three of its rows measure a near-equivalent |
 
