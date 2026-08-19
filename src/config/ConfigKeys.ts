@@ -70,6 +70,34 @@ export const ConfigKeys = {
    * or samples the dead-letter *stream* (#1179) belongs under `diagnostics`
    * and must gate downstream of this capture, or the queue's completeness
    * claim is silently false.
+   *
+   * **This namespace is settled, and here is the reasoning it was missing.**
+   * It shipped under #433 while #1179 and #867 were both open, which left it
+   * looking like a decision taken rather than made.  Re-examined against what
+   * those two issues actually propose, they are not rival homes for these
+   * keys and they are not even each other's:
+   *
+   * - #1179 wants a per-recipient token bucket over the *publish* path, and
+   *   sketches it under `actor-ts.diagnostics.*`.
+   * - #867 wants dead-letter *logging* toggles, and sketches them at the
+   *   root — `log-dead-letters`, `log-dead-letters-during-shutdown`,
+   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.
+   *
+   * Neither asks for the retention keys to move, and there is no single
+   * alternative block they could move into.  The line that matters is the
+   * **reader**: everything here is read by `DeadLetterQueue` and decides what
+   * is *retained*; everything those two want is read on the publish side by
+   * `DeadLetterRef` and decides how loudly a letter is *announced*.  Merging
+   * them would give one block two readers in two subsystems, and would make a
+   * suppression knob look like it gates capture — which the code deliberately
+   * prevents by capturing before publishing.  Splitting by reader also keeps
+   * the safety property checkable in one place instead of by convention.
+   *
+   * If it is ever renamed anyway, the cost is 21 files and not four: this
+   * file, `Reference.ts`, `DeadLetterQueueOptions.ts`, `ActorSystem.ts`, five
+   * EN docs pages with their five DE twins, and seven test files.  Only the
+   * two `reference-conf.mdx` pages announce themselves, being byte-pinned by
+   * `tests/unit/config/ReferenceConfDocs.test.ts`.
    */
   deadLetters: {
     store: 'actor-ts.dead-letters.store',

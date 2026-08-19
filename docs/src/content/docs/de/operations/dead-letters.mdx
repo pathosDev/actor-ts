@@ -108,6 +108,14 @@ veröffentlicht sie ein Dead Letter, und diese Einstellung entscheidet, ob
 es jemand aufbewahrt. Beide ergänzen sich; keine ersetzt die andere.
 :::
 
+Jeder Key in diesem Block entscheidet, **was aufbewahrt wird** — deshalb
+liegen sie unter `actor-ts.dead-letters` und nicht neben den künftigen
+Stellschrauben für Logging und Rate-Limiting: Die entscheiden, wie laut ein
+Letter *angekündigt* wird, werden auf dem Publish-Pfad gelesen und nicht von
+der Queue, und sitzen bewusst hinter dem Erfassen — eine
+Unterdrückungseinstellung kann diese Aufzeichnung also nie still
+unvollständig machen.
+
 ## Inspizieren
 
 `list()` liefert Einträge **neueste zuerst**, eingeengt durch einen
@@ -211,7 +219,11 @@ gestellt und `replay` verweigert es.
 Mit `store = "persistent"` schreibt die Queue ein Append-only-Log ins
 konfigurierte [Journal](/de/persistence/overview/) und liest es beim
 nächsten Start zurück, sodass ein Redeploy nicht verliert, was der
-vorherige Prozess erfasst hat. Zwei Details lohnen sich zu wissen:
+vorherige Prozess erfasst hat.
+
+Ausgeliefert wird **Dauerhaftigkeit über ein geordnetes Herunterfahren,
+keine Crash-Dauerhaftigkeit** — und der Unterschied ist es wert, genau
+benannt zu werden:
 
 - **Der Stream wird aus dem Systemnamen abgeleitet**, sodass zwei Systeme,
   die sich ein Journal teilen, getrennte Queues behalten. Überschreibe ihn
@@ -220,10 +232,21 @@ vorherige Prozess erfasst hat. Zwei Details lohnen sich zu wissen:
   abgeschlossen** — einmal in der Phase `before-actor-system-terminate` von
   [CoordinatedShutdown](/de/fundamentals/coordinated-shutdown/) und noch
   einmal, nachdem der Actor-Baum unten ist, weil das Herunterfahren selbst
-  noch Dead Letters erzeugt, nachdem die letzte Phase gelaufen ist. Ein
-  **harter Kill** kann die gerade laufenden Schreibvorgänge trotzdem
-  verlieren; die Queue ist eine Diagnoseaufzeichnung, kein transaktionaler
-  Outbox.
+  noch Dead Letters erzeugt, nachdem die letzte Phase gelaufen ist. Alles,
+  was vor einem `terminate()` erfasst wurde, steht danach im Journal — egal
+  wie groß der Schub war.
+- **Ein harter Kill verliert den Rückstau, was nicht dasselbe ist wie einen
+  einzelnen Schreibvorgang zu verlieren.** `tell` ist synchron und kann
+  nicht auf ein Journal warten, Appends werden also „abschicken und
+  vergessen" in eine *serialisierte* Kette gegeben. Ein Schub, der schneller
+  eintrifft als das Journal ihn annimmt, lässt daher viele unabgeschlossene
+  Appends offen, und ein `SIGKILL`, ein Stromausfall oder ein OOM-Kill
+  verliert sie alle — nicht nur den gerade laufenden.
+
+Die Queue ist eine Diagnoseaufzeichnung, kein transaktionaler Outbox. Wenn
+ein Letter einen unkontrollierten Stopp überleben muss, gehört der
+Journal-Schreibvorgang auf den Sendepfad — ein anderer Entwurf, und nicht
+dieser hier.
 
 ## Metriken
 
