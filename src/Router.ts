@@ -62,9 +62,14 @@ export function broadcastStrategy(): RoutingStrategy {
  *   takes the traffic.  That is a balance error and it is recoverable; the
  *   starvation was not.  Several unreadable routees tie at `0` and so rotate
  *   among themselves.
- * - **Terminated — never (`null`).**  `ActorCell.postUserEnvelope` dead-letters
- *   instead of enqueueing once the cell is `terminated`, so its `mailboxSize`
- *   is pinned at `0` for good.  Read as a plain depth that makes a dead routee
+ * - **Stopping or stopped — never (`null`).**  `ActorCell.postUserEnvelope`
+ *   dead-letters instead of enqueueing once the cell is `terminated`, so its
+ *   `mailboxSize` is pinned at `0` for good.  A cell that is still *stopping*
+ *   reads 0 for a different reason and loses the message just the same: it
+ *   accepts the enqueue and then dead-letters it from the termination drain.
+ *   Both are excluded, because the question here is "will this routee do the
+ *   work?" and the answer for a dying one is no whichever half of the cascade
+ *   it has reached.  Read as a plain depth that makes a dead routee
  *   the permanently most attractive member of the pool: it wins every message
  *   until the router's `Terminated` — a *user* message, queued behind whatever
  *   the router had already accepted — finally prunes it, and every one of
@@ -75,7 +80,7 @@ export function broadcastStrategy(): RoutingStrategy {
 function routableDepthOf(routee: ActorRef): number | null {
   if (!(routee instanceof LocalActorRef)) return 0;
   const cell = routee.getCell();
-  return cell.isTerminated() ? null : cell.mailboxSize;
+  return cell.isStopping() ? null : cell.mailboxSize;
 }
 
 /**
