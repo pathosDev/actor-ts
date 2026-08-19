@@ -244,6 +244,40 @@ export const DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS = 10_000;
 export const SINGLETON_HAND_OVER_BUFFER_SIZE = 1_000;
 
 /**
+ * How long a singleton manager holds a message routed to it while it does not
+ * (yet) consider itself the host, before dead-lettering it (#637).
+ *
+ * A backstop, not the expected duration.  The window it covers is the two
+ * sides of one election disagreeing: a joining node is an `up` member carrying
+ * the role in its *peers'* views a gossip round before it is one in its own,
+ * so every proxy already routes there while the node itself still answers
+ * `wantHosted() === false` and has neither a child nor a hand-over to hold the
+ * message against.  Those messages were dead-lettered, which is
+ * "zero dropped messages" failing on the very transition #637 is about.
+ *
+ * The buffer is normally discharged by an *event* rather than by this timer —
+ * the next reconcile either takes over hosting (the messages flush into the
+ * new instance) or concludes this node is not the host (they dead-letter at
+ * once, so a node that genuinely will not host is no slower to report than it
+ * was).  This number only bounds the case where no further cluster event
+ * arrives at all.
+ *
+ * Two seconds — two gossip intervals at the default cadence
+ * (`DEFAULT_GOSSIP_INTERVAL_MS` in `src/util/Constants.ts`), because that is
+ * the quantity the window is made of.  Written as a literal rather than
+ * derived from it, because this module imports nothing by design (see the
+ * header) and a cluster configured with a slower gossip has the reconcile
+ * discharge above to fall back on, which does not depend on this number at
+ * all.
+ *
+ * Deliberately far below {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS}: that
+ * one waits on another node's cooperation, this one waits on our own view
+ * catching up.  If two rounds of gossip have not delivered that, holding
+ * longer is holding a message for a host that is not coming.
+ */
+export const SINGLETON_HOST_DISAGREEMENT_HOLD_MS = 2_000;
+
+/**
  * How often an outstanding {@link SingletonHandOverRequest} is re-sent while
  * the hand-over is still waiting (#949).
  *

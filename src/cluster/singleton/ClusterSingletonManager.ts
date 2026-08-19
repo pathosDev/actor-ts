@@ -29,6 +29,7 @@ import {
   DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
   SINGLETON_HAND_OVER_BUFFER_SIZE,
   SINGLETON_HAND_OVER_RETRY_INTERVAL_MS,
+  SINGLETON_HOST_DISAGREEMENT_HOLD_MS,
   SINGLETON_RESTART_BACKOFF_MS,
 } from '../Constants.js';
 
@@ -182,6 +183,7 @@ type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
 type RestartChildEvent = { readonly kind: 'restart-child' };
 type HandOverTimeoutEvent = { readonly kind: 'hand-over-timeout' };
 type HandOverRetryEvent = { readonly kind: 'hand-over-retry' };
+type HostDisagreementHoldExpiredEvent = { readonly kind: 'host-disagreement-hold-expired' };
 
 type ManagerEvent =
   | ReconcileEvent
@@ -190,7 +192,8 @@ type ManagerEvent =
   | AcquireRetryEvent
   | RestartChildEvent
   | HandOverTimeoutEvent
-  | HandOverRetryEvent;
+  | HandOverRetryEvent
+  | HostDisagreementHoldExpiredEvent;
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated | AuthenticatedSingletonMessage;
 
@@ -284,6 +287,16 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * is the difference between a hand-over and a hope.
    */
   private readonly handOverRequesters = new Map<string, NodeAddress>();
+
+  /**
+   * Messages routed here while this node does not (yet) consider itself the
+   * host — see {@link holdWhileHostingIsUndecided}.  Flushed by {@link spawn},
+   * dead-lettered by {@link dropHostDisagreementHold}.
+   */
+  private readonly hostDisagreementHold: unknown[] = [];
+
+  /** Backstop that ends {@link hostDisagreementHold} if no reconcile does. */
+  private hostDisagreementHoldTimer: Cancellable | null = null;
 
   /**
    * Whether `lease.release()` still owes the outgoing child a `Terminated`.
@@ -392,6 +405,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // strongest form of "not hosting" there is, and leaving them to time out
     // would make an orderly `cluster.singleton.stop()` slower than a crash.
     this.abandonHandOver('the manager is stopping');
+    this.dropHostDisagreementHold('the manager is stopping');
     this.answerHandOverRequesters();
     // Release the lease if held — the holder leaving cleanly lets a
     // follower acquire faster than waiting for the TTL to expire.
@@ -422,6 +436,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'restart-child' }, () => this.onRestartChild())
       .with({ kind: 'hand-over-timeout' }, () => this.onHandOverTimeout())
       .with({ kind: 'hand-over-retry' }, () => this.onHandOverRetry())
+      .with({ kind: 'host-disagreement-hold-expired' }, () =>
+        this.onHostDisagreementHoldExpired())
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -545,6 +561,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       + `restartOnTermination is off — not re-spawning`,
     );
     this.terminallyStopped = true;
+    // Nothing held for a spawn that is never coming: from here `wantHosted()`
+    // is permanently false, so the hold has no view left to catch up to (#637).
+    this.dropHostDisagreementHold('this node has opted out of hosting the singleton');
     void this.releaseLease();
   }
 
@@ -612,6 +631,12 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       // itself, so dead-lettering through it would pay for "at most one
       // instance" with message loss on every host move (#949).
       if (this.handOver !== null && this.holdUntilHandOverCompletes(message.body)) return;
+      // The same window one step earlier, and the half #949 left open (#637):
+      // this node has not concluded it is the host *yet*, so there is no
+      // hand-over to hold against — but a peer routed here, which is that peer
+      // saying it is.  Hold rather than dead-letter while the two views
+      // disagree; see {@link holdWhileHostingIsUndecided}.
+      if (this.holdWhileHostingIsUndecided(message.body)) return;
       this.warnNotHostedOnce();
       // The manager, not `/deadLetters`, is the recipient: this node was
       // addressed as the singleton's host and could not deliver, and the
@@ -994,6 +1019,101 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     return true;
   }
 
+  /**
+   * Hold a routed message while this node and the sender disagree about who
+   * hosts, up to {@link SINGLETON_HAND_OVER_BUFFER_SIZE}.  `false` means the
+   * caller should dead-letter instead.
+   *
+   * **Why a message can arrive before this node thinks it hosts at all.**  The
+   * election rule is the first address-ordered `up` member (carrying the role,
+   * if there is one), and every node applies it to its *own* member list.  A
+   * node that has just joined is `up` in its peers' lists a gossip round before
+   * it is `up` in its own — so a proxy elsewhere already routes here while
+   * `wantHosted()` here still answers `false`.  There is no child and no
+   * hand-over to hold against, and #949's buffer therefore does not cover it:
+   * the message was dead-lettered, which is #637's *"zero dropped messages"*
+   * failing on precisely the transition #637 is about.  Measured on the
+   * three-node role-restricted fixture: seven of seventeen messages sent across
+   * a take-over went to dead letters with no failure of any kind in play.
+   *
+   * Holding is the same trade #949 already made one step later, for the same
+   * reason — a window the framework opens itself must not be paid for in
+   * message loss.  It ends either in {@link spawn}, which flushes it into the
+   * new instance, or in {@link SINGLETON_HOST_DISAGREEMENT_HOLD_MS}, after
+   * which the messages dead-letter exactly as they used to.
+   *
+   * **The discharge is deliberately *not* driven by a reconcile that concludes
+   * "not the host".**  That was the first shape of this fix and it dropped the
+   * very messages it was added to save: while a joining node's view is still
+   * filling in, it reconciles several times *before* it can see that it is the
+   * host, and each of those intermediate answers is `false` for the same reason
+   * the hold exists — the view is incomplete.  Measured on the fixture below:
+   * two of the held messages were dead-lettered by such a reconcile a
+   * heartbeat before the node took over.  An incomplete view is not evidence.
+   *
+   * **`terminallyStopped` is refused rather than held**, and it is the one piece
+   * of positive evidence available.  A manager that opted out of re-spawning
+   * will never host again (see {@link terminallyStopped}), so there is no view
+   * for ours to catch up *to* — holding would turn an immediate, correct dead
+   * letter into a delayed one and make the misconfiguration harder to see.  It
+   * is also what keeps the neighbouring "routed here but not hosting"
+   * assertion honest rather than merely slower.
+   */
+  private holdWhileHostingIsUndecided(body: unknown): boolean {
+    if (this.terminallyStopped) return false;
+    if (this.hostDisagreementHold.length >= SINGLETON_HAND_OVER_BUFFER_SIZE) return false;
+    this.hostDisagreementHold.push(body);
+    // Armed once, on the transition out of empty: re-arming per message would
+    // let a steady sender extend the hold indefinitely, which is the unbounded
+    // buffer the cap exists to prevent wearing a different hat.
+    if (this.hostDisagreementHoldTimer === null) {
+      this.hostDisagreementHoldTimer = this.system.scheduler.scheduleOnceFunction(
+        SINGLETON_HOST_DISAGREEMENT_HOLD_MS,
+        () => {
+          // Through the mailbox: a scheduler tick fires outside a message turn,
+          // and every other transition in this manager arrives as a message.
+          this.self.tell({ kind: 'host-disagreement-hold-expired' } satisfies ManagerEvent);
+        },
+      );
+    }
+    return true;
+  }
+
+  /**
+   * The backstop fired: no reconcile has taken over hosting and none has
+   * concluded this node is not the host either.  Two gossip intervals is long
+   * enough that our view is not merely lagging.
+   */
+  private onHostDisagreementHoldExpired(): void {
+    this.dropHostDisagreementHold(
+      'this node was routed to as the host but its own view never agreed',
+    );
+  }
+
+  /**
+   * Flush what {@link holdWhileHostingIsUndecided} held into the freshly
+   * spawned child.  Called from {@link spawn}, so it runs *before*
+   * {@link completeHandOver} flushes the hand-over's own buffer — which is the
+   * order the two were received in.
+   */
+  private flushHostDisagreementHold(): void {
+    this.hostDisagreementHoldTimer?.cancel();
+    this.hostDisagreementHoldTimer = null;
+    if (this.hostDisagreementHold.length === 0) return;
+    const held = this.hostDisagreementHold.splice(0, this.hostDisagreementHold.length);
+    for (const body of held) this.child?.tell(body as never);
+  }
+
+  /** Give up on the hold and dead-letter it, with the reason in the log. */
+  private dropHostDisagreementHold(reason: string): void {
+    this.hostDisagreementHoldTimer?.cancel();
+    this.hostDisagreementHoldTimer = null;
+    if (this.hostDisagreementHold.length === 0) return;
+    const held = this.hostDisagreementHold.splice(0, this.hostDisagreementHold.length);
+    this.warnNotHostedOnce();
+    this.dropHeld(held, reason);
+  }
+
   /** Everything a wait was holding, to dead letters, with the reason in the log. */
   private dropHeld(held: readonly unknown[], reason: string): void {
     if (held.length === 0) return;
@@ -1161,6 +1281,9 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       this.options.singletonActorOptions,
     );
     this.context.watch(this.child);
+    // Before the log line and before `completeHandOver` flushes its own buffer:
+    // these were routed here first, so they enter the mailbox first (#637).
+    this.flushHostDisagreementHold();
     // The "routed here but not hosting" condition has just cleared; unlatch so
     // a later episode is reported rather than passing silently.
     this.warnedNotHosted = false;
