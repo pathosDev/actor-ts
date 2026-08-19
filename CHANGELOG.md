@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **An ask stops rebuilding its own address** (#1208). `AskResponseRef` built
+  three `ActorPath` objects per call, two of which were the same constant
+  `actor-ts://<system>/temp` prefix — rebuilt and re-validated character by
+  character every time. It is now cached per system name. The settle-callback
+  array, which only the cluster ever fills, is `null` until something registers
+  instead of being allocated on every local ask.
+
+  Measured over six interleaved rounds: **ask 189.5k → 217.5k/second (+15 %,
+  t = 5.8), p50 4.12 µs → 3.67 µs**. Nothing else moves, which is the expected
+  shape — no other path builds a reply ref.
+
+  The per-ask `setTimeout` and the `replyTo` spread were both considered and
+  kept, and the reasons now sit in the code rather than only in a tracker
+  comment: a shared deadline wheel would change what a timeout means, since a
+  bucketed wheel fires up to a bucket late; and writing `replyTo` onto the
+  caller's object is observable, while a prototype-based stand-in breaks a
+  remote ask, whose serialisation walks own properties.
+
 - **A spawn stops building things it does not need** (#1207).
 
   A full lifecycle — spawn, confirmed `preStart`, `stop`, confirmed `postStop` —
