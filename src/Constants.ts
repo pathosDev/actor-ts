@@ -63,6 +63,35 @@ export const DEFAULT_DISPATCHER_THROUGHPUT = 16;
 export const DEFAULT_ACTOR_THROUGHPUT = 16;
 
 /**
+ * Units a {@link HybridDispatcher} schedules as microtasks before it spends one
+ * on a macrotask to let the event loop breathe.
+ *
+ * The hybrid exists because the two obvious schedulers are each wrong half the
+ * time.  `setImmediate` is fair and slow: it costs ~2.4 µs, which an actor
+ * flooded with messages amortises over its 16-message batch and an actor
+ * answering one message at a time cannot amortise at all — an alternating
+ * volley pays it per message, and measured 8.1 µs per round trip of which
+ * roughly 4.8 µs was the two hops.  `queueMicrotask` is fast and unfair: it
+ * measured 3.99x on the same volley, and starves timers and I/O outright,
+ * because a microtask queue that refills itself never lets the loop advance.
+ *
+ * The budget buys the second one's speed and bounds its unfairness.  A unit is
+ * one actor's turn, itself up to {@link DEFAULT_ACTOR_THROUGHPUT} messages, so
+ * 64 units is at most ~1024 messages between yields — the same order as a busy
+ * event-loop tick, and the worst case degrades to exactly what the `immediate`
+ * dispatcher always did rather than to something new.
+ *
+ * The count lives on the dispatcher, not on the cell, and that is the whole
+ * design: the microtask chain is the union across every actor scheduled on it,
+ * so a per-cell counter would read 1 for each of two actors volleying forever
+ * — undercounting in precisely the case the budget exists to bound.
+ *
+ * Not an options default in the `XOptions.ts` sense; it is the value both
+ * `new HybridDispatcher()` and `Dispatchers.Hybrid()` fall back to.
+ */
+export const DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS = 64;
+
+/**
  * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
  * A phase that overruns it is abandoned so the next one still gets
  * to run — 5 s balances letting a slow task finish against blocking

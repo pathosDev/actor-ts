@@ -124,6 +124,7 @@ export { Scheduler } from './Scheduler.js';
 export type { Cancellable, SchedulerErrorSink } from './Scheduler.js';
 export {
   Dispatchers,
+  HybridDispatcher,
   ImmediateDispatcher,
   MicrotaskDispatcher,
   ThroughputDispatcher,
