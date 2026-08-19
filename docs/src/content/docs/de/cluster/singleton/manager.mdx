@@ -436,11 +436,36 @@ sobald die Mitgliedschaft es tut — also fast immer — und nicht, solange
 ein Mitglied für die eine Seite unerreichbar ist und für die andere
 nicht.
 
-Eine Nachricht, die bei einem Manager ankommt, der nicht hostet, geht
-in `system.deadLetters`, mit einer einmaligen, verriegelten Warnung, die
-das Singleton benennt. Sie wird nicht still verworfen, taucht also dort
-auf, wo du Dead Letters ohnehin beobachtest — Metriken, DevTools, eine
-`eventStream`-Subscription auf `DeadLetter`:
+Eine Nachricht, die bei einem Manager ankommt, der **gewählt ist, aber
+noch keine Instanz hat**, wird gehalten statt in Dead Letters geschickt
+und in Sendereihenfolge in die Instanz gespült, sobald diese spawnt. In
+diesen Zustand führen drei Wege, und alle sind von Bauart vorübergehend:
+Eine Übergabe ist offen und ein Peer hat seinen Rückzug noch nicht
+abgeschlossen; `lease.acquire()` ist noch nicht aufgelöst; oder dieser
+Node ist in der Sicht eines *Peers* schon der Host und in seiner eigenen
+noch nicht, weil ein beitretendes Mitglied für seine Peers eine
+Gossip-Runde früher `up` ist als für sich selbst.
+
+Genau deshalb hängt das Halten nicht daran, dass der Manager sich selbst
+als Host sieht. Das kann es nicht: Das Fenster existiert gerade deshalb,
+weil er das noch nicht tut — und eine unvollständige Sicht ist kein
+Beweis. Der eine Fall, der *doch* ein Beweis ist, ist ein Manager, der
+das Hosten ganz abgewählt hat — `restartOnTermination: false`, nachdem
+seine Instanz gestoppt ist —, und der schickt sofort in Dead Letters
+statt zu halten.
+
+Das Halten ist auf 1000 Nachrichten begrenzt und läuft nach zwei
+Sekunden ab; danach gehen die Nachrichten wie unten beschrieben in Dead
+Letters. Den Ablauf zu erreichen heißt, dass dieser Node als Host
+adressiert wurde und seine eigene Sicht dem nie zugestimmt hat — das ist
+ein Mitgliedschaftsproblem, kein Timing-Problem.
+
+Eine Nachricht, die bei einem Manager ankommt, der nicht hostet **und
+auch keine Aussicht darauf hat**, geht in `system.deadLetters`, mit einer
+einmaligen, verriegelten Warnung, die das Singleton benennt. Sie wird
+nicht still verworfen, taucht also dort auf, wo du Dead Letters ohnehin
+beobachtest — Metriken, DevTools, eine `eventStream`-Subscription auf
+`DeadLetter`:
 
 ```ts
 import { DeadLetter } from 'actor-ts';
@@ -456,7 +481,10 @@ dieser Node der gewählte Host ist, aber nie `start(...)` aufgerufen hat
 
 **Vor v0.17.0 loggte der Manager pro Nachricht eine Warnung und verwarf
 sie.** Nichts erreichte den Dead-Letter-Stream, der Verlust war also für
-alles außer dem Log unsichtbar.
+alles außer dem Log unsichtbar. Danach schickte er jede Nachricht, die
+vor der ersten Instanz ankam, in Dead Letters — das machte den Verlust
+sichtbar, verhinderte ihn aber nicht: Ein gewöhnlicher Host-Wechsel
+verlor alles, was unterwegs war. Beides deckt jetzt das Halten oben ab.
 
 ## Restart-Semantik
 

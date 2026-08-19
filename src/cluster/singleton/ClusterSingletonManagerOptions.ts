@@ -26,6 +26,11 @@ export type ClusterSingletonManagerOptionsType<T> = {
    */
   readonly handOverTimeoutMs?: number;
   /**
+   * Cap on a warm-hand-over snapshot's size in bytes — see
+   * {@link StartSingletonOptionsType.maxHandOverStateBytes}.  Default: 1 MiB.
+   */
+  readonly maxHandOverStateBytes?: number;
+  /**
    * Whether the manager re-spawns the singleton after its child dies
    * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
    * — as opposed to the planned teardown of a handover.  Default: `true`.
@@ -95,6 +100,11 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
     return this.set('handOverTimeoutMs', ms);
   }
 
+  /** Cap on a warm-hand-over snapshot's size in bytes.  Default 1 MiB. */
+  withMaxHandOverStateBytes(bytes: number): this {
+    return this.set('maxHandOverStateBytes', bytes);
+  }
+
   /** Re-spawn the singleton after an unexpected child death?  Default `true`. */
   withRestartOnTermination(restartOnTermination: boolean): this {
     return this.set('restartOnTermination', restartOnTermination);
@@ -127,6 +137,7 @@ export class ClusterSingletonManagerOptionsValidator<T>
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
     this.positiveNumber('handOverTimeoutMs');
+    this.positiveInt('maxHandOverStateBytes');
   }
 }
 

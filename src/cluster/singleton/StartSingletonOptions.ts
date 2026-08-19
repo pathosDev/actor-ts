@@ -61,6 +61,26 @@ export type StartSingletonOptionsType<T> = {
    */
   readonly handOverTimeoutMs?: number;
   /**
+   * Largest warm-hand-over snapshot this singleton will put on the wire, in
+   * bytes.  Default: `1_048_576` (1 MiB).
+   *
+   * Only consulted when the singleton actor implements
+   * {@link WarmHandOverActor} — warm hand-over is opted into on the actor, not
+   * here, so this field turns nothing on.  What it does is bound what an
+   * opted-in actor may ship: a snapshot above it is not sent, and the incoming
+   * instance starts cold, which is what every singleton did before the feature
+   * existed.
+   *
+   * Raising it is measured against the *transport's* frame cap rather than
+   * against this number.  A snapshot is base64 inside a JSON frame, so it
+   * costs about a third more on the wire, and a frame over the receiving
+   * node's cap costs the whole inter-node connection rather than the message —
+   * so an oversized snapshot is refused independently of this setting, however
+   * high it is set.  See
+   * `ClusterOptions.maxFrameBytes` for the other half of that arithmetic.
+   */
+  readonly maxHandOverStateBytes?: number;
+  /**
    * Whether the singleton is re-spawned after its instance dies
    * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
    * — as opposed to the planned teardown of a handover.  Default: `true`.
@@ -136,6 +156,11 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
     return this.set('handOverTimeoutMs', ms);
   }
 
+  /** Cap on a warm-hand-over snapshot's size in bytes.  Default 1 MiB. */
+  withMaxHandOverStateBytes(bytes: number): this {
+    return this.set('maxHandOverStateBytes', bytes);
+  }
+
   /** Re-spawn the singleton after an unexpected instance death?  Default `true`. */
   withRestartOnTermination(restartOnTermination: boolean): this {
     return this.set('restartOnTermination', restartOnTermination);
@@ -163,6 +188,7 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
     this.positiveNumber('handOverTimeoutMs');
+    this.positiveInt('maxHandOverStateBytes');
     this.positiveInt('bufferSize');
   }
 }

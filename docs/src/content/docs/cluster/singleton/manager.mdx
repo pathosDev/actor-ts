@@ -405,11 +405,32 @@ whether it is hosting.  Those two views agree whenever membership does,
 which is almost always — and not while a member is unreachable to one
 side and not the other.
 
-A message that arrives at a manager which is not hosting goes to
-`system.deadLetters`, with a single latched warning naming the
-singleton.  It is not dropped silently, so it shows up wherever you
-already watch dead letters — metrics, DevTools, an `eventStream`
-subscription on `DeadLetter`:
+A message that arrives at a manager which is **elected but has no
+instance yet** is held, not dead-lettered, and flushed into the instance
+in send order the moment it spawns.  There are three ways to be in that
+state, and all of them are transient by construction: a hand-over is
+outstanding and a peer has not finished standing down; `lease.acquire()`
+has not resolved; or this node is already the host in a *peer's* view and
+not yet in its own, because a joining member is `up` to its peers a
+gossip round before it is `up` to itself.
+
+That last one is why the hold is not conditional on the manager agreeing
+that it hosts.  It cannot be: the window exists precisely because it does
+not agree yet, and an incomplete view is not evidence.  A manager that
+has opted out of hosting altogether — `restartOnTermination: false` after
+its instance stopped — is the one case that *is* evidence, and it
+dead-letters immediately rather than holding.
+
+The hold is capped at 1000 messages and expires after two seconds, after
+which the messages dead-letter as below.  Reaching the expiry means this
+node was routed to as the host and its own view never agreed, which is a
+membership problem rather than a timing one.
+
+A message that arrives at a manager which is not hosting **and has no
+prospect of hosting** goes to `system.deadLetters`, with a single latched
+warning naming the singleton.  It is not dropped silently, so it shows up
+wherever you already watch dead letters — metrics, DevTools, an
+`eventStream` subscription on `DeadLetter`:
 
 ```ts
 import { DeadLetter } from 'actor-ts';
@@ -425,7 +446,10 @@ mistake that will not heal on its own.
 
 **Before v0.17.0 the manager logged a warning per message and dropped
 it.** Nothing reached the dead-letter stream, so the loss was invisible
-to everything except the log.
+to everything except the log.  It then dead-lettered every message that
+arrived before it had an instance, which made the loss visible but did
+not stop it — a routine host move lost whatever was in flight.  Both are
+now covered by the hold above.
 
 ## Restart semantics
 
