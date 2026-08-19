@@ -45,7 +45,10 @@ name: nightly-flakes
 #   - drop `--exclude=worker` from benchmarks.yml's smoke step — same cause,
 #     and easy to miss because it is not a test;
 #   - revisit test.yml's pragmatic `COVERAGE_LINE_FLOOR: '80'`, which was
-#     lowered for the same reason;
+#     lowered for the same reason, and the per-module floors in
+#     scripts/coverage-gate.mjs with it — src/cluster/ measures below its true
+#     line coverage while LeaseMajority cannot run, so its floor is set against
+#     the quarantined population (#541);
 #   - keep this job — it becomes the regression guard for the un-quarantining.
 #
 # A single red night resets the count.  The evidence is the `summary.json` in

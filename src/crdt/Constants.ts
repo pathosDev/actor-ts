@@ -69,6 +69,29 @@ export const MAX_TIMESTAMP_SKEW_MS = 5 * 60_000;
 export const MAX_CRDT_NESTING_DEPTH = 32;
 
 /**
+ * Quiet period between two "this key could not be gossiped" warnings.
+ *
+ * The condition is discovered on the gossip timer, so it recurs at
+ * `gossip-interval` — once a second by default — for as long as the key
+ * exists, which is indefinitely: an oversized value is not transient the way
+ * an undecodable frame is, and nothing prunes it.  Logged per occurrence it
+ * would be a line a second per key forever, which reliably ends with the
+ * category filtered out and the one condition that needs an operator lost with
+ * it.
+ *
+ * A minute is picked to be legible in the two places this actually gets read:
+ * it survives log sampling at any realistic rate, and it is short enough that
+ * the line is still in the window an operator opens after noticing a key stuck
+ * stale.  The warning carries a running total, so a rate that under-reports
+ * episodes cannot under-report their number.
+ *
+ * Not an option: it tunes a log, and every skip is already counted in
+ * `distributed_data_gossip_skipped_keys_total` for anyone who needs the exact
+ * series.
+ */
+export const GOSSIP_SKIP_WARN_INTERVAL_MS = 60_000;
+
+/**
  * Random hex characters in a tag suffix — 96 bits.
  *
  * A tag used to be `${replica}#${seq}` off a monotonic counter, and the

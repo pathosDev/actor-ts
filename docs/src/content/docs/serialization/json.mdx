@@ -128,9 +128,11 @@ import { Aside } from '@astrojs/starlight/components';
   `JsonSerializer` restores `Date`, `Map`, `Set`, `bigint`, and
   `Uint8Array` as real instances — but via actor-ts-specific tags.
   A non-actor-ts consumer reading the raw JSON sees the tag shape,
-  not a bare value.  The **cluster wire** uses raw `JSON.stringify`
-  (not this serializer), so cross-node `tell`s do **not** get this
-  round-trip — see the [overview](/serialization/overview/).
+  not a bare value.  The **cluster wire** frames the same tagged
+  tree, so a cross-node `tell` *does* get this round-trip — but not
+  through this serializer: `encodeFrame` calls the tree walkers
+  directly and never consults the pluggable `Serializer` — see the
+  [overview](/serialization/overview/).
 </Aside>
 
 <Aside type="caution" title="`undefined`, functions, and symbols throw">

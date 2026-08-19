@@ -71,6 +71,7 @@ actor-ts {
     gossip-interval             = 1s
     max-pending-quorum-requests = 1000    # 0 = kein Cap
     max-quorum-timeout          = 30s     # 0 = keine Obergrenze
+    max-gossip-bytes            = 1M      # pro Gossip-Frame; 0 = kein Budget
   }
 
   remote {
@@ -218,9 +219,23 @@ zählen gegen keine der Grenzen.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren kompletten Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren Key-Satz an einen zufälligen Peer schickt. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+| `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
+
+`max-gossip-bytes` wird immer **auf `remote.max-frame-bytes` heruntergeschnitten**:
+Wer das Wire-Cap senkt, senkt damit auch das Gossip-Budget, und keine
+Einstellung kann Gossip wieder darüber schieben.  Das ist wichtig, weil die
+beiden Fehlerbilder nicht vergleichbar sind: Ein Frame über dem Wire-Cap wird
+schon an seinem 4-Byte-Längenpräfix abgelehnt, und der empfangende Transport
+verwirft die komplette Peer-Verbindung — Heartbeats, Membership-Gossip und
+jedes `tell` über Knotengrenzen inklusive — während ein Budget denselben Zustand
+lediglich über mehr Ticks verteilt.  Ein einzelner Key, dessen eigene Kodierung
+das Budget überschreitet, lässt sich nicht weiter aufteilen: Er wird
+übersprungen, mit einer ratenbegrenzten Warnung samt Key-Name und beiden Größen
+gemeldet, in `distributed_data_gossip_skipped_keys_total` gezählt — und er
+konvergiert **nicht**.
 
 Der Block liegt auf oberster Ebene statt unter `cluster.*` (wo `pub-sub`
 und `receptionist` wohnen), weil das Modul dort liegt: `DistributedData`

@@ -11,9 +11,21 @@ type ClassConstructor = abstract new (...args: any[]) => unknown;
  * (id=2) is registered and available but used only when explicitly bound
  * to a class or asked for by ID.
  *
- * Will graduate to an `ExtensionId<SerializationExtension>` once the
- * Extensions mechanism (P1.2) lands — until then it is constructed
- * directly inside `ActorSystem`.
+ * Reached as `system.extension(SerializationExtensionId)` — the id declared
+ * below is what installs it, lazily and once per system, so nothing
+ * constructs this class on an `ActorSystem`'s behalf.
+ *
+ * **A binding registered here reaches {@link SerializationExtension.encode}
+ * and nothing else.**
+ * Neither of the framework's own byte boundaries consults the registry: the
+ * cluster wire frames a tagged JSON tree unconditionally (`cluster/Protocol.ts`),
+ * and a persistence store takes a `Serializer` *instance* through its own
+ * `withSerializer(...)` option (`persistence/storage/StoreSerializerOptions.ts`)
+ * rather than looking one up by class.  So `bind(Order, 2)` changes what
+ * `encode(order)` produces and changes nothing a peer or a journal row ever
+ * sees.  Wiring bindings through to the wire is #450, and it waits on the
+ * protocol negotiation of #823 — without one, adding a `serializerId` to the
+ * frame is a second breaking wire change with no way to detect the mismatch.
  */
 export class SerializationExtension implements Extension {
   private readonly byId = new Map<number, Serializer>();
