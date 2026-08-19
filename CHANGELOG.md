@@ -2655,7 +2655,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`ParallelMultiNodeSpec` subscribed `message` and `close` on every worker
   it spawned and never `error`, so an uncaught throw inside a worker took
   the whole test process down with it — including the framework's own
-  parallel multi-node suites (#678).**
+  parallel multi-node suites (#700).**
 
   The containment added in #700 did not reach it: the Web-Worker adapter
   cancels the event from inside the listener that a subscription installs,
