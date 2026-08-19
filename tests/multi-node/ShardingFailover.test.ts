@@ -205,6 +205,9 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation.  Nothing is asserted on the wait
+      // itself — the asks below carry their own 8 s budget — so a still-running
+      // allocation is absorbed rather than misread, and a fixed sleep is honest.
       await sleep(300);
 
       // Start a batch of 32 asks against region 'a', then crash 'c' during
@@ -248,6 +251,9 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation before cutting the partition, so
+      // the rebalance under test starts from an allocated state.  Nothing is
+      // asserted on the wait; the 2-member view below is the real signal.
       await sleep(300);
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
@@ -322,6 +328,8 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation.  Nothing is asserted on the wait
+      // itself — every ask below carries its own 4 s budget.
       await sleep(300);
 
       // A burst of asks while the cluster topology shifts.  Bounded by a
@@ -342,6 +350,10 @@ describe('multi-node sharding failover', () => {
             replies++;
           } catch { failures++; }
           issued++;
+          // Pacing, not a wait on an outcome: it spreads the 60 asks over the
+          // churn window instead of firing them in one event-loop burst.  The
+          // loop is bounded by `totalAsks`, so the delay's length is not load
+          // bearing (#477 makes the real quantum ~15.6 ms on Windows anyway).
           await sleep(5);
         }
       })();

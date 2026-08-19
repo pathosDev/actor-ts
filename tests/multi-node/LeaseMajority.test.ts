@@ -25,6 +25,7 @@ import {
 import { LeaseOptions } from '../../src/coordination/LeaseOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { sleep } from '../util/AwaitCondition.js';
 
 // Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1): the
 // in-process arbitration here is starved into a false split-brain by the
@@ -133,7 +134,12 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
         rightAlive = ['c', 'd'].filter(isClusterAlive);
         // One side fully self-downed → arbitration has converged.
         if (leftAlive.length === 0 || rightAlive.length === 0) break;
-        await Bun.sleep(50);
+        // Deliberately not an `awaitCondition`: falling through is *meaningful*
+        // here.  A run in which neither side dies leaves both `leftAlive` and
+        // `rightAlive` non-empty, and the anti-split-brain assertion below then
+        // fails with the finding — "both sides survived" — instead of with a
+        // generic "condition never became true".
+        await sleep(50);
       }
 
       // At least one node survived — the lease arbitration produced
