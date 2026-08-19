@@ -20,12 +20,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   | scenario | before | after | |
   |---|---|---|---|
-  | tell, batch 10k | 890k/s | **4.68M/s** | 5.3x |
-  | tell, batch 1k | 780k/s | **3.00M/s** | 3.8x |
-  | ping-pong, 10k | 123k/s | **503k/s** | 4.1x |
-  | ask | 92.5k/s | **215k/s** | 2.3x |
-  | ask p50 | 8.5 µs | **3.7 µs** | 2.3x faster |
-  | spawn | 41k/s | **76k/s** | 1.9x |
+  | tell, batch 10k | 890k/s | **4.50M/s** | 5.1x |
+  | tell, batch 1k | 780k/s | **2.96M/s** | 3.8x |
+  | ping-pong, 10k | 123k/s | **521k/s** | 4.2x |
+  | ask | 92.5k/s | **223k/s** | 2.4x |
+  | ask p50 | 8.5 µs | **3.6 µs** | 2.4x faster |
+  | spawn | 41k/s | **79k/s** | 1.9x |
+
+  The published run is the second of two full ten-round measurements taken a
+  few hours apart. They agree to within 4 % on every actor-ts row — inside the
+  spread each figure already carries — which is the reproducibility claim the
+  spread column implies and had not until now been checked.
 
   Two published claims were wrong afterwards and are corrected rather than
   quietly dropped. The README and both benchmark pages said to expect roughly a

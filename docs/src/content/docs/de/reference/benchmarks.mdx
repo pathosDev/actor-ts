@@ -24,11 +24,11 @@ kein Unterschied.
 
 | Szenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
 | -------- | -------- | ---------- | ------------- |
-| tell-Durchsatz, Batch 1k  | **3,00M/s** ±9 % | 366k/s ±4 % | 166k/s ±6 % |
-| tell-Durchsatz, Batch 10k | **4,68M/s** ±5 % | 386k/s ±2 % | 179k/s ±5 % |
-| ask-Roundtrip, p50        | **3,7 µs** | 7,1 µs | 11,7 µs |
-| Ping-Pong, 10k Wechsel    | **503k/s** ±5 % | 191k/s ±2 % | 93k/s ±4 % |
-| spawn → gestartet → gestoppt | 76k/s ±6 % | **188k/s** ±8 % | 53k/s ±10 % |
+| tell-Durchsatz, Batch 1k  | **2,96M/s** ±9 % | 376k/s ±4 % | 193k/s ±5 % |
+| tell-Durchsatz, Batch 10k | **4,50M/s** ±11 % | 404k/s ±4 % | 192k/s ±8 % |
+| ask-Roundtrip, p50        | **3,6 µs** | 6,6 µs | 13,7 µs |
+| Ping-Pong, 10k Wechsel    | **521k/s** ±8 % | 183k/s ±7 % | 83k/s ±12 % |
+| spawn → gestartet → gestoppt | 79k/s ±9 % | **196k/s** ±13 % | 65k/s ±8 % |
 
 ### Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness
 
@@ -38,10 +38,10 @@ nach, auf einer anderen Runtime — und das ist eine schwächere Aussage.
 
 | Szenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
 | -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell-Durchsatz, Batch 10k | **4,68M/s** ±5 % | 2,83M/s ±5 % | 3,23M/s ±16 % | 1,29M/s ±22 % | 723k/s ±18 % |
-| Ping-Pong, 10k Wechsel    | 503k/s ±5 % | 459k/s ±13 % | 526k/s ±9 % | 413k/s ±13 % | 176k/s ±3 % |
-| spawn → gestartet → gestoppt | **76k/s** ±6 % | 27k/s ±8 % | 25k/s ±8 % | 34k/s ±6 % | 5k/s ±11 % |
-| ask-Roundtrip, p50        | **3,7 µs** | 38,6 µs | 37,0 µs | 8,0 µs | 6,0 µs |
+| tell-Durchsatz, Batch 10k | **4,50M/s** ±11 % | 3,12M/s ±6 % | 3,33M/s ±15 % | 1,31M/s ±36 % | 528k/s ±16 % |
+| Ping-Pong, 10k Wechsel    | 521k/s ±8 % | 450k/s ±24 % | 452k/s ±34 % | 433k/s ±21 % | 164k/s ±4 % |
+| spawn → gestartet → gestoppt | **79k/s** ±9 % | 26k/s ±7 % | 25k/s ±12 % | 32k/s ±27 % | 5k/s ±10 % |
+| ask-Roundtrip, p50        | **3,6 µs** | 38,9 µs | 40,8 µs | 6,8 µs | 7,9 µs |
 | Lizenz                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
 Drei Dinge lassen sich aus dieser Tabelle ablesen, die keine einzelne Zeile
@@ -63,7 +63,7 @@ diese beiden Arme nur in ihrer Abhängigkeit unterscheiden, ist jeder die
 Kontrolle für den anderen.
 
 **Die ask-Zeile trennt sich nach Runtime, nicht nach Framework.**  Beide
-JVM-Arme liegen bei 37-39 µs, während beide .NET-Arme und actor-ts unter 8 µs
+JVM-Arme liegen bei 39-41 µs, während beide .NET-Arme und actor-ts unter 8 µs
 bleiben.  Das ist der externe Aufrufer, nicht das
 Framework: im Event-Loop ist das Warten ein Microtask und in .NET ein `await`,
 auf der JVM aus einem Nicht-Aktor-Thread aber ein Thread, der sich an einem
@@ -73,8 +73,8 @@ Frameworks, ohne diese Kosten im Pfad.
 ### Was die Zahlen sagen
 
 **actor-ts führt im JavaScript-Feld in jeder Zeile außer dem Spawnen** —
-Faktor zwölf gegenüber nact und sechsundzwanzig gegenüber XState bei einem
-Batch von 10 000, rund doppelter Durchsatz beim Ping-Pong und die halbe
+Faktor elf gegenüber nact und dreiundzwanzig gegenüber XState bei einem Batch
+von 10 000, rund dreifacher Durchsatz beim Ping-Pong und die halbe
 ask-Latenz.
 
 **Beim Spawnen liegt es zurück**, um etwa das Zweieinhalbfache, und der Grund
@@ -93,8 +93,11 @@ war ein `setImmediate` pro Aktor-Durchlauf, den ein Aktor, der eine Anfrage
 nach der anderen beantwortet, nicht amortisieren kann, und drei verschachtelte
 `async`-Funktionen im Zustellpfad, die auch ein Handler ohne Rückgabewert
 bezahlte.  Ohne sie liegt das Massen-Messaging vor beiden JVM-Armen, und das
-Ping-Pong liegt innerhalb von Pekkos Streuung — ein Gleichstand, und als
-solcher zu lesen, nicht als Sieg.
+Ping-Pong liegt innerhalb der Streuung der JVM-Arme — ein Gleichstand, und als
+solcher zu lesen, nicht als Sieg.  Zwei unabhängige Zehn-Runden-Läufe ergaben
+für actor-ts 503k und 521k, für den nächstliegenden JVM-Arm 526k und 452k; die
+Reihenfolge kippte dazwischen, und genau so sieht ein Gleichstand aus, wenn man
+ihn zweimal misst.
 
 Was sich nicht geändert hat: das ist eine lokale, prozessinterne
 Einzelknoten-Messung auf einer Maschine.  In den Clustering-, Persistenz- und

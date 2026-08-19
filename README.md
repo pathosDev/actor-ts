@@ -409,10 +409,10 @@ Per operation, Bun 1.3.1, AMD Ryzen 9 7940HX:
 
 | scenario                       | actor-ts          | nact 7.6.2      | XState 5.32.5   |
 | ------------------------------ | ----------------- | --------------- | --------------- |
-| tell throughput (batch 10k)    | **4.68M/s** ±5 %  | 386k/s ±2 %     | 179k/s ±5 %     |
-| ask round-trip (p50)           | **3.7 µs**        | 7.1 µs          | 11.7 µs *       |
-| ping-pong (10k exchanges)      | **503k/s** ±5 %   | 191k/s ±2 %     | 93k/s ±4 %      |
-| spawn → started → stopped      | 76k/s ±6 %        | **188k/s** ±8 % | 53k/s ±10 %     |
+| tell throughput (batch 10k)    | **4.50M/s** ±11 % | 404k/s ±4 %     | 192k/s ±8 %     |
+| ask round-trip (p50)           | **3.6 µs**        | 6.6 µs          | 13.7 µs *       |
+| ping-pong (10k exchanges)      | **521k/s** ±8 %   | 183k/s ±7 %     | 83k/s ±12 %     |
+| spawn → started → stopped      | 79k/s ±9 %        | **196k/s** ±13 %| 65k/s ±8 %      |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait, which is the idiomatic equivalent but not a native ask.</sub>
@@ -438,10 +438,10 @@ a harness that mirrors the JavaScript one rather than being it.
 
 | scenario                    | actor-ts (Bun)   | Akka 2.8.8      | Pekko 1.6.0      | Akka.NET 1.5.70  | Orleans 10.2.2 |
 | --------------------------- | ---------------- | --------------- | ---------------- | ---------------- | -------------- |
-| tell throughput (batch 10k) | **4.68M/s** ±5 % | 2.83M/s ±5 %    | 3.23M/s ±16 %    | 1.29M/s ±22 %    | 723k/s ±18 %   |
-| ping-pong (10k exchanges)   | 503k/s ±5 %      | 459k/s ±13 %    | 526k/s ±9 %      | 413k/s ±13 %     | 176k/s ±3 %    |
-| spawn → started → stopped   | **76k/s** ±6 %   | 27k/s ±8 %      | 25k/s ±8 %       | 34k/s ±6 %       | 5k/s ±11 % ‡   |
-| ask round-trip (p50)        | **3.7 µs**       | 38.6 µs †       | 37.0 µs †        | 8.0 µs           | 6.0 µs         |
+| tell throughput (batch 10k) | **4.50M/s** ±11 %| 3.12M/s ±6 %    | 3.33M/s ±15 %    | 1.31M/s ±36 %    | 528k/s ±16 %   |
+| ping-pong (10k exchanges)   | 521k/s ±8 %      | 450k/s ±24 %    | 452k/s ±34 %     | 433k/s ±21 %     | 164k/s ±4 %    |
+| spawn → started → stopped   | **79k/s** ±9 %   | 26k/s ±7 %      | 25k/s ±12 %      | 32k/s ±27 %      | 5k/s ±10 % ‡   |
+| ask round-trip (p50)        | **3.6 µs**       | 38.9 µs †       | 40.8 µs †        | 6.8 µs           | 7.9 µs         |
 | licence                     | MIT              | BUSL-1.1        | Apache-2.0       | Apache-2.0       | MIT            |
 
 <sub>† Every arm drives the system from an external caller.  On an event loop
@@ -455,8 +455,11 @@ This table used to say "expect roughly a third of the JVM's throughput", and
 that is no longer where the numbers land — most of the gap was a scheduling
 hop and an async state machine on the receive path rather than anything
 inherent to the runtime.  On bulk messaging actor-ts is now ahead of both JVM
-arms; on the alternating volley it and Pekko are inside each other's spreads,
-which is a tie and should be read as one.
+arms; on the alternating volley it and the two JVM arms are inside each
+other's spreads, which is a tie and should be read as one.  Two independent
+ten-round runs put actor-ts at 503k and 521k and the closest JVM arm at 526k
+and 452k — the ordering flipped between them, which is what a tie looks like
+when you measure it twice.
 
 Two things worth reading off this table beyond the raw numbers.  The two JVM
 columns are the same framework either side of its licence change, and they

@@ -24,11 +24,11 @@ than the spread beside it is not a difference.
 
 | scenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
 | -------- | -------- | ---------- | ------------- |
-| tell throughput, batch 1k  | **3.00M/s** ±9 % | 366k/s ±4 % | 166k/s ±6 % |
-| tell throughput, batch 10k | **4.68M/s** ±5 % | 386k/s ±2 % | 179k/s ±5 % |
-| ask round-trip, p50        | **3.7 µs** | 7.1 µs | 11.7 µs |
-| ping-pong, 10k exchanges   | **503k/s** ±5 % | 191k/s ±2 % | 93k/s ±4 % |
-| spawn → started → stopped  | 76k/s ±6 % | **188k/s** ±8 % | 53k/s ±10 % |
+| tell throughput, batch 1k  | **2.96M/s** ±9 % | 376k/s ±4 % | 193k/s ±5 % |
+| tell throughput, batch 10k | **4.50M/s** ±11 % | 404k/s ±4 % | 192k/s ±8 % |
+| ask round-trip, p50        | **3.6 µs** | 6.6 µs | 13.7 µs |
+| ping-pong, 10k exchanges   | **521k/s** ±8 % | 183k/s ±7 % | 83k/s ±12 % |
+| spawn → started → stopped  | 79k/s ±9 % | **196k/s** ±13 % | 65k/s ±8 % |
 
 ### Cross-language — another virtual machine, mirrored harness
 
@@ -38,10 +38,10 @@ hand, on a different runtime, and that is a weaker claim.
 
 | scenario | actor-ts (Bun) | Akka 2.8.8 | Pekko 1.6.0 | Akka.NET 1.5.70 | Orleans 10.2.2 |
 | -------- | -------------- | ---------- | ----------- | --------------- | -------------- |
-| tell throughput, batch 10k | **4.68M/s** ±5 % | 2.83M/s ±5 % | 3.23M/s ±16 % | 1.29M/s ±22 % | 723k/s ±18 % |
-| ping-pong, 10k exchanges   | 503k/s ±5 % | 459k/s ±13 % | 526k/s ±9 % | 413k/s ±13 % | 176k/s ±3 % |
-| spawn → started → stopped  | **76k/s** ±6 % | 27k/s ±8 % | 25k/s ±8 % | 34k/s ±6 % | 5k/s ±11 % |
-| ask round-trip, p50        | **3.7 µs** | 38.6 µs | 37.0 µs | 8.0 µs | 6.0 µs |
+| tell throughput, batch 10k | **4.50M/s** ±11 % | 3.12M/s ±6 % | 3.33M/s ±15 % | 1.31M/s ±36 % | 528k/s ±16 % |
+| ping-pong, 10k exchanges   | 521k/s ±8 % | 450k/s ±24 % | 452k/s ±34 % | 433k/s ±21 % | 164k/s ±4 % |
+| spawn → started → stopped  | **79k/s** ±9 % | 26k/s ±7 % | 25k/s ±12 % | 32k/s ±27 % | 5k/s ±10 % |
+| ask round-trip, p50        | **3.6 µs** | 38.9 µs | 40.8 µs | 6.8 µs | 7.9 µs |
 | licence                    | MIT | BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 
 Three things are readable from this table that no single row shows.
@@ -61,7 +61,7 @@ nothing in throughput** — and because those two arms differ only in which
 dependency they pull, each is a control on the other.
 
 **The ask row splits by runtime, not by framework.**  Both JVM arms sit near
-37-39 µs while both .NET arms and actor-ts sit under 8 µs.  That
+39-41 µs while both .NET arms and actor-ts sit under 8 µs.  That
 is the external caller, not the frameworks: on an event loop the wait is a
 microtask and in .NET an `await`, but on the JVM from a non-actor thread it is
 a thread parking on a future.  The JVM arms lead the tell rows by a wide
@@ -69,9 +69,9 @@ margin, which is the same frameworks measured without that cost in the path.
 
 ### What the numbers say
 
-**actor-ts leads the JavaScript field on every row except spawning** — twelve
-times nact and twenty-six times XState at a batch of 10 000, roughly twice its
-throughput on the alternating volley, and half the ask latency.
+**actor-ts leads the JavaScript field on every row except spawning** — eleven
+times nact and twenty-three times XState at a batch of 10 000, roughly three
+times its throughput on the alternating volley, and half the ask latency.
 
 **It trails on spawning**, by about two and a half times, and the reason is
 structural rather than a missing optimisation.  nact constructs an actor
@@ -88,8 +88,11 @@ written.  Most of that gap was not the runtime: it was a `setImmediate` per
 actor turn, which an actor answering one request at a time cannot amortise,
 and three nested `async` functions on the delivery path that a handler
 returning nothing still paid for.  With those gone, bulk messaging is ahead of
-both JVM arms and the alternating volley is inside Pekko's spread — a tie, and
-it should be read as one rather than as a win.
+both JVM arms, and the alternating volley is inside the JVM arms' spreads — a
+tie, and it should be read as one rather than as a win.  Two independent
+ten-round runs put actor-ts at 503k and 521k against the closest JVM arm's 526k
+and 452k; the ordering flipped between them, which is what a tie looks like
+when it is measured twice.
 
 What has not changed is that this is a local, in-process, single-node
 measurement on one machine.  A JVM actor system has two decades of work in its
