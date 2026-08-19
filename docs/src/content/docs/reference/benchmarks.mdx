@@ -22,8 +22,8 @@ than the spread beside it is not a difference.
 
 ### JavaScript — same machine, same harness
 
-| scenario | actor-ts | nact 7.6.2 | XState 5.32.5 |
-| -------- | -------- | ---------- | ------------- |
+| scenario | actor-ts 0.16.0 | nact 7.6.2 | XState 5.32.5 |
+| -------- | --------------- | ---------- | ------------- |
 | tell throughput, batch 1k  | **2.90M/s** ±6 % | 359k/s ±3 % | 185k/s ±4 % |
 | tell throughput, batch 10k | **4.55M/s** ±8 % | 389k/s ±3 % | 183k/s ±9 % |
 | ask round-trip, p50        | **3.5 µs** | 6.7 µs | 13.5 µs |
@@ -41,8 +41,8 @@ Each JVM framework appears twice — through its **Java** API and through its
 on the same pinned JDK.  Everything is held constant except the binding, which
 is what lets the gap inside a pair be read as the binding.
 
-| scenario | actor-ts (Bun) | Akka 2.8.8 (Java) | Akka (Scala 3) | Pekko 1.6.0 (Java) | Pekko (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
-| -------- | -------------- | ----------------- | -------------- | ------------------ | --------------- | --------------- | -------------- |
+| scenario | actor-ts 0.16.0 (Bun) | Akka 2.8.8 (Java) | Akka 2.8.8 (Scala 3) | Pekko 1.6.0 (Java) | Pekko 1.6.0 (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | --------------------- | ----------------- | -------------------- | ------------------ | --------------------- | --------------- | -------------- |
 | tell throughput, batch 1k  | **2.90M/s** ±6 % | 2.11M/s ±27 % | 1.31M/s ±37 % | 1.71M/s ±28 % | 1.10M/s ±45 % | 1.38M/s ±9 % | 288k/s ±19 % |
 | tell throughput, batch 10k | **4.55M/s** ±8 % | 3.14M/s ±9 % | 2.80M/s ±16 % | 3.04M/s ±13 % | 2.84M/s ±47 % | 1.36M/s ±18 % | 576k/s ±26 % |
 | ping-pong, 10k exchanges   | 504k/s ±6 % | 404k/s ±40 % | 369k/s ±42 % | 343k/s ±27 % | 603k/s ±82 % | 415k/s ±21 % | 157k/s ±7 % |
