@@ -124,6 +124,8 @@ export {
   SingletonKey,
   singletonKeyOf,
   singletonManagerPath,
+  asWarmHandOverActor,
+  handOverStateFitsFrame,
 } from './singleton/index.js';
 export type {
   StartSingletonOptionsType,
@@ -132,6 +134,7 @@ export type {
   SingletonReference,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
+  WarmHandOverActor,
 } from './singleton/index.js';
 
 // Distributed Pub-Sub.

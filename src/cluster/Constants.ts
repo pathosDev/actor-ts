@@ -244,6 +244,59 @@ export const DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS = 10_000;
 export const SINGLETON_HAND_OVER_BUFFER_SIZE = 1_000;
 
 /**
+ * Largest warm-hand-over snapshot a singleton will put on the wire, before it
+ * declines to ship one and lets the successor start cold (#194).
+ *
+ * Here rather than in an `XOptions.ts` for the same reason as
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS}: it defaults a field on
+ * **two** options types.
+ *
+ * One mebibyte, which is *not* the frame cap and deliberately nowhere near it.
+ * Three reasons, in order of how much they cost to get wrong:
+ *
+ * - The frame cap is a hard failure, not a fallback.  A snapshot is base64 in
+ *   a JSON frame, so it inflates by a third, and a frame over the receiver's
+ *   cap makes the receiver drop the whole inter-node connection — heartbeats
+ *   and gossip with it.  `handOverStateFitsFrame` in
+ *   `singleton/WarmHandOver.ts` is the check that keeps this default from ever
+ *   being the thing that trips it, and it derives from the live transport's
+ *   number rather than from this one.
+ * - The snapshot travels on the critical path of a host move, while the
+ *   singleton is running nowhere.  Shipping ten megabytes to save a recovery
+ *   is a slower outage, not a shorter one.
+ * - A cap that declines is safe: declining is a cold start, which is what
+ *   every singleton did before this feature existed.
+ *
+ * Raise it with `withMaxHandOverStateBytes` when a measured snapshot genuinely
+ * needs more — the number that matters then is the transport's frame cap, not
+ * this one.
+ */
+export const DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES = 1_024 * 1_024;
+
+/**
+ * How long a singleton manager keeps a warm-hand-over snapshot for a successor
+ * that has not asked for it yet (#194).
+ *
+ * The order this covers is the ordinary one.  Both nodes reconcile from their
+ * own gossip, so the outgoing host often stops its instance *before* the
+ * incoming host's request arrives — it reacted to the same membership change
+ * and did not need to be asked.  Without a short retention the snapshot taken at
+ * that moment has nobody to hand to, and the request a moment later is answered
+ * with nothing; warm hand-over then works or not depending on which of two
+ * independent gossip deliveries won.
+ *
+ * **Short on purpose, and the direction of the risk is why.**  A stale snapshot
+ * is the one outcome worse than a cold start: it restores a generation of state
+ * the cluster has already moved past, silently.  Two seconds is several
+ * multiples of the round trip a genuine successor needs — it re-asks every
+ * 500 ms, so it gets four attempts inside this window — and far too short for
+ * another node to have hosted, run and stopped in between.  The snapshot is
+ * also single-use and dropped the moment this node hosts again, so this bound is
+ * the last of three rather than the only one.
+ */
+export const SINGLETON_HAND_OVER_STATE_RETENTION_MS = 2_000;
+
+/**
  * How long a singleton manager holds a message routed to it while it does not
  * (yet) consider itself the host, before dead-lettering it (#637).
  *

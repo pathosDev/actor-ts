@@ -1,8 +1,11 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
+import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
+import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
+import { LocalActorRef } from '../../internal/LocalActorRef.js';
 import { SystemGroups, singletonManagerName, systemActorPath } from '../../internal/SystemPaths.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import type { Cluster } from '../Cluster.js';
@@ -25,10 +28,13 @@ import {
   MemberUp,
   SelfUp,
 } from '../ClusterEvents.js';
+import { asWarmHandOverActor, handOverStateFitsFrame } from './WarmHandOver.js';
 import {
   DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
+  DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
   SINGLETON_HAND_OVER_BUFFER_SIZE,
   SINGLETON_HAND_OVER_RETRY_INTERVAL_MS,
+  SINGLETON_HAND_OVER_STATE_RETENTION_MS,
   SINGLETON_HOST_DISAGREEMENT_HOLD_MS,
   SINGLETON_RESTART_BACKOFF_MS,
 } from '../Constants.js';
@@ -184,6 +190,7 @@ type RestartChildEvent = { readonly kind: 'restart-child' };
 type HandOverTimeoutEvent = { readonly kind: 'hand-over-timeout' };
 type HandOverRetryEvent = { readonly kind: 'hand-over-retry' };
 type HostDisagreementHoldExpiredEvent = { readonly kind: 'host-disagreement-hold-expired' };
+type HandOverStateExpiredEvent = { readonly kind: 'hand-over-state-expired' };
 
 type ManagerEvent =
   | ReconcileEvent
@@ -193,7 +200,8 @@ type ManagerEvent =
   | RestartChildEvent
   | HandOverTimeoutEvent
   | HandOverRetryEvent
-  | HostDisagreementHoldExpiredEvent;
+  | HostDisagreementHoldExpiredEvent
+  | HandOverStateExpiredEvent;
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated | AuthenticatedSingletonMessage;
 
@@ -212,6 +220,15 @@ type PendingHandOver = {
   readonly retryTimer: Cancellable;
   /** Messages routed here while the wait is on; flushed into the child on spawn. */
   readonly held: unknown[];
+  /**
+   * A predecessor's warm state, if one arrived on an acknowledgment (#194).
+   *
+   * Mutable, and on the wait rather than on the manager, so it cannot outlive
+   * the hand-over that collected it: state from a wait that was abandoned is
+   * state for an instance that will not be spawned, and applying it to a later,
+   * unrelated spawn would restore a snapshot the cluster has since moved past.
+   */
+  state: Uint8Array | null;
 };
 
 /**
@@ -297,6 +314,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   /** Backstop that ends {@link hostDisagreementHold} if no reconcile does. */
   private hostDisagreementHoldTimer: Cancellable | null = null;
+
+  /**
+   * A snapshot this node's stopped instance left for a successor that had not
+   * asked yet — see {@link retainHandOverState} (#194).
+   */
+  private retainedHandOverState: Uint8Array | null = null;
+
+  /** Expiry for {@link retainedHandOverState}. */
+  private retainedHandOverStateTimer: Cancellable | null = null;
 
   /**
    * Whether `lease.release()` still owes the outgoing child a `Terminated`.
@@ -406,6 +432,13 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // would make an orderly `cluster.singleton.stop()` slower than a crash.
     this.abandonHandOver('the manager is stopping');
     this.dropHostDisagreementHold('the manager is stopping');
+    // The requesters are answered without state: `child.stop()` above has only
+    // *enqueued* the PoisonPill, so the instance's `postStop` has not run and
+    // anything read from it would be a snapshot from before it finished (#194).
+    // A retained one from an earlier stand-down is equally unusable — this
+    // manager is going away, so the answer it owes is "not hosting", not a
+    // generation of state whose age it can no longer bound.
+    this.dropRetainedHandOverState();
     this.answerHandOverRequesters();
     // Release the lease if held — the holder leaving cleanly lets a
     // follower acquire faster than waiting for the TTL to expire.
@@ -438,6 +471,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'hand-over-retry' }, () => this.onHandOverRetry())
       .with({ kind: 'host-disagreement-hold-expired' }, () =>
         this.onHostDisagreementHoldExpired())
+      .with({ kind: 'hand-over-state-expired' }, () => this.onHandOverStateExpired())
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -492,10 +526,21 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       this.log.debug(
         `previous child '${this.options.typeName}' fully terminated — re-running reconcile`,
       );
+      // Before `pendingStop` is cleared, and before the answer goes out: this
+      // is the one instant at which the instance's state is both final and
+      // still readable (#194).  `postStop` has completed, so nothing more will
+      // be processed; the cell still holds the instance, so it can still be
+      // asked.
+      const warmState = this.captureWarmState(this.pendingStop);
       this.pendingStop = null;
       // Now, and not when `stopChild` returned: this is the instant at which
       // this node has genuinely stopped hosting.
-      this.answerHandOverRequesters();
+      const answered = this.answerHandOverRequesters(warmState);
+      // Nobody had asked yet, which is the common order rather than an edge —
+      // both nodes reconcile from their own gossip, so the outgoing host often
+      // stops first and is asked a moment later.  Keep the snapshot for that
+      // request; see {@link retainHandOverState} for why briefly and once.
+      if (!answered && warmState !== null) this.retainHandOverState(warmState);
       if (this.releaseLeaseWhenChildStops) {
         this.releaseLeaseWhenChildStops = false;
         await this.releaseLease();
@@ -838,6 +883,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         () => this.self.tell({ kind: 'hand-over-retry' } satisfies ManagerEvent),
       ),
       held: [],
+      state: null,
     };
     this.log.debug(
       `singleton '${this.options.typeName}': asking ${peers.length} peer(s) to hand over `
@@ -930,6 +976,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // An answer from someone we did not ask is not evidence about anyone we
     // did, so it must not shrink the wait.
     if (!pending.awaiting.delete(peer.toString())) return;
+    this.acceptWarmState(pending, message.state, peer);
     if (pending.awaiting.size > 0) return;
     this.log.debug(`singleton '${this.options.typeName}': hand-over acknowledged by every peer`);
     this.completeHandOver();
@@ -977,7 +1024,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       this.dropHeld(pending.held, 'the lease was lost while the hand-over was outstanding');
       return;
     }
-    this.spawn();
+    // The predecessor's snapshot, if one came, goes in *with* the spawn — it has
+    // to reach the instance before `preStart`, so it cannot be applied after
+    // (#194).  See {@link warmedActorFactory}.
+    this.spawn(pending.state);
     if (this.child === null) {
       // `spawn()` refused — a `pendingStop` appeared during the wait.  Its
       // `Terminated` reconciles again, but this buffer cannot survive to that
@@ -1208,21 +1258,276 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     return true;
   }
 
-  /** Answer every peer whose hand-over this node now genuinely satisfies. */
-  private answerHandOverRequesters(): void {
-    if (this.handOverRequesters.size === 0) return;
-    if (this.child || this.pendingStop) return;
+  /**
+   * Answer every peer whose hand-over this node now genuinely satisfies,
+   * carrying `state` when the stand-down produced one (#194).
+   *
+   * `state` is only ever non-null on the planned path — a `Terminated` for a
+   * child this manager itself stopped.  The two other callers pass nothing on
+   * purpose:
+   *
+   * - **an unexpected death.**  The state that survives a crash or an exhausted
+   *   supervision budget is the state that caused it, and handing it to the
+   *   successor propagates the failure to the node that was supposed to
+   *   recover from it.
+   * - **the manager stopping.**  `postStop` calls `child.stop()` and answers
+   *   immediately; the child's own `postStop` has not run, so anything read
+   *   there would be a snapshot from before the instance finished.
+   *
+   * Both are ordinary cold starts, which is what a singleton did before warm
+   * hand-over existed.
+   */
+  private answerHandOverRequesters(state: Uint8Array | null = null): boolean {
+    if (this.handOverRequesters.size === 0) return false;
+    if (this.child || this.pendingStop) return false;
     const requesters = [...this.handOverRequesters.values()];
     this.handOverRequesters.clear();
-    for (const peer of requesters) this.answerHandOver(peer);
+    // Only the first gets the state — see {@link retainHandOverState}.  In
+    // practice there is one: a peer only asks when it believes it is taking
+    // over, and two peers believing that at once is the state the hand-over
+    // exists to resolve.
+    let offer = state;
+    for (const peer of requesters) {
+      this.answerHandOver(peer, offer);
+      offer = null;
+    }
+    return true;
   }
 
-  private answerHandOver(peer: NodeAddress): void {
+  private answerHandOver(peer: NodeAddress, state: Uint8Array | null = null): void {
+    const warmState = state ?? this.takeRetainedHandOverState();
     const acknowledgment: SingletonHandOverAcknowledgment = {
       kind: 'singleton.HandOverAcknowledgment',
       typeName: this.options.typeName,
+      ...(warmState === null ? {} : { state: warmState }),
     };
     this.sendToPeer(peer, acknowledgment);
+  }
+
+  /* --------------------- warm hand-over (#194) --------------------- */
+
+  /**
+   * Keep a snapshot for a successor that has not asked yet.
+   *
+   * The case this exists for is the ordinary one, not an edge.  Both nodes
+   * reconcile from their own gossip, so a host that loses the election
+   * frequently stops its instance *before* the incoming host's
+   * {@link SingletonHandOverRequest} arrives — the outgoing side reacts to the
+   * same membership change, and does not need to be asked.  Without retention
+   * the snapshot taken at that `Terminated` had nobody to hand to and was
+   * dropped, and the request that arrived a moment later was answered with
+   * nothing.  Warm hand-over then worked or not depending on which of two
+   * independent gossip deliveries won, which is the same as not working.
+   *
+   * **Single use, and short-lived.**  Both bounds guard the one failure mode
+   * that is worse than a cold start — restoring a snapshot the cluster has
+   * moved past:
+   *
+   * - Handed to the *first* peer that asks and cleared, because there is one
+   *   successor.  A second asker gets nothing rather than a snapshot that has
+   *   already been superseded by the instance the first asker started.
+   * - Expired after {@link SINGLETON_HAND_OVER_STATE_RETENTION_MS}.  A peer
+   *   asking later than that was not part of this transition.
+   *
+   * Also cleared whenever this node spawns again ({@link spawn}), because from
+   * then on its own live instance is the state that matters and the saved one is
+   * a strictly older generation of it.
+   */
+  private retainHandOverState(state: Uint8Array): void {
+    this.retainedHandOverState = state;
+    this.retainedHandOverStateTimer?.cancel();
+    this.retainedHandOverStateTimer = this.system.scheduler.scheduleOnceFunction(
+      SINGLETON_HAND_OVER_STATE_RETENTION_MS,
+      () => {
+        // Through the mailbox, like every other timer in this manager.
+        this.self.tell({ kind: 'hand-over-state-expired' } satisfies ManagerEvent);
+      },
+    );
+  }
+
+  /** The retained snapshot, if any — consuming it. */
+  private takeRetainedHandOverState(): Uint8Array | null {
+    const state = this.retainedHandOverState;
+    if (state === null) return null;
+    this.dropRetainedHandOverState();
+    return state;
+  }
+
+  private dropRetainedHandOverState(): void {
+    this.retainedHandOverStateTimer?.cancel();
+    this.retainedHandOverStateTimer = null;
+    this.retainedHandOverState = null;
+  }
+
+  /**
+   * Nobody asked in time.  The snapshot describes a singleton that has been
+   * running somewhere else since, so it is now the wrong answer rather than a
+   * late one.
+   */
+  private onHandOverStateExpired(): void {
+    if (this.retainedHandOverState === null) return;
+    this.log.debug(
+      `singleton '${this.options.typeName}': no peer asked for the hand-over state within `
+      + `${SINGLETON_HAND_OVER_STATE_RETENTION_MS}ms — discarding it`,
+    );
+    this.dropRetainedHandOverState();
+  }
+
+  /**
+   * The stopped instance's state, ready to travel — or `null` for every reason
+   * that falls back to a cold start.
+   *
+   * Read from the instance *after* its `postStop` has completed, which is what
+   * makes the snapshot final: nothing further will be processed, and whatever
+   * was still in the mailbox has already gone to dead letters rather than into
+   * this.  Taking it at `stopChild` time instead would ship a snapshot from
+   * before the remaining mailbox was drained — state that silently disagrees
+   * with what the outgoing instance actually did.
+   *
+   * The instance is reached the way the DevTools replay panel reaches a live
+   * `PersistentActor` (`ReplayRegistry.actorAt`): a singleton child is always
+   * spawned locally, so its ref is a `LocalActorRef` and its cell still holds
+   * the instance at this point.  Nothing is retained — the value read out is a
+   * byte array, and the reference is dropped with this stack frame.
+   */
+  private captureWarmState(stopped: ActorRef<T>): Uint8Array | null {
+    if (!(stopped instanceof LocalActorRef)) return null;
+    const warm = asWarmHandOverActor(stopped.getCell()._actorForInspection());
+    if (warm === null) return null;
+    let state: Uint8Array | null;
+    try {
+      state = warm.serializeForHandOver();
+    } catch (error) {
+      // A cold start, not a failed hand-over: the successor is spawning either
+      // way, and a serializer that throws must not be able to keep the
+      // singleton from moving.
+      this.log.warn(
+        `singleton '${this.options.typeName}': serializeForHandOver threw — `
+        + 'the successor will start cold',
+        error,
+      );
+      return null;
+    }
+    if (state === null || state.byteLength === 0) return null;
+    return this.withinHandOverStateBudget(state) ? state : null;
+  }
+
+  /**
+   * Whether `state` may go on the wire, against both bounds — and `warn` naming
+   * the one it failed, because a warm hand-over that silently stops being warm
+   * is a latency regression with no symptom.
+   *
+   * Two separate checks, deliberately.  `maxHandOverStateBytes` is a *policy*:
+   * how much this deployment is willing to move on the critical path of a host
+   * change.  The frame budget is a *safety* bound and is not configurable here
+   * at all: a frame over the receiver's cap does not lose the message, it makes
+   * the receiver drop the whole inter-node connection — heartbeats and gossip
+   * with it — and nothing on the send side would otherwise notice.  So a caller
+   * who raises the policy bound past what the transport can carry still cannot
+   * produce that frame.
+   */
+  private withinHandOverStateBudget(state: Uint8Array): boolean {
+    const configured = this.options.maxHandOverStateBytes
+      ?? DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES;
+    if (state.byteLength > configured) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': the hand-over state is `
+        + `${state.byteLength} bytes, over the ${configured}-byte `
+        + 'maxHandOverStateBytes — not shipping it, so the successor starts cold.  '
+        + 'Raise the cap, or hand over a smaller summary and let the successor '
+        + 'rebuild the rest.',
+      );
+      return false;
+    }
+    const maxFrameBytes = this.options.cluster.transport.maxFrameBytes;
+    if (!handOverStateFitsFrame(state.byteLength, maxFrameBytes)) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': the hand-over state is `
+        + `${state.byteLength} bytes, which does not fit this transport's `
+        + `${maxFrameBytes}-byte frame cap once base64-encoded — not shipping it, `
+        + 'so the successor starts cold.  A snapshot costs about a third more on '
+        + 'the wire than in memory; raise `ClusterOptions.maxFrameBytes` on every '
+        + 'node, or hand over less.',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Take a predecessor's snapshot off an acknowledgment.
+   *
+   * At most one peer can have been hosting, so at most one answer carries
+   * state; a second is a cluster that was running two instances, and the note
+   * says so rather than silently preferring one of them.  The **first** is
+   * kept, because it is the one whose sender was asked first.
+   */
+  private acceptWarmState(
+    pending: PendingHandOver,
+    state: Uint8Array | undefined,
+    peer: NodeAddress,
+  ): void {
+    if (state === undefined || state.byteLength === 0) return;
+    if (pending.state !== null) {
+      this.log.warn(
+        `singleton '${this.options.typeName}': ${peer} also offered hand-over state, `
+        + 'and another peer already had — keeping the first.  Two peers holding state '
+        + 'for one singleton means two instances were running.',
+      );
+      return;
+    }
+    pending.state = state;
+  }
+
+  /**
+   * The actor to spawn, wrapped so a predecessor's snapshot is applied between
+   * the constructor and `preStart`.
+   *
+   * That position is the entire feature.  The instance is created inside the
+   * child's own `onCreate`, which is a mailbox turn on the child's dispatcher —
+   * so there is no moment after `context.spawn` returns at which the manager
+   * could reach the instance and still be ahead of `preStart`.  Handing the
+   * state to the *factory* puts it in the only frame that is: the actor exists,
+   * and the recovery `preStart` would otherwise perform has not started.  Push
+   * it in any later and the expensive replay this exists to skip has already
+   * been paid for, and then overwritten.
+   *
+   * A factory rather than the class, which is the exception the house rule
+   * names — the class form cannot express a constructor-time side effect, and
+   * this is not per-call-site configuration dressed up as a closure.
+   */
+  private warmedActorFactory(state: Uint8Array): ActorClassOrFactory<T> {
+    const construct = actorFactoryOf(this.options.singletonActor);
+    const typeName = this.options.typeName;
+    return () => {
+      const actor = construct();
+      const warm = asWarmHandOverActor(actor);
+      if (warm === null) {
+        // The predecessor could serialize and this one cannot restore, so the
+        // two ends are running different code — a rolling upgrade past the
+        // release that added the hooks, most likely.  Cold start, and say so.
+        this.log.warn(
+          `singleton '${typeName}': a predecessor handed over ${state.byteLength} bytes of `
+          + 'state, but this node\'s actor does not implement restoreFromHandOver — '
+          + 'starting cold.  The two nodes are running different versions of it.',
+        );
+        return actor;
+      }
+      try {
+        warm.restoreFromHandOver(state);
+        this.log.info(
+          `singleton '${typeName}' restored ${state.byteLength} bytes of hand-over state`,
+        );
+      } catch (error) {
+        this.log.warn(
+          `singleton '${typeName}': restoreFromHandOver threw — continuing as a cold `
+          + 'start.  The instance is not re-constructed, so an implementation that '
+          + 'mutates while parsing may be half-populated.',
+          error,
+        );
+      }
+      return actor;
+    };
   }
 
   /**
@@ -1266,7 +1571,13 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .exists((host) => host.address.equals(cluster.selfAddress));
   }
 
-  private spawn(): void {
+  /**
+   * @param warmState A predecessor's snapshot to start from, or `null` for the
+   * cold start every other caller wants.  Only {@link completeHandOver} ever
+   * has one: it is the only path that asked a peer to stand down, so it is the
+   * only path a snapshot can have arrived on.
+   */
+  private spawn(warmState: Uint8Array | null = null): void {
     if (this.child) return;
     // The previous child is still terminating.  Don't try to spawn
     // with the same name — its cell is still in the parent's children
@@ -1276,11 +1587,17 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // once `pendingStop` clears.
     if (this.pendingStop) return;
     this.child = this.context.spawn(
-      this.options.singletonActor,
+      warmState === null
+        ? this.options.singletonActor
+        : this.warmedActorFactory(warmState),
       this.options.typeName,
       this.options.singletonActorOptions,
     );
     this.context.watch(this.child);
+    // This node is hosting again, so a snapshot it left for a successor is a
+    // strictly older generation of the state its own live instance now holds
+    // (#194).
+    this.dropRetainedHandOverState();
     // Before the log line and before `completeHandOver` flushes its own buffer:
     // these were routed here first, so they enter the mailbox first (#637).
     this.flushHostDisagreementHold();

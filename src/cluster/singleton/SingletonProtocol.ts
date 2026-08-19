@@ -53,6 +53,24 @@ export type SingletonHandOverRequest = {
 export type SingletonHandOverAcknowledgment = {
   readonly kind: 'singleton.HandOverAcknowledgment';
   readonly typeName: string;
+  /**
+   * The stopped instance's state, when it offered one — see
+   * {@link ../WarmHandOver.ts} (#194).
+   *
+   * It rides *here* rather than on a message of its own because this frame is
+   * already sent at the only instant the state is final: the answering node
+   * emits it once its instance's `postStop` has completed, so there is no
+   * further message to fold in and no second round trip to sequence against.
+   * A separate `HandOverState` frame would have to be ordered against this one
+   * anyway, and `_sendEnvelope` is fire-and-forget — two frames is two chances
+   * to arrive in the wrong order or not at all.
+   *
+   * Optional in the strong sense: absent whenever the actor does not implement
+   * the hooks, declined the snapshot, died unexpectedly, or produced one too
+   * large for the frame.  Every one of those falls back to a cold start, so a
+   * receiver treats "no state" as the ordinary case and never as an error.
+   */
+  readonly state?: Uint8Array;
 };
 
 /**
@@ -87,8 +105,21 @@ const SINGLETON_MESSAGE_KINDS: ReadonlySet<string> = new Set<SingletonMessage['k
  */
 export function isSingletonMessage(body: unknown): body is SingletonMessage {
   if (typeof body !== 'object' || body === null) return false;
-  const { kind, typeName } = body as { kind?: unknown; typeName?: unknown };
-  return typeof kind === 'string' && SINGLETON_MESSAGE_KINDS.has(kind) && typeof typeName === 'string';
+  const { kind, typeName, state } = body as {
+    kind?: unknown;
+    typeName?: unknown;
+    state?: unknown;
+  };
+  if (typeof kind !== 'string' || !SINGLETON_MESSAGE_KINDS.has(kind)) return false;
+  if (typeof typeName !== 'string') return false;
+  // The warm-hand-over payload, checked here rather than trusted downstream: it
+  // is the one field of this protocol that reaches *user* code, so the shape
+  // guard in front of it is the difference between "bytes from a peer" and
+  // "whatever a peer put in a JSON object" (#194).  Absent is the ordinary
+  // case; present-but-not-bytes is a peer to disbelieve entirely, not a frame
+  // to strip a field off — a body this wrong is not one to act on.
+  if (state !== undefined && !(state instanceof Uint8Array)) return false;
+  return true;
 }
 
 /**

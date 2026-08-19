@@ -28,3 +28,5 @@ export type {
   SingletonMessage,
 } from './SingletonProtocol.js';
 export { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
+export { asWarmHandOverActor, handOverStateFitsFrame } from './WarmHandOver.js';
+export type { WarmHandOverActor } from './WarmHandOver.js';
