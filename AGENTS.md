@@ -359,6 +359,24 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   a scannable dispatch table. **Exempt:** matches on *internal state* (a state
   machine / behavior / directive reducer) or that *compute a value* in a helper
   (config, codec, route, priority) stay inline.
+- **Measured-hot-path exemption.** Where a `match(…)` dispatches on a path a
+  benchmark **in this repository** has measured as hot, it may be a `switch` on
+  `kind` instead — every `case` still a thin `onXxx` delegation, exhaustiveness
+  restored by a `default` that assigns the scrutinee to `never` (the shape
+  `decodeCrdt` in `crdt/DistributedData.ts` documents as the reference) — and
+  the site **must** carry a comment naming the benchmark and the measured
+  delta. The exemption is per-site and evidence-carrying: a `switch` without
+  that comment is a style violation, and the comment is the token the
+  pattern-matching conformance sweep (#494) recognises as exempt and must not
+  convert back.
+
+  The rule it bends is a good one — a matcher reads as a dispatch table where a
+  chain of ifs reads as logic — and the arms staying delegations is what keeps
+  that. What changes is the construct, and only where a number justifies it:
+  building a matcher and one closure per arm is free at a call rate of one per
+  request and is not at one per actor lifecycle. Two sites qualify today
+  (`ActorCell.handleSystemCommand`, `BoundedMailbox.enqueue`), and a third
+  needs its own measurement, not an appeal to these.
 - **`interface` for contracts and heritage, `type` for everything else.** A
   declaration is an `interface` when it prescribes **function heads** — any
   method, call or construct signature — or when it **`extends`** another
