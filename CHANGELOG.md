@@ -11,6 +11,45 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **A synchronous receive handler no longer pays for the async machinery**
+  (#1206).
+
+  Delivering one message ran through three nested `async` functions and three
+  `await`s regardless of what the handler did. An `async` function allocates a
+  promise and a heap frame and costs a microtask hop whether or not anything in
+  it suspends — and the ordinary handler does not suspend: it counts something,
+  updates a field, forwards a message and returns nothing.
+
+  `handleUserMessage` and `_dispatchToBehavior` now return `void | Promise<void>`
+  and each caller awaits only what is thenable. `handleSystemCommand` does the
+  same; four of its nine arms are synchronous and were each paying a hop to hand
+  back `undefined`, two of them per actor lifecycle.
+
+  Measured on the comparison arm, six rounds interleaved against the previous
+  build: **tell throughput 1.06M → 4.42M messages/second at a batch of 10 000**,
+  and 993k → 3.53M at a batch of 1 000. The repo's own tell benchmark agrees
+  independently (4.23M at 10k, 4.78M at 100k), and every row is
+  completion-verified — 300 000 of 300 000 messages accounted for.
+
+  The gain is larger than the removed allocations alone explain, and the reason
+  is worth recording: `run()` handles up to 16 messages per dispatcher turn, and
+  it was suspending and resuming its own state machine at every one of them. The
+  batch now runs as a single synchronous loop, so what disappeared is 16 round
+  trips through the microtask queue per turn rather than two promises per
+  message.
+
+  The one figure that moved the other way is the alternating volley, at −4.3 %
+  (t = −1.9, at the edge of what six rounds resolve). That path is depth-1 by
+  construction: there is no batch to amortise anything across, so it sees only
+  the fork's own cost and none of its benefit.
+
+  The fork duplicates nothing — the success tail, the failure tail and the
+  epilogue are one method each, called from both sides. The epilogue had to stop
+  being a `finally` for that, since a synchronous path and a promise path cannot
+  share one. A new equivalence suite runs six scenarios twice, once with a
+  synchronous handler and once with an `async` handler whose body is identical,
+  and asserts the two produce the same observable sequence.
+
 - **The coverage floors are now a ratchet with the policy written down in
   AGENTS.md: raise freely, never lower silently, and record the measurement
   that forces a lowering beside the number (#541).**
