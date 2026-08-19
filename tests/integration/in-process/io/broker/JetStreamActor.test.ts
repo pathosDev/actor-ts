@@ -23,7 +23,17 @@ import {
 } from '../../../../../src/io/broker/JetStreamActor.js';
 import { JetStreamOptions, JetStreamOptionsBuilder } from '../../../../../src/io/broker/JetStreamOptions.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+
+/**
+ * The window in which one *too many* of something shows up.
+ *
+ * A poll returns on the arrival that reaches the number it waits for, so it can
+ * only confirm the lower half of an exact claim — `toHaveLength(2)`,
+ * `toEqual([10, 11, 12, 13, 14])`.  Polling `>=` and then holding still for
+ * this long is what restores the upper half.
+ */
+const SETTLE_MS = 20;
 
 /* --------------------------- Mocks ----------------------------- */
 
@@ -192,6 +202,8 @@ class MockJetStreamActor extends JetStreamActor {
   protected override async createNatsConnection(): Promise<NatsConnectionLike> {
     return this.mockConnection;
   }
+
+  publicConnectionState(): string { return this.connectionState; }
 }
 
 /* --------------------------- Helpers ---------------------------- */
@@ -215,9 +227,32 @@ async function bootActor(
     },
     'js',
   );
-  // Allow preStart + connect to complete and the pump to enter `for await`.
-  await sleep(60);
+  // `connected` is set only after `connectImplementation` returned, and that is
+  // where the stream and consumer upserts, the `subscribe` and the pull-consumer
+  // handle all happen — so this one condition covers everything the callers read
+  // straight after booting.
+  await awaitCondition(
+    () => ref.current !== null && ref.current.publicConnectionState() === 'connected',
+    { timeoutMs: 4_000, label: 'the JetStream actor connected and provisioned its consumer' },
+  );
   return { actor: actor as ActorRef<JetStreamCommand>, mock: ref.current!, target };
+}
+
+/**
+ * Wait until the pump forwarded `count` message(s) to the target.
+ *
+ * `deliverAndAwaitAcknowledgment` tells the target and registers the pending
+ * ack in the same synchronous stretch, and the tell lands in a *later* actor
+ * turn — so a message arriving at the target means the pending entry an
+ * `acknowledgment` / `negativeAcknowledgment` / `terminate` has to find is
+ * already there.  That is what makes this the right thing to wait on before
+ * sending one, rather than a proxy for it.
+ */
+function awaitForwarded(target: CapturingTarget, count: number): Promise<void> {
+  return awaitCondition(() => target.received.length >= count, {
+    timeoutMs: 4_000,
+    label: `${count} message(s) reached the target, so their acks are pending`,
+  });
 }
 
 function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHandle {
@@ -312,12 +347,15 @@ describe('JetStreamActor — ack/nak/term', () => {
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(42);
       mock.mockConnection.js.subscription.push(handle);
-      await sleep(40);
+      await awaitForwarded(target, 1);
+      await sleep(SETTLE_MS);  // the upper half of "exactly one"; see SETTLE_MS
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.streamSeq).toBe(42);
 
       actor.tell({ kind: 'acknowledgment', streamSeq: 42 });
-      await sleep(40);
+      await awaitCondition(() => handle.acked, {
+        timeoutMs: 4_000, label: 'the acknowledgment reached the handle',
+      });
       expect(handle.acked).toBe(true);
     } finally {
       await sys.terminate();
@@ -334,12 +372,16 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
-      const { actor, mock } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(7);
       mock.mockConnection.js.subscription.push(handle);
-      await sleep(40);
+      await awaitForwarded(target, 1);
       actor.tell({ kind: 'negativeAcknowledgment', streamSeq: 7, delayMs: 1500 });
-      await sleep(40);
+      // `acked` staying false is an absence, but it shares the one code path
+      // with `naked` — so waiting for the nak is what makes it meaningful.
+      await awaitCondition(() => handle.naked, {
+        timeoutMs: 4_000, label: 'the negative acknowledgment reached the handle',
+      });
       expect(handle.naked).toBe(true);
       expect(handle.nakDelay).toBe(1500);
       expect(handle.acked).toBe(false);
@@ -358,12 +400,14 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
-      const { actor, mock } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(99);
       mock.mockConnection.js.subscription.push(handle);
-      await sleep(40);
+      await awaitForwarded(target, 1);
       actor.tell({ kind: 'terminate', streamSeq: 99, reason: 'unparseable' });
-      await sleep(40);
+      await awaitCondition(() => handle.termed, {
+        timeoutMs: 4_000, label: 'the terminate reached the handle',
+      });
       expect(handle.termed).toBe(true);
     } finally {
       await sys.terminate();
@@ -380,19 +424,25 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
-      const { actor, mock } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(5);
       mock.mockConnection.js.subscription.push(handle);
-      await sleep(40);
+      await awaitForwarded(target, 1);
       actor.tell({ kind: 'inProgress', streamSeq: 5 });
-      await sleep(20);
+      await awaitCondition(() => handle.working_called, {
+        timeoutMs: 4_000, label: 'the in-progress signal reached the handle',
+      });
+      await sleep(SETTLE_MS);  // "neither acked nor naked" is an absence
       expect(handle.working_called).toBe(true);
       // The handle is still pending — neither acked nor naked.
       expect(handle.acked).toBe(false);
       expect(handle.naked).toBe(false);
-      // Clean up.
+      // Clean up: the pump is parked on this handle's ack, so let it resolve
+      // before the system tears the actor down under it.
       actor.tell({ kind: 'acknowledgment', streamSeq: 5 });
-      await sleep(40);
+      await awaitCondition(() => handle.acked, {
+        timeoutMs: 4_000, label: 'the cleanup acknowledgment released the pump',
+      });
     } finally {
       await sys.terminate();
     }
@@ -412,12 +462,18 @@ describe('JetStreamActor — ack/nak/term', () => {
       const { mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       mock.mockConnection.js.subscription.push(h1);
-      await sleep(120);   // past the timeout
+      // The 60 ms ack-wait expiring is what naks the handle — poll for the nak
+      // rather than for twice the timeout, so a loaded runner cannot make the
+      // fixed delay the shorter of the two.
+      await awaitCondition(() => h1.naked, {
+        timeoutMs: 4_000, label: 'the ack timeout naked the un-acknowledged handle',
+      });
       expect(h1.naked).toBe(true);
       // Pump should be free to receive the next message now.
       const h2 = makeHandle(2);
       mock.mockConnection.js.subscription.push(h2);
-      await sleep(40);
+      await awaitForwarded(target, 2);
+      await sleep(SETTLE_MS);  // the upper half of "exactly two"; see SETTLE_MS
       expect(target.received).toHaveLength(2);
       expect(target.received[1]!.streamSeq).toBe(2);
     } finally {
@@ -440,7 +496,9 @@ describe('JetStreamActor — ack/nak/term', () => {
       const h2 = makeHandle(2);
       mock.mockConnection.js.subscription.push(h1);
       mock.mockConnection.js.subscription.push(h2);
-      await sleep(80);
+      await awaitForwarded(target, 2);
+      // Both "not acked" claims are absences; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
@@ -462,7 +520,9 @@ describe('JetStreamActor — ack/nak/term', () => {
       const { actor } = await bootActor(sys, jetstreamOptions);
       // No handle pushed, so no pending entry.  Sending ack should not throw.
       actor.tell({ kind: 'acknowledgment', streamSeq: 999 });
-      await sleep(20);
+      // The claim is an absence whose observable side is a crash that did not
+      // happen — there is nothing to poll for, only a turn to give away.
+      await sleep(SETTLE_MS);
       // Test passes if we get here without unhandled rejection.
       expect(true).toBe(true);
     } finally {
@@ -492,7 +552,9 @@ describe('JetStreamActor — publish', () => {
           headers: { 'X-Tenant': 't1' },
         },
       });
-      await sleep(40);
+      await awaitCondition(() => mock.mockConnection.js.published.length >= 1, {
+        timeoutMs: 4_000, label: 'the publish reached the JetStream client',
+      });
       const published = mock.mockConnection.js.published[0];
       expect(published?.subject).toBe('orders.new');
       expect(new TextDecoder().decode(published!.payload)).toBe('hello');
@@ -567,18 +629,23 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       pc.enqueueBatch([makeHandle(1), makeHandle(2), makeHandle(3)]);
 
       actor.tell({ kind: 'fetch', batch: 3, expiresMs: 1_000 });
-      await sleep(50);
+      await awaitForwarded(target, 3);
+      // Both assertions below are exact — one fetch call, three sequences and
+      // no fourth; see SETTLE_MS.
+      await sleep(SETTLE_MS);
 
       // All three messages delivered to target before any ack.
       expect(target.received.map((m) => m.streamSeq).sort()).toEqual([1, 2, 3]);
       // Fetch was called with the requested parameters.
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
-      // Acknowledgment them all so the pending-map drains.
+      // Acknowledgment them all so the pending-map drains.  The batch handles
+      // are constructed inline, so there is nothing to poll here — this is a
+      // drain before teardown, not a wait before an assertion.
       actor.tell({ kind: 'acknowledgment', streamSeq: 1 });
       actor.tell({ kind: 'acknowledgment', streamSeq: 2 });
       actor.tell({ kind: 'acknowledgment', streamSeq: 3 });
-      await sleep(30);
+      await sleep(30);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
     }
@@ -599,7 +666,13 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       // No batch enqueued — fetch yields an empty iterator immediately.
 
       actor.tell({ kind: 'fetch', batch: 10, expiresMs: 100 });
-      await sleep(40);
+      // "no messages" is an absence, so waiting for the *fetch call* is what
+      // makes it mean anything: an empty target could otherwise equally mean
+      // the fetch had not been issued yet.
+      await awaitCondition(() => pc.fetchCalls.length >= 1, {
+        timeoutMs: 4_000, label: 'the fetch reached the pull consumer',
+      });
+      await sleep(SETTLE_MS);  // "no messages" is the absence; see SETTLE_MS
 
       expect(target.received).toHaveLength(0);
       expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 100 }]);
@@ -624,20 +697,27 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       pc.enqueueBatch([makeHandle(12), makeHandle(13), makeHandle(14)]);
 
       actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
-      await sleep(30);
+      await awaitForwarded(target, 2);
       actor.tell({ kind: 'acknowledgment', streamSeq: 10 });
       actor.tell({ kind: 'acknowledgment', streamSeq: 11 });
-      await sleep(20);
+      // The two acks have to be processed before the second fetch, or the
+      // pending map is still full and the fetch under test never runs.  The
+      // batch handles are inline, so the ack landing is not observable from
+      // here — hence a delay, not a poll.
+      await sleep(SETTLE_MS);
 
       actor.tell({ kind: 'fetch', batch: 3, expiresMs: 100 });
-      await sleep(30);
+      await awaitForwarded(target, 5);
+      // The sequence list is exact, and so is the fetch count; see SETTLE_MS.
+      await sleep(SETTLE_MS);
       expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
       expect(pc.fetchCalls).toHaveLength(2);
 
+      // Drain the pending map before teardown; see the first ack pair above.
       actor.tell({ kind: 'acknowledgment', streamSeq: 12 });
       actor.tell({ kind: 'acknowledgment', streamSeq: 13 });
       actor.tell({ kind: 'acknowledgment', streamSeq: 14 });
-      await sleep(20);
+      await sleep(SETTLE_MS);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
     }
@@ -657,7 +737,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       const pc = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
       actor.tell({ kind: 'fetch', batch: 0, expiresMs: 100 });
       actor.tell({ kind: 'fetch', batch: -5, expiresMs: 100 });
-      await sleep(20);
+      // An absence — `fetchCalls` is already empty, so a predicate over it
+      // returns at t=0.  This is the turn a wrongly-forwarded fetch would use.
+      await sleep(SETTLE_MS);
       expect(pc.fetchCalls).toEqual([]);
     } finally {
       await sys.terminate();
@@ -678,7 +760,10 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       // No pull consumer was ever fetched.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
       actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
-      await sleep(20);
+      // An absence, and the second reading of one that already held; this is
+      // the turn in which a push-mode actor that wrongly honoured the fetch
+      // would materialise a pull consumer.
+      await sleep(SETTLE_MS);
       // Still no pull consumer.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
     } finally {
