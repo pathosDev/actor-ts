@@ -296,39 +296,52 @@ describe('timer bookkeeping after a one-shot fires', () => {
   });
 
   test('cycling through timer keys does not grow the map', async () => {
-    // The leak: an actor that starts a fresh single timer per message kept
-    // one dead entry per key, forever.
+    // The leak: a fired one-shot left its entry behind — nothing calls back
+    // into the handle map when a timer runs — so an actor that starts a fresh
+    // single timer per message accumulated one dead entry per key for its
+    // whole life.  `activeKeys()` prunes settled handles on read.
+    //
+    // The timer message deliberately does *not* arm another timer.  An earlier
+    // version of this test had it do exactly that, which made the population
+    // self-perpetuating: 25 timers in flight forever, each fired message
+    // arming its successor.  `activeKeys()` then reads 0 only when the actor
+    // happens to be running *behind* its own timers — all 25 settled and none
+    // of their messages handled yet — which is a property of the scheduler,
+    // not of the map.  It held under a dispatcher costing a macrotask per turn
+    // and stopped holding the moment turns got cheaper, reporting a leak where
+    // there was none: the count sat at exactly 25, the live timers, correctly
+    // retained.  Letting the timers settle for good tests the invariant
+    // itself, and tests it identically under any scheduler.
     let keyCount = -1;
 
-    class T extends Actor<'work' | 'check'> {
+    class T extends Actor<'tick' | 'work' | 'check'> {
       private nextIndex = 0;
-      override onReceive(m: 'work' | 'check'): void {
-        if (m === 'work') this.context.timers.startSingleTimer(`k${this.nextIndex++}`, 'work', 5);
-        else keyCount = this.context.timers.activeKeys().length;
+      override onReceive(m: 'tick' | 'work' | 'check'): void {
+        if (m === 'work') this.context.timers.startSingleTimer(`k${this.nextIndex++}`, 'tick', 5);
+        else if (m === 'check') keyCount = this.context.timers.activeKeys().length;
+        // 'tick' is the timer firing, and it is meant to do nothing at all.
       }
     }
     const sys = newSystem();
     const ref = sys.spawn(T, 'churn');
-    for (let i = 0; i < 25; i++) ref.tell('work');
 
-    // Poll rather than sleep.  The 80 ms this used to wait encodes an idle
-    // machine: the cell dequeues one user message per event-loop turn, so
-    // arming 25 timers already costs 25 turns before the first 5 ms delay
-    // starts running down.  Under CI load that budget is not enough, and the
-    // assertion then reads a map the invariant has not reached yet rather
-    // than one it violated — 22 live keys on the run that caught this.  The
-    // timeout is a failure budget; a healthy run returns on the first poll.
-    await awaitCondition(
-      async () => {
-        keyCount = -1;
-        ref.tell('check');
-        await sleep(5);
-        return keyCount === 0;
-      },
-      { timeoutMs: 4_000, intervalMs: 20, label: 'timer handles drain to zero' },
-    );
-
-    expect(keyCount).toBe(0);
+    // Three waves over 75 distinct keys.  One wave would catch a total failure
+    // to prune; the waves catch the defect as it actually behaved, which was
+    // cumulative — with entries retained the count reads 25, then 50, then 75
+    // instead of returning to zero each time.
+    for (let wave = 0; wave < 3; wave++) {
+      for (let i = 0; i < 25; i++) ref.tell('work');
+      await awaitCondition(
+        async () => {
+          keyCount = -1;
+          ref.tell('check');
+          await sleep(5);
+          return keyCount === 0;
+        },
+        { timeoutMs: 4_000, intervalMs: 20, label: `wave ${wave + 1} drains to zero` },
+      );
+      expect(keyCount).toBe(0);
+    }
     await sys.terminate();
   });
 });

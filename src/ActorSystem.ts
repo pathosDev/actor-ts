@@ -18,6 +18,7 @@ import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
   Dispatcher,
   DispatcherErrorSink,
+  HybridDispatcher,
   ImmediateDispatcher,
   MicrotaskDispatcher,
   ThroughputDispatcher,
@@ -1029,11 +1030,18 @@ function actorThroughputFromConfig(config: Config): number {
   return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
 }
 
+/**
+ * The absent-key case and the unrecognised-value case both land on the default
+ * rather than on a named kind, so "what runs when nobody chose?" has exactly
+ * one answer — including for a typo, which is the case most likely to reach
+ * someone wondering why their tuning did nothing.
+ */
 function dispatcherFromConfig(config: Config): Dispatcher {
   const kind = config.hasPath(ConfigKeys.dispatcher.default)
     ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
-    : 'immediate';
+    : 'hybrid';
   return match(kind)
+    .with('immediate',  () => new ImmediateDispatcher() as Dispatcher)
     .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
     .with('throughput', () => {
       const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
@@ -1041,5 +1049,5 @@ function dispatcherFromConfig(config: Config): Dispatcher {
         : DEFAULT_DISPATCHER_THROUGHPUT;
       return new ThroughputDispatcher(throughput) as Dispatcher;
     })
-    .otherwise(() => new ImmediateDispatcher() as Dispatcher);
+    .otherwise(() => new HybridDispatcher() as Dispatcher);
 }

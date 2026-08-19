@@ -337,15 +337,34 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     expect(rec.connections).toHaveLength(2);
     expect(Math.max(...rec.childCounts)).toBeGreaterThanOrEqual(2);
 
-    // Closing one stops its child → the hub's child count drops.
+    // Closing one stops its child, and the hub's child count drops.
+    //
+    // Read at the *next* event rather than inside `onClientDisconnected`, and
+    // that distinction is the interesting part.  A connection actor reports its
+    // disconnect from `postStop`, while the `childTerminated` that unregisters
+    // it from the parent is sent afterwards, from the rest of the same
+    // termination.  So the hook can run before the child is off the parent's
+    // list — the hub's own `clients` map is already correct, but the raw
+    // `context.children` view still counts a child that is finishing stopping,
+    // because it genuinely is still finishing stopping.  Whether the hook sees
+    // that transient depends purely on how fast the hub's next turn is
+    // scheduled, so asserting on it pins the scheduler rather than the
+    // cleanup.  Connecting a third socket reads the count once the dust has
+    // settled, which is the durable property this test is named for: 2 means
+    // B and C, with A's child gone; a leak would read 3.
     socketA.close(1000, 'bye');
-    await awaitCondition(() => rec.childCounts[rec.childCounts.length - 1] === 1, {
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('disconnect:')), {
       timeoutMs: 4_000,
-      label: 'the hub child count dropped back to one',
+      label: 'the disconnect hook fired',
     });
-    expect(rec.events.some((e) => e.startsWith('disconnect:'))).toBe(true);
-    const afterDisconnect = rec.childCounts[rec.childCounts.length - 1]!;
-    expect(afterDisconnect).toBe(1);
+
+    const socketC = new MockSocket();
+    wire(system, hub, socketC);
+    await awaitCondition(() => rec.connections.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the third socket connected',
+    });
+    expect(rec.childCounts[rec.childCounts.length - 1]).toBe(2);
   });
 
   test('connection exposes upgrade info (path, params, query, remoteAddress)', async () => {

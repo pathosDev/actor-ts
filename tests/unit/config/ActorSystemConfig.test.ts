@@ -116,8 +116,9 @@ describe('ActorSystem — config integration', () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger());
     const sys = ActorSystem.create('cfg', sysOptions);
-    // Default dispatcher is "immediate" (per reference.conf).
-    expect(sys.dispatcher.constructor.name).toBe('ImmediateDispatcher');
+    // Default dispatcher is "hybrid" (per reference.conf): microtask wakeups
+    // with a macrotask yield every 64 units.
+    expect(sys.dispatcher.constructor.name).toBe('HybridDispatcher');
     await sys.terminate();
   });
 });
