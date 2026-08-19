@@ -232,15 +232,56 @@ function fromAlphabet(length: number, alphabet: string): string {
   // 52-character alphabet (letters, no digits) at 18.75 % rejection, so a second
   // draw is occasionally needed and a third is rare.
   const ceiling = Math.floor(256 / alphabet.length) * alphabet.length;
-  const bytes = new Uint8Array(length);
   let out = '';
   while (out.length < length) {
-    globalThis.crypto.getRandomValues(bytes);
-    for (const byte of bytes) {
-      if (byte >= ceiling) continue;
-      out += alphabet[byte % alphabet.length];
-      if (out.length === length) break;
-    }
+    const byte = nextEntropyByte();
+    if (byte >= ceiling) continue;
+    out += alphabet[byte % alphabet.length];
   }
   return out;
+}
+
+/**
+ * Bytes for {@link fromAlphabet}, drawn one at a time from a buffer the CSPRNG
+ * fills in bulk.
+ *
+ * **The entropy is unchanged** — these are the same `crypto.getRandomValues`
+ * bytes, consumed in the same rejection-sampled way; what is amortised is the
+ * call, not the randomness.  That distinction is the whole point: every
+ * identifier this module produces is addressable on the cluster wire, an
+ * anonymous actor's name and an ask reply-ref's name alike, so a counter or a
+ * per-process seed would make a reply address guessable.  Batching the syscall
+ * is free; weakening the draw is not on the table.
+ *
+ * A spawn draws twelve characters and an ask another twelve, so at a few
+ * hundred thousand spawns a second the per-draw call was the measurable half of
+ * name generation.  One refill now serves several hundred identifiers.
+ */
+const ENTROPY_POOL_BYTES = 4_096;
+const entropyPool = new Uint8Array(ENTROPY_POOL_BYTES);
+// Starts exhausted so the first draw fills it; no branch for "never filled".
+let entropyOffset = ENTROPY_POOL_BYTES;
+
+function nextEntropyByte(): number {
+  if (entropyOffset >= ENTROPY_POOL_BYTES) {
+    globalThis.crypto.getRandomValues(entropyPool);
+    entropyOffset = 0;
+  }
+  return entropyPool[entropyOffset++]!;
+}
+
+/**
+ * @internal — discard any buffered entropy.
+ *
+ * The pool is the one thing here that outlives a call, which means it also
+ * outlives a test substituting `crypto.getRandomValues` to make `randomId`
+ * deterministic: bytes drawn from the real generator before the substitution
+ * are still in the buffer afterwards, and the next few identifiers ignore the
+ * stub entirely.  A test that swaps the generator calls this to say so.
+ *
+ * Deliberately not a general "reseed": there is no production reason to drop
+ * entropy, and the pool holds no state worth resetting outside that one case.
+ */
+export function _resetEntropyPool(): void {
+  entropyOffset = ENTROPY_POOL_BYTES;
 }

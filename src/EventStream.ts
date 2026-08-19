@@ -206,6 +206,17 @@ export class EventStream {
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
    * an API that does not throw by contract, into one that did.
    */
+  /**
+   * Whether anything is listening at all.
+   *
+   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
+   * *constructing* an event, which is only sound when the answer covers every
+   * channel; a per-channel query would let a caller skip building an event a
+   * different channel's subscriber was entitled to.  With DevTools attached the
+   * cost comes back, which is the intended trade.
+   */
+  get hasSubscribers(): boolean { return this.subs.length > 0; }
+
   publish(event: object): void {
     // The snapshot below exists to fix the recipient set for the duration of
     // the loop.  An empty stream has no set to fix, and this is the ordinary

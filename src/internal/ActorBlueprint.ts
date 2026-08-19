@@ -24,13 +24,26 @@ export type ActorBlueprint<TMessage> = ActorOptionsType<TMessage> & {
  * The options are **snapshotted**: a builder mutated after the spawn does not
  * retroactively reconfigure a running actor.
  */
+const BLUEPRINT_VALIDATOR = new ActorOptionsValidator<unknown>();
+
 export function actorBlueprintOf<TMessage>(
   actor: ActorClassOrFactory<TMessage>,
   options?: ActorOptions<TMessage>,
 ): ActorBlueprint<TMessage> {
-  const settings = { ...(options as Partial<ActorOptionsType<TMessage>> | undefined) };
-  new ActorOptionsValidator<TMessage>().validate(settings);
-  return { ...settings, factory: actorFactoryOf(actor) };
+  // One spread, not two: the blueprint the cell keeps *is* the snapshot, so
+  // building an intermediate copy to validate and then copying that copy
+  // allocated a second object per spawn for nothing.  The validator reads only
+  // declared fields and ignores `factory`.
+  const blueprint = {
+    ...(options as Partial<ActorOptionsType<TMessage>> | undefined),
+    factory: actorFactoryOf(actor),
+  };
+  // Shared rather than constructed per spawn.  `OptionsValidator` holds only
+  // transient state for the duration of a synchronous, non-reentrant
+  // `validate()` — its own header says so — and spawning is not reentrant with
+  // itself, so one instance serves every call.
+  BLUEPRINT_VALIDATOR.validate(blueprint as Partial<ActorOptionsType<unknown>>);
+  return blueprint;
 }
 
 /**

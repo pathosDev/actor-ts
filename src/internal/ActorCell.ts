@@ -98,7 +98,20 @@ function watchKeyOf(ref: ActorRef): string {
 export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly self: LocalActorRef<TMessage>;
   readonly path: ActorPath;
-  readonly log: Logger;
+  /**
+   * Built on first use rather than at spawn.  Constructing it eagerly cost a
+   * `DisplayNameLogger`, a closure and — through `withSource` — a full render
+   * of the actor's path, for every actor including the ones that never log a
+   * line.  The render is memoized on the path, so deferring it means an actor
+   * that never logs never pays for it at all.
+   */
+  private _log: Logger | null = null;
+  get log(): Logger {
+    return this._log ??= new DisplayNameLogger(
+      this.system.log.withSource(this.path.toString()),
+      () => this._customDisplayName() ?? '',
+    );
+  }
 
   private readonly mailbox: Mailbox<TMessage>;
   /**
@@ -133,7 +146,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _watchWithMessages = new Map<string, TMessage>();
 
-  private _failureTimes: number[] = [];
+  /**
+   * Restart timestamps for the supervision window, `null` until the first
+   * failure — which for most actors is never.
+   */
+  private _failureTimes: number[] | null = null;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -189,7 +206,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _displayNameFailed = false;
 
   /** Per-actor timer scheduler. */
-  readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
+  /**
+   * Lazily constructed: the scheduler allocates a `Map` of its own, and the
+   * overwhelming majority of actors never set a timer.  Two of the three
+   * readers only ever cancel, so they ask the field rather than the getter and
+   * skip building a scheduler in order to tell it there is nothing to cancel.
+   */
+  private _timers: CellTimerScheduler<TMessage> | null = null;
+  get timers(): TimerScheduler<TMessage> {
+    return this._timers ??= new CellTimerScheduler<TMessage>(this);
+  }
 
   /**
    * @internal Child names to stop one after another instead of all at once,
@@ -234,12 +260,6 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       : new ActorPath(name, null, system.name, uid);
     this.mailbox = this._createMailbox(blueprint);
     this.self = new LocalActorRef<TMessage>(this);
-    // Resolved per record rather than bound here: the user's Actor does not
-    // exist yet, and once it does its name may change (state, restart).
-    this.log = new DisplayNameLogger(
-      system.log.withSource(this.path.toString()),
-      () => this._customDisplayName() ?? '',
-    );
     this.enqueueSystem({ kind: 'create' });
   }
 
@@ -1318,9 +1338,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           { help: 'Cumulative count of actors successfully started.' },
         ).inc();
       }
-      this.system.eventStream.publish(
-        new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
-      );
+      // Gated like its counterpart in `finalizeTermination`: the parent-path
+      // argument alone forces a path render, and nothing renders a path for an
+      // event nobody receives.
+      if (this.system.eventStream.hasSubscribers) {
+        this.system.eventStream.publish(
+          new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
+        );
+      }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.log.error('Actor initialization failed', err);
@@ -1379,7 +1404,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Cancel actor-scoped timers before user code runs in postStop so the
     // actor cannot schedule new messages into a mailbox that's about to
     // drain to dead letters.
-    this.timers.cancelAll();
+    this._timers?.cancelAll();
     // Cancel any pending throttle-resume tick — same reasoning as the
     // user timers above.
     this._throttleResumeTimer?.cancel();
@@ -1418,13 +1443,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         { help: 'Cumulative count of actors that have been stopped.' },
       ).inc();
     }
-    this.system.eventStream.publish(new ActorStopped(this.self));
+    // The event object itself is only worth building if somebody is listening;
+    // an unobserved system publishes one per actor stop and iterates nobody.
+    if (this.system.eventStream.hasSubscribers) {
+      this.system.eventStream.publish(new ActorStopped(this.self));
+    }
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
-    // `_notifyWatcher` for why the loop must not be able to throw.
-    const terminated = new Terminated(this.self);
-    for (const watcher of this._watchers) this._notifyWatcher(watcher, terminated);
-    this._watchers.clear();
+    // `_notifyWatcher` for why the loop must not be able to throw.  Built only
+    // when there is a watcher to hand it to: most actors are watched by nobody,
+    // and the signal was being allocated for them anyway.
+    if (this._watchers.size > 0) {
+      const terminated = new Terminated(this.self);
+      for (const watcher of this._watchers) this._notifyWatcher(watcher, terminated);
+      this._watchers.clear();
+    }
 
     // Tell watched targets to drop us from their watcher set
     for (const watched of this._watching.values()) {
@@ -1449,7 +1482,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // carry over — the new instance has none of the state that made those
     // messages un-handleable — but it goes to dead letters rather than
     // being dropped, so a restart does not swallow them silently.
-    this.timers.cancelAll();
+    this._timers?.cancelAll();
     this.deadLetterStash();
 
     // Let the old instance clean up.  The default is `postStop()`.
@@ -2068,9 +2101,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const now = Date.now();
     if (strategy.withinTimeRangeMs > 0) {
       const threshold = now - strategy.withinTimeRangeMs;
-      this._failureTimes = this._failureTimes.filter(t => t >= threshold);
+      this._failureTimes = (this._failureTimes ?? []).filter(t => t >= threshold);
     }
-    this._failureTimes.push(now);
+    (this._failureTimes ??= []).push(now);
     return this._failureTimes.length <= strategy.maxRetries + 1;
   }
 
