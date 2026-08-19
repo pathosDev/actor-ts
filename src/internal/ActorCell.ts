@@ -1258,17 +1258,33 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * per actor lifecycle, so a spawn paid for it twice.
    */
   private handleSystemCommand(command: SystemCommand): void | Promise<void> {
-    return match(command)
-      .with({ kind: 'create' }, () => this.onCreate())
-      .with({ kind: 'terminate' }, () => this.onTerminate())
-      .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
-      .with({ kind: 'suspend' }, () => this.onSuspend())
-      .with({ kind: 'resume' }, () => this.onResume())
-      .with({ kind: 'failure' }, (signal) => this.onFailure(signal))
-      .with({ kind: 'childTerminated' }, (signal) => this.onChildTerminated(signal))
-      .with({ kind: 'watchNotify' }, (signal) => this.onWatchNotify(signal))
-      .with({ kind: 'receiveTimeout' }, () => this.onReceiveTimeout())
-      .exhaustive();
+    // switch, not match(): AGENTS.md's measured-hot-path exemption.  Two of
+    // these arms run per actor lifecycle — `create` on the child, then
+    // `childTerminated` on its parent — and `benchmarks/comparison` measures a
+    // full lifecycle at ~15 us, against which building a nine-arm matcher and
+    // its closures twice is worth about 10 %.  The repo measured the same
+    // construct on a message path at 18-22 % of throughput (#27).  The arms
+    // stay one-line delegations, which is what the rule is actually protecting.
+    //
+    // Exhaustiveness moves from run time to compile time rather than being
+    // given up: adding a `SystemCommand` variant without a case here makes the
+    // `never` assignment below fail to compile.
+    switch (command.kind) {
+      case 'create': return this.onCreate();
+      case 'terminate': return this.onTerminate();
+      case 'recreate': return this.onRecreate(command);
+      case 'suspend': return this.onSuspend();
+      case 'resume': return this.onResume();
+      case 'failure': return this.onFailure(command);
+      case 'childTerminated': return this.onChildTerminated(command);
+      case 'watchNotify': return this.onWatchNotify(command);
+      case 'receiveTimeout': return this.onReceiveTimeout();
+      default: {
+        const _exhaustive: never = command;
+        void _exhaustive;
+        return;
+      }
+    }
   }
 
   /**
