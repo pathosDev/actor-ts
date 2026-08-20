@@ -9,6 +9,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **The comparison benchmarks now run on Linux** (#1325). Six of the nine arms
+  failed there. Two separate causes, and they deserved separate treatment.
+
+  The committed POSIX build-tool launchers were recorded at mode `100644`, so
+  `/bin/sh` refused to exec them and every JVM arm died with exit 126 before
+  its build tool was reached. Windows never saw it — there the `.bat` sibling
+  is the entry point and `core.fileMode` is false regardless — and neither did
+  any gate, because nothing in the repository looked at a file mode. The four
+  scripts are now `100755`, asserted against the **git index** by
+  `tests/unit/ci/ComparisonLauncherModes.test.ts`; the working tree cannot
+  answer that question on Windows, so a filesystem check would have passed on
+  the one platform where the bug does not bite.
+
+  Separately, an arm whose toolchain is simply not installed was reported as a
+  failed arm, so a machine without the .NET SDK exited non-zero and buried the
+  arms that did measure under an error summary. The driver now checks each
+  external arm before running it and reports a missing toolchain as **skipped**,
+  naming what to install and keeping the exit code at 0 — `RESULTS.md` dates
+  every arm separately, so a partial run stays legible. Skips are listed in the
+  summary on the success path too, since a partial run reported as a plain
+  green tick is how a release publishes figures for arms that never ran. A
+  launcher that exists but is not executable stays a hard failure: that is a
+  broken checkout, not an environment choice, and the message carries the
+  `chmod` that fixes it.
+
+  The Windows `.bat` is also no longer the reason POSIX goes through a shell.
+  A shell is now used only where one is required, which removes the last place
+  a path containing a space could break the invocation.
+
 ### Changed
 
 - **The comparison gains two Scala 3 arms, and all four JVM arms move to one
