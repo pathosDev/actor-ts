@@ -9,6 +9,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **The Bun toolchain is pinned to 1.4.0** (#1328). CI read
+  `bun-version: latest` at 13 of 14 setup-bun sites, so Bun 1.4.0 — the
+  first release of Bun's Rust rewrite — would have switched every
+  workflow silently, the way 1.3.14 once broke the badge scrape (#1194).
+  The version now lives in `.bun-version`; every workflow reads it via
+  `bun-version-file`, the 18 integration images moved to
+  `oven/bun:1.4-debian`, and a future bump is a one-line reviewed change
+  that triggers the gates it affects. The supported floor is unchanged —
+  `engines` still declares Bun >= 1.3.0 and the multi-runtime floor leg
+  still tests it — and the nightly quarantine criterion now counts
+  nights only while the pin is unchanged (#1330). Validated under 1.4.0
+  before pinning: full suite, coverage gate, stress ×5, three-runtime
+  smoke, examples, bench:smoke, check:ui, lint:package, lint:audit.
+
 ### Fixed
 
 - **A one-way tell batch could be read before it landed, and one failed arm
