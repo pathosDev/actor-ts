@@ -15,7 +15,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 | Runtime | Mindestversion | Hinweise |
 | --- | --- | --- |
-| **Bun** | 1.3 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server. |
+| **Bun** | 1.3 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server.  Toolchain und CI des Frameworks laufen auf exakt der Bun-Version, die `.bun-version` pinnt. |
 | **Node.js** | 24.0 | Bringt alles nativ mit: WebSocket-Client, zstd-Kompression, WebCrypto, fetch.  SQLite über das eingebaute `node:sqlite` oder `better-sqlite3`, wenn du es installierst. |
 | **Deno** | 2.2 | Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.  Mit `--allow-net` / `--allow-read` ausführen, wenn nötig.  SQLite braucht Deno 2.2 für `node:sqlite`; alles andere läuft ab 2.0. |
 

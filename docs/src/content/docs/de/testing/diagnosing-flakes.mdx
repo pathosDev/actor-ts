@@ -440,9 +440,13 @@ Ergebnis kommt deshalb als Annotation am Lauf und als Step-Summary.
 Die Latte liegt bei **14 aufeinanderfolgenden grünen Nächten** — 42
 aufeinanderfolgenden grünen Ausführungen.  Zwei Kalenderwochen statt einer
 kleineren Zahl, weil der Fehler eine Eigenschaft des Runner-Pools ist und
-nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools sowie
-mehrere `bun-version: latest`-Rollen ab, und genau davon muss gezeigt werden,
-dass es aufgehört hat.  Eine einzige rote Nacht setzt den Zähler zurück; das
+nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools ab,
+und genau davon muss gezeigt werden, dass es aufgehört hat.  Die Toolchain
+selbst variiert unter der Messung nicht mehr: Seit dem Bun-1.4.0-Pin
+(2026-08-21) liest jedes Bein die repo-weite `.bun-version`-Datei, Nächte
+zählen also nur, solange dieser Pin unverändert bleibt — ein Bun-Bump ist
+eine begründete Entscheidung am Experiment-Issue, und der Zähler ist mit dem
+Pin neu gestartet.  Eine einzige rote Nacht setzt den Zähler zurück; das
 `summary.json` jeder Nacht ist der Beleg (`greenRuns == runs` und ein leeres
 `runsTimedOut` — ein hängender Lauf ist rot, egal wie wenige Tests darin
 umgefallen sind).

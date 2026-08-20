@@ -25,6 +25,7 @@ on:
       - 'src/**'
       - 'benchmarks/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.bench.json'
@@ -35,6 +36,7 @@ on:
       - 'src/**'
       - 'benchmarks/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.bench.json'
@@ -64,7 +66,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Frozen, like every other install in CI: an unfrozen resolve can
       # green-light a dependency set no lockfile records, so the check
@@ -109,7 +111,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Two installs, two manifests.  The root one is what the arms import
       # actor-ts from; the nested one carries the frameworks it is measured

@@ -19,6 +19,7 @@ on:
       - 'devtools-ui/**'
       - 'scripts/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/build.yml'
@@ -29,6 +30,7 @@ on:
       - 'devtools-ui/**'
       - 'scripts/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/build.yml'
@@ -49,7 +51,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Frozen: `dependencies` feed the bundle's source-hash below, so a
       # drifting install would move the fingerprint the check compares.
@@ -70,7 +72,7 @@ jobs:
       # It compares the `source-hash` in the committed module's header
       # against a fresh one, rather than rebuilding and diffing bytes.
       # The bytes are not a function of the sources alone — gzip stamps
-      # the OS into every member and `bun-version: latest` moves the
+      # the OS into every member and every Bun-version bump moves the
       # minifier under us — so a byte diff fires on bundles that are
       # perfectly current (#521).  See scripts/build-devtools-ui.mjs.
       - name: Verify the embedded DevTools UI bundle is current

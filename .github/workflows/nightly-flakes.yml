@@ -30,9 +30,14 @@ name: nightly-flakes
 # **14 consecutive green nights** of the `quarantined` job, then un-quarantine
 # in one change.  Fourteen rather than a smaller number because the failure is
 # a property of the runner pool, not of the code: two calendar weeks spans
-# weekday and weekend pools and several `bun-version: latest` rolls, which is
-# what has to be shown to have stopped happening.  Each night is 3 repeats of
-# all three suites, so the bar is 42 consecutive green executions.
+# weekday and weekend pools, which is what has to be shown to have stopped
+# happening.  Each night is 3 repeats of all three suites, so the bar is 42
+# consecutive green executions.  The toolchain no longer rolls underneath the
+# experiment: every leg reads the repo-wide `.bun-version` pin, so nights
+# count only while that pin is unchanged — a Bun bump is a logged decision on
+# the experiment issue (continue or reset, with reasoning), and the count
+# restarted at the Bun 1.4.0 pin (2026-08-21, #1330).  Before the pin,
+# `bun-version: latest` rolled silently under the count.
 #
 # Un-quarantining is then, in one commit:
 #   - drop `ACTOR_TS_SKIP_FLAKY_MNS` from test.yml, multi-runtime.yml and
@@ -123,7 +128,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Install
         run: bun install --frozen-lockfile
@@ -206,7 +211,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Install
         run: bun install --frozen-lockfile
