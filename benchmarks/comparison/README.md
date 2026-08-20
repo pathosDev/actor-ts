@@ -402,6 +402,13 @@ Use `--javascript-only` to skip the cross-language arms deliberately rather
 than by omission — that is what CI does, since it installs Bun and nothing
 else.
 
+**A failed arm does not discard the run.** The rounds are merged before the
+exit code reports the failure, so an arm that dies at round 44 of 100 leaves
+every other arm's hundred rounds intact and publishes its own 43 — with the
+shortfall printed beside it, and the count carried into `RESULTS.md`, so a
+short arm is never mistaken for a full one. It used to exit first and throw
+away hours of measurement over one bad row (#1326).
+
 A launcher that is present but not executable is *not* a missing toolchain: it
 is a broken checkout, and the run fails with the `chmod` that fixes it. The
 POSIX `mill` scripts are committed as mode `100755` for that reason, and

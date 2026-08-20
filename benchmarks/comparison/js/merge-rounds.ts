@@ -105,6 +105,23 @@ function averageScenario(rows: ReadonlyArray<ScenarioResult>): ScenarioResult {
 }
 
 /**
+ * How many rounds each arm actually completed, keyed by framework name.
+ *
+ * Arms are not required to reach the same count. One that dies partway leaves
+ * the rounds it did finish, and those still merge — so the driver needs a way
+ * to say which arms fell short rather than presenting a mixed set as uniform
+ * (#1326).
+ */
+export function roundsPerArm(): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const [, rounds] of groupRoundsByArm()) {
+    const last = rounds[rounds.length - 1];
+    if (last !== undefined) counts.set(last.framework.name, rounds.length);
+  }
+  return counts;
+}
+
+/**
  * Merge every arm's rounds into `results/`, returning the written paths.
  *
  * The scenario list comes from the last round, so an arm that gained a case
