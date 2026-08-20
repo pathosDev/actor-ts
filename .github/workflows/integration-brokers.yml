@@ -24,6 +24,7 @@ on:
       - 'src/**'
       - 'tests/integration/brokers/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/integration-brokers.yml'
@@ -33,6 +34,7 @@ on:
       - 'src/**'
       - 'tests/integration/brokers/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/integration-brokers.yml'
@@ -95,7 +97,7 @@ jobs:
         # — the actual scenarios run INSIDE the Docker containers.
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Docker is preinstalled on `ubuntu-latest`.  Surface the
       # version in the log so a future Docker-on-Actions outage

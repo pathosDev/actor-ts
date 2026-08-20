@@ -410,10 +410,14 @@ step summary.
 The bar is **14 consecutive green nights** — 42 consecutive green executions.
 Two calendar weeks rather than a smaller number because the failure is a
 property of the runner pool, not of the code: a fortnight spans weekday and
-weekend pools and several `bun-version: latest` rolls, which is what has to
-be shown to have stopped happening.  A single red night resets the count, and
-each night's `summary.json` is the evidence (`greenRuns == runs`, and an empty
-`runsTimedOut` — a hung run is red however few tests failed in it).
+weekend pools, which is what has to be shown to have stopped happening.  The
+toolchain itself no longer varies underneath the measurement: since the Bun
+1.4.0 pin (2026-08-21) every leg reads the repo-wide `.bun-version` file, so
+nights count only while that pin is unchanged — a Bun bump is a logged
+decision on the experiment issue, and the count restarted at the pin.  A
+single red night resets the count, and each night's `summary.json` is the
+evidence (`greenRuns == runs`, and an empty `runsTimedOut` — a hung run is
+red however few tests failed in it).
 
 **The first two nights kept no evidence at all.**  `actions/upload-artifact`
 has defaulted `include-hidden-files` to false since v4.4, `.stress` is a
