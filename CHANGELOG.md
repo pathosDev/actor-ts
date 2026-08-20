@@ -11,6 +11,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A one-way tell batch could be read before it landed, and one failed arm
+  discarded every arm's rounds** (#1326). Both surfaced on the same run: a
+  hundred-round measurement stopped at round 44 with `completed 993 of 1000
+  operations`.
+
+  The virtual-actor arm sends its batch as one-way RPCs — that runtime's
+  nearest analogue to fire-and-forget — and then read the counter back with a
+  single call. A one-way call completes when the message is *dispatched*, not
+  when the grain has processed it, and the runtime orders it against nothing,
+  so the read could overtake the tail of the batch. No other arm needs care
+  here: their frameworks order messages per sender-recipient pair, so a read
+  issued after N sends observes all N. The read is now a bounded drain that
+  accumulates across reads — delayed messages are counted, and messages that
+  were *dropped* rather than delayed still time out and still fail the row, so
+  it remains a completion check rather than a way of passing one. Both
+  directions are covered by a probe: the same delayed batch fails with the old
+  single read and passes with the drain, and a permanently lost batch fails
+  either way.
+
+  Separately, the driver called `process.exit(1)` before it merged, so one arm
+  failing once at round 44 threw away the other eight arms' hundred rounds as
+  well — hours of measurement, already written per round, discarded over one
+  bad row. It now merges first and reports the failure afterwards. Merging
+  costs no honesty: each merged file records that arm's own round count and
+  `RESULTS.md` prints it per arm, and the driver names any arm that fell short
+  of the requested count.
+
 - **The comparison benchmarks now run on Linux** (#1325). Six of the nine arms
   failed there. Two separate causes, and they deserved separate treatment.
 

@@ -44,7 +44,7 @@ import { accessSync, constants, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi } from '../lib/stats.js';
 import { captureEnvironment } from './js/environment.js';
-import { mergeRounds } from './js/merge-rounds.js';
+import { mergeRounds, roundsPerArm } from './js/merge-rounds.js';
 import { ROUNDS_DIRECTORY } from './js/result-file.js';
 
 /** An arm written in TypeScript, run through the shared harness on Bun. */
@@ -437,6 +437,24 @@ function run(): void {
       '    dates every arm separately, so a stale one stays visible as stale.'));
   }
 
+  // Merge before reporting a failure, never after. An arm that dies once at
+  // round 44 of 100 used to discard every *other* arm's hundred rounds too,
+  // because this exited first — hours of measurement, already written per
+  // round, thrown away over one bad row (#1326). Merging costs no honesty: the
+  // merged file records the arm's own round count and `RESULTS.md` prints it
+  // per arm, so an arm at 43 beside eight at 100 reads as exactly that.
+  if (rounds > 1 && process.env.ACTOR_TS_BENCH_SMOKE !== '1') {
+    const written = mergeRounds();
+    console.log(`  ${ansi.green('✓')} merged into ${written.length} result file(s)`);
+    for (const [name, count] of roundsPerArm()) {
+      if (count < rounds) {
+        console.log(ansi.yellow(
+          `    ${name} carries ${count} of ${rounds} rounds — the rest did not complete`,
+        ));
+      }
+    }
+  }
+
   if (failed.length > 0) {
     console.log(
       `  ${ansi.red('✗')} ${failed.length} of ${selected.length - skipped.length} arm(s) failed `
@@ -444,11 +462,6 @@ function run(): void {
     );
     for (const name of failed) console.log(ansi.red(`      ${name}`));
     process.exit(1);
-  }
-
-  if (rounds > 1 && process.env.ACTOR_TS_BENCH_SMOKE !== '1') {
-    const written = mergeRounds();
-    console.log(`  ${ansi.green('✓')} merged ${rounds} rounds into ${written.length} result file(s)`);
   }
 
   console.log(`  ${ansi.green('✓')} done — total wall time ${ansi.bold(elapsed + 's')}`);

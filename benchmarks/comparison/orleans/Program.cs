@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
@@ -40,6 +41,17 @@ internal static class Program
     private const int PingPongIterations = 20;
     private const int PingPongExchanges = 10_000;
     private const int PingPongWarmup = 10;
+
+    /// <summary>
+    /// How long a tell batch may wait for one-way messages still in flight.
+    /// </summary>
+    /// <remarks>
+    /// Generous on purpose. It is not a tuning knob for the measurement — the
+    /// wait only happens when a read came back short, and the whole point is
+    /// to leave no doubt that a batch which still has not arrived was dropped
+    /// rather than delayed.
+    /// </remarks>
+    private const int TellDrainTimeoutSeconds = 5;
 
     private const string ActivationNote =
         "Orleans has no caller-visible create or stop: a grain activates on first call and "
@@ -144,7 +156,49 @@ internal static class Program
     private static async Task<long> TellBatchAsync(ICounterGrain counter, int batch)
     {
         for (var i = 0; i < batch; i++) await counter.Increment();
-        return await counter.ReadAndReset();
+        return await DrainAsync(counter, batch);
+    }
+
+    /// <summary>
+    /// Read the counter back, allowing for one-way messages still in flight.
+    /// </summary>
+    /// <remarks>
+    /// <para><c>[OneWay]</c> completes the caller's task when the message is
+    /// <em>dispatched</em>, not when the grain has processed it, and this
+    /// runtime guarantees no ordering between a one-way message and a later
+    /// two-way one. A single read can therefore overtake the tail of the batch:
+    /// it did once, as 993 of 1000, at round 44 of a hundred-round run on a
+    /// machine fast enough for the sender to outrun the grain (#1326). No other
+    /// arm needs this — their frameworks order messages per sender-recipient
+    /// pair, so a read issued after N sends observes all N.</para>
+    ///
+    /// <para>Reads accumulate because each one resets, so nothing is
+    /// double-counted and a short read cannot leak into the next iteration.
+    /// The bound is what keeps this a completion check rather than a way of
+    /// passing one: a message that was dropped instead of delayed never
+    /// arrives, the loop runs out, and <c>RequireComplete</c> fails exactly as
+    /// it did before. Distinguishing those two is the entire purpose — the
+    /// first is a harness that read too early, the second is work that did not
+    /// happen.</para>
+    ///
+    /// <para>The common case costs precisely what it always did: one read, and
+    /// the loop is never entered.</para>
+    /// </remarks>
+    private static async Task<long> DrainAsync(ICounterGrain counter, int batch)
+    {
+        var observed = await counter.ReadAndReset();
+        if (observed >= batch) return observed;
+
+        var deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * TellDrainTimeoutSeconds);
+        while (observed < batch && Stopwatch.GetTimestamp() < deadline)
+        {
+            // Yield between reads so the silo's own scheduler gets the thread.
+            // A tight loop of grain calls from the client can starve exactly
+            // the delivery it is waiting for.
+            await Task.Yield();
+            observed += await counter.ReadAndReset();
+        }
+        return observed;
     }
 
     /// <summary>
