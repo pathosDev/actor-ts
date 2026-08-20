@@ -28,12 +28,19 @@
  * the failures in its exit code — the property `run-all.ts` had to learn the
  * hard way when ten broken suites exited 0 for months (#506).
  *
+ * An arm whose **toolchain is not installed** is a different outcome from an
+ * arm that failed. It is reported as skipped, named again in the summary, and
+ * does not fail the run: `RESULTS.md` carries one environment row per arm
+ * precisely so a partial run stays legible instead of forcing an all-or-nothing
+ * choice. A launcher that is present but *not executable* is not that case —
+ * that is a defect in the checkout, and it fails (#1325).
+ *
  * This is a deliberately separate driver from `../run-all.ts`, which skips
  * this directory by name: these arms need this tree's own installed manifest,
  * which a clean clone and every CI run of `bun run bench` does not have.
  */
 import { spawnSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { accessSync, constants, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi } from '../lib/stats.js';
 import { captureEnvironment } from './js/environment.js';
@@ -182,6 +189,77 @@ function millWrapper(): string {
   return process.platform === 'win32' ? 'mill.bat' : 'mill';
 }
 
+/**
+ * Whether `name` resolves to something runnable on `PATH`.
+ *
+ * A lookup rather than a trial run, deliberately: spawning `--version` costs a
+ * process and answers a different question, since a tool can be installed and
+ * still exit non-zero for it.
+ */
+function isOnPath(name: string): boolean {
+  const isWindows = process.platform === 'win32';
+  const extensions = isWindows
+    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')
+    : [''];
+  for (const directory of (process.env.PATH ?? '').split(isWindows ? ';' : ':')) {
+    if (directory === '') continue;
+    for (const extension of extensions) {
+      if (existsSync(join(directory, name + extension))) return true;
+    }
+  }
+  return false;
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why an arm cannot run here, or `null` if it can.
+ *
+ * The two kinds must not share an outcome.  A **toolchain** blocker is a
+ * statement about this machine — the SDK is not installed — and the honest
+ * response is to measure the arms that can run and name the ones that could
+ * not: `RESULTS.md` prints one environment row per arm precisely so an arm
+ * measured elsewhere, or not at all this time, reads as exactly that instead
+ * of averaging in silently.  A **defect** blocker is a statement about the
+ * checkout, and it fails the run: a committed launcher without its executable
+ * bit is a repository bug, and a driver that shrugged at it would hide it for
+ * as long as nobody used the affected platform — which is how this one lasted
+ * from the Maven wrappers through their replacement (#1325).
+ */
+type ArmBlocker = {
+  readonly kind: 'toolchain' | 'defect';
+  readonly message: string;
+};
+
+function blockerFor(arm: ExternalArm): ArmBlocker | null {
+  if (arm.resolveFrom === 'path') {
+    return isOnPath(arm.executable)
+      ? null
+      : { kind: 'toolchain', message: `needs ${arm.toolchain} — no "${arm.executable}" on PATH` };
+  }
+  const launcher = join(COMPARISON_ROOT, arm.directory, arm.executable);
+  if (!existsSync(launcher)) {
+    return { kind: 'defect', message: `no launcher at ${arm.directory}/${arm.executable}` };
+  }
+  // Only POSIX enforces it; on Windows the `.bat` is the entry point and the
+  // bit is not represented in the working tree at all.
+  if (process.platform !== 'win32' && !isExecutable(launcher)) {
+    return {
+      kind: 'defect',
+      message: `${arm.directory}/${arm.executable} is not executable`
+        + ` — \`chmod +x benchmarks/comparison/*/${arm.executable}\``,
+    };
+  }
+  return null;
+}
+
 const COMPARISON_ROOT = resolve(import.meta.dirname ?? '.', '.');
 const JAVASCRIPT_ARM_DIRECTORY = join(COMPARISON_ROOT, 'js');
 
@@ -217,13 +295,16 @@ function runArm(arm: ComparisonArm, environment: NodeJS.ProcessEnv): number | nu
   const command = arm.resolveFrom === 'directory'
     ? join(directory, arm.executable)
     : arm.executable;
-  return spawnSync(command, [...arm.args], {
+  // A `.bat` is not an executable and cannot be spawned without cmd.exe.  A
+  // POSIX script can be: it carries a shebang and, since #1325, its executable
+  // bit — so exec it directly and skip the shell's quoting rules entirely,
+  // which is also the only way a path containing a space survives.
+  const useShell = process.platform === 'win32';
+  return spawnSync(useShell && command.includes(' ') ? `"${command}"` : command, [...arm.args], {
     stdio: 'inherit',
     cwd: directory,
     env: environment,
-    // A build wrapper is a script rather than an executable, so it needs a
-    // shell to run at all.
-    shell: true,
+    shell: useShell,
   }).status;
 }
 
@@ -283,14 +364,46 @@ function run(): void {
     ));
   }
 
+  // Preflight once, not once per round: the answer cannot change mid-run, and
+  // ten rounds would otherwise repeat the same diagnosis ten times.
+  const blockers = new Map<string, ArmBlocker>();
+  for (const arm of selected) {
+    if (arm.kind !== 'external') continue;
+    const blocker = blockerFor(arm);
+    if (blocker !== null) blockers.set(arm.name, blocker);
+  }
+  const runnable = selected.filter((arm) => !blockers.has(arm.name));
+
   const start = Date.now();
   const failed: string[] = [];
+  const skipped: string[] = [];
+
+  for (const [name, blocker] of blockers) {
+    if (blocker.kind === 'toolchain') {
+      skipped.push(name);
+      console.log();
+      console.log(ansi.yellow('↷ ') + ansi.bold(name)
+        + ansi.gray(' / ') + ansi.yellow(blocker.message));
+    } else {
+      failed.push(name);
+      console.log();
+      console.error(ansi.red('✗ ') + ansi.bold(name)
+        + ansi.gray(' / ') + ansi.red(blocker.message));
+    }
+  }
+
+  if (runnable.length === 0) {
+    console.log();
+    console.error(ansi.red('Nothing to measure — every selected arm is blocked.'));
+    process.exit(1);
+  }
+
   const sharedEnvironment = { ...process.env, ...environmentVariables() };
 
   // Rounds outside, arms inside.  The other order would measure each arm
   // under whatever the machine happened to be doing during its block.
   for (let round = 1; round <= rounds; round++) {
-    for (const arm of selected) {
+    for (const arm of runnable) {
       const roundLabel = rounds > 1 ? ansi.gray(` (round ${round}/${rounds})`) : '';
       const where = arm.kind === 'javascript' ? `js/${arm.file}` : `${arm.directory}/`;
       console.log('\n' + ansi.cyan('▸ ') + ansi.bold(arm.name) + ansi.gray(' / ') + where + roundLabel);
@@ -310,9 +423,23 @@ function run(): void {
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log('\n' + ansi.gray('─'.repeat(60)));
 
+  // Skips are reported on every path, success included.  A partial run that
+  // announced only a green tick is the shape of a release publishing figures
+  // for arms that never ran.
+  if (skipped.length > 0) {
+    console.log(
+      `  ${ansi.yellow('↷')} ${skipped.length} arm(s) skipped for a missing toolchain: `
+      + `${skipped.join(', ')}`,
+    );
+    console.log(ansi.gray(
+      '    Their published figures keep whatever an earlier run measured — `RESULTS.md`'));
+    console.log(ansi.gray(
+      '    dates every arm separately, so a stale one stays visible as stale.'));
+  }
+
   if (failed.length > 0) {
     console.log(
-      `  ${ansi.red('✗')} ${failed.length} of ${selected.length} arm(s) failed `
+      `  ${ansi.red('✗')} ${failed.length} of ${selected.length - skipped.length} arm(s) failed `
       + `— total wall time ${ansi.bold(elapsed + 's')}`,
     );
     for (const name of failed) console.log(ansi.red(`      ${name}`));

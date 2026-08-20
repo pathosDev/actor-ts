@@ -381,6 +381,35 @@ Measure every arm, each in its own subprocess:
 bun run bench:compare
 ```
 
+### What each arm needs installed
+
+| arm | needs |
+| --- | ----- |
+| the three JavaScript arms | Bun, and this directory's manifest |
+| the four JVM arms | `curl`; the Mill launcher fetches its own JDK |
+| the two .NET arms | the .NET 10 SDK on `PATH` |
+
+**An arm whose toolchain is absent is skipped, not failed.** The driver checks
+before it runs anything, names what is missing, and finishes with the arms that
+can run — the exit code stays 0. That is deliberate: `RESULTS.md` carries a
+date and a commit per arm, so a partial run leaves the untouched arms visibly
+attributed to the run that did measure them, which is more useful than refusing
+to measure anything. The summary lists every skipped arm on the success path
+too, because a partial run reported as a plain green tick is how a release
+publishes figures for arms that never ran.
+
+Use `--javascript-only` to skip the cross-language arms deliberately rather
+than by omission — that is what CI does, since it installs Bun and nothing
+else.
+
+A launcher that is present but not executable is *not* a missing toolchain: it
+is a broken checkout, and the run fails with the `chmod` that fixes it. The
+POSIX `mill` scripts are committed as mode `100755` for that reason, and
+`tests/unit/ci/ComparisonLauncherModes.test.ts` asserts it against the git
+index — the working tree cannot answer the question on Windows, which is
+exactly why the four JVM arms were unrunnable on Linux for as long as they
+were (#1325).
+
 Then regenerate the published tables from what was measured:
 
 ```bash
