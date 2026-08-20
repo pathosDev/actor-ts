@@ -139,18 +139,19 @@ nicht die Buchhaltung des Frameworks.
 
 ### Was ist der Overhead pro Nachricht?
 
-Gemessen auf Bun 1.3.1, einem Ryzen 9 7940HX, Mittelwert aus zehn Runden —
+Gemessen auf Bun 1.3.14, 10 Kernen eines Intel i9-12900K unter Linux,
+Mittelwert aus hundert Runden —
 Methodik und Vergleich mit anderen Frameworks stehen unter
 [Benchmarks](/de/reference/benchmarks/):
 
-- **`tell`, Ende zu Ende** — rund **220 ns** pro Nachricht bei einer
-  Mailbox mit Tiefe (grob 4,5 Millionen Nachrichten/Sekunde dauerhaft).  Das
+- **`tell`, Ende zu Ende** — rund **53 ns** pro Nachricht bei einer
+  Mailbox mit Tiefe (grob 19 Millionen Nachrichten/Sekunde dauerhaft).  Das
   ist der gesamte Pfad: einreihen, einplanen, zustellen, behandeln.
   Der `tell()`-Aufruf selbst kehrt noch schneller zurück — er reiht nur
   ein.  „Wie lange dauert `tell`?" und „wie viele Nachrichten pro
   Sekunde?" sind also zwei Fragen, deren Antworten eine Größenordnung
   auseinanderliegen.
-- **`ask`-Roundtrip** — **3,5 µs** im p50, Tiefe 1.
+- **`ask`-Roundtrip** — **0,9 µs** im p50, Tiefe 1.
 - **Cross-Cluster `tell`** — begrenzt durch Netzwerk- +
   Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost, ms-Bereich
   über LAN.  Noch nicht gemessen; die Cluster-Benchmarks verlassen den
