@@ -448,7 +448,7 @@ bun run typecheck:compare
 **Publish from `--rounds`, never from a single run:**
 
 ```bash
-bun run bench:compare -- --rounds=7
+bun run bench:compare -- --rounds=100
 ```
 
 This runs the arms **interleaved** — round 1 of every arm, then round 2 —

@@ -397,22 +397,22 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 
 ## Benchmarks
 
-Measured rather than asserted: one machine, one harness, one workload, ten
-interleaved rounds, and every row verified against work the system actually
-completed rather than work it was asked for.  Each figure is the mean of those
-rounds; 🥇 marks the best value in its row.
+Measured rather than asserted: one machine, one harness, one workload, a
+hundred interleaved rounds, and every row verified against work the system
+actually completed rather than work it was asked for.  Each figure is the mean
+of those rounds; 🥇 marks the best value in its row.
 
-Bun 1.3.1 · AMD Ryzen 9 7940HX.
+Bun 1.3.14 · 10 cores of an Intel i9-12900K · Linux.
 
 ### Against JavaScript
 
-| Scenario                    | actor-ts       | nact          | XState    |
-| --------------------------- | -------------- | ------------- | --------- |
-| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 359k/s        | 185k/s    |
-| tell throughput (batch 10k) | **4.55M/s** 🥇 | 389k/s        | 183k/s    |
-| ping-pong (10k exchanges)   | **504k/s** 🥇  | 166k/s        | 83k/s     |
-| spawn → started → stopped   | 75k/s          | **192k/s** 🥇 | 61k/s     |
-| ask round-trip (p50)        | **3.5 µs** 🥇  | 6.7 µs        | 13.5 µs * |
+| Scenario                    | actor-ts        | nact          | XState   |
+| --------------------------- | --------------- | ------------- | -------- |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 1.59M/s       | 878k/s   |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 1.64M/s       | 961k/s   |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 811k/s        | 508k/s   |
+| spawn → started → stopped   | 355k/s          | **698k/s** 🥇 | 332k/s   |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 1.5 µs        | 2.2 µs * |
 
 <sub>\* XState has no request/response primitive — that row is `send` plus a
 snapshot wait.</sub>
@@ -422,30 +422,25 @@ snapshot wait.</sub>
 Each framework appears through both its Java and its Scala API at the same
 pinned version, so a gap inside a pair is the language binding.
 
-| Scenario                    | actor-ts (Bun) | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) |
-| --------------------------- | -------------- | ----------- | ------------ | ------------ | ------------- |
-| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 2.11M/s     | 1.31M/s      | 1.71M/s      | 1.10M/s       |
-| tell throughput (batch 10k) | **4.55M/s** 🥇 | 3.14M/s     | 2.80M/s      | 3.04M/s      | 2.84M/s       |
-| ping-pong (10k exchanges)   | 504k/s         | 404k/s      | 369k/s       | 343k/s       | **603k/s** 🥇 |
-| spawn → started → stopped   | **75k/s** 🥇   | 28k/s       | 26k/s        | 27k/s        | 28k/s         |
-| ask round-trip (p50)        | **3.5 µs** 🥇  | 34.9 µs †   | 37.4 µs †    | 32.8 µs †    | 32.4 µs †     |
-| Licence                     | MIT            | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    |
-
-<sub>† Asked from a non-actor thread, the JVM parks a thread on a future where
-an event loop waits on a microtask.<br/>
-The volley columns move by ±27 % to ±82 % between rounds — read that row's
-🥇 as "came out highest this time", not as a winner.</sub>
+| Scenario                    | actor-ts (Bun)  | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) |
+| --------------------------- | --------------- | ----------- | ------------ | ------------ | ------------- |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 7.23M/s     | 5.37M/s      | 6.76M/s      | 4.34M/s       |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 9.18M/s     | 9.03M/s      | 9.36M/s      | 9.37M/s       |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 1.99M/s     | 1.94M/s      | 1.99M/s      | 1.99M/s       |
+| spawn → started → stopped   | **355k/s** 🥇   | 105k/s      | 97k/s        | 102k/s       | 90k/s         |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 3.7 µs      | 3.5 µs       | 3.6 µs       | 3.5 µs        |
+| Licence                     | MIT             | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    |
 
 ### Against .NET
 
-| Scenario                    | actor-ts (Bun) | Akka.NET (C#) | Orleans (C#) |
-| --------------------------- | -------------- | ------------- | ------------ |
-| tell throughput (batch 1k)  | **2.90M/s** 🥇 | 1.38M/s       | 288k/s       |
-| tell throughput (batch 10k) | **4.55M/s** 🥇 | 1.36M/s       | 576k/s       |
-| ping-pong (10k exchanges)   | **504k/s** 🥇  | 415k/s        | 157k/s       |
-| spawn → started → stopped   | **75k/s** 🥇   | 34k/s         | 5k/s ‡       |
-| ask round-trip (p50)        | **3.5 µs** 🥇  | 7.2 µs        | 7.7 µs       |
-| Licence                     | MIT            | Apache-2.0    | MIT          |
+| Scenario                    | actor-ts (Bun)  | Akka.NET (C#) | Orleans (C#) |
+| --------------------------- | --------------- | ------------- | ------------ |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 5.96M/s       | 695k/s       |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 6.37M/s       | 792k/s       |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 499k/s        | 357k/s       |
+| spawn → started → stopped   | **355k/s** 🥇   | 85k/s         | 30k/s ‡      |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 3.2 µs        | 5.5 µs       |
+| Licence                     | MIT             | Apache-2.0    | MIT          |
 
 <sub>‡ Orleans has no caller-visible create or stop; grains activate on first
 call, so that row is activation latency rather than a comparable lifecycle.</sub>
@@ -458,7 +453,7 @@ or a real network.
 **[what the numbers mean](https://actor-ts.dev/reference/benchmarks/)** — the
 spread behind every figure, the pinned version of every arm, and what is
 deliberately not measured yet.  Reproduce with
-`bun run bench:compare -- --rounds=10`.
+`bun run bench:compare -- --rounds=100`.
 
 ---
 ## Roadmap & status

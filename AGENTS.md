@@ -114,7 +114,7 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    themselves as `-dirty`.
 
    ```sh
-   bun run bench:compare -- --rounds=10   # every arm, machine otherwise idle
+   bun run bench:compare -- --rounds=100  # every arm, machine otherwise idle, hours
    bun run bench:compare:report           # regenerates RESULTS.md
    ```
 

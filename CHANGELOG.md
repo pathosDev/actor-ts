@@ -69,6 +69,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The published comparison figures come from a hundred-round run on Linux**
+  (#1327). All nine arms, one run, one machine, one commit — replacing a
+  ten-round run on a Windows desktop. Every absolute number moved by a factor
+  of two to five, so the columns are comparable with each other and with
+  nothing quoted before.
+
+  Three published claims did not survive the move, and the pages carry them as
+  corrections rather than restating them quietly:
+
+  - **The alternating volley is no longer a tie.** At ten rounds those columns
+    carried spreads from ±27 % to ±82 % and the honest reading was that nobody
+    was clearly ahead. At a hundred rounds they carry ±2–3 %, and actor-ts
+    leads the best JVM arm by 1.4×.
+  - **The round-trip row no longer splits by runtime.** The JVM arms were
+    reported at 32–38 µs against under 8 µs elsewhere, explained as a non-actor
+    thread parking on a future. On Linux the same arms at the same versions sit
+    at 3.5–3.7 µs, beside 3.2 µs for the CLR arm. The mechanism is real and
+    worth a fraction of a microsecond; the rest belonged to the previous host.
+  - **"The two lineages agree to within the noise on every row"** was a claim
+    about the noise, and a hundred rounds leave much less of it. The conclusion
+    holds — neither lineage has a systematic advantage, and the largest gap at
+    the Java binding is 6 % — but it is now stated as sizes rather than as
+    agreement.
+
+  The language-binding finding gets stronger and simpler: 26 % and 36 % behind
+  the Java siblings at a batch of 1 000 (t = 11 and 16), and at a batch of
+  10 000 the effect is gone rather than merely narrowed (−1.5 % and +0.1 %).
+  That is much better evidence for the reading the pages already offered.
+
 - **The comparison gains two Scala 3 arms, and all four JVM arms move to one
   build tool** (#1229).
 

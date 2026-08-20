@@ -16,19 +16,25 @@ is the source of truth; this page is the readable version of it.
 
 ## The numbers
 
-Bun 1.3.1 · AMD Ryzen 9 7940HX (32 logical cores) · Windows 11 · **mean of ten
+Bun 1.3.14 · 10 cores of an Intel i9-12900K · Linux · **mean of one hundred
 interleaved rounds**, with the spread those rounds varied by.  A gap smaller
 than the spread beside it is not a difference.
+
+The machine changed with this run — ten rounds on a Windows desktop became a
+hundred on Linux — and every absolute figure moved by a factor of two to five.
+Compare the columns with each other, never with a figure quoted here before.
+Three findings did not survive the move, and each is marked below as a
+correction rather than quietly restated.
 
 ### JavaScript — same machine, same harness
 
 | scenario | actor-ts 0.16.0 | nact 7.6.2 | XState 5.32.5 |
 | -------- | --------------- | ---------- | ------------- |
-| tell throughput, batch 1k  | **2.90M/s** ±6 % | 359k/s ±3 % | 185k/s ±4 % |
-| tell throughput, batch 10k | **4.55M/s** ±8 % | 389k/s ±3 % | 183k/s ±9 % |
-| ask round-trip, p50        | **3.5 µs** | 6.7 µs | 13.5 µs |
-| ping-pong, 10k exchanges   | **504k/s** ±6 % | 166k/s ±10 % | 83k/s ±13 % |
-| spawn → started → stopped  | 75k/s ±10 % | **192k/s** ±7 % | 61k/s ±4 % |
+| tell throughput, batch 1k | **13.82M/s** ±15 % | 1.59M/s ±2 % | 878k/s ±3 % |
+| tell throughput, batch 10k | **19.05M/s** ±6 % | 1.64M/s ±2 % | 961k/s ±2 % |
+| ping-pong, 10k exchanges | **2.82M/s** ±3 % | 811k/s ±2 % | 508k/s ±1 % |
+| spawn → started → stopped | 355k/s ±9 % | **698k/s** ±8 % | 332k/s ±8 % |
+| ask round-trip, p50 | **0.9 µs** | 1.5 µs | 2.2 µs |
 
 ### Cross-language — another virtual machine, mirrored harness
 
@@ -43,55 +49,73 @@ is what lets the gap inside a pair be read as the binding.
 
 | scenario | actor-ts 0.16.0 (Bun) | Akka 2.8.8 (Java) | Akka 2.8.8 (Scala 3) | Pekko 1.6.0 (Java) | Pekko 1.6.0 (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
 | -------- | --------------------- | ----------------- | -------------------- | ------------------ | --------------------- | --------------- | -------------- |
-| tell throughput, batch 1k  | **2.90M/s** ±6 % | 2.11M/s ±27 % | 1.31M/s ±37 % | 1.71M/s ±28 % | 1.10M/s ±45 % | 1.38M/s ±9 % | 288k/s ±19 % |
-| tell throughput, batch 10k | **4.55M/s** ±8 % | 3.14M/s ±9 % | 2.80M/s ±16 % | 3.04M/s ±13 % | 2.84M/s ±47 % | 1.36M/s ±18 % | 576k/s ±26 % |
-| ping-pong, 10k exchanges   | 504k/s ±6 % | 404k/s ±40 % | 369k/s ±42 % | 343k/s ±27 % | 603k/s ±82 % | 415k/s ±21 % | 157k/s ±7 % |
-| spawn → started → stopped  | **75k/s** ±10 % | 28k/s ±10 % | 26k/s ±6 % | 27k/s ±14 % | 28k/s ±13 % | 34k/s ±6 % | 5k/s ±13 % |
-| ask round-trip, p50        | **3.5 µs** | 34.9 µs | 37.4 µs | 32.8 µs | 32.4 µs | 7.2 µs | 7.7 µs |
-| licence                    | MIT | BUSL-1.1 | BUSL-1.1 | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
+| tell throughput, batch 1k | **13.82M/s** ±15 % | 7.23M/s ±12 % | 5.37M/s ±26 % | 6.76M/s ±16 % | 4.34M/s ±24 % | 5.96M/s ±5 % | 695k/s ±10 % |
+| tell throughput, batch 10k | **19.05M/s** ±6 % | 9.18M/s ±7 % | 9.03M/s ±8 % | 9.36M/s ±7 % | 9.37M/s ±15 % | 6.37M/s ±3 % | 792k/s ±30 % |
+| ping-pong, 10k exchanges | **2.82M/s** ±3 % | 1.99M/s ±3 % | 1.94M/s ±3 % | 1.99M/s ±3 % | 1.99M/s ±2 % | 499k/s ±8 % | 357k/s ±11 % |
+| spawn → started → stopped | **355k/s** ±9 % | 105k/s ±5 % | 97k/s ±5 % | 102k/s ±5 % | 90k/s ±5 % | 85k/s ±2 % | 30k/s ±4 % |
+| ask round-trip, p50 | **0.9 µs** | 3.7 µs | 3.5 µs | 3.6 µs | 3.5 µs | 3.2 µs | 5.5 µs |
+| licence | MIT | BUSL-1.1 | BUSL-1.1 | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
 
 Four things are readable from this table that no single row shows.
 
 **The same actor model appears on three runtimes** — JVM, CLR and JavaScript —
 which is what makes the runtime's own contribution visible rather than
-inferred.  It is also the finding that survived least intact: this paragraph
-used to say the JVM led bulk throughput with actor-ts at roughly a third of
-it.  Most of that gap turned out to be a scheduling hop and an async state
-machine on the receive path rather than anything the runtime imposed, and
-removing them moved the JavaScript arm past every JVM one.
+inferred.  On this machine the JavaScript arm leads every row: about twice the
+best JVM arm on bulk messaging, 1.4× on the alternating volley, three times on
+the lifecycle row and four times faster on the round trip.  It is also the
+finding that has moved most over time — this paragraph once said the JVM led
+bulk throughput with actor-ts at roughly a third of it, and most of that gap
+turned out to be a scheduling hop and an async state machine on the receive
+path rather than anything the runtime imposed.
 
-**The language binding costs on exactly one row.**  Each JVM framework is
-measured through both its Java and its Scala 3 API at the same version, so a
-gap inside a pair is the binding.  On four rows of five there is none worth the
-name.  On the fifth there is: at a batch of 1 000 the Scala arms run **36–38 %
-behind their Java siblings**, in both pairs independently, and far enough
-outside their spreads to stand (t = 3.4 and 2.8).  That is what the idiomatic
-functional style costs — an actor that advances its state by returning a new
-behavior allocates one per message where a mutable field allocates none.  The
-gap narrows to 7–11 % at a batch of 10 000; the plausible reading is that the
-JIT eliminates the allocation once it has enough profile, but that is a
-mechanism this benchmark suggests rather than one it measured.
+**The language binding costs on exactly one row, and nothing at all on the
+next.**  Each JVM framework is measured through both its Java and its Scala 3
+API at the same version, so a gap inside a pair is the binding.  At a batch of
+1 000 the Scala arms run **26 % and 36 % behind their Java siblings** — both
+pairs independently, and across a hundred rounds far outside any doubt
+(t = 11 and 16).  At a batch of 10 000 the effect is *gone*: −1.5 % and +0.1 %,
+neither of them distinguishable from zero.
+
+That is the shape a per-message allocation makes when a JIT learns to remove
+it.  An actor advancing its state by returning a new behavior allocates one per
+message where a mutable field allocates none, and a batch of a thousand does
+not hand the compiler enough profile to eliminate it.  The earlier ten-round
+run could only say the gap "narrowed to 7–11 %"; a hundred rounds say it
+disappears, which is a far better reason to believe the explanation.
 
 **The two JVM lineages are the same framework either side of its licence
-change**: the Apache-licensed fork against the BUSL-1.1 original.  They agree
-to within the noise on every row, so **staying on an OSI-approved licence costs
-nothing in throughput** — and because those two arms differ only in which
-dependency they pull, each is a control on the other.
+change**: the Apache-licensed fork against the BUSL-1.1 original.  Neither has
+a systematic advantage — the fork leads some rows and trails others, and the
+volley row matches to three digits.  **Staying on an OSI-approved licence still
+costs nothing worth having**: at the Java binding the largest gap is 6 % and
+most are inside 2 %.  Because those arms differ only in which dependency they
+pull, each is a control on the other.
 
-**The ask row splits by runtime, not by framework.**  All four JVM arms sit
-near 32-38 µs while both .NET arms and actor-ts sit under 8 µs.  That
-is the external caller, not the frameworks: on an event loop the wait is a
-microtask and in .NET an `await`, but on the JVM from a non-actor thread it is
-a thread parking on a future.  The JVM arms lead the tell rows by a wide
-margin, which is the same frameworks measured without that cost in the path.
+One correction.  This paragraph used to say the two "agree to within the noise
+on every row" — a claim about the noise as much as about the frameworks, and a
+hundred rounds leave far less of it.  Differences of a few per cent are now
+measurable rather than invisible.  They remain differences nobody would choose
+a framework over.
+
+**The round-trip row no longer splits by runtime — a correction.**  This page
+reported the four JVM arms at 32–38 µs against under 8 µs elsewhere, and
+explained it as the cost of a non-actor thread parking on a future where an
+event loop waits on a microtask.  On Linux the same arms at the same versions
+sit at 3.5–3.7 µs, beside 3.2 µs for the CLR arm.  The mechanism is real, but on
+this host it is worth a fraction of a microsecond — the rest belonged to the
+previous machine's thread parking, and the explanation was carrying far more
+weight than the measurement could support.  What survives is narrower and still
+useful: actor-ts is about four times faster than every other arm on this row, on
+a runtime that has no thread to park.
 
 ### What the numbers say
 
-**actor-ts leads the JavaScript field on every row except spawning** — eleven
-times nact and twenty-three times XState at a batch of 10 000, roughly three
-times its throughput on the alternating volley, and half the ask latency.
+**actor-ts leads the JavaScript field on every row except spawning** — twelve
+times nact and twenty times XState at a batch of 10 000, three and a half times
+nact's throughput on the alternating volley, and under two thirds of its
+round-trip latency.
 
-**It trails on spawning**, by about two and a half times, and the reason is
+**It trails on spawning**, by about two times, and the reason is
 structural rather than a missing optimisation.  nact constructs an actor
 synchronously inside `spawn()` and puts it in two maps.  This row waits for a
 confirmed `preStart`, then a `stop()`, then a confirmed `postStop`, and the
@@ -105,13 +129,16 @@ changed rather than quietly restating it.  This section previously read
 written.  Most of that gap was not the runtime: it was a `setImmediate` per
 actor turn, which an actor answering one request at a time cannot amortise,
 and three nested `async` functions on the delivery path that a handler
-returning nothing still paid for.  With those gone, bulk messaging is ahead of
-every JVM arm, and the alternating volley is inside their spreads — a tie, and
-it should be read as one rather than as a win.  Those spreads have since grown
-rather than shrunk, because the JVM arms now fork a clean process instead of
-measuring inside a warm one; the volley column varies by a third to four fifths
-between rounds, which is wide enough that the honest statement is that nobody
-is clearly ahead.
+returning nothing still paid for.  With those gone, bulk messaging runs ahead
+of every JVM arm.
+
+**The volley is no longer a tie either — the third correction.**  When the JVM
+arms began forking a clean process instead of measuring inside their build
+tool's warm one, their volley spreads ran from ±27 % to ±82 %, and the honest
+reading was that nobody was clearly ahead.  A hundred rounds on this host bring
+those spreads to ±2–3 %, and at that resolution actor-ts leads the best JVM arm
+by 1.4× on the row.  The tie was a statement about the measurement rather than
+about the frameworks, and the measurement improved.
 
 What has not changed is that this is a local, in-process, single-node
 measurement on one machine.  A JVM actor system has two decades of work in its
@@ -137,8 +164,8 @@ import { Aside } from '@astrojs/starlight/components';
 These are single-machine measurements.  They say nothing about a production
 deployment on real hardware with real networks.  Compare the columns, treat
 the last digit of every figure as fiction, and read a 10 % gap as "about the
-same" — the measured run-to-run spread on this workload reaches 15-30 % for a
-single round, which is exactly why every figure above is a mean of ten and
+same" — the measured run-to-run spread still reaches 26–30 % on the noisiest
+rows, which is exactly why every figure above is a mean of a hundred and
 carries its spread.
 </Aside>
 
@@ -167,10 +194,11 @@ The parts that make the table worth reading:
   one file, and the generator fails if any arm reports different ones.
 - **Interleaved rounds, averaged.**  Round 1 of every arm, then round 2, so
   background load lands on all arms rather than on whichever one happened to
-  run during it.  Each published figure is the mean of ten rounds, and each
-  carries the spread those rounds varied by — publishing the median would
-  report one round and discard nine, while publishing a mean without its
-  spread would hide that some of these figures move by a sixth between runs.
+  run during it.  Each published figure is the mean of a hundred rounds, and
+  each carries the spread those rounds varied by — publishing the median would
+  report one round and discard the rest, while publishing a mean without its
+  spread would hide that some of these figures still move by a quarter between
+  runs.
 - **One framework per subprocess**, so module state, JIT profiles and GC
   pressure do not cross arms.
 - **Logging off everywhere.**  An arm that writes log lines measures its
@@ -218,9 +246,11 @@ while every other arm in this suite started fresh.  Isolating it by running the
 same compiled classes three ways showed the difference is the fork rather than
 the tool or the JDK, and it was worth up to half of the alternating-volley
 figure.  So the JVM volley numbers published before this change were flattered
-by the harness, and these are lower and noisier: a cold JVM is a more variable
-one, which is why those columns carry spreads from ±27 % to ±82 % and should be
-read as an order of magnitude rather than a ranking.
+by the harness, and the ones that replaced them were both lower and far
+noisier: a cold JVM is a more variable one, and at ten rounds those columns
+carried spreads from ±27 % to ±82 %.  A hundred rounds on a quieter host bring
+them back to ±2–3 %, so the fork costs accuracy in the figure but not, at this
+sample size, confidence in it.
 
 **Akka and Pekko** are the same lineage either side of a licence change, and
 at the same binding are measured from sources identical apart from the package
@@ -269,7 +299,7 @@ bun install --cwd benchmarks/comparison
 ```
 
 ```bash
-bun run bench:compare -- --rounds=10
+bun run bench:compare -- --rounds=100
 ```
 
 ```bash
