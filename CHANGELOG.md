@@ -29,10 +29,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   would have made a regression indistinguishable from a wiring mistake. The seam
   is what lets #487 finally reach it with a fake socket.
 
-  The seven panels still mount through `LegacyPanelHostComponent` and are ported
-  one at a time; navigation still runs through `core/router.ts`, because two
-  routers writing `location.hash` would be a race for no benefit until a panel
-  is a real component.
+  The panels are ported one at a time behind `LegacyPanelHostComponent`, which
+  is deleted with the last of them. Explain is the first; the registry accepts
+  either shape, so a port is one panel's commit and nothing else's, and each
+  panel keeps its own lazy chunk and size budget across the change. Navigation
+  still runs through `core/router.ts`, because two routers writing
+  `location.hash` would be a race for no benefit until more panels are
+  components.
 
 
 - **The DevTools UI is built by Angular 22 instead of `Bun.build`** (#483, part

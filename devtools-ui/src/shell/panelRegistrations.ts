@@ -56,7 +56,7 @@ export function registerAllPanels(): void {
     title: 'Explain plan',
     description: 'The last messages one actor handled, with timings.',
     order: 40,
-    load: () => import('../panels/explain/explainPanel.js'),
+    load: () => import('../panels/explain/ExplainPanelComponent.js'),
   });
 
   registerPanel({

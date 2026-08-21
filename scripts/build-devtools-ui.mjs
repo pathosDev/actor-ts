@@ -84,9 +84,20 @@ const PANEL_BUDGETS_KIB = {
  * not (`timetravel`).  Deriving from the file keeps every existing budget key
  * valid, so this issue changes how attribution is discovered without changing
  * what is being budgeted.
+ *
+ * `PanelComponent` is accepted alongside `Panel` so a panel keeps its bucket
+ * across the port to an Angular component (#485), where `explainPanel.ts`
+ * becomes `ExplainPanelComponent.ts`.  Without it the renamed chunk would land
+ * in the shell bucket — which is worse than failing, because the budget would
+ * still be green while no longer measuring the thing it names.
  */
 function panelFromEntryPoint(entryPoint) {
-  return /(?:^|\/)([A-Za-z0-9]+)Panel\.ts$/.exec(entryPoint)?.[1] ?? null;
+  const name = /(?:^|\/)([A-Za-z0-9]+)Panel(?:Component)?\.ts$/.exec(entryPoint)?.[1];
+  // Lower-cased first letter because a component file is PascalCase
+  // (`ExplainPanelComponent.ts`) while a legacy one is not (`explainPanel.ts`),
+  // and both have to land in the same bucket — the budget keys name the panel,
+  // not the file.  Idempotent for the names that were already camelCase.
+  return name === undefined ? null : name.charAt(0).toLowerCase() + name.slice(1);
 }
 
 /**
