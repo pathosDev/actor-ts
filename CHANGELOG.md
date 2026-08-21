@@ -11,6 +11,52 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The DevTools UI is built by Angular 22 instead of `Bun.build`** (#483, part
+  of #482). A build-time change only: no panel is ported, the served UI behaves
+  exactly as before, and the public API is untouched.
+
+  Angular and ECharts are devDependencies of a nested `devtools-ui/` package,
+  which is deliberately **not** a bun workspace — hoisting would put
+  `@angular/core` in the root `node_modules` and in Dependabot's view of a
+  manifest that ships two runtime dependencies, and Angular pins
+  `typescript >=6.0 <6.1` while the library is on `^7.0.2`. The two example
+  Angular frontends already live with that same split. Nothing here reaches a
+  consumer: the UI is bundled at build time into
+  `src/devtools/generated/UiAssets.ts`, no framework appears in `dependencies`
+  or `peerDependencies`, and the served page loads nothing over the network.
+
+  The toolchain is a separate install, `bun run ui:install`. `bun run build:ui`
+  fails hard without it and prints that command; `bun run typecheck` skips the
+  UI half with a warning locally and fails hard under CI. That split is what
+  keeps `typecheck`, `bun test` and `bun run smoke` working from a fresh clone,
+  which is only possible because the bundle is committed. A new `bun run
+  build:lib` (`tsc` alone) serves the jobs that want `dist/` and have no opinion
+  about the UI — the two cross-runtime smoke scripts among them, which would
+  otherwise have made the Angular install a prerequisite for `bun run smoke`.
+
+  All seven panels keep running through a temporary adapter that mounts the
+  existing shell inside one Angular component. The adapter wraps the shell
+  rather than each panel on purpose: wrapping panels would have meant Angular
+  owning navigation, and with it the nav rail, the `welcome` panel roster, the
+  route guards and the offline dialog — a shell port, which is #485's scope,
+  smuggled into the issue that was only supposed to change how the bundle is
+  produced.
+
+  Two build details worth recording. Chunks are attributed to size budgets from
+  the builder's own metafile rather than from file names: Angular emits
+  `chunk-<hash>.js`, so the panel identity survives only in `stats.json`'s
+  `entryPoint`, and reading that is strictly better than the naming convention
+  it replaces. And `angular.json` sets `"baseHref": "./"`, without which every
+  asset would be pinned to the server root and `DevTools.mount('/devtools')`
+  would break; the build now asserts that, plus that no asset reference is
+  root-relative and that no embedded text asset carries a CRLF.
+
+  Budgets: the shell ceiling moves from 60 to 100 KiB to cover Angular's core
+  and bootstrap, a `charts` bucket of 150 KiB is declared ahead of #486, and the
+  400 KiB total is unchanged. The bundle currently measures about 67 KB gzip
+  against that total.
+
+
 - **Example frontend bundles are no longer committed, and the 34 per-broker
   integration scripts are one driver** (#559). Two kinds of build weight,
   addressed together because underneath they are the same mistake: a list kept

@@ -114,7 +114,7 @@ describe('DevTools.attach', () => {
     const response = await fetch(`${devtools.url}/`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(await response.text()).toContain('id="app"');
+    expect(await response.text()).toContain('<devtools-root>');
   });
 
   test('exposes the handshake as plain JSON for curl', async () => {

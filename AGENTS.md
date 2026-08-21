@@ -272,7 +272,18 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `benchmarks/`, so nothing else catches an orphaned benchmark; the
   `benchmarks` workflow gates both. The benchmarks are part of the
   adoption sweep for a breaking change, exactly like tests and examples.
-- **DevTools UI:** a change under `devtools-ui/` needs **`bun run
+- **DevTools UI:** the UI has its own Angular toolchain in a nested
+  `devtools-ui/` package, installed once with **`bun run ui:install`** and
+  deliberately not a bun workspace — hoisting would put `@angular/core` in the
+  root `node_modules` and in Dependabot's view of a manifest that ships two
+  runtime dependencies, and Angular pins a TypeScript the library does not use
+  (#483). `bun run build:ui` fails hard without it; `bun run typecheck` skips
+  the UI half with a warning locally and fails hard under CI, which is what
+  keeps `typecheck`, `bun test` and `bun run smoke` working from a fresh clone.
+  `bun run build:lib` is `tsc` alone, for the jobs that want `dist/` and have
+  no opinion about the UI.
+
+  A change under `devtools-ui/` needs **`bun run
   build:ui`** in the same commit — `src/devtools/generated/UiAssets.ts`
   is generated but committed, and a stale one is valid TypeScript, so
   nothing else notices. **`bun run check:ui`** asserts it (and gates the

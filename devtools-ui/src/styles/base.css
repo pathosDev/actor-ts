@@ -99,6 +99,12 @@ a:hover { text-decoration: underline; }
 
 /* ------------------------------- shell -------------------------------- */
 
+/* Angular's root element replaced the `<div id="app">` the shell used to
+   mount into (#483).  An unknown element is `display: inline` by default,
+   which would leave `.dt-app`'s grid in an inline formatting context; this
+   restores exactly what the div gave it. */
+devtools-root { display: block; }
+
 .dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
 
 .dt-header {

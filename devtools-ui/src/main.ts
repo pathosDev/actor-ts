@@ -1,73 +1,28 @@
 /**
  * DevTools UI bootstrap.
  *
- * Registration is the only place that knows the full panel roster:
- * every later phase adds one entry here plus its own directory, and
- * the shell, router and dashboard pick it up without changes.  Panels
- * are declared even before their server side exists — the handshake
- * decides whether each one is usable, so an unimplemented panel shows
- * up as an explained card rather than vanishing.
+ * Angular owns the build from #483 on, but not yet the application: this boots
+ * a single component that mounts the existing shell, so the toolchain change
+ * lands without touching a panel.  See `app/LegacyShellHost.ts` for why the
+ * adapter sits at the shell rather than per panel, and #485 for the port that
+ * removes it.
+ *
+ * Zoneless: there is no `zone.js` in `angular.json`'s `polyfills`, and nothing
+ * here needs it.  The existing UI drives its own updates through
+ * `core/signal.ts`, and the components that replace it in #485 use Angular
+ * signals, which is the whole reason Angular 22 was the framework picked — the
+ * reactive model ports across rather than being rewritten.
+ *
+ * The stylesheet is no longer imported here.  `base.css` is a global sheet
+ * listed in `angular.json`'s `styles`, which is how Angular's builder extracts
+ * it; a side-effect `import './styles/base.css'` was Bun's mechanism and would
+ * now produce a second, component-scoped copy.
  */
-import './styles/base.css';
-import { connectTap, tapUrl } from './core/tapClient.js';
-import { registerPanel } from './shell/PanelRegistry.js';
-import { mountAppShell } from './shell/AppShell.js';
+import { provideZonelessChangeDetection } from '@angular/core';
+import { bootstrapApplication } from '@angular/platform-browser';
 
-registerPanel({
-  id: 'dashboard',
-  title: 'Overview',
-  description: 'System at a glance and the way into every tool.',
-  order: 0,
-  load: () => import('./panels/dashboard/dashboardPanel.js'),
+import { LegacyShellHostComponent } from './app/LegacyShellHost.js';
+
+await bootstrapApplication(LegacyShellHostComponent, {
+  providers: [provideZonelessChangeDetection()],
 });
-
-registerPanel({
-  id: 'actors',
-  title: 'Actors',
-  description: 'Live actor tree, mailbox depths and the busiest actors.',
-  order: 10,
-  load: () => import('./panels/actors/actorsPanel.js'),
-});
-
-registerPanel({
-  id: 'cluster',
-  title: 'Cluster',
-  description: 'Node topology, shard distribution and membership history.',
-  order: 20,
-  load: () => import('./panels/cluster/clusterPanel.js'),
-});
-
-registerPanel({
-  id: 'tracing',
-  title: 'Tracing',
-  description: 'Flame graph and waterfall over recorded message spans.',
-  order: 30,
-  load: () => import('./panels/tracing/tracingPanel.js'),
-});
-
-registerPanel({
-  id: 'explain',
-  title: 'Explain plan',
-  description: 'The last messages one actor handled, with timings.',
-  order: 40,
-  load: () => import('./panels/explain/explainPanel.js'),
-});
-
-registerPanel({
-  id: 'time-travel',
-  title: 'Time travel',
-  description: 'Browse a journal and reconstruct state at any point.',
-  order: 50,
-  load: () => import('./panels/timetravel/timeTravelPanel.js'),
-});
-
-registerPanel({
-  id: 'profiler',
-  title: 'Profiler',
-  description: 'Sample where the actor system spends its time.',
-  order: 60,
-  load: () => import('./panels/profiler/profilerPanel.js'),
-});
-
-const root = document.getElementById('app');
-if (root !== null) mountAppShell(root, connectTap(tapUrl()));

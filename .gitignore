@@ -83,11 +83,16 @@ examples/voice/static/svelte/
 # Throwaway scratch space (release-note drafts, smoke-test files etc.).
 tmp/
 
-# DevTools UI bundler scratch.  `.build/` feeds the generated embedded
-# module (src/devtools/generated/uiAssets.ts, which IS committed);
-# `.dev/` is the unminified output served via `uiDevelopmentRoot`.
-devtools-ui/.build/
+# DevTools UI toolchain and build scratch (#483).  `node_modules/` is the
+# nested Angular install, deliberately not hoisted into the root tree;
+# `.angular-build/` feeds the generated embedded module
+# (src/devtools/generated/UiAssets.ts, which IS committed), and `.dev/` is
+# the unminified output served via `uiDevelopmentRoot`.
+devtools-ui/node_modules/
+devtools-ui/.angular-build/
 devtools-ui/.dev/
+devtools-ui/.angular-out/
+devtools-ui/.angular/
 
 # Extracted documentation samples, written and deleted by
 # `scripts/check-doc-samples.mjs` on every run.  Present on disk only while

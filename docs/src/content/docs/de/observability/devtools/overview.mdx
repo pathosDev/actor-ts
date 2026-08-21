@@ -369,9 +369,24 @@ unangetastet — DevTools liest sie und schaltet sie nie ab.
 
 ## An der UI arbeiten
 
-Die UI ist reines TypeScript, gebündelt von `Bun.build` und in das
-veröffentlichte Paket eingebettet: kein UI-Framework zur Laufzeit, kein
-Netzwerkzugriff. Um an einem Panel zu arbeiten:
+Die UI ist eine Angular-Anwendung, gebaut von ihrer eigenen Toolchain und als
+gzip-Bundle in das veröffentlichte Paket eingebettet. Angular ist reine
+Build-Zeit-Abhängigkeit: Es taucht weder in `dependencies` noch in
+`peerDependencies` von `actor-ts` auf, niemand installiert es beim Konsumieren
+des Pakets, und die ausgelieferte Seite lädt nichts über das Netz. Es gibt also
+weiterhin kein UI-Framework zur Laufzeit und keinen Netzwerkzugriff — geändert
+hat sich, wie das Bundle entsteht, nicht was ausgeliefert wird.
+
+Diese Toolchain ist eine eigene Installation und bewusst kein Workspace. Genau
+deshalb kann ein frischer Clone ohne sie typechecken, testen und smoken — das
+gebaute Bundle ist eingecheckt. Einmalig installieren, bevor du an der UI
+arbeitest:
+
+```bash
+bun run ui:install
+```
+
+Um an einem Panel zu arbeiten:
 
 ```bash
 bun run build:ui -- --dev --watch
