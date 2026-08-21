@@ -10,7 +10,7 @@
  * so there is nothing to push.  It is read once per panel open.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
-import type { Config } from '../../config/Config.js';
+import type { ConfigLayers } from '../../config/Config.js';
 import type { ConfigObject, ConfigValue } from '../../config/HoconParser.js';
 import { toWireValue } from '../internal/WireSerializer.js';
 import {
@@ -57,10 +57,7 @@ export class ConfigMethods {
 }
 
 /** Which layer's value survived the merge for `path`. */
-function sourceOf(
-  layers: { reference: Config; application: Config; overrides: Config },
-  path: string,
-): ConfigSource {
+function sourceOf(layers: ConfigLayers, path: string): ConfigSource {
   // Highest first: the merge resolves the same way, so this cannot
   // disagree with the tree it is describing.
   if (layers.overrides.hasPath(path)) return 'override';
@@ -69,11 +66,7 @@ function sourceOf(
 }
 
 /** True when a layer below the winning one also set `path`. */
-function displaced(
-  layers: { reference: Config; application: Config; overrides: Config },
-  path: string,
-  source: ConfigSource,
-): boolean {
+function displaced(layers: ConfigLayers, path: string, source: ConfigSource): boolean {
   if (source === 'override') {
     return layers.application.hasPath(path) || layers.reference.hasPath(path);
   }
