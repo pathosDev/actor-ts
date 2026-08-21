@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The DevTools shell is Angular components** (#485, part of #482). The header,
+  nav rail, offline dialog and panel host are components reading Angular
+  signals; `shell/AppShell.ts` and its imperative DOM building are gone. What
+  the user sees is unchanged — the same 2 s grace period before the offline
+  dialog, the same nav built from the `welcome` panel roster with disabled items
+  carrying both the panel name and the reason, the same epoch guard that stops a
+  slowly-loading panel painting over one the reader has already moved to.
+
+  `core/tapClient.ts` gains an injectable `TapClientService` around it, and a
+  seam for the socket constructor. The connection logic itself is deliberately
+  not rewritten: backoff from 500 ms to 10 s, `incompatible` never retrying,
+  re-subscribing every open stream on `welcome`, treating a sequence gap as
+  "re-subscribe for a fresh snapshot" rather than rendering a diverged tree, and
+  refcounting listeners so an idle panel costs the actor system nothing — none
+  of that is covered by a test yet, and porting it by hand in the same change
+  would have made a regression indistinguishable from a wiring mistake. The seam
+  is what lets #487 finally reach it with a fake socket.
+
+  The seven panels still mount through `LegacyPanelHostComponent` and are ported
+  one at a time; navigation still runs through `core/router.ts`, because two
+  routers writing `location.hash` would be a race for no benefit until a panel
+  is a real component.
+
+
 - **The DevTools UI is built by Angular 22 instead of `Bun.build`** (#483, part
   of #482). A build-time change only: no panel is ported, the served UI behaves
   exactly as before, and the public API is untouched.

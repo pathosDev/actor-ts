@@ -49,7 +49,18 @@ interface PendingRequest {
   reject(error: Error): void;
 }
 
-export function connectTap(url: string): TapClient {
+/**
+ * How a socket is created.  A seam, not a generalisation: the reconnect
+ * backoff, the sequence-gap recovery and the refcounted subscribe/unsubscribe
+ * below are the most failure-prone logic in the UI and had no test entry point
+ * at all, because they could only be reached through a real `WebSocket` (#487).
+ */
+export type SocketFactory = (url: string) => WebSocket;
+
+export function connectTap(
+  url: string,
+  createSocket: SocketFactory = (target) => new WebSocket(target),
+): TapClient {
   const status = signal<ConnectionStatus>('connecting');
   const welcome = signal<WelcomeFrame | null>(null);
   const lastError = signal<string | null>(null);
@@ -75,7 +86,7 @@ export function connectTap(url: string): TapClient {
 
   function open(): void {
     status.set('connecting');
-    const next = new WebSocket(url);
+    const next = createSocket(url);
     socket = next;
 
     next.addEventListener('open', () => send(helloFrame('devtools-ui')));

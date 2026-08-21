@@ -1,0 +1,253 @@
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  computed,
+  effect,
+  inject,
+  signal,
+  viewChild,
+  type ElementRef,
+} from '@angular/core';
+import { DomSanitizer, type SafeHtml } from '@angular/platform-browser';
+
+import { ACTOR_TS_LOGO_SVG } from '../assets/logo.js';
+import { formatDuration } from '../core/format.js';
+import { currentRoute, panelHref } from '../core/router.js';
+import { currentTheme, toggleTheme, type Theme } from '../core/theme.js';
+import { DEVTOOLS_PROTOCOL_VERSION, type ConnectionStatus } from '../core/tapClient.js';
+import { registeredPanels } from '../shell/PanelRegistry.js';
+import { panelStatusOf } from '../shell/panelStatus.js';
+import { LegacyPanelHostComponent } from './LegacyPanelHostComponent.js';
+import { TapClientService } from './TapClientService.js';
+
+const STATUS_LABELS: Readonly<Record<ConnectionStatus, string>> = {
+  connecting: 'connecting',
+  open: 'live',
+  closed: 'reconnecting',
+  incompatible: 'version mismatch',
+};
+
+/**
+ * How long a lost connection is tolerated before it is announced.
+ *
+ * Long enough to cover the flicker of an ordinary reconnect — the status goes
+ * `connecting` → `closed` → `connecting` while it retries — and short enough
+ * that a real outage is named while you are still looking at the screen.
+ */
+const OFFLINE_GRACE_MS = 2_000;
+
+/** Keeps the "last contact" reading moving while there is none. */
+const OFFLINE_CLOCK_MS = 1_000;
+
+/** One nav entry, resolved against the handshake. */
+type NavigationItem = {
+  readonly id: string;
+  readonly title: string;
+  readonly href: string;
+  readonly usable: boolean;
+  readonly current: boolean;
+  readonly reason: string;
+};
+
+/**
+ * The application frame: branded header, nav rail, panel host.
+ *
+ * The shell owns exactly one thing — which panel is mounted — and swaps it when
+ * the route changes.  Everything else (data, layout, rendering) belongs to the
+ * panels, which is what lets a new panel arrive without touching this file.
+ *
+ * Navigation still runs through `core/router.ts` rather than Angular's router,
+ * and that is deliberate for as long as the panels mount imperatively: two
+ * routers writing `location.hash` is a race, and the panels read `currentRoute`
+ * for sub-state no Angular route models yet (a selected actor path, a journal
+ * offset).  `provideRouter(routes, withHashLocation())` arrives with the first
+ * panel that becomes a real component — and the hash half is not optional when
+ * it does, because `UiAssetRoutes.ts` deliberately serves no SPA fallback: a
+ * path that is not an asset has to 404 rather than return this document.
+ */
+@Component({
+  selector: 'devtools-root',
+  imports: [LegacyPanelHostComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <div class="dt-app" [class.dt-app--offline]="offline()">
+      <header class="dt-header">
+        <span class="dt-header__logo" role="img" aria-label="actor-ts" [innerHTML]="logo"></span>
+        <span class="dt-header__system">{{ systemName() }}</span>
+        <span class="dt-header__spacer"></span>
+        <span class="dt-status dt-status--{{ status() }}" [title]="badgeTitle()">
+          <span class="dt-status__dot"></span>{{ statusLabel() }}
+        </span>
+        <button class="dt-iconbutton" type="button" (click)="onToggleTheme()">
+          {{ theme() === 'dark' ? 'Light mode' : 'Dark mode' }}
+        </button>
+      </header>
+
+      <div class="dt-body">
+        <nav class="dt-nav">
+          @for (item of navigation(); track item.id) {
+            @if (item.usable) {
+              <a class="dt-nav__item" [class.dt-nav__item--current]="item.current" [href]="item.href">
+                {{ item.title }}
+              </a>
+            } @else {
+              <span
+                class="dt-nav__item dt-nav__item--unavailable"
+                [class.dt-nav__item--current]="item.current"
+                [title]="item.reason"
+                [attr.aria-label]="item.title + ' — ' + item.reason"
+                aria-disabled="true"
+              >{{ item.title }}</span>
+            }
+          }
+        </nav>
+
+        <devtools-legacy-panel-host class="dt-panel" />
+      </div>
+
+      <dialog class="dt-dialog" #offlineDialog (cancel)="onDialogCancel($event)">
+        <div class="dt-dialog__body">
+          @if (status() === 'incompatible') {
+            <h2 class="dt-dialog__title">This UI does not match the server</h2>
+            <p>
+              The bundled panels and the tap protocol disagree on their version, so the
+              connection was refused rather than half-understood. Rebuild the UI bundle.
+            </p>
+          } @else {
+            <h2 class="dt-dialog__title">No node reachable</h2>
+            <p>
+              Nothing has answered for {{ offlineFor() }}. Everything behind this is the
+              last thing the node said, frozen at that moment — it is not live. Still
+              retrying, and this closes by itself the moment something answers.
+            </p>
+            <p class="dt-dialog__hint">
+              Each node serves its own DevTools, so another node's port may still answer
+              while this one does not.
+            </p>
+          }
+        </div>
+        <div class="dt-dialog__actions">
+          <button class="dt-iconbutton" type="button" (click)="onDismissOffline()">
+            Look at the last data anyway
+          </button>
+        </div>
+      </dialog>
+    </div>
+  `,
+})
+export class AppShellComponent {
+  private readonly tap = inject(TapClientService);
+  private readonly destroyRef = inject(DestroyRef);
+
+  /** Trusted build-time constant, not user data — inlined so the mark inherits the theme. */
+  readonly logo: SafeHtml = inject(DomSanitizer).bypassSecurityTrustHtml(ACTOR_TS_LOGO_SVG);
+
+  readonly status = this.tap.status;
+  readonly statusLabel = computed(() => STATUS_LABELS[this.status()]);
+  readonly systemName = computed(() => this.tap.welcome()?.systemName ?? '…');
+
+  private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('offlineDialog');
+
+  private readonly themeSignal = signal<Theme>(currentTheme.get());
+  readonly theme = this.themeSignal.asReadonly();
+
+  private readonly routeSignal = signal(currentRoute.get());
+
+  /** Ticks so the "nothing has answered for …" reading keeps moving. */
+  private readonly now = signal(Date.now());
+  private readonly offlineSince = signal<number | null>(Date.now());
+  /** Set when the reader chooses to look past it; cleared on recovery. */
+  private readonly dismissed = signal(false);
+
+  /**
+   * The framework version has its own overview tile (#911) — it is the first
+   * thing a bug report quotes, and a tooltip does not survive a screenshot.
+   * The PROTOCOL version stays here only: it matters when the two sides
+   * disagree, which is not a glanceable figure.
+   */
+  readonly badgeTitle = computed(() => {
+    const welcome = this.tap.welcome();
+    return welcome === null
+      ? ''
+      : `actor-ts ${welcome.serverVersion} · tap protocol v${DEVTOOLS_PROTOCOL_VERSION}`;
+  });
+
+  readonly offline = computed(() => {
+    const since = this.offlineSince();
+    return since !== null && this.now() - since >= OFFLINE_GRACE_MS;
+  });
+
+  readonly offlineFor = computed(() => {
+    const since = this.offlineSince();
+    return since === null ? '' : formatDuration(this.now() - since);
+  });
+
+  readonly navigation = computed<readonly NavigationItem[]>(() => {
+    const welcome = this.tap.welcome();
+    const active = this.routeSignal().panel;
+    return registeredPanels().map((panel) => {
+      const descriptor = panelStatusOf(welcome, panel.id);
+      return {
+        id: panel.id,
+        title: panel.title,
+        href: panelHref(panel.id),
+        usable: descriptor.status === 'active',
+        current: panel.id === active,
+        // `title` alone would BECOME the accessible name, so a screen reader
+        // would announce the reason and never the panel.  The template spells
+        // out both, in that order.
+        reason: descriptor.reason ?? 'not available',
+      };
+    });
+  });
+
+  constructor() {
+    this.destroyRef.onDestroy(currentTheme.subscribe((value) => this.themeSignal.set(value)));
+    this.destroyRef.onDestroy(currentRoute.subscribe((value) => this.routeSignal.set(value)));
+
+    const clock = setInterval(() => this.now.set(Date.now()), OFFLINE_CLOCK_MS);
+    this.destroyRef.onDestroy(() => clearInterval(clock));
+
+    effect(() => {
+      if (this.status() === 'open') {
+        this.offlineSince.set(null);
+        // Back on its feet: a later outage is allowed to raise the dialog again.
+        this.dismissed.set(false);
+        return;
+      }
+      if (this.offlineSince() === null) this.offlineSince.set(Date.now());
+    });
+
+    /**
+     * Say so, in the way that is hard to miss, when nothing answers.
+     *
+     * Every panel keeps rendering the last thing it was told, which is the right
+     * behaviour — the final reading before a node died is usually the
+     * interesting one — but without saying so it reads as a live dashboard of a
+     * healthy system.  The status badge was too quiet for that; it is eight
+     * pixels in a corner.
+     */
+    effect(() => {
+      const element = this.dialog().nativeElement;
+      if (this.offline() && !this.dismissed()) {
+        if (!element.open) element.showModal();
+      } else if (element.open) {
+        element.close();
+      }
+    });
+  }
+
+  onToggleTheme(): void { toggleTheme(); }
+
+  onDismissOffline(): void { this.dismissed.set(true); }
+
+  /**
+   * Escape counts as dismissing rather than as a close that reopens on the next
+   * tick — a dialog that comes straight back is a trap.
+   */
+  onDialogCancel(event: Event): void {
+    event.preventDefault();
+    this.dismissed.set(true);
+  }
+}
