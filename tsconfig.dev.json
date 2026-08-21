@@ -62,16 +62,21 @@
     // by the `comparison` job in `.github/workflows/benchmarks.yml`.
     "benchmarks/comparison/**",
 
-    // Three examples that demonstrate an optional peer the root install does
+    // Two examples that demonstrate an optional peer the root install does
     // not carry.  Each one loads it through a guarded `import()` and prints
     // an "install it with …" message when it is missing — the type positions
     // (`typeof import('@opentelemetry/api')`) are what the root cannot
-    // resolve, not the code around them.  `smoke-test.ts` is a black-box
-    // script: it spawns the voice backend as a subprocess and talks to it
-    // over a socket, so it imports nothing from `src/` and this config would
-    // catch no API drift in it either way.
+    // resolve, not the code around them.
+    //
+    // `examples/voice/smoke-test.ts` used to be listed here too, excused as a
+    // black-box script that "imports nothing from `src/` and this config would
+    // catch no API drift in it either way".  That reasoning does not match the
+    // rule above — its imports (`node:*`, `ws`) all resolve from the root
+    // manifest — and it was wrong on its own terms: the file was returning
+    // `unknown` where it declared `Uint8Array | undefined`, and being listed
+    // here is the only reason nothing said so (#1015).  Drift is not the only
+    // thing a typecheck catches.  Do not re-add it.
     "examples/management/otel-jaeger.ts",
-    "examples/management/prom-client-shared.ts",
-    "examples/voice/smoke-test.ts"
+    "examples/management/prom-client-shared.ts"
   ]
 }

@@ -27,6 +27,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The voice sample promised a `Uint8Array` and returned `unknown`, and the
+  one config that could have said so was told not to look** (#1015).
+  `Array.prototype.find` over a union hands back the whole union, so reading
+  `.data` off the result is `unknown`. Both helpers in
+  `examples/voice/smoke-test.ts` reached for it through `(e as any).data` and
+  `?.['data']`, which is precisely what stopped the mismatch from being
+  visible where it was written. They now narrow with a type guard over named
+  `TextEvent` / `BinaryEvent` variants, and the casts are gone. The change is
+  type-level only — the sample still round-trips all three modes.
+
+  Why it survived is the more useful half. `tsconfig.dev.json` excluded the
+  file, excused as a black-box script that "imports nothing from `src/` and
+  this config would catch no API drift in it either way". That does not match
+  the exclude rule stated at the top of that same file — a file is excluded
+  when a manifest *other than the root* resolves its imports, and this one's
+  (`node:*`, `ws`) all come from the root — and drift is not the only thing a
+  typecheck catches. The entry is gone, so the file is gated from now on. The
+  gate was checked in both directions: with the exclusion lifted but the
+  source left unfixed, `typecheck:dev` fails with exactly the reported error,
+  and green only once the narrowing lands. This was the last of the eight
+  errors #1015 inventoried; the other seven had already been fixed in passing
+  by #540's sweep and by #1014.
+
 - **A one-way tell batch could be read before it landed, and one failed arm
   discarded every arm's rounds** (#1326). Both surfaced on the same run: a
   hundred-round measurement stopped at round 44 with `completed 993 of 1000
