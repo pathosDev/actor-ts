@@ -19,6 +19,7 @@
  *   bun scripts/build-devtools-ui.mjs --dev      plain files in devtools-ui/.dev
  *   bun scripts/build-devtools-ui.mjs --dev --watch
  */
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { gzipSync, constants as zlibConstants } from 'node:zlib';
 import { mkdir, readdir, readFile, rm, watch, writeFile } from 'node:fs/promises';
@@ -26,28 +27,46 @@ import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { requireUiToolchain } from './ui-toolchain.mjs';
+
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const uiRoot = join(repositoryRoot, 'devtools-ui');
-const entrypoint = join(uiRoot, 'src', 'main.ts');
 const indexHtml = join(uiRoot, 'index.html');
-const buildDirectory = join(uiRoot, '.build');
+const buildDirectory = join(uiRoot, '.angular-build');
 const developmentDirectory = join(uiRoot, '.dev');
 const generatedModule = join(repositoryRoot, 'src', 'devtools', 'generated', 'UiAssets.ts');
 
 /**
+ * Build output that must not be embedded.
+ *
+ * `stats.json` is the builder's own metafile — it is how chunks are attributed
+ * to panels below, and it is bigger than several panels put together.
+ * `prerendered-routes.json` describes a prerender this application does not do.
+ * Neither is ever requested by the served document.
+ */
+const IGNORED_OUTPUTS = new Set(['stats.json', 'prerendered-routes.json']);
+
+/**
  * gzip size ceilings, in kibibytes.
  *
- * Panel entry modules are named `<panel>Panel.ts`, so Bun's chunk names
- * carry the panel identity and each budget can be attributed exactly —
- * that is the real reason the bundle is split, more than load time.
- * Everything else (entry, shared chunks, CSS, HTML) is the shell, which
- * every page load pays for and is therefore held tightest.  The
- * per-panel numbers come from the panel issues: #204 asks for ≤ 200 KB,
- * #217 for ≤ 100 KB.
+ * Each panel is a lazy chunk, and every chunk is attributed to exactly one
+ * bucket — that is the real reason the bundle is split, more than load time.
+ * Everything else (entry, shared chunks, CSS, HTML) is the shell, which every
+ * page load pays for and is therefore held tightest.  The per-panel numbers
+ * come from the panel issues: #204 asks for ≤ 200 KB, #217 for ≤ 100 KB.
+ *
+ * The shell figure moved from 60 to 100 KiB when Angular replaced the
+ * hand-rolled framework (#483): the framework's core and its bootstrap land
+ * there, and the ceiling is what the shell may cost, not a target it should
+ * grow into.  `charts` is declared ahead of #486 for the same reason the
+ * dependency is installed early — ECharts is lazy and shared by four panels,
+ * so it needs a bucket of its own rather than inflating whichever panel
+ * happens to pull it first.  The 400 KiB total is unchanged.
  */
-const SHELL_BUDGET_KIB = 60;
+const SHELL_BUDGET_KIB = 100;
 const TOTAL_BUDGET_KIB = 400;
 const PANEL_BUDGETS_KIB = {
+  charts: 150,
   dashboard: 60,
   timeTravel: 80,
   profiler: 100,
@@ -57,9 +76,41 @@ const PANEL_BUDGETS_KIB = {
   explain: 60,
 };
 
-/** `assets/dashboardPanel-a1b2c3.js` → `dashboard`; anything else → shell. */
-function panelOf(assetPath) {
-  return /^assets\/([A-Za-z0-9]+)Panel(-[a-z0-9]+)?\.js$/.exec(assetPath)?.[1] ?? null;
+/**
+ * `src/panels/timetravel/timeTravelPanel.ts` → `timeTravel`.
+ *
+ * The bucket name comes from the file, not the directory: the budget keys
+ * predate this change and are camelCase (`timeTravel`) while the directory is
+ * not (`timetravel`).  Deriving from the file keeps every existing budget key
+ * valid, so this issue changes how attribution is discovered without changing
+ * what is being budgeted.
+ */
+function panelFromEntryPoint(entryPoint) {
+  return /(?:^|\/)([A-Za-z0-9]+)Panel\.ts$/.exec(entryPoint)?.[1] ?? null;
+}
+
+/**
+ * Read `stats.json` and map each emitted file to its bucket.
+ *
+ * Only entry points that are panels produce a bucket; `src/main.ts` and every
+ * chunk without an entry point fall through to the shell, which is the same
+ * split the previous build applied by file name.
+ */
+async function readChunkAttribution(outputDirectory) {
+  const statsPath = join(outputDirectory, 'stats.json');
+  if (!existsSync(statsPath)) {
+    throw new Error(
+      `${relative(repositoryRoot, statsPath)} is missing — the build cannot attribute `
+      + 'chunks to size budgets without it. `statsJson` must stay enabled in angular.json.',
+    );
+  }
+  const stats = JSON.parse(await readFile(statsPath, 'utf8'));
+  const attribution = new Map();
+  for (const [path, output] of Object.entries(stats.outputs ?? {})) {
+    const panel = output.entryPoint === undefined ? null : panelFromEntryPoint(output.entryPoint);
+    if (panel !== null) attribution.set(path.replaceAll('\\', '/'), panel);
+  }
+  return attribution;
 }
 
 const MIME_TYPES = {
@@ -70,6 +121,7 @@ const MIME_TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.woff2': 'font/woff2',
   '.png': 'image/png',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 const development = process.argv.includes('--dev');
@@ -84,50 +136,42 @@ if (checkOnly) {
 }
 
 async function run() {
+  requireUiToolchain('the DevTools UI build');
+
   const outputDirectory = development ? developmentDirectory : buildDirectory;
   await rm(outputDirectory, { recursive: true, force: true });
+  runAngularBuild();
 
-  const result = await Bun.build({
-    entrypoints: [entrypoint],
-    outdir: outputDirectory,
-    target: 'browser',
-    format: 'esm',
-    splitting: true,
-    minify: !development,
-    sourcemap: development ? 'linked' : 'none',
-    naming: {
-      entry: 'assets/[name].[ext]',
-      chunk: 'assets/[name]-[hash].[ext]',
-      asset: 'assets/[name]-[hash].[ext]',
-    },
-  });
-
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error('DevTools UI bundle failed');
+  // Angular writes `index.html` itself, with its own hashed `<script>` and
+  // `<link>` injected, so the document is no longer read from source here —
+  // reading it would embed the version that references nothing.
+  const emitted = await filesUnder(outputDirectory);
+  const files = [];
+  for (const absolute of emitted) {
+    const path = relative(outputDirectory, absolute).replaceAll('\\', '/');
+    if (IGNORED_OUTPUTS.has(path)) continue;
+    files.push({ path, bytes: new Uint8Array(await readFile(absolute)) });
   }
 
-  const files = [
-    { path: 'index.html', bytes: await readNormalised(indexHtml) },
-    ...await Promise.all(result.outputs.map(async (output) => ({
-      path: relative(outputDirectory, output.path).replaceAll('\\', '/'),
-      bytes: new Uint8Array(await output.arrayBuffer()),
-    }))),
-  ];
+  assertServableUnderAnyPrefix(files);
 
   if (development) {
-    // The dev root is served straight off disk via `uiDevelopmentRoot`,
-    // so index.html only has to land next to what Bun already wrote.
-    await writeFile(join(outputDirectory, 'index.html'), await readFile(indexHtml));
-    report(files.map((file) => ({ ...file, gzipBytes: gzip(file.bytes) })));
+    // The dev root is served straight off disk via `uiDevelopmentRoot`, and
+    // the builder already wrote index.html into it.
+    report(files.map((file) => ({ ...file, bucket: 'shell', gzipBytes: gzip(file.bytes) })));
     console.log(`\ndev bundle → ${relative(repositoryRoot, outputDirectory)}`);
     return;
   }
 
-  const assets = rehashChunkNames(files).map((file) => {
+  const attribution = await readChunkAttribution(outputDirectory);
+  const bucketed = files.map((file) => ({ ...file, bucket: attribution.get(file.path) ?? 'shell' }));
+  assertNoCarriageReturns(bucketed);
+
+  const assets = rehashChunkNames(bucketed).map((file) => {
     const gzipBytes = gzip(file.bytes);
     return {
       path: file.path,
+      bucket: file.bucket,
       contentType: contentTypeOf(file.path),
       size: file.bytes.byteLength,
       etag: `"${createHash('sha256').update(file.bytes).digest('base64url').slice(0, 27)}"`,
@@ -139,6 +183,86 @@ async function run() {
   enforceBudgets(assets);
   report(assets);
   await emitModule(assets, await sourceHash());
+}
+
+/**
+ * Run the nested Angular build, inheriting its output so a template error
+ * reads the way it would if you had run `ng build` yourself.
+ */
+function runAngularBuild() {
+  const script = development ? 'build:dev' : 'build';
+  const result = spawnSync('bun', ['run', script], {
+    cwd: uiRoot,
+    stdio: 'inherit',
+    shell: false,
+  });
+  if (result.error) throw new Error(`DevTools UI build could not start — ${result.error.message}`);
+  if (result.status !== 0) throw new Error('DevTools UI bundle failed');
+}
+
+/**
+ * The served document has to work at the server root (`DevTools.attach`) AND
+ * under a prefix (`DevTools.mount('/devtools')`), which is what the
+ * trailing-slash 301 in `UiAssetRoutes.ts` exists for.  Two ways to lose that,
+ * both silent until someone mounts under a prefix:
+ *
+ *   - a base element resolving to the server root.  Angular's builder always
+ *     emits one; `angular.json`'s `"baseHref": "./"` is what makes it `./`
+ *     rather than `/`, and `./` is exactly right — it anchors every relative
+ *     reference to the directory the document was served from, whatever that
+ *     directory turns out to be.
+ *   - any root-relative `src`/`href`, which resolves past the prefix
+ *     regardless of the base.
+ *
+ * `data:` URIs are exempt: the inline favicon is one, and it references
+ * nothing on the server.
+ */
+function assertServableUnderAnyPrefix(files) {
+  const document = files.find((file) => file.path === 'index.html');
+  if (document === undefined) throw new Error('DevTools UI build produced no index.html');
+  const html = new TextDecoder().decode(document.bytes);
+
+  const base = /<base\b[^>]*\bhref="([^"]*)"/i.exec(html)?.[1];
+  if (base !== undefined && base.startsWith('/')) {
+    throw new Error(
+      `index.html carries <base href="${base}">, which pins every asset to the server root `
+      + "and breaks DevTools.mount('/devtools'). Set `baseHref` to './' in "
+      + 'devtools-ui/angular.json.',
+    );
+  }
+
+  const rooted = [...html.matchAll(/\b(?:src|href)="([^"]*)"/gi)]
+    .map((match) => match[1])
+    .filter((reference) => reference.startsWith('/'));
+  if (rooted.length > 0) {
+    throw new Error(
+      `index.html references ${rooted.join(', ')} from the server root, which breaks `
+      + "DevTools.mount('/devtools'). Asset references must be relative.",
+    );
+  }
+}
+
+/**
+ * Fail on a CRLF in any embedded text asset.
+ *
+ * `index.html` used to be read through {@link readNormalised}, which stripped
+ * them; it now comes out of the builder along with everything else, and
+ * normalising minified output blindly would corrupt a string literal that
+ * legitimately contains one.  Asserting instead keeps the bundle a function of
+ * the sources on Windows and Linux alike, and says so when it is not.
+ */
+function assertNoCarriageReturns(files) {
+  const decoder = new TextDecoder();
+  const offenders = files
+    .filter((file) => /\.(?:js|css|html|json|svg)$/.test(file.path))
+    .filter((file) => decoder.decode(file.bytes).includes('\r\n'));
+  if (offenders.length > 0) {
+    throw new Error(
+      `CRLF line endings in built assets: ${offenders.map((file) => file.path).join(', ')}. `
+      + 'The embedded bundle would then differ between Windows and Linux for the same commit. '
+      + 'Check .gitattributes for the sources these were built from.',
+    );
+  }
 }
 
 /**
@@ -202,6 +326,9 @@ async function sourceHash() {
   const inputs = [
     posixPath(indexHtml),
     posixPath(join(uiRoot, 'tsconfig.json')),
+    posixPath(join(uiRoot, 'tsconfig.app.json')),
+    posixPath(join(uiRoot, 'angular.json')),
+    posixPath(join(uiRoot, 'package.json')),
     posixPath(fileURLToPath(import.meta.url)),
     ...(await filesUnder(join(uiRoot, 'src'))).map(posixPath),
   ].sort();
@@ -213,6 +340,10 @@ async function sourceHash() {
     digest.update(await readNormalised(join(repositoryRoot, path)));
     digest.update('\0');
   }
+  // The root's `dependencies` still count: `ts-pattern` is bundled into the
+  // output, so a version bump makes the committed bundle stale without any UI
+  // source changing.  `devtools-ui/package.json` is hashed whole, above, which
+  // covers the Angular and ECharts versions the same way.
   const manifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
   digest.update(JSON.stringify(manifest.dependencies ?? {}));
   return digest.digest('hex').slice(0, 16);
@@ -256,7 +387,12 @@ function posixPath(path) {
  * never embedded, so they are left alone.
  */
 function rehashChunkNames(files) {
-  const hashedName = /^(assets\/.+)-[a-z0-9]{8}(\.[A-Za-z0-9]+)$/;
+  // Angular's builder hashes with a mixed-case, base64url-ish alphabet and
+  // writes at the output root rather than under `assets/`
+  // (`main-BRPG6UHL.js`, `chunk-DJ-4lt2t.js`, `styles-ACD2OGKC.css`), so the
+  // shape this matches changed with the toolchain even though the reasoning
+  // below did not.
+  const hashedName = /^(.+)-[A-Za-z0-9_-]{8}(\.[A-Za-z0-9]+)$/;
   const nameParts = new Map();
   for (const file of files) {
     const match = hashedName.exec(file.path);
@@ -312,6 +448,7 @@ function rehashChunkNames(files) {
   }
 
   return files.map((file) => ({
+    ...file,
     path: renamed.get(file.path) ?? file.path,
     bytes: rewrite(file),
   }));
@@ -345,8 +482,7 @@ function contentTypeOf(path) {
 function enforceBudgets(assets) {
   const buckets = new Map([['shell', 0]]);
   for (const asset of assets) {
-    const bucket = panelOf(asset.path) ?? 'shell';
-    buckets.set(bucket, (buckets.get(bucket) ?? 0) + asset.gzipBytes.byteLength);
+    buckets.set(asset.bucket, (buckets.get(asset.bucket) ?? 0) + asset.gzipBytes.byteLength);
   }
 
   const violations = [];
@@ -375,7 +511,7 @@ function enforceBudgets(assets) {
 function report(assets) {
   const rows = assets.map((asset) => ({
     asset: asset.path,
-    bucket: panelOf(asset.path) ?? 'shell',
+    bucket: asset.bucket,
     raw: kilobytes(asset.size ?? asset.bytes.byteLength),
     gzip: kilobytes(asset.gzipBytes.byteLength),
   }));

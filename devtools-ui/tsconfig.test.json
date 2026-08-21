@@ -1,5 +1,22 @@
 {
-  "//": "Type-checks the panels' own tests. They run under `bun test`, which does not type-check, and the bundle config next door cannot cover them because it deliberately has no Bun types — browser code must not see `Bun`. Without this a changed signature reached the tests unnoticed and they went on passing against a shape that could no longer occur.",
+  "//": [
+    "Type-checks the panels' own tests. They run under `bun test`, which does not",
+    "type-check, so without this a changed signature reached the tests unnoticed",
+    "and they went on passing against a shape that could no longer occur.",
+    "",
+    "This is the one config in devtools-ui/ still read by the ROOT TypeScript",
+    "(^7.0.2) rather than by the nested Angular toolchain (>=6.0 <6.1), which is",
+    "why `include` names only `tests/` and lets imports pull the rest in (#483).",
+    "It used to list `src/**/*.ts`, and that would now drag Angular components",
+    "and @angular/* type positions into a compiler that cannot resolve them.",
+    "",
+    "Entry-driven is also the more honest scope: everything these tests cover is",
+    "framework-free by design — format, history, flamegraph, profileTree,",
+    "stateDiff, actorsTree, uptime — so what tsc walks into from here is exactly",
+    "the substance the tests assert on, and nothing that merely happens to sit",
+    "nearby. The Angular half is checked by `bun run typecheck`, through",
+    "scripts/ui-toolchain.mjs."
+  ],
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
@@ -7,6 +24,6 @@
     "types": ["bun"],
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["tests/**/*.ts", "src/**/*.ts", "../src/devtools/protocol/**/*.ts"],
-  "exclude": ["node_modules", ".build", ".dev"]
+  "include": ["tests/**/*.ts"],
+  "exclude": ["node_modules", ".angular-build", ".dev"]
 }

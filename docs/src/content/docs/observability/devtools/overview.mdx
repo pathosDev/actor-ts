@@ -347,9 +347,23 @@ it and never disables it.
 
 ## Working on the UI
 
-The UI is vanilla TypeScript bundled by `Bun.build` and embedded into
-the published package, so it needs no UI framework at runtime and no
-network access.  To work on a panel:
+The UI is an Angular application, built by its own toolchain and embedded
+into the published package as a gzipped bundle.  Angular is a build-time
+dependency only: it never appears in `actor-ts`'s `dependencies` or
+`peerDependencies`, nothing a consumer installs carries it, and the served
+page loads nothing over the network.  So the UI still needs no framework at
+runtime and no network access — what changed is how the bundle is produced,
+not what ships.
+
+That toolchain is a separate install, deliberately not a workspace, which is
+why a fresh clone can typecheck, test and smoke without it — the built bundle
+is committed.  Install it once before working on the UI:
+
+```bash
+bun run ui:install
+```
+
+To work on a panel:
 
 ```bash
 bun run build:ui -- --dev --watch

@@ -10,12 +10,24 @@
       prefix without a trailing slash, so the same document works both
       at the server root (`DevTools.attach`) and under a path prefix
       (`DevTools.mount`).
+
+      The stylesheet and script tags are no longer written here: Angular's
+      builder injects its own, hashed.  It also injects a base element, and
+      `angular.json` sets `"baseHref": "./"` so that element anchors every
+      relative reference to whatever directory the document was served from.
+      That setting is load-bearing rather than cosmetic — the default pins the
+      base at the server root, which would break `DevTools.mount('/devtools')`.
+      The build asserts both halves (#483): the base is not root-anchored, and
+      no asset reference is.
+
+      Do NOT write the literal base tag into this comment.  The whole document,
+      comments included, is what the builder reads: a base element spelled out
+      here is found and used instead of the correct one being injected, which
+      is how the wrong value shipped once already.
     -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg stroke='%236366f1' stroke-width='1.6' fill='none'%3E%3Cpath d='M6 6 L18 10 M6 6 L9 19 M18 10 L9 19'/%3E%3C/g%3E%3Cg fill='%23ef4444'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Ccircle cx='18' cy='10' r='2.6'/%3E%3Ccircle cx='9' cy='19' r='2.6'/%3E%3C/g%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="assets/main.css" />
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="assets/main.js"></script>
+    <devtools-root></devtools-root>
   </body>
 </html>

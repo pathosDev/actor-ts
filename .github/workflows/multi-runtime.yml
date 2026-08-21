@@ -118,7 +118,7 @@ jobs:
       # saves ~20s on the Bun smoke jobs.
       - name: Build (tsc → dist/)
         if: ${{ !startsWith(matrix.runtime, 'bun') }}
-        run: bun run build
+        run: bun run build:lib
 
       - name: Smoke (Bun)
         if: startsWith(matrix.runtime, 'bun')
@@ -149,6 +149,10 @@ jobs:
       # green-light a dependency set no lockfile records, so the check
       # passes against something nobody can reproduce.  #622
       - run: bun install --frozen-lockfile
+      # The root typecheck reaches the DevTools UI through
+      # scripts/ui-toolchain.mjs, which skips locally and fails hard under CI
+      # (#483) — so CI is where the nested Angular install has to exist.
+      - run: bun run ui:install
       - run: bun run typecheck
       # Worker-thread multi-node suites + LeaseMajority e2e are quarantined
       # on hosted runners (Bun can't respawn functional workers there) —

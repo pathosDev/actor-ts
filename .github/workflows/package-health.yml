@@ -78,7 +78,7 @@ jobs:
       # first.  Built once here rather than by `lint:package`, so the job does
       # not pay for three builds.
       - name: Build (tsc → dist/)
-        run: bun run build
+        run: bun run build:lib
 
       # Each step runs the package.json script rather than repeating the tool
       # invocation, so the flags live in exactly one place and a local

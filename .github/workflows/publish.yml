@@ -80,6 +80,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # `prepublishOnly` runs `build` (which is `build:ui && tsc`) and
+      # `typecheck`, and both reach the DevTools UI. Its toolchain is a
+      # separate, deliberately un-hoisted install (#483), so without this the
+      # publish would fail at the last possible moment — after the tag and the
+      # GitHub Release already exist.
+      - name: Install the DevTools UI toolchain
+        run: bun run ui:install
+
       # Node 24 (the `engines` floor) bundles npm >= 11.5.1, which is the
       # minimum for trusted publishing — no separate npm upgrade step needed.
       - name: Setup Node + npm registry

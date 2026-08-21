@@ -64,10 +64,13 @@ jobs:
       # valid TypeScript whether or not its contents are current, so a
       # stale one sailed through typecheck and the entire test suite.
       #
-      # This runs BEFORE the build, and that ordering is load-bearing:
-      # `bun run build` is `build:ui && tsc`, so it regenerates the very
-      # file under test and any check after it would pass by
-      # construction.
+      # It runs before the build out of habit rather than necessity now.  That
+      # ordering used to be load-bearing: `bun run build` was `build:ui && tsc`,
+      # so it regenerated the very file under test and any check after it passed
+      # by construction.  This job builds with `build:lib` (tsc only) since
+      # #483, which removes the hazard structurally instead of relying on step
+      # order — and keeps this job free of the nested Angular install, because
+      # the check reads the committed module rather than rebuilding it.
       #
       # It compares the `source-hash` in the committed module's header
       # against a fresh one, rather than rebuilding and diffing bytes.
@@ -79,7 +82,7 @@ jobs:
         run: bun run check:ui
 
       - name: Build (tsc → dist/)
-        run: bun run build
+        run: bun run build:lib
 
       - name: Verify dist/ produced
         run: |

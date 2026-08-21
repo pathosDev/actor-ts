@@ -101,6 +101,14 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
+      # The DevTools UI has its own install, deliberately not a workspace, and
+      # the root typecheck reaches it through scripts/ui-toolchain.mjs. That
+      # guard skips a missing toolchain locally and fails hard under CI (#483),
+      # so the UI is type-checked on every run rather than only by whoever
+      # happens to have installed it.
+      - name: Install the DevTools UI toolchain
+        run: bun run ui:install
+
       - name: Typecheck
         run: bun run typecheck
 
