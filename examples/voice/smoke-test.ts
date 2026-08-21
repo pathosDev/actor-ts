@@ -28,10 +28,21 @@ const HTTP_PORT = 8091;     // distinct from the default 8081 so this
                             // can be run while a real cluster is up
 const CLUSTER_PORT = 2691;
 
+/**
+ * What arrived on a client socket.  Named variants rather than an inline
+ * union so `findText` / `findBinary` can narrow with a type guard: `find`
+ * hands back the whole union otherwise, and reading `.data` off that is
+ * `unknown` — which is how this file shipped returning `unknown` where it
+ * promised a `Uint8Array` (#1015).
+ */
+type TextEvent = { kind: 'text'; data: unknown };
+type BinaryEvent = { kind: 'binary'; data: Uint8Array };
+type ConnectionEvent = TextEvent | BinaryEvent;
+
 type Connection = {
   ws: WebSocket;
   username: string;
-  events: Array<{ kind: 'text'; data: unknown } | { kind: 'binary'; data: Uint8Array }>;
+  events: ConnectionEvent[];
   ready: Promise<void>;
 };
 
@@ -74,12 +85,13 @@ async function waitFor<T>(
 function clearEvents(c: Connection): void { c.events.length = 0; }
 
 function findText(c: Connection, predicate: (m: any) => boolean): any | undefined {
-  return c.events.find((e) => e.kind === 'text' && predicate((e as any).data))?.['data'];
+  return c.events.find((e): e is TextEvent => e.kind === 'text' && predicate(e.data))?.data;
 }
 
 function findBinary(c: Connection, predicate?: (b: Uint8Array) => boolean): Uint8Array | undefined {
-  const ev = c.events.find((e) => e.kind === 'binary' && (!predicate || predicate((e as any).data)));
-  return ev?.['data'];
+  return c.events.find(
+    (e): e is BinaryEvent => e.kind === 'binary' && (!predicate || predicate(e.data)),
+  )?.data;
 }
 
 function decodeIncoming(buffer: Uint8Array): { sender: string; opus: Uint8Array } {
