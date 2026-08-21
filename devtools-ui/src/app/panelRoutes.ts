@@ -119,6 +119,16 @@ export const PANEL_ROUTES: Routes = [
     loadComponent: () => import('../panels/eventstream/EventStreamPanelComponent.js')
       .then((m) => m.EventStreamPanelComponent),
   },
+  {
+    path: 'config',
+    data: {
+      id: 'config',
+      title: 'Configuration',
+      description: 'Every resolved HOCON key, and which layer set it.',
+    } satisfies PanelRouteData,
+    loadComponent: () => import('../panels/config/ConfigPanelComponent.js')
+      .then((m) => m.ConfigPanelComponent),
+  },
 ];
 
 /** The nav roster, in declaration order. */

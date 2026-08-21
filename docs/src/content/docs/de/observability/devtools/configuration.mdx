@@ -1,0 +1,67 @@
+---
+title: Konfiguration
+description: Jeder aufgelöste HOCON-Key, sein effektiver Wert und die Schicht, die ihn gesetzt hat — der eingebaute Default, application.conf oder ein Code-Override.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Ein zusammengeführter Konfigurationsbaum beantwortet *was ist diese
+Einstellung jetzt*. Die Frage, die dich tatsächlich hierher bringt, ist
+*warum ist sie nicht das, was ich geschrieben habe* — und dafür braucht
+es die Schicht zusätzlich zum Wert.
+
+| Spalte | Bedeutung |
+| --- | --- |
+| **key** | Vollständiger Punktpfad, z. B. `actor-ts.cluster.seed-nodes` |
+| **value** | Der effektive Wert nach dem Merge |
+| **from** | Welche Schicht gewonnen hat: `reference.conf`, `application.conf` oder `code` |
+
+Ein Hover auf die Zeile zeigt die ganze Geschichte: die Schicht, ob sie
+eine tiefere verdrängt hat, und ob der Wert für die Leitung gekürzt
+wurde.
+
+**Changed from defaults only** blendet alles aus, was noch auf seinem
+eingebauten Wert steht — üblicherweise alles bis auf eine Handvoll Keys.
+Bleibt die Tabelle dann leer, sagt das Panel es: dass nichts die Defaults
+überschreibt, ist eine Antwort für sich — und eine andere als „kein Key
+passt zu diesem Filter".
+
+## Die drei Schichten
+
+Präzedenz, höchste zuerst:
+
+1. **`code`** — was du als `ActorSystemOptions.config` übergeben hast.
+2. **`application.conf`** — aufgelöst über `configFile`, dann
+   `ACTOR_TS_CONFIG`, dann `./application.conf`.
+3. **`reference.conf`** — mit dem Paket ausgeliefert.
+
+Das Panel nennt, woher `application.conf` gelesen wurde — oder dass keine
+gefunden wurde. Diese Unterscheidung zählt mehr, als sie aussieht: *meine
+Datei wird ignoriert* und *meine Datei sagt etwas anderes* sind
+verschiedene Probleme, und der Pfad ist es, was sie trennt.
+
+<Aside type="note" title="Code-Optionen sind kein HOCON">
+Optionen pro Konsument — `MqttOptions.create().withQos(1)` und jeder
+andere `XOptions`-Builder — überschreiben HOCON an der Aufrufstelle und
+laufen nie durch den Konfigurationsbaum.  Ein hier gezeigter Key kann
+also trotzdem von einer expliziten Option in deinem Code überschrieben
+sein, und dieses Panel sieht das nicht.  Was es zeigt, ist die
+HOCON-Auflösung — und die exakt.
+</Aside>
+
+## Geheimnisse
+
+Ein Wert, dessen **Key** ein Geheimnis benennt — alles, was auf `pass`,
+`secret`, `token`, `key`, `credential` oder `auth` passt — wird durch
+`<redacted>` ersetzt, bevor er den Prozess verlässt. Nach Key statt nach
+Wert, denn ein Passwort, das zufällig gewöhnlich aussieht, ist immer noch
+ein Passwort, und der Key ist es, der es benennt.
+
+Das ist bewusst ein grobes Werkzeug. Ein Konfigurationsbaum verrät auch
+geschwärzt eine Menge über ein Deployment — Hosts, Ports, Seed-Nodes,
+Speicherpfade — also schalte das Panel ab, wo das zählt:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPanels({ config: false });
+```

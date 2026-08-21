@@ -119,6 +119,13 @@ export type {
   WireSpanStatus,
 } from './TracingStreamFrames.js';
 
+export { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from './ConfigFrames.js';
+export type {
+  ConfigSource,
+  ResolvedConfigEntry,
+  ResolvedConfigResult,
+} from './ConfigFrames.js';
+
 export {
   BUS_EVENT_BUFFER_DEFAULT,
   BUS_EVENT_TAIL_ROWS,

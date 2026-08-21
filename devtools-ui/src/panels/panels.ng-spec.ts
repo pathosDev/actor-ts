@@ -7,6 +7,7 @@ import { installDomGaps } from '../app/testing/domGaps.js';
 import { TapClientService } from '../app/TapClientService.js';
 import { ActorsPanelComponent } from './actors/ActorsPanelComponent.js';
 import { ClusterPanelComponent } from './cluster/ClusterPanelComponent.js';
+import { ConfigPanelComponent } from './config/ConfigPanelComponent.js';
 import { DeadLettersPanelComponent } from './deadletters/DeadLettersPanelComponent.js';
 import { EventStreamPanelComponent } from './eventstream/EventStreamPanelComponent.js';
 import { DashboardPanelComponent } from './dashboard/DashboardPanelComponent.js';
@@ -90,6 +91,11 @@ const PANELS: readonly PanelCase[] = [
     // The long explanation is the point: nothing is recorded until the
     // panel is open, so an idle system shows nothing and that is not a fault.
     expects: ['Event stream', 'Waiting for the first event', 'Cluster topics'],
+  },
+  {
+    name: 'config',
+    component: ConfigPanelComponent,
+    expects: ['Configuration', 'Loading'],
   },
 ];
 

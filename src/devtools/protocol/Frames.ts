@@ -65,7 +65,8 @@ export type DevToolsRequestMethod =
   | 'profiler.stop'
   | 'tracing.buffer'
   | 'deadletters.list'
-  | 'pubsub.topics';
+  | 'pubsub.topics'
+  | 'config.resolved';
 
 /** Every request method, for validation and iteration. */
 export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
@@ -84,6 +85,7 @@ export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
   'tracing.buffer',
   'deadletters.list',
   'pubsub.topics',
+  'config.resolved',
 ];
 
 /** Panels of the UI shell — the cards on the dashboard. */
@@ -96,7 +98,8 @@ export type DevToolsPanelId =
   | 'time-travel'
   | 'profiler'
   | 'dead-letters'
-  | 'event-stream';
+  | 'event-stream'
+  | 'config';
 
 /**
  * Whether a panel can be used right now.  `'disabled'` means the

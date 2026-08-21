@@ -48,6 +48,7 @@ import { ReplayRegistry } from './replay/ReplayRegistry.js';
 import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
 import { DeadLetterMethods } from './deadletters/DeadLetterMethods.js';
 import { EventStreamTap } from './taps/EventStreamTap.js';
+import { ConfigMethods } from './config/ConfigMethods.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
@@ -93,6 +94,7 @@ const OPTIONAL_PANELS: ReadonlyArray<{
   { id: 'profiler', option: 'profiler' },
   { id: 'dead-letters', option: 'deadLetters' },
   { id: 'event-stream', option: 'eventStream' },
+  { id: 'config', option: 'config' },
 ];
 
 /**
@@ -261,6 +263,11 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerTap(spans);
       spans.installMethods(this);
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('config')) {
+      new ConfigMethods(this.system).install(this);
+      this.registerPanel({ id: 'config', status: 'active' });
     }
 
     if (this.isPanelEnabled('event-stream')) {
