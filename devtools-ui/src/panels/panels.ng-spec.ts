@@ -7,6 +7,7 @@ import { installDomGaps } from '../app/testing/domGaps.js';
 import { TapClientService } from '../app/TapClientService.js';
 import { ActorsPanelComponent } from './actors/ActorsPanelComponent.js';
 import { ClusterPanelComponent } from './cluster/ClusterPanelComponent.js';
+import { DeadLettersPanelComponent } from './deadletters/DeadLettersPanelComponent.js';
 import { DashboardPanelComponent } from './dashboard/DashboardPanelComponent.js';
 import { ExplainPanelComponent } from './explain/ExplainPanelComponent.js';
 import { ProfilerPanelComponent } from './profiler/ProfilerPanelComponent.js';
@@ -76,6 +77,11 @@ const PANELS: readonly PanelCase[] = [
     name: 'profiler',
     component: ProfilerPanelComponent,
     expects: ['Profiler', 'Start a session to profile the system', 'No profile yet'],
+  },
+  {
+    name: 'dead-letters',
+    component: DeadLettersPanelComponent,
+    expects: ['Dead letters', 'Loading'],
   },
 ];
 

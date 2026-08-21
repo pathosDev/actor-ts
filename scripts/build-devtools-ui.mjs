@@ -86,6 +86,7 @@ const PANEL_BUDGETS_KIB = {
   cluster: 120,
   tracing: 100,
   explain: 60,
+  deadLetters: 60,
 };
 
 /**

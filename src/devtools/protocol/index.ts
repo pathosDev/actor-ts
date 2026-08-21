@@ -119,6 +119,13 @@ export type {
   WireSpanStatus,
 } from './TracingStreamFrames.js';
 
+export { DEAD_LETTER_ROWS, deadLetterView } from './DeadLetterFrames.js';
+export type {
+  DeadLettersParameters,
+  DeadLettersResult,
+  DeadLetterView,
+} from './DeadLetterFrames.js';
+
 export { explainEntriesPayload } from './ExplainFrames.js';
 export type {
   ExplainEnableParameters,

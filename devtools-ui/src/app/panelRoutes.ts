@@ -99,6 +99,16 @@ export const PANEL_ROUTES: Routes = [
     loadComponent: () => import('../panels/profiler/ProfilerPanelComponent.js')
       .then((m) => m.ProfilerPanelComponent),
   },
+  {
+    path: 'dead-letters',
+    data: {
+      id: 'dead-letters',
+      title: 'Dead letters',
+      description: 'Messages the system could not deliver, and why.',
+    } satisfies PanelRouteData,
+    loadComponent: () => import('../panels/deadletters/DeadLettersPanelComponent.js')
+      .then((m) => m.DeadLettersPanelComponent),
+  },
 ];
 
 /** The nav roster, in declaration order. */

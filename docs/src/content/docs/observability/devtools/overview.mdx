@@ -48,6 +48,7 @@ fails.
 | **Explain plan** | The last messages one actor handled, with timings |
 | **Time travel** | Browse a journal, reconstruct state at any point |
 | **Profiler** | Where the actor system spends its time |
+| **Dead letters** | Messages the system could not deliver, and why |
 
 All of them speak one [tap protocol](/observability/devtools/protocol/)
 over a single WebSocket, so they share a connection rather than each
@@ -167,11 +168,13 @@ client asks for:
 
 ```ts
 const devtoolsOptions = DevToolsOptions.create()
-  .withPanels({ timeTravel: false, profiler: false });
+  .withPanels({ timeTravel: false, deadLetters: false });
 ```
 
 Time travel is the one to think about first: it is the panel that
-surfaces raw persisted events.
+surfaces raw persisted events — closely followed by
+[dead letters](/observability/devtools/dead-letters/), which shows
+message payloads.
 
 ## Security
 

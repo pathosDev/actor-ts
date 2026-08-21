@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A dead-letter panel in DevTools** (#553). A message that cannot be
+  delivered throws nothing and logs nothing by default — `tell` returns, the
+  sender carries on, and the work never happens. That silence is what makes
+  the failure easy to miss, and the panel is where it becomes visible:
+  recipient, sender, message type, replay count, and the payload on click.
+
+  It reads the queue from #433 through a new `deadletters.list` request
+  method, polling once a second rather than streaming — the queue is a
+  bounded ring the server already keeps, and pushing every capture would put
+  DevTools on the delivery path of the very failures it is watching.
+
+  The queue is off by default, and the panel says so rather than showing an
+  empty table: "nothing is broken" and "nothing is being recorded" are
+  opposite answers that an empty table gives identically. Payloads are
+  sanitised through the wire serialiser, and one the queue could not keep
+  names the reason instead of rendering a `null` that reads like an empty
+  message. Switch it off with `panels: { deadLetters: false }` wherever the
+  payloads are not the operator's to read.
+
 - **The DevTools UI has tests** (#487, part of #482). Roughly 3,000 lines of it
   had none, which was the migration's whole point. Fifty tests across two
   runners: the framework-free half stays on `bun test`, and the Angular half
@@ -218,6 +237,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   smoke, examples, bench:smoke, check:ui, lint:package, lint:audit.
 
 ### Fixed
+
+- **DevTools grouped large numbers differently depending on the host**
+  (#553). `formatCount` grouped thousands by rewriting the comma out of
+  `toLocaleString('en-US')`, but that separator comes from the runtime's
+  ICU data — it is a comma under Bun and a thin space (U+2009) under the
+  Node that runs the UI test suite, where the rewrite therefore hit
+  nothing. Grouped by hand now, and pinned by a test that asserts the
+  codepoint rather than the shape.
 
 - **The voice sample promised a `Uint8Array` and returned `unknown`, and the
   one config that could have said so was told not to look** (#1015).

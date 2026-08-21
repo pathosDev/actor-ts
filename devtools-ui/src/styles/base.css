@@ -642,6 +642,64 @@ devtools-root { display: block; }
   white-space: nowrap;
 }
 
+/* ------------------------------ dead letters ----------------------------- */
+
+.dt-deadletters {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-deadletters__row {
+  display: grid;
+  grid-template-columns: 78px minmax(120px, 1fr) minmax(120px, 1.4fr) minmax(90px, 1fr) 72px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+  cursor: pointer;
+}
+.dt-deadletters__row:last-child { border-bottom: none; }
+.dt-deadletters__row:hover { background: var(--dt-bg-inset); }
+.dt-deadletters__row--open { background: var(--dt-bg-inset); }
+.dt-deadletters__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: default;
+}
+.dt-deadletters__row--head:hover { background: var(--dt-bg-inset); }
+.dt-deadletters__type {
+  color: var(--dt-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-deadletters__detail {
+  padding: 8px 12px 12px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-deadletters__degraded {
+  margin: 0 0 8px;
+  color: var(--dt-text-muted);
+  font-size: 12.5px;
+}
+.dt-deadletters__payload {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  color: var(--dt-text);
+}
+
 /* ------------------------------ time travel ------------------------------ */
 
 .dt-timetravel { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: var(--dt-gap); }

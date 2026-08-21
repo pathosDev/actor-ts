@@ -1,0 +1,91 @@
+---
+title: Dead letters
+description: The messages your system could not deliver — recipient, sender, payload and why — in the panel, instead of vanishing silently.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A message becomes a **dead letter** when it cannot be delivered: the
+recipient was stopped, never existed, or the path was wrong. Nothing
+throws and nothing logs by default — `tell` returns, the sender carries
+on, and the work simply never happens. That silence is what makes the
+failure so easy to miss, and this panel is where it becomes visible.
+
+| Column | Meaning |
+| --- | --- |
+| **time** | When the message was captured |
+| **message** | Constructor name of the message, or its `typeof` |
+| **recipient** | The actor it failed to reach |
+| **sender** | Who sent it, when there was a sender |
+| **replays** | How many times it has been replayed and come back |
+
+Click a row to see the payload. A non-zero **replays** count is worth
+noticing: it means you are looking at a poison message being retried,
+not a fresh failure.
+
+## Switching the queue on
+
+The panel reads the system's dead-letter queue, and that queue is
+**off by default** — capturing every undelivered message costs memory,
+and a system that never produces one should not pay for it:
+
+```ts
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters({ store: 'memory', maxEntries: 500 });
+
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+With `store: 'off'` the panel stays in the navigation but reports itself
+unavailable, naming the setting to change. That is deliberate: an empty
+table cannot tell you whether nothing is broken or nothing is being
+recorded, and those are opposite answers.
+
+Use `store: 'persistent'` to keep the queue across a restart — the
+letters are journalled, so the ones that arrived just before a crash are
+still there afterwards, which is usually exactly when you want them.
+
+## Filtering
+
+The filter box takes a recipient path and keeps that actor and
+everything beneath it, so `/user/orders` selects the whole subtree and a
+full path selects one actor. The filtering happens on the server, over
+the ring it already holds; the summary counts what the filter selected,
+not what the page shows.
+
+## Payloads
+
+Payloads are sanitised before they reach the browser — depth, entry
+count and string length are all capped. A message cut to fit says
+**truncated** above it, and one the queue could not keep at all says why
+instead of showing a `null` that reads like an empty message.
+
+<Aside type="caution" title="The payload is your data">
+The panel shows message contents, so it exposes whatever your messages
+carry.  Switch it off with `panels: { deadLetters: false }` anywhere
+that matters — the same call you would make for the time-travel panel,
+and for the same reason.
+</Aside>
+
+## Replaying
+
+Redelivering a captured letter is a queue operation rather than a panel
+one, and it stays in code on purpose — a button that re-sends production
+messages is a different kind of decision from a table that shows them:
+
+```ts
+const [letter] = await system.deadLetterQueue.list({ recipient: '/user/orders' });
+if (letter !== undefined) await system.deadLetterQueue.replay(letter.id);
+```
+
+`replay` removes the entry before redelivering and remembers the
+message, so a second failure comes back as the **same** entry with a
+higher `replayCount` rather than as a fresh one. Past `maxReplays` the
+letter is quarantined and replay refuses it.
+
+<Aside type="note" title="Why it polls">
+The panel asks for the queue once a second rather than being pushed to.
+The queue is a bounded ring the server already keeps, so a request is
+cheap — and pushing every capture would put DevTools on the delivery
+path of the very failures it is watching.
+</Aside>

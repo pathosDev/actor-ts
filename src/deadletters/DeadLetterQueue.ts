@@ -147,6 +147,15 @@ export class DeadLetterQueue {
   get store(): DeadLetterStore { return this.settings.store; }
 
   /**
+   * How many letters the ring holds before it drops its oldest.
+   *
+   * Exposed for the DevTools panel (#553), which reports how full the
+   * queue is: a count alone cannot say whether 200 letters is a quiet
+   * system or one that has already begun losing them.
+   */
+  get capacity(): number { return this.settings.maxEntries; }
+
+  /**
    * Captured letters, **newest first**, narrowed by `filter`.
    *
    * Newest first because the question that brings someone here is almost
