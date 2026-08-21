@@ -8,11 +8,12 @@ import {
 } from '@angular/core';
 import { match } from 'ts-pattern';
 
+import { ChartThemeService, type ChartTheme } from '../../app/charts/ChartThemeService.js';
+import { EChartComponent } from '../../app/charts/EChartComponent.js';
+import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
+import { buildTopologyOption, type TopologyNode } from '../../app/charts/topologyOption.js';
 import { TapClientService } from '../../app/TapClientService.js';
 import { formatCount, formatTime } from '../../core/format.js';
-import { currentTheme } from '../../core/theme.js';
-import { themeColor } from '../../render/timeseries.js';
-import { ringLayout } from './topologyLayout.js';
 import type {
   ClusterEventPayload,
   ClusterMemberInfo,
@@ -28,9 +29,6 @@ const GONE_CLOCK_INTERVAL_MS = 1000;
 /** How many membership transitions the timeline keeps. */
 const TIMELINE_CAPACITY = 60;
 
-/** Diameter of the topology drawing, in SVG user units. */
-const TOPOLOGY_SIZE = 320;
-
 /** Member status → the semantic colour token that carries its meaning. */
 const STATUS_TOKENS: Readonly<Record<ClusterMemberStatus, string>> = {
   joining: '--dt-state-warn',
@@ -42,23 +40,20 @@ const STATUS_TOKENS: Readonly<Record<ClusterMemberStatus, string>> = {
   removed: '--dt-state-idle',
 };
 
-/** One member, placed on the ring and coloured. */
-type PlacedMember = {
-  readonly address: string;
-  readonly x: number;
-  readonly y: number;
-  readonly radius: number;
-  readonly strokeWidth: number;
-  readonly color: string;
-  readonly label: string;
-  readonly title: string;
-};
-
-type Edge = { readonly x1: number; readonly y1: number; readonly x2: number; readonly y2: number };
+/** The same tokens, resolved, for the one thing that paints to a canvas. */
+function resolvedToken(variable: string, theme: ChartTheme): string {
+  switch (variable) {
+    case '--dt-state-ok': return theme.stateOk;
+    case '--dt-state-warn': return theme.stateWarn;
+    case '--dt-state-error': return theme.stateError;
+    default: return theme.stateIdle;
+  }
+}
 
 /** One member row in the list below the ring. */
 type MemberRow = {
   readonly member: ClusterMemberInfo;
+  /** A CSS custom property reference — the DOM themes itself. */
   readonly color: string;
   readonly statusLabel: string;
   readonly lastSeen: string | null;
@@ -101,52 +96,29 @@ function badgeToneFor(name: ClusterEventPayload['event']): string {
 /**
  * The cluster panel (#204) — topology, shard distribution, membership history.
  *
- * The topology is SVG: a cluster has tens of nodes, not thousands, and SVG
- * gives crisp labels, CSS theming and hover targets for free.  It is written
- * as template markup here rather than built through the `svg()` helper, which
- * is one of the things that helper existed for.
+ * The ring is an ECharts `graph` with `layout: 'circular'` (#486), which
+ * replaced both the hand-built SVG and `ringLayout`: placing points on a circle
+ * is exactly the kind of thing worth handing to a chart library, and the layout
+ * stays deterministic rather than force-directed, so a member does not move
+ * because another one joined.
+ *
+ * Everything else here stays DOM and themes itself through the `--dt-*` custom
+ * properties.  Only the canvas needs resolved colours, because `var(...)` means
+ * nothing to a canvas — which is the whole reason `ChartThemeService` exists.
  */
 @Component({
   selector: 'devtools-cluster-panel',
+  imports: [EChartComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <h1 class="dt-panel__title">Cluster</h1>
     <p class="dt-panel__subtitle">Who is in the cluster, who leads it, and where the shards live.</p>
 
     <div class="dt-topology">
-      @if (placed().length === 0) {
+      @if (topologyNodes().length === 0) {
         <p class="dt-empty">Waiting for cluster state…</p>
       } @else {
-        <svg
-          class="dt-topology__svg"
-          [attr.viewBox]="viewBox"
-          role="img"
-          [attr.aria-label]="'Cluster topology with ' + placed().length + ' members'"
-        >
-          <!-- Edges first so nodes draw on top of them. A ring is fully
-               connected in gossip terms; drawing every pair keeps that honest
-               without pretending to show real traffic. -->
-          @for (edge of edges(); track $index) {
-            <line
-              class="dt-topology__edge"
-              [attr.x1]="edge.x1" [attr.y1]="edge.y1" [attr.x2]="edge.x2" [attr.y2]="edge.y2"
-            />
-          }
-          @for (node of placed(); track node.address) {
-            <g class="dt-topology__node">
-              <title>{{ node.title }}</title>
-              <circle
-                class="dt-topology__circle"
-                [attr.cx]="node.x" [attr.cy]="node.y" [attr.r]="node.radius"
-                [attr.fill]="node.color" [attr.stroke-width]="node.strokeWidth"
-              />
-              <text
-                class="dt-topology__label"
-                [attr.x]="node.x" [attr.y]="node.y + 30" text-anchor="middle"
-              >{{ node.label }}</text>
-            </g>
-          }
-        </svg>
+        <devtools-echart class="dt-topology__chart" [option]="topologyOption()" height="340px" />
         <p class="dt-topology__legend">Larger circle = leader · thick outline = this node</p>
       }
     </div>
@@ -219,8 +191,7 @@ function badgeToneFor(name: ClusterEventPayload['event']): string {
 export class ClusterPanelComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
-
-  readonly viewBox = `0 0 ${TOPOLOGY_SIZE} ${TOPOLOGY_SIZE}`;
+  private readonly chartTheme = inject(ChartThemeService).theme;
 
   private readonly members = signal<readonly ClusterMemberInfo[]>([]);
   private readonly leader = signal<string | null>(null);
@@ -234,38 +205,24 @@ export class ClusterPanelComponent {
 
   readonly timeline = this.events.asReadonly();
 
-  readonly placed = computed<readonly PlacedMember[]>(() => {
-    const members = this.members();
-    currentTheme();
-    if (members.length === 0) return [];
-    const points = ringLayout(members.length, TOPOLOGY_SIZE / 2, TOPOLOGY_SIZE / 2, TOPOLOGY_SIZE / 2 - 46);
+  readonly topologyNodes = computed<readonly TopologyNode[]>(() => {
     const leader = this.leader();
     const self = this.selfAddress();
-    return members.map((member, index) => {
-      const point = points[index]!;
-      return {
-        address: member.address,
-        x: point.x,
-        y: point.y,
-        radius: member.address === leader ? 15 : 11,
-        strokeWidth: member.address === self ? 3 : 1,
-        color: this.colorOf(member),
-        label: shortAddress(member.address),
-        title: `${member.address} — ${member.gone ? 'not answering' : member.status}`,
-      };
-    });
+    const theme = this.chartTheme();
+    return this.members().map((member) => ({
+      address: member.address,
+      label: shortAddress(member.address),
+      status: member.gone ? 'not answering' : member.status,
+      // A departed node is listed from memory; drawing it in the green it had
+      // when it left is the one thing this graph must not do.
+      color: resolvedToken(member.gone ? '--dt-state-error' : STATUS_TOKENS[member.status], theme),
+      isLeader: member.address === leader,
+      isSelf: member.address === self,
+    }));
   });
 
-  readonly edges = computed<readonly Edge[]>(() => {
-    const nodes = this.placed();
-    const out: Edge[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        out.push({ x1: nodes[i]!.x, y1: nodes[i]!.y, x2: nodes[j]!.x, y2: nodes[j]!.y });
-      }
-    }
-    return out;
-  });
+  readonly topologyOption = computed<DevToolsChartOption>(() =>
+    buildTopologyOption(this.topologyNodes(), this.chartTheme()));
 
   /**
    * Live members first, then the departed, each group by address — so a node
@@ -274,12 +231,11 @@ export class ClusterPanelComponent {
   readonly memberRows = computed<readonly MemberRow[]>(() => {
     const now = this.now();
     const leader = this.leader();
-    currentTheme();
     return [...this.members()]
       .sort((a, b) => Number(a.gone) - Number(b.gone) || a.address.localeCompare(b.address))
       .map((member) => ({
         member,
-        color: this.colorOf(member),
+        color: `var(${member.gone ? '--dt-state-error' : STATUS_TOKENS[member.status]})`,
         statusLabel: member.gone ? 'unreachable' : member.status,
         lastSeen: member.gone ? sinceLabel(now - member.lastSeenAtMs) : null,
         isLeader: member.address === leader && !member.gone,
@@ -288,7 +244,6 @@ export class ClusterPanelComponent {
 
   readonly shardMaps = computed<readonly ShardMapView[]>(() => {
     this.revision();
-    currentTheme();
     return [...this.shardMapsByType.values()].map((shardMap) => {
       const byRegion = new Map<string, number>();
       for (const assignment of shardMap.shardHome) {
@@ -305,14 +260,15 @@ export class ClusterPanelComponent {
           count,
           percent: (count / peak) * 100,
           // Cycle the categorical ramp so adjacent regions stay distinguishable.
-          color: themeColor(`--dt-data-${(index % 8) + 1}`, '#818cf8'),
+          // A custom property, not a resolved colour: this is a DOM bar, and CSS
+          // re-themes it for free.
+          color: `var(--dt-data-${(index % 8) + 1})`,
         })),
       };
     });
   });
 
   constructor() {
-
     this.destroyRef.onDestroy(this.tap.listen('cluster', (payload) => {
       match(payload)
         .with({ kind: 'cluster-snapshot' }, (p) => this.onClusterSnapshot(p))
@@ -333,14 +289,6 @@ export class ClusterPanelComponent {
   count(value: number): string { return formatCount(value); }
   at(atMs: number): string { return formatTime(atMs); }
   tone(name: ClusterEventPayload['event']): string { return badgeToneFor(name); }
-
-  /**
-   * A departed node is listed from memory; drawing it in the green it had when
-   * it left is the one thing this graph must not do.
-   */
-  private colorOf(member: ClusterMemberInfo): string {
-    return themeColor(member.gone ? '--dt-state-error' : STATUS_TOKENS[member.status], '#64748b');
-  }
 
   private onClusterSnapshot(payload: ClusterSnapshotPayload): void {
     this.members.set(payload.members);

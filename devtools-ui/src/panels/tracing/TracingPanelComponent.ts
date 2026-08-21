@@ -10,14 +10,15 @@ import {
   type ElementRef,
 } from '@angular/core';
 
+import { ChartThemeService } from '../../app/charts/ChartThemeService.js';
+import { EChartComponent } from '../../app/charts/EChartComponent.js';
+import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
+import { buildRectanglesOption, NOMINAL_WIDTH, type ChartRectangle } from '../../app/charts/rectanglesOption.js';
 import { TapClientService } from '../../app/TapClientService.js';
 import { formatCount, formatTime, shortActorPath } from '../../core/format.js';
-import { currentTheme } from '../../core/theme.js';
-import { themeColor } from '../../render/timeseries.js';
 import {
   ROW_HEIGHT,
   groupByTrace,
-  hitTest,
   layoutRectangles,
   spanColorIndex,
   type LayoutSpan,
@@ -109,21 +110,6 @@ function barLabel(span: WireSpan): string {
   return span.messageType === null ? actor : `${actor} · ${span.messageType}`;
 }
 
-function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
-  const context = canvas.getContext('2d');
-  if (context === null) return null;
-  const ratio = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth || 600;
-  const height = canvas.clientHeight || ROW_HEIGHT;
-  if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
-  }
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.clearRect(0, 0, width, height);
-  return context;
-}
-
 /**
  * The tracing panel (#217) — the route a message took, and where the time went.
  *
@@ -139,6 +125,7 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
  */
 @Component({
   selector: 'devtools-tracing-panel',
+  imports: [EChartComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <h1 class="dt-panel__title">Tracing</h1>
@@ -185,7 +172,12 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
           }
         </div>
 
-        <canvas class="dt-flame" #flame (mousemove)="onMove($event)" (mouseleave)="onLeave()"></canvas>
+        <devtools-echart
+          class="dt-flame"
+          [option]="flameOption()"
+          [height]="flameHeight()"
+          (hovered)="onHovered($event)"
+        />
 
         <div class="dt-spandetails">
           @if (detailRows(); as detail) {
@@ -265,12 +257,11 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
 export class TracingPanelComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly flame = viewChild<ElementRef<HTMLCanvasElement>>('flame');
+  private readonly chartTheme = inject(ChartThemeService).theme;
 
   readonly bufferChoices = BUFFER_CHOICES;
 
   private spans: WireSpan[] = [];
-  private rectangles: readonly SpanRectangle[] = [];
 
   private readonly traces = signal<readonly TraceLayout[]>([]);
   private readonly dropped = signal(0);
@@ -280,8 +271,6 @@ export class TracingPanelComponent {
   readonly openTraceId = signal<string | null>(null);
   readonly hovered = signal<LayoutSpan | null>(null);
 
-  /** Bumped on resize: a canvas keeps its backing store until told otherwise. */
-  private readonly viewport = signal(0);
 
   readonly summary = computed(() => {
     const spanCount = this.spans.length;
@@ -323,9 +312,45 @@ export class TracingPanelComponent {
       + ` · ${formatCount(trace.spans.length)} spans · ${formatMilliseconds(trace.totalMs)}`;
   });
 
+  /**
+   * The bars, laid out at a nominal width and scaled when painted.
+   *
+   * `layoutRectangles` is unchanged — it is the tested part, and it never
+   * learns about the chart.
+   */
+  readonly spanRectangles = computed<readonly SpanRectangle[]>(() => {
+    const trace = this.openTrace();
+    if (trace === null) return [];
+    const flame = this.mode() === 'flame';
+    return layoutRectangles(trace, NOMINAL_WIDTH, flame ? (entry) => entry.depth : (_entry, index) => index);
+  });
+
+  readonly flameHeight = computed(() => {
+    const trace = this.openTrace();
+    if (trace === null) return `${ROW_HEIGHT}px`;
+    const rows = this.mode() === 'flame' ? trace.maxDepth + 1 : trace.spans.length;
+    return `${Math.max(rows * ROW_HEIGHT, ROW_HEIGHT)}px`;
+  });
+
+  readonly flameOption = computed<DevToolsChartOption>(() => {
+    const theme = this.chartTheme();
+    const bars: ChartRectangle[] = this.spanRectangles().map((rectangle) => {
+      const index = spanColorIndex(rectangle.span.span);
+      return {
+        x: rectangle.x,
+        y: rectangle.y,
+        width: rectangle.width,
+        height: rectangle.height,
+        label: barLabel(rectangle.span.span),
+        color: index === -1 ? theme.stateError : theme.series[index % theme.series.length]!,
+      };
+    });
+    return buildRectanglesOption(bars, theme);
+  });
+
   readonly detailRows = computed(() => {
     const trace = this.openTrace();
-    const entry = this.hovered() ?? this.rectangles[0]?.span ?? null;
+    const entry = this.hovered() ?? this.spanRectangles()[0]?.span ?? null;
     if (trace === null || entry === null) return null;
     const span = entry.span;
     const rows: Array<[string, string]> = [
@@ -355,10 +380,6 @@ export class TracingPanelComponent {
 
   constructor() {
 
-    const onResize = (): void => this.viewport.update((value) => value + 1);
-    window.addEventListener('resize', onResize);
-    this.destroyRef.onDestroy(() => window.removeEventListener('resize', onResize));
-
     this.destroyRef.onDestroy(this.tap.listen('spans', (payload) => {
       if (payload.kind !== 'span-batch') return;
       this.dropped.update((value) => value + payload.dropped);
@@ -368,15 +389,6 @@ export class TracingPanelComponent {
       this.trimSpans();
       this.regroup();
     }));
-
-    afterRenderEffect(() => {
-      this.openTrace();
-      this.mode();
-      this.hovered();
-      currentTheme();
-      this.viewport();
-      this.draw();
-    });
 
     // Say the default out loud, so the two rings agree even if their defaults
     // ever drift apart.
@@ -405,15 +417,13 @@ export class TracingPanelComponent {
   onBack(): void { this.openTraceId.set(null); }
   onMode(mode: ViewMode): void { this.mode.set(mode); }
 
-  onMove(event: MouseEvent): void {
-    const canvas = this.flame()?.nativeElement;
-    if (canvas === undefined) return;
-    const bounds = canvas.getBoundingClientRect();
-    const found = hitTest(this.rectangles, event.clientX - bounds.left, event.clientY - bounds.top);
-    this.hovered.set(found?.span ?? null);
+  /**
+   * ECharts reports which bar the pointer is over, so the second geometry pass
+   * the hand-rolled `hitTest` performed is gone with it (#486).
+   */
+  onHovered(index: number | null): void {
+    this.hovered.set(index === null ? null : this.spanRectangles()[index]?.span ?? null);
   }
-
-  onLeave(): void { this.hovered.set(null); }
 
   /**
    * Ask the server to retain more (or less) of the recent past.
@@ -450,57 +460,6 @@ export class TracingPanelComponent {
     if (id !== null && !grouped.some((trace) => trace.traceId === id)) this.openTraceId.set(null);
   }
 
-  private draw(): void {
-    const canvas = this.flame()?.nativeElement;
-    const trace = this.openTrace();
-    if (canvas === undefined || trace === null) {
-      this.rectangles = [];
-      return;
-    }
-    const flame = this.mode() === 'flame';
-    const rows = flame ? trace.maxDepth + 1 : trace.spans.length;
-    const width = canvas.clientWidth || 600;
-    canvas.style.height = `${Math.max(rows * ROW_HEIGHT, ROW_HEIGHT)}px`;
-
-    this.rectangles = layoutRectangles(
-      trace,
-      width,
-      flame ? (entry) => entry.depth : (_entry, index) => index,
-    );
-
-    const context = preparedContext(canvas);
-    if (context === null) return;
-    const border = themeColor('--dt-bg', '#0f172a');
-    const label = themeColor('--dt-text-strong', '#f1f5f9');
-    const highlighted = this.hovered();
-    context.font = '11px ui-monospace, monospace';
-    context.textBaseline = 'middle';
-
-    for (const rectangle of this.rectangles) {
-      const index = spanColorIndex(rectangle.span.span);
-      context.fillStyle = index === -1
-        ? themeColor('--dt-state-error', '#ef4444')
-        : themeColor(`--dt-data-${index + 1}`, '#818cf8');
-      context.globalAlpha = highlighted === null || highlighted === rectangle.span ? 1 : 0.45;
-      context.fillRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
-      context.globalAlpha = 1;
-
-      context.strokeStyle = border;
-      context.lineWidth = 1;
-      context.strokeRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
-
-      // Only label a bar with room for it; clipped text is worse than none.
-      if (rectangle.width > 42) {
-        context.save();
-        context.beginPath();
-        context.rect(rectangle.x + 3, rectangle.y, rectangle.width - 6, rectangle.height);
-        context.clip();
-        context.fillStyle = label;
-        context.fillText(barLabel(rectangle.span.span), rectangle.x + 5, rectangle.y + rectangle.height / 2);
-        context.restore();
-      }
-    }
-  }
 }
 
 /** The registry loads this module and reads this export. */

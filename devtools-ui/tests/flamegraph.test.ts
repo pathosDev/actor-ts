@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   durationOf,
   groupByTrace,
-  hitTest,
   layoutRectangles,
   layoutTrace,
   spanColorIndex,
@@ -181,23 +180,6 @@ describe('layoutRectangles', () => {
     const rectangles = layoutRectangles(instant, 100, () => 0);
     expect(Number.isFinite(rectangles[0]!.x)).toBe(true);
     expect(Number.isFinite(rectangles[0]!.width)).toBe(true);
-  });
-});
-
-describe('hitTest', () => {
-  const trace = layoutTrace([span('root', null, 0, 10), span('child', 'root', 5, 10)]);
-  const rectangles = layoutRectangles(trace, 100, (entry) => entry.depth);
-
-  test('finds the span under the point', () => {
-    expect(hitTest(rectangles, 10, 5)?.span.span.spanId).toBe('root');
-  });
-
-  test('prefers the rectangle drawn last where they overlap', () => {
-    expect(hitTest(rectangles, 60, 25)?.span.span.spanId).toBe('child');
-  });
-
-  test('returns null outside every rectangle', () => {
-    expect(hitTest(rectangles, 10, 500)).toBeNull();
   });
 });
 

@@ -11,6 +11,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **DevTools charts are Apache ECharts** (#486, part of #482). The overview's
+  sparklines and line charts, the cluster ring, the tracing flame graph and
+  waterfall, and the profiler icicle. What that buys is tooltips, crosshairs and
+  resize handling that the hand-drawn canvases never had, and three
+  near-identical device-pixel-ratio helpers collapsing into one wrapper.
+
+  The actor tree stays DOM and the percentage bars stay CSS, deliberately: a
+  tree needs search, selection and copyable paths, and a chart engine behind
+  three lines of CSS is pure overhead.
+
+  Where ECharts has no answer, the geometry stayed ours. There is no flame-graph
+  series, so `layoutTrace`, `layoutRectangles`, `buildProfileTree` and
+  `layoutProfile` are unchanged and feed a `custom` series that only paints
+  them. What did go is `render/timeseries.ts` and the two hand-rolled hit tests,
+  since ECharts reports which bar the pointer is over. `projectPoints` went with
+  the renderer it projected for, and its two invariants are now spelled out as
+  `yAxis.min: 0` and `xAxis.type: 'time'` in the option builders — a rate chart
+  auto-scaled to its own minimum turns jitter into mountains, and an
+  index-spaced axis quietly compresses away a gap in the samples.
+
+  **The size budget for charts moved from 150 to 200 KiB, on a measurement
+  rather than a preference.** ECharts costs 165.9 KB gzip with a *single* chart
+  type registered; the two further types this UI needs are cheap on top of that
+  floor — 8.3 KB for `custom`, 14.7 KB for `graph` — for 188.9 KB in total. So
+  the 150 KiB estimate could not have been met by any import set, and the number
+  is the library rather than the drawings. It stays a bucket of its own because
+  it is lazy: the chunk loads when a charting panel opens, so opening the actor
+  tree costs none of it. The whole bundle is 311 KB gzip against the unchanged
+  400 KiB ceiling — more than the epic's 200–230 KB estimate, and still inside
+  the limit that protects the reader.
+
+  Colour keeps coming from the `--dt-*` custom properties. Everything in the DOM
+  now references them directly and re-themes itself through CSS; only the
+  canvases need resolved values, which is what `ChartThemeService` reads on a
+  theme flip. Verified in both directions: flipping the theme repaints the
+  cluster ring, and flipping back restores it pixel for pixel.
+
+
 - **The DevTools UI is Angular throughout** (#485, part of #482). The shell and
   all seven panels are components reading Angular signals, routed by Angular's
   router. The hand-rolled framework is gone: `core/signal.ts`, `core/dom.ts`,
