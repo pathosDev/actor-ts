@@ -188,21 +188,34 @@ accumulate on inactive rooms.
 
 ## Frontends
 
-Built output goes to `examples/chat/static/<framework>/` and is
-served by `@fastify/static` under `/static/<framework>/`.
+All six are served under `/static/<framework>/`, but they divide in two.
 
-| Path                  | Stack                          | Build command                              |
-|-----------------------|--------------------------------|---------------------------------------------|
-| `frontend-plain/`     | Vanilla HTML/CSS/JS            | (none — copy `index.html` to `static/plain/`) |
-| `frontend-angular/`   | Angular standalone + Signals   | `ng build --output-path=../static/angular`  |
-| `frontend-react/`     | React + Vite (SPA)             | `vite build --outDir ../static/react`       |
-| `frontend-next/`      | Next.js (App Router, RSC)      | `next build && cp -r out ../static/next`    |
-| `frontend-svelte/`    | SvelteKit + Svelte 5 Runes     | `vite build` (adapter-static → `../static/svelte`) |
-| `frontend-lit/`       | Lit Web Components + Vite      | `vite build --outDir ../static/lit`         |
+`plain/` and `lit/` have **no build step**: `static/plain/index.html` and
+`static/lit/index.html` are the source, committed and served as written.
 
-Plain HTML is shipped pre-built; the other five each carry their own
-`package.json` and follow standard create-* scaffolding.  See each
-subdirectory's `README.md` for details.
+The other four build into `examples/chat/static/<framework>/`, which is **not
+committed** (#559) — run the build in the frontend's own directory first, or
+that route will 404:
+
+```sh
+cd examples/chat/frontend-react && npm ci && npm run build
+```
+
+Those are the same two commands `.github/workflows/examples.yml` runs for all
+four on every change.
+
+| Path                  | Stack                            | Build command |
+|-----------------------|----------------------------------|---------------|
+| `frontend-plain/`     | Vanilla HTML/CSS/JS              | none — source is `static/plain/index.html` |
+| `frontend-lit/`       | Lit Web Components (esm.sh CDN)  | none — source is `static/lit/index.html`   |
+| `frontend-angular/`   | Angular standalone + Signals     | `npm run build` |
+| `frontend-react/`     | React + Vite (SPA)               | `npm run build` |
+| `frontend-next/`      | Next.js (App Router, RSC)        | `npm run build` |
+| `frontend-svelte/`    | SvelteKit + Svelte 5 Runes       | `npm run build` |
+
+The four built frontends each carry their own `package.json` and follow
+standard create-* scaffolding.  See each subdirectory's `README.md` for
+details.
 
 ## Verifying it works
 
@@ -443,8 +456,10 @@ examples/chat/
 │   ├── protocol.ts        ← shared TS types for WS messages
 │   ├── users.ts           ← test credentials (TEST_USERS)
 │   └── rooms.ts           ← default room list (DEFAULT_ROOMS)
-├── static/                ← built frontend assets (served by @fastify/static)
-│   └── plain/index.html
+├── static/                ← served under /static/<framework>/
+│   ├── plain/index.html   ← source (no build step, committed)
+│   └── lit/index.html     ← source (no build step, committed)
+│                            angular|next|react|svelte/ are build output, gitignored
 ├── frontend-plain/        ← source for plain HTML
 ├── frontend-angular/
 ├── frontend-react/

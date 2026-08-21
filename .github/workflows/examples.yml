@@ -32,9 +32,11 @@ name: examples
 #                       than quietly rewriting it.
 #   - `npm run build` — a dependency bump that breaks the build.
 #
-# What this job deliberately does NOT do is rebuild the committed
-# bundles under `examples/*/static/**` and diff the bytes.  That is not
-# a judgement call — for four of the original six legs it is impossible.
+# There is no committed bundle here to check for staleness any more: the
+# output under `examples/*/static/{angular,next,react,svelte}/` is gitignored
+# (#559), so what this job builds from source is the only copy that exists.
+# The measurement that used to justify not diffing it is what made committing
+# it untenable in the first place, and is kept because it is the evidence.
 # Two builds from an identical tree were compared:
 #
 #   - Next   — a fresh build id every run (`Kb3j7R17-emTNVLO8IAvl` ->
@@ -44,11 +46,14 @@ name: examples
 #              `index.html` embeds it.
 #   - Angular — byte-identical, the only deterministic one.
 #
-# So a rebuild-and-diff gate would be permanently red on four legs
-# regardless of staleness, which is the same conclusion `check:ui`
-# reached for `UiAssets.ts` by a different route.  A content-independent
-# freshness gate (a source hash over the inputs, the way `UiAssets.ts`
-# has one) is the open question in #903.
+# So a rebuild-and-diff gate would have been permanently red on four legs
+# regardless of staleness, and keeping the committed copies honest would have
+# needed a content-independent freshness gate — a source hash over the inputs,
+# the way `UiAssets.ts` has one.  Not committing them dissolves the question
+# rather than answering it, which is why no such gate was ever built.
+#
+# `static/plain/` and `static/lit/` stay committed and need no gate: they have
+# no build step, so those files are source, not output.
 
 # `src/**` is in the filter because of the `snippets` job, and it is the
 # whole point of it: the failure this gate exists to catch is a framework

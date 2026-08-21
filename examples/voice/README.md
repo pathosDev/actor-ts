@@ -104,11 +104,13 @@ All six talk the same WebSocket protocol against the same backend:
 | [`frontend-next/`](frontend-next/)          | `npm run build` (`output: 'export'`)| Next.js App Router, hydration-safe `hydrated` flag, identical hook to the React sibling.               |
 | [`frontend-angular/`](frontend-angular/)    | `npm run build` (`@angular/build`)  | Angular 21 standalone components, signal-driven state via `VoiceService`.                              |
 
-The shipped artefacts under `static/` are committed for `plain` and
-`lit` (no build) and otherwise produced by each frontend's own build
-script (output paths are matched in `static/svelte/`, `static/react/`,
-`static/next/`, `static/angular/`).  The wire protocol + frame codec
-are the source of truth shared between all six.
+Under `static/`, only `plain/index.html` and `lit/index.html` are committed —
+they have no build step, so they are the source rather than an artefact.  The
+other four write into `static/svelte/`, `static/react/`, `static/next/` and
+`static/angular/`, which are **not committed** (#559): run `npm ci && npm run
+build` in the frontend's own directory first, or that route will 404.  Those
+are the same commands `.github/workflows/examples.yml` runs for all four.  The
+wire protocol + frame codec are the source of truth shared between all six.
 
 ## Audio under the hood
 
