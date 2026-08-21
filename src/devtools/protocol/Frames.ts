@@ -18,6 +18,7 @@
 import { DEVTOOLS_PROTOCOL_VERSION } from './Version.js';
 import type { ActorStreamPayload, MailboxStreamPayload } from './ActorStreamFrames.js';
 import type { ClusterStreamPayload } from './ClusterStreamFrames.js';
+import type { BusEventStreamPayload } from './EventStreamFrames.js';
 import type { ExplainStreamPayload } from './ExplainFrames.js';
 import type { ProfilerStreamPayload } from './ProfilerFrames.js';
 import type { StatsStreamPayload } from './StatsFrames.js';
@@ -33,7 +34,8 @@ export type DevToolsStreamId =
   | 'mailboxes'
   | 'spans'
   | 'explain'
-  | 'profiler';
+  | 'profiler'
+  | 'events';
 
 /** Every stream id, for validation and iteration. */
 export const DEVTOOLS_STREAM_IDS: ReadonlyArray<DevToolsStreamId> = [
@@ -44,6 +46,7 @@ export const DEVTOOLS_STREAM_IDS: ReadonlyArray<DevToolsStreamId> = [
   'spans',
   'explain',
   'profiler',
+  'events',
 ];
 
 /** Pull operations, namespaced by the panel that owns them. */
@@ -61,7 +64,8 @@ export type DevToolsRequestMethod =
   | 'profiler.start'
   | 'profiler.stop'
   | 'tracing.buffer'
-  | 'deadletters.list';
+  | 'deadletters.list'
+  | 'pubsub.topics';
 
 /** Every request method, for validation and iteration. */
 export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
@@ -79,6 +83,7 @@ export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
   'profiler.stop',
   'tracing.buffer',
   'deadletters.list',
+  'pubsub.topics',
 ];
 
 /** Panels of the UI shell — the cards on the dashboard. */
@@ -90,7 +95,8 @@ export type DevToolsPanelId =
   | 'explain'
   | 'time-travel'
   | 'profiler'
-  | 'dead-letters';
+  | 'dead-letters'
+  | 'event-stream';
 
 /**
  * Whether a panel can be used right now.  `'disabled'` means the
@@ -217,7 +223,8 @@ export type DevToolsStreamPayload =
   | MailboxStreamPayload
   | TracingStreamPayload
   | ExplainStreamPayload
-  | ProfilerStreamPayload;
+  | ProfilerStreamPayload
+  | BusEventStreamPayload;
 
 /* ------------------------------ factories ------------------------------- */
 

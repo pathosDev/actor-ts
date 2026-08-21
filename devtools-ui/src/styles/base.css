@@ -700,6 +700,79 @@ devtools-root { display: block; }
   color: var(--dt-text);
 }
 
+/* ------------------------------ event stream ----------------------------- */
+
+.dt-events {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 46vh;
+}
+.dt-events__row {
+  display: grid;
+  grid-template-columns: 62px 78px minmax(120px, 1fr) minmax(140px, 2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+  cursor: pointer;
+}
+.dt-events__row:last-child { border-bottom: none; }
+.dt-events__row:hover { background: var(--dt-bg-inset); }
+.dt-events__row--open { background: var(--dt-bg-inset); }
+.dt-events__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: default;
+}
+.dt-events__row--head:hover { background: var(--dt-bg-inset); }
+.dt-events__type { color: var(--dt-text-strong); }
+.dt-events__type, .dt-events__preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-events__preview { color: var(--dt-text-muted); }
+.dt-events__detail {
+  padding: 8px 12px 12px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-events__degraded {
+  margin: 0 0 8px;
+  color: var(--dt-text-muted);
+  font-size: 12.5px;
+}
+.dt-events__payload {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  color: var(--dt-text);
+}
+.dt-section__title {
+  margin: var(--dt-gap) 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dt-text-strong);
+}
+.dt-topics { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-topics__item {
+  padding: 3px 9px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+}
+
 /* ------------------------------ time travel ------------------------------ */
 
 .dt-timetravel { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: var(--dt-gap); }

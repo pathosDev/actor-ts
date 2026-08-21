@@ -11,6 +11,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **An event-stream panel in DevTools** (#553). A live tail of the system
+  bus — actor lifecycle events, dead letters, and whatever your actors
+  publish — with a filter over type and payload, pause, and the cluster
+  PubSub topics beside it.
+
+  It needs a seam the bus did not have: `EventStream._observe`, one
+  internal slot checked on every publish. It is checked BEFORE the
+  empty-stream early return, deliberately — an observer placed after it
+  sees nothing on a system nobody else subscribes to, which is exactly the
+  system a developer opens this panel on. Six tests fail if it moves.
+
+  **The observer is installed only while a panel is subscribed**, unlike
+  the span tap, which records from attach. Tracing is opt-in already; the
+  event bus is always live, so an always-on observer would run on every
+  actor start and stop for a panel nobody opened. The trade is that the
+  panel opens empty and fills, which is what a tail is.
+
+  Events are batched on a tick and capped by `eventBufferCapacity`
+  (default 500). Past it the oldest are dropped and the panel says how
+  many: a tail that silently skips is worse than one that admits it,
+  because the reader draws conclusions from what is not there.
+
 - **A dead-letter panel in DevTools** (#553). A message that cannot be
   delivered throws nothing and logs nothing by default — `tell` returns, the
   sender carries on, and the work never happens. That silence is what makes

@@ -73,6 +73,19 @@ export class EventStream {
   private subs: Subscription[] = [];
 
   /**
+   * A single observer that sees every published event (#553).
+   *
+   * DevTools' bus viewer needs the events themselves, not a subscription to
+   * one channel — and it has to see them even when nothing else is
+   * listening, which is why this is checked BEFORE the empty-stream return
+   * below.  A system nobody observes pays one null check per publish.
+   *
+   * One slot rather than a list: this is a debugger seam, and a second
+   * observer would be a second DevTools.
+   */
+  private observer: ((event: object) => void) | null = null;
+
+  /**
    * Optional logger used to surface predicate failures.  Assigned by
    * `ActorSystem` once its main logger has been constructed; tests
    * that instantiate `EventStream` directly can leave it `undefined`
@@ -217,7 +230,25 @@ export class EventStream {
    */
   get hasSubscribers(): boolean { return this.subs.length > 0; }
 
+  /**
+   * Install the observer, replacing any previous one.  `null` removes it.
+   *
+   * @internal  DevTools only — not part of the public bus contract.
+   */
+  _observe(observer: ((event: object) => void) | null): void {
+    this.observer = observer;
+  }
+
   publish(event: object): void {
+    if (this.observer !== null) {
+      // Guarded like any subscription: a bug in a diagnostic must not reach
+      // `ref.tell`, which does not throw by contract.
+      try {
+        this.observer(event);
+      } catch {
+        /* an observer is an observer; its failures are its own */
+      }
+    }
     // The snapshot below exists to fix the recipient set for the duration of
     // the loop.  An empty stream has no set to fix, and this is the ordinary
     // state of a system nobody is observing — yet `publish` runs on every

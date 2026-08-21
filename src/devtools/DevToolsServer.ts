@@ -24,6 +24,7 @@ import {
   type ServerBinding,
 } from '../http/index.js';
 import {
+  BUS_EVENT_BUFFER_DEFAULT,
   DEVTOOLS_PROTOCOL_VERSION,
   type DevToolsPanelDescriptor,
   type DevToolsPanelId,
@@ -46,6 +47,7 @@ import { ExplainMethods } from './taps/ExplainTap.js';
 import { ReplayRegistry } from './replay/ReplayRegistry.js';
 import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
 import { DeadLetterMethods } from './deadletters/DeadLetterMethods.js';
+import { EventStreamTap } from './taps/EventStreamTap.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
@@ -90,6 +92,7 @@ const OPTIONAL_PANELS: ReadonlyArray<{
   { id: 'time-travel', option: 'timeTravel' },
   { id: 'profiler', option: 'profiler' },
   { id: 'dead-letters', option: 'deadLetters' },
+  { id: 'event-stream', option: 'eventStream' },
 ];
 
 /**
@@ -258,6 +261,17 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerTap(spans);
       spans.installMethods(this);
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('event-stream')) {
+      const events = new EventStreamTap(
+        this.system,
+        settings.eventBufferCapacity ?? BUS_EVENT_BUFFER_DEFAULT,
+        settings.eventFlushIntervalMs ?? 250,
+      );
+      this.registerTap(events);
+      events.installMethods(this);
+      this.registerPanel({ id: 'event-stream', status: 'active' });
     }
 
     if (this.isPanelEnabled('dead-letters')) {

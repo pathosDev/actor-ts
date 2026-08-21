@@ -119,6 +119,18 @@ export type {
   WireSpanStatus,
 } from './TracingStreamFrames.js';
 
+export {
+  BUS_EVENT_BUFFER_DEFAULT,
+  BUS_EVENT_TAIL_ROWS,
+  busEventBatchPayload,
+} from './EventStreamFrames.js';
+export type {
+  BusEvent,
+  BusEventBatchPayload,
+  BusEventStreamPayload,
+  PubSubTopicsResult,
+} from './EventStreamFrames.js';
+
 export { DEAD_LETTER_ROWS, deadLetterView } from './DeadLetterFrames.js';
 export type {
   DeadLettersParameters,

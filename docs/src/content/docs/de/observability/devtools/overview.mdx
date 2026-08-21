@@ -50,6 +50,7 @@ nichts soll sich hinter einem Klick verstecken, der ins Leere läuft.
 | **Time Travel** | Journal durchsehen, Zustand zu beliebigem Zeitpunkt rekonstruieren |
 | **Profiler** | Wo das Actor-System seine Zeit verbringt |
 | **Dead Letters** | Nachrichten, die das System nicht zustellen konnte, und warum |
+| **Event Stream** | Live-Tail des Event-Busses und die Cluster-Topics |
 
 Alle sprechen ein gemeinsames
 [Tap-Protokoll](/de/observability/devtools/protocol/) über einen
@@ -182,8 +183,9 @@ const devtoolsOptions = DevToolsOptions.create()
 
 Über Time Travel solltest du zuerst nachdenken: Das ist das Panel, das
 rohe persistierte Events sichtbar macht — dicht gefolgt von
-[Dead Letters](/de/observability/devtools/dead-letters/), das
-Nachrichten-Payloads zeigt.
+[Dead Letters](/de/observability/devtools/dead-letters/) und dem
+[Event Stream](/de/observability/devtools/event-stream/), die beide
+Nachrichten-Payloads zeigen.
 
 ## Sicherheit
 

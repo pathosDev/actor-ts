@@ -87,6 +87,7 @@ const PANEL_BUDGETS_KIB = {
   tracing: 100,
   explain: 60,
   deadLetters: 60,
+  eventStream: 60,
 };
 
 /**

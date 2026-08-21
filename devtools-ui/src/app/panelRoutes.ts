@@ -109,6 +109,16 @@ export const PANEL_ROUTES: Routes = [
     loadComponent: () => import('../panels/deadletters/DeadLettersPanelComponent.js')
       .then((m) => m.DeadLettersPanelComponent),
   },
+  {
+    path: 'event-stream',
+    data: {
+      id: 'event-stream',
+      title: 'Event stream',
+      description: 'Live tail of the event bus, and the cluster PubSub topics.',
+    } satisfies PanelRouteData,
+    loadComponent: () => import('../panels/eventstream/EventStreamPanelComponent.js')
+      .then((m) => m.EventStreamPanelComponent),
+  },
 ];
 
 /** The nav roster, in declaration order. */

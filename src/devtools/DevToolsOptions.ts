@@ -39,6 +39,16 @@ export type DevToolsPanelOptionsType = {
    * read.
    */
   readonly deadLetters?: boolean;
+  /**
+   * Live tail of the event bus and the cluster PubSub topics (#553).
+   * Default `true`.
+   *
+   * Shows every published event, payload included, so it is switched off
+   * alongside {@link timeTravel} and {@link deadLetters} anywhere those
+   * payloads are not the operator's to read.  Nothing is observed until a
+   * panel actually subscribes.
+   */
+  readonly eventStream?: boolean;
 };
 
 /** Plain options-object shape accepted by `DevTools.attach`. */
@@ -136,6 +146,15 @@ export type DevToolsOptionsType = {
   readonly spanBufferCapacity?: number;
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
+  /**
+   * Ceiling on events the bus tail buffers between flushes.  Default `500`.
+   *
+   * Past it the oldest are dropped and the panel is told how many — a tail
+   * that silently skips is worse than one that admits it.
+   */
+  readonly eventBufferCapacity?: number;
+  /** How often buffered events are flushed to the panel, in ms.  Default `250`. */
+  readonly eventFlushIntervalMs?: number;
   /**
    * Folds the time-travel panel uses to reconstruct state.
    *
@@ -238,6 +257,16 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
     return this.set('spanBufferCapacity', capacity);
   }
 
+  /** Ceiling on events the bus tail buffers between flushes. */
+  withEventBufferCapacity(capacity: number): this {
+    return this.set('eventBufferCapacity', capacity);
+  }
+
+  /** How often buffered events are flushed to the panel, in ms. */
+  withEventFlushIntervalMs(intervalMs: number): this {
+    return this.set('eventFlushIntervalMs', intervalMs);
+  }
+
   /** How often buffered spans are flushed to the panel, in ms. */
   withSpanFlushIntervalMs(intervalMs: number): this {
     return this.set('spanFlushIntervalMs', intervalMs);
@@ -297,6 +326,8 @@ export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsTy
     this.positiveInt('mailboxSampleLimit');
     this.positiveInt('spanBufferCapacity');
     this.positiveNumber('spanFlushIntervalMs');
+    this.positiveInt('eventBufferCapacity');
+    this.positiveNumber('eventFlushIntervalMs');
 
     // The security rule this whole validator exists for: DevTools can
     // read every actor's class, mailbox and (with time travel) persisted
