@@ -32,7 +32,7 @@ export function registerAllPanels(): void {
     title: 'Actors',
     description: 'Live actor tree, mailbox depths and the busiest actors.',
     order: 10,
-    load: () => import('../panels/actors/actorsPanel.js'),
+    load: () => import('../panels/actors/ActorsPanelComponent.js'),
   });
 
   registerPanel({
