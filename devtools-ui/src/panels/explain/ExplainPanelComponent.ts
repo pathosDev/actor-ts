@@ -61,12 +61,13 @@ const OUTCOME_TOKENS: Readonly<Record<MessageOutcome, string>> = {
       <select
         class="dt-input"
         aria-label="Actor to inspect"
-        [value]="selected() ?? ''"
         (change)="onSelect($event)"
       >
-        <option value="">{{ paths().length === 0 ? 'Waiting for the actor tree…' : 'Pick an actor…' }}</option>
+        <option value="" [selected]="selected() === null">
+          {{ paths().length === 0 ? 'Waiting for the actor tree…' : 'Pick an actor…' }}
+        </option>
         @for (path of paths(); track path) {
-          <option [value]="path">{{ path }}</option>
+          <option [value]="path" [selected]="path === selected()">{{ path }}</option>
         }
       </select>
 

@@ -24,7 +24,7 @@ export function registerAllPanels(): void {
     title: 'Overview',
     description: 'System at a glance and the way into every tool.',
     order: 0,
-    load: () => import('../panels/dashboard/dashboardPanel.js'),
+    load: () => import('../panels/dashboard/DashboardPanelComponent.js'),
   });
 
   registerPanel({
