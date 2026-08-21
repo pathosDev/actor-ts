@@ -9,7 +9,7 @@
  * dashboard alone never makes the actor system produce span batches.
  */
 import { match } from 'ts-pattern';
-import { signal, type ReadonlySignal } from './signal.js';
+import { signal, type Signal } from '@angular/core';
 import {
   DEVTOOLS_PROTOCOL_VERSION,
   helloFrame,
@@ -30,11 +30,11 @@ export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'incompatible'
 export type StreamListener = (payload: DevToolsStreamPayload) => void;
 
 export interface TapClient {
-  readonly status: ReadonlySignal<ConnectionStatus>;
+  readonly status: Signal<ConnectionStatus>;
   /** Handshake data, or `null` until the first `welcome` arrives. */
-  readonly welcome: ReadonlySignal<WelcomeFrame | null>;
+  readonly welcome: Signal<WelcomeFrame | null>;
   /** Last connection-level error message, for the incompatible banner. */
-  readonly lastError: ReadonlySignal<string | null>;
+  readonly lastError: Signal<string | null>;
   /** Start receiving `stream`.  Returns the unsubscribe function. */
   listen(stream: DevToolsStreamId, listener: StreamListener): () => void;
   /** Invoke a pull method. */
@@ -105,7 +105,7 @@ export function connectTap(
       // An incompatible server will still be incompatible in a second;
       // retrying would just spin.  Every other close is transient (the
       // system restarted, the laptop slept) and worth retrying.
-      if (status.get() === 'incompatible') return;
+      if (status() === 'incompatible') return;
       status.set('closed');
       scheduleReconnect();
     });
@@ -200,16 +200,16 @@ export function connectTap(
   open();
 
   return {
-    status: { get: status.get, subscribe: status.subscribe },
-    welcome: { get: welcome.get, subscribe: welcome.subscribe },
-    lastError: { get: lastError.get, subscribe: lastError.subscribe },
+    status: status.asReadonly(),
+    welcome: welcome.asReadonly(),
+    lastError: lastError.asReadonly(),
 
     listen(stream: DevToolsStreamId, listener: StreamListener): () => void {
       let streamListeners = listeners.get(stream);
       if (streamListeners === undefined) {
         streamListeners = new Set();
         listeners.set(stream, streamListeners);
-        if (status.get() === 'open') subscribeOnServer(stream);
+        if (status() === 'open') subscribeOnServer(stream);
       }
       streamListeners.add(listener);
       return () => {

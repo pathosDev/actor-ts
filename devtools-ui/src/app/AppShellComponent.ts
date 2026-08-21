@@ -10,15 +10,14 @@ import {
   type ElementRef,
 } from '@angular/core';
 import { DomSanitizer, type SafeHtml } from '@angular/platform-browser';
+import { NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
 
 import { ACTOR_TS_LOGO_SVG } from '../assets/logo.js';
 import { formatDuration } from '../core/format.js';
-import { currentRoute, panelHref } from '../core/router.js';
-import { currentTheme, toggleTheme, type Theme } from '../core/theme.js';
+import { currentTheme, toggleTheme } from '../core/theme.js';
 import { DEVTOOLS_PROTOCOL_VERSION, type ConnectionStatus } from '../core/tapClient.js';
-import { registeredPanels } from '../shell/PanelRegistry.js';
 import { panelStatusOf } from '../shell/panelStatus.js';
-import { LegacyPanelHostComponent } from './LegacyPanelHostComponent.js';
+import { PANEL_ROSTER } from './panelRoutes.js';
 import { TapClientService } from './TapClientService.js';
 
 const STATUS_LABELS: Readonly<Record<ConnectionStatus, string>> = {
@@ -44,31 +43,24 @@ const OFFLINE_CLOCK_MS = 1_000;
 type NavigationItem = {
   readonly id: string;
   readonly title: string;
-  readonly href: string;
   readonly usable: boolean;
   readonly current: boolean;
   readonly reason: string;
 };
 
 /**
- * The application frame: branded header, nav rail, panel host.
+ * The application frame: branded header, nav rail, routed panel.
  *
- * The shell owns exactly one thing — which panel is mounted — and swaps it when
- * the route changes.  Everything else (data, layout, rendering) belongs to the
- * panels, which is what lets a new panel arrive without touching this file.
- *
- * Navigation still runs through `core/router.ts` rather than Angular's router,
- * and that is deliberate for as long as the panels mount imperatively: two
- * routers writing `location.hash` is a race, and the panels read `currentRoute`
- * for sub-state no Angular route models yet (a selected actor path, a journal
- * offset).  `provideRouter(routes, withHashLocation())` arrives with the first
- * panel that becomes a real component — and the hash half is not optional when
- * it does, because `UiAssetRoutes.ts` deliberately serves no SPA fallback: a
- * path that is not an asset has to 404 rather than return this document.
+ * The shell owns exactly one thing — which panel is mounted — and Angular's
+ * router does the mounting.  `withHashLocation()` is not a preference:
+ * `UiAssetRoutes.ts` deliberately serves no SPA fallback, so a request for a
+ * PATH that is not an asset must 404 rather than return this document.  Putting
+ * every navigation target in the hash is what keeps that true while still
+ * giving the panels real URLs.
  */
 @Component({
   selector: 'devtools-root',
-  imports: [LegacyPanelHostComponent],
+  imports: [RouterLink, RouterOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="dt-app" [class.dt-app--offline]="offline()">
@@ -88,9 +80,11 @@ type NavigationItem = {
         <nav class="dt-nav">
           @for (item of navigation(); track item.id) {
             @if (item.usable) {
-              <a class="dt-nav__item" [class.dt-nav__item--current]="item.current" [href]="item.href">
-                {{ item.title }}
-              </a>
+              <a
+                class="dt-nav__item"
+                [class.dt-nav__item--current]="item.current"
+                [routerLink]="['/', item.id]"
+              >{{ item.title }}</a>
             } @else {
               <span
                 class="dt-nav__item dt-nav__item--unavailable"
@@ -103,7 +97,20 @@ type NavigationItem = {
           }
         </nav>
 
-        <devtools-legacy-panel-host class="dt-panel" />
+        <main class="dt-panel">
+          <!-- Availability is decided by the SERVER, not the bundle: the UI
+               ships every panel, but whether one can do anything depends on the
+               system being looked at. A route guard would send the reader
+               somewhere else instead of saying why. -->
+          @if (unavailable(); as blocked) {
+            <div class="dt-notice">
+              <div class="dt-notice__title">{{ blocked.title }} is not available</div>
+              <div>{{ blocked.reason }}</div>
+            </div>
+          } @else {
+            <router-outlet />
+          }
+        </main>
       </div>
 
       <dialog class="dt-dialog" #offlineDialog (cancel)="onDialogCancel($event)">
@@ -139,20 +146,20 @@ type NavigationItem = {
 export class AppShellComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly router = inject(Router);
 
   /** Trusted build-time constant, not user data — inlined so the mark inherits the theme. */
   readonly logo: SafeHtml = inject(DomSanitizer).bypassSecurityTrustHtml(ACTOR_TS_LOGO_SVG);
 
   readonly status = this.tap.status;
+  readonly theme = currentTheme;
   readonly statusLabel = computed(() => STATUS_LABELS[this.status()]);
   readonly systemName = computed(() => this.tap.welcome()?.systemName ?? '…');
 
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('offlineDialog');
 
-  private readonly themeSignal = signal<Theme>(currentTheme.get());
-  readonly theme = this.themeSignal.asReadonly();
-
-  private readonly routeSignal = signal(currentRoute.get());
+  /** First path segment of the current URL — the panel id. */
+  private readonly activePanel = signal(this.panelFromUrl(this.router.url));
 
   /** Ticks so the "nothing has answered for …" reading keeps moving. */
   private readonly now = signal(Date.now());
@@ -185,13 +192,12 @@ export class AppShellComponent {
 
   readonly navigation = computed<readonly NavigationItem[]>(() => {
     const welcome = this.tap.welcome();
-    const active = this.routeSignal().panel;
-    return registeredPanels().map((panel) => {
+    const active = this.activePanel();
+    return PANEL_ROSTER.map((panel) => {
       const descriptor = panelStatusOf(welcome, panel.id);
       return {
         id: panel.id,
         title: panel.title,
-        href: panelHref(panel.id),
         usable: descriptor.status === 'active',
         current: panel.id === active,
         // `title` alone would BECOME the accessible name, so a screen reader
@@ -202,9 +208,21 @@ export class AppShellComponent {
     });
   });
 
+  readonly unavailable = computed(() => {
+    const active = this.activePanel();
+    const panel = PANEL_ROSTER.find((entry) => entry.id === active);
+    if (panel === undefined) return null;
+    const descriptor = panelStatusOf(this.tap.welcome(), panel.id);
+    return descriptor.status === 'active'
+      ? null
+      : { title: panel.title, reason: descriptor.reason ?? 'This server does not offer the panel.' };
+  });
+
   constructor() {
-    this.destroyRef.onDestroy(currentTheme.subscribe((value) => this.themeSignal.set(value)));
-    this.destroyRef.onDestroy(currentRoute.subscribe((value) => this.routeSignal.set(value)));
+    const subscription = this.router.events.subscribe((event) => {
+      if (event instanceof NavigationEnd) this.activePanel.set(this.panelFromUrl(event.urlAfterRedirects));
+    });
+    this.destroyRef.onDestroy(() => subscription.unsubscribe());
 
     const clock = setInterval(() => this.now.set(Date.now()), OFFLINE_CLOCK_MS);
     this.destroyRef.onDestroy(() => clearInterval(clock));
@@ -249,5 +267,9 @@ export class AppShellComponent {
   onDialogCancel(event: Event): void {
     event.preventDefault();
     this.dismissed.set(true);
+  }
+
+  private panelFromUrl(url: string): string {
+    return url.replace(/^\//, '').split(/[/?#]/)[0] ?? '';
   }
 }

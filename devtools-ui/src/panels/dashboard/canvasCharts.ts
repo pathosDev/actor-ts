@@ -39,14 +39,12 @@ export class SparklineComponent {
   readonly colorVariable = input('--dt-accent');
 
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
-  private readonly theme = signal(currentTheme.get());
 
   constructor() {
-    inject(DestroyRef).onDestroy(currentTheme.subscribe((value) => this.theme.set(value)));
     afterRenderEffect(() => {
       const points = this.points();
       const variable = this.colorVariable();
-      this.theme();
+      currentTheme();
       const canvas = this.element.nativeElement.querySelector('canvas');
       if (canvas === null || points.length < 2) return;
       drawSparkline(canvas, points, themeColor(variable, '#818cf8'), peakOf(points));
@@ -89,13 +87,11 @@ export class ChartComponent {
   readonly peakLabel = input('0');
 
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
-  private readonly theme = signal(currentTheme.get());
   /** Bumped on resize: a canvas keeps its backing store until told otherwise. */
   private readonly viewport = signal(0);
 
   constructor() {
     const destroyRef = inject(DestroyRef);
-    destroyRef.onDestroy(currentTheme.subscribe((value) => this.theme.set(value)));
 
     const onResize = (): void => this.viewport.update((value) => value + 1);
     window.addEventListener('resize', onResize);
@@ -104,7 +100,7 @@ export class ChartComponent {
     afterRenderEffect(() => {
       const lines = this.series();
       const collecting = this.collecting();
-      this.theme();
+      currentTheme();
       this.viewport();
       const canvas = this.element.nativeElement.querySelector('canvas');
       if (canvas === null || collecting) return;

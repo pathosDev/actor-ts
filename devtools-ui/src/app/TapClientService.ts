@@ -1,4 +1,4 @@
-import { DestroyRef, Injectable, InjectionToken, inject, signal, type Signal } from '@angular/core';
+import { DestroyRef, Injectable, InjectionToken, inject, type Signal } from '@angular/core';
 
 import {
   connectTap,
@@ -46,38 +46,23 @@ export const TAP_SOCKET_FACTORY = new InjectionToken<SocketFactory>('devtools ta
  * change that introduces the service would have made a behaviour regression
  * indistinguishable from a wiring mistake.
  *
- * What this adds is the two things the plain function could not give: an
- * injection point, and Angular signals for components to read.  The signals
- * mirror the client's own — they are written from its subscriptions, which is
- * the one direction data flows.
+ * What this adds is the thing the plain function could not: an injection
+ * point, and with it a place to hand a fake socket in.  The signals are the
+ * client's own — it produces Angular signals directly since #485, so there is
+ * nothing to mirror and no second copy to fall behind.
  */
 @Injectable({ providedIn: 'root' })
 export class TapClientService {
-  /** The underlying client, for the legacy panels that still take one. */
-  readonly client: TapClient;
-
-  private readonly statusSignal = signal<ConnectionStatus>('connecting');
-  private readonly welcomeSignal = signal<WelcomeFrame | null>(null);
-  private readonly lastErrorSignal = signal<string | null>(null);
-
-  constructor() {
-    this.client = connectTap(inject(TAP_URL), inject(TAP_SOCKET_FACTORY));
-    this.statusSignal.set(this.client.status.get());
-    this.welcomeSignal.set(this.client.welcome.get());
-    this.lastErrorSignal.set(this.client.lastError.get());
-    this.client.status.subscribe((value) => this.statusSignal.set(value));
-    this.client.welcome.subscribe((value) => this.welcomeSignal.set(value));
-    this.client.lastError.subscribe((value) => this.lastErrorSignal.set(value));
-  }
+  private readonly client: TapClient = connectTap(inject(TAP_URL), inject(TAP_SOCKET_FACTORY));
 
   /** Connection state, for the header badge and the offline dialog. */
-  get status(): Signal<ConnectionStatus> { return this.statusSignal.asReadonly(); }
+  readonly status: Signal<ConnectionStatus> = this.client.status;
 
   /** Handshake data, or `null` until the first `welcome` arrives. */
-  get welcome(): Signal<WelcomeFrame | null> { return this.welcomeSignal.asReadonly(); }
+  readonly welcome: Signal<WelcomeFrame | null> = this.client.welcome;
 
   /** Last connection-level error, for the version-mismatch dialog. */
-  get lastError(): Signal<string | null> { return this.lastErrorSignal.asReadonly(); }
+  readonly lastError: Signal<string | null> = this.client.lastError;
 
   /** Start receiving `stream`.  Returns the unsubscribe function. */
   listen(stream: DevToolsStreamId, listener: StreamListener): () => void {
