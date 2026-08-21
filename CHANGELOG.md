@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Example frontend bundles are no longer committed, and the 34 per-broker
+  integration scripts are one driver** (#559). Two kinds of build weight,
+  addressed together because underneath they are the same mistake: a list kept
+  by hand in more places than anyone checks.
+
+  `examples/{chat,voice}/static/{angular,next,react,svelte}/` held 86 tracked
+  files — hashed chunks, RSC payloads, a Next build-id directory — that
+  `.github/workflows/examples.yml` already rebuilds from source on every
+  change. They are gitignored now, and each sample's README says to run
+  `npm ci && npm run build` in a frontend's own directory before opening its
+  route. `static/plain/` and `static/lit/` stay committed, because they have no
+  build step: those files are the source, and the matching `frontend-plain/` /
+  `frontend-lit/` directories hold nothing but a README. This also retires a
+  question `examples.yml` documented at length — four of the six builds are not
+  reproducible (Next mints a fresh build id, Svelte stamps a timestamp), so a
+  rebuild-and-diff staleness gate could never have worked, and not committing
+  the output dissolves the problem rather than answering it.
+
+  Separately, 34 `test:integration:<broker>` / `:teardown` scripts were the
+  same two `docker compose` lines with a different path spliced in, and the
+  list of backends lived in four places at once — both scripts, both aggregate
+  chains, and the CI matrix. Miss one and the suite simply never ran, silently.
+  `scripts/integration-compose.mjs` discovers the suites from the tree instead:
+  `bun run test:integration:broker <name>`, `…:broker:teardown <name>`, plus
+  the unchanged `test:integration:brokers` aggregate. The CI matrix now carries
+  only the display label nothing can derive, and lost the second column that
+  existed solely to map `redis-streams` to a short `redis` script.
+  `tests/unit/ci/IntegrationBrokerSuites.test.ts` fails when the matrix and the
+  tree disagree in either direction, and pins the compose argument vectors
+  against the commands the removed scripts ran — `--exit-code-from runner`
+  included, since without it a failing scenario inside the container would
+  leave every broker suite green forever. `test:integration` still means the
+  multi-node cluster suite and is deliberately untouched.
+
 - **The Bun toolchain is pinned to 1.4.0** (#1328). CI read
   `bun-version: latest` at 13 of 14 setup-bun sites, so Bun 1.4.0 — the
   first release of Bun's Rust rewrite — would have switched every

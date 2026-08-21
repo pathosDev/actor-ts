@@ -4,8 +4,8 @@
 # no clustering — single-node ephemeral instance.
 #
 # Run locally:
-#   bun run test:integration:redis
-#   bun run test:integration:redis:teardown
+#   bun run test:integration:broker redis-streams
+#   bun run test:integration:broker:teardown redis-streams
 
 name: actor-ts-integration-redis-streams
 

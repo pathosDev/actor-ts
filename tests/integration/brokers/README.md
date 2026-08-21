@@ -139,39 +139,52 @@ stores against the other server — that is the whole point of those two
 ## Run locally
 
 You need Docker (Desktop on macOS/Windows, Engine on Linux).
-Nothing else.  Per-suite:
+Nothing else.  One suite, named by its directory here:
 
 ```bash
-bun run test:integration:s3           # MinIO + S3ObjectStorageBackend
-bun run test:integration:mqtt         # Mosquitto + MqttActor
-bun run test:integration:kafka        # Redpanda + KafkaActor
-bun run test:integration:amqp         # RabbitMQ + AmqpActor
-bun run test:integration:nats         # NATS + NatsActor
-bun run test:integration:redis        # Redis + RedisStreamsActor
-bun run test:integration:grpc         # gRPC echo + GrpcActor
-bun run test:integration:k8s          # kind + KubernetesApiSeedProvider
-bun run test:integration:postgres     # PostgreSQL + Postgres{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:mariadb      # MariaDB + MariaDb{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:libsql       # libSQL (sqld) + LibSql{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:mssql        # SQL Server 2022 + MsSql{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:cockroachdb  # CockroachDB + the Postgres stores over pg wire
-bun run test:integration:yugabytedb   # YugabyteDB + the Postgres stores over pg wire
-bun run test:integration:mongodb      # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:dynamodb     # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
-bun run test:integration:email        # GreenMail (SMTP + IMAP) + EmailBridgeActor
+bun run test:integration:broker s3             # MinIO + S3ObjectStorageBackend
+bun run test:integration:broker mqtt           # Mosquitto + MqttActor
+bun run test:integration:broker kafka          # Redpanda + KafkaActor
+bun run test:integration:broker amqp           # RabbitMQ + AmqpActor
+bun run test:integration:broker nats           # NATS + NatsActor
+bun run test:integration:broker redis-streams  # Redis + RedisStreamsActor
+bun run test:integration:broker grpc           # gRPC echo + GrpcActor
+bun run test:integration:broker k8s            # kind + KubernetesApiSeedProvider
+bun run test:integration:broker postgres       # PostgreSQL + Postgres{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker mariadb        # MariaDB + MariaDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker libsql         # libSQL (sqld) + LibSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker mssql          # SQL Server 2022 + MsSql{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker cockroachdb    # CockroachDB + the Postgres stores over pg wire
+bun run test:integration:broker yugabytedb     # YugabyteDB + the Postgres stores over pg wire
+bun run test:integration:broker mongodb        # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker dynamodb       # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker email          # GreenMail (SMTP + IMAP) + EmailBridgeActor
 ```
 
-All of them:
+The list above is documentation, not configuration.  There used to be a
+`package.json` script per line — 34 of them, all the same two `docker compose`
+invocations with a different path — so the set of backends was maintained in
+four places and missing one meant a suite that silently never ran (#559).
+`scripts/integration-compose.mjs` discovers them instead: a suite is a
+directory here holding `docker-compose.<dir>.yml`, so adding a backend means
+adding a directory.  A wrong name prints the ones that exist.
+
+Tear one down, or dump its logs:
+
+```bash
+bun run test:integration:broker:teardown kafka
+bun scripts/integration-compose.mjs kafka --logs
+```
+
+All of them, and their teardown:
 
 ```bash
 bun run test:integration:brokers
-```
-
-Tear down (volumes, networks):
-
-```bash
 bun run test:integration:brokers:teardown
 ```
+
+`up` stops at the first failing suite; teardown deliberately does not, so one
+broken suite cannot strand every later suite's containers and volumes.
 
 ## CI
 

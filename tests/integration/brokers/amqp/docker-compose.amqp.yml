@@ -5,8 +5,8 @@
 # specific 3.x release (alpine variant for smaller pulls).
 #
 # Run locally:
-#   bun run test:integration:amqp
-#   bun run test:integration:amqp:teardown
+#   bun run test:integration:broker amqp
+#   bun run test:integration:broker:teardown amqp
 
 name: actor-ts-integration-amqp
 

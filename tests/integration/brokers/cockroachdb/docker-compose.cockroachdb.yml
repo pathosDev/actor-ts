@@ -7,8 +7,8 @@
 # `23505` rather than on message text.
 #
 # Run locally:
-#   bun run test:integration:cockroachdb
-#   bun run test:integration:cockroachdb:teardown
+#   bun run test:integration:broker cockroachdb
+#   bun run test:integration:broker:teardown cockroachdb
 
 name: actor-ts-integration-cockroachdb
 

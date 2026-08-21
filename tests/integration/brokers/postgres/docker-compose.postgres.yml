@@ -5,8 +5,8 @@
 # server via the `pg` driver.
 #
 # Run locally:
-#   bun run test:integration:postgres
-#   bun run test:integration:postgres:teardown
+#   bun run test:integration:broker postgres
+#   bun run test:integration:broker:teardown postgres
 
 name: actor-ts-integration-postgres
 

@@ -5,8 +5,8 @@
 # over HTTP via `@libsql/client`.
 #
 # Run locally:
-#   bun run test:integration:libsql
-#   bun run test:integration:libsql:teardown
+#   bun run test:integration:broker libsql
+#   bun run test:integration:broker:teardown libsql
 
 name: actor-ts-integration-libsql
 

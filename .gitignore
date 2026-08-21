@@ -59,6 +59,21 @@ examples/chat/frontend-*/build/
 examples/chat/frontend-*/.angular/
 examples/chat/frontend-*/.svelte-kit/
 
+# Where those four frontends each publish their build (#559).  Listed one
+# directory at a time rather than as `examples/*/static/` because `static/` is
+# not purely output: `plain/` and `lit/` have no build step, so their
+# `index.html` IS the source and stays tracked.  Build them with
+# `npm ci && npm run build` in the matching `frontend-*` directory — the same
+# commands `.github/workflows/examples.yml` runs.
+examples/chat/static/angular/
+examples/chat/static/next/
+examples/chat/static/react/
+examples/chat/static/svelte/
+examples/voice/static/angular/
+examples/voice/static/next/
+examples/voice/static/react/
+examples/voice/static/svelte/
+
 # Internal staging area used while building the initial commit history
 .staging/
 

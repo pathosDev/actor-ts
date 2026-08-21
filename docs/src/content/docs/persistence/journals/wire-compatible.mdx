@@ -9,8 +9,8 @@ no new code:
 
 | Database | Journal | Snapshot store | Durable state | Certified by |
 | --- | --- | --- | --- | --- |
-| [CockroachDB](https://www.cockroachlabs.com) | ✓ | ✓ | ✓ | `test:integration:cockroachdb` |
-| [YugabyteDB](https://www.yugabyte.com) (YSQL) | ✓ | ✓ | ✓ | `test:integration:yugabytedb` |
+| [CockroachDB](https://www.cockroachlabs.com) | ✓ | ✓ | ✓ | `test:integration:broker cockroachdb` |
+| [YugabyteDB](https://www.yugabyte.com) (YSQL) | ✓ | ✓ | ✓ | `test:integration:broker yugabytedb` |
 
 There is no `CockroachJournal` and no `YugabyteJournal` — you use
 `PostgresJournal` and point it at the other server:
@@ -94,8 +94,8 @@ import { Aside } from '@astrojs/starlight/components';
 ## Running the suites
 
 ```bash
-bun run test:integration:cockroachdb
-bun run test:integration:yugabytedb
+bun run test:integration:broker cockroachdb
+bun run test:integration:broker yugabytedb
 ```
 
 Both need Docker. YugabyteDB initializes its system catalogs on first boot and
