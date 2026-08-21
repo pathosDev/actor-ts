@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A send-message action in DevTools** (#553), **off by default**. Every
+  other panel reads; this one writes a JSON message into a running system,
+  so it is disabled until acknowledged in code with
+  `DevToolsOptions.withAllowMessageSending()`.
+
+  Two switches, and only one is a security decision: `panels: { send:
+  false }` hides the view, `allowMessageSending` grants the capability.
+  While the acknowledgement is unset the `actors.send` method is never
+  registered, so a client that knows the name is told there is no such
+  method rather than being refused by a guard it might argue with.
+
+  Bounds when it is on: JSON object or array only, at most 64 KiB, and
+  the recipient must be under `/user`. The message is sent with no sender,
+  so a reply goes to dead letters rather than to an actor that never sent
+  anything. One bound is structural rather than checked, which is why it
+  holds: the body is JSON, so it cannot be a `PoisonPill` or any other
+  class the system treats specially.
+
 - **A resolved-configuration panel in DevTools** (#553). Every HOCON key,
   its effective value, and which of the three layers put it there —
   `reference.conf`, `application.conf`, or a code override — plus whether

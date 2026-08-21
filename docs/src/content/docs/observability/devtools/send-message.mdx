@@ -1,0 +1,73 @@
+---
+title: Send message
+description: Send a JSON message to one of your actors from the browser — off by default, and behind an explicit acknowledgement in code.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every other DevTools panel reads. This one **writes**: it sends a message
+into the running system. That makes it a different kind of feature, and
+it has a different default.
+
+<Aside type="caution" title="Off unless you say otherwise">
+The action is disabled until you acknowledge it in code.  While it is
+off the `actors.send` method is not registered at all — a client that
+knows the name is told there is no such method, rather than being
+refused by a guard.
+</Aside>
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withAllowMessageSending();
+
+await DevTools.attach(system, devtoolsOptions);
+```
+
+There are **two** switches, and only one of them is a security decision:
+
+| Switch | What it does |
+| --- | --- |
+| `panels: { send: false }` | Hides the panel |
+| `allowMessageSending` | Grants the capability |
+
+Hiding a view and making a system writable are different decisions, so
+they are different settings. With the acknowledgement unset, the panel
+still appears in the navigation — as a disabled entry naming the setting
+to change, rather than silently absent.
+
+## Using it
+
+Pick an actor, write JSON, press **Send**. The chooser is fed by the live
+actor tree, so an actor that stops disappears from the list rather than
+staying selectable until the send fails.
+
+The panel keeps a short log of what it sent this session — time, message
+type, and recipient — so a sequence of pokes is reviewable.
+
+## What the server accepts
+
+The body is validated on the server, and the panel reports its refusal
+verbatim rather than repeating the rules — two copies of a rule is how
+they drift apart.
+
+- **JSON object or array only.** A bare `42` or `"hello"` reaching
+  `onReceive` is far more likely to be a mistyped body than an intention.
+- **64 KiB at most.** An unbounded field on a write endpoint is a way to
+  push arbitrary amounts of memory into a mailbox from a browser.
+- **Under `/user` only.** System actors are the framework's own machinery
+  — mailboxes, cluster gossip, DevTools' own hub — and a hand-written
+  message to one is at best ignored.
+- **No sender.** The recipient's `sender` is `None`. Forging one would
+  point it at an actor that never sent anything, and a reply would go
+  somewhere nobody expects.
+
+## What it cannot do
+
+The message is **JSON**, so it is a plain object. It cannot be a
+`PoisonPill`, a `Kill`, or any other class the system treats specially —
+those are instances, and JSON cannot construct one. That bound is
+structural rather than enforced by a check, which is why it holds.
+
+What it *can* do is send your actors messages they will act on. Treat the
+acknowledgement the way you would treat any write access to a running
+system.

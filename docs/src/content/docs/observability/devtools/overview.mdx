@@ -51,6 +51,7 @@ fails.
 | **Dead letters** | Messages the system could not deliver, and why |
 | **Event stream** | Live tail of the event bus, and the cluster topics |
 | **Configuration** | Every resolved HOCON key, and which layer set it |
+| **Send message** | Send JSON to an actor — off unless acknowledged |
 
 All of them speak one [tap protocol](/observability/devtools/protocol/)
 over a single WebSocket, so they share a connection rather than each

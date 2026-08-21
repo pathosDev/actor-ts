@@ -89,6 +89,7 @@ const PANEL_BUDGETS_KIB = {
   deadLetters: 60,
   eventStream: 60,
   config: 60,
+  send: 60,
 };
 
 /**

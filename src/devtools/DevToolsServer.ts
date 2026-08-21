@@ -49,6 +49,7 @@ import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
 import { DeadLetterMethods } from './deadletters/DeadLetterMethods.js';
 import { EventStreamTap } from './taps/EventStreamTap.js';
 import { ConfigMethods } from './config/ConfigMethods.js';
+import { SendMethods } from './send/SendMethods.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
@@ -95,6 +96,7 @@ const OPTIONAL_PANELS: ReadonlyArray<{
   { id: 'dead-letters', option: 'deadLetters' },
   { id: 'event-stream', option: 'eventStream' },
   { id: 'config', option: 'config' },
+  { id: 'send', option: 'send' },
 ];
 
 /**
@@ -263,6 +265,22 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerTap(spans);
       spans.installMethods(this);
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('send')) {
+      // Two switches, and only one of them is a security decision.  The
+      // panel toggle above hides the view; this acknowledgement grants
+      // the capability, and without it the method is never registered.
+      if (settings.allowMessageSending === true) {
+        new SendMethods(this.system).install(this);
+        this.registerPanel({ id: 'send', status: 'active' });
+      } else {
+        this.registerPanel({
+          id: 'send',
+          status: 'unavailable',
+          reason: 'sending is off — set `allowMessageSending` in DevToolsOptions',
+        });
+      }
     }
 
     if (this.isPanelEnabled('config')) {
