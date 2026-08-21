@@ -38,15 +38,15 @@ exactly that rather than averaged in silently.
 
 | arm | measured | actor-ts | commit | CPU | cores | RAM | OS |
 | --- | -------- | -------- | ------ | --- | ----- | --- | -- |
-| actor-ts (bun) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| akka-java (jvm) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| akka.net (dotnet) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| akka-scala (jvm) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| nact (bun) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| orleans (dotnet) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| pekko-java (jvm) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| pekko-scala (jvm) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
-| xstate (bun) | 2026-08-20 | 0.16.0 | `2d94f69c` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| actor-ts (bun) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| akka-java (jvm) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| akka.net (dotnet) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| akka-scala (jvm) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| nact (bun) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| orleans (dotnet) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| pekko-java (jvm) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| pekko-scala (jvm) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
+| xstate (bun) | 2026-08-21 | 0.16.0 | `3c04d81b` | 12th Gen Intel(R) Core(TM) i9-12900K | 10 | 94.0 GiB | linux 6.12.99-production+truenas (x64) |
 
 ## Arms
 
@@ -56,15 +56,15 @@ idle — see the spread column in the tables below.
 
 | framework | version | language | licence | runtime | rounds |
 | --------- | ------- | -------- | ------- | ------- | ------ |
-| actor-ts | 0.16.0 | TypeScript | MIT | bun 1.3.14 | 100 |
+| actor-ts | 0.16.0 | TypeScript | MIT | bun 1.4.0 | 100 |
 | akka-java | 2.8.8 | Java | BUSL-1.1 | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 100 |
 | akka.net | 1.5.70 | C# | Apache-2.0 | dotnet 10.0.11 | 100 |
 | akka-scala | 2.8.8 | Scala 3 | BUSL-1.1 | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 100 |
-| nact | 7.6.2 | JavaScript | Apache-2.0 | bun 1.3.14 | 100 |
+| nact | 7.6.2 | JavaScript | Apache-2.0 | bun 1.4.0 | 100 |
 | orleans | 10.2.2 | C# | MIT | dotnet 10.0.11 | 100 |
 | pekko-java | 1.6.0 | Java | Apache-2.0 | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 100 |
 | pekko-scala | 1.6.0 | Scala 3 | Apache-2.0 | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 100 |
-| xstate | 5.32.5 | TypeScript | MIT | bun 1.3.14 | 100 |
+| xstate | 5.32.5 | TypeScript | MIT | bun 1.4.0 | 100 |
 
 ## spawn
 
@@ -78,20 +78,20 @@ Create a batch of actors and take them through their full lifecycle — spawn, c
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts [^1] | bun 1.3.14 | 354,652 actor/s | ± 9.3 % | 2.85 µs | 225.42 µs | 2.27 ms | +30.2 MB |
-| nact [^2] | bun 1.3.14 | 697,751 actor/s | ± 7.7 % | 1.44 µs | 105.30 µs | 1.28 ms | +16.9 MB |
-| xstate [^3] | bun 1.3.14 | 331,593 actor/s | ± 7.5 % | 3.04 µs | 267.95 µs | 1.28 ms | +15.7 MB |
+| actor-ts [^1] | bun 1.4.0 | 328,412 actor/s | ± 7.2 % | 3.06 µs | 170.18 µs | 2.45 ms | +7.3 MB |
+| nact [^2] | bun 1.4.0 | 906,214 actor/s | ± 9.0 % | 1.11 µs | 75.42 µs | 1.21 ms | +7.0 MB |
+| xstate [^3] | bun 1.4.0 | 253,075 actor/s | ± 5.4 % | 3.96 µs | 279.41 µs | 1.63 ms | +12.8 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka-java [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 104,889 actor/s | ± 4.9 % | 9.56 µs | 915.63 µs | 2.22 ms | — |
-| akka.net [^5] | dotnet 10.0.11 | 84,681 actor/s | ± 1.9 % | 11.81 µs | 1.21 ms | 1.62 ms | — |
-| akka-scala [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 97,341 actor/s | ± 5.5 % | 10.31 µs | 983.43 µs | 2.96 ms | — |
-| orleans [^6] | dotnet 10.0.11 | 30,009 actor/s | ± 4.0 % | 33.38 µs | 3.15 ms | 8.08 ms | — |
-| pekko-java [^7] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 102,488 actor/s | ± 5.2 % | 9.79 µs | 925.76 µs | 2.43 ms | — |
-| pekko-scala [^7] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 90,311 actor/s | ± 4.7 % | 11.10 µs | 1.04 ms | 3.35 ms | — |
+| akka-java [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 102,139 actor/s | ± 5.6 % | 9.82 µs | 935.68 µs | 2.59 ms | — |
+| akka.net [^5] | dotnet 10.0.11 | 84,553 actor/s | ± 2.0 % | 11.83 µs | 1.21 ms | 1.62 ms | — |
+| akka-scala [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 95,908 actor/s | ± 5.6 % | 10.46 µs | 1.00 ms | 3.10 ms | — |
+| orleans [^6] | dotnet 10.0.11 | 29,881 actor/s | ± 4.2 % | 33.53 µs | 3.14 ms | 8.50 ms | — |
+| pekko-java [^7] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 101,140 actor/s | ± 5.0 % | 9.91 µs | 932.50 µs | 2.80 ms | — |
+| pekko-scala [^7] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 89,692 actor/s | ± 5.8 % | 11.19 µs | 1.05 ms | 3.66 ms | — |
 
 ## tell-throughput
 
@@ -105,20 +105,20 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.14 | 13,818,694 msg/s | ± 15.0 % | 74 ns | 64.01 µs | 375.69 µs | +1.7 MB |
-| nact | bun 1.3.14 | 1,592,934 msg/s | ± 2.2 % | 628 ns | 598.73 µs | 1.14 ms | +0.9 MB |
-| xstate [^8] | bun 1.3.14 | 877,649 msg/s | ± 2.8 % | 1.14 µs | 1.00 ms | 5.37 ms | +7.8 MB |
+| actor-ts | bun 1.4.0 | 13,693,613 msg/s | ± 6.9 % | 73 ns | 60.84 µs | 429.55 µs | −2.0 MB |
+| nact | bun 1.4.0 | 1,192,327 msg/s | ± 3.4 % | 840 ns | 791.66 µs | 1.43 ms | −4.9 MB |
+| xstate [^8] | bun 1.4.0 | 824,638 msg/s | ± 8.4 % | 1.22 µs | 1.19 ms | 2.52 ms | −2.6 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 7,228,924 msg/s | ± 12.2 % | 141 ns | 136.56 µs | 298.13 µs | — |
-| akka.net | dotnet 10.0.11 | 5,962,087 msg/s | ± 4.6 % | 168 ns | 166.89 µs | 195.34 µs | — |
-| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 5,368,883 msg/s | ± 26.1 % | 199 ns | 189.67 µs | 516.28 µs | — |
-| orleans [^10] | dotnet 10.0.11 | 694,965 msg/s | ± 9.6 % | 1.45 µs | 1.36 ms | 3.35 ms | — |
-| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 6,764,171 msg/s | ± 16.3 % | 153 ns | 148.06 µs | 369.05 µs | — |
-| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 4,338,533 msg/s | ± 23.6 % | 242 ns | 230.59 µs | 487.54 µs | — |
+| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 7,093,389 msg/s | ± 15.3 % | 145 ns | 138.82 µs | 392.64 µs | — |
+| akka.net | dotnet 10.0.11 | 5,883,236 msg/s | ± 4.4 % | 170 ns | 168.71 µs | 194.03 µs | — |
+| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 5,346,739 msg/s | ± 26.8 % | 201 ns | 191.52 µs | 386.97 µs | — |
+| orleans [^10] | dotnet 10.0.11 | 684,671 msg/s | ± 9.9 % | 1.47 µs | 1.38 ms | 3.29 ms | — |
+| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 6,543,468 msg/s | ± 16.3 % | 157 ns | 152.97 µs | 399.91 µs | — |
+| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 4,270,070 msg/s | ± 23.8 % | 246 ns | 235.03 µs | 498.24 µs | — |
 
 ### batch=10k
 
@@ -128,20 +128,20 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.14 | 19,051,980 msg/s | ± 6.2 % | 53 ns | 492.38 µs | 1.15 ms | +0.9 MB |
-| nact | bun 1.3.14 | 1,635,109 msg/s | ± 1.6 % | 612 ns | 5.88 ms | 7.50 ms | +8.5 MB |
-| xstate [^8] | bun 1.3.14 | 961,417 msg/s | ± 2.5 % | 1.04 µs | 10.35 ms | 11.61 ms | −48.6 MB |
+| actor-ts | bun 1.4.0 | 15,842,356 msg/s | ± 6.4 % | 63 ns | 531.63 µs | 1.18 ms | +1.9 MB |
+| nact | bun 1.4.0 | 1,150,641 msg/s | ± 2.5 % | 870 ns | 8.64 ms | 9.81 ms | +0.6 MB |
+| xstate [^8] | bun 1.4.0 | 877,954 msg/s | ± 8.1 % | 1.15 µs | 11.47 ms | 13.61 ms | +0.3 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,175,118 msg/s | ± 6.9 % | 110 ns | 1.09 ms | 1.59 ms | — |
-| akka.net | dotnet 10.0.11 | 6,373,521 msg/s | ± 3.2 % | 157 ns | 1.57 ms | 1.71 ms | — |
-| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,033,841 msg/s | ± 8.0 % | 111 ns | 1.10 ms | 1.98 ms | — |
-| orleans [^10] | dotnet 10.0.11 | 792,039 msg/s | ± 29.7 % | 1.35 µs | 13.41 ms | 18.88 ms | — |
-| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,357,505 msg/s | ± 7.0 % | 107 ns | 1.07 ms | 1.61 ms | — |
-| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,366,847 msg/s | ± 14.9 % | 109 ns | 1.07 ms | 1.85 ms | — |
+| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,217,546 msg/s | ± 8.3 % | 109 ns | 1.09 ms | 1.60 ms | — |
+| akka.net | dotnet 10.0.11 | 6,349,884 msg/s | ± 2.5 % | 158 ns | 1.57 ms | 1.72 ms | — |
+| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,088,528 msg/s | ± 10.4 % | 111 ns | 1.09 ms | 1.88 ms | — |
+| orleans [^10] | dotnet 10.0.11 | 784,538 msg/s | ± 35.9 % | 1.38 µs | 13.86 ms | 19.14 ms | — |
+| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,477,987 msg/s | ± 8.2 % | 106 ns | 1.06 ms | 1.65 ms | — |
+| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,336,361 msg/s | ± 11.8 % | 108 ns | 1.07 ms | 1.85 ms | — |
 
 ## ask-round-trip
 
@@ -155,20 +155,20 @@ Sequential request/response round trips, depth 1 — a latency measurement, so t
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.14 | 916,865 ask/s | ± 9.4 % | 1.10 µs | 871 ns | 2.83 µs | +0.9 MB |
-| nact | bun 1.3.14 | 590,004 ask/s | ± 7.0 % | 1.70 µs | 1.48 µs | 3.21 µs | +0.8 MB |
-| xstate [^11] | bun 1.3.14 | 404,790 ask/s | ± 5.7 % | 2.48 µs | 2.15 µs | 5.67 µs | +1.8 MB |
+| actor-ts | bun 1.4.0 | 812,770 ask/s | ± 7.8 % | 1.24 µs | 805 ns | 3.05 µs | +1.1 MB |
+| nact | bun 1.4.0 | 485,151 ask/s | ± 4.6 % | 2.07 µs | 1.83 µs | 3.83 µs | +0.6 MB |
+| xstate [^11] | bun 1.4.0 | 419,975 ask/s | ± 9.8 % | 2.41 µs | 1.85 µs | 5.54 µs | +1.0 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka-java [^12] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 250,713 ask/s | ± 9.1 % | 4.03 µs | 3.66 µs | 7.97 µs | — |
-| akka.net | dotnet 10.0.11 | 307,016 ask/s | ± 3.9 % | 3.26 µs | 3.19 µs | 4.05 µs | — |
-| akka-scala [^13] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 261,959 ask/s | ± 10.5 % | 3.87 µs | 3.54 µs | 8.51 µs | — |
-| orleans | dotnet 10.0.11 | 186,826 ask/s | ± 21.3 % | 5.58 µs | 5.47 µs | 6.86 µs | — |
-| pekko-java [^12] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 252,994 ask/s | ± 8.5 % | 3.99 µs | 3.60 µs | 7.96 µs | — |
-| pekko-scala [^13] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 263,510 ask/s | ± 10.2 % | 3.83 µs | 3.49 µs | 8.70 µs | — |
+| akka-java [^12] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 252,125 ask/s | ± 7.1 % | 3.99 µs | 3.65 µs | 7.86 µs | — |
+| akka.net | dotnet 10.0.11 | 308,292 ask/s | ± 3.6 % | 3.25 µs | 3.18 µs | 4.04 µs | — |
+| akka-scala [^13] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 262,290 ask/s | ± 8.6 % | 3.84 µs | 3.52 µs | 8.86 µs | — |
+| orleans | dotnet 10.0.11 | 186,277 ask/s | ± 22.1 % | 5.61 µs | 5.48 µs | 7.13 µs | — |
+| pekko-java [^12] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 254,971 ask/s | ± 7.1 % | 3.94 µs | 3.59 µs | 8.00 µs | — |
+| pekko-scala [^13] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 262,312 ask/s | ± 9.9 % | 3.86 µs | 3.53 µs | 8.78 µs | — |
 
 ## ping-pong
 
@@ -182,20 +182,20 @@ Two actors volleying — the scheduler with nothing else in the way.
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| actor-ts | bun 1.3.14 | 2,824,859 exchange/s | ± 2.9 % | 354 ns | 3.58 ms | 4.09 ms | −0.3 MB |
-| nact | bun 1.3.14 | 811,064 exchange/s | ± 1.7 % | 1.23 µs | 12.29 ms | 13.21 ms | −18.3 MB |
-| xstate | bun 1.3.14 | 507,713 exchange/s | ± 1.3 % | 1.97 µs | 19.73 ms | 21.49 ms | −22.6 MB |
+| actor-ts | bun 1.4.0 | 2,245,419 exchange/s | ± 7.7 % | 448 ns | 4.47 ms | 5.20 ms | −2.0 MB |
+| nact | bun 1.4.0 | 584,327 exchange/s | ± 3.1 % | 1.71 µs | 17.07 ms | 18.64 ms | −0.2 MB |
+| xstate | bun 1.4.0 | 476,468 exchange/s | ± 5.5 % | 2.10 µs | 21.15 ms | 24.61 ms | +2.4 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
 | framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
 | --------- | ------- | ---------- | ------ | --- | --- | ---- |
-| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,985,620 exchange/s | ± 2.5 % | 504 ns | 5.01 ms | 5.42 ms | — |
-| akka.net | dotnet 10.0.11 | 498,937 exchange/s | ± 7.6 % | 2.02 µs | 19.97 ms | 28.96 ms | — |
-| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,943,486 exchange/s | ± 3.5 % | 515 ns | 5.19 ms | 5.51 ms | — |
-| orleans [^14] | dotnet 10.0.11 | 356,936 exchange/s | ± 11.4 % | 2.84 µs | 27.65 ms | 37.61 ms | — |
-| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,986,446 exchange/s | ± 2.7 % | 504 ns | 5.03 ms | 5.43 ms | — |
-| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,992,523 exchange/s | ± 2.1 % | 502 ns | 5.03 ms | 5.32 ms | — |
+| akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,978,574 exchange/s | ± 2.4 % | 506 ns | 5.03 ms | 5.43 ms | — |
+| akka.net | dotnet 10.0.11 | 491,109 exchange/s | ± 8.1 % | 2.05 µs | 20.41 ms | 28.94 ms | — |
+| akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,948,162 exchange/s | ± 3.3 % | 514 ns | 5.16 ms | 5.43 ms | — |
+| orleans [^14] | dotnet 10.0.11 | 358,711 exchange/s | ± 10.7 % | 2.83 µs | 27.13 ms | 38.88 ms | — |
+| pekko-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,974,409 exchange/s | ± 2.5 % | 507 ns | 5.04 ms | 5.49 ms | — |
+| pekko-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 1,990,669 exchange/s | ± 2.2 % | 503 ns | 5.02 ms | 5.32 ms | — |
 
 ## Notes
 
