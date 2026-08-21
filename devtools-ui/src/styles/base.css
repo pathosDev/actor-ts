@@ -773,6 +773,52 @@ devtools-root { display: block; }
   font-size: 12.5px;
 }
 
+/* ------------------------------ configuration ---------------------------- */
+
+.dt-config {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-config__row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) minmax(140px, 1fr) 150px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-config__row:last-child { border-bottom: none; }
+.dt-config__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dt-config__key { color: var(--dt-text-strong); }
+.dt-config__key, .dt-config__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-config__source { display: inline-flex; align-items: center; gap: 7px; color: var(--dt-text-muted); }
+.dt-config__origin { margin: 0 0 10px; color: var(--dt-text-muted); font-size: 12.5px; }
+.dt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+  white-space: nowrap;
+}
+
 /* ------------------------------ time travel ------------------------------ */
 
 .dt-timetravel { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: var(--dt-gap); }

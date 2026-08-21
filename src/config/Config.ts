@@ -26,8 +26,37 @@ import { parseSize } from './Size.js';
  *  - `Config.parseFile(path)` — parse a file.
  *  - `Config.fromObject(obj)` — build from a plain JS object (code overrides).
  */
+/**
+ * Where each key in a loaded {@link Config} could have come from.
+ *
+ * Kept as whole layers rather than a per-key map: attribution is then a
+ * lookup in each, in precedence order, and cannot disagree with the merge
+ * — a precomputed map is a second answer to the same question.
+ */
+export type ConfigLayers = {
+  /** `reference.conf`, bundled with the package. */
+  readonly reference: Config;
+  /** `application.conf`, or an empty config when there was none. */
+  readonly application: Config;
+  /** Where `application.conf` was read from, when it was read. */
+  readonly applicationPath: string | null;
+  /** Passed in code — `ActorSystemOptions.config`. */
+  readonly overrides: Config;
+};
+
 export class Config {
   private constructor(private readonly tree: ConfigObject) {}
+
+  /**
+   * The layers {@link load} merged, kept for attribution (#553).
+   *
+   * Only the object `load` returns carries them — a `merge` or `atPath`
+   * derived from it does not, because the layers would no longer describe
+   * the tree.  `null` everywhere else, which is the honest answer: a
+   * config built by `parseString` has one source and no precedence to
+   * explain.
+   */
+  private layers: ConfigLayers | null = null;
 
   /* ------------------------------ Constructors ----------------------------- */
 
@@ -74,7 +103,14 @@ export class Config {
       ? (options.overrides instanceof Config ? options.overrides : Config.fromObject(options.overrides))
       : Config.empty();
     // Build from reference up, with each layer overriding the last.
-    return reference.merge(application).merge(overrides);
+    const merged = reference.merge(application).merge(overrides);
+    merged.layers = {
+      reference,
+      application,
+      applicationPath: applicationPath ?? null,
+      overrides,
+    };
+    return merged;
   }
 
   /** Load the bundled reference defaults.  Cached for the process. */
@@ -191,6 +227,14 @@ export class Config {
   }
 
   /** Deep-clone the underlying tree as a plain object. */
+  /**
+   * The layers this config was merged from, or `null`.
+   *
+   * @internal  DevTools' resolved-config panel (#553) — it is what lets
+   * a key say which file it came from rather than only what it is now.
+   */
+  _sources(): ConfigLayers | null { return this.layers; }
+
   toJSON(): ConfigObject {
     return cloneTree(this.tree);
   }

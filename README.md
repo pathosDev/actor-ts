@@ -128,7 +128,7 @@ A short tour of what's in the box:
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a
   persistence journal, a profiler, a dead-letter inspector, and a live tail
-  of the event bus.  Built with
+  of the event bus, and a resolved-configuration inspector.  Built with
   Angular and ECharts and embedded as a gzipped bundle — both are
   build-time only, so neither appears in this package's dependencies and
   the served page loads nothing over the network.  Loopback-only and

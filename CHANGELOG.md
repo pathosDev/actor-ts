@@ -11,6 +11,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A resolved-configuration panel in DevTools** (#553). Every HOCON key,
+  its effective value, and which of the three layers put it there —
+  `reference.conf`, `application.conf`, or a code override — plus whether
+  it displaced a lower one and where `application.conf` was read from.
+
+  A merged tree answers "what is this setting now"; the question that
+  brings someone here is "why is it not what I wrote", which needs the
+  layer as well as the value. `Config.load` now keeps the layers it merged
+  so the answer is looked up rather than inferred — a config built any
+  other way reports that it cannot attribute, instead of guessing.
+
+  Values whose key names a secret (`pass`, `secret`, `token`, `key`,
+  `credential`, `auth`) are redacted before they leave the process. By key
+  rather than by value: a password that happens to look ordinary is still
+  a password. Switch the panel off with `panels: { config: false }` where
+  even a redacted tree says too much.
+
 - **An event-stream panel in DevTools** (#553). A live tail of the system
   bus — actor lifecycle events, dead letters, and whatever your actors
   publish — with a filter over type and payload, pause, and the cluster

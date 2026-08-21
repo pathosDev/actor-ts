@@ -49,6 +49,15 @@ export type DevToolsPanelOptionsType = {
    * panel actually subscribes.
    */
   readonly eventStream?: boolean;
+  /**
+   * Resolved HOCON configuration, with the source of each key (#553).
+   * Default `true`.
+   *
+   * Values whose key names a secret are redacted before they leave the
+   * process, but a configuration tree still says a great deal about a
+   * deployment — hosts, ports, seed nodes, storage paths.
+   */
+  readonly config?: boolean;
 };
 
 /** Plain options-object shape accepted by `DevTools.attach`. */
