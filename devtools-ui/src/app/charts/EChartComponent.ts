@@ -28,7 +28,7 @@ import type { DevToolsChartOption, ECharts } from './echartsModules.js';
 @Component({
   selector: 'devtools-echart',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: '',
+  templateUrl: './EChartComponent.html',
   styles: ':host { display: block; }',
 })
 export class EChartComponent {

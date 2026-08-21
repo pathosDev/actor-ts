@@ -1,0 +1,125 @@
+<h1 class="dt-panel__title">Overview</h1>
+<p class="dt-panel__subtitle">What this system is, what it is doing, and how that is trending.</p>
+
+<div class="dt-toolbar">
+  <!-- Selection is bound per option rather than as a value on the select:
+       the value is applied before the loop has produced the options, so the
+       browser falls back to the first one, and the control then disagrees
+       with the span the panel is actually charting (#485). -->
+  <select class="dt-input" aria-label="Charted timespan" (change)="onSpan($event)">
+    @for (choice of spanChoices; track choice) {
+      <option [value]="choice" [selected]="choice === spanMs()">last {{ label(choice) }}</option>
+    }
+  </select>
+  <span class="dt-toolbar__summary">{{ spanNote() }}</span>
+</div>
+
+<section>
+  <h2 class="dt-section">Common</h2>
+  <div class="dt-tiles">
+    @for (tile of commonTiles(); track tile.label) {
+      <ng-container *ngTemplateOutlet="tileTemplate; context: { $implicit: tile }" />
+    }
+  </div>
+</section>
+
+<section>
+  <h2 class="dt-section">Numbers</h2>
+  <div class="dt-tiles">
+    @for (tile of numberTiles(); track tile.label) {
+      <ng-container *ngTemplateOutlet="tileTemplate; context: { $implicit: tile }" />
+    }
+  </div>
+</section>
+
+<!-- Hidden on a system with a single node: a breakdown of one is the totals
+     with extra steps. It appears the moment a cluster has a second member,
+     which is also the moment the totals stop telling you WHERE something is
+     happening. -->
+<section [hidden]="nodes().length < 2">
+  <h2 class="dt-section">Per node</h2>
+  <div class="dt-nodetable">
+    <div class="dt-nodetable__head">
+      <span>Node</span><span>Actors</span><span>Messages</span><span>Backlog</span>
+      <span>Restarts</span><span>Dead letters</span><span>Uptime</span>
+    </div>
+    @for (node of nodes(); track node.figures.address) {
+      <div
+        class="dt-nodetable__row"
+        [class.dt-nodetable__row--stale]="node.stale"
+        [title]="nodeTitle(node)"
+      >
+        <span class="dt-nodetable__address">
+          {{ node.figures.address }}
+          @if (node.isSelf) { <span class="dt-badge">self</span> }
+          @if (node.stale) { <span class="dt-badge dt-badge--error">not answering</span> }
+        </span>
+        <span class="dt-nodetable__figure">{{ count(node.figures.actorCount) }}</span>
+        <span class="dt-nodetable__figure">{{ count(node.figures.messagesProcessed) }}</span>
+        <span class="dt-nodetable__figure">{{ count(node.figures.mailboxBacklog) }}</span>
+        <span class="dt-nodetable__figure">{{ count(node.figures.actorsRestarted) }}</span>
+        <span class="dt-nodetable__figure">{{ count(node.figures.deadLetters) }}</span>
+        <span class="dt-nodetable__figure">{{ duration(node.figures.uptimeMs) }}</span>
+      </div>
+    }
+  </div>
+</section>
+
+<section>
+  <h2 class="dt-section">Charts</h2>
+  <div class="dt-charts">
+    @for (chart of charts(); track chart.title) {
+      <section class="dt-chart">
+        <h3 class="dt-chart__title">{{ chart.title }}</h3>
+        <div class="dt-chart__legend">
+          @if (collecting()) {
+            <span class="dt-empty">collecting samples…</span>
+          } @else {
+            @for (line of chart.lines; track line.label) {
+              <span class="dt-legend__item">
+                <span class="dt-legend__swatch" [style.background]="line.color"></span>{{ line.label }}
+              </span>
+            }
+            <!-- ECharts has no peak reading, and it is the one number that
+                 makes two charts comparable at a glance. -->
+            <span class="dt-legend__peak">peak {{ chart.peak }}</span>
+          }
+        </div>
+        @if (!collecting()) {
+          <devtools-echart [option]="chart.option" height="180px" />
+        }
+      </section>
+    }
+  </div>
+
+  <h3 class="dt-chart__title">Busiest mailboxes</h3>
+  <div class="dt-hotlist">
+    @if (hotList().length === 0) {
+      <p class="dt-empty">Every mailbox is empty.</p>
+    } @else {
+      @for (entry of hotList(); track entry.path) {
+        <div class="dt-hotrow" [title]="entry.path">
+          <span class="dt-hotrow__name">{{ shorten(entry.path) }}</span>
+          <span class="dt-hotrow__bar">
+            <span class="dt-hotrow__fill" [style.width.%]="entry.percent"></span>
+          </span>
+          <span class="dt-hotrow__value">{{ count(entry.size) }}</span>
+        </div>
+      }
+    }
+  </div>
+</section>
+
+<ng-template #tileTemplate let-tile>
+  <div class="dt-tile" [attr.title]="tile.title ?? null">
+    <div class="dt-tile__label">{{ tile.label }}</div>
+    <div
+      class="dt-tile__value"
+      [class.dt-tile__accent]="tile.accent"
+      [class.dt-tile__alert]="tile.alert"
+    >{{ tile.value }}</div>
+    @if (tile.option) {
+      <devtools-echart class="dt-tile__spark" [option]="tile.option" height="30px" />
+    }
+  </div>
+</ng-template>

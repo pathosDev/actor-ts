@@ -1,0 +1,99 @@
+<h1 class="dt-panel__title">Profiler</h1>
+<p class="dt-panel__subtitle">
+  Sample where the actor system spends its time. Wallclock groups by actor path and
+  message type; CPU hands back a V8 profile for Chrome DevTools.
+</p>
+
+<div class="dt-toolbar">
+  <select
+    class="dt-input"
+    aria-label="Profiling mode"
+    [disabled]="running()"
+    (change)="onMode($event)"
+  >
+    <option value="wallclock" [selected]="mode() === 'wallclock'">
+      Wallclock — per actor and message
+    </option>
+    <!-- Greyed out with the reason in the label, rather than letting Start
+         fail: on Bun the inspector module imports fine and throws only when
+         a session is constructed, so without asking first the reader meets a
+         runtime's internal error message. -->
+    <option value="cpu" [selected]="mode() === 'cpu'" [disabled]="!cpuAvailable()">
+      {{ cpuLabel() }}
+    </option>
+  </select>
+
+  <button class="dt-iconbutton" type="button" (click)="onToggle()">
+    {{ running() ? 'Stop profiling' : 'Start profiling' }}
+  </button>
+  <button class="dt-iconbutton" type="button" [disabled]="result() === null" (click)="onDownload()">
+    Download
+  </button>
+  <span class="dt-toolbar__summary">{{ summary() }}</span>
+</div>
+
+@if (error(); as message) {
+  <div class="dt-notice">
+    <div class="dt-notice__title">Profiling failed</div>
+    <div>{{ message }}</div>
+  </div>
+}
+
+<devtools-echart
+  class="dt-flame"
+  [option]="flameOption()"
+  [height]="flameHeight()"
+  (hovered)="onHovered($event)"
+/>
+
+<div class="dt-spandetails">
+  @if (isCpuProfile()) {
+    <div class="dt-notice">
+      <div class="dt-notice__title">CPU profile captured</div>
+      <div>
+        V8 profiles are not rendered here — download it and open the .cpuprofile in
+        Chrome DevTools, which does it better than we would.
+      </div>
+    </div>
+  } @else if (focused(); as node) {
+    <dl class="dt-kv">
+      <dt>Frame</dt><dd [title]="node.key">{{ node.name }}</dd>
+      <dt>Total</dt><dd>{{ millis(node.totalMs) }} ({{ share().toFixed(1) }} %)</dd>
+      <dt>Self</dt><dd>{{ millis(node.selfMs) }}</dd>
+      <dt>Messages</dt><dd>{{ count(node.count) }}</dd>
+      <dt>Mean</dt><dd>{{ node.count === 0 ? '—' : millis(node.totalMs / node.count) }}</dd>
+      @if (node.errors > 0) {
+        <dt>Errors</dt><dd>{{ count(node.errors) }}</dd>
+      }
+    </dl>
+  } @else {
+    <p class="dt-empty">
+      {{ running() ? 'Profiling… stop to see the result.' : 'Start a session to profile the system.' }}
+    </p>
+  }
+</div>
+
+<h2 class="dt-section">Heaviest handlers</h2>
+<div class="dt-hotlist">
+  @if (isCpuProfile()) {
+    <!-- nothing to tabulate: the V8 profile is not folded here -->
+  } @else if (tree() === null) {
+    <p class="dt-empty">No profile yet.</p>
+  } @else if (leaves().length === 0) {
+    <p class="dt-empty">The system handled no messages while profiling.</p>
+  } @else {
+    @for (leaf of leaves(); track leaf.key) {
+      <div class="dt-hotrow" [title]="leaf.key">
+        <span class="dt-hotrow__name">{{ leaf.name }}</span>
+        <span class="dt-hotrow__bar">
+          <span
+            class="dt-hotrow__fill"
+            [style.width.%]="leaf.percent"
+            [style.background]="leaf.errors > 0 ? 'var(--dt-state-error)' : 'var(--dt-data-3)'"
+          ></span>
+        </span>
+        <span class="dt-hotrow__value">{{ millis(leaf.selfMs) }}</span>
+      </div>
+    }
+  }
+</div>

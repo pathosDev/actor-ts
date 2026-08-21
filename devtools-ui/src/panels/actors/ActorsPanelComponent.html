@@ -1,0 +1,95 @@
+<h1 class="dt-panel__title">Actors</h1>
+<p class="dt-panel__subtitle">
+  The live supervision tree. Depth counts messages waiting in the mailbox.
+</p>
+
+<div class="dt-toolbar">
+  <input
+    class="dt-input"
+    type="search"
+    placeholder="Filter by path, class or name…"
+    aria-label="Filter actors"
+    [value]="filter()"
+    (input)="onFilter($event)"
+  />
+  <label class="dt-checkbox">
+    <input type="checkbox" [checked]="hideInternal()" (change)="onHideInternal($event)" />
+    Hide DevTools actors
+  </label>
+  <label class="dt-checkbox">
+    <input type="checkbox" [checked]="showStopped()" (change)="onShowStopped($event)" />
+    Keep stopped for {{ retentionSeconds }}s
+  </label>
+  <span class="dt-toolbar__summary">{{ summary() }}</span>
+</div>
+
+<div class="dt-tree">
+  @if (groups().length === 0) {
+    <p class="dt-empty">
+      {{ liveCount() === 0 ? 'Waiting for the actor tree…' : 'No actor matches that filter.' }}
+    </p>
+  } @else {
+    @for (group of groups(); track group.address) {
+      @if (grouped()) {
+        <h3 class="dt-tree__node">
+          {{ group.address }}
+          <span class="dt-tree__nodecount">{{ count(group.rows.length) }}</span>
+          @if (group.staleSince !== null) {
+            <span class="dt-badge dt-badge--error">
+              not answering · last seen {{ since(group.staleSince) }} ago
+            </span>
+          }
+        </h3>
+      }
+      <!-- A node that has stopped answering left a snapshot behind. Its
+           actors are not running — nobody knows what they are — so the whole
+           group is dimmed and its state dots go neutral rather than reporting
+           the green they had when the last tree arrived. -->
+      <div class="dt-tree__group" [class.dt-tree__group--stale]="group.staleSince !== null">
+        <!-- Tracked by path alone: Angular forbids the outer loop variable
+             here, and paths only collide ACROSS nodes — which is exactly why
+             there is one tree model per node. -->
+        @for (row of group.rows; track row.node.path) {
+          <div
+            class="dt-tree__row"
+            [class.dt-tree__row--stopped]="row.stoppedAtMs !== null"
+            [style.--dt-tree-depth]="row.depth"
+            [title]="row.node.path"
+          >
+            @if (row.hasChildren) {
+              <button
+                class="dt-tree__twisty"
+                type="button"
+                [attr.aria-label]="row.expanded ? 'Collapse' : 'Expand'"
+                (click)="onToggle(group.address, row.node.path)"
+              >{{ row.expanded ? '▾' : '▸' }}</button>
+            } @else {
+              <span class="dt-tree__twisty dt-tree__twisty--leaf"></span>
+            }
+
+            <span class="dt-state {{ stateToken(row.node.cellState) }}" [title]="row.node.cellState"></span>
+            <!-- The actor's own name when it has one, else the path segment.
+                 The full path stays on the row's title either way. -->
+            <span class="dt-tree__name">{{ nameOf(row.node) }}</span>
+            <span class="dt-tree__class">{{ row.node.className }}</span>
+
+            @if (depthOf(row) > 0) {
+              <span class="dt-badge dt-badge--warn" title="messages waiting">{{ count(depthOf(row)) }}</span>
+            }
+            @if (row.node.stashSize > 0) {
+              <span class="dt-badge" title="stashed messages">stash {{ count(row.node.stashSize) }}</span>
+            }
+            @if (row.node.suspended) {
+              <span class="dt-badge dt-badge--error">suspended</span>
+            }
+            @if (row.stoppedAtMs !== null) {
+              <span class="dt-badge dt-badge--error" title="removed shortly">
+                stopped {{ stoppedFor(row.stoppedAtMs) }}s ago
+              </span>
+            }
+          </div>
+        }
+      </div>
+    }
+  }
+</div>

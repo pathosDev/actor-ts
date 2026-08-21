@@ -485,6 +485,38 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
 
+### Angular components (`devtools-ui/`)
+
+- **The template is always a separate `.html` file — never an inline
+  string.** Every `@Component` uses `templateUrl: './XComponent.html'`,
+  pointing at a file named after the component and sitting beside it. This
+  holds without exception, including for a component that renders no markup
+  of its own: `EChartComponent.html` is a lone HTML comment explaining why
+  it is empty, which says more than `template: ''` did and keeps the rule
+  free of edge cases to argue about.
+
+  The reason is that markup and logic are read, reviewed and edited by
+  different motions. A hundred-line template inside a decorator pushes the
+  class it belongs to off the screen, gives the markup no HTML tooling —
+  no formatter, no tag matching, no syntax awareness — and makes a diff
+  that touches one `<span>` look like a change to the component. It also
+  puts HTML inside a template literal, where a stray backtick or `${`
+  terminates the string and the error surfaces as `NG1010: template must
+  be a string`, nowhere near the character that caused it. That has
+  actually happened here, twice, both times from a backtick inside an HTML
+  comment.
+
+  `styles` may stay inline: they are usually a line or two of `:host`
+  rules, and the UI's real styling lives in `devtools-ui/src/styles/`.
+
+- **Nothing else needs adjusting when a template moves out.** The
+  `source-hash` behind `bun run check:ui` hashes *every* file under
+  `devtools-ui/src`, extension-blind, so a template-only edit already
+  marks the committed bundle stale — verified by making one and watching
+  the check fail. Size budgets are unaffected too: the compiler inlines
+  the template into the component's chunk, so attribution and the
+  per-panel numbers do not move.
+
 ### Constants
 
 A module-level `SCREAMING_SNAKE` constant lives in one of four places.
