@@ -283,6 +283,16 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `bun run build:lib` is `tsc` alone, for the jobs that want `dist/` and have
   no opinion about the UI.
 
+  The UI has **two test runners, and their file patterns must stay disjoint**.
+  The framework-free half (`format`, `history`, `flamegraph`, `profileTree`,
+  `stateDiff`, `actorsTree`, `uptime`, and the chart-option builders) runs
+  under `bun test` from `devtools-ui/tests/*.test.ts` and needs no DOM. The
+  Angular half runs under Vitest in jsdom, as `bun run test:ui`, from
+  `devtools-ui/src/**/*.ng-spec.ts`. The `.ng-spec.ts` suffix is not a style
+  choice: `bun test` collects `*.spec.ts` anywhere in the tree and would try
+  to run specs that need Vitest and a DOM. Renaming them back breaks the root
+  suite, not just the UI one (#487).
+
   A change under `devtools-ui/` needs **`bun run
   build:ui`** in the same commit — `src/devtools/generated/UiAssets.ts`
   is generated but committed, and a stale one is valid TypeScript, so

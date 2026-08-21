@@ -24,7 +24,8 @@
   "scripts": {
     "build": "ng build",
     "build:dev": "ng build --configuration development",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit"
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.spec.json --noEmit",
+    "test": "ng test"
   },
   "devDependencies": {
     "@angular/build": "^22.1.5",

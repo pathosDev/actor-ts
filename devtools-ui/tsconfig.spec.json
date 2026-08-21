@@ -1,0 +1,23 @@
+{
+  "//": [
+    "What the Vitest runner compiles (#487).  Separate from tsconfig.app.json",
+    "because the specs need the test globals and the app must not: a component",
+    "that can see `describe` compiles even when it accidentally ships one.",
+    "",
+    "`rootDir` is `..` for the same reason the app config sets it — the UI reads",
+    "the wire protocol from ../src/devtools/protocol/, outside this directory.",
+    "",
+    "The files are `.ng-spec.ts`, not `.spec.ts`, and that is load-bearing rather",
+    "than a style: `bun test` collects `*.spec.ts` anywhere in the repository and",
+    "would try to run these — they need Vitest and a DOM, so eighteen of them",
+    "failed the root suite. Two runners share one tree, so their file patterns",
+    "have to be disjoint."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "./.angular-out-spec",
+    "types": ["vitest/globals"]
+  },
+  "include": ["src/**/*.ng-spec.ts", "src/**/*.d.ts"]
+}
