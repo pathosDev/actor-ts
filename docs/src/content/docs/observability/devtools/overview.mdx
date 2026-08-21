@@ -49,6 +49,7 @@ fails.
 | **Time travel** | Browse a journal, reconstruct state at any point |
 | **Profiler** | Where the actor system spends its time |
 | **Dead letters** | Messages the system could not deliver, and why |
+| **Event stream** | Live tail of the event bus, and the cluster topics |
 
 All of them speak one [tap protocol](/observability/devtools/protocol/)
 over a single WebSocket, so they share a connection rather than each
@@ -173,7 +174,8 @@ const devtoolsOptions = DevToolsOptions.create()
 
 Time travel is the one to think about first: it is the panel that
 surfaces raw persisted events — closely followed by
-[dead letters](/observability/devtools/dead-letters/), which shows
+[dead letters](/observability/devtools/dead-letters/) and the
+[event stream](/observability/devtools/event-stream/), which both show
 message payloads.
 
 ## Security

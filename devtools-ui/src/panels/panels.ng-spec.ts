@@ -8,6 +8,7 @@ import { TapClientService } from '../app/TapClientService.js';
 import { ActorsPanelComponent } from './actors/ActorsPanelComponent.js';
 import { ClusterPanelComponent } from './cluster/ClusterPanelComponent.js';
 import { DeadLettersPanelComponent } from './deadletters/DeadLettersPanelComponent.js';
+import { EventStreamPanelComponent } from './eventstream/EventStreamPanelComponent.js';
 import { DashboardPanelComponent } from './dashboard/DashboardPanelComponent.js';
 import { ExplainPanelComponent } from './explain/ExplainPanelComponent.js';
 import { ProfilerPanelComponent } from './profiler/ProfilerPanelComponent.js';
@@ -82,6 +83,13 @@ const PANELS: readonly PanelCase[] = [
     name: 'dead-letters',
     component: DeadLettersPanelComponent,
     expects: ['Dead letters', 'Loading'],
+  },
+  {
+    name: 'event-stream',
+    component: EventStreamPanelComponent,
+    // The long explanation is the point: nothing is recorded until the
+    // panel is open, so an idle system shows nothing and that is not a fault.
+    expects: ['Event stream', 'Waiting for the first event', 'Cluster topics'],
   },
 ];
 

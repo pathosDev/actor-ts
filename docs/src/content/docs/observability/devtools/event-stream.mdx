@@ -1,0 +1,73 @@
+---
+title: Event stream
+description: A live tail of the system event bus — actor lifecycle events, dead letters and whatever your actors publish — plus the cluster PubSub topics.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The [event stream](/fundamentals/event-stream/) is the system's own bus.
+Actor lifecycle events go through it, every dead letter is published on
+it, and so is whatever your actors publish themselves. This panel is a
+live tail of it.
+
+| Column | Meaning |
+| --- | --- |
+| **seq** | Per-session counter; a gap means events were dropped |
+| **time** | When the event was published |
+| **event** | Constructor name of the event, or its `typeof` |
+| **payload** | A one-line preview; click the row for the whole thing |
+
+The filter box matches on both the event type and the payload text, so
+`OrderPlaced` and `order-4711` both narrow the tail.
+
+**Pause** stops the tail so you can read it. Events published while
+paused are discarded rather than buffered — resuming into a wall of
+everything that happened meanwhile is not what the button promises.
+**Clear** empties the tail and resets the dropped counter.
+
+## Nothing is recorded until you look
+
+The server installs its observer when this panel subscribes and removes
+it when the last one goes away. That is different from the tracing
+panel, which records from the moment DevTools attaches, and the
+difference is deliberate: tracing is already opt-in, while the event bus
+is always live, so an always-on observer would run on every actor start
+and stop for a panel nobody opened.
+
+The consequence is that the panel opens **empty** and fills as events
+arrive. An idle system shows nothing, and that is not a fault.
+
+## When the tail falls behind
+
+The server buffers events between flushes and drops the oldest past its
+cap, then tells the panel how many it dropped. The panel says so above
+the table rather than quietly showing a shorter list — a reader draws
+conclusions from what is *not* there, so a tail that silently skips is
+worse than one that admits it.
+
+Raise the buffer if you are losing events you need:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withEventBufferCapacity(2_000)
+  .withEventFlushIntervalMs(100);
+```
+
+## Cluster topics
+
+Below the tail is the list of [distributed PubSub](/cluster/pubsub/)
+topics this node knows about. It is a cluster extension, so a
+single-node system reports that it was never started — which is a
+different answer from "started, with no topics", and the panel makes
+that distinction rather than showing an empty list for both.
+
+Topic **names** only: the mediator's `CurrentTopics` reply carries no
+subscriber counts, and changing a cluster wire type for one column in
+one panel is not a trade worth making.
+
+<Aside type="caution" title="The payload is your data">
+The tail shows event contents, so it exposes whatever your events carry.
+Switch it off with `panels: { eventStream: false }` anywhere that
+matters — the same call you would make for the time-travel and
+dead-letter panels, and for the same reason.
+</Aside>

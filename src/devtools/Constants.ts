@@ -75,6 +75,15 @@ export const MAXIMUM_CAPACITY = 10_000;
 /** Persistence ids returned per page. */
 export const DEFAULT_IDENTIFIER_LIMIT = 100;
 
+/**
+ * How long the bus panel waits for the PubSub mediator's topic list.
+ *
+ * Short, because this is a panel refresh and not a cluster operation: a
+ * mediator too busy to answer a local mailbox hop in two seconds is
+ * itself the finding, and a longer wait would only delay reporting it.
+ */
+export const PUBSUB_TOPICS_TIMEOUT_MS = 2_000;
+
 /** Events returned per page — a journal can be enormous. */
 export const DEFAULT_EVENT_LIMIT = 200;
 
