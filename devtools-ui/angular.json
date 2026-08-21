@@ -13,13 +13,18 @@
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "outputPath": { "base": ".angular-build", "browser": "" },
+            "outputPath": {
+              "base": ".angular-build",
+              "browser": ""
+            },
             "index": "index.html",
             "browser": "src/main.ts",
             "polyfills": [],
             "tsConfig": "tsconfig.app.json",
             "assets": [],
-            "styles": ["src/styles/base.css"],
+            "styles": [
+              "src/styles/base.css"
+            ],
             "scripts": [],
             "baseHref": "./"
           },
@@ -33,10 +38,25 @@
               "extractLicenses": false,
               "sourceMap": true,
               "outputHashing": "none",
-              "outputPath": { "base": ".dev", "browser": "" }
+              "outputPath": {
+                "base": ".dev",
+                "browser": ""
+              }
             }
           },
           "defaultConfiguration": "production"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "buildTarget": "actor-ts-devtools-ui:build:development",
+            "tsConfig": "tsconfig.spec.json",
+            "runner": "vitest",
+            "include": [
+              "src/**/*.ng-spec.ts"
+            ],
+            "watch": false
+          }
         }
       }
     }

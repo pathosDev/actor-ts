@@ -9,6 +9,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **The DevTools UI has tests** (#487, part of #482). Roughly 3,000 lines of it
+  had none, which was the migration's whole point. Fifty tests across two
+  runners: the framework-free half stays on `bun test`, and the Angular half
+  runs under Vitest in jsdom as `bun run test:ui`, wired into CI and
+  `prepublishOnly`.
+
+  The most valuable of them cover `TapClientService` against a socket the test
+  drives — reconnect backoff, `incompatible` never retrying, a sequence gap
+  re-subscribing instead of rendering a diverged tree, refcounted
+  subscribe/unsubscribe, and request/response resolution. Every one of those
+  failure modes is silent in production: a broken refcount leaves the actor
+  system producing frames for a panel nobody is looking at, and a missed gap
+  renders a tree that quietly disagrees with the real one. None of it was
+  reachable from a test until #485 added a seam for the socket constructor.
+
+  The chart-option builders are asserted as plain objects, which is what keeps
+  charts testable without a browser — and where `yAxis.min: 0` and
+  `xAxis.type: 'time'` are pinned. Both invariants were enforced by
+  `projectPoints` until #486 deleted it with its renderer, and ECharts has
+  neither by default.
+
+  Two runners sharing one tree needed one accommodation: the Angular specs are
+  `.ng-spec.ts`, because `bun test` collects `*.spec.ts` anywhere in the
+  repository and tried to run eighteen of them without Vitest or a DOM. The
+  coverage gate was measured before and after, as the issue asked rather than
+  assumed: 93.68 % to 93.54 %, both far above the 80 % floor.
+
+
 ### Changed
 
 - **DevTools charts are Apache ECharts** (#486, part of #482). The overview's

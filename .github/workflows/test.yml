@@ -112,6 +112,12 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The UI's own suite. It is a separate runner (Vitest, in jsdom) because
+      # it needs a DOM, which `bun test` deliberately does not provide — the
+      # framework-free half of the UI stays on `bun test` and runs above.
+      - name: DevTools UI specs
+        run: bun run test:ui
+
       - name: Tests with coverage
         id: stats
         # The worker-thread multi-node suites (ParallelMultiNodeSpec +

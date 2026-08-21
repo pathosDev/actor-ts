@@ -13,7 +13,7 @@
  * the bytes below: those also vary with the platform and the Bun release
  * that produced them.
  *
- * source-hash: 1db38cbfeb6029c6
+ * source-hash: a0b82304b8ac05ab
  */
 import type { UiAsset } from '../UiAssetRoutes.js';
 

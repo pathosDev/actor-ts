@@ -130,7 +130,8 @@
     "dev:devtools": "bun scripts/devtools-dev.ts",
     "watch": "bunx tsc --watch",
     "clean": "rm -rf dist",
-    "typecheck": "bunx tsc --noEmit && bunx tsc -p devtools-ui/tsconfig.test.json --noEmit && bun scripts/ui-toolchain.mjs --typecheck",
+    "typecheck": "bunx tsc --noEmit && bun scripts/ui-toolchain.mjs --typecheck",
+    "typecheck:ui": "bun scripts/ui-toolchain.mjs --typecheck",
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
     "typecheck:bench": "bunx tsc -p tsconfig.bench.json",
     "typecheck:compare": "bunx tsc -p benchmarks/comparison/tsconfig.json",
@@ -145,6 +146,7 @@
     "test:integration:brokers": "bun scripts/integration-compose.mjs --all",
     "test:integration:brokers:teardown": "bun scripts/integration-compose.mjs --all --down",
     "test:examples": "bun tests/examples/run-examples.mjs",
+    "test:ui": "bun scripts/ui-toolchain.mjs --test",
     "smoke:bun": "bun tests/smoke/run-cases.mjs",
     "smoke:node": "bun run build:lib && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/run-cases.mjs",
     "smoke:deno": "bun run build:lib && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env --allow-write --allow-net --allow-run tests/smoke/run-cases.mjs",
@@ -159,7 +161,7 @@
     "bench:compare": "bun run benchmarks/comparison/run-comparison.ts",
     "bench:compare:smoke": "ACTOR_TS_BENCH_SMOKE=1 bun run benchmarks/comparison/run-comparison.ts",
     "bench:compare:report": "bun run benchmarks/comparison/report.ts",
-    "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"
+    "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test && bun run test:ui"
   },
   "keywords": [
     "actor",
