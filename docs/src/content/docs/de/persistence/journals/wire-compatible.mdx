@@ -9,8 +9,8 @@ ohne eine Zeile neuen Code:
 
 | Datenbank | Journal | Snapshot Store | Durable State | Zertifiziert durch |
 | --- | --- | --- | --- | --- |
-| [CockroachDB](https://www.cockroachlabs.com) | ✓ | ✓ | ✓ | `test:integration:cockroachdb` |
-| [YugabyteDB](https://www.yugabyte.com) (YSQL) | ✓ | ✓ | ✓ | `test:integration:yugabytedb` |
+| [CockroachDB](https://www.cockroachlabs.com) | ✓ | ✓ | ✓ | `test:integration:broker cockroachdb` |
+| [YugabyteDB](https://www.yugabyte.com) (YSQL) | ✓ | ✓ | ✓ | `test:integration:broker yugabytedb` |
 
 Es gibt kein `CockroachJournal` und kein `YugabyteJournal` — du nutzt
 `PostgresJournal` und richtest es auf den anderen Server:
@@ -99,8 +99,8 @@ import { Aside } from '@astrojs/starlight/components';
 ## Die Suiten ausführen
 
 ```bash
-bun run test:integration:cockroachdb
-bun run test:integration:yugabytedb
+bun run test:integration:broker cockroachdb
+bun run test:integration:broker yugabytedb
 ```
 
 Beide brauchen Docker. YugabyteDB initialisiert beim ersten Start seine

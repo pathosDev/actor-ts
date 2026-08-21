@@ -6,8 +6,8 @@
 # to the host.
 #
 # Run locally:
-#   bun run test:integration:mqtt
-#   bun run test:integration:mqtt:teardown
+#   bun run test:integration:broker mqtt
+#   bun run test:integration:broker:teardown mqtt
 
 name: actor-ts-integration-mqtt
 

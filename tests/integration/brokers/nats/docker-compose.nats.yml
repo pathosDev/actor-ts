@@ -5,8 +5,8 @@
 # port 4222.
 #
 # Run locally:
-#   bun run test:integration:nats
-#   bun run test:integration:nats:teardown
+#   bun run test:integration:broker nats
+#   bun run test:integration:broker:teardown nats
 
 name: actor-ts-integration-nats
 

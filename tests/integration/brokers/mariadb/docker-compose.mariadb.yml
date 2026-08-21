@@ -5,8 +5,8 @@
 # the `mariadb` connector.
 #
 # Run locally:
-#   bun run test:integration:mariadb
-#   bun run test:integration:mariadb:teardown
+#   bun run test:integration:broker mariadb
+#   bun run test:integration:broker:teardown mariadb
 
 name: actor-ts-integration-mariadb
 

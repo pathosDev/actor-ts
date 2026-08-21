@@ -4,8 +4,8 @@
 # snapshot / durable-state backends against it via the `mongodb` driver.
 #
 # Run locally:
-#   bun run test:integration:mongodb
-#   bun run test:integration:mongodb:teardown
+#   bun run test:integration:broker mongodb
+#   bun run test:integration:broker:teardown mongodb
 
 name: actor-ts-integration-mongodb
 

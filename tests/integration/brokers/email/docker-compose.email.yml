@@ -19,8 +19,8 @@
 # wrong way round.
 #
 # Run locally:
-#   bun run test:integration:email
-#   bun run test:integration:email:teardown
+#   bun run test:integration:broker email
+#   bun run test:integration:broker:teardown email
 
 name: actor-ts-integration-email
 
