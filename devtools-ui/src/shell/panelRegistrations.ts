@@ -40,7 +40,7 @@ export function registerAllPanels(): void {
     title: 'Cluster',
     description: 'Node topology, shard distribution and membership history.',
     order: 20,
-    load: () => import('../panels/cluster/clusterPanel.js'),
+    load: () => import('../panels/cluster/ClusterPanelComponent.js'),
   });
 
   registerPanel({
