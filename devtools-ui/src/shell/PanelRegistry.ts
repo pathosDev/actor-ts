@@ -7,6 +7,7 @@
  * a new directory, with no edit to the shell — and it keeps the
  * per-panel size budgets individually measurable in the build.
  */
+import type { Type } from '@angular/core';
 import type { DevToolsPanelId } from '../../../src/devtools/protocol/index.js';
 import type { ReadonlySignal } from '../core/signal.js';
 import type { TapClient } from '../core/tapClient.js';
@@ -23,9 +24,36 @@ export interface PanelInstance {
   dispose(): void;
 }
 
-/** The module shape a panel's `index.ts` must default-export. */
-export interface PanelModule {
+/**
+ * A panel that builds its own DOM.
+ *
+ * The original shape, and a shrinking population: each panel becomes an
+ * Angular component in its own commit (#485), and this half of the union — with
+ * `LegacyPanelHostComponent`, `core/dom.ts` and `core/signal.ts` — goes with the
+ * last of them.
+ */
+export interface LegacyPanelModule {
   mount(host: HTMLElement, context: PanelContext): PanelInstance;
+}
+
+/**
+ * A panel that is an Angular component.
+ *
+ * Loaded through the same lazy `import()` as the legacy shape rather than
+ * through a router `loadComponent`, which is what keeps the per-panel chunk
+ * split — and therefore the per-panel size budgets — working identically while
+ * the two shapes coexist.
+ */
+export type ComponentPanelModule = {
+  readonly panelComponent: Type<unknown>;
+};
+
+/** What a panel module may export. */
+export type PanelModule = LegacyPanelModule | ComponentPanelModule;
+
+/** Narrows to the component shape; everything else still mounts imperatively. */
+export function isComponentPanel(module: PanelModule): module is ComponentPanelModule {
+  return 'panelComponent' in module;
 }
 
 /** Registration record. */

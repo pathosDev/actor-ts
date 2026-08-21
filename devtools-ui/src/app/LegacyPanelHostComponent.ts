@@ -2,16 +2,18 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  ViewContainerRef,
   computed,
   effect,
   inject,
   signal,
   viewChild,
+  type ComponentRef,
   type ElementRef,
 } from '@angular/core';
 
 import { currentRoute } from '../core/router.js';
-import { findPanel, type PanelInstance } from '../shell/PanelRegistry.js';
+import { findPanel, isComponentPanel, type PanelInstance } from '../shell/PanelRegistry.js';
 import { panelStatusOf } from '../shell/panelStatus.js';
 import { TapClientService } from './TapClientService.js';
 
@@ -25,23 +27,28 @@ type HostState =
 /**
  * Mounts the panel the route names, and keeps it in step.
  *
- * The panels are still the hand-written modules from before the Angular
- * migration: each exports `mount(host, context)` and returns something with a
- * `dispose()`.  This component is the adapter that lets them keep working while
- * they are ported one at a time (#485) — it is deleted with the last of them.
+ * Two kinds of panel live here while the port runs (#485): the hand-written
+ * modules that export `mount(host, context)` and build their own DOM, and the
+ * ones that have become Angular components.  Both arrive through the same lazy
+ * `import()`, which is what keeps each panel in its own chunk and its own size
+ * budget regardless of which shape it currently has.  This component is deleted
+ * with the last legacy panel.
  *
- * Two properties are carried over from the shell's `mountRoutedPanel`, and both
- * are easy to lose in a port:
+ * Three properties are carried over from the shell's old `mountRoutedPanel`,
+ * and each is easy to lose in a port:
  *
  *   - **The epoch guard.** Every panel is its own lazy chunk, so loading is
- *     async and a fast click sequence can resolve out of order.  Without the
- *     guard a slow panel can land after the user has already moved on and paint
- *     over whatever is now correct.
- *   - **Disposal before replacement.** `dispose()` is what detaches a panel's
- *     effects and its tap subscriptions; the refcount in the tap client is what
- *     then tells the server to stop producing that stream.  Skipping it does not
- *     look broken locally — it quietly leaves the actor system doing work for a
- *     panel nobody is looking at.
+ *     async and a fast click sequence can resolve out of order.  Without it a
+ *     slow panel can land after the reader has already moved on and paint over
+ *     whatever is now correct.
+ *   - **Disposal before replacement.** `dispose()` detaches a panel's effects
+ *     and its tap subscriptions, and the refcount in the tap client is what
+ *     then tells the server to stop producing that stream.  Skipping it does
+ *     not look broken locally — it quietly leaves the actor system doing work
+ *     for a panel nobody is looking at.
+ *   - **Availability comes from the handshake**, not from the bundle.  The UI
+ *     ships every panel; whether one can do anything depends on the system
+ *     being looked at.
  */
 @Component({
   selector: 'devtools-legacy-panel-host',
@@ -64,6 +71,7 @@ type HostState =
         </div>
       }
     }
+    <ng-container #outlet />
     <div #host></div>
   `,
 })
@@ -71,6 +79,7 @@ export class LegacyPanelHostComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly host = viewChild.required<ElementRef<HTMLElement>>('host');
+  private readonly outlet = viewChild.required('outlet', { read: ViewContainerRef });
 
   private readonly route = signal(currentRoute.get());
   private readonly hostState = signal<HostState>({ kind: 'loading' });
@@ -94,11 +103,12 @@ export class LegacyPanelHostComponent {
   });
 
   private mounted: PanelInstance | null = null;
+  private component: ComponentRef<unknown> | null = null;
   private epoch = 0;
 
   constructor() {
     this.destroyRef.onDestroy(currentRoute.subscribe((value) => this.route.set(value)));
-    this.destroyRef.onDestroy(() => this.disposeMounted());
+    this.destroyRef.onDestroy(() => this.clear());
 
     effect(() => {
       const wanted = this.route().panel;
@@ -106,10 +116,14 @@ export class LegacyPanelHostComponent {
       const definition = findPanel(wanted) ?? findPanel('dashboard');
 
       const current = ++this.epoch;
-      this.disposeMounted();
+      this.clear();
 
       if (definition === undefined) {
-        this.hostState.set({ kind: 'unavailable', title: wanted, reason: 'This server does not offer the panel.' });
+        this.hostState.set({
+          kind: 'unavailable',
+          title: wanted,
+          reason: 'This server does not offer the panel.',
+        });
         return;
       }
       const descriptor = panelStatusOf(welcome, definition.id);
@@ -126,6 +140,10 @@ export class LegacyPanelHostComponent {
       void definition.load().then((module) => {
         if (current !== this.epoch) return;
         this.hostState.set({ kind: 'mounted' });
+        if (isComponentPanel(module)) {
+          this.component = this.outlet().createComponent(module.panelComponent);
+          return;
+        }
         this.mounted = module.mount(this.host().nativeElement, {
           tap: this.tap.client,
           route: currentRoute,
@@ -141,9 +159,12 @@ export class LegacyPanelHostComponent {
     });
   }
 
-  private disposeMounted(): void {
+  private clear(): void {
     this.mounted?.dispose();
     this.mounted = null;
+    this.component?.destroy();
+    this.component = null;
+    this.outlet().clear();
     const element = this.host().nativeElement;
     while (element.firstChild !== null) element.removeChild(element.firstChild);
   }
