@@ -64,7 +64,7 @@ export function registerAllPanels(): void {
     title: 'Time travel',
     description: 'Browse a journal and reconstruct state at any point.',
     order: 50,
-    load: () => import('../panels/timetravel/timeTravelPanel.js'),
+    load: () => import('../panels/timetravel/TimeTravelPanelComponent.js'),
   });
 
   registerPanel({
