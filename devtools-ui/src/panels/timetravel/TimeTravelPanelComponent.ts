@@ -47,14 +47,13 @@ const PAGE_SIZE = 200;
       <select
         class="dt-input"
         aria-label="Persistence id"
-        [value]="selected() ?? ''"
         (change)="onSelect($event)"
       >
-        <option value="">
+        <option value="" [selected]="selected() === null">
           {{ identifiers().length === 0 ? 'No persistence ids in this journal' : 'Pick a persistence id…' }}
         </option>
         @for (entry of identifiers(); track entry.persistenceId) {
-          <option [value]="entry.persistenceId">
+          <option [value]="entry.persistenceId" [selected]="entry.persistenceId === selected()">
             {{ entry.persistenceId }} ({{ count(entry.highestSequenceNumber) }} events)
           </option>
         }
