@@ -33,62 +33,7 @@ const SENT_LOG_ROWS = 20;
 @Component({
   selector: 'devtools-send-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <h1 class="dt-panel__title">Send message</h1>
-    <p class="dt-panel__subtitle">
-      Send a JSON message to one of your actors. The server accepts this only
-      when message sending was acknowledged in code.
-    </p>
-
-    <div class="dt-toolbar">
-      <select class="dt-input" aria-label="Recipient actor" (change)="onSelect($event)">
-        <option value="" [selected]="selected() === null">
-          {{ paths().length === 0 ? 'Waiting for the actor tree…' : 'Pick an actor…' }}
-        </option>
-        @for (path of paths(); track path) {
-          <option [value]="path" [selected]="path === selected()">{{ path }}</option>
-        }
-      </select>
-      <button
-        class="dt-iconbutton"
-        type="button"
-        [disabled]="!canSend()"
-        (click)="onSend()"
-      >Send</button>
-    </div>
-
-    <label class="dt-send__label" for="dt-send-body">Message, as JSON</label>
-    <textarea
-      id="dt-send-body"
-      class="dt-send__body"
-      rows="8"
-      spellcheck="false"
-      [value]="body()"
-      (input)="onBody($event)"
-    ></textarea>
-
-    @if (error(); as message) {
-      <div class="dt-notice">
-        <div class="dt-notice__title">The message was not sent</div>
-        <div>{{ message }}</div>
-      </div>
-    }
-
-    <h2 class="dt-section__title">Sent this session</h2>
-    @if (sent().length === 0) {
-      <p class="dt-empty">Nothing sent yet.</p>
-    } @else {
-      <div class="dt-send__log">
-        @for (entry of sent(); track entry.atMs) {
-          <div class="dt-send__row">
-            <span>{{ formatAt(entry.atMs) }}</span>
-            <span class="dt-send__type">{{ entry.messageType }}</span>
-            <span>{{ shortPath(entry.path) }}</span>
-          </div>
-        }
-      </div>
-    }
-  `,
+  templateUrl: './SendPanelComponent.html',
 })
 export class SendPanelComponent {
   private readonly tap = inject(TapClientService);

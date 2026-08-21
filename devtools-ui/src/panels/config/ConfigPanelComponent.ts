@@ -42,72 +42,7 @@ const SOURCE_LABELS: Readonly<Record<ConfigSource, string>> = {
 @Component({
   selector: 'devtools-config-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <h1 class="dt-panel__title">Configuration</h1>
-    <p class="dt-panel__subtitle">
-      Every resolved HOCON key, its effective value, and which layer put it
-      there.
-    </p>
-
-    <div class="dt-toolbar">
-      <input
-        class="dt-input"
-        type="search"
-        placeholder="Filter by key or value"
-        aria-label="Filter configuration keys"
-        [value]="filter()"
-        (input)="onFilter($event)"
-      />
-      <label class="dt-toggle">
-        <input
-          type="checkbox"
-          [checked]="changedOnly()"
-          (change)="onChangedOnly($event)"
-        />
-        Changed from defaults only
-      </label>
-      <span class="dt-toolbar__summary">{{ summary() }}</span>
-    </div>
-
-    @if (result(); as loaded) {
-      @if (!loaded.attributed) {
-        <div class="dt-notice">
-          <div class="dt-notice__title">Sources are not available</div>
-          <div>
-            This system's configuration was not built from the usual layers, so
-            every key is shown as a default rather than guessed at.
-          </div>
-        </div>
-      }
-      <p class="dt-config__origin">
-        @if (loaded.applicationPath; as path) {
-          application.conf read from <code>{{ path }}</code>
-        } @else {
-          No application.conf was found — values come from the bundled defaults
-          and from code.
-        }
-      </p>
-    }
-
-    <div class="dt-config">
-      @if (rows().length === 0) {
-        <p class="dt-empty">{{ emptyMessage() }}</p>
-      } @else {
-        <div class="dt-config__row dt-config__row--head">
-          <span>key</span><span>value</span><span>from</span>
-        </div>
-        @for (entry of rows(); track entry.path) {
-          <div class="dt-config__row" [title]="titleOf(entry)">
-            <span class="dt-config__key">{{ entry.path }}</span>
-            <span class="dt-config__value">{{ display(entry) }}</span>
-            <span class="dt-config__source">
-              <span class="dt-state {{ sourceToken(entry.source) }}"></span>{{ sourceLabel(entry.source) }}
-            </span>
-          </div>
-        }
-      }
-    </div>
-  `,
+  templateUrl: './ConfigPanelComponent.html',
 })
 export class ConfigPanelComponent {
   private readonly tap = inject(TapClientService);
