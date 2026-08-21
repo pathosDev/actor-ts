@@ -13,6 +13,7 @@ import { EventStreamPanelComponent } from './eventstream/EventStreamPanelCompone
 import { DashboardPanelComponent } from './dashboard/DashboardPanelComponent.js';
 import { ExplainPanelComponent } from './explain/ExplainPanelComponent.js';
 import { ProfilerPanelComponent } from './profiler/ProfilerPanelComponent.js';
+import { SendPanelComponent } from './send/SendPanelComponent.js';
 import { TimeTravelPanelComponent } from './timetravel/TimeTravelPanelComponent.js';
 import { TracingPanelComponent } from './tracing/TracingPanelComponent.js';
 
@@ -96,6 +97,12 @@ const PANELS: readonly PanelCase[] = [
     name: 'config',
     component: ConfigPanelComponent,
     expects: ['Configuration', 'Loading'],
+  },
+  {
+
+    name: 'send',
+    component: SendPanelComponent,
+    expects: ['Send message', 'Waiting for the actor tree', 'Nothing sent yet'],
   },
 ];
 

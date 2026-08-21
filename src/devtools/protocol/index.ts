@@ -119,6 +119,9 @@ export type {
   WireSpanStatus,
 } from './TracingStreamFrames.js';
 
+export { SEND_MESSAGE_MAX_BYTES } from './SendFrames.js';
+export type { SendMessageParameters, SendMessageResult } from './SendFrames.js';
+
 export { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from './ConfigFrames.js';
 export type {
   ConfigSource,

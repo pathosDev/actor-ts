@@ -58,6 +58,15 @@ export type DevToolsPanelOptionsType = {
    * deployment — hosts, ports, seed nodes, storage paths.
    */
   readonly config?: boolean;
+  /**
+   * Send-message action (#553).  Default `true` — but the panel is only
+   * usable when {@link DevToolsOptionsType.allowMessageSending} is also
+   * set, which is a separate switch on purpose.
+   *
+   * This one hides the panel; that one grants the capability.  A view
+   * being hidden and a system being writable are different decisions.
+   */
+  readonly send?: boolean;
 };
 
 /** Plain options-object shape accepted by `DevTools.attach`. */
@@ -84,6 +93,21 @@ export type DevToolsOptionsType = {
    * {@link allowUngatedMount}.
    */
   readonly allowRemote?: boolean;
+  /**
+   * Acknowledge that DevTools may **send messages into the running
+   * system** from the browser (#553).  Default `false`.
+   *
+   * Every other thing DevTools does is a read.  This one writes, so it
+   * is off until someone says otherwise in code — and while it is off
+   * the `actors.send` method is never registered, so a client that
+   * knows the name is told there is no such method rather than being
+   * refused by a guard.
+   *
+   * Two bounds hold even when it is on: the message is JSON, so it
+   * cannot be a `PoisonPill` or any other class the system treats
+   * specially; and the recipient must be under `/user`.
+   */
+  readonly allowMessageSending?: boolean;
   /**
    * Acknowledge that `DevTools.mount()` may return a route tree DevTools
    * does not gate itself.  Default `false`, and the validator rejects a
@@ -209,6 +233,11 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   /** Acknowledge binding a non-loopback interface without auth. */
   withAllowRemote(allow = true): this {
     return this.set('allowRemote', allow);
+  }
+
+  /** Acknowledge that DevTools may send messages into the system. */
+  withAllowMessageSending(allow = true): this {
+    return this.set('allowMessageSending', allow);
   }
 
   /** Acknowledge mounting a route tree DevTools does not gate itself. */

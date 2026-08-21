@@ -129,6 +129,16 @@ export const PANEL_ROUTES: Routes = [
     loadComponent: () => import('../panels/config/ConfigPanelComponent.js')
       .then((m) => m.ConfigPanelComponent),
   },
+  {
+    path: 'send',
+    data: {
+      id: 'send',
+      title: 'Send message',
+      description: 'Send a JSON message to one of your actors.',
+    } satisfies PanelRouteData,
+    loadComponent: () => import('../panels/send/SendPanelComponent.js')
+      .then((m) => m.SendPanelComponent),
+  },
 ];
 
 /** The nav roster, in declaration order. */
