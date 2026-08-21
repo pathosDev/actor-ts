@@ -347,13 +347,16 @@ it and never disables it.
 
 ## Working on the UI
 
-The UI is an Angular application, built by its own toolchain and embedded
-into the published package as a gzipped bundle.  Angular is a build-time
-dependency only: it never appears in `actor-ts`'s `dependencies` or
-`peerDependencies`, nothing a consumer installs carries it, and the served
-page loads nothing over the network.  So the UI still needs no framework at
-runtime and no network access — what changed is how the bundle is produced,
-not what ships.
+The UI is an Angular application whose charts are drawn by Apache ECharts,
+built by its own toolchain and embedded into the published package as a
+gzipped bundle.  Both are build-time dependencies only: neither appears in
+`actor-ts`'s `dependencies` or `peerDependencies`, nothing a consumer installs
+carries them, and the served page loads nothing over the network.  So the UI
+still needs no framework at runtime and no network access — what changed is
+how the bundle is produced, not what ships.
+
+ECharts is loaded lazily, in a chunk of its own, so opening a panel that draws
+nothing costs none of it.
 
 That toolchain is a separate install, deliberately not a workspace, which is
 why a fresh clone can typecheck, test and smoke without it — the built bundle
