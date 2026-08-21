@@ -7,14 +7,15 @@ import {
   inject,
   signal,
 } from '@angular/core';
-
 import { NgTemplateOutlet } from '@angular/common';
 
+import { ChartThemeService } from '../../app/charts/ChartThemeService.js';
+import { EChartComponent } from '../../app/charts/EChartComponent.js';
+import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
+import { buildLineChartOption, buildSparklineOption, type ChartLine } from '../../app/charts/timeSeriesOptions.js';
 import { TapClientService } from '../../app/TapClientService.js';
 import { formatCount, formatDuration, shortActorPath } from '../../core/format.js';
 import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
-import { themeColor, type ChartSeries } from '../../render/timeseries.js';
-import { ChartComponent, SparklineComponent } from './canvasCharts.js';
 import { uptimeMillis, type UptimeAnchor } from './uptime.js';
 import {
   STATS_HISTORY_DEFAULT_SPAN_MS,
@@ -45,8 +46,15 @@ type Tile = {
   readonly accent?: boolean;
   readonly alert?: boolean;
   readonly title?: string;
-  readonly points?: readonly SeriesPoint[];
-  readonly color?: string;
+  readonly option?: DevToolsChartOption;
+};
+
+/** A chart, with its legend and the option that draws it. */
+type ChartBlock = {
+  readonly title: string;
+  readonly lines: readonly ChartLine[];
+  readonly peak: string;
+  readonly option: DevToolsChartOption;
 };
 
 /**
@@ -103,7 +111,7 @@ function formatMillis(value: number): string {
  */
 @Component({
   selector: 'devtools-dashboard-panel',
-  imports: [ChartComponent, NgTemplateOutlet, SparklineComponent],
+  imports: [EChartComponent, NgTemplateOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <h1 class="dt-panel__title">Overview</h1>
@@ -176,27 +184,28 @@ function formatMillis(value: number): string {
     <section>
       <h2 class="dt-section">Charts</h2>
       <div class="dt-charts">
-        <devtools-chart
-          class="dt-chart"
-          title="Throughput"
-          [series]="throughput()"
-          [collecting]="collecting()"
-          [peakLabel]="peakOfSeries(throughput())"
-        />
-        <devtools-chart
-          class="dt-chart"
-          title="Actors"
-          [series]="population()"
-          [collecting]="collecting()"
-          [peakLabel]="peakOfSeries(population())"
-        />
-        <devtools-chart
-          class="dt-chart"
-          title="Backlog"
-          [series]="backlog()"
-          [collecting]="collecting()"
-          [peakLabel]="peakOfSeries(backlog())"
-        />
+        @for (chart of charts(); track chart.title) {
+          <section class="dt-chart">
+            <h3 class="dt-chart__title">{{ chart.title }}</h3>
+            <div class="dt-chart__legend">
+              @if (collecting()) {
+                <span class="dt-empty">collecting samples…</span>
+              } @else {
+                @for (line of chart.lines; track line.label) {
+                  <span class="dt-legend__item">
+                    <span class="dt-legend__swatch" [style.background]="line.color"></span>{{ line.label }}
+                  </span>
+                }
+                <!-- ECharts has no peak reading, and it is the one number that
+                     makes two charts comparable at a glance. -->
+                <span class="dt-legend__peak">peak {{ chart.peak }}</span>
+              }
+            </div>
+            @if (!collecting()) {
+              <devtools-echart [option]="chart.option" height="180px" />
+            }
+          </section>
+        }
       </div>
 
       <h3 class="dt-chart__title">Busiest mailboxes</h3>
@@ -225,8 +234,8 @@ function formatMillis(value: number): string {
           [class.dt-tile__accent]="tile.accent"
           [class.dt-tile__alert]="tile.alert"
         >{{ tile.value }}</div>
-        @if (tile.points && tile.points.length > 1) {
-          <devtools-sparkline [points]="tile.points" [colorVariable]="tile.color ?? '--dt-accent'" />
+        @if (tile.option) {
+          <devtools-echart class="dt-tile__spark" [option]="tile.option" height="30px" />
         }
       </div>
     </ng-template>
@@ -235,6 +244,7 @@ function formatMillis(value: number): string {
 export class DashboardPanelComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly chartTheme = inject(ChartThemeService).theme;
 
   readonly spanChoices = STATS_HISTORY_SPANS_MS;
 
@@ -319,22 +329,25 @@ export class DashboardPanelComponent {
     const latest = this.latest();
     if (latest === null) return [{ label: 'Live figures', value: 'waiting for first sample…' }];
     const history = this.history;
+    const palette = this.chartTheme().series;
+    const spark = (points: readonly SeriesPoint[], index: number): DevToolsChartOption | undefined =>
+      (points.length > 1 ? buildSparklineOption(points, palette[index]!) : undefined);
+
     return [
-      { label: 'Actors', value: formatCount(latest.actorCount), points: history.levels('actorCount'), color: '--dt-data-1' },
-      { label: 'Messages / s', value: history.latestRate('messagesProcessed').toFixed(1), points: history.rates('messagesProcessed'), color: '--dt-data-1' },
+      { label: 'Actors', value: formatCount(latest.actorCount), option: spark(history.levels('actorCount'), 0) },
+      { label: 'Messages / s', value: history.latestRate('messagesProcessed').toFixed(1), option: spark(history.rates('messagesProcessed'), 0) },
       { label: 'Processed messages', value: formatCount(latest.messagesProcessed) },
-      { label: 'Spawns / s', value: history.latestRate('actorsStarted').toFixed(1), points: history.rates('actorsStarted'), color: '--dt-data-2' },
-      { label: 'Stops / s', value: history.latestRate('actorsStopped').toFixed(1), points: history.rates('actorsStopped'), color: '--dt-data-6' },
-      { label: 'Restarts', value: formatCount(latest.actorsRestarted), points: history.rates('actorsRestarted'), color: '--dt-data-5', alert: latest.actorsRestarted > 0 },
-      { label: 'Mailbox backlog', value: formatCount(latest.mailboxBacklog), points: history.levels('mailboxBacklog'), color: latest.mailboxBacklog > 0 ? '--dt-data-3' : '--dt-data-2' },
-      { label: 'Stashed', value: formatCount(latest.stashedTotal), points: history.levels('stashedTotal'), color: '--dt-data-6' },
-      { label: 'Suspended actors', value: formatCount(latest.suspendedActors), points: history.levels('suspendedActors'), color: '--dt-data-5', alert: latest.suspendedActors > 0 },
-      { label: 'Dead letters', value: formatCount(latest.deadLetters), points: history.rates('deadLetters'), color: '--dt-data-4', alert: latest.deadLetters > 0 },
+      { label: 'Spawns / s', value: history.latestRate('actorsStarted').toFixed(1), option: spark(history.rates('actorsStarted'), 1) },
+      { label: 'Stops / s', value: history.latestRate('actorsStopped').toFixed(1), option: spark(history.rates('actorsStopped'), 5) },
+      { label: 'Restarts', value: formatCount(latest.actorsRestarted), option: spark(history.rates('actorsRestarted'), 4), alert: latest.actorsRestarted > 0 },
+      { label: 'Mailbox backlog', value: formatCount(latest.mailboxBacklog), option: spark(history.levels('mailboxBacklog'), latest.mailboxBacklog > 0 ? 2 : 1) },
+      { label: 'Stashed', value: formatCount(latest.stashedTotal), option: spark(history.levels('stashedTotal'), 5) },
+      { label: 'Suspended actors', value: formatCount(latest.suspendedActors), option: spark(history.levels('suspendedActors'), 4), alert: latest.suspendedActors > 0 },
+      { label: 'Dead letters', value: formatCount(latest.deadLetters), option: spark(history.rates('deadLetters'), 3), alert: latest.deadLetters > 0 },
       {
         label: 'Mailbox drops',
         value: formatCount(latest.mailboxDrops),
-        points: history.rates('mailboxDrops'),
-        color: '--dt-data-4',
+        option: spark(history.rates('mailboxDrops'), 3),
         alert: latest.mailboxDrops > 0,
         title: 'Messages a bounded mailbox threw away on overflow.',
       },
@@ -358,28 +371,48 @@ export class DashboardPanelComponent {
     return entries.map((entry) => ({ ...entry, percent: (entry.size / peak) * 100 }));
   });
 
-  readonly throughput = computed<readonly ChartSeries[]>(() => {
+  /**
+   * Three charts rather than one, because a level and a rate cannot share a
+   * y-axis honestly: a backlog of 400 flattens a 2/s line to nothing.  Each
+   * chart holds one kind of quantity and scales to its own peak.
+   */
+  readonly charts = computed<readonly ChartBlock[]>(() => {
     this.revision();
-    return [
-      this.series('messages / s', '--dt-data-1', '#818cf8', this.history.rates('messagesProcessed')),
-      this.series('dead letters / s', '--dt-data-4', '#ef4444', this.history.rates('deadLetters')),
-    ];
-  });
+    const theme = this.chartTheme();
+    const history = this.history;
+    const line = (label: string, index: number, points: readonly SeriesPoint[]): ChartLine =>
+      ({ label, color: theme.series[index]!, points });
 
-  readonly population = computed<readonly ChartSeries[]>(() => {
-    this.revision();
-    return [
-      this.series('actors', '--dt-data-2', '#22c55e', this.history.levels('actorCount')),
-      this.series('suspended', '--dt-data-5', '#a78bfa', this.history.levels('suspendedActors')),
+    const blocks: Array<{ title: string; lines: ChartLine[] }> = [
+      {
+        title: 'Throughput',
+        lines: [
+          line('messages / s', 0, history.rates('messagesProcessed')),
+          line('dead letters / s', 3, history.rates('deadLetters')),
+        ],
+      },
+      {
+        title: 'Actors',
+        lines: [
+          line('actors', 1, history.levels('actorCount')),
+          line('suspended', 4, history.levels('suspendedActors')),
+        ],
+      },
+      {
+        title: 'Backlog',
+        lines: [
+          line('mailbox backlog', 2, history.levels('mailboxBacklog')),
+          line('stashed', 5, history.levels('stashedTotal')),
+        ],
+      },
     ];
-  });
 
-  readonly backlog = computed<readonly ChartSeries[]>(() => {
-    this.revision();
-    return [
-      this.series('mailbox backlog', '--dt-data-3', '#f59e0b', this.history.levels('mailboxBacklog')),
-      this.series('stashed', '--dt-data-6', '#22d3ee', this.history.levels('stashedTotal')),
-    ];
+    return blocks.map((block) => ({
+      title: block.title,
+      lines: block.lines,
+      peak: formatCount(Math.max(...block.lines.map((entry) => peakOf(entry.points)), 0)),
+      option: buildLineChartOption(block.lines, theme),
+    }));
   });
 
   constructor() {
@@ -408,9 +441,6 @@ export class DashboardPanelComponent {
   duration(ms: number): string { return formatDuration(ms); }
   label(ms: number): string { return spanLabel(ms); }
   shorten(path: string): string { return shortActorPath(path); }
-  peakOfSeries(lines: readonly ChartSeries[]): string {
-    return formatCount(Math.max(...lines.map((line) => peakOf(line.points)), 0));
-  }
 
   nodeTitle(node: NodeSample): string {
     return node.stale
@@ -448,15 +478,6 @@ export class DashboardPanelComponent {
   private touch(): void {
     this.now.set(Date.now());
     this.revision.update((value) => value + 1);
-  }
-
-  private series(
-    label: string,
-    variable: string,
-    fallback: string,
-    points: readonly SeriesPoint[],
-  ): ChartSeries {
-    return { label, color: themeColor(variable, fallback), points };
   }
 
   private clusterTile(latest: StatsSamplePayload | null): Tile {

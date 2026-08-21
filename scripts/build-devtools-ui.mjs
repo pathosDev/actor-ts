@@ -66,7 +66,19 @@ const IGNORED_OUTPUTS = new Set(['stats.json', 'prerendered-routes.json']);
 const SHELL_BUDGET_KIB = 100;
 const TOTAL_BUDGET_KIB = 400;
 const PANEL_BUDGETS_KIB = {
-  charts: 150,
+  // 200, not the 150 #486 estimated.  Measured, because the estimate could not
+  // be met by any import set: ECharts costs 165.9 KB gzip with a SINGLE chart
+  // type registered, and the two this UI additionally needs are cheap on top of
+  // that floor — CustomChart (flame graph, icicle) adds 8.3 KB and GraphChart
+  // (cluster ring) adds 14.7 KB, for 188.9 KB in total.  So the number is the
+  // library, not the drawings, and trimming further would mean giving up a
+  // chart kind rather than shaving a budget.
+  //
+  // It stays a bucket of its own because it is LAZY: the chunk loads when a
+  // charting panel opens, so a reader who opens the actor tree pays none of it.
+  // The 400 KiB total is what actually protects the reader, and it holds with
+  // roughly a quarter to spare.
+  charts: 200,
   dashboard: 60,
   timeTravel: 80,
   profiler: 100,
@@ -92,6 +104,11 @@ const PANEL_BUDGETS_KIB = {
  * still be green while no longer measuring the thing it names.
  */
 function panelFromEntryPoint(entryPoint) {
+  // Anything the chart module tree is the entry point of belongs to `charts`,
+  // not to whichever panel happened to pull it in first.  ECharts is lazy and
+  // shared by four panels, so attributing it to one of them would make that
+  // panel's budget meaningless and leave the others looking free (#486).
+  if (/(?:^|\/)src\/app\/charts\//.test(entryPoint)) return 'charts';
   const name = /(?:^|\/)([A-Za-z0-9]+)Panel(?:Component)?\.ts$/.exec(entryPoint)?.[1];
   // Lower-cased first letter because a component file is PascalCase
   // (`ExplainPanelComponent.ts`) while a legacy one is not (`explainPanel.ts`),

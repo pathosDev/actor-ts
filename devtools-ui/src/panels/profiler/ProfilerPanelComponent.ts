@@ -11,14 +11,15 @@ import {
 } from '@angular/core';
 import { match } from 'ts-pattern';
 
+import { ChartThemeService } from '../../app/charts/ChartThemeService.js';
+import { EChartComponent } from '../../app/charts/EChartComponent.js';
+import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
+import { buildRectanglesOption, NOMINAL_WIDTH, type ChartRectangle } from '../../app/charts/rectanglesOption.js';
 import { TapClientService } from '../../app/TapClientService.js';
 import { formatCount, formatDuration } from '../../core/format.js';
-import { currentTheme } from '../../core/theme.js';
-import { themeColor } from '../../render/timeseries.js';
 import {
   PROFILE_ROW_HEIGHT,
   buildProfileTree,
-  hitTestProfile,
   hottestLeaves,
   layoutProfile,
   profileDepth,
@@ -56,21 +57,6 @@ function formatMilliseconds(value: number): string {
   return `${(value * 1000).toFixed(0)} µs`;
 }
 
-function prepare(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
-  const context = canvas.getContext('2d');
-  if (context === null) return null;
-  const ratio = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth || 600;
-  const height = canvas.clientHeight || PROFILE_ROW_HEIGHT;
-  if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
-  }
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.clearRect(0, 0, width, height);
-  return context;
-}
-
 /**
  * The profiler panel (#226) — where does the actor system spend time?
  *
@@ -85,6 +71,7 @@ function prepare(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
  */
 @Component({
   selector: 'devtools-profiler-panel',
+  imports: [EChartComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <h1 class="dt-panel__title">Profiler</h1>
@@ -128,7 +115,12 @@ function prepare(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
       </div>
     }
 
-    <canvas class="dt-flame" #flame (mousemove)="onMove($event)" (mouseleave)="onLeave()"></canvas>
+    <devtools-echart
+      class="dt-flame"
+      [option]="flameOption()"
+      [height]="flameHeight()"
+      (hovered)="onHovered($event)"
+    />
 
     <div class="dt-spandetails">
       @if (isCpuProfile()) {
@@ -186,7 +178,7 @@ function prepare(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
 export class ProfilerPanelComponent {
   private readonly tap = inject(TapClientService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly flame = viewChild.required<ElementRef<HTMLCanvasElement>>('flame');
+  private readonly chartTheme = inject(ChartThemeService).theme;
 
   readonly mode = signal<ProfilerMode>('wallclock');
   readonly running = signal(false);
@@ -199,12 +191,39 @@ export class ProfilerPanelComponent {
   readonly cpuLabel = signal('CPU — V8 profile');
 
   private readonly progress = signal('');
-  /** Bumped on resize: a canvas keeps its backing store until told otherwise. */
-  private readonly viewport = signal(0);
-
-  private rectangles: readonly ProfileRectangle[] = [];
 
   readonly isCpuProfile = computed(() => this.result()?.format === 'cpuprofile');
+
+  /**
+   * The icicle, laid out at a nominal width and scaled when painted.
+   *
+   * `layoutProfile` is unchanged — it is the tested part, and it never learns
+   * about the chart.
+   */
+  readonly rectangles = computed<readonly ProfileRectangle[]>(() => {
+    const tree = this.tree();
+    return tree === null || this.isCpuProfile() ? [] : layoutProfile(tree, NOMINAL_WIDTH);
+  });
+
+  readonly flameHeight = computed(() => {
+    const depth = profileDepth(this.rectangles());
+    return `${Math.max(depth, 1) * PROFILE_ROW_HEIGHT}px`;
+  });
+
+  readonly flameOption = computed<DevToolsChartOption>(() => {
+    const theme = this.chartTheme();
+    const bars: ChartRectangle[] = this.rectangles().map((rectangle) => ({
+      x: rectangle.x,
+      y: rectangle.y,
+      width: rectangle.width,
+      height: rectangle.height,
+      label: rectangle.node.name,
+      color: rectangle.node.errors > 0
+        ? theme.stateError
+        : theme.series[rectangle.node.depth % theme.series.length]!,
+    }));
+    return buildRectanglesOption(bars, theme);
+  });
 
   /** Hovered frame, else the root — the details pane always says something. */
   readonly focused = computed(() => this.hovered() ?? this.tree());
@@ -234,10 +253,6 @@ export class ProfilerPanelComponent {
 
   constructor() {
 
-    const onResize = (): void => this.viewport.update((value) => value + 1);
-    window.addEventListener('resize', onResize);
-    this.destroyRef.onDestroy(() => window.removeEventListener('resize', onResize));
-
     this.destroyRef.onDestroy(this.tap.listen('profiler', (payload) => {
       match(payload)
         .with({ kind: 'profiler-progress' }, (p) => this.onProfilerProgress(p))
@@ -251,15 +266,6 @@ export class ProfilerPanelComponent {
       if (this.running()) {
         void this.tap.request('profiler.stop').catch(() => { /* already stopped */ });
       }
-    });
-
-    afterRenderEffect(() => {
-      this.tree();
-      this.hovered();
-      currentTheme();
-      this.viewport();
-      this.isCpuProfile();
-      this.draw();
     });
 
     void this.applyCapabilities();
@@ -304,14 +310,10 @@ export class ProfilerPanelComponent {
     URL.revokeObjectURL(url);
   }
 
-  onMove(event: MouseEvent): void {
-    const canvas = this.flame().nativeElement;
-    const bounds = canvas.getBoundingClientRect();
-    const found = hitTestProfile(this.rectangles, event.clientX - bounds.left, event.clientY - bounds.top);
-    this.hovered.set(found?.node ?? null);
+  /** ECharts reports which bar the pointer is over (#486). */
+  onHovered(index: number | null): void {
+    this.hovered.set(index === null ? null : this.rectangles()[index]?.node ?? null);
   }
-
-  onLeave(): void { this.hovered.set(null); }
 
   /**
    * Grey out a mode this host cannot run, with the reason in its label.
@@ -350,51 +352,6 @@ export class ProfilerPanelComponent {
       errors: bucket.errors,
     }));
     this.tree.set(buildProfileTree(stacks));
-  }
-
-  private draw(): void {
-    const canvas = this.flame().nativeElement;
-    const tree = this.tree();
-    if (tree === null || this.isCpuProfile()) {
-      this.rectangles = [];
-      canvas.style.height = `${PROFILE_ROW_HEIGHT}px`;
-      prepare(canvas);
-      return;
-    }
-    if (prepare(canvas) === null) return;
-    this.rectangles = layoutProfile(tree, canvas.clientWidth || 600);
-    canvas.style.height = `${profileDepth(this.rectangles) * PROFILE_ROW_HEIGHT}px`;
-    // Re-prepare: changing the CSS height invalidates the backing store.
-    const painter = prepare(canvas);
-    if (painter === null) return;
-
-    const border = themeColor('--dt-bg', '#0f172a');
-    const label = themeColor('--dt-text-strong', '#f1f5f9');
-    const hovered = this.hovered();
-    painter.font = '11px ui-monospace, monospace';
-    painter.textBaseline = 'middle';
-
-    for (const rectangle of this.rectangles) {
-      painter.fillStyle = rectangle.node.errors > 0
-        ? themeColor('--dt-state-error', '#ef4444')
-        : themeColor(`--dt-data-${(rectangle.node.depth % 8) + 1}`, '#818cf8');
-      painter.globalAlpha = hovered === null || hovered === rectangle.node ? 1 : 0.5;
-      painter.fillRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
-      painter.globalAlpha = 1;
-      painter.strokeStyle = border;
-      painter.lineWidth = 1;
-      painter.strokeRect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
-
-      if (rectangle.width > 42) {
-        painter.save();
-        painter.beginPath();
-        painter.rect(rectangle.x + 3, rectangle.y, rectangle.width - 6, rectangle.height);
-        painter.clip();
-        painter.fillStyle = label;
-        painter.fillText(rectangle.node.name, rectangle.x + 5, rectangle.y + rectangle.height / 2);
-        painter.restore();
-      }
-    }
   }
 
   private onProfilerProgress(payload: ProfilerProgressPayload): void {

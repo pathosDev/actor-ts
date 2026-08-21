@@ -232,42 +232,6 @@ devtools-root { display: block; }
 
 .dt-section { margin: 0 0 12px; font-size: 15px; color: var(--dt-text-strong); }
 
-.dt-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: var(--dt-gap);
-}
-.dt-card {
-  display: block;
-  background: var(--dt-bg-elevated);
-  border: 1px solid var(--dt-border);
-  border-left: 3px solid var(--dt-card-accent, var(--dt-accent));
-  border-radius: 0;
-  padding: 15px 17px;
-  color: var(--dt-text);
-  box-shadow: var(--dt-shadow);
-}
-.dt-card:hover { border-color: var(--dt-accent); text-decoration: none; }
-.dt-card--unavailable {
-  --dt-card-accent: var(--dt-state-idle);
-  opacity: 0.62;
-  cursor: not-allowed;
-}
-.dt-card--unavailable:hover { border-color: var(--dt-border); }
-.dt-card__title { font-weight: 600; color: var(--dt-text-strong); margin-bottom: 3px; }
-.dt-card__text { font-size: 13px; color: var(--dt-text-muted); }
-.dt-card__badge {
-  display: inline-block;
-  margin-top: 9px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 7px;
-  border-radius: 0;
-  background: var(--dt-accent-low);
-  color: var(--dt-accent-strong);
-}
-.dt-card__badge--unavailable { background: transparent; border: 1px solid var(--dt-border-strong); color: var(--dt-text-muted); }
 
 /* ------------------------------- notices ------------------------------ */
 
@@ -514,10 +478,10 @@ devtools-root { display: block; }
 /* -------------------------------- cluster ------------------------------- */
 
 .dt-topology { display: flex; flex-direction: column; align-items: center; margin-bottom: 18px; }
-.dt-topology__svg { width: 100%; max-width: 360px; height: auto; }
-.dt-topology__edge { stroke: var(--dt-border); stroke-width: 1; }
-.dt-topology__circle { stroke: var(--dt-bg); }
-.dt-topology__label { fill: var(--dt-text-muted); font-size: 11px; font-family: var(--dt-font-mono); }
+/* The ring is an ECharts graph since #486. It needs an explicit width:
+   .dt-topology centres its children, so a block element with no intrinsic
+   size would collapse to zero and the chart would never get a canvas. */
+.dt-topology__chart { width: 100%; max-width: 360px; }
 .dt-topology__legend { font-size: 12px; color: var(--dt-text-muted); margin: 4px 0 0; }
 
 .dt-member { display: flex; align-items: center; gap: 10px; font-size: 13px; }

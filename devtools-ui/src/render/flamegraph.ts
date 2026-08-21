@@ -170,23 +170,6 @@ export function layoutRectangles(
   }));
 }
 
-/** Topmost rectangle covering the point, or `null`. */
-export function hitTest(
-  rectangles: ReadonlyArray<SpanRectangle>,
-  x: number,
-  y: number,
-): SpanRectangle | null {
-  // Last match wins: later rectangles are drawn on top.
-  let found: SpanRectangle | null = null;
-  for (const rectangle of rectangles) {
-    if (x >= rectangle.x && x <= rectangle.x + rectangle.width
-      && y >= rectangle.y && y <= rectangle.y + rectangle.height) {
-      found = rectangle;
-    }
-  }
-  return found;
-}
-
 /**
  * Stable colour for a span.
  *
