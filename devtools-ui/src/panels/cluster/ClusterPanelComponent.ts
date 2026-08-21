@@ -231,14 +231,12 @@ export class ClusterPanelComponent {
   /** Bumped when the shard maps change; they are held in a map, not a signal. */
   private readonly revision = signal(0);
   private readonly now = signal(Date.now());
-  /** Colours come from CSS custom properties, so a theme flip has to recolour. */
-  private readonly theme = signal(currentTheme.get());
 
   readonly timeline = this.events.asReadonly();
 
   readonly placed = computed<readonly PlacedMember[]>(() => {
     const members = this.members();
-    this.theme();
+    currentTheme();
     if (members.length === 0) return [];
     const points = ringLayout(members.length, TOPOLOGY_SIZE / 2, TOPOLOGY_SIZE / 2, TOPOLOGY_SIZE / 2 - 46);
     const leader = this.leader();
@@ -276,7 +274,7 @@ export class ClusterPanelComponent {
   readonly memberRows = computed<readonly MemberRow[]>(() => {
     const now = this.now();
     const leader = this.leader();
-    this.theme();
+    currentTheme();
     return [...this.members()]
       .sort((a, b) => Number(a.gone) - Number(b.gone) || a.address.localeCompare(b.address))
       .map((member) => ({
@@ -290,7 +288,7 @@ export class ClusterPanelComponent {
 
   readonly shardMaps = computed<readonly ShardMapView[]>(() => {
     this.revision();
-    this.theme();
+    currentTheme();
     return [...this.shardMapsByType.values()].map((shardMap) => {
       const byRegion = new Map<string, number>();
       for (const assignment of shardMap.shardHome) {
@@ -314,7 +312,6 @@ export class ClusterPanelComponent {
   });
 
   constructor() {
-    this.destroyRef.onDestroy(currentTheme.subscribe((value) => this.theme.set(value)));
 
     this.destroyRef.onDestroy(this.tap.listen('cluster', (payload) => {
       match(payload)

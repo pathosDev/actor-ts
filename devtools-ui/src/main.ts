@@ -1,22 +1,23 @@
 /**
  * DevTools UI bootstrap.
  *
- * Angular owns the shell from #485 on: the header, the nav rail, the offline
- * dialog and the panel host are components reading Angular signals.  The panels
- * themselves are still the hand-written modules — each one is ported in its own
- * commit, behind `LegacyPanelHostComponent`, which is deleted with the last of
- * them.
+ * Angular owns the whole application from #485 on: the shell is components
+ * reading signals, every panel is a component, and the router mounts them.
+ * Nothing hand-rolled survives — `core/signal.ts`, `core/dom.ts`,
+ * `core/router.ts`, `shell/PanelRegistry.ts` and the migration's own adapters
+ * are gone with the last panel that needed them.
  *
- * Navigation still runs through `core/router.ts`.  `provideRouter(routes,
- * withHashLocation())` arrives with the first panel that becomes a real
- * component; until then two routers writing `location.hash` would be a race for
- * no benefit.  See `AppShellComponent` for why the hash half is mandatory when
- * it does arrive.
+ * `withHashLocation()` is mandatory, not a style choice.  `UiAssetRoutes.ts`
+ * deliberately serves no SPA fallback, so a request for a PATH that is not an
+ * asset has to 404 rather than return this document — which is what lets the
+ * same bundle be served at the server root (`DevTools.attach`) and under a
+ * prefix (`DevTools.mount('/devtools')`).  Keeping every navigation target in
+ * the hash is what preserves that while still giving the panels real URLs.
  *
  * Zoneless: there is no `zone.js` in `angular.json`'s `polyfills` and nothing
- * needs it.  The panels drive their own updates through `core/signal.ts`, the
- * shell uses Angular signals, and the two coexist because the shell mirrors the
- * few legacy signals it reads (`currentTheme`, `currentRoute`) into its own.
+ * needs it.  The reactive model is Angular signals throughout, which is the
+ * reason this framework was the one picked — the previous `signal`/`computed`/
+ * `effect` layer ported across rather than being rewritten.
  *
  * The stylesheet is not imported here.  `base.css` is a global sheet listed in
  * `angular.json`'s `styles`, which is how Angular's builder extracts it; a
@@ -25,15 +26,14 @@
  */
 import { provideZonelessChangeDetection } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter, withHashLocation } from '@angular/router';
 
 import { AppShellComponent } from './app/AppShellComponent.js';
-import { registerAllPanels } from './shell/panelRegistrations.js';
-
-// Before the shell renders: the nav rail and the panel host both read the
-// registry, so a panel registered afterwards would be missing from the first
-// paint rather than merely late.
-registerAllPanels();
+import { APP_ROUTES } from './app/panelRoutes.js';
 
 await bootstrapApplication(AppShellComponent, {
-  providers: [provideZonelessChangeDetection()],
+  providers: [
+    provideZonelessChangeDetection(),
+    provideRouter(APP_ROUTES, withHashLocation()),
+  ],
 });

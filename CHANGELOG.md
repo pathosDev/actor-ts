@@ -11,13 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
-- **The DevTools shell is Angular components** (#485, part of #482). The header,
-  nav rail, offline dialog and panel host are components reading Angular
-  signals; `shell/AppShell.ts` and its imperative DOM building are gone. What
-  the user sees is unchanged — the same 2 s grace period before the offline
-  dialog, the same nav built from the `welcome` panel roster with disabled items
-  carrying both the panel name and the reason, the same epoch guard that stops a
-  slowly-loading panel painting over one the reader has already moved to.
+- **The DevTools UI is Angular throughout** (#485, part of #482). The shell and
+  all seven panels are components reading Angular signals, routed by Angular's
+  router. The hand-rolled framework is gone: `core/signal.ts`, `core/dom.ts`,
+  `core/router.ts`, `shell/PanelRegistry.ts`, `shell/AppShell.ts` and the two
+  adapters the migration itself needed. What the user sees is unchanged — the
+  same 2 s grace period before the offline dialog, the same nav built from the
+  `welcome` panel roster with disabled entries carrying both the panel name and
+  the reason, the same 30 s tombstones, 200-row trace cap, 1 s explain poll,
+  persisted chart timespan and speedscope download.
+
+  `withHashLocation()` is mandatory rather than stylistic: `UiAssetRoutes.ts`
+  deliberately serves no SPA fallback, so a request for a PATH that is not an
+  asset has to 404 rather than return the shell — which is what lets the same
+  bundle be served at the server root and under `DevTools.mount('/devtools')`.
+  Every navigation target therefore lives in the hash.
+
+  Each panel is a lazy `loadComponent`, so the per-panel chunk split and its
+  size budget survive the change. The roster now lives in the routes' `data`
+  rather than in a second registry, which is one list instead of two.
 
   `core/tapClient.ts` gains an injectable `TapClientService` around it, and a
   seam for the socket constructor. The connection logic itself is deliberately
@@ -29,13 +41,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   would have made a regression indistinguishable from a wiring mistake. The seam
   is what lets #487 finally reach it with a fake socket.
 
-  The panels are ported one at a time behind `LegacyPanelHostComponent`, which
-  is deleted with the last of them. Explain is the first; the registry accepts
-  either shape, so a port is one panel's commit and nothing else's, and each
-  panel keeps its own lazy chunk and size budget across the change. Navigation
-  still runs through `core/router.ts`, because two routers writing
-  `location.hash` would be a race for no benefit until more panels are
-  components.
+  `core/theme.ts` became an Angular signal too, which is what lets a theme flip
+  recolour the canvases and the cluster SVG: they read the `--dt-*` custom
+  properties on every paint rather than caching what `getComputedStyle` returned
+  once.
+
+  One defect this found is worth recording, because every gate was green while
+  it was there: a `computed` that mutates during evaluation leaves the view
+  rendering one update behind for ever. The actor tree swept its tombstones
+  inside the computed that built its rows — the natural place, and where the
+  imperative version had it — and collapsing a branch then updated the model and
+  the computed while the DOM did not move. Sweeping now happens on the way in.
+  Nothing in this repository can see a stale view; that is what #487 is for.
 
 
 - **The DevTools UI is built by Angular 22 instead of `Bun.build`** (#483, part
