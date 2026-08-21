@@ -114,6 +114,10 @@ record incomplete.
 
 ## Inspecting
 
+The queue also has a panel: once it is switched on, the
+[dead-letter inspector](/observability/devtools/dead-letters/) in DevTools
+shows the same entries in a browser, with their payloads.  In code:
+
 `list()` returns entries **newest first**, narrowed by an optional filter.
 Everything is `await`ed, because a `persistent` queue may still be reading
 back a previous run's log.

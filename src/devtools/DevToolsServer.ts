@@ -45,6 +45,7 @@ import { ClusterTap } from './taps/ClusterTap.js';
 import { ExplainMethods } from './taps/ExplainTap.js';
 import { ReplayRegistry } from './replay/ReplayRegistry.js';
 import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
+import { DeadLetterMethods } from './deadletters/DeadLetterMethods.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
@@ -88,6 +89,7 @@ const OPTIONAL_PANELS: ReadonlyArray<{
   { id: 'explain', option: 'explain' },
   { id: 'time-travel', option: 'timeTravel' },
   { id: 'profiler', option: 'profiler' },
+  { id: 'dead-letters', option: 'deadLetters' },
 ];
 
 /**
@@ -256,6 +258,23 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerTap(spans);
       spans.installMethods(this);
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('dead-letters')) {
+      const deadLetters = new DeadLetterMethods(this.system);
+      deadLetters.install(this);
+      // Registered either way, so a client that asks gets an empty
+      // answer rather than `unknown method`.  The status is what
+      // carries the reason, and a queue left `off` cannot be turned
+      // on from here — `store` is fixed when the system is built.
+      this.registerPanel(deadLetters.recording
+        ? { id: 'dead-letters', status: 'active' }
+        : {
+            id: 'dead-letters',
+            status: 'unavailable',
+            reason: "dead-letter queue is off — set `deadLetters.store` to "
+              + "'memory' or 'persistent' on the ActorSystem",
+          });
     }
 
     if (this.isPanelEnabled('profiler')) {

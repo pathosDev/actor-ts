@@ -118,6 +118,10 @@ unvollständig machen.
 
 ## Inspizieren
 
+Die Queue hat auch ein Panel: Sobald sie eingeschaltet ist, zeigt der
+[Dead-Letter-Inspektor](/de/observability/devtools/dead-letters/) in
+DevTools dieselben Einträge im Browser, samt Payloads.  Im Code:
+
 `list()` liefert Einträge **neueste zuerst**, eingeengt durch einen
 optionalen Filter. Alles wird `await`ed, weil eine `persistent`-Queue noch
 das Log eines vorherigen Laufs zurücklesen kann.

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellComponent } from './AppShellComponent.js';
 import { TAP_SOCKET_FACTORY, TAP_URL, TapClientService } from './TapClientService.js';
 import { installDomGaps } from './testing/domGaps.js';
+import { ALL_PANELS_ACTIVE } from './testing/fakeTapSocket.js';
 import type { DevToolsPanelDescriptor, WelcomeFrame } from '../../../src/devtools/protocol/index.js';
 
 /**
@@ -63,10 +64,8 @@ function welcome(panels: readonly DevToolsPanelDescriptor[]): WelcomeFrame {
   } as WelcomeFrame;
 }
 
-/** Every panel active, which is the ordinary case. */
-const ALL_ACTIVE: readonly DevToolsPanelDescriptor[] = [
-  'dashboard', 'actors', 'cluster', 'tracing', 'explain', 'time-travel', 'profiler',
-].map((id) => ({ id, status: 'active' })) as DevToolsPanelDescriptor[];
+/** Every panel active, which is the ordinary case — see {@link ALL_PANELS_ACTIVE}. */
+const ALL_ACTIVE = ALL_PANELS_ACTIVE;
 
 describe('AppShellComponent', () => {
   let fixture: ComponentFixture<AppShellComponent>;
@@ -124,7 +123,10 @@ describe('AppShellComponent', () => {
       fixture.detectChanges();
 
       const items = navigationItems();
-      expect(items).toHaveLength(7);
+      // Counted from the roster the test just handed the server, not a
+      // literal: the property is "every active panel becomes a link", and
+      // a hard-coded size only restates how many panels exist today.
+      expect(items).toHaveLength(ALL_ACTIVE.length);
       expect(items.every((item) => item.tagName === 'A')).toBe(true);
     });
 

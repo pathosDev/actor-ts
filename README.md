@@ -127,9 +127,12 @@ A short tour of what's in the box:
 - **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a
-  persistence journal, and a profiler.  Vanilla TypeScript bundled into the
-  package — no UI framework, no CDN.  Loopback-only and unauthenticated by
-  default, and it refuses a routable bind without a gate.
+  persistence journal, a profiler, and a dead-letter inspector.  Built with
+  Angular and ECharts and embedded as a gzipped bundle — both are
+  build-time only, so neither appears in this package's dependencies and
+  the served page loads nothing over the network.  Loopback-only and
+  unauthenticated by default, and it refuses a routable bind without a
+  gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
   deterministic tests including cluster scenarios.
 

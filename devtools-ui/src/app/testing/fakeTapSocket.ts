@@ -1,4 +1,5 @@
 import { TAP_SOCKET_FACTORY, TAP_URL } from '../TapClientService.js';
+import { PANEL_ROSTER } from '../panelRoutes.js';
 import type { DevToolsPanelDescriptor, WelcomeFrame } from '../../../../src/devtools/protocol/index.js';
 
 /**
@@ -33,6 +34,7 @@ export class FakeTapSocket {
   readyState = 0;
   readonly sent: unknown[] = [];
   private readonly listeners = new Map<string, Listener[]>();
+  private readonly answered = new Set<number>();
 
   constructor(readonly url: string) {
     FakeTapSocket.instances.push(this);
@@ -57,6 +59,24 @@ export class FakeTapSocket {
   /** Frames this socket sent, of one kind. */
   sentOf(kind: string): Array<Record<string, unknown>> {
     return (this.sent as Array<Record<string, unknown>>).filter((frame) => frame['kind'] === kind);
+  }
+
+  /**
+   * Answer the newest un-answered request for `method`.
+   *
+   * Correlates on the client's own `requestId` rather than assuming an
+   * order, because a panel that polls has several in flight the moment a
+   * test advances its timers.
+   */
+  respondTo(method: string, result: unknown): void {
+    const pending = this.sentOf('request')
+      .filter((frame) => frame['method'] === method)
+      .filter((frame) => !this.answered.has(frame['requestId'] as number));
+    const frame = pending[pending.length - 1];
+    if (frame === undefined) throw new Error(`no pending request: ${method}`);
+    const requestId = frame['requestId'] as number;
+    this.answered.add(requestId);
+    this.receives({ kind: 'response', requestId, result });
   }
 
   opened(): void {
@@ -100,7 +120,12 @@ export function fakeWelcome(panels: readonly DevToolsPanelDescriptor[]): Welcome
   } as WelcomeFrame;
 }
 
-/** Every panel active, which is the ordinary case. */
-export const ALL_PANELS_ACTIVE: readonly DevToolsPanelDescriptor[] = [
-  'dashboard', 'actors', 'cluster', 'tracing', 'explain', 'time-travel', 'profiler',
-].map((id) => ({ id, status: 'active' })) as DevToolsPanelDescriptor[];
+/**
+ * Every panel active, which is the ordinary case.
+ *
+ * Derived from the roster rather than listed by hand: a literal list stops
+ * meaning "every panel" the moment one is added, and it fails as an
+ * off-by-one in a count rather than as the drift it is (#553).
+ */
+export const ALL_PANELS_ACTIVE: readonly DevToolsPanelDescriptor[] = PANEL_ROSTER
+  .map((panel) => ({ id: panel.id, status: 'active' }));

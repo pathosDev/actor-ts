@@ -810,6 +810,7 @@ export default defineConfig({
                 { label: 'Explain plan', slug: 'observability/devtools/explain-plan', translations: { de: 'Explain-Plan', es: 'Plan de explicación', fr: 'Plan d’explication', ja: '実行計画', ko: '실행 계획', 'pt-BR': 'Plano de explicação', ru: 'План выполнения', 'zh-CN': '执行计划' } },
                 { label: 'Time travel', slug: 'observability/devtools/time-travel', translations: { de: 'Time Travel', es: 'Viaje en el tiempo', fr: 'Voyage dans le temps', ja: 'タイムトラベル', ko: '타임 트래블', 'pt-BR': 'Viagem no tempo', ru: 'Путешествие во времени', 'zh-CN': '时间旅行' } },
                 { label: 'Profiler', slug: 'observability/devtools/profiler', translations: { de: 'Profiler', es: 'Profiler', fr: 'Profiler', ja: 'プロファイラ', ko: '프로파일러', 'pt-BR': 'Profiler', ru: 'Профилировщик', 'zh-CN': '性能分析器' } },
+                { label: 'Dead letters', slug: 'observability/devtools/dead-letters', translations: { de: 'Dead Letters', es: 'Cartas muertas', fr: 'Lettres mortes', ja: 'デッドレター', ko: '데드 레터', 'pt-BR': 'Cartas mortas', ru: 'Мёртвые письма', 'zh-CN': '死信' } },
                 { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
               ],
             },

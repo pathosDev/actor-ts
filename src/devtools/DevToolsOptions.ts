@@ -29,6 +29,16 @@ export type DevToolsPanelOptionsType = {
   readonly timeTravel?: boolean;
   /** Actor profiler (#226).  Default `true`. */
   readonly profiler?: boolean;
+  /**
+   * Undelivered messages, from the dead-letter queue (#553).  Default
+   * `true`, but the panel only reports itself active when the queue is
+   * actually recording — `deadLetters.store` defaults to `'off'`.
+   *
+   * Shows message payloads, so it is switched off alongside
+   * {@link timeTravel} anywhere the payloads are not the operator's to
+   * read.
+   */
+  readonly deadLetters?: boolean;
 };
 
 /** Plain options-object shape accepted by `DevTools.attach`. */

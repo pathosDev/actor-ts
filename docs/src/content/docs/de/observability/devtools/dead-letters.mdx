@@ -1,0 +1,97 @@
+---
+title: Dead Letters
+description: Die Nachrichten, die dein System nicht zustellen konnte — Empfänger, Absender, Payload und Grund — im Panel, statt still zu verschwinden.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Eine Nachricht wird zum **Dead Letter**, wenn sie nicht zugestellt
+werden kann: Der Empfänger wurde gestoppt, existierte nie, oder der Pfad
+war falsch. Standardmäßig wirft nichts eine Exception und nichts landet
+im Log — `tell` kehrt zurück, der Absender macht weiter, und die Arbeit
+passiert einfach nie. Genau diese Stille macht den Fehler so leicht zu
+übersehen, und dieses Panel ist der Ort, an dem er sichtbar wird.
+
+| Spalte | Bedeutung |
+| --- | --- |
+| **time** | Wann die Nachricht erfasst wurde |
+| **message** | Konstruktorname der Nachricht, oder ihr `typeof` |
+| **recipient** | Der Actor, den sie nicht erreicht hat |
+| **sender** | Wer sie gesendet hat, sofern es einen Absender gab |
+| **replays** | Wie oft sie erneut zugestellt wurde und zurückkam |
+
+Ein Klick auf eine Zeile zeigt die Payload. Ein **replays**-Wert über
+null lohnt Aufmerksamkeit: Dann siehst du eine Poison Message, die
+wiederholt wird — keinen frischen Fehler.
+
+## Die Queue einschalten
+
+Das Panel liest die Dead-Letter-Queue des Systems, und diese Queue ist
+**standardmäßig aus** — jede unzustellbare Nachricht zu erfassen kostet
+Speicher, und ein System, das nie eine erzeugt, soll dafür nicht zahlen:
+
+```ts
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters({ store: 'memory', maxEntries: 500 });
+
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+Mit `store: 'off'` bleibt das Panel in der Navigation, meldet sich aber
+als nicht verfügbar und nennt die Einstellung, die zu ändern ist. Das
+ist Absicht: Eine leere Tabelle kann dir nicht sagen, ob nichts kaputt
+ist oder ob nichts aufgezeichnet wird — und das sind gegenteilige
+Antworten.
+
+`store: 'persistent'` hält die Queue über einen Neustart hinweg: Die
+Letters werden journalisiert, sodass die kurz vor einem Absturz
+eingetroffenen danach noch da sind — also genau dann, wenn du sie
+üblicherweise brauchst.
+
+## Filtern
+
+Das Filterfeld nimmt einen Empfängerpfad und behält diesen Actor samt
+allem darunter. `/user/orders` wählt also den ganzen Teilbaum aus, ein
+vollständiger Pfad genau einen Actor. Gefiltert wird auf dem Server,
+über den Ring, den er ohnehin hält; die Zusammenfassung zählt, was der
+Filter ausgewählt hat — nicht, was die Seite zeigt.
+
+## Payloads
+
+Payloads werden bereinigt, bevor sie den Browser erreichen: Tiefe,
+Anzahl der Einträge und Stringlänge sind allesamt gedeckelt. Eine
+zurechtgeschnittene Nachricht sagt **truncated** darüber, und eine, die
+die Queue gar nicht behalten konnte, nennt den Grund — statt ein `null`
+zu zeigen, das sich wie eine leere Nachricht liest.
+
+<Aside type="caution" title="Die Payload sind deine Daten">
+Das Panel zeigt Nachrichteninhalte und legt damit offen, was deine
+Nachrichten transportieren.  Schalte es mit `panels: { deadLetters:
+false }` überall dort ab, wo das zählt — derselbe Aufruf, den du für
+das Time-Travel-Panel machen würdest, und aus demselben Grund.
+</Aside>
+
+## Erneut zustellen
+
+Das erneute Zustellen eines erfassten Letters ist eine Operation der
+Queue, nicht des Panels, und bleibt bewusst im Code: Ein Button, der
+Produktionsnachrichten erneut versendet, ist eine andere Art von
+Entscheidung als eine Tabelle, die sie anzeigt.
+
+```ts
+const [letter] = await system.deadLetterQueue.list({ recipient: '/user/orders' });
+if (letter !== undefined) await system.deadLetterQueue.replay(letter.id);
+```
+
+`replay` entfernt den Eintrag vor der erneuten Zustellung und merkt sich
+die Nachricht, sodass ein zweites Scheitern als **derselbe** Eintrag mit
+höherem `replayCount` zurückkommt statt als neuer. Jenseits von
+`maxReplays` wird der Letter in Quarantäne gestellt und `replay`
+verweigert ihn.
+
+<Aside type="note" title="Warum es pollt">
+Das Panel fragt die Queue einmal pro Sekunde ab, statt sich beliefern zu
+lassen.  Die Queue ist ein begrenzter Ring, den der Server ohnehin hält
+— eine Anfrage ist also billig, und jede Erfassung zu pushen würde
+DevTools auf den Zustellpfad genau der Fehler setzen, die es beobachtet.
+</Aside>
