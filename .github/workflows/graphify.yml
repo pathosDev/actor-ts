@@ -1,0 +1,79 @@
+# Rebuilds the committed knowledge graph in `graphify-out/`.
+#
+# Why this is a workflow and not a git hook (#1345): `graphify hook install`
+# offers `post-commit` and `post-checkout` hooks, and both are a bad fit here
+# because `graphify-out/` is *tracked* in this repo.  `post-checkout` runs a
+# full re-extraction on every branch switch — minutes of work, and it leaves
+# the tree dirty right after a commit — which with several worktrees in play
+# fires constantly.  Moving the rebuild here keeps every local checkout clean
+# and puts the cost on CI, the same shape as the README badge bot in
+# `test.yml`.
+#
+# Deliberately NOT on every push.  `graph.json` is ~36 MB and reorders on
+# rebuild, so it deltas poorly; a commit per push would add gigabytes to a
+# history that is already 210 MB.  Weekly keeps the graph at most seven days
+# behind, and `workflow_dispatch` covers "I just landed a big refactor".
+#
+# Scope: this refreshes the **code** side only (AST extraction — deterministic,
+# no LLM, no API key).  Documentation nodes come from semantic extraction and
+# still need a deliberate `/graphify <path> --update` run in an agent session.
+# Community labels are re-derived here: clustering re-runs and Louvain ids move
+# whenever nodes change, so hand-curated labels cannot survive an automated
+# rebuild — that is a known trade-off, not a defect (#1345).
+name: graphify
+
+on:
+  schedule:
+    # Sundays, 03:17 UTC — off-peak, and a full week of commits per rebuild.
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialise against the badge bot and against a manual run overlapping the
+# scheduled one; both push to develop and would otherwise race on `git push`.
+concurrency:
+  group: graphify-rebuild
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    name: Rebuild knowledge graph
+    runs-on: ubuntu-latest
+    # The only job in the file, but the write scope still lives here rather
+    # than at workflow level (#621): a scope that can change anything belongs
+    # on the job that uses it.
+    permissions:
+      contents: write
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The graph belongs on develop; a dispatch from any other branch
+          # still rebuilds and pushes there rather than forking the artifact.
+          ref: develop
+
+      # Pinned on purpose.  The AST cache is keyed by version
+      # (`graphify-out/cache/ast/v<version>/`), so a silent upgrade would
+      # orphan the committed cache, force a full re-extraction and commit a
+      # second copy of it.  Bumping this is a deliberate change, and the
+      # rebuild that follows it is expected to be large.
+      - name: Install graphify
+        run: python3 -m pip install --disable-pip-version-check 'graphifyy==0.9.46'
+
+      - name: Rebuild code side of the graph
+        run: graphify update .
+
+      - name: Commit + push if the graph moved
+        run: |
+          if [[ -z "$(git status --porcelain graphify-out/)" ]]; then
+            echo "graph unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add graphify-out/
+          git commit -m "chore(graphify): refresh knowledge graph [skip ci]"
+          git push
+          echo "pushed graph refresh"

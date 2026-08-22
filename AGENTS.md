@@ -169,6 +169,41 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
 
+## Knowledge graph (`graphify-out/`)
+
+`graphify-out/` holds a committed knowledge graph of the repository —
+`graph.json`, `graph.html`, `GRAPH_REPORT.md` and `cache/`. It is tracked
+**on purpose** (`.gitignore` says why): the cache keys on repo-relative
+paths plus a hash of the extraction prompt, so a fresh clone replays it
+instead of paying a ~7.2M-token semantic re-extraction of `docs/`. Only
+run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
+
+- **The graph is bot-maintained.** `.github/workflows/graphify.yml` runs
+  weekly (and on `workflow_dispatch`), re-extracts the **code** side, and
+  pushes `chore(graphify): refresh knowledge graph [skip ci]` to `develop`
+  — the same shape as the README badge bot above, so the same caveat
+  applies: fetch again before branching.
+- **Weekly, not per push, and that is deliberate.** `graph.json` is ~36 MB
+  and reorders on rebuild, so it deltas poorly; a commit per push would add
+  gigabytes to the history. Landing a large refactor is what the manual
+  dispatch is for.
+- **CI refreshes code nodes only.** Documentation nodes come from semantic
+  extraction, which needs an LLM — run `/graphify . --update` in an agent
+  session after a docs sweep. Community labels are re-derived on every
+  rebuild (Louvain ids move when nodes change), so hand-curated labels do
+  not survive automation. #1345.
+- **The graphify version in that workflow is pinned** because the AST cache
+  lives under `cache/ast/v<version>/`. Bumping it orphans the committed
+  cache and commits a second copy — a deliberate change, never a drive-by.
+- **Local git hooks are deliberately not used.** `graphify hook install`
+  offers `post-commit`/`post-checkout`; the checkout hook runs a full
+  re-extraction on every branch switch and leaves the tree dirty, which with
+  several worktrees in play fires constantly. The merge driver it registers
+  (`.gitattributes`, `merge=graphify`) is kept — it union-merges two branches
+  that both rebuilt the graph — but it needs `graphify hook install` once per
+  clone to configure the driver binary, or git just falls back to a normal
+  merge.
+
 ## Verification gates (before every commit)
 
 - **`bun run typecheck`** (build tsconfig — excludes `examples/`,
