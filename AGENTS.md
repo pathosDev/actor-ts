@@ -200,9 +200,17 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   re-extraction on every branch switch and leaves the tree dirty, which with
   several worktrees in play fires constantly. The merge driver it registers
   (`.gitattributes`, `merge=graphify`) is kept — it union-merges two branches
-  that both rebuilt the graph — but it needs `graphify hook install` once per
-  clone to configure the driver binary, or git just falls back to a normal
-  merge.
+  that both rebuilt the graph. Configure it **directly**, once per clone;
+  do not reach for `graphify hook install`, which would reinstate the hooks
+  along with it:
+
+  ```sh
+  git config merge.graphify.name 'graphify graph.json union merge'
+  git config merge.graphify.driver 'graphify merge-driver %O %A %B'
+  ```
+
+  Without it git just falls back to a normal merge, which on a 36 MB
+  reordered JSON means a conflict you resolve by rebuilding.
 
 ## Verification gates (before every commit)
 
