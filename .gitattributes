@@ -47,3 +47,4 @@ devtools-ui/** text eol=lf
 benchmarks/comparison/**/.mill-version text eol=lf
 benchmarks/comparison/**/mill          text eol=lf
 benchmarks/comparison/**/mill.bat      text eol=crlf
+graphify-out/graph.json merge=graphify
