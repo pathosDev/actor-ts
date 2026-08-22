@@ -112,6 +112,7 @@ devtools-ui/.angular/
 graphify-out/manifest.json
 graphify-out/cost.json
 graphify-out/.graphify_labels.json
+graphify-out/.graphify_labels.json.sig
 graphify-out/.graphify_python
 graphify-out/.graphify_root
 
