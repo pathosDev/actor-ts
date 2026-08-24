@@ -72,6 +72,94 @@ function actionReferences({ name, lines }: WorkflowFile): ActionReference[] {
 
 const references = workflows.flatMap(actionReferences);
 
+/**
+ * `.github/dependabot.yml` — for the one property of a pin that no workflow
+ * file can express: whether the bumps Dependabot will open are *mergeable*.
+ */
+const DEPENDABOT_FILE = join(import.meta.dir, '..', '..', '..', '.github', 'dependabot.yml');
+
+const dependabotLines: readonly string[] = readFileSync(DEPENDABOT_FILE, 'utf8').split(/\r?\n/);
+
+/** One `- package-ecosystem: "<name>"` entry, up to the next entry or EOF. */
+function ecosystemBlock(ecosystem: string): readonly string[] {
+  const marker = `- package-ecosystem: "${ecosystem}"`;
+  const start = dependabotLines.findIndex((line) => line.trim() === marker);
+  if (start < 0) return [];
+  const rest = dependabotLines.slice(start + 1);
+  const end = rest.findIndex((line) => /^\s*-\s*package-ecosystem:/.test(line));
+  return end < 0 ? rest : rest.slice(0, end);
+}
+
+/**
+ * Every `patterns:` entry of every group in a `groups:` block.  Same
+ * regex-over-YAML trade-off as the workflow parsers above: a list item counts
+ * only while `patterns:` is the nearest preceding key, so a sibling
+ * `update-types:` list is not mistaken for one.
+ */
+function groupPatterns(block: readonly string[]): string[] {
+  const start = block.findIndex((line) => /^\s*groups:\s*$/.test(line));
+  if (start < 0) return [];
+  const groupsIndent = /^\s*/.exec(block[start]!)![0].length;
+  const out: string[] = [];
+  let inPatterns = false;
+  for (const line of block.slice(start + 1)) {
+    if (line.trim() === '' || line.trim().startsWith('#')) continue;
+    if (/^\s*/.exec(line)![0].length <= groupsIndent) break; // the `groups:` block ended
+    const item = /^\s*-\s*"?([^"#]+?)"?\s*$/.exec(line);
+    if (inPatterns && item) out.push(item[1]!);
+    else inPatterns = /^\s*patterns:\s*$/.test(line);
+  }
+  return out;
+}
+
+const actionGroupPatterns = groupPatterns(ecosystemBlock('github-actions'));
+
+/**
+ * A Dependabot group pattern — `*` is its only wildcard.  Matched by walking
+ * the literal segments in order rather than by compiling a RegExp: a pattern
+ * is repository configuration, and turning one into a regex would let a `.`
+ * or a `+` inside it quietly widen what the group is asserted to cover.
+ */
+const matchesPattern = (pattern: string, dependency: string): boolean => {
+  const segments = pattern.split('*');
+  const first = segments[0] ?? '';
+  const last = segments[segments.length - 1] ?? '';
+  if (segments.length === 1) return dependency === first;
+  if (!dependency.startsWith(first) || !dependency.endsWith(last)) return false;
+  let index = first.length;
+  for (const segment of segments.slice(1, -1)) {
+    const found = dependency.indexOf(segment, index);
+    if (found < 0) return false;
+    index = found + segment.length;
+  }
+  return index <= dependency.length - last.length;
+};
+
+type CoupledAction = {
+  /** `owner/repo` — the action whose sub-paths have to move together. */
+  readonly action: string;
+  /** The distinct dependency names Dependabot sees, one per sub-path. */
+  readonly paths: readonly string[];
+};
+
+/**
+ * Actions reached through more than one sub-path — exactly the ones Dependabot
+ * splits across PRs, because it reads every `uses:` path as its own dependency.
+ */
+const coupledActions: readonly CoupledAction[] = (() => {
+  const byAction = new Map<string, Set<string>>();
+  for (const { reference } of references) {
+    const dependency = reference.split('@')[0] ?? '';
+    if (dependency.split('/').length <= 2) continue; // no sub-path, nothing to split
+    const action = dependency.split('/').slice(0, 2).join('/');
+    const paths = byAction.get(action) ?? new Set<string>();
+    byAction.set(action, paths.add(dependency));
+  }
+  return [...byAction]
+    .map(([action, paths]) => ({ action, paths: [...paths].sort() }))
+    .filter(({ paths }) => paths.length > 1);
+})();
+
 type WorkflowJob = {
   readonly workflow: string;
   readonly name: string;
@@ -250,6 +338,11 @@ describe('workflow hygiene', () => {
     expect(uploads.every((upload) => upload.paths.length > 0)).toBe(true);
     expect(uploads.some((upload) => upload.paths.some(isHiddenPath))).toBe(true);
     expect(uploads.some((upload) => upload.paths.every((path) => !isHiddenPath(path)))).toBe(true);
+    // The dependabot parser has to have found the ecosystem, its patterns and
+    // the coupling they cover, or the grouping assertion below has no subject.
+    expect(dependabotLines.length).toBeGreaterThan(10);
+    expect(actionGroupPatterns.length).toBeGreaterThan(0);
+    expect(coupledActions.map(({ action }) => action)).toContain('github/codeql-action');
   });
 
   /**
@@ -412,6 +505,38 @@ describe('workflow hygiene', () => {
         'A SHA pin needs its release tag in a trailing "# vX.Y.Z" comment, or '
         + 'Dependabot cannot tell what version it is and stops updating it.',
       ).toMatch(/^# v\d+(\.\d+)*$/);
+    },
+  );
+
+  /**
+   * #1348 — the two assertions above pass for a pin that cannot be merged.
+   * Dependabot reads every `uses:` path as its own dependency, so an action
+   * used through more than one sub-path gets one PR per path, and each of them
+   * is a well-formed SHA with a well-formed version comment.
+   *
+   * They still cannot land one at a time. `github/codeql-action/init` writes a
+   * config file stamped with its own version and `github/codeql-action/analyze`
+   * refuses to read one that does not match, so each half creates the skew it
+   * then fails on — `Loaded a configuration file for version '4.37.8', but
+   * running version '4.37.7'` — and only the pair is green (#1346 + #1347,
+   * red alone). A `groups:` pattern is what makes them arrive together.
+   *
+   * `github/codeql-action` is the only such action today, which is exactly why
+   * this is a guard and not a comment: the next one gets added by someone with
+   * no reason to have read `.github/dependabot.yml`.
+   */
+  test.each([...coupledActions])(
+    '$action is grouped in dependabot.yml, so its sub-paths bump together',
+    ({ action, paths }) => {
+      expect(
+        actionGroupPatterns.filter(
+          (pattern) => paths.every((dependency) => matchesPattern(pattern, dependency)),
+        ),
+        `${action} is used through ${paths.length} sub-paths (${paths.join(', ')}), so `
+        + 'Dependabot opens one PR per path and each lands on a tree that is broken '
+        + 'in between. Add a pattern covering all of them to the "github-actions" '
+        + 'groups: block in .github/dependabot.yml.',
+      ).not.toEqual([]);
     },
   );
 
