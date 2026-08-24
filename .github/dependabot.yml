@@ -69,3 +69,36 @@ updates:
     commit-message:
       prefix: "chore(actions)"
       include: "scope"
+    # Dependabot treats every `uses:` path as its own dependency, so an action
+    # referenced through more than one sub-path gets one PR per path — and for
+    # `github/codeql-action` those PRs are individually invalid.  `init` writes
+    # a config file stamped with its own version and `analyze` refuses to read
+    # one that does not match, so each half creates the very skew it fails on:
+    #
+    #     Loaded a configuration file for version '4.37.8', but running version '4.37.7'
+    #
+    # Only merging both is green — #1346 and #1347 were each red alone.  A check
+    # that says nothing about the change in front of it is worse than no check:
+    # it teaches you to merge codeql PRs unread, on the one workflow whose job
+    # is to find security defects.
+    #
+    # **Keyed on the action, not on an update type.**  A minor-and-patch group
+    # mirroring the npm block above would not fix this — the sub-path coupling
+    # holds at every update type, so a major bump would split into two invalid
+    # PRs again, leaving the bump that most deserves an eyeball as the one that
+    # lands red.
+    #
+    # The rest stays ungrouped on purpose.  The npm block groups to avoid ~15
+    # PRs a day; actions have no such volume, and an actions bump rewrites a SHA
+    # pin inside workflows that hold `id-token: write` (#585), so one PR per
+    # action is the review posture worth keeping.
+    #
+    # `github/codeql-action` is the only multi-sub-path action here today, so
+    # the pattern list is precise rather than speculative — and
+    # `tests/unit/ci/WorkflowHygiene.test.ts` fails when another one appears
+    # without a pattern, because nothing else in the toolchain reads this file.
+    # #1348
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
