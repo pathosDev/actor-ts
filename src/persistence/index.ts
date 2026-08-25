@@ -33,6 +33,11 @@ export {
   assertValidPersistenceId,
   persistenceIdRejection,
 } from './storage/PersistenceIdValidator.js';
+// Same reason, for tags: #740 made an empty or repeated tag a rejected write,
+// so a `tagsFor` an application cannot check ahead of time is a `persist` that
+// throws in production instead.  The caps behind it stay internal — the rules
+// are what a caller checks against, not the numbers.
+export { assertValidTags } from './storage/TagValidator.js';
 export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
