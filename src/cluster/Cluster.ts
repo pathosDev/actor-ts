@@ -237,6 +237,13 @@ export class Cluster {
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
+  /**
+   * Whether {@link selfElect} promoted this node, as opposed to a peer's
+   * leader doing it — the joined-vs-formed distinction #943 asks for.  Never
+   * reset: election happens at most once per incarnation, and "formed a
+   * cluster, then merged with another" is still a formation.
+   */
+  private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
@@ -541,6 +548,27 @@ export class Cluster {
    */
   getMembers(): ReadonlyArray<Member> {
     return Array.from(this.members.values()).filter((member) => member.status !== 'removed');
+  }
+
+  /**
+   * This node's own membership record, or `undefined` before the join has
+   * created it.  Unlike {@link getMembers} it does **not** filter a `removed`
+   * self: the tombstoned record — status and all — is exactly the diagnostic
+   * a caller holding a stale handle after {@link leave} is asking for.
+   */
+  selfMember(): Member | undefined {
+    return this.members.get(this.selfAddress.toString());
+  }
+
+  /**
+   * `true` once {@link selfElect} turned this node `up`: it formed a new
+   * cluster (of one, until others join it) rather than being promoted by an
+   * existing cluster's leader.  This is the observable behind
+   * `BootstrappedCluster.formedNewCluster`, and the mechanism a test binds to
+   * when "joined instead of forming a rival" is the claim (#1087).
+   */
+  get selfElected(): boolean {
+    return this._selfElected;
   }
 
   /** Members in the `up` state, ordered by address — the "active set". */
@@ -897,6 +925,7 @@ export class Cluster {
     if (me.status !== 'joining' && me.status !== 'weakly-up') return;
     const message = `self-electing as first cluster member — ${reason}`;
     if (level === 'info') this.log.info(message); else this.log.debug(message);
+    this._selfElected = true;
     this.updateMember(me.withStatus('up'));
   }
 
