@@ -21,9 +21,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
 import {
   BackoffSupervisor,
@@ -555,6 +558,142 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       // Both terminations triggered respawns: spawn count grew twice.
       expect(afterCrash).toBeGreaterThanOrEqual(2);
       expect(lifecycleSpawns).toBeGreaterThan(afterCrash);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+});
+
+/**
+ * #769 — the supervisor must not retire a live child on the word of a
+ * `Terminated`.  Two layers, and one test each, because they fail
+ * independently: `ActorCell` refuses a signal the runtime did not emit, and
+ * `handleTerminated` refuses one whose subject is demonstrably still running.
+ */
+describe('BackoffSupervisor — Terminated provenance', () => {
+  /** The supervisor's children, by name, straight off its cell. */
+  const childNames = (supervisor: ActorRef<unknown>): string[] =>
+    (supervisor as unknown as LocalActorRef).getCell().children.map((c) => c.path.name);
+
+  const currentChild = (supervisor: ActorRef<unknown>): ActorRef =>
+    (supervisor as unknown as LocalActorRef).getCell().children[0] as ActorRef;
+
+  test('a fabricated Terminated neither orphans the live child nor drives a respawn', async () => {
+    crashesObserved = 0; flakyStarts = 0;
+    const sys = newSystem('backoff-forged-terminated');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-forged',
+    );
+    try {
+      await awaitCondition(() => flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first child started',
+      });
+      const child = currentChild(supervisor as ActorRef<unknown>);
+      expect(child.path.name).toBe('child-1');
+
+      // The exploit, in one line: anything holding the supervisor's ref can
+      // build this, and before #769 it retired the watch, bumped the backoff
+      // counter and spawned `child-2` alongside a `child-1` nobody stopped.
+      supervisor.tell(new Terminated(child) as never);
+
+      // Round-trip a real message so the assertions follow the forgery
+      // through the supervisor's mailbox rather than racing it.
+      const echoed = await supervisor.ask<number>({ kind: 'echo', value: 7 }, 1_000);
+      expect(echoed).toBe(7);
+
+      expect(flakyStarts).toBe(1);
+      expect(policy.calls).toEqual([]);
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-1']);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('a runtime-emitted Terminated naming a child that is still running is refused', async () => {
+    crashesObserved = 0; flakyStarts = 0;
+    const sys = newSystem('backoff-live-terminated');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-live',
+    );
+    try {
+      await awaitCondition(() => flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first child started',
+      });
+      const cell = (supervisor as unknown as LocalActorRef).getCell();
+      const child = cell.children[0] as ActorRef;
+
+      // `watchNotify` is the one door that builds a *branded* `Terminated` for
+      // an arbitrary target, so it is the only way to hand the supervisor a
+      // signal whose provenance is genuine and whose claim is false.  That is
+      // exactly what the supervisor's own liveness check is for: the cell's
+      // brand says who sent it, not whether the subject died.
+      cell.enqueueSystem({ kind: 'watchNotify', target: child });
+
+      // Two round-trips, not one.  `enqueueSystem` only queues the command,
+      // and the notification it produces is appended to the *user* queue when
+      // the command runs — so a single echo sent now sits in front of the
+      // signal and would resolve before the supervisor had seen it, which is
+      // a test that passes for no reason.  The first ask flushes the command;
+      // the second is behind the notification the command produced.
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 11 }, 1_000)).toBe(11);
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 12 }, 1_000)).toBe(12);
+
+      expect(flakyStarts).toBe(1);
+      expect(policy.calls).toEqual([]);
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-1']);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('a genuine respawn leaves exactly one child and dead-letters nothing', async () => {
+    // The backstop added for #769 stops the child it is replacing if that
+    // child is somehow still alive — and `context.stop` is a `PoisonPill`,
+    // which a terminated cell turns into a dead letter.  So the liveness
+    // check inside that backstop is the whole reason an ordinary respawn
+    // stays silent, and this is what says so.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: unknown[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter.message); }
+    }
+
+    const sys = newSystem('backoff-respawn-silent');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-silent',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => flakyStarts === 2, {
+        timeoutMs: 4_000,
+        label: 'the crashed child was respawned',
+      });
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 3 }, 1_000)).toBe(3);
+
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-2']);
+      expect(letters).toEqual([]);
     } finally {
       supervisor.stop();
       await sys.terminate();
