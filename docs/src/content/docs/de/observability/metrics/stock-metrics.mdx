@@ -52,9 +52,19 @@ Default unbounded, ein zurückfallender Actor sammelt also an, statt
 abzuwerfen — und eine Serie entsteht erst, wenn einer 10 000 wartende
 Nachrichten überschreitet. Ihr *Vorhandensein* ist damit der Alarm: auf
 einem gesunden System ist die Metrik leer. Eine Mailbox, die wieder
-unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
-dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
+unter die Schwelle fällt — oder deren Actor stoppt —, verliert ihre
+Serie: sie wird **entfernt**, nicht auf 0 gesetzt. „Gesundes System,
+keine Serie" gilt damit auch nach einer Störung und nicht nur davor.
+Dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
 Verdopplung), unabhängig davon ob Metriken aktiv sind.
+
+Das Entfernen ist der Grund, warum die Breite der Familie *gleichzeitige*
+Störungen zählt und nicht jemals dagewesene: ein Actor, der sich erholt,
+gibt seinen Platz unter der
+[Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#eine-serie-entfernen)
+zurück. Alarmiere auf der Existenz der Serie (`count(actor_mailbox_size)
+> 0`) oder auf ihrem Wert, nicht auf einem Übergang nach 0 — es gibt
+keine 0, in die übergegangen werden könnte.
 
 `actor_mailbox_depth` ist die **Verteilung**, die der Gauge nicht sein
 kann — und beide sind so entworfen, dass sie sich an genau einer Zahl
@@ -236,7 +246,7 @@ Event-Loop-Aushungerung, nicht hierher.
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
-| `actor_dead_letters_total` | counter | `outcome`, `recipient` | Von der Dead-Letter-Queue erfasste unzustellbare Nachrichten, nach Ausgang. |
+| `actor_dead_letters_total` | counter | `outcome` | Von der Dead-Letter-Queue erfasste unzustellbare Nachrichten, nach Ausgang. |
 
 Nur vorhanden, sobald
 [`actor-ts.dead-letters.store`](/de/operations/dead-letters/) etwas
@@ -246,22 +256,30 @@ Einstellung für genau diesen Counter und nichts weiter: sie zählt jedes
 Letter und bewahrt keine Payload auf. `outcome` ist eines von:
 
 - `captured` — ein neues Letter kam in die Queue.
-- `replayed` — ein Letter wurde zurückgegeben. Das Label `recipient` nennt,
-  wohin es tatsächlich ging — bei einer Zustellung an einen alternativen
-  Empfänger also nicht den Pfad, an den das Letter ursprünglich adressiert
-  war.
+- `replayed` — ein Letter wurde zurückgegeben.
 - `replay-failed` — ein erneut zugestelltes Letter kam zurück, der
   Empfänger kann es also weiterhin nicht annehmen. Ein steigendes
   `replay-failed` bei flachem `captured` ist eine giftige Nachricht, die
   erneut versucht wird, keine neue Störung.
 
-`recipient` ist der vollständige Pfad des Actors, den die Nachricht nicht
-erreicht hat — das macht ein Letter von einem anderen unterscheidbar.
-Dieser Counter ist eine *Diagnose* auf einem Pfad, der nur feuert, wenn
-ohnehin schon etwas kaputt ist, das Label zahlt sich also aus. Es ist im
-Prinzip unbegrenzt und in der Praxis durch die Serien-Obergrenze pro
-Familie in der Registry begrenzt, die den Überlauf in eine einzelne Serie
-faltet, statt einen Vorfall unbegrenzt Serien erzeugen zu lassen.
+**Es gibt bewusst kein `recipient`-Label.** Es trug den vollständigen
+Pfad des Actors, den die Nachricht nicht erreicht hat — unter Sharding
+also `entity-<entityId>`, gewählt von dem, der die Shard-Region
+adressiert, und bei einem anonymen Actor ein frischer Pfad pro Spawn.
+Gemessen an der Stock-Label-Regel am Ende dieser Seite ist das ein Wert
+pro Instanz, für den nichts bezahlt: das Geschwister
+`actor_mailbox_size` behält sein `path`, weil eine Serie dort einen
+anhaltenden Rückstau von 10 000 Nachrichten kostet — hier kostete eine
+Serie eine einzige unzustellbare Nachricht.
+
+An welchen Pfad ein Letter adressiert war, ist deshalb nicht verloren —
+es stand nie nur auf dem Counter. Jedes Letter wird auf dem
+[Event-Stream](/de/operations/dead-letters/) als `DeadLetter` mit seiner
+Recipient-Ref veröffentlicht, und unter `store = "memory"` oder
+`"persistent"` hält die Queue `recipientPath` auf dem Eintrag selbst.
+Beides ist pro Ereignis statt pro Serie und kostet damit nichts
+Dauerhaftes; `deadLetterQueue.list({ recipient })` beantwortet „welcher
+Actor", der Counter beantwortet „wie viel, und wohin geht der Trend".
 
 `actor_dead_letters_total` ist ein **Verlust**-Signal, kein Backlog-Signal.
 Jede anhaltend von null verschiedene Rate bedeutet, dass Nachrichten an
@@ -429,6 +447,11 @@ import { Aside } from '@astrojs/starlight/components';
   nicht Entities, und auf einem gesunden System ist sie leer. Bei
   einer breiten Störung kann sie trotzdem Tausende erreichen.
 
+  *Danach* hält sie in Schach, dass die Serie eines erholten Actors
+  entfernt und nicht auf 0 gesetzt wird: die Breite fällt mit der
+  Störung zurück, statt über die Lebenszeit des Prozesses
+  hochzuratschen.
+
   Die Serien-Anzahl ist dann **beschränkt, aber nicht klein**: die
   [Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
   der Registry stoppt die Familie bei 10 000 Serien und faltet den
@@ -458,11 +481,22 @@ import { Aside } from '@astrojs/starlight/components';
   deklarieren — eine Kardinalität, die das Deployment verwaltet, keine,
   die das Framework auferlegt hat.
 
-  `actor_mailbox_dropped_total` trug früher `path` und tut es nicht
-  mehr, weil es keinen der beiden Tests bestand: Abwerfen ist der
-  Normalbetrieb einer beschränkten Mailbox, gesunde Actors erzeugten
-  also dauerhafte Serien, und unter Sharding stammte der Wert von dem,
-  der die Shard-Region adressiert hat.
+  Zwei Familien haben ein Label pro Instanz verloren, weil sie diese
+  Regel verletzten. `actor_mailbox_dropped_total` trug früher `path` und
+  bestand keinen der beiden Tests: Abwerfen ist der Normalbetrieb einer
+  beschränkten Mailbox, gesunde Actors erzeugten also dauerhafte Serien,
+  und unter Sharding stammte der Wert von dem, der die Shard-Region
+  adressiert hat. `actor_dead_letters_total` trug früher `recipient` —
+  derselbe Wert unter anderem Namen, zum Preis einer unzustellbaren
+  Nachricht pro Serie.
+
+  Die Regel ist inzwischen ein **Gate statt einer Notiz**. Sie landete
+  einen Commit-Tag, nachdem sie für den Drop-Counter aufgeschrieben
+  worden war, auf dem Dead-Letter-Counter — weil das Einzige, was sie
+  prüfte, ein Test auf dem Label-Satz einer einzelnen Familie war.
+  `tests/unit/metrics/StockMetrics.test.ts` liest jetzt jede
+  Stock-Familie aus `src/` und prüft das gesamte Inventar gegen diese
+  Regel, mit den beiden Labels pro Instanz oben als benannte Ausnahmen.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">

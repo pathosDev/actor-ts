@@ -164,8 +164,9 @@ Watch:
 - **`actor_mailbox_size`** — the depth of any mailbox at or above
   10 000 queued messages.  A series only exists once an actor crosses
   that mark, so its *presence* is the signal; on a healthy system the
-  metric is empty.  A drained mailbox reads 0 rather than its last
-  spike.
+  metric is empty.  A drained mailbox loses its series rather than
+  standing at its last spike, so alert on the series existing, not on a
+  transition to 0.
 - **`actor_mailbox_depth`** — the same quantity as a *distribution*,
   covering the range the gauge is silent on.  This is the metric to size
   a capacity from: a `capacity` is a bet on the worst-case burst, and the
