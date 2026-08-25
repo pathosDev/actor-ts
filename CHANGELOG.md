@@ -349,6 +349,71 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A bounded mailbox now applies its capacity, its overflow policy and its
+  drop accounting to the `unstashAll()` replay path (#772).**
+  `BoundedMailbox` overrode `enqueue` and nothing else, so every envelope
+  re-entering through `prependUser` went straight onto the queue, past the
+  capacity check, past the overflow dispatch and past the drop accounting. A
+  `reject` mailbox never threw, a `drop-head` / `drop-new` mailbox never
+  dropped, and `droppedCount` / `actor_mailbox_dropped_total` under-reported
+  by exactly the batch. With the stash capped at 1024 envelopes a
+  `capacity: 10` mailbox could hold 1034 — the advertised memory ceiling was
+  not one.
+
+  The geometry mirrors rather than copies: an arrival lands at the tail and
+  `drop-head` makes room at the head, so a replay lands at the head and makes
+  room at the **tail**. A full mailbox sheds its newest queued messages instead
+  of the ones the actor deliberately parked; evicting the head under a prepend
+  would discard the messages the replay just put back, which is not a bound but
+  a way of making `unstashAll()` a no-op. Once the queue holds nothing
+  droppable the arrival is what goes, reported as `drop-new`. `reject` throws
+  `MailboxFullError` *before admitting anything*, and `ActorCell.unstashAll`
+  restores the stash buffer before the error travels on, so the batch stays
+  parked and `deadLetterStash` still sees it. `Envelope.undroppable` is
+  honoured on the new path, so a `Terminated` that round-tripped through a
+  stash is admitted whatever the policy says and is never counted (#729).
+
+  New seams, because `Mailbox.userQueue` is private: `RingBuffer.pop()` and a
+  protected `Mailbox.removeNewest()` beside `removeOldest`, both stepping over
+  undroppable envelopes. `PriorityMailbox` overrides `removeNewest` as well —
+  it does not use the base user queue, so an inherited version would return
+  `undefined` forever and any bound built on it would quietly stop enforcing,
+  which is the shape of #407.
+
+  Worth knowing for anyone who opted into a bound: `unstashAll()` on a full
+  bounded mailbox can now drop messages, or throw under `reject`, where it
+  previously always succeeded. Mailboxes are unbounded by default since #1148,
+  so nothing changes for an actor that never called `withMailboxCapacity`.
+
+- **`FilesystemObjectStorageBackend.list` now reads only the directory its
+  prefix names (#746)** — everything up to the prefix's last `/` —
+  instead of walking the whole storage root and filtering afterwards. A snapshot
+  `loadLatest` previously read every *other* entity's directory, turning an
+  O(1) lookup into O(N) in the entity count on the actor's mailbox, and
+  `keepN` pruning re-ran the same LIST after every save. Which keys come back
+  is unchanged; the `startsWith` filter stays as the correctness backstop, so
+  a partial-segment prefix like `mine/e` still matches `mine/e0/…` and
+  `mine/e10/…` alike. The S3 backend was never affected — it passes `Prefix`
+  and `MaxKeys` to `ListObjectsV2Command` — so the defect was invisible to
+  anyone measuring against S3.
+
+  A positive `limit` now stops the walk rather than trimming a finished array,
+  which is the parity with S3's `MaxKeys` the issue asked for; `limit: 0` and
+  negative limits keep their historical `slice` semantics, and under a limit
+  each directory's entries are ordered before descending so the depth-first
+  order agrees with the ascending key order the contract promises. A prefix
+  naming a directory nothing ever wrote to, or one whose directory portion is
+  an ordinary file, now returns an empty listing instead of surfacing
+  ENOENT/ENOTDIR — both became reachable only once the walk started at the
+  prefix. `list` also now runs the same post-resolve root containment check
+  `put` / `get` / `delete` already do, since it joins caller-supplied text
+  into a path for the first time.
+
+  Corrected the `ObjectStorageSnapshotStore` class doc, which described
+  `loadLatest` as "a single LIST with `limit:1` and reverse iteration over the
+  sorted result". It never did that and could not: the contract sorts
+  ascending, so `limit: 1` returns the *oldest* snapshot.
+
 - **A cluster whose nodes all advertised `0.0.0.0` never formed** (#944).
   The host a node resolved became both its bind address and its identity,
   and the last resort of that resolution was the wildcard. Every node
@@ -4540,6 +4605,97 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING (pre-1.0): `ActorRef.ask` now requires `timeoutMs` to be a
+  positive finite number (#765).** `0`, a negative value, `NaN` and
+  `Infinity` throw `OptionsError` instead of producing an ask that can never
+  settle. `AskResponseRef` arms its timeout only under `if (timeoutMs > 0)`
+  and `tell` is the only other caller of its `settle()`, so an unanswered ask
+  with such a deadline settled on nothing at all: the caller's `await` stayed
+  pending for the life of the process, and once the ref had been encoded onto
+  the wire it also left one permanent entry in
+  `Cluster._envelopeHandlersByPath` — the map `dispatchEnvelope` consults on
+  every inbound envelope — because `RefCodec.registerAskResponseRef` hangs
+  that entry's removal on `_onSettled` and nothing else removes it.
+
+  None of those values needs a typo to arrive: a computed budget
+  (`deadline - Date.now()`) is negative the moment its deadline has passed, so
+  under a request-driven workload a slow downstream turned every late request
+  into a permanent leak. CWE-772 — the same shape #602 closed on
+  `HttpClient`'s per-request limits. The check runs before anything is
+  allocated or sent, and throws rather than returning a rejected promise: an
+  argument outside its domain is a defect at the call site, and a rejection
+  would surface as an unhandled rejection for the fire-and-forget
+  `void ref.ask(...)` shape the cluster client uses.
+
+  `0` is refused rather than reinterpreted as "use the default". Substituting
+  five seconds for an expired budget would make the ask outlive the deadline
+  its caller computed, and nothing can settle a deadline-less ask by hand —
+  `ask` hands back the promise, not the ref. It also puts this positional
+  argument in the same domain as every option-sourced ask timeout in the
+  framework, all of which validate with `positiveNumber`.
+
+  *Migration:* omit the argument (or pass `undefined`) for the five-second
+  default — there is no "wait forever" mode. Code that computes a budget
+  should check it is still positive before asking rather than passing an
+  expired one through.
+
+- **`WorkerBroker` now re-addresses every brokered frame to the
+  `MessagePort` it arrived on, so a worker can no longer write a sibling's
+  address into an envelope's `from` (#774).** The broker establishes a
+  trustworthy port-to-address binding at registration — the host mints each
+  worker's `NodeAddress` and hands it to `register` — but discarded it and
+  re-posted envelopes verbatim, while the receiving
+  `MessageChannelTransport` derives its peer identity from that field and
+  hands it to `Cluster.handleWire`. One worker could therefore refresh a dead
+  sibling's failure-detector timer, keeping it looking alive and blocking
+  singleton and shard failover, and have its own envelopes attributed to that
+  sibling for reply routing and every `maySpeakFor` rule. This is the rule
+  #562/#564/#572/#574/#582 already applied elsewhere — take the peer from the
+  connection, not from the payload — reaching the one path where it did not
+  hold.
+
+  Only the `system@host:port` slot is compared and corrected, because
+  `toString`, `equals` and `compareTo` all exclude the incarnation, so that
+  slot is what every member map, the failure detector and every authority rule
+  keys on. The optional `incarnation` is still passed through as the sender
+  wrote it, for as long as nothing in the cluster acts on it (#940). The
+  testkit's `MultiNodeBroker` applies the identical rule via the same helper,
+  so a `ParallelMultiNodeSpec` scenario cannot pass in the harness and fail in
+  a real worker mesh.
+
+- **`InMemoryCache` now ranks eviction by key prefix before it ranks by
+  guarantee (#607).** The new `prefixQuotas` option — a table of key prefix to
+  entry count, off by default — splits one map between the consumers writing
+  into it. A quota is a cap and a reservation at once: as a cap, a prefix that
+  has reached its quota takes its next victim from inside itself, so a caller
+  who can mint keys under one prefix evicts only that prefix's entries; as a
+  reservation, the entries a prefix holds below its quota are not available to
+  anybody else. A key belongs to the longest configured prefix it starts with,
+  or to a shared unreserved remainder.
+
+  Two exposures #607 was left holding are closed by configuring it: a
+  rate-limit counter flood evicting an idempotency record from a shared
+  instance (a double charge), and an off-limiter `Idempotency-Key` flood
+  resetting the flooder's own rate limit. #1080's guarantee split ranked what
+  an entry is *for*; this ranks *whose* it is, and the two are independent.
+
+  One exposure is declared **permanent** rather than pending, and the docs and
+  tests now say so: a flood through `idempotent`'s own key space still evicts
+  another caller's record, because attacker and victim write under the same
+  prefix and share whatever is reserved for it. Bounding a caller rather than a
+  prefix needs a key space the attacker does not choose; the answers remain
+  sizing `maxEntries` and backing the consumer with `RedisCache`.
+
+  `maxEntries` is unchanged as a hard cap — a configuration reserving the
+  whole map leaves an unreserved write taking a reserved slot rather than the
+  bound giving way. Quotas summing above `maxEntries`, an empty prefix and a
+  non-positive-integer quota are refused at construction with `OptionsError`.
+  Configurable through `withPrefixQuotas`, a plain object, or HOCON at
+  `actor-ts.cache.<name>.in-memory.prefixQuotas`; the table is layered whole
+  rather than leaf by leaf, because the quotas must sum to at most
+  `maxEntries` and a half-inherited table is a sum nobody wrote down. An
+  unconfigured cache is one bucket and behaves exactly as before.
 
 - **BREAKING (pre-1.0): a replicated event's author is now bound to the node
   that sent it (#706).** `ReplicatedEventSourcedActor` took an envelope's
