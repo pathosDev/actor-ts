@@ -648,6 +648,7 @@ export type {
 export {
   reEncryptObjectStorage,
   InMemoryReEncryptProgressStore,
+  ReEncryptIncompleteError,
 } from './object-storage/ReEncryptionSweep.js';
 export type {
   ReEncryptOptions,
