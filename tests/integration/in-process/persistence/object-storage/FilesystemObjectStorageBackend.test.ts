@@ -56,9 +56,13 @@ describe('FilesystemObjectStorageBackend — basic CRUD', () => {
   });
 
   test('list honours the limit', async () => {
+    // Asserting WHICH two, not just how many: the walk stops early under a
+    // limit (#746), so a length-only expectation would pass against an
+    // implementation that returns an arbitrary — or filesystem-order —
+    // subset instead of the first two keys.
     for (let i = 0; i < 5; i++) await backend.put(`p/${i}`, bytes(String(i)));
     const items = await backend.list({ prefix: 'p/', limit: 2 });
-    expect(items).toHaveLength(2);
+    expect(items.map(i => i.key)).toEqual(['p/0', 'p/1']);
   });
 
   test('content-encoding metadata is round-tripped', async () => {

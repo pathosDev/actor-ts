@@ -95,12 +95,16 @@ snapshots/account-42/seq-300
 ```
 
 Das Framework listet Keys unter `<prefix>/<persistenceId>/`, um
-den neuesten Snapshot zu finden.
+den neuesten Snapshot zu finden.  Die Auflistung ist aufsteigend
+nach Key und trägt kein Limit: die nullgepolsterte Sequenznummer
+macht den *letzten* Eintrag zum neuesten, ein `limit: 1` lieferte
+also den ältesten.
 
 Für sehr große `persistenceId`-Räume ist das Listen pro pid in S3
 typischerweise schnell (Per-Prefix-Durchsatz).  Vermeide es, alle
 Entity-Typen unter denselben Prefix ohne Per-pid-Unterordner zu
-packen.
+packen — dieses Verzeichnis-Segment ist das Einzige, was
+begrenzt, was ein Load aufzählen muss.
 
 ## Performance
 
@@ -109,6 +113,15 @@ durch GET.  Zahlen für S3 Same-Region:
 
 - **Save** — 20-50 ms pro Snapshot.
 - **Load latest** — 1 LIST + 1 GET = 30-60 ms.
+
+Dieses LIST ist das, was das Verzeichnis pro `persistenceId` im
+Key einbringt.  Beide mitgelieferten Backends schränken es auf
+`<prefix>/<persistenceId>/` ein — S3 über `Prefix` / `MaxKeys`,
+das Filesystem-Backend, indem es nur dieses Verzeichnis liest —,
+sodass ein Load die Snapshots genau einer Entity kostet und flach
+bleibt, während die Zahl der Entities wächst.  Das `keepN`-Pruning
+setzt dasselbe LIST nach jedem Save ab; ein Backend ohne diese
+Einschränkung legte das Wachstum also auch auf den Schreibpfad.
 
 Für **Hot-Path-Snapshot-Laden** (häufige Actor-Neustarts) wickle
 es mit
@@ -148,7 +161,8 @@ PersistentActor.persist(event) gelingt
 backend.put('snapshots/<pid>/seq-N', serialisierter State)
 
 PersistentActor.preStart
-  ↓ 'snapshots/<pid>/' auflisten, um die neueste seq zu finden
+  ↓ 'snapshots/<pid>/' auflisten — nur dieses Verzeichnis, aufsteigend
+  ↓ letzter Key = neueste seq
   ↓ backend.get(latest) → dekodieren → onEvent ab seq+1
 ```
 

@@ -199,8 +199,20 @@ import { Aside } from '@astrojs/starlight/components';
   the only slack the shared map has, and Memcached and Redis under
   `allkeys-lru` have no such policy.  Hand this middleware a dedicated
   instance — or `ext.cache('response-cache')` — rather than the one
-  enforcing a guarantee.  See
-  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
+  enforcing a guarantee.  Where one instance has to be shared, give it
+  a `prefixQuotas` reservation for this middleware's `keyPrefix`, which
+  bounds the flood to that share whatever else the map holds:
+
+  ```hocon
+  actor-ts.cache.shared.in-memory {
+    maxEntries = 10000
+    prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+  }
+  ```
+
+  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not)
+  and [dividing one instance by key prefix](/cache/in-memory/#dividing-one-instance-by-key-prefix).
 </Aside>
 
 ## Where to next

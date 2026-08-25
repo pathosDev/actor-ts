@@ -483,6 +483,20 @@ actor-ts {
     #
     # The name is the application's, so these paths cannot be listed here.
     # actor-ts.cache.<name>.plugin selects the backend the same way.
+    #
+    # prefixQuotas splits ONE instance between the consumers writing into it,
+    # so a flood of keys under one prefix evicts only that prefix's entries
+    # (#607).  Each quota is a cap and a reservation; they must sum to at most
+    # that instance's maxEntries.  Off by default — an undivided map is the
+    # behaviour every release before it had.  Quote the prefixes, they contain
+    # a colon:
+    #
+    #   actor-ts.cache.shared.in-memory {
+    #     maxEntries = 10000
+    #     prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+    #   }
+    #
+    # A per-name table replaces the global one rather than merging with it.
   }
 
   persistence {

@@ -225,6 +225,18 @@ Wähle nach **der richtigen Antwort auf Overflow**:
 
 Es gibt kein "Bestes" — kontextabhängig.
 
+<Aside type="note" title="Die Policy gilt auch für das Unstash-Replay">
+  Ein Actor, der `context.stash()` / `unstashAll()` nutzt, tritt wieder
+  in seine eigene Mailbox ein, und dieser Pfad unterliegt derselben
+  Capacity und derselben Policy — kalkuliere die Capacity also für den
+  Backlog *plus* das, was der Actor parkt.  Ein Replay geht vorne
+  hinein, `drop-head` schafft also am **Ende** der Queue Platz: eine
+  volle Mailbox verliert ihre neuesten Nachrichten statt der bewusst
+  gestashten.  `reject` wirft `MailboxFullError` aus `unstashAll()`
+  heraus und lässt nichts hinein — der Batch bleibt gestasht, und der
+  Fehler erreicht den Supervisor, statt ein stiller Verlust zu werden.
+</Aside>
+
 ## Priority-Mailboxes
 
 Für Actors mit **gemischter Dringlichkeit**:

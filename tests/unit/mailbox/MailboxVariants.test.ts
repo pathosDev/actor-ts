@@ -82,6 +82,29 @@ describe('BoundedMailbox — overflow policies', () => {
   test('capacity < 1 throws in constructor', () => {
     expect(() => new BoundedMailbox({ capacity: 0 })).toThrow(/capacity/);
   });
+
+  test('the bound applies to the unstash path too', () => {
+    // The mirror of the `PriorityMailbox` case below.  `prependUser` used to
+    // inherit the base implementation and write straight to the queue, so a
+    // replay arrived past the capacity, the policy and the counter (#772).
+    // It sheds at the *tail* here: a replay lands at the head, so the far end
+    // is the one that makes room — the alternative is a bound that discards
+    // the messages `unstashAll()` just put back.
+    const mbox = new BoundedMailbox<string>({ capacity: 2, overflow: 'drop-head' });
+    for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
+    mbox.prependUser([{ message: 's1', sender: null }, { message: 's2', sender: null }]);
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['s1', 's2']);
+    expect(mbox.droppedCount).toBe(2);
+  });
+
+  test('reject refuses an unstash that does not fit, whole', () => {
+    const mbox = new BoundedMailbox<string>({ capacity: 2 });
+    for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
+    expect(() => mbox.prependUser([{ message: 's1', sender: null }])).toThrow(MailboxFullError);
+    // Nothing admitted, nothing counted — the caller still owns the batch.
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['a', 'b']);
+    expect(mbox.droppedCount).toBe(0);
+  });
 });
 
 // Options plumbing: builder parity + OptionsError validation, replacing the
@@ -301,8 +324,9 @@ describe('PriorityMailbox — capacity and overflow', () => {
   });
 
   test('the bound applies to the unstash path too', () => {
-    // `prependUser` re-enters `enqueue` here, unlike BoundedMailbox — so
-    // `unstashAll()` on a full priority mailbox can drop, which is worth
+    // `prependUser` re-enters `enqueue` here, where `BoundedMailbox` sheds at
+    // the tail instead (#772) — two routes to the same guarantee.  Either way
+    // `unstashAll()` on a full bounded mailbox can drop, which is worth
     // knowing before it surprises someone.
     const mbox = new PriorityMailbox<number>({
       priorityFor: (n) => n,

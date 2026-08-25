@@ -260,6 +260,59 @@ describe('Behaviors.withStash', () => {
     expect(seen).toEqual(['stashed-1', 'stashed-2', 'fresh-1']);
     await sys.terminate();
   });
+
+  test('a bounded mailbox bounds the typed replay too (#772)', async () => {
+    const sys = newSys('typed-stash-bounded');
+    const seen: string[] = [];
+    const parked: string[] = [];
+
+    const behavior = Behaviors.withStash<string>(16, (stash) => {
+      const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+        seen.push(message);
+        return Behaviors.same;
+      });
+      return Behaviors.receiveMessage<string>((message) => {
+        if (message === 'ready') { stash.unstashAll(); return ready; }
+        stash.stash(message);
+        parked.push(message);
+        return Behaviors.same;
+      });
+    });
+
+    // The typed buffer's capacity is its own — 16 here — so the mailbox bound
+    // is the only thing standing between a replay and the queue.  Until #772
+    // it stood aside: `prependUserMessages` reached the same base
+    // `prependUser` the OO stash did.
+    const options = ActorOptions.create<string>()
+      .withMailboxCapacity(4)
+      .withMailboxOverflow('drop-head');
+    const ref = sys.spawnAnonymous(typedActor<string>(behavior), options);
+
+    ref.tell('p1');
+    ref.tell('p2');
+    await awaitCondition(() => parked.length === 2, { label: 'both messages were parked' });
+
+    // Both parked, mailbox empty.  Now four in one burst: `ready` is taken
+    // for the turn that unstashes, leaving x1..x3 queued on a capacity of 4.
+    ref.tell('ready');
+    ref.tell('x1');
+    ref.tell('x2');
+    ref.tell('x3');
+
+    await awaitCondition(() => seen.length === 4, {
+      timeoutMs: 4_000,
+      label: 'the bounded mailbox delivered exactly its capacity',
+    });
+    // The assertion is an absence — `x3` must never arrive — so the wait has
+    // to be elapsed time.  Polling `seen.length === 4` fires the instant it
+    // reaches four and would pass with a fifth message still in flight, which
+    // is exactly the pre-#772 behaviour this is meant to catch.
+    await sleep(20);
+    // One slot free, so `p2` cost the newest queued message rather than being
+    // smuggled in past the bound.
+    expect(seen).toEqual(['p1', 'p2', 'x1', 'x2']);
+    await sys.terminate();
+  });
 });
 
 /**
@@ -315,6 +368,52 @@ describe('Behaviors.withStash — messages that never get unstashed', () => {
       label: 'the typed stash reached dead letters on stop',
     });
     expect(mine().map((l) => l.message)).toEqual(['a', 'b', 'c']);
+    await sys.terminate();
+  });
+
+  test('a replay a reject mailbox refuses is dead-lettered, not lost (#772)', async () => {
+    const sys = newSys('typed-stash-refused');
+    const letters = await listenForDeadLetters(sys);
+    const parked: string[] = [];
+    const seen: string[] = [];
+
+    const behavior = Behaviors.withStash<string>(16, (stash) => {
+      const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+        seen.push(message);
+        return Behaviors.same;
+      });
+      return Behaviors.receiveMessage<string>((message) => {
+        if (message === 'ready') { stash.unstashAll(); return ready; }
+        stash.stash(message);
+        parked.push(message);
+        return Behaviors.same;
+      });
+    });
+
+    const options = ActorOptions.create<string>()
+      .withMailboxCapacity(4)
+      .withMailboxOverflow('reject');
+    const ref = sys.spawnAnonymous(typedActor<string>(behavior), options);
+
+    ref.tell('p1');
+    ref.tell('p2');
+    await awaitCondition(() => parked.length === 2, { label: 'both messages were parked' });
+
+    // One slot free once `ready` is taken for the turn, two envelopes offered:
+    // `reject` refuses the batch whole.  The typed buffer emptied itself
+    // before calling the cell and the cell owns nothing it could put back, so
+    // dead letters are what keeps the refusal from being a disappearance.
+    ref.tell('ready');
+    ref.tell('x1');
+    ref.tell('x2');
+    ref.tell('x3');
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 2, {
+      timeoutMs: 4_000,
+      label: 'the refused replay reached dead letters',
+    });
+    expect(mine().map((l) => l.message)).toEqual(['p1', 'p2']);
     await sys.terminate();
   });
 

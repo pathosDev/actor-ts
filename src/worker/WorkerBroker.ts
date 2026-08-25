@@ -7,7 +7,8 @@ import { isNodeAddressData } from '../cluster/WireValidation.js';
 
 /**
  * Main-thread piece of the multi-core cluster.  Collects one `MessagePort`
- * per worker and forwards `BrokeredMessage`s based on their `to` address.
+ * per worker and forwards `BrokeredMessage`s based on their `to` address,
+ * re-addressing each to the port it arrived on ({@link withChannelSource}).
  * Unknown destinations are dropped silently — the rest of the cluster
  * deals with them through the normal dead-letters / failure-detection
  * paths.
@@ -35,7 +36,10 @@ export class WorkerBroker {
     }
     if (this.ports.has(key)) throw new Error(`WorkerBroker: address ${key} already registered`);
     this.ports.set(key, port);
-    port.onmessage = (evt) => this.onMessage(key, evt.data);
+    // The `NodeAddress` and not `key`: `onMessage` stamps this address into
+    // every frame the port sends (#774), and parsing it back out of the string
+    // form per frame would redo work the registration already did.
+    port.onmessage = (evt) => this.onMessage(address, evt.data);
     port.start?.();
   }
 
@@ -81,18 +85,76 @@ export class WorkerBroker {
    * to report through.  The try/catch is a backstop for the same reason — a
    * throw from anything downstream must not escape into an event callback the
    * host cannot catch.
+   *
+   * `source` is the address this port was registered under — the one identity
+   * on this path a worker cannot choose for itself, because the host minted it
+   * (`WorkerCluster.spawnOne`) and handed it to {@link WorkerBroker.register}.
+   * {@link withChannelSource} is what spends it (#774).
    */
-  private onMessage(_sourceKey: string, frame: unknown): void {
+  private onMessage(source: NodeAddress, frame: unknown): void {
     if (this.stopped) return;
     if (!isBrokeredMessage(frame)) return;
     try {
-      const targetAddr = NodeAddress.fromJSON(frame.to);
-      const target = this.ports.get(targetAddr.toString());
+      const targetAddress = NodeAddress.fromJSON(frame.to);
+      const target = this.ports.get(targetAddress.toString());
       if (!target) return;                     // unknown address → drop
-      // Re-post verbatim; receiver's transport trusts the envelope's `from`.
-      target.postMessage(frame);
+      target.postMessage(withChannelSource(frame, source));
     } catch { /* malformed or unroutable → drop */ }
   }
+}
+
+/**
+ * Re-address a frame to the port it actually arrived on (#774).
+ *
+ * The broker holds a binding no worker can forge, and used to throw it away:
+ * it re-posted whatever `from` the sender wrote, and the receiving
+ * `MessageChannelTransport` hands that value straight to `Cluster.handleWire`
+ * as the peer identity.  So one worker could refresh a sibling's
+ * failure-detector timer — keeping a dead node looking alive — and have its
+ * envelopes attributed to that sibling.  Every other identity fix in the
+ * cluster (#562, #564, #572, #574, #582) takes the peer from the connection
+ * rather than from the payload; this is that same rule one layer down, where
+ * the connection is a `MessagePort`.
+ *
+ * Rewriting rather than dropping the mismatch is deliberate.  It makes the
+ * receiver's peer identity channel-derived *by construction*, so no later
+ * caller can forget a check, and it concedes nothing: the sender is a live
+ * registered peer that could have sent the same payload under its own name.
+ * It also leaves nothing to report, which matters while `src/worker/` still
+ * has no logger to report through (#1276) — a dropped frame would be a
+ * silent refusal, where a re-addressed one is simply correct.
+ *
+ * The equality test is a fast path rather than an optimisation detail.
+ * Measured on the broker's own forward loop (2M honest frames, 5 interleaved
+ * rounds, 3 repetitions, Bun; `benchmarks/` has no arm over this path): against
+ * a ~210 ns baseline, returning the frame unchanged costs nothing measurable —
+ * its delta lands at or below zero, inside a run-to-run band of about ±30 ns —
+ * while allocating a replacement unconditionally costs ~35-55 ns, and the drop
+ * variant the issue also proposed —
+ * `NodeAddress.fromJSON(frame.from).toString() !== source.toString()` — costs
+ * ~210-240 ns, i.e. it roughly doubles the cost of forwarding a frame.
+ *
+ * Only the *slot* is compared, because the slot is the identity: `toString`,
+ * `equals` and `compareTo` all exclude {@link NodeAddress.incarnation} by
+ * design, so the failure detector, every member map and every authority rule
+ * key on `systemName@host:port` alone.  A sender may therefore still choose
+ * the `incarnation` it writes into `from`, which is harmless only for as long
+ * as that field stays carried-but-not-acted-on (#940); the merge rule that
+ * first keys on it has to bring this comparison with it.
+ *
+ * Exported for the testkit's broker fork alone — `src/testkit/internal/
+ * MultiNodeBroker.ts` routes `ParallelMultiNodeSpec`'s worker mesh and has to
+ * apply the identical rule, and a copied six-liner is a copy that drifts.  It
+ * is not in `src/worker/index.ts`, so it is not package surface.
+ */
+export function withChannelSource(frame: BrokeredMessage, source: NodeAddress): BrokeredMessage {
+  const { from } = frame;
+  if (from.systemName === source.systemName
+    && from.host === source.host
+    && from.port === source.port) {
+    return frame;
+  }
+  return { ...frame, from: source.toJSON() };
 }
 
 /**

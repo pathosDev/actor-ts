@@ -30,8 +30,8 @@ const INITIAL_RING_CAPACITY = 8;
  * the array and re-lays the elements from index 0, which is the one O(n) step
  * and happens log2(n) times — amortized O(1) per push.
  *
- * Deliberately not a general-purpose deque.  It carries exactly the four
- * operations its callers need — {@link push}, {@link shift},
+ * Deliberately not a general-purpose deque.  It carries exactly the five
+ * operations its callers need — {@link push}, {@link shift}, {@link pop},
  * {@link unshiftAll} and {@link drain} — because every extra one is another
  * index-wrapping edge case, and this type sits on the message path of every
  * actor in the system.
@@ -74,6 +74,25 @@ export class RingBuffer<T> {
     // large payloads must not keep them reachable.
     this.slots[this.head] = undefined;
     this.head = (this.head + 1) & this.mask;
+    this.count--;
+    return item;
+  }
+
+  /**
+   * Remove and return the back element, or `undefined` when empty.  O(1).
+   *
+   * The mirror of {@link shift}, and it exists for one caller: a bound that
+   * has to make room for something inserted at the *front* sheds at the back,
+   * because that is the end furthest from the arrival (#772).  Without it a
+   * mailbox could only evict what it was about to deliver.
+   */
+  pop(): T | undefined {
+    if (this.count === 0) return undefined;
+    const index = (this.head + this.count - 1) & this.mask;
+    const item = this.slots[index];
+    // Cleared for the same reason `shift` clears: the slot outlives the
+    // element until the ring wraps back onto it.
+    this.slots[index] = undefined;
     this.count--;
     return item;
   }

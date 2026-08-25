@@ -98,4 +98,108 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
   override enqueueSignal(env: Envelope<T>): void {
     super.enqueue(env);
   }
+
+  /**
+   * A replay meets the bound, the same way an arrival does (#772).
+   *
+   * Until this override existed the base `prependUser` wrote straight to the
+   * queue, so `unstashAll()` unshifted a whole stash — up to
+   * `DEFAULT_STASH_CAPACITY` envelopes — past the capacity check, past the
+   * `switch` above and past the drop accounting.  A `reject` mailbox never
+   * threw, a `drop-head` / `drop-new` mailbox never dropped, and
+   * `droppedCount` / `actor_mailbox_dropped_total` under-reported by exactly
+   * the batch.  The advertised memory ceiling was not one: `capacity: 10`
+   * could become 1034.
+   *
+   * **Which end sheds.** The policy is unchanged, only the geometry is: an
+   * arrival lands at the tail and `drop-head` makes room at the head, a
+   * replay lands at the head and so makes room at the *tail*.  Both read as
+   * "admit the arrival, evict a queued message from the far end", and the
+   * other choice is indefensible here — evicting the head under a prepend
+   * would discard the messages the replay just put back, which is not a bound
+   * but a way of making `unstashAll()` a no-op.
+   *
+   * **Which reason is reported.** `drop-head` when a queued message was
+   * evicted, `drop-new` when the arrival itself was refused — the closed
+   * two-value vocabulary of `MailboxDropReason`, applied by what actually
+   * happened rather than by which policy is configured.  So a
+   * `drop-head` mailbox does report `drop-new` for the tail of a batch bigger
+   * than its capacity: once the queue holds nothing droppable, there is no
+   * room to make and the arrival is what goes.  That is where this diverges
+   * from `enqueue`, which admits and overshoots by one in the same situation
+   * — one envelope over a bound is the arrival rate, a whole stash over it is
+   * the defect.
+   *
+   * **What `reject` does.** It throws `MailboxFullError`, and it throws
+   * *before admitting anything*: all-or-nothing, so a caller that catches it
+   * knows the batch is entirely still its own.  The throw lands on the
+   * actor's own stack, inside its `unstashAll()`, rather than on a remote
+   * sender's — and that is the closest thing to a sender a replay has.  It is
+   * also not a message lost: `ActorCell.unstashAll` puts the batch back into
+   * the stash before the error travels on, so the envelopes stay parked and
+   * `deadLetterStash` still sees them if supervision then restarts or stops
+   * the actor.  Choosing `reject` says "refuse, do not lose", and refusing
+   * the replay of a stash that no longer fits is what that means here.
+   *
+   * An {@link Envelope.undroppable} envelope is admitted whatever the policy
+   * says and is never counted, exactly as {@link enqueueSignal} admits one at
+   * the tail: a `Terminated` that round-tripped through a stash must not
+   * become droppable on the way back in (#729).
+   */
+  override prependUser(envelopes: Array<Envelope<T>>): void {
+    if (envelopes.length === 0) return;
+    // Read once into a local: the policy is fixed at construction, and the
+    // local is what lets the `never` check below narrow after the `reject`
+    // arm has returned.
+    const overflow = this.overflow;
+    if (overflow === 'reject') {
+      let droppable = 0;
+      for (const envelope of envelopes) if (envelope.undroppable !== true) droppable++;
+      // `Math.max` because the queue may already sit above capacity — that is
+      // what an exempt `enqueueSignal` does — and a batch of pure
+      // notifications must still get in rather than be refused for a bound it
+      // is not subject to.
+      if (droppable > Math.max(0, this.capacity - this.size)) {
+        throw new MailboxFullError(this.capacity);
+      }
+      super.prependUser(envelopes);
+      return;
+    }
+    const admitted: Array<Envelope<T>> = [];
+    for (const envelope of envelopes) {
+      // `this.size + admitted.length` rather than a running counter: eviction
+      // moves `size` underneath the loop, and a counter that has to be kept in
+      // step with it is a bug waiting for the first policy that evicts twice.
+      if (envelope.undroppable === true || this.size + admitted.length < this.capacity) {
+        admitted.push(envelope);
+        continue;
+      }
+      switch (overflow) {
+        case 'drop-head': {
+          const evicted = super.removeNewest();
+          if (evicted === undefined) {
+            // Nothing queued may be dropped, so there is no room to make and
+            // the arrival is the one discarded — which is `drop-new`, whatever
+            // the policy is called.
+            this.reportDrop('drop-new');
+            break;
+          }
+          this.reportDrop('drop-head');
+          admitted.push(envelope);
+          break;
+        }
+        case 'drop-new':
+          this.reportDrop('drop-new');
+          break;
+        default: {
+          const _exhaustive: never = overflow;
+          void _exhaustive;
+          throw new MailboxFullError(this.capacity);
+        }
+      }
+    }
+    // One bulk move for whatever survived, so the base keeps its non-spread
+    // insert and the batch is still O(admitted) rather than O(queue).
+    super.prependUser(admitted);
+  }
 }

@@ -114,6 +114,45 @@ class ArrayBoundedMailboxModel extends ArrayMailboxModel {
     super.enqueue(envelope);
   }
 
+  /**
+   * The replay path, bounded (#772).  An arrival lands at the tail and
+   * `drop-head` makes room at the head; a replay lands at the head and makes
+   * room at the tail.  `reject` refuses the batch whole rather than admitting
+   * part of it, so the model has to decide before it mutates anything.
+   */
+  override prependUser(envelopes: Array<Envelope<number>>): void {
+    if (envelopes.length === 0) return;
+    const droppable = envelopes.filter((envelope) => envelope.undroppable !== true).length;
+    if (this.overflow === 'reject') {
+      if (droppable > Math.max(0, this.capacity - this.size)) throw new Error('mailbox full');
+      super.prependUser(envelopes);
+      return;
+    }
+    const admitted: Envelope<number>[] = [];
+    for (const envelope of envelopes) {
+      if (envelope.undroppable === true || this.size + admitted.length < this.capacity) {
+        admitted.push(envelope);
+        continue;
+      }
+      const evicted = this.overflow === 'drop-head' ? this.evictNewest() : undefined;
+      if (evicted === undefined) {
+        this.recordDrop('drop-new');
+        continue;
+      }
+      this.recordDrop('drop-head');
+      admitted.push(envelope);
+    }
+    super.prependUser(admitted);
+  }
+
+  /** The newest queued message that may be dropped — the mirror of `evictOldest`. */
+  private evictNewest(): Envelope<number> | undefined {
+    for (let index = this.userQueue.length - 1; index >= 0; index--) {
+      if (this.userQueue[index]!.undroppable !== true) return this.userQueue.splice(index, 1)[0];
+    }
+    return undefined;
+  }
+
   private recordDrop(reason: MailboxDropReason): void {
     this.droppedCount++;
     this.onDrop(reason);
@@ -513,11 +552,13 @@ describe('every mailbox variant matches an array reference model', () => {
  * counted anyway.  A random walk that suspends and resumes is the cheapest
  * guard that the bounds keep holding across the whole enqueue path.
  *
- * `prependUser` is excluded for `BoundedMailbox` and only for it: that path
- * inherits the base implementation and deliberately bypasses the bound, which
- * is #772's complaint and is out of scope here.  `PriorityMailbox` re-enters
- * `enqueue`, so its walk keeps `prependUser` in — the difference between the
- * two is real, and the model test above pins it either way.
+ * `prependUser` is in the walk for every variant since #772.  It used to be
+ * excluded for `BoundedMailbox`, because that path inherited the base
+ * implementation and bypassed the bound — the exclusion was the suite
+ * asserting the gap rather than the invariant.  Both mailboxes now bound
+ * their replay, by different routes: `BoundedMailbox` sheds at the tail to
+ * make room at the head, `PriorityMailbox` re-enters `enqueue` so priorities
+ * are recomputed.  The model above pins each against its own reference.
  */
 /* --------------- the absolute bound, checked without a model --------------- */
 
@@ -558,17 +599,15 @@ function driveOne(mailbox: MailboxUnderTest, operation: MailboxOperation): void 
  * reference; this one states the bound absolutely, so it cannot be satisfied
  * by a model that regressed in the same direction.
  *
- * `prependUser` is excluded for `BoundedMailbox`, and only for it: that path
- * inherits the base implementation and deliberately bypasses the bound, which
- * is #772's complaint and out of scope here.  `PriorityMailbox.prependUser`
- * re-enters `enqueue`, so its walk keeps `prependUser` in.
+ * The walk includes `prependUser` for both mailboxes since #772.  While
+ * `BoundedMailbox` inherited the base implementation, this test ran against a
+ * filtered arbitrary — which meant the one suite stating the bound absolutely
+ * was stating it over exactly the operations that could not break it.
  */
 describe('#407 stays fixed under a random walk', () => {
-  const withoutPrepend = operationArbitrary.filter((operation) => operation.kind !== 'prependUser');
-
-  test('BoundedMailbox never exceeds its capacity, suspended or not', () => {
+  test('BoundedMailbox never exceeds its capacity, unstash included', () => {
     fc.assert(
-      fc.property(fc.array(withoutPrepend, { maxLength: 250 }), (operations) => {
+      fc.property(fc.array(operationArbitrary, { maxLength: 250 }), (operations) => {
         const mailbox = new ProbeBoundedMailbox({ capacity: 8, overflow: 'drop-head' });
         for (const operation of operations) {
           driveOne(mailbox, operation);

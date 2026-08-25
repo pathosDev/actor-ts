@@ -18,28 +18,35 @@
  * cases below now assert that the flood no longer reaches them.  They are
  * REGRESSION tests, and reverting the policy turns both red.
  *
- * What has NOT changed is the reason the middleware pages still say to
- * give each consumer its own cache, and the last two blocks are the
- * CHARACTERISATION of that residual:
+ * What #1080 did NOT do was rank one consumer's guarantee against
+ * another's, and #607 closed that with `prefixQuotas`: a quota is a cap
+ * and a reservation on one key prefix's share of the map, so a flood
+ * under `idem:` evicts `idem:` entries and stops there.  Every block
+ * below that used to characterise a hazard is now a PAIR — the shared
+ * instance left undivided, which still loses, and the same instance with
+ * quotas configured, which does not.  Both halves are load-bearing: the
+ * undivided half is the default configuration and therefore what an
+ * unconfigured deployment actually gets, and it is also what proves the
+ * quota is the thing doing the work rather than some accident of order.
  *
- *   - The policy does not rank guarantees against each other.  Two
- *     guarantee-carrying consumers sharing one instance still evict each
- *     other, because once the map holds nothing cheaper there is nothing
- *     cheaper to drop.
+ * One exposure survives all of it, and the last block characterises it as
+ * PERMANENT rather than pending:
+ *
  *   - `idempotent`'s own key space is attacker-controlled, so a flood
- *     through the SAME middleware still evicts another caller's record.
- *   - And that residual reaches the FLOODER's own rate-limit counter as
- *     soon as the flood does not travel through the limiter, which the
- *     middleware JSDoc used to deny without qualification.  The last two
- *     tests of the rate-limit block are the two halves of the corrected
- *     claim (#607).
+ *     through the SAME middleware evicts another caller's record — from a
+ *     dedicated instance, and from a quota'd one, because attacker and
+ *     victim share the prefix the quota is drawn around.  A quota bounds
+ *     a prefix, not a caller.  Only a per-caller key space (an `identity`
+ *     scope over a known, small set of tenants, reserved one by one) or a
+ *     backend the framework does not evict (`RedisCache`) changes it, and
+ *     both of those are configuration rather than policy.
  *
- * Deliberately NOT covered here: per-prefix quotas, which would rank one
- * consumer's guarantee above another's.  Nothing in #607 or #1080 decided
- * that, and it needs a public `Cache` API decision (a per-write priority,
- * or a cap the cache enforces per key prefix) rather than a tweak to
- * `evictIfNeeded`; the three characterisation tests below are what it
- * would flip.
+ * Deliberately NOT covered here: a per-*write* priority on the `Cache`
+ * interface itself.  That would have to mean something on `RedisCache`
+ * and `MemcachedCache`, which evict server-side where no client-side
+ * policy reaches, so it would be a public API that is a no-op in two of
+ * three implementations.  `prefixQuotas` is an `InMemoryCache` option for
+ * exactly that reason.
  */
 import { describe, expect, test } from 'bun:test';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
@@ -64,6 +71,21 @@ function makeRequest(
 
 function newCache(): InMemoryCache {
   return new InMemoryCache({ maxEntries: MAX_ENTRIES, cleanupMs: 0 });
+}
+
+/**
+ * The same instance, divided between the three middleware prefixes.  The
+ * quotas are the middlewares' own defaults (`rsp:`, `idem:`, `rl:`) and they
+ * sum to `MAX_ENTRIES`, which is the configuration the docs describe: reserve
+ * the whole map among the consumers that write into it, so no bucket can be
+ * squeezed by another's flood.
+ */
+function newDividedCache(): InMemoryCache {
+  return new InMemoryCache({
+    maxEntries: MAX_ENTRIES,
+    cleanupMs: 0,
+    prefixQuotas: { 'rsp:': 2, 'idem:': 1, 'rl:': 1 },
+  });
 }
 
 /**
@@ -235,8 +257,13 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
    * flood).  A flood of `idempotent` claims empties the opportunistic half
    * and then takes the least-recently-used guarantee, which is the counter
    * nobody has bumped.
+   *
+   * This is the DEFAULT configuration — one undivided shared instance — and
+   * it is what an unconfigured deployment gets, so it stays pinned as an
+   * exposure.  The test after it is the same wiring with `prefixQuotas`,
+   * which is the answer #607 shipped.
    */
-  test('a flood BYPASSING the limiter resets the flooder\'s own counter', async () => {
+  test('a flood BYPASSING the limiter resets the flooder\'s own counter on an undivided cache', async () => {
     const shared = newCache();
     const limited = rateLimit({
       cache: shared,
@@ -262,21 +289,56 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
 
     await shared.close();
   });
+
+  /**
+   * The same wiring, on a cache divided by prefix.  Nothing about the
+   * middleware changed — the flood still bypasses the limiter, still carries
+   * a guarantee, and still never bumps the counter.  What changed is that
+   * `idem:` inserts beyond the `idem:` quota take their victim from `idem:`,
+   * so the counter is not reachable from that key space at all and the 429
+   * holds for the whole window.
+   */
+  test('a flood BYPASSING the limiter leaves the counter alone once the cache is divided', async () => {
+    const shared = newDividedCache();
+    const limited = rateLimit({
+      cache: shared,
+      windowMs: 60_000,
+      max: 2,
+      key: (request) => request.remoteAddress ?? 'unknown',
+    })(() => complete(Status.OK, { ok: true }));
+    const pay = idempotent({ cache: shared })(() => complete(Status.OK, { ok: true }));
+
+    const attacker = makeRequest({}, '/api', '192.0.2.5');
+    expect((await limited(attacker)).status).toBe(Status.OK);                  // count 1
+    expect((await limited(attacker)).status).toBe(Status.OK);                  // count 2
+    expect((await limited(attacker)).status).toBe(Status.TooManyRequests);     // count 3 → limited
+
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      await pay(makeRequest({ 'idempotency-key': `flood-${i}` }));
+    }
+    // The flood really did fill its own reservation and evict inside it —
+    // otherwise the counter survived because nothing was ever evicted.
+    expect(shared.sizeOfPrefixForTest('idem:')).toBe(1);
+
+    // NO self-reset: the window is still the one the attacker exhausted.
+    expect((await limited(attacker)).status).toBe(Status.TooManyRequests);
+
+    await shared.close();
+  });
 });
 
-describe('shared cache — the policy does not rank one guarantee above another', () => {
+describe('shared cache — ranking one guarantee above another is what the quota buys', () => {
   /**
-   * The reason "give each middleware its own cache" survives #1080 as
-   * advice.  Preferring guarantee-free victims only helps while the map
-   * still holds some: two guarantee-carrying consumers on one instance run
-   * out of cheap victims and then evict each other on recency, exactly as
-   * before.  A caller with an IPv6 `/64` mints rate-limit counters all
-   * day, and every one of them is a counter the policy protects.
+   * A caller with an IPv6 `/64` mints rate-limit counters all day, and
+   * every one of them is a counter #1080's policy protects — so preferring
+   * guarantee-free victims buys nothing here.  Two guarantee-carrying
+   * consumers on one undivided instance run out of cheap victims and then
+   * evict each other on recency, exactly as they did before #1080.
    *
-   * Ranking one consumer's guarantee above another's is per-prefix quotas,
-   * which nothing has decided, and this test is what it would flip.
+   * Pinned as the DEFAULT configuration.  The test after it is the same
+   * traffic against the same middleware on a cache divided by prefix.
    */
-  test('a flood of rate-limit counters still evicts an idempotency record from the same instance', async () => {
+  test('a flood of rate-limit counters evicts an idempotency record from an undivided instance', async () => {
     const shared = newCache();
     let charges = 0;
     const pay = idempotent({ cache: shared })(() => {
@@ -306,17 +368,66 @@ describe('shared cache — the policy does not rank one guarantee above another'
 
     await shared.close();
   });
+
+  /**
+   * The same double charge, refused.  `rl:` is capped at its own
+   * reservation, so the twentieth counter evicts the nineteenth rather than
+   * the payment record two prefixes away — which is the whole of "a quota is
+   * a cap and a reservation at once".  Note the record here is protected by
+   * *both* mechanisms and neither is redundant: #1080 keeps a `cached` body
+   * from taking it, #607 keeps another guarantee-carrying consumer from
+   * taking it.
+   */
+  test('a flood of rate-limit counters leaves the record alone once the cache is divided', async () => {
+    const shared = newDividedCache();
+    let charges = 0;
+    const pay = idempotent({ cache: shared })(() => {
+      charges++;
+      return complete(Status.OK, { charge: charges });
+    });
+    const limited = rateLimit({
+      cache: shared,
+      windowMs: 60_000,
+      max: 1_000,
+      key: (request) => request.remoteAddress ?? 'unknown',
+    })(() => complete(Status.OK, { ok: true }));
+
+    await pay(makeRequest({ 'idempotency-key': 'pay-1' }));
+    expect(charges).toBe(1);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      expect((await limited(makeRequest({}, '/api', `2001:db8::${i}`))).status).toBe(Status.OK);
+    }
+    expect(shared.sizeOfPrefixForTest('rl:')).toBe(1);   // the flood ate its own
+
+    const retry = await pay(makeRequest({ 'idempotency-key': 'pay-1' }));
+    expect(retry.status).toBe(Status.OK);
+    expect(charges).toBe(1);                      // handler NOT re-run
+    expect(retry.body).toEqual({ charge: 1 });    // the FIRST response, replayed
+
+    await shared.close();
+  });
 });
 
 describe('shared cache — the idempotency key space is itself a flood vector', () => {
   /**
-   * Naming a separate cache narrows the blast radius; it does not
-   * remove it.  `Idempotency-Key` is client-chosen, so a caller floods
-   * the idempotency cache directly and evicts OTHER callers' records
-   * out of it.  `maxKeyLength` bounds how big each minted key is, not
-   * how many there are — which is exactly why the docs tell you to size
-   * `maxEntries` for the key space and to use Redis where the guarantee
-   * has to hold against an adversary.
+   * The exposure that survives every policy in this file, and is
+   * characterised here as PERMANENT rather than pending.
+   *
+   * Naming a separate cache narrows the blast radius; it does not remove
+   * it.  `Idempotency-Key` is client-chosen, so a caller floods the
+   * idempotency cache directly and evicts OTHER callers' records out of it.
+   * `maxKeyLength` bounds how big each minted key is, not how many there
+   * are.  #1080 does not help — attacker and victim both write claims, so
+   * both are on the protected side of that line.  And #607's quota does not
+   * help either, for the structural reason the test below asserts: a quota
+   * is drawn around a *prefix*, attacker and victim share the prefix, and
+   * drawing one per caller would need a key space the attacker does not
+   * choose.
+   *
+   * What is left is not policy but configuration, and the docs say both:
+   * size `maxEntries` for the key space you are willing to hold, and use
+   * Redis where the guarantee has to hold against an adversary.
    */
   test('a flood of distinct Idempotency-Keys evicts another caller\'s record from the same cache', async () => {
     const idempotencyCache = newCache();
@@ -336,6 +447,38 @@ describe('shared cache — the idempotency key space is itself a flood vector', 
     const retry = await pay(makeRequest({ 'idempotency-key': 'victim-key' }));
     expect(retry.status).toBe(Status.OK);
     expect(charges).toBe(FLOOD_SIZE + 2);   // the victim's handler ran a second time
+
+    await idempotencyCache.close();
+  });
+
+  /**
+   * The same flood against a cache whose `idem:` prefix has a quota of its
+   * own, which is the strongest thing `prefixQuotas` can be asked to do
+   * here.  It changes nothing, and that is the point: reserving the whole
+   * map for `idem:` reserves it for the attacker too.
+   */
+  test('a per-prefix quota does not help, because attacker and victim share the prefix', async () => {
+    const idempotencyCache = new InMemoryCache({
+      maxEntries: MAX_ENTRIES,
+      cleanupMs: 0,
+      prefixQuotas: { 'idem:': MAX_ENTRIES },
+    });
+    let charges = 0;
+    const pay = idempotent({ cache: idempotencyCache })(() => {
+      charges++;
+      return complete(Status.OK, { charge: charges });
+    });
+
+    await pay(makeRequest({ 'idempotency-key': 'victim-key' }));
+    expect(charges).toBe(1);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      await pay(makeRequest({ 'idempotency-key': `attacker-${i}` }));
+    }
+
+    const retry = await pay(makeRequest({ 'idempotency-key': 'victim-key' }));
+    expect(retry.status).toBe(Status.OK);
+    expect(charges).toBe(FLOOD_SIZE + 2);   // unchanged — still a second charge
 
     await idempotencyCache.close();
   });

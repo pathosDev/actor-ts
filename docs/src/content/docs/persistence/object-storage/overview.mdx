@@ -208,6 +208,15 @@ Rough numbers for S3:
 
 Filesystem backend: sub-millisecond.
 
+A LIST on the filesystem backend reads only the directory its
+prefix names — everything up to the prefix's last `/` — so it
+costs the matched subtree, not the whole storage root.  That is
+what keeps a per-`persistenceId` prefix such as
+`snapshots/<pid>/` sub-millisecond however many other entities
+share the root.  A prefix with no `/` in it (`snapshots`) has no
+directory to narrow to and still walks everything, so prefer
+keys with a per-entity directory segment.
+
 Object-storage is slower than SQLite / Cassandra for single
 operations.  Compensate with:
 

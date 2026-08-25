@@ -33,36 +33,44 @@ import {
  * **Security — give this middleware its own cache (security audit
  * HTTP-8).**  The `Idempotency-Key` header is attacker-chosen, so every
  * request can mint a new cache key.  `InMemoryCache` is LRU-bounded
- * (10 000 entries by default), and since #1080 its eviction takes entries
- * that carry no guarantee first — the claim this middleware writes with
- * `setIfAbsent` and the record that replaces it both count as one, so a
- * flood minted through `cached` no longer reaches a stored response.
- * Three things still do:
+ * (10 000 entries by default), and its eviction now asks two questions
+ * before recency: which key prefix the entry belongs to (#607) and
+ * whether it carries a guarantee (#1080).  The claim this middleware
+ * writes with `setIfAbsent` and the record that replaces it both carry
+ * one, so a flood minted through `cached` cannot reach a stored response;
+ * and a shared instance configured with `prefixQuotas` confines a flood
+ * of rate-limit counters to the `rl:` reservation, so it cannot reach one
+ * either.  Two things still do:
  *
- *   - The policy does not rank guarantees against each other.  On an
- *     instance shared with `rateLimit`, a flood of counters evicts
- *     records anyway, because once the map holds nothing cheaper there is
- *     nothing cheaper to drop.
- *   - This middleware's OWN key space is attacker-controlled, so a flood
- *     of distinct `Idempotency-Key`s evicts other callers' records out of
- *     the same instance.  {@link IdempotencyOptionsType.maxKeyLength} and
+ *   - **Without a quota**, an instance shared with `rateLimit` has no
+ *     ranking between two guarantee-carrying consumers: once the map
+ *     holds nothing cheaper, a counter flood takes records.  Configure
+ *     `prefixQuotas` on a shared instance, or do not share it.
+ *   - **This middleware's OWN key space is attacker-controlled**, and no
+ *     quota fixes that — attacker and victim both write under `idem:`,
+ *     so they share whatever reservation is drawn around it.  A flood of
+ *     distinct `Idempotency-Key`s evicts other callers' records out of a
+ *     dedicated instance just as it does out of a shared one.
+ *     {@link IdempotencyOptionsType.maxKeyLength} and
  *     {@link IdempotencyOptionsType.maxScopeLength} bound how big each
  *     minted key is — between them they bound the whole composed key —
  *     but neither bounds how many of them there are.
- *   - A record is only moved to the most-recently-used end when it is
- *     READ — a claimed-but-not-yet-answered key is never bumped at all,
- *     because `setIfAbsent` does not count as a use — so it is the first
- *     thing dropped once the cap is reached.
+ *
+ * A record is also only moved to the most-recently-used end when it is
+ * READ — a claimed-but-not-yet-answered key is never bumped at all,
+ * because `setIfAbsent` does not count as a use — so it is the first
+ * thing dropped within its own half once a cap is reached.
  *
  * So hand this middleware a cache nothing else writes to —
  * `ext.cache('idempotency')` resolves a separate named instance — and
  * size that cache's `maxEntries` for the number of in-flight keys you
  * expect times the TTL, under `actor-ts.cache.idempotency.in-memory`
  * (#607: that per-name block is what makes the advice reachable; before
- * it, every named instance shared the one global bound).  Naming a
- * separate cache narrows the blast radius; it does not remove it.  Where
- * the guarantee has to hold under an adversary, back it with Redis
- * rather than an in-process LRU.
+ * it, every named instance shared the one global bound).  Where one
+ * instance genuinely has to be shared, reserve this middleware's share of
+ * it with `prefixQuotas` instead.  Neither removes the last exposure:
+ * where the guarantee has to hold under an adversary who chooses the
+ * keys, back it with Redis rather than an in-process LRU.
  */
 
 type CachedResponse = {

@@ -706,7 +706,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // `Envelope.replayed`).  Copying here rather than at `stash()` keeps the
     // marker at the moment it becomes true; either way it is a cold batch
     // path, not the per-message one.
-    this.mailbox.prependUser(drained.map((env) => ({ ...env, replayed: true })));
+    try {
+      this.mailbox.prependUser(drained.map((env) => ({ ...env, replayed: true })));
+    } catch (cause) {
+      // A bounded mailbox may now refuse the replay — `reject` throws
+      // `MailboxFullError` rather than admitting a batch that does not fit,
+      // and it refuses the batch whole (#772).  So every envelope is still
+      // the stash's to account for, and the buffer goes back before the error
+      // travels on: the local would otherwise go out of scope with the throw
+      // and `reject`, the policy chosen precisely so nothing is lost
+      // silently, would be the one losing a whole stash.  Restored unmarked,
+      // because none of them re-entered the queue.
+      //
+      // What happens next is ordinary supervision — the throw surfaces inside
+      // the handler that called `unstashAll()` — and `deadLetterStash` covers
+      // the restart and stop paths from there.
+      this._stashBuffer = drained;
+      throw cause;
+    }
     this.schedule();
   }
 
@@ -731,17 +748,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * there is none to carry — and no `enqueuedAtMs`, which matches
    * {@link unstashAll}: a replayed message is not re-stamped, so an explain
    * plan reports its mailbox wait as unknown rather than as a fresh arrival.
+   *
+   * A bounded mailbox may refuse the batch (#772), and this path answers that
+   * differently from {@link unstashAll} because it owns nothing: the typed
+   * `StashBuffer` has already emptied itself by the time it calls here, and
+   * the cell cannot put messages back into a buffer that is not its own.
+   * Dead-lettering them is what is left, and it is what this method already
+   * does for a terminated cell — the caller still learns from the throw, and
+   * the messages are visible instead of gone.
    */
   prependUserMessages(messages: ReadonlyArray<TMessage>): void {
     if (messages.length === 0) return;
     if (this.state === 'terminated') {
-      for (const message of messages) {
-        this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
-      }
+      this.deadLetterMessages(messages);
       return;
     }
-    this.mailbox.prependUser(messages.map((message) => ({ message, sender: null })));
+    try {
+      this.mailbox.prependUser(messages.map((message) => ({ message, sender: null })));
+    } catch (cause) {
+      this.deadLetterMessages(messages);
+      throw cause;
+    }
     this.schedule();
+  }
+
+  /** Every message to dead letters, from this actor, with no sender to name. */
+  private deadLetterMessages(messages: ReadonlyArray<TMessage>): void {
+    for (const message of messages) {
+      this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+    }
   }
 
   /**
@@ -819,6 +854,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // (#1167).  System commands still get their turn; one of those will
     // re-dequeue and re-park this message, which is why the prepend
     // above and the already-armed check below both have to be idempotent.
+    //
+    // This is a re-park, not an arrival, and a bounded mailbox costs it
+    // nothing even though `prependUser` now consults the bound (#772): the
+    // envelope came out of this very queue a few statements ago and nothing
+    // ran in between, so the queue is one below wherever it was and the
+    // capacity check has room by construction.  The one state where it does
+    // not is a queue already over its ceiling — only `enqueueSignal` puts it
+    // there — and a bound that then sheds one message, or refuses under
+    // `reject`, is doing its job rather than inventing a drop here.  A refusal
+    // arrives as a dispatcher error, which `runReported` already answers for.
     this.mailbox.prependUser([env]);
     if (this._throttleResumeTimer) return true; // already armed
     const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
