@@ -42,9 +42,10 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 - Next window is open (`[Unreleased]`).  The obvious heads from here: the
   `reference.conf` expansion tracked in #887; the residual security items
-  the wave narrowed rather than closed (#112 needs the incarnation identity
-  from #940; #607's eviction residual is closed by #1080); #766, whose titled
-  fix turns out to be insufficient on its own; and the fresh audit round
+  the wave narrowed rather than closed (#112 needs a **required** incarnation
+  on the wire, which is #823's wire break and not #940's optional field;
+  #607's eviction residual is closed by #1080); #766, whose titled fix turns
+  out to be insufficient on its own; and the fresh audit round
   #1166–#1193, which is unstarted and holds several `priority: high`
   correctness defects — `PersistentActor` has no fencing (#1166),
   `throttle('pause')` livelocks the `MicrotaskDispatcher` (#1167),
@@ -161,14 +162,24 @@ This document tracks the planned direction.  Nothing here is committed work — 
     not the copy — 95 % of the remaining cost) and #586 (a hard throw on
     `@hono/node-ws` versions `package.json` still declared supported)
   - **What the wave narrowed rather than closed**, stated so it is not
-    re-derived later: #112's guard holds only while the sender is still a
-    member — deleting a member drops its high-water mark, so once the sender
-    is also evicted a recording replays again, and closing that needs #940's
-    incarnation identity.  #607's key bound is necessary but not sufficient
-    without #1080's eviction policy.  #602 deliberately has no HOCON key,
-    because one would reach `HttpExtension.client` and silently not the
-    `HttpClient` inside `D1Client` — a bound that applies to some clients and
-    not others is worse than none
+    re-derived later: #112's guard refuses a recording only to a receiver
+    that already holds a high-water mark for its sender.  This entry used to
+    say the guard holds "while the sender is still a member" — that was
+    wrong, and the security page now withdraws it.  The mark has one writer
+    and it runs in the gossip path, so it exists for a peer this node has
+    accepted a frame *from* and for nobody else, and three kinds of receiver
+    hold none: one whose sender was itself evicted (the mark is dropped with
+    the member), a fresh or restarted process, and — the ordinary case, not
+    an edge — one that learned the subject **third-party**, where the sender
+    is a full member throughout and nothing was evicted anywhere.  Each is
+    asserted by execution in `GossipReplayGuard.test.ts`, the last two as
+    exploits; closing them needs a **required** incarnation on the wire,
+    which is #823's wire break rather than the optional field #940 landed.
+    #607's key bound is necessary but not sufficient without #1080's
+    eviction policy.  #602 deliberately has no HOCON key, because one would
+    reach `HttpExtension.client` and silently not the `HttpClient` inside
+    `D1Client` — a bound that applies to some clients and not others is
+    worse than none
   - **Eleven release notes were corrected** after the fact, most of them
     overclaims by the wave's own hand.  #121's migration note named the wrong
     safe version (v0.13.0 for v0.14.0), which would have had an operator roll
