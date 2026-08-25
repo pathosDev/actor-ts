@@ -360,6 +360,15 @@ Unterschied sagt, wo als Nächstes zu suchen ist:
   Das ist ein Teardown-Race im Harness, keine Zeit-Wette im Test — also kann kein
   Warten, welcher Form auch immer, die Ursache gewesen sein.
 
+  Dieser Trace kann nicht mehr entkommen.  `MultiNodeBroker.onMessage` routet
+  inzwischen innerhalb desselben try/catch, das der Produktions-Broker seit #701
+  trägt: Ein Ziel-Port, der wirft — der Fall, der dort ankommt, ist ein von
+  `crash()` bereits beendeter Worker — zählt als das nicht zustellbare Ziel, das
+  er ist, und der Frame wird verworfen.  Das Race selbst bleibt unverändert; weg
+  ist der Teil, der es zu einem *Flake* gemacht hat, nämlich ein unbeteiligter
+  Test, der daran scheitert.  Lies den Eintrag oben als Aufzeichnung des
+  Symptoms, nicht als etwas, das noch zu reproduzieren wäre.
+
 Genau dafür lohnt es sich, einen offenen Eintrag aufzuschreiben statt zu raten:
 Ein Eintrag, dessen Sleep umgestellt wurde, und einer, der nie einen hatte,
 führen zu verschiedenen nächsten Schritten, und nur die Zahl im `summary.json`
