@@ -164,6 +164,27 @@ export type ReEncryptOptions = {
    * while the application is serving.  Turning integrity on corpus-wide
    * is the stores' own read-then-write migration (see
    * {@link allowUntaggedBodies}).
+   *
+   * This is the key the corpus is already under, **not** a key to move
+   * it to.  There is deliberately no `newIntegrity` beside
+   * {@link newInfo} (#1354).  `newInfo` gets away with having no wire
+   * byte because AES-GCM decryption is its own oracle — the probe in
+   * the rewrite loop retries under the target context and only a
+   * keyholder can make that succeed.  Integrity has no such oracle
+   * that helps: nothing records which integrity key sealed a body, so
+   * every reader would have to accept both keys for the duration of
+   * the sweep — keeping the leaked key trusted for exactly the window
+   * the revocation exists to close — and the "returning is the
+   * certificate" contract (#747) would have nothing to rest on, since
+   * the pre-sweep sampler can enumerate live *master* key versions off
+   * the frame without holding a key and has no counterpart here.
+   *
+   * Rolling the integrity key is therefore a per-`persistenceId`
+   * read-old / write-new pass through the stores' per-call
+   * `PersistenceOptions.integrity`, not a sweep and not a migration
+   * window; #1354 records that and what a wire-format answer (an
+   * integrity-key version byte mirroring `FLAG_KEY_VERSIONED`) would
+   * cost.
    */
   readonly integrity?: IntegrityConfig | IntegrityResolver;
   /**
