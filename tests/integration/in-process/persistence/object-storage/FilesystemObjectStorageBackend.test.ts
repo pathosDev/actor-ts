@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomId } from '../../../../../src/util/RandomString.js';
-import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import {
+  FilesystemObjectStorageBackend,
+  fsLazy,
+} from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
@@ -396,5 +400,320 @@ describe('FilesystemObjectStorageBackend — control characters on the write pat
     await backend.put('pid-a/snap.json', bytes('body'));
     const items = await backend.list({ prefix: '' });
     expect(items.map((i) => i.key)).toEqual(['pid-a/snap.json']);
+  });
+});
+
+/* --------------------- security: symlink containment (#748) ------------------- */
+
+/**
+ * Link `linkPath` to the directory `target`.
+ *
+ * Windows refuses a plain directory symlink without elevation or Developer
+ * Mode but creates a **junction** freely, and a junction is dereferenced by
+ * `realpath`, traversed by `mkdir(recursive)` and reported by a `readdir`
+ * dirent as a link — measured on the maintainer's box, all three.  So the
+ * directory half of this fix is exercised where the work happens and not only
+ * on the Linux runner, which is the difference between a guard that is tested
+ * and one that is skipped into permanent green.
+ */
+async function linkDirectory(target: string, linkPath: string): Promise<void> {
+  await symlink(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+}
+
+/**
+ * Capability probes for the two blocks below.  A stock Windows box refuses
+ * `fs.symlink` to a file without elevation or Developer Mode, and that is the
+ * ONLY reason a block may be skipped: any other failure re-throws, so a
+ * genuinely broken filesystem cannot hide behind the guard and let the block
+ * pass forever.  Ported from `tests/unit/http/static/StaticFiles.test.ts`,
+ * where the same guard covers the same platform gap for #575.
+ */
+async function fileSymlinksAreCreatable(): Promise<boolean> {
+  return await probeLink(async (probeDirectory) => {
+    await writeFile(join(probeDirectory, 'target'), 'probe');
+    await symlink(join(probeDirectory, 'target'), join(probeDirectory, 'link'));
+  });
+}
+
+/** Directory-link half of the probe — a junction on Windows, a `'dir'` symlink elsewhere. */
+async function directoryLinksAreCreatable(): Promise<boolean> {
+  return await probeLink(async (probeDirectory) => {
+    await mkdir(join(probeDirectory, 'target'));
+    await linkDirectory(join(probeDirectory, 'target'), join(probeDirectory, 'link'));
+  });
+}
+
+async function probeLink(attempt: (probeDirectory: string) => Promise<void>): Promise<boolean> {
+  const probeDirectory = await mkdtemp(join(tmpdir(), 'actor-ts-objstore-link-probe-'));
+  try {
+    await attempt(probeDirectory);
+    return true;
+  } catch (error) {
+    const code = (error as { readonly code?: string }).code;
+    if (code === 'EPERM' || code === 'EACCES') return false;
+    throw error;
+  } finally {
+    await rm(probeDirectory, { recursive: true, force: true });
+  }
+}
+
+const describeIfDirectoryLinks = (await directoryLinksAreCreatable()) ? describe : describe.skip;
+const describeIfFileSymlinks = (await fileSymlinksAreCreatable()) ? describe : describe.skip;
+
+/**
+ * The half of #748 the key validator cannot reach.
+ *
+ * `escape/sacred.txt` is a perfectly well-formed key — no `..`, no absolute
+ * prefix, no NUL — so `assertSafeKey` passes it, and `path.join` /
+ * `path.resolve` produce a string squarely inside the root.  Only the
+ * filesystem knows that `escape` is a door.
+ *
+ * Which is also why the `/path-traversal/` assertions further up prove
+ * nothing about the containment check they appear to cover: every one of them
+ * is satisfied by the key validator, whose rejection message carries the same
+ * phrase.  These are the ones that reach `assertWithinRoot`'s successor.
+ */
+describeIfDirectoryLinks('FilesystemObjectStorageBackend — a linked key segment (#748)', () => {
+  let outside: string;
+  const victimName = 'sacred.txt';
+
+  beforeEach(async () => {
+    outside = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-outside-'));
+    writeFileSync(join(outside, victimName), 'untouched');
+    await linkDirectory(outside, join(tmpRoot, 'escape'));
+  });
+
+  afterEach(() => {
+    // Remove the link before the outer `afterEach` walks `tmpRoot`, so the
+    // recursive delete can never reach through it to the fixture.
+    try { rmSync(join(tmpRoot, 'escape'), { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(outside, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test('put through the link is refused and the target file is untouched', async () => {
+    await expect(backend.put(`escape/${victimName}`, bytes('overwritten')))
+      .rejects.toThrow(/path-traversal/);
+    expect(readFileSync(join(outside, victimName), 'utf8')).toBe('untouched');
+  });
+
+  test('the refusal happens before the lock file is taken', async () => {
+    // Order matters: the containment check sits between `mkdir` and
+    // `acquireLock`, so a refused key leaves no `<key>.lock` outside the root
+    // either — which would otherwise be an arbitrary-file *create* even
+    // though the body write never lands.
+    await expect(backend.put(`escape/${victimName}`, bytes('overwritten'))).rejects.toThrow();
+    expect(readdirSync(outside).sort()).toEqual([victimName]);
+  });
+
+  test('get through the link is refused', async () => {
+    await expect(backend.get(`escape/${victimName}`)).rejects.toThrow(/path-traversal/);
+  });
+
+  test('delete through the link is refused and the target survives', async () => {
+    await expect(backend.delete(`escape/${victimName}`)).rejects.toThrow(/path-traversal/);
+    expect(readFileSync(join(outside, victimName), 'utf8')).toBe('untouched');
+  });
+
+  test('a prefixed list seeded at the link is refused', async () => {
+    // #746 moved the walk's start from the root to the prefix's directory,
+    // and `readdir` resolves the directory it is handed — so this is the one
+    // hop of a listing a link can move.  Before that change it was
+    // unreachable, which is why the guard arrives with the seed.
+    await expect(backend.list({ prefix: 'escape/' })).rejects.toThrow(/path-traversal/);
+  });
+
+  test('a list-all does not descend into the link', async () => {
+    // No check needed for this one, and the test says why it is safe rather
+    // than assuming it: the walk classifies from a `withFileTypes` dirent,
+    // which describes the link itself — neither a file nor a directory.
+    await backend.put('inside', bytes('x'));
+    const items = await backend.list({ prefix: '' });
+    expect(items.map((i) => i.key)).toEqual(['inside']);
+  });
+});
+
+describeIfDirectoryLinks('FilesystemObjectStorageBackend — a linked root still works (#748)', () => {
+  test('every operation round-trips when `dir` is itself a link', async () => {
+    // The regression a containment check causes if it compares against the
+    // configured spelling of the root instead of the resolved one.
+    // `/var/lib/app -> /mnt/data` is an ordinary deployment, and there every
+    // single write resolves "outside" a lexically-compared root — so getting
+    // this wrong breaks the backend completely rather than subtly.
+    const data = join(tmpRoot, 'data');
+    const alias = join(tmpRoot, 'alias');
+    mkdirSync(data);
+    await linkDirectory(data, alias);
+    const aliasOptions = FilesystemObjectStorageOptions.create()
+      .withDir(alias);
+    const aliased = new FilesystemObjectStorageBackend(aliasOptions);
+
+    await aliased.put('nested/key.json', bytes('through the link'), { contentType: 'application/json' });
+    const fetched = await aliased.get('nested/key.json');
+    expect(fetched.isSome()).toBe(true);
+    if (fetched.isSome()) {
+      expect(new TextDecoder().decode(fetched.value.body)).toBe('through the link');
+      expect(fetched.value.contentType).toBe('application/json');
+    }
+    expect((await aliased.list({ prefix: 'nested/' })).map((i) => i.key)).toEqual(['nested/key.json']);
+    await aliased.delete('nested/key.json');
+    expect((await aliased.get('nested/key.json')).isNone()).toBe(true);
+  });
+});
+
+/**
+ * The final-component cases.  These need a *file* link, which is the one thing
+ * a stock Windows box cannot create — see the probe above.
+ */
+describeIfFileSymlinks('FilesystemObjectStorageBackend — a linked file (#748)', () => {
+  let outside: string;
+  let victimPath: string;
+  const victimContent = '{"contentType":"leaked/secret"}';
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-outside-file-'));
+    victimPath = join(outside, 'secret.json');
+    writeFileSync(victimPath, victimContent);
+  });
+
+  afterEach(() => {
+    try { rmSync(outside, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test('put does not follow a pre-planted `<key>.meta.json` link', async () => {
+    // The sidecar's name is fully deterministic — `<key>.meta.json` — so
+    // unlike the CSPRNG temp path it can be pre-planted.  `writeFile`'s
+    // default `'w'` flag follows the link and truncates the target;
+    // temp+rename replaces the link itself.
+    await backend.put('obj', bytes('v1'));
+    await symlink(victimPath, join(tmpRoot, 'obj.meta.json'));
+
+    await backend.put('obj', bytes('v2'), { contentType: 'application/json' });
+
+    expect(readFileSync(victimPath, 'utf8')).toBe(victimContent);
+    expect(lstatSync(join(tmpRoot, 'obj.meta.json')).isSymbolicLink()).toBe(false);
+    const fetched = await backend.get('obj');
+    expect(fetched.isSome()).toBe(true);
+    if (fetched.isSome()) expect(fetched.value.contentType).toBe('application/json');
+  });
+
+  test('get does not follow a `<key>` link out of the root', async () => {
+    // `readFile` follows a link at the final component, so without the
+    // canonical check this hands the caller the target's bytes under a key
+    // the validator was perfectly happy with.  The issue body never mentions
+    // the read path.
+    await symlink(victimPath, join(tmpRoot, 'peek'));
+    await expect(backend.get('peek')).rejects.toThrow(/path-traversal/);
+  });
+
+  test('get refuses an escaping `<key>.meta.json` link rather than reading it', async () => {
+    // The sidecar is a hop of its own: the body can canonicalise inside the
+    // root while its metadata is a link out of it.  Refused, not skipped — a
+    // planted link inside the storage root is a compromise indicator, and
+    // swallowing it would leave the only symptom in a `catch {}`.
+    await backend.put('obj', bytes('v1'));
+    await symlink(victimPath, join(tmpRoot, 'obj.meta.json'));
+    await expect(backend.get('obj')).rejects.toThrow(/path-traversal/);
+  });
+});
+
+/**
+ * The parts of the #748 change that need no symlink at all, so they run
+ * everywhere — including the two "must still work" properties the sidecar's
+ * move to temp+rename could plausibly have broken.
+ */
+describe('FilesystemObjectStorageBackend — sidecar and root resolution (#748)', () => {
+  // One test below seeds `fsLazy`; clearing it unconditionally keeps that
+  // from leaking into whatever runs next, which is cheap because the next
+  // `get()` just re-imports the real modules.
+  afterEach(() => { fsLazy.reset(); });
+
+  test('a re-put replaces the metadata sidecar rather than failing on it', async () => {
+    // `{ flag: 'wx' }`, the exclusive create #748 suggested for the sidecar,
+    // would have made this second put fail: `get` reads that exact
+    // deterministic name back, so a re-put has to overwrite it.  That is why
+    // the fix here is temp+rename and not `wx`.
+    await backend.put('obj', bytes('v1'), { contentType: 'text/plain' });
+    await backend.put('obj', bytes('v2'), { contentType: 'application/json', contentEncoding: 'gzip' });
+    const fetched = await backend.get('obj');
+    expect(fetched.isSome()).toBe(true);
+    if (fetched.isSome()) {
+      expect(fetched.value.contentType).toBe('application/json');
+      expect(fetched.value.contentEncoding).toBe('gzip');
+    }
+  });
+
+  test('list ignores the sidecar temp file a crashed writer leaves behind', async () => {
+    // Same lockstep hazard as #909, one file later: the sidecar's temp name
+    // is shaped `<key>.meta.json.tmp.<pid>.<random>` precisely so the
+    // existing `TMP_FILE_RE` covers it — the `.meta.json` suffix rule alone
+    // would not.
+    await backend.put('real', bytes('value'));
+    writeFileSync(join(tmpRoot, `real.meta.json.tmp.${process.pid}.${randomId(12)}`), '{}');
+    const items = await backend.list({ prefix: '' });
+    expect(items.map((i) => i.key)).toEqual(['real']);
+  });
+
+  test('get on a root that does not exist answers None', async () => {
+    // Resolving the root is now the first thing `get` does, so an absent root
+    // has to keep reading as "nothing stored" instead of becoming an error.
+    const missingOptions = FilesystemObjectStorageOptions.create()
+      .withDir(join(tmpRoot, 'never-created'));
+    const missing = new FilesystemObjectStorageBackend(missingOptions);
+    expect((await missing.get('anything')).isNone()).toBe(true);
+  });
+
+  test('a prefixed list on a root that does not exist answers empty', async () => {
+    const missingOptions = FilesystemObjectStorageOptions.create()
+      .withDir(join(tmpRoot, 'never-created'));
+    const missing = new FilesystemObjectStorageBackend(missingOptions);
+    expect(await missing.list({ prefix: 'a/b' })).toEqual([]);
+  });
+
+  test('put writes the metadata sidecar through a temp file and renames it into place', async () => {
+    // The portable half of the pre-planted-link defence.  A file symlink
+    // needs elevation on Windows, so the behavioural test above skips there
+    // — but *which path was opened for writing* is observable everywhere, and
+    // it is the whole of the fix: the sidecar's own deterministic name must
+    // never reach `writeFile`, whose default `'w'` flag follows a link
+    // planted at it, only `rename`, which replaces the entry itself.
+    //
+    // Seeded through `fsLazy`, the same `Lazy.setOverride` seam
+    // `FilesystemObjectStorageBackend.listScoping.test.ts` uses.
+    const real = await fsLazy.get();
+    const written: string[] = [];
+    const renamedTo: string[] = [];
+    fsLazy.setOverride(Promise.resolve({
+      path: real.path,
+      fs: {
+        ...real.fs,
+        writeFile: (
+          p: string,
+          body: Uint8Array | string,
+          writeOptions?: { flag?: string; encoding?: string },
+        ): Promise<void> => {
+          written.push(p);
+          return real.fs.writeFile(p, body, writeOptions);
+        },
+        rename: (oldPath: string, newPath: string): Promise<void> => {
+          renamedTo.push(newPath);
+          return real.fs.rename(oldPath, newPath);
+        },
+      },
+    }));
+
+    await backend.put('obj', bytes('body'), { contentType: 'application/json' });
+
+    const metaPath = join(tmpRoot, 'obj.meta.json');
+    expect(written).not.toContain(metaPath);
+    expect(written.some((p) => p.startsWith(`${metaPath}.tmp.`))).toBe(true);
+    expect(renamedTo).toContain(metaPath);
+  });
+
+  test('get on a key whose parent is an ordinary file answers None', async () => {
+    // `realpath` reports this one differently from a plain absence, and it
+    // has to read as absent too — otherwise an ordinary key collision turns
+    // into an error the caller never used to see.
+    await backend.put('collision', bytes('x'));
+    expect((await backend.get('collision/child')).isNone()).toBe(true);
   });
 });

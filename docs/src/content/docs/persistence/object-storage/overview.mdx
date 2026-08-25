@@ -142,6 +142,25 @@ S3 cost.  Right for:
 - **Small single-node deployments** — if you specifically want
   the object-storage interface without S3.
 
+The root directory is the whole of this backend's world.  A key
+carrying `..`, an absolute prefix or a NUL byte is rejected
+outright, and every operation additionally canonicalises the path
+it is about to touch — so a symlink sitting inside the root and
+pointing out of it is refused rather than followed.  The root
+*itself* may be a symlink: each operation resolves it and measures
+containment against the result, so `/var/lib/app -> /mnt/data`
+works normally.
+
+Two limits are worth knowing, because the alternative is assuming
+more than the check delivers.  It reads the filesystem and then
+acts on it, so it refuses a link that is already in place but
+cannot win a race against one planted in between — portable
+`O_NOFOLLOW` is not reachable through `node:fs`.  And it confines
+the backend's *own* operations; it is not a sandbox around a
+directory other local processes may write to.  If untrusted users
+can create entries inside the storage root, that is already the
+larger problem.
+
 ### S3
 
 ```ts
