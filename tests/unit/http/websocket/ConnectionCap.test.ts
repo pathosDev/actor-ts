@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { ManualScheduler } from '../../../../src/testkit/ManualScheduler.js';
 import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
@@ -35,31 +36,51 @@ function makeHub() {
   return { hub, tells };
 }
 
+/**
+ * The `ActorSystem` surface `wireConnection` touches once the hub is a stub:
+ * the scheduler it arms the accept watchdog on (#717) and the log its failure
+ * paths write to.
+ *
+ * A `ManualScheduler` rather than the real one, for two reasons: these tests
+ * arm a ten-second timer per admitted socket and never terminate a system that
+ * would disarm it, and virtual time makes "was the watchdog armed at all"
+ * readable as `pendingCount` instead of a wait.
+ */
+function fakeSystem(): { system: ActorSystem; scheduler: ManualScheduler } {
+  const scheduler = new ManualScheduler();
+  return { system: { scheduler, log: new NoopLogger() } as unknown as ActorSystem, scheduler };
+}
+
 // security audit WS-5 — a route's connection admission cap.
 describe('wireConnection — maxConnections admission cap (WS-5)', () => {
   test('rejects connections beyond the cap with 1013, admits the rest', () => {
     const { hub, tells } = makeHub();
+    const { system, scheduler } = fakeSystem();
     const policy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 2 };
     const codec = jsonCodec() as never;
     const socket1 = fakeSocket(); const socket2 = fakeSocket(); const socket3 = fakeSocket();
 
-    wireConnection({} as never, hub, request, socket1.socket, codec, policy);
-    wireConnection({} as never, hub, request, socket2.socket, codec, policy);
-    wireConnection({} as never, hub, request, socket3.socket, codec, policy);
+    wireConnection(system, hub, request, socket1.socket, codec, policy);
+    wireConnection(system, hub, request, socket2.socket, codec, policy);
+    wireConnection(system, hub, request, socket3.socket, codec, policy);
 
     expect(tells.length).toBe(2);        // first two admitted (hub told)
     expect(socket1.closes.length).toBe(0);
     expect(socket2.closes.length).toBe(0);
     expect(socket3.closes).toEqual([{ code: 1013, reason: 'server at capacity' }]);  // third rejected
+    // One watchdog per *admitted* connection: the refused upgrade never
+    // reached the hub, so it has nothing to wait for.
+    expect(scheduler.pendingCount).toBe(2);
   });
 
   test('separate hubs (routes) have independent counts', () => {
     const hubA = makeHub(); const hubB = makeHub();
+    const { system } = fakeSystem();
     const policy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 1 };
     const codec = jsonCodec() as never;
-    wireConnection({} as never, hubA.hub, request, fakeSocket().socket, codec, policy);
+    wireConnection(system, hubA.hub, request, fakeSocket().socket, codec, policy);
     const bSock = fakeSocket();
-    wireConnection({} as never, hubB.hub, request, bSock.socket, codec, policy);   // different hub → own budget
+    wireConnection(system, hubB.hub, request, bSock.socket, codec, policy);   // different hub → own budget
     expect(hubA.tells.length).toBe(1);
     expect(hubB.tells.length).toBe(1);
     expect(bSock.closes.length).toBe(0);
@@ -67,9 +88,10 @@ describe('wireConnection — maxConnections admission cap (WS-5)', () => {
 
   test('default policy (Infinity) admits everything', () => {
     const { hub, tells } = makeHub();
+    const { system } = fakeSystem();
     const codec = jsonCodec() as never;
     for (let i = 0; i < 50; i++) {
-      wireConnection({} as never, hub, request, fakeSocket().socket, codec, DEFAULT_WEBSOCKET_POLICY);
+      wireConnection(system, hub, request, fakeSocket().socket, codec, DEFAULT_WEBSOCKET_POLICY);
     }
     expect(tells.length).toBe(50);
   });

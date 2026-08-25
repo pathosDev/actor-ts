@@ -416,7 +416,17 @@ export class HonoBackend implements HttpServerBackend {
       // so close and error have to be held exactly like messages, or the
       // connection actor never stops and its maxConnections slot never
       // comes back (#570).
-      const events = bufferWebsocketEvents();
+      // Bounded on the route's own numbers (#717): nothing drains this until
+      // the connection actor attaches, and on this backend the socket handle
+      // itself only exists from `onOpen` onwards — so the overflow close goes
+      // through `ws`, which is set by then or the frames could not have come.
+      const events = bufferWebsocketEvents(reg.preAttachBuffer, () => {
+        try {
+          ws?.close(1013, 'connection setup buffer overflow');
+        } catch {
+          /* already closing / closed */
+        }
+      });
       const adapter: WebsocketSocketAdapter = {
         send: (data) => ws?.send(data),
         close: (code, reason) => ws?.close(code, reason),

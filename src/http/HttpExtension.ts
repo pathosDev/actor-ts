@@ -203,6 +203,10 @@ export class HttpExtension implements Extension {
           active.registerWebSocket!({
             pattern: route.pattern,
             maxFrameBytes: policy.maxFrameBytes,
+            preAttachBuffer: {
+              maxFrames: policy.maxPreAttachFrames,
+              maxBytes: policy.maxPreAttachBytes,
+            },
             authorize: route.authorize,
             onConnection: (request, socket) => {
               system.log.debug(`[ws] upgrade ${request.path}`);

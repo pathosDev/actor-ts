@@ -50,10 +50,13 @@ const filler: FillerCommand = { kind: 'filler' };
 type HubMessage = WebsocketServerMessage<Out, In, FillerCommand>;
 
 /**
- * Minimal socket adapter.  `listenersAttached` is the assertion every test
- * here turns on: `setListeners` is called from the connection actor's
- * `preStart`, so it is true if and only if the hub actually processed the
- * accept command and spawned the child.
+ * Minimal socket adapter.  `listenersAttached` plus an empty `closeCalls` is
+ * the assertion every test here turns on: `setListeners` is called from the
+ * connection actor's `preStart`, and a live connection is never handed a
+ * socket the wiring layer already closed — so the pair is true if and only if
+ * the hub processed the accept command and spawned the child.  (The flag alone
+ * is not: `wireConnection` also attaches no-op listeners when it gives up, to
+ * run the unwind chains that hang off `setListeners`.)
  *
  * Deliberately *not* `rec.connections`-style bookkeeping through
  * `onClientConnected`: that arrives as a second, ordinary `tell` from the
@@ -349,7 +352,13 @@ describe('wireConnection cannot leak an admission slot when the hub refuses (#71
 
     const first = new ProbeSocket();
     expect(() => wireOne(first)).not.toThrow();
-    expect(first.listenersAttached).toBe(false);
+    // Not `listenersAttached === false` any more: giving up on a connection
+    // attaches no-op listeners on purpose, because that is what runs the
+    // unwind chains the wrappers hung off `setListeners` and stops the
+    // pre-attach buffer refilling.  The close is what says no *connection
+    // actor* got the socket — a live one is never handed a closed socket, and
+    // this hub could not have spawned one regardless: `RefusingMailbox`
+    // enqueues nothing.
     expect(first.closeCalls).toEqual([{ code: 1011, reason: 'connection setup failed' }]);
 
     // The slot the first upgrade took must be back.  `decrementOnClose`'s

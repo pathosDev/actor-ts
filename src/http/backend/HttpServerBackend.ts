@@ -1,6 +1,6 @@
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
-import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
+import type { PreAttachBufferLimits, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
 export type RouteRegistration = {
@@ -34,6 +34,19 @@ export type WebsocketRouteRegistration = {
    * several routes.
    */
   readonly maxFrameBytes: number;
+  /**
+   * The route's resolved bound on the buffer that holds inbound events between
+   * the upgrade completing and the connection actor attaching its listeners.
+   *
+   * It travels with the registration rather than reaching the buffer through
+   * `onConnection` because the backend builds the adapter — and therefore the
+   * buffer — *before* it calls `onConnection`, which is the whole point: the
+   * buffer exists to catch what arrives in that window.  A backend that hands
+   * this to `websocketPackageAdapter` (or to `bufferWebsocketEvents` directly)
+   * makes the route's number the one that governs; one that forgets falls back
+   * to the built-in bound, never to none (#717).
+   */
+  readonly preAttachBuffer: PreAttachBufferLimits;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */

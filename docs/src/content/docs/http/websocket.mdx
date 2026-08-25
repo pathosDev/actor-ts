@@ -96,6 +96,9 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH defence — see below
   maxConnections?:   number;                          // concurrent-connection cap; default unlimited
+  maxPreAttachFrames?: number;                        // setup-window frame cap; default 256
+  maxPreAttachBytes?:  number;                        // setup-window byte cap; default 4 MiB
+  acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
 };
 ```
 
@@ -173,6 +176,38 @@ uncapped socket, the backend refuses to build the WebSocket bridge and
 names the version in the error.  That is why the peer range starts at
 1.2.0; a plain `npm install @hono/node-ws` already picks a new enough one.
 </Aside>
+
+#### The connection setup window
+
+Between the handshake completing and the connection's actor attaching its
+listeners there is a short window — two mailbox hops — in which the socket
+is live and nothing is reading it.  Frames that arrive there are held and
+replayed the moment the actor attaches, so nothing is lost.  Two knobs
+bound what that window may cost, and both exist because the window's exit
+is not guaranteed: the actor is spawned by the hub, and a hub that has
+stopped, stalled or been reconfigured may never produce one.
+
+- **`maxPreAttachFrames` / `maxPreAttachBytes`** bound what is held.  Past
+  either the socket is closed with **1013** ("try again later") rather than
+  buffered further.  A legitimate client sends nothing or a greeting into
+  this window, so the defaults — 256 frames, 4 MiB — are orders of
+  magnitude above ordinary traffic; what they refuse is a peer that streams
+  into a connection nobody has accepted yet.  The **first** frame is always
+  admitted whatever its size (it is already bounded by `maxFrameBytes`), so
+  a route that raises `maxFrameBytes` above 4 MiB only needs to raise
+  `maxPreAttachBytes` if its clients send *several* such frames at once.
+- **`acceptTimeoutMs`** bounds how long the window may stay open.  If no
+  connection actor has attached within it, the socket is closed with 1013
+  and its `maxConnections` slot is released.  Ten seconds by default: a
+  healthy hub attaches in microseconds, so this is a fallback, not a
+  liveness policy — and an actor that turns up after the deadline is handed
+  the close rather than a socket the framework already killed.  Set
+  `Infinity` to switch it off.
+
+Neither is reachable by accident.  Both answer the same failure: an
+upgraded socket with no actor behind it, which before they existed stayed
+open for the process lifetime, accumulated frames nothing would ever drain,
+and held an admission slot nothing would ever return.
 
 ### Origin allowlist (CSWSH defence)
 
@@ -314,7 +349,10 @@ once, from the backend's upgrade callback, and it carries the only
 reference to a socket whose handshake has already completed.  Losing it
 would leave that socket upgraded with nothing attached to it: no
 listeners, inbound frames piling up unread, and its `maxConnections`
-slot held until the client gave up.
+slot held until the client gave up.  A hub that cannot answer for a
+different reason — it has stopped, or it never gets to the command — is
+caught by [the connection setup window](#the-connection-setup-window)
+instead, which closes the socket and gives the slot back.
 
 **What a bound does still shed is the rest.**  Inbound frames, and the
 `onClientConnected` / `onClientDisconnected` signals the connection
@@ -443,6 +481,9 @@ actor-ts.http.websocket {
   onInvalidMessage = close
   maxBufferedBytes = 4194304
   onBackpressure   = drop
+  maxPreAttachFrames = 256
+  maxPreAttachBytes  = 4M
+  acceptTimeoutMs    = 10s
 }
 ```
 
