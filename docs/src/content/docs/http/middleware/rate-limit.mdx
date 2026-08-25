@@ -193,10 +193,10 @@ import { Aside } from '@astrojs/starlight/components';
   `InMemoryCache` counts the counter as carrying a guarantee — `incr`
   with a `windowMs` created it — and evicts entries that carry none
   first, so a `cached` key flood no longer resets other clients'
-  windows.  It does not rank guarantees against each other, though: on
-  an instance shared with `idempotent`, a flood of attacker-chosen
-  `Idempotency-Key`s is a flood of claims, and once the map holds
-  nothing cheaper the counters go too.
+  windows.  That ranks what an entry is for, not whose it is: on an
+  undivided instance shared with `idempotent`, a flood of
+  attacker-chosen `Idempotency-Key`s is a flood of claims, and once the
+  map holds nothing cheaper the counters go too.
 
   **A flooder can reset its own limit, but only from outside the
   limiter.**  Requests that pass *through* this middleware run `incr`
@@ -220,9 +220,22 @@ import { Aside } from '@astrojs/starlight/components';
   actor-ts.cache.rate-limit.in-memory.maxEntries = 50000
   ```
 
-  A client with an IPv6 `/64` mints them all day, and every one is a
-  counter the cache protects.  See
-  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
+  Where one instance genuinely has to be shared, reserve this
+  middleware's `keyPrefix` out of it instead — the same twenty
+  off-limiter requests then evict inside `idem:` and the 429 stands:
+
+  ```hocon
+  actor-ts.cache.shared.in-memory {
+    maxEntries = 10000
+    prefixQuotas { "rl:" = 5000, "idem:" = 5000 }
+  }
+  ```
+
+  Neither buys protection from a co-tenant of the same prefix: a client
+  with an IPv6 `/64` mints counters all day, and every one is a counter
+  the cache protects under the same `rl:` reservation.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not)
+  and [dividing one instance by key prefix](/cache/in-memory/#dividing-one-instance-by-key-prefix).
 </Aside>
 
 <Aside type="caution" title="Fixed-window edge effects">

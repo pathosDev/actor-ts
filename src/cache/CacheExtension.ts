@@ -63,12 +63,36 @@ export class CacheExtension implements Extension {
     );
   }
 
-  /** The two `InMemoryCacheOptionsType` leaves under `root`, omitting absent ones. */
+  /**
+   * The `InMemoryCacheOptionsType` leaves under `root`, omitting absent ones.
+   *
+   * `prefixQuotas` is read as a whole object and layered whole — a per-name
+   * table **replaces** the global one rather than merging into it, which is
+   * the same shallow rule {@link mergeOptions} applies to every other field.
+   * Merging would be worse than inconsistent here: the quotas have to sum to
+   * at most `maxEntries`, and a table half-inherited from a global block is a
+   * sum nobody wrote down.  Its keys are read from the object rather than
+   * addressed as config paths, because a prefix may contain a `.` and a path
+   * would split it.
+   */
   private inMemoryCacheLeaves(root: string): Partial<InMemoryCacheOptionsType> {
     const config = this.system.config;
-    const leaves: { maxEntries?: number; cleanupMs?: number } = {};
+    const leaves: {
+      maxEntries?: number;
+      cleanupMs?: number;
+      prefixQuotas?: Record<string, number>;
+    } = {};
     if (config.hasPath(`${root}.maxEntries`)) leaves.maxEntries = config.getInt(`${root}.maxEntries`);
     if (config.hasPath(`${root}.cleanupMs`)) leaves.cleanupMs = config.getDuration(`${root}.cleanupMs`);
+    if (config.hasPath(`${root}.prefixQuotas`)) {
+      const quotas: Record<string, number> = {};
+      for (const [prefix, quota] of Object.entries(config.getObject(`${root}.prefixQuotas`))) {
+        // A quoted HOCON number arrives as a string; anything else is passed
+        // through unconverted so the validator names the value it rejected.
+        quotas[prefix] = typeof quota === 'string' ? Number(quota) : (quota as number);
+      }
+      leaves.prefixQuotas = quotas;
+    }
     return leaves;
   }
 

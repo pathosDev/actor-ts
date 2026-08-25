@@ -92,12 +92,15 @@ const TOKEN_LENGTH = 32;
  * returning `false` for a reason its own documentation used to rule out.
  * `InMemoryCache` (the default backend) prefers to evict entries that
  * carry no guarantee and so keeps a lock out of an ordinary key flood's
- * way, but its `maxEntries` bound is still hard: a cache holding nothing
- * but locks evicts its oldest lock once the cap is reached.  Memcached
- * evicts server-side with no client-side policy, and so does Redis under
- * `maxmemory-policy allkeys-lru`.  So size the lock's cache for the
- * number of locks live inside one TTL, and do not point this at an
- * instance a caller can flood with keys of their own choosing.
+ * way, and a `prefixQuotas` reservation for the lock prefix keeps it out
+ * of a *guarantee-carrying* flood's way too (#607) — but its
+ * `maxEntries` bound is still hard, and so is a reservation: a bucket
+ * holding nothing but locks evicts its oldest lock once its own cap is
+ * reached.  Memcached evicts server-side with no client-side policy, and
+ * so does Redis under `maxmemory-policy allkeys-lru`.  So size the
+ * lock's cache — or its reservation — for the number of locks live
+ * inside one TTL, and do not point this at an instance a caller can
+ * flood with keys under the same prefix.
  *
  * **What this is not.**  The compare-and-delete in `release` is a `get`
  * followed by a `delete`, not one atomic step — the `Cache` surface has

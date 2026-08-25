@@ -31,9 +31,17 @@ import { Status, type HttpRequest } from '../../../../src/http/Types.js';
  * What the second one cannot catch is a *new* absolute phrasing that happens
  * to miss these substrings.  That is the accepted ceiling: the failure mode
  * worth catching is the specific sentence that was there for a release, and
- * anything stronger would need to understand the prose.  The behavioural test
- * below covers the other direction — if the exposure is ever actually closed,
- * it fails and forces the text to be revisited rather than left stale.
+ * anything stronger would need to understand the prose.  The behavioural
+ * tests below cover the other direction — the text now states both which
+ * configuration is exposed and which one is not, so both are measured, and a
+ * change to either turns a test red rather than leaving the page stale.
+ *
+ * #607 added the second of those: `InMemoryCache`'s `prefixQuotas` confine a
+ * flood to its own key prefix, so the same off-limiter flood that resets the
+ * counter on an undivided instance leaves it alone on a divided one.  The
+ * corrected text is therefore no longer "this is exposed" but "this is
+ * exposed *until you divide the cache*", and it takes two reproductions to
+ * keep that sentence honest.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..', '..');
@@ -82,25 +90,60 @@ describe('the flooder-immunity claim is qualified, and the qualification is meas
     expect(qualifier.test(text)).toBe(true);
   });
 
+  /** The measurement the text quotes: one shared `maxEntries: 4` instance, 429 then 200. */
   test('the off-limiter self-reset the corrected text describes still reproduces', async () => {
     const shared = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
-    const limited = rateLimit({
-      cache: shared,
-      windowMs: 60_000,
-      max: 2,
-      key: (request) => request.remoteAddress ?? 'unknown',
-    })(() => complete(Status.OK, { ok: true }));
-    const pay = idempotent({ cache: shared })(() => complete(Status.OK, { ok: true }));
+    const statuses = await exhaustThenFlood(shared);
 
-    expect((await limited(makeRequest())).status).toBe(Status.OK);
-    expect((await limited(makeRequest())).status).toBe(Status.OK);
-    expect((await limited(makeRequest())).status).toBe(Status.TooManyRequests);
-
-    for (let i = 0; i < 20; i++) {
-      await pay(makeRequest({ 'idempotency-key': `flood-${i}` }, '/payments'));
-    }
-
-    expect((await limited(makeRequest())).status).toBe(Status.OK);
+    expect(statuses.beforeFlood).toBe(Status.TooManyRequests);
+    expect(statuses.afterFlood).toBe(Status.OK);          // the window silently restarted
     await shared.close();
   });
+
+  /**
+   * And the remedy the same paragraph now names.  Identical traffic, identical
+   * middleware, one option: `idem:` and `rl:` each hold a reservation, so the
+   * flood evicts inside its own and the exhausted window survives it.
+   */
+  test('the prefixQuotas remedy the corrected text names actually holds', async () => {
+    const divided = new InMemoryCache({
+      maxEntries: 4,
+      cleanupMs: 0,
+      prefixQuotas: { 'idem:': 2, 'rl:': 2 },
+    });
+    const statuses = await exhaustThenFlood(divided);
+
+    expect(statuses.beforeFlood).toBe(Status.TooManyRequests);
+    expect(statuses.afterFlood).toBe(Status.TooManyRequests);   // still limited
+    expect(divided.sizeOfPrefixForTest('idem:')).toBe(2);       // the flood evicted its own
+    await divided.close();
+  });
 });
+
+/**
+ * Exhaust a `max: 2` window from one client, then send twenty off-limiter
+ * `Idempotency-Key` requests through the same cache, and report the limiter's
+ * answer on either side of the flood.  Shared by the two reproductions so the
+ * only difference between them is the cache they are handed.
+ */
+async function exhaustThenFlood(
+  cache: InMemoryCache,
+): Promise<{ beforeFlood: number; afterFlood: number }> {
+  const limited = rateLimit({
+    cache,
+    windowMs: 60_000,
+    max: 2,
+    key: (request) => request.remoteAddress ?? 'unknown',
+  })(() => complete(Status.OK, { ok: true }));
+  const pay = idempotent({ cache })(() => complete(Status.OK, { ok: true }));
+
+  expect((await limited(makeRequest())).status).toBe(Status.OK);
+  expect((await limited(makeRequest())).status).toBe(Status.OK);
+  const beforeFlood = (await limited(makeRequest())).status;
+
+  for (let i = 0; i < 20; i++) {
+    await pay(makeRequest({ 'idempotency-key': `flood-${i}` }, '/payments'));
+  }
+
+  return { beforeFlood, afterFlood: (await limited(makeRequest())).status };
+}

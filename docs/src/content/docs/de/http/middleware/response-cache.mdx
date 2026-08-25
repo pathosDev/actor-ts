@@ -205,8 +205,20 @@ import { Aside } from '@astrojs/starlight/components';
   sowie Redis unter `allkeys-lru` haben keine solche Politik.  Gib
   dieser Middleware eine eigene Instanz — oder
   `ext.cache('response-cache')` — statt der, die eine Garantie
-  durchsetzt.  Siehe
-  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
+  durchsetzt.  Wo eine Instanz geteilt werden muss, gib ihr eine
+  `prefixQuotas`-Reservierung für den `keyPrefix` dieser Middleware; das
+  begrenzt die Flut auf diesen Anteil, egal was die Map sonst hält:
+
+  ```hocon
+  actor-ts.cache.shared.in-memory {
+    maxEntries = 10000
+    prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+  }
+  ```
+
+  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+  und [eine Instanz nach Key-Präfix aufteilen](/de/cache/in-memory/#eine-instanz-nach-key-präfix-aufteilen).
 </Aside>
 
 ## Wohin als Nächstes

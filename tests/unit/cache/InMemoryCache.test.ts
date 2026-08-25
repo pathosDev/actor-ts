@@ -462,6 +462,182 @@ describe('InMemoryCache — eviction prefers entries that carry no guarantee (#1
   });
 });
 
+/**
+ * #607 — the step #1080 left undone.  Preferring guarantee-free victims ranks
+ * *what an entry is for*; it does not rank *whose entry it is*, so two
+ * consumers sharing one instance still evicted each other as soon as the map
+ * held nothing cheaper.  The issue's own words for the fix: "per-prefix quotas
+ * so `rsp:` inserts can only evict `rsp:` entries".
+ *
+ * A quota is a cap and a reservation at once, and these tests bind both
+ * halves, because either one alone leaves the hole open.  Cap without
+ * reservation and a flood simply evicts its neighbours before it ever reaches
+ * its own limit; reservation without cap and the flood grows until the map
+ * does.  The prefix boundary is also deliberately *orthogonal* to #1080's
+ * guarantee: it protects an ordinary `set` from another prefix just as it
+ * protects a lock, because whose key space a caller can enumerate is a
+ * different question from what losing an entry costs.
+ *
+ * The two things it does not do are asserted as firmly as the things it does:
+ * `maxEntries` is still the hard cap (a configuration that reserves the whole
+ * map does not get to grow it), and a quota bounds a prefix rather than a
+ * caller, which is why `tests/unit/http/cache/SharedCacheEviction.test.ts`
+ * still characterises a same-prefix flood as an open exposure.
+ */
+describe('InMemoryCache — per-prefix quotas (#607)', () => {
+  /** Comfortably past every cap used here, so eviction is not order-sensitive. */
+  const FLOOD_SIZE = 20;
+
+  test('a flood under one prefix evicts only that prefix\'s entries', async () => {
+    const cache = new InMemoryCache({
+      maxEntries: 4,
+      cleanupMs: 0,
+      prefixQuotas: { 'rsp:': 2, 'idem:': 2 },
+    });
+    await cache.set('idem:pay-1', { charge: 1 }, 60_000);
+    await cache.set('idem:pay-2', { charge: 2 }, 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i, 60_000);
+
+    expect((await cache.get('idem:pay-1')).toNullable()).toEqual({ charge: 1 });
+    expect((await cache.get('idem:pay-2')).toNullable()).toEqual({ charge: 2 });
+    // The flood really did have to evict — otherwise the assertions above hold
+    // because nothing ever reached a cap, which proves nothing.
+    expect(cache.sizeOfPrefixForTest('rsp:')).toBe(2);
+    await cache.close();
+  });
+
+  /**
+   * The A/B that names what the quota changed.  Both caches see the identical
+   * flood of guarantee-carrying claims; only the divided one keeps the
+   * counter.  This is the shape behind two of the three exposures #607 was
+   * left holding — a counter flood evicting an idempotency record, and an
+   * off-limiter `Idempotency-Key` flood resetting the flooder's own limit.
+   */
+  test('a guarantee-carrying flood cannot reach another prefix\'s guarantee', async () => {
+    const divided = new InMemoryCache({
+      maxEntries: 4,
+      cleanupMs: 0,
+      prefixQuotas: { 'rl:': 2, 'idem:': 2 },
+    });
+    const undivided = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+
+    for (const cache of [divided, undivided]) {
+      expect(await cache.incr('rl:198.51.100.7', 60_000)).toBe(1);
+      for (let i = 0; i < FLOOD_SIZE; i++) {
+        await cache.setIfAbsent(`idem:attacker-${i}`, { inFlight: true }, 60_000);
+      }
+    }
+
+    // Divided: the window continues.  Undivided: it silently restarts at 1,
+    // which is the reset the issue is titled after.
+    expect(await divided.incr('rl:198.51.100.7', 60_000)).toBe(2);
+    expect(await undivided.incr('rl:198.51.100.7', 60_000)).toBe(1);
+
+    await divided.close();
+    await undivided.close();
+  });
+
+  /**
+   * The reservation half, isolated.  `rl:a` is a plain `set` — it carries no
+   * #1080 guarantee at all — and survives a flood that fills the map, purely
+   * because its prefix is below its quota and that space belongs to nobody
+   * else.
+   */
+  test('a prefix below its quota is not evicted from by another prefix\'s growth', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0, prefixQuotas: { 'rl:': 3 } });
+    await cache.set('rl:a', 'counter');
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`k${i}`, i);
+
+    expect((await cache.get('rl:a')).toNullable()).toBe('counter');
+    expect(cache.sizeOfPrefixForTest('rl:')).toBe(1);
+    expect(cache.sizeForTest()).toBe(4);
+    await cache.close();
+  });
+
+  test('the longest configured prefix claims a key', async () => {
+    const cache = new InMemoryCache({
+      maxEntries: 3,
+      cleanupMs: 0,
+      prefixQuotas: { 'rl:': 1, 'rl:tenant-a:': 2 },
+    });
+    await cache.set('rl:other', 'shared');
+    await cache.set('rl:tenant-a:1', 1);
+    await cache.set('rl:tenant-a:2', 2);
+    await cache.set('rl:tenant-a:3', 3);   // tenant-a is full — it eats its own
+
+    expect((await cache.get('rl:tenant-a:1')).isNone()).toBe(true);
+    expect((await cache.get('rl:other')).toNullable()).toBe('shared');
+    expect(cache.sizeOfPrefixForTest('rl:tenant-a:')).toBe(2);
+    expect(cache.sizeOfPrefixForTest('rl:')).toBe(1);
+    await cache.close();
+  });
+
+  /**
+   * HTTP-2 non-regression, in the one configuration that can collide with it:
+   * the quotas reserve every slot, so a key matching no prefix has nowhere of
+   * its own to go.  A reservation is not permission to grow the map, so the
+   * write takes a reserved slot rather than the cap taking the loss.
+   */
+  test('maxEntries stays a hard cap when the quotas reserve the whole map', async () => {
+    const cache = new InMemoryCache({ maxEntries: 2, cleanupMs: 0, prefixQuotas: { 'a:': 2 } });
+    await cache.set('a:1', 1);
+    await cache.set('a:2', 2);
+    await cache.set('unreserved', 3);
+
+    expect(cache.sizeForTest()).toBe(2);
+    expect((await cache.get('unreserved')).toNullable()).toBe(3);
+    await cache.close();
+  });
+
+  test('a quota caps a prefix even in an unbounded map', async () => {
+    const cache = new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0, prefixQuotas: { 'rsp:': 3 } });
+    for (let i = 0; i < FLOOD_SIZE; i++) {
+      await cache.set(`rsp:/public/${i}`, i);
+      await cache.set(`k${i}`, i);
+    }
+    expect(cache.sizeOfPrefixForTest('rsp:')).toBe(3);
+    expect(cache.sizeForTest()).toBe(3 + FLOOD_SIZE);
+    await cache.close();
+  });
+
+  /** Inside a bucket nothing changed: guarantee-free entries go first, then LRU. */
+  test('within one prefix the guarantee split and the recency order still decide', async () => {
+    const cache = new InMemoryCache({ maxEntries: 10, cleanupMs: 0, prefixQuotas: { 'x:': 3 } });
+    expect(await cache.setIfAbsent('x:claim', { inFlight: true }, 60_000)).toBe(true);
+    await cache.set('x:a', 'first');
+    await cache.set('x:b', 'second');
+    await cache.set('x:c', 'third');       // at quota — the oldest `set` goes
+
+    expect((await cache.get('x:a')).isNone()).toBe(true);
+    expect((await cache.get('x:claim')).toNullable()).toEqual({ inFlight: true });
+    expect((await cache.get('x:b')).toNullable()).toBe('second');
+    await cache.close();
+  });
+
+  /** A prefix nothing reserved has no bucket of its own, and reads as holding nothing. */
+  test('sizeOfPrefixForTest answers zero for an unreserved prefix', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0, prefixQuotas: { 'a:': 2 } });
+    await cache.set('b:1', 1);
+    expect(cache.sizeOfPrefixForTest('b:')).toBe(0);
+    expect(cache.sizeForTest()).toBe(1);
+    await cache.close();
+  });
+
+  test('delete and the periodic sweep both free the reserved slot again', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 10, prefixQuotas: { 'a:': 2 } });
+    await cache.set('a:1', 1);
+    await cache.set('a:2', 2, 5);
+    await cache.delete('a:1');
+    expect(cache.sizeOfPrefixForTest('a:')).toBe(1);
+    await awaitCondition(() => cache.sizeOfPrefixForTest('a:') === 0, {
+      label: 'the sweep reclaimed the expired reserved entry',
+    });
+    await cache.close();
+  });
+});
+
 // Options plumbing (WP3): builder parity + OptionsError validation, replacing
 // the old bare-Error maxEntries guard and covering the previously-unvalidated
 // cleanupMs.
@@ -490,5 +666,48 @@ describe('InMemoryCache — options + validation', () => {
   test('accepts the documented opt-out values (Infinity maxEntries, 0 cleanupMs)', () => {
     expect(() => new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0 })).not.toThrow();
     expect(() => new InMemoryCache({ cleanupMs: Infinity })).not.toThrow();
+  });
+
+  test('builder form carries prefixQuotas the same way', async () => {
+    const cacheOptions = InMemoryCacheOptions.create()
+      .withMaxEntries(4)
+      .withCleanupMs(0)
+      .withPrefixQuotas({ 'a:': 2 });
+    const cache = new InMemoryCache(cacheOptions);
+    for (let i = 0; i < 20; i++) await cache.set(`a:${i}`, i);
+    expect(cache.sizeOfPrefixForTest('a:')).toBe(2);
+    await cache.close();
+  });
+
+  /**
+   * The cross-field rule, and the reason it is one: reservations the map
+   * cannot honour would be broken in the eviction path, silently, long after
+   * the configuration that caused it was written.
+   */
+  test('rejects prefixQuotas that reserve more than maxEntries', () => {
+    expect(() => new InMemoryCache({ maxEntries: 4, prefixQuotas: { 'a:': 3, 'b:': 3 } }))
+      .toThrow(OptionsError);
+    expect(() => new InMemoryCache({ maxEntries: 4, prefixQuotas: { 'a:': 3, 'b:': 3 } }))
+      .toThrow(/prefixQuotas/);
+    // The default cap counts when maxEntries is unset — the sum is checked
+    // against what the instance will actually be built with.
+    expect(() => new InMemoryCache({ prefixQuotas: { 'a:': DEFAULT_MAX_ENTRIES + 1 } }))
+      .toThrow(/prefixQuotas/);
+  });
+
+  test('rejects a quota that is not a positive integer, and an empty prefix', () => {
+    expect(() => new InMemoryCache({ prefixQuotas: { 'a:': 0 } })).toThrow(/prefixQuotas/);
+    expect(() => new InMemoryCache({ prefixQuotas: { 'a:': 1.5 } })).toThrow(/prefixQuotas/);
+    expect(() => new InMemoryCache({ prefixQuotas: { 'a:': Infinity } })).toThrow(/prefixQuotas/);
+    expect(() => new InMemoryCache({ prefixQuotas: { '': 2 } })).toThrow(/empty prefix/);
+    expect(() => new InMemoryCache({ prefixQuotas: 4 as unknown as Record<string, number> }))
+      .toThrow(OptionsError);
+  });
+
+  test('accepts quotas that exactly reserve the map, and quotas on an unbounded one', () => {
+    expect(() => new InMemoryCache({ maxEntries: 4, cleanupMs: 0, prefixQuotas: { 'a:': 2, 'b:': 2 } }))
+      .not.toThrow();
+    expect(() => new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0, prefixQuotas: { 'a:': 2 } }))
+      .not.toThrow();
   });
 });

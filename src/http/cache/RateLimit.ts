@@ -35,16 +35,19 @@ import {
  *   });
  *   route(post('/api/expensive', limited(handler)));
  *
- * **Security — give this middleware its own cache (security audit
- * HTTP-8):** the counter that enforces the limit lives in the cache, and
- * `InMemoryCache` is LRU-bounded at `maxEntries`.  Since #1080 it counts
- * a counter as carrying a guarantee — `incr` with a `windowMs` created it
- * — and evicts entries that carry none first, so a flood of
- * response-cache keys through a shared instance no longer resets other
- * clients' windows.  It does not rank guarantees against each other,
- * though: on an instance shared with `idempotent`, an attacker-chosen
- * `Idempotency-Key` flood is a flood of claims, and once the map holds
- * nothing cheaper the counters go with them.
+ * **Security — give this middleware its own cache, or reserve its share
+ * of a shared one (security audit HTTP-8):** the counter that enforces
+ * the limit lives in the cache, and `InMemoryCache` is LRU-bounded at
+ * `maxEntries`.  Since #1080 it counts a counter as carrying a guarantee
+ * — `incr` with a `windowMs` created it — and evicts entries that carry
+ * none first, so a flood of response-cache keys through a shared instance
+ * no longer resets other clients' windows.  That ranks what an entry is
+ * for; since #607 `prefixQuotas` ranks whose entry it is, so a shared
+ * instance configured with `{ 'rl:': n, 'idem:': m, … }` confines each
+ * consumer's flood to its own reservation.  Without one, an
+ * attacker-chosen `Idempotency-Key` flood on the same instance is a flood
+ * of claims, and once the map holds nothing cheaper the counters go with
+ * them.
  *
  * **A flooder can reset its OWN limit, but only from outside the
  * limiter** (#607).  Two cases, and the difference is which of them the
@@ -55,22 +58,27 @@ import {
  *     it is never the least-recently-used victim however long the flood
  *     runs.  This holds even after the limiter starts answering 429: the
  *     `incr` happens before the `max` comparison.
- *   - *Bypassing this limiter* — not safe.  A key-minting route on the
- *     same `Cache` that the limiter does not wrap never bumps the
- *     counter, so it ages like anyone else's.  Whether it survives then
- *     depends on what the flood writes: a `cached` flood is
+ *   - *Bypassing this limiter* — not safe by default.  A key-minting
+ *     route on the same `Cache` that the limiter does not wrap never
+ *     bumps the counter, so it ages like anyone else's.  Whether it
+ *     survives then depends on what the flood writes: a `cached` flood is
  *     opportunistic and is drained first, but a flood of `idempotent`
  *     claims carries a guarantee too, and once the opportunistic half is
  *     empty the counters are what is left to take.  Measured on one
  *     shared `maxEntries: 4` instance: a client answered 429 by
  *     `max: 2` was answered 200 again after twenty off-limiter
- *     `Idempotency-Key` requests.
+ *     `Idempotency-Key` requests.  A `prefixQuotas` reservation for
+ *     `rl:` closes exactly this: the same twenty requests then evict
+ *     inside `idem:` and the 429 stands for the whole window.
  *
  * Pass a dedicated instance (`ext.cache('rate-limit')`) and size its
  * `maxEntries` above the number of distinct keys you expect to see within
  * one `windowMs`, under `actor-ts.cache.rate-limit.in-memory` — a client
  * with an IPv6 `/64` mints them freely, and every one is a counter this
- * cache protects.
+ * cache protects.  Where one instance genuinely has to be shared, give it
+ * `prefixQuotas` instead and size `rl:` the same way; what neither buys
+ * is protection from a *co-tenant of the same prefix*, which is what
+ * `keyPrefix` and a per-caller `key` are for.
  *
  * **Security — choosing `key` (security audit HTTP-3):** derive it from a
  * value the client can't freely forge.  `request.remoteAddress` (the socket peer)

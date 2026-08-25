@@ -259,14 +259,18 @@ await cache.mset(new Map([
   ```
   `InMemoryCache` evictet Einträge ohne Garantie, bevor er einen
   Rate-Limit-Zähler, einen Idempotency-Record oder ein Lock anfasst —
-  eine Flut von Response-Cache-Keys erreicht diese also nicht mehr.  Er
-  ordnet Garantien aber nicht gegeneinander, und Memcached sowie Redis
-  unter `allkeys-lru` evictieren serverseitig, wo eine solche Politik
-  gar nicht hinreicht.  Gib jedem Consumer eine eigene benannte
-  Instanz (`cache('rate-limit')`, `cache('idempotency')`), damit ein
-  Aufrufer, der den Key-Raum des einen aufzählt, den State des anderen
-  nicht erreicht.  Siehe
-  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
+  eine Flut von Response-Cache-Keys erreicht diese also nicht mehr.
+  Diese Ordnung ist aber blind dafür, *wessen* Eintrag es ist: eine Flut
+  von Claims oder Zählern nimmt weiterhin den State eines anderen
+  Consumers, und Memcached sowie Redis unter `allkeys-lru` evictieren
+  serverseitig, wo eine solche Politik gar nicht hinreicht.  Gib jedem
+  Consumer eine eigene benannte Instanz (`cache('rate-limit')`,
+  `cache('idempotency')`), damit ein Aufrufer, der den Key-Raum des
+  einen aufzählt, den State des anderen nicht erreicht — oder
+  reserviere, wo eine Instanz geteilt werden muss, den Anteil jedes
+  Consumers mit `prefixQuotas`.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+  und [eine Instanz nach Key-Präfix aufteilen](/de/cache/in-memory/#eine-instanz-nach-key-präfix-aufteilen).
 </Aside>
 
 ## Wohin als Nächstes

@@ -34,11 +34,14 @@ TTL wird weiterhin **pro Aufruf** übergeben (siehe
 | --- | --- | --- | --- |
 | `maxEntries` | `withMaxEntries(n)` | `10000` | LRU-Schranke für gespeicherte Einträge.  `Infinity` = unbegrenzt. |
 | `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge (ms).  `0` / `Infinity` schaltet den Sweep ab. |
+| `prefixQuotas` | `withPrefixQuotas(table)` | *(keine)* | Reservierungen je Key-Präfix, `{ 'rsp:': 8000, 'idem:': 2000 }`.  Ohne Angabe bleibt die Map ungeteilt — siehe [eine Instanz nach Key-Präfix aufteilen](#eine-instanz-nach-key-präfix-aufteilen). |
 
 Werte werden einmalig beim Konstruieren auf den gemergten Settings
 validiert: `maxEntries` muss eine positive Ganzzahl (oder `Infinity`)
-sein und `cleanupMs` eine nicht-negative Zahl (oder `Infinity`).  Ein
-ungültiger Wert wirft
+sein, `cleanupMs` eine nicht-negative Zahl (oder `Infinity`) und jede
+Quote in `prefixQuotas` eine positive Ganzzahl unter einem nicht-leeren
+Präfix, wobei die Quoten in Summe höchstens `maxEntries` ergeben dürfen.
+Ein ungültiger Wert wirft
 [`OptionsError`](/de/reference/configuration/#validierung) — der
 Builder, ein einfaches Objekt und HOCON treffen alle dieselbe Prüfung.
 
@@ -122,9 +125,11 @@ geschrieben und nie zurückgelesen wird (ein Idempotency-Record, der noch
 auf den Retry des Clients wartet), altert ab dem Moment der Speicherung
 auf die Eviction zu.
 
-Aktualität ist allerdings nicht das *einzige* Kriterium: welche Einträge
-die Schranke zuerst greift, hängt davon ab, was sie tragen — darum geht
-es im nächsten Abschnitt.
+Aktualität ist allerdings nicht das *einzige* Kriterium — sie ist das
+letzte von dreien.  Die Eviction fragt zuerst, zu welchem Key-Präfix ein
+Eintrag gehört, dann was er trägt, und erst danach, wie kürzlich er
+gelesen wurde.  Um die beiden vorderen Fragen geht es im nächsten
+Abschnitt.
 
 Setze `maxEntries: Infinity`, um die Eviction ganz abzuschalten.  Tu
 das nur, wenn du den Key-Raum kontrollierst — eine unbegrenzte Map
@@ -183,10 +188,13 @@ Dinge, die du einplanen musst:
   Locks hinaus, die innerhalb einer TTL gleichzeitig leben.**  Ein Cache,
   der nur Locks hält, evictet an der Schranke sein ältestes Lock — und
   der nächste Aufrufer bekommt dann ein Lock, das jemand noch hält.
-- **Die Politik ordnet Garantien nicht gegeneinander.**  Zwei Consumer,
-  die je eine Garantie tragen und sich eine Instanz teilen, evictieren
-  sich weiterhin gegenseitig; ein Cache pro Consumer bleibt daher die
-  Empfehlung (unten).
+- **Die Garantie-Aufteilung ordnet Garantien nicht gegeneinander.**
+  Zwei Consumer, die je eine Garantie tragen und sich eine Instanz
+  teilen, evictieren sich allein nach Aktualität — eine Zähler-Flut
+  nimmt Idempotency-Records, sobald die Map nichts Billigeres mehr hält.
+  Gib jedem Consumer seinen eigenen Cache (unten), oder teile den
+  gemeinsamen mit `prefixQuotas` auf
+  ([nächster Abschnitt](#eine-instanz-nach-key-präfix-aufteilen)).
 - **Eine Garantie, die du selbst mit einem einfachen `set` ablegst, wird
   nicht erkannt** — der Cache kann sie nicht von einem Response-Body
   unterscheiden.  Schreibe den Claim mit `setIfAbsent`, oder nimm ihn mit
@@ -199,6 +207,56 @@ Und nichts davon folgt einem entfernten Backend.  Redis unter
 `maxmemory-policy allkeys-lru` und Memcached evictieren serverseitig, wo
 keine clientseitige Politik hinreicht — siehe die
 [Memcached-Seite](/de/cache/memcached/).
+
+### Eine Instanz nach Key-Präfix aufteilen
+
+`prefixQuotas` teilt eine Map unter den Consumern auf, die in sie
+schreiben.  Jeder Eintrag ist ein Key-Präfix und die Zahl der für ihn
+reservierten Einträge:
+
+```ts
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts/cache';
+
+const cacheOptions = InMemoryCacheOptions.create()
+  .withMaxEntries(10_000)
+  .withPrefixQuotas({ 'rsp:': 7_000, 'idem:': 2_000, 'rl:': 1_000 });
+const shared = new InMemoryCache(cacheOptions);
+```
+
+Eine Quote ist **Schranke und Reservierung zugleich**, und beide Hälften
+machen sie erst zu einer Grenze statt zu einem Hinweis:
+
+- als *Schranke* nimmt ein Präfix, das seine Quote erreicht hat, sein
+  nächstes Opfer aus sich selbst — wer also Keys unter einem Präfix
+  erzeugen kann, evictet nur die eigenen Einträge dieses Präfixes;
+- als *Reservierung* stehen die Einträge, die ein Präfix unterhalb
+  seiner Quote hält, niemandem sonst zur Verfügung — die Flut erreicht
+  also auch keinen Rate-Limit-Zähler auf der anderen Seite der Map.
+
+Ein Key gehört zum **längsten** konfigurierten Präfix, mit dem er
+beginnt, und zu einem gemeinsamen unreservierten Rest, wenn er mit
+keinem beginnt.  Die Quoten müssen in Summe höchstens `maxEntries`
+ergeben: eine Reservierung, die die Map nicht einlösen kann, wird beim
+Konstruieren abgelehnt, statt unter Last gebrochen zu werden.  Innerhalb
+eines Buckets ändert sich an der Garantie-Aufteilung nichts —
+opportunistische Einträge gehen weiterhin vor garantierten, am längsten
+nicht genutzte zuerst.
+
+Zwei Dinge tut sie **nicht**:
+
+- **Sie begrenzt ein Präfix, keinen Aufrufer.**  Zwei Clients, die
+  `Idempotency-Key`s senden, teilen sich die `idem:`-Reservierung und
+  evictieren sich weiterhin gegenseitig.  Nur ein Key-Raum je Aufrufer
+  hilft hier (ein `identity`-Scope über eine bekannte, kleine Menge von
+  Mandanten, jeder einzeln reserviert) — und `Idempotency-Key` allein
+  ist keiner.
+- **Sie lässt die Map nicht wachsen.**  `maxEntries` bleibt die harte
+  Schranke; eine Konfiguration, die jeden Platz reserviert, führt dazu,
+  dass ein unreservierter Write einen aus einer Reservierung nimmt,
+  statt dass die Schranke nachgibt.
+
+Auf `RedisCache` oder `MemcachedCache` gibt es dazu kein Gegenstück —
+beide evictieren serverseitig, wo keine clientseitige Politik hinreicht.
 
 ### Was eine verlorene Garantie kostet
 
@@ -251,18 +309,36 @@ actor-ts.cache {
 
 Der Block je Name gewinnt Blatt für Blatt gegen den globalen, ein
 Override setzt also nur, was er nennt, und der Rest fällt weiterhin
-durch.  Der Name gehört dir, deshalb sind diese Pfade nicht in
+durch — die einzige Ausnahme ist `prefixQuotas`: eine Tabelle wird als
+Ganzes überlagert, denn eine halb geerbte Tabelle ist eine Summe, die
+niemand aufgeschrieben hat.  Der Name gehört dir, deshalb sind diese
+Pfade nicht in
 [reference.conf](/de/reference/reference-conf/) aufgeführt — aus dem
 gleichen Grund, aus dem `actor-ts.cache.<name>.plugin` es nicht ist.
 Ein ungültiger Wert wird beim ersten `cache(name)` mit einem
 `OptionsError` abgelehnt, statt die Map still auf den Default zu
 dimensionieren.
 
-Das verkleinert den Explosionsradius, beseitigt ihn aber nicht: eine
-Middleware, deren eigener Key-Raum angreiferkontrolliert ist, kann
-weiterhin ihre eigenen Einträge evictieren — ein Client mit einem
-IPv6-`/64` erzeugt beliebig viele Rate-Limit-Keys, und jeder davon ist
-ein Zähler, den diese Politik schützt.  Wo das zählt, hinterlege den
+Wo eine Instanz wirklich geteilt werden muss — ein einziger Cache für
+alle drei Middlewares —, reserviere stattdessen den Anteil jedes
+Consumers:
+
+```hocon
+actor-ts.cache.shared.in-memory {
+  maxEntries = 10000
+  prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+}
+```
+
+Die Präfixe sind die `keyPrefix`-Optionen der Middlewares; sie müssen in
+HOCON gequotet werden, weil sie einen Doppelpunkt enthalten.
+
+So oder so verkleinert sich der Explosionsradius, statt zu verschwinden:
+eine Middleware, deren eigener Key-Raum angreiferkontrolliert ist,
+evictet weiterhin ihre eigenen Einträge, und keine Quote ändert das —
+ein Client mit einem IPv6-`/64` erzeugt beliebig viele Rate-Limit-Keys,
+und jeder davon ist ein Zähler, den diese Politik unter derselben
+`rl:`-Reservierung schützt.  Wo das zählt, hinterlege den
 sicherheitsrelevanten Consumer mit Redis (den du separat dimensionierst
 und überwachst) statt mit einer prozesslokalen LRU.
 
@@ -292,6 +368,7 @@ Der von der Extension gebaute In-Memory-Cache liest seine Defaults aus HOCON:
 actor-ts.cache.in-memory {
   maxEntries = 50000   # LRU cap
   cleanupMs  = 30000   # background sweep interval, ms (0 disables)
+  # prefixQuotas { "rsp:" = 40000, "idem:" = 10000 }   # optional, off by default
 }
 ```
 

@@ -252,13 +252,17 @@ await cache.mset(new Map([
   ```
   `InMemoryCache` evicts entries that carry no guarantee before it
   touches a rate-limit counter, an idempotency record or a lock — so a
-  response-cache key flood no longer reaches them.  But it does not
-  rank guarantees against each other, and Memcached and Redis under
+  response-cache key flood no longer reaches them.  But that ranking is
+  blind to *whose* entry it is, so a flood of claims or counters still
+  takes another consumer's state, and Memcached and Redis under
   `allkeys-lru` evict server-side where no such policy reaches at all.
   Give each consumer its own named instance (`cache('rate-limit')`,
   `cache('idempotency')`), so a caller who enumerates one consumer's
-  key space cannot reach another's state.  See
-  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not).
+  key space cannot reach another's state — or, where one instance has
+  to be shared, reserve each consumer's share of it with
+  `prefixQuotas`.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not)
+  and [dividing one instance by key prefix](/cache/in-memory/#dividing-one-instance-by-key-prefix).
 </Aside>
 
 ## Where to next
