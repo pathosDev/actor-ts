@@ -33,10 +33,13 @@ at construction time.
 | --- | --- | --- | --- |
 | `maxEntries` | `withMaxEntries(n)` | `10000` | LRU cap on stored entries.  `Infinity` = unbounded. |
 | `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Background expired-entry sweep interval (ms).  `0` / `Infinity` disables the sweep. |
+| `prefixQuotas` | `withPrefixQuotas(table)` | *(none)* | Per-key-prefix reservations, `{ 'rsp:': 8000, 'idem:': 2000 }`.  Unset, the map is undivided — see [dividing one instance by key prefix](#dividing-one-instance-by-key-prefix). |
 
 Values are validated once, at construction, on the merged settings:
-`maxEntries` must be a positive integer (or `Infinity`) and `cleanupMs`
-a non-negative number (or `Infinity`).  A bad value throws
+`maxEntries` must be a positive integer (or `Infinity`), `cleanupMs`
+a non-negative number (or `Infinity`), and every quota in
+`prefixQuotas` a positive integer under a non-empty prefix, with the
+quotas summing to at most `maxEntries`.  A bad value throws
 [`OptionsError`](/reference/configuration/#validation) — the
 builder, a plain object, and HOCON all hit the same check.
 
@@ -115,9 +118,10 @@ So a hot key survives, but an entry that is written once and never read
 back — an idempotency record still waiting for the client's retry —
 ages towards eviction from the moment it is stored.
 
-Recency is not the *only* criterion, though: which entries the cap
-reaches for first depends on what they carry, and that is the next
-section.
+Recency is not the *only* criterion, though — it is the last of three.
+Eviction asks which key prefix an entry belongs to, then what it
+carries, and only then how recently it was read.  Both of the earlier
+questions are the next section.
 
 Set `maxEntries: Infinity` to opt out of eviction entirely.  Only do
 this when you control the key space — an unbounded map OOMs the process
@@ -174,9 +178,12 @@ things to plan for:
   live inside one TTL.**  A cache holding nothing but locks evicts its
   oldest lock at the cap, and the next caller then acquires a lock
   somebody still holds.
-- **The policy does not rank guarantees against each other.**  Two
-  guarantee-carrying consumers sharing one instance still evict each
-  other, so one cache per consumer stays the advice (below).
+- **The guarantee split does not rank guarantees against each other.**
+  Two guarantee-carrying consumers sharing one instance evict each
+  other on recency alone — a counter flood takes idempotency records
+  once the map holds nothing cheaper.  Give each consumer its own cache
+  (below), or divide the shared one with `prefixQuotas`
+  ([next section](#dividing-one-instance-by-key-prefix)).
 - **A guarantee you store yourself with a plain `set` is not
   recognised** — the cache cannot tell it from a response body.  Write
   the claim with `setIfAbsent`, or take it with `acquireLock`.
@@ -188,6 +195,51 @@ And none of it follows a remote backend.  Redis under
 `maxmemory-policy allkeys-lru` and Memcached both evict server-side,
 where no client-side policy reaches — see the
 [Memcached page](/cache/memcached/).
+
+### Dividing one instance by key prefix
+
+`prefixQuotas` splits one map between the consumers writing into it.
+Each entry is a key prefix and the number of entries reserved for it:
+
+```ts
+import { InMemoryCache, InMemoryCacheOptions } from 'actor-ts/cache';
+
+const cacheOptions = InMemoryCacheOptions.create()
+  .withMaxEntries(10_000)
+  .withPrefixQuotas({ 'rsp:': 7_000, 'idem:': 2_000, 'rl:': 1_000 });
+const shared = new InMemoryCache(cacheOptions);
+```
+
+A quota is a **cap and a reservation at once**, and both halves are
+what make it a boundary rather than a hint:
+
+- as a *cap*, a prefix that has reached its quota takes its next victim
+  from inside itself — so a caller who can mint keys under one prefix
+  evicts only that prefix's own entries;
+- as a *reservation*, the entries a prefix holds below its quota are
+  not available to anybody else — so the flood cannot reach a
+  rate-limit counter on the other side of the map either.
+
+A key belongs to the **longest** configured prefix it starts with, and
+to a shared unreserved remainder when it starts with none.  The quotas
+must sum to at most `maxEntries`: a reservation the map cannot honour
+is refused at construction rather than broken under load.  Nothing
+about the guarantee split changes inside a bucket — opportunistic
+entries still go before guaranteed ones, least-recently-used first.
+
+Two things it does **not** do:
+
+- **It bounds a prefix, not a caller.**  Two clients sending
+  `Idempotency-Key`s share the `idem:` reservation and still evict each
+  other.  A per-caller key space (an `identity` scope over a known,
+  small set of tenants, each reserved separately) is the only shape of
+  this that helps, and `Idempotency-Key` on its own is not one.
+- **It does not grow the map.**  `maxEntries` remains the hard cap, so
+  a configuration that reserves every slot leaves an unreserved write
+  taking one from a reservation rather than the cap taking the loss.
+
+There is no equivalent on `RedisCache` or `MemcachedCache` — both evict
+server-side, where no client-side policy reaches.
 
 ### What a dropped guarantee costs
 
@@ -237,19 +289,35 @@ actor-ts.cache {
 ```
 
 The per-name block wins over the global one leaf by leaf, so an
-override sets only what it names and the rest still falls through.  The
-name is yours, so these paths are not listed in
+override sets only what it names and the rest still falls through — the
+one exception is `prefixQuotas`, which is a table and is layered whole,
+because a half-inherited table is a sum nobody wrote down.  The name is
+yours, so these paths are not listed in
 [reference.conf](/reference/reference-conf/) — the same reason
 `actor-ts.cache.<name>.plugin` is not.  A bad value is refused at the
 first `cache(name)` with an `OptionsError` rather than quietly sizing
 the map at the default.
 
-That narrows the blast radius rather than removing it: a middleware
-whose own key space is attacker-controlled can still evict its own
-entries — a client with an IPv6 `/64` mints rate-limit keys all day, and
-every one of them is a counter this policy protects.  Where that
-matters, back the security-relevant consumer with Redis (which you size
-and monitor independently) instead of an in-process LRU.
+Where one instance genuinely has to be shared — a single cache handed
+to all three middlewares — reserve each consumer's share of it instead:
+
+```hocon
+actor-ts.cache.shared.in-memory {
+  maxEntries = 10000
+  prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+}
+```
+
+The prefixes are the middlewares' `keyPrefix` options, and they need
+quoting in HOCON because they contain a colon.
+
+Either way the blast radius narrows rather than disappearing: a
+middleware whose own key space is attacker-controlled still evicts its
+own entries, and no quota changes that — a client with an IPv6 `/64`
+mints rate-limit keys all day, and every one of them is a counter this
+policy protects under the same `rl:` reservation.  Where that matters,
+back the security-relevant consumer with Redis (which you size and
+monitor independently) instead of an in-process LRU.
 
 ## Sharing across the system
 
@@ -277,6 +345,7 @@ The in-memory cache built by the extension reads its defaults from HOCON:
 actor-ts.cache.in-memory {
   maxEntries = 50000   # LRU cap
   cleanupMs  = 30000   # background sweep interval, ms (0 disables)
+  # prefixQuotas { "rsp:" = 40000, "idem:" = 10000 }   # optional, off by default
 }
 ```
 

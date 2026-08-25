@@ -64,11 +64,14 @@ export interface Cache {
    * configuration — it is the default one.  `InMemoryCache` is
    * LRU-bounded at 10 000 entries out of the box (it prefers to evict
    * entries that carry no guarantee, which covers this method's writes,
-   * but the bound is still hard); Memcached's eviction is server-side
-   * LRU with no client-side policy at all; and Redis under
-   * `maxmemory-policy allkeys-lru` behaves the same.  So size the cache
-   * for the number of live claims and don't share the instance with a
-   * consumer whose key space a caller can enumerate.
+   * and it can reserve a share of the map per key prefix, but the bound
+   * is still hard); Memcached's eviction is server-side LRU with no
+   * client-side policy at all; and Redis under `maxmemory-policy
+   * allkeys-lru` behaves the same.  So size the cache for the number of
+   * live claims and don't share the instance with a consumer whose key
+   * space a caller can enumerate — or, when you must, reserve this
+   * consumer's prefix out of it (`InMemoryCache`'s `prefixQuotas`, which
+   * has no equivalent on a backend that evicts server-side).
    *
    * `ttlMs` is applied **only on the write that wins** — a losing call
    * leaves the incumbent entry's expiry untouched, so a retry loop can

@@ -44,7 +44,9 @@ This document tracks the planned direction.  Nothing here is committed work — 
   `reference.conf` expansion tracked in #887; the residual security items
   the wave narrowed rather than closed (#112 needs a **required** incarnation
   on the wire, which is #823's wire break and not #940's optional field;
-  #607's eviction residual is closed by #1080); #766, whose titled fix turns
+  #607's eviction residual is closed by its own `prefixQuotas`, on top of
+  #1080's guarantee split — what remains after both is a flood inside one
+  key prefix, which is configuration rather than policy); #766, whose titled fix turns
   out to be insufficient on its own; and the fresh audit round
   #1166–#1193, which is unstarted and holds several `priority: high`
   correctness defects — `PersistentActor` has no fencing (#1166),
@@ -175,8 +177,12 @@ This document tracks the planned direction.  Nothing here is committed work — 
     asserted by execution in `GossipReplayGuard.test.ts`, the last two as
     exploits; closing them needs a **required** incarnation on the wire,
     which is #823's wire break rather than the optional field #940 landed.
-    #607's key bound is necessary but not sufficient without #1080's
-    eviction policy.  #602 deliberately has no HOCON key, because one would
+    #607's key bound was necessary but not sufficient; #1080's guarantee
+    split and #607's own `prefixQuotas` are the rest of it, and what
+    survives both is a flood inside a single key prefix — an attacker who
+    chooses the `Idempotency-Key`s evicts other callers' records out of the
+    reservation they share, which no eviction policy fixes and Redis or a
+    larger bound does.  #602 deliberately has no HOCON key, because one would
     reach `HttpExtension.client` and silently not the `HttpClient` inside
     `D1Client` — a bound that applies to some clients and not others is
     worse than none

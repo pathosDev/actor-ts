@@ -42,7 +42,10 @@ import type { HttpRequest, HttpResponse } from '../Types.js';
  * evicts server-side where no such policy reaches.  This middleware is
  * the key-minting side of the trade, so hand it a dedicated instance
  * (`ext.cache('response-cache')`) rather than the one enforcing a
- * security guarantee.
+ * security guarantee — or, where one instance has to be shared, give the
+ * instance a `prefixQuotas` reservation for this middleware's
+ * {@link ResponseCacheOptions.keyPrefix} (#607), which bounds the flood
+ * to that share whatever else the map is holding.
  */
 
 export type ResponseCacheOptions = {

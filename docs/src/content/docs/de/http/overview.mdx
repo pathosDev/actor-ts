@@ -274,13 +274,16 @@ import { Aside } from '@astrojs/starlight/components';
   Eviction leert zuerst die Einträge, die keine Garantie tragen — ein
   Aufrufer, der den Response-Cache-Key variiert, erreicht die
   Rate-Limit-Zähler und Idempotency-Records *anderer* Clients also nicht
-  mehr.  Garantien ordnet sie aber nicht gegeneinander: wer den
-  `Idempotency-Key`-Header variiert, evictet Zähler und Records
-  weiterhin, sobald nichts Billigeres mehr in der Map liegt.  Getrennte
-  Instanzen (oder `ext.cache('rate-limit')` / `ext.cache('idempotency')`)
-  halten die Key-Flut der einen Middleware vollständig aus dem State der
-  anderen heraus.  Siehe
-  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht).
+  mehr.  Diese Ordnung ist aber blind dafür, wem ein Eintrag gehört: in
+  einer ungeteilten Instanz evictet, wer den `Idempotency-Key`-Header
+  variiert, Zähler und Records weiterhin, sobald nichts Billigeres mehr
+  in der Map liegt.  Getrennte Instanzen (oder `ext.cache('rate-limit')`
+  / `ext.cache('idempotency')`) halten die Key-Flut der einen Middleware
+  vollständig aus dem State der anderen heraus; wo eine Instanz geteilt
+  werden muss, reserviert `prefixQuotas` den Anteil jeder Middleware
+  daran.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+  und [eine Instanz nach Key-Präfix aufteilen](/de/cache/in-memory/#eine-instanz-nach-key-präfix-aufteilen).
 </Aside>
 
 ## HTTP an Actors anschließen
