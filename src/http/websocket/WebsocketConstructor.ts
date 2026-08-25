@@ -5,6 +5,26 @@
  * ships (Bun, Deno, Node).  Used by
  * {@link WebsocketClientActor}.  Server-side upgrades never touch
  * this — the HTTP backends own those.
+ *
+ * **There is deliberately no inbound size limit here, and there is no point
+ * adding one.**  The obvious reading of #750 is that
+ * {@link WebsocketClientConstructorOptions} should carry `maxFrameBytes` and
+ * hand it to the transport, the way the server backends hand `maxPayload` to
+ * `ws`.  Measured against this repository's supported runtimes, no native
+ * client `WebSocket` honours such a limit: constructing with `maxPayload`,
+ * `maxPayloadLength` or `maxFrameBytes` in the options bag succeeds on Bun
+ * 1.4.0, Node 26.7.0 and Deno 2.6.8, reads back `undefined` on all three, and
+ * a 4 MiB frame is still delivered in full to the `message` listener.  A field
+ * here would therefore configure nothing while reading, at every call site,
+ * as though the socket were capped — which is exactly the trap 30ec6464
+ * documents on the server side, where Bun's `ws` shim accepts `maxPayload`,
+ * reports it back unchanged, and enforces nothing.
+ *
+ * So the client's `maxFrameBytes` is necessarily post-hoc, and what it can
+ * still do is make the breach terminal rather than repeatable — see
+ * `WebsocketClientActor.rejectOversizeFrame`.  Revisit this only with a live
+ * enforcement test (send an over-cap frame, observe that the socket refuses
+ * it); a constructor that merely accepts the option proves nothing.
  */
 import { Lazy } from '../../util/Lazy.js';
 

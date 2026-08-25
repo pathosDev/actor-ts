@@ -187,12 +187,20 @@ the [Route DSL](/http/route-dsl/).
   process has buffered it — otherwise a peer could force 16 MiB (Bun) or
   100 MiB (`ws`) of buffering per frame that the framework would then discard.
   Lowering the cap — per route or via `actor-ts.http.websocket.maxFrameBytes` —
-  narrows that buffering window with it. **Two combinations have no transport
-  cap** and buffer the frame before rejecting it: Hono on **Deno**, whose
-  `upgradeWebSocket` exposes no payload limit at all, and **Bun** with the
+  narrows that buffering window with it. **Three places have no transport cap**
+  and buffer the frame before rejecting it: Hono on **Deno**, whose
+  `upgradeWebSocket` exposes no payload limit at all; **Bun** with the
   Express or Fastify backend, where `ws` resolves to Bun's built-in shim, which
-  accepts `maxPayload` and reports it back but does not enforce it. See
-  [WebSocket](/http/websocket/).
+  accepts `maxPayload` and reports it back but does not enforce it; and the
+  **outbound** [`WebsocketClientActor`](/io/websocket/) on *every* runtime — no
+  native client `WebSocket` honours a payload limit passed to its constructor,
+  measured on Bun, Node and Deno, where the option is accepted, reads back
+  `undefined`, and a 4 MiB frame is still delivered whole. On the client the
+  cap is therefore post-hoc only, and what it buys is that the breach is
+  *terminal*: an oversize frame closes the connection with 1009, so the peer
+  cannot repeat the allocation on that socket. Note the threat model differs
+  there — the peer is an endpoint you chose to dial, or a MITM on a plaintext
+  `ws://` link. See [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
 - **Responses you fetch** are untrusted input too, and the direction this list

@@ -61,7 +61,7 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
-  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
+  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
@@ -185,9 +185,22 @@ A `WebsocketFrame` is `{ kind: 'text'; data: string }` or
 `WebsocketDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
 enforced on the **raw frame before decode**.
 
-An oversize frame is dropped with a warning, one per frame — so the peer
-decides how often that line is written.  It therefore names the connection
-by a redacted label (`wss://feed.example.com/ws/orders`) rather than by
+An oversize frame **closes the connection** with code 1009 ("Message Too
+Big") and starts the usual reconnect, rather than being dropped in place.
+Be clear about what that does and does not buy you: it does **not** stop
+the allocation.  Unlike the server backends, the client has no transport
+cap to push the limit down to — no supported runtime's native `WebSocket`
+honours a payload limit passed to its constructor, so by the time
+`maxFrameBytes` is checked the runtime has already reassembled the frame
+on the heap.  What closing buys is that the peer cannot spend that heap
+*again* on the same socket: without it, one connection could be made to
+repeat the allocation for every frame it felt like sending.  Another round
+now costs the peer a full reconnect, which the `reconnect` backoff and the
+circuit breaker already throttle.  See
+[Capping untrusted input](/http/security/#capping-untrusted-input).
+
+The close is accompanied by one warning line.  It names the connection by
+a redacted label (`wss://feed.example.com/ws/orders`) rather than by
 `url`: the userinfo and the query string are stripped, since a WebSocket
 endpoint is commonly authenticated with a `?token=…`, and the path is kept
 because it is what tells two connections to the same host apart.  The same
