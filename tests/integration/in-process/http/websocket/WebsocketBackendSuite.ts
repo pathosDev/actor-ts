@@ -315,9 +315,15 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
     test('a response-decorating middleware above the route still lets the upgrade complete (#757)', async () => {
       // The unit test proves this at the `compile()` seam; this one proves
       // it end to end, through the backend's real upgrade path and a real
-      // client, on every backend the suite parameterises.  Before #757 the
-      // decorated sentinel read as a rejection and the client saw a
-      // malformed 101 with no `Sec-WebSocket-Accept`.
+      // client, on every backend the suite parameterises — which is the
+      // half a `compile()`-level assertion cannot reach, since "authorize
+      // returned null" is not yet "the socket opened".
+      //
+      // Reverting the fix fails this on all three backends with `ws errored
+      // before open`: the decorated sentinel read as a rejection, so the
+      // backend answered the upgrade with an ordinary 101-status response
+      // carrying no `Sec-WebSocket-Accept` instead of handing the socket
+      // over, and the handshake never completed.
       const { base } = await bindServer([], (s) =>
         withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', s))));
 
