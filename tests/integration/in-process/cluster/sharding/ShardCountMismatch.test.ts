@@ -52,9 +52,9 @@ const TYPE_NAME = 'entity';
  * there.  Two live instances need the two hashes to be owned by *different*
  * nodes, which needs one odd modulus.
  *
- * `user-7` hashes to shard 50 under 33.  Node A (the leader, and the lower
- * address) owns 50; node B owns 19.  So each node hosts the shard its own
- * arithmetic produced, and both would run `user-7`.
+ * `user-7` hashes to shard 50 under 64 and to shard 19 under 33.  Node A (the
+ * leader, and the lower address) owns 50; node B owns 19.  So each node hosts
+ * the shard its own arithmetic produced, and both would run `user-7`.
  */
 const NUM_SHARDS_AGREED = 64;
 const NUM_SHARDS_DISAGREEING = 33;
@@ -180,6 +180,65 @@ describe('ClusterSharding — numShards mismatch (#633)', () => {
     // quietly running a second copy.
     expect(delivered).toBe(1);
   }, 20_000);
+
+  test('a leadership move to a differently-configured node un-homes what it already hosted', async () => {
+    // The direction a rolling deploy takes, and the one refusing a
+    // *registration* does not by itself cover. The node that hosts the entity
+    // is not refused when it starts — it is alone, so its own coordinator
+    // governs the type with its own count and accepts it. The refusal arrives
+    // later, when a node with a lower address joins and takes leadership with
+    // a different count. For a region in that position the refusal used to
+    // change nothing: `localShards` and `shardHomes` still named the shard the
+    // first coordinator gave it, `route` still delivered out of them, and no
+    // handoff could take them away — `ShardCoordinator.beginHandOff` only
+    // writes to regions it holds in `regions`, and a refused one is not there.
+    const systemName = 'leader-move';
+    const base = 47_440;
+    // Started alone, so it leads and hosts; the *higher* port is what makes it
+    // stop leading a moment later, since leadership is decided by address.
+    const hosting = await startNode(systemName, base + 1, NUM_SHARDS_AGREED);
+    await awaitCondition(() => hosting.cluster.isLeader(), {
+      timeoutMs: 5_000,
+      label: 'the first node leads its own single-node cluster',
+    });
+    hosting.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => delivered === 1, {
+      timeoutMs: 5_000,
+      label: 'the entity came up on the node that was leading',
+    });
+    expect(liveEntityCount([hosting])).toBe(1);
+
+    const governing = await startNode(
+      systemName, base, NUM_SHARDS_DISAGREEING, [`${systemName}@h:${base + 1}`],
+    );
+    const nodes = [hosting, governing];
+    await awaitCondition(() => nodes.every((node) => node.cluster.upMembers().length === 2), {
+      timeoutMs: 5_000,
+      label: 'the two-node cluster converged',
+    });
+    await awaitCondition(() => governing.cluster.isLeader() && !hosting.cluster.isLeader(), {
+      timeoutMs: 5_000,
+      label: 'leadership moved to the differently-configured node',
+    });
+
+    // Not an absence, so polling is the right instrument here: the entity is
+    // live at t=0 and the claim is that it goes away.
+    await awaitCondition(() => liveEntityCount([hosting]) === 0, {
+      timeoutMs: 10_000,
+      label: 'the refused region gave up the entity it was already hosting',
+    });
+
+    // The other half: the type still works, on the terms the new leader sets.
+    // One instance, under the leader's modulus — and not a second one left
+    // behind under the old.
+    governing.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => delivered === 2, {
+      timeoutMs: 5_000,
+      label: 'the entity came back up under the new leader',
+    });
+    expect(liveEntityCount(nodes)).toBe(1);
+    expect(liveEntityCount([hosting])).toBe(0);
+  }, 40_000);
 
   test('agreeing nodes are unaffected', async () => {
     // The control for the case above: the same shape, one count, and the
