@@ -65,8 +65,7 @@ beforeEach(async () => {
   fsLazy.reset();
   directoriesRead = [];
   tmpRoot = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-scope-'));
-  const backendOptions = FilesystemObjectStorageOptions.create()
-    .withDir(tmpRoot);
+  const backendOptions = FilesystemObjectStorageOptions.create().withDir(tmpRoot);
   backend = new FilesystemObjectStorageBackend(backendOptions);
   await installReaddirCounter();
 });
