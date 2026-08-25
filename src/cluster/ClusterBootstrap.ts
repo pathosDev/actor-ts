@@ -13,7 +13,7 @@ import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOption
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
-import { ClusterOptions } from './ClusterOptions.js';
+import { ClusterOptions, resolveAdvertisedHost } from './ClusterOptions.js';
 import type { SelfElectionPolicy } from './ClusterOptions.js';
 import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
@@ -24,6 +24,7 @@ import type { StableObservationTuning } from './bootstrap/StableObservationOptio
 import {
   ClusterBootstrapOptionsValidator,
   DEFAULT_AWAIT_READY_MS,
+  DEFAULT_BIND_HOST,
   DEFAULT_PORT,
 } from './ClusterBootstrapOptions.js';
 import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
@@ -66,7 +67,13 @@ export async function bootstrapCluster(
 ): Promise<BootstrappedCluster> {
   const resolvedOptions = options as ClusterBootstrapOptionsType;
   new ClusterBootstrapOptionsValidator().validate(resolvedOptions);
-  const host = resolveHost(resolvedOptions);
+  const host = resolveBindHost(resolvedOptions);
+  // The two are the same value whenever one routable host was named, and
+  // differ exactly where the bind target is a wildcard.  Resolved here as well
+  // as in `Cluster.join` because three things upstream of the join need the
+  // identity: the election orders on it, the seed filter compares against it,
+  // and both run before `join` is called.
+  const advertisedHost = resolveAdvertisedHost({ host, advertisedHost: resolvedOptions.advertisedHost });
   const port = resolvePort(resolvedOptions);
 
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
@@ -85,7 +92,7 @@ export async function bootstrapCluster(
         tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
         fromConfig: readStableObservationOptionsFromConfig(system.config),
         seedProvider: buildSeedProviderFor(resolvedOptions, port, log),
-        selfAddress: new NodeAddress(resolvedOptions.name, host, port),
+        selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, port),
         log: (message) => system.log.info(message),
       })
       : {
@@ -94,7 +101,7 @@ export async function bootstrapCluster(
           discovery: resolvedOptions.discovery,
           systemName: resolvedOptions.name,
           port,
-          selfHost: host,
+          selfHost: advertisedHost,
           log,
         }),
       };
@@ -108,6 +115,15 @@ export async function bootstrapCluster(
     .withHost(host)
     .withPort(port)
     .withSeeds([...seeds]);
+  // Forward only what the caller actually named, never the value derived from
+  // it.  `Cluster.join` runs the same chain over the same `host` and the same
+  // environment, so it arrives at the same answer — and it can still tell that
+  // nobody named one, which is what the startup diagnostic is keyed on.
+  // Passing the derived value would suppress that warning on the path most
+  // deployments take.
+  if (resolvedOptions.advertisedHost !== undefined) {
+    clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
+  }
   if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
   if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
   if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
@@ -144,22 +160,21 @@ export async function bootstrapCluster(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The host this node **advertises** — not merely the one it binds.  The value
- * becomes `selfAddress`, so it is what peers dial back and what the bootstrap
- * election orders on (#944).
+ * The interface this node **binds**.
+ *
+ * The chain is unchanged from when this function resolved one value for both
+ * jobs, and that is deliberate: naming a single routable host still binds and
+ * advertises it, so no configuration that works today moves.  What changed is
+ * only the last resort — `'0.0.0.0'` now stops at the socket instead of
+ * travelling on into `selfAddress`, where it was never an identity (#944).
  *
  * `CLUSTER_HOST` leads the env vars because it is the only one that means
  * *"this is my address"*: `POD_IP` is right by construction but exists only
  * where the pod spec exports it, and `HOSTNAME` is a pod name that resolves
  * under a StatefulSet with a headless service and nowhere else.  Naming it
  * after `CLUSTER_PORT` keeps the pair symmetric.
- *
- * `'0.0.0.0'` survives as the last resort so a single-node development run
- * still starts with no configuration at all — with more than one node it is
- * not an identity, which the stable-observation phase refuses outright rather
- * than letting an election run on it.
  */
-function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
+function resolveBindHost(resolvedOptions: ClusterBootstrapOptionsType): string {
   if (resolvedOptions.host) return resolvedOptions.host;
   const clusterHost = (process.env.CLUSTER_HOST ?? '').trim();
   if (clusterHost) return clusterHost;
@@ -167,7 +182,7 @@ function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
   if (podIp) return podIp;
   const hostname = (process.env.HOSTNAME ?? '').trim();
   if (hostname) return hostname;
-  return '0.0.0.0';
+  return DEFAULT_BIND_HOST;
 }
 
 function resolvePort(resolvedOptions: ClusterBootstrapOptionsType): number {

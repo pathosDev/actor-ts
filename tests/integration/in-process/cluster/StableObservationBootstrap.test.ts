@@ -276,12 +276,17 @@ describe('bootstrapCluster — stableObservation', () => {
   }, 30_000);
 
   test('refuses to elect on a wildcard advertised host', async () => {
-    // `resolveHost`'s last-resort '0.0.0.0' is a bind address, not an
-    // identity: ordered on it, every node sorts first (#944).  The phase says
-    // so instead of running a meaningless election.
+    // A bind address is not an identity: ordered on it, every node sorts first
+    // (#944).  The phase says so instead of running a meaningless election.
+    //
+    // The wildcard has to be named as the *advertised* host to get here.  A
+    // bare `withHost('0.0.0.0')` no longer reaches this guard at all —
+    // `resolveAdvertisedHost` turns it into a dialable address before the
+    // election ever sees it, which is the other half of the same fix.
     const name = 'stable-wildcard';
     const bootstrapOptions = ClusterBootstrapOptions.create(name)
       .withHost('0.0.0.0')
+      .withAdvertisedHost('0.0.0.0')
       .withPort(56501)
       .withSeeds([`${name}@h:56502`])
       .withStableObservation(true)

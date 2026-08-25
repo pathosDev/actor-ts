@@ -23,7 +23,8 @@ const provider = new KubernetesApiSeedProvider(
 
 const seeds = await provider.lookup();
 const clusterOptions = ClusterOptions.create()
-  .withHost(process.env.POD_IP!)
+  .withHost('0.0.0.0')
+  .withAdvertisedHost(process.env.POD_IP!)
   .withPort(2552)
   .withSeeds(seeds);
 await Cluster.join(
@@ -34,6 +35,28 @@ await Cluster.join(
 
 Für jeden bereiten Pod hinter dem Service `actor-ts` im
 Namespace gibt der Provider `<pod-ip>:2552` zurück.
+
+Das Adresspaar ist der eigentliche Punkt des Beispiels. Ein Pod kennt
+seine eigene IP beim Prozessstart nicht, bindet also `0.0.0.0` — aber
+`0.0.0.0` ist keine Identität, und eine Flotte von Pods, die sie alle
+verteilten, verteilte denselben String; jeder läse die Ankündigungen
+der anderen als Aussagen über sich selbst. `POD_IP` ist die Adresse,
+die die Plattform vergeben hat, und genau die gehört in den Gossip.
+
+`POD_IP` gibt es nicht automatisch — die Pod-Spec muss sie exportieren:
+
+```yaml
+env:
+  - name: POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.podIP
+```
+
+Damit ist `withAdvertisedHost` optional: die Auflösungskette liest
+`POD_IP` von selbst, sobald der Bind-Host eine Wildcard ist. Die Zeile
+lohnt sich trotzdem — sie hält die Absicht des Deployments im Code statt
+in einer Umgebung, die man erst nachschlagen muss.
 
 ## Konfiguration
 

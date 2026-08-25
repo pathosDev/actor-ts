@@ -8,7 +8,6 @@ export {
   StableObservationOptionsBuilder,
   StableObservationOptionsValidator,
   readStableObservationOptionsFromConfig,
-  isWildcardHost,
   DEFAULT_STABLE_MARGIN_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_MAX_WAIT_MS,

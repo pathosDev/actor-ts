@@ -73,6 +73,26 @@ export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
 
 /**
+ * Last resort for {@link ClusterOptionsType.advertisedHost} — the address a
+ * node claims when nothing names one (#944).
+ *
+ * Loopback rather than the `0.0.0.0` this replaces, because the two fail
+ * differently and only one of them fails visibly.  A wildcard is not an
+ * address: every node that reaches for it advertises the byte-identical
+ * `<system>@0.0.0.0:<port>`, so each reads the others' self-announcements as
+ * claims about *itself*, `maySpeakFor` refuses them, and every node ends up
+ * alone in a member map of one — with nothing in the log that says so.
+ * Loopback is a real address that happens to be reachable from one machine, so
+ * an unconfigured node states its own limit in every line it logs, and several
+ * processes on one host get genuinely distinct identities from their distinct
+ * ports.
+ *
+ * It is a fallback, not a guess at the deployment: {@link resolveAdvertisedHost}
+ * consults `CLUSTER_HOST`, `POD_IP` and `HOSTNAME` before reaching it.
+ */
+export const DEFAULT_ADVERTISED_HOST = '127.0.0.1';
+
+/**
  * Whether — and when — this node may declare itself the first member of a
  * new cluster, moving straight from `joining` to `up` with nobody's
  * agreement.
@@ -104,7 +124,35 @@ export type SelfElectionPolicy = 'immediate' | 'never' | number;
 
 /** Plain options-object shape accepted by {@link Cluster.join}. */
 export type ClusterOptionsType = {
+  /**
+   * The interface this node **binds**.  A wildcard is correct here and is the
+   * shipped default (`actor-ts.remote.tcp.host = "0.0.0.0"`): binding every
+   * interface is how a container accepts traffic on an address it does not
+   * know at start-up.
+   *
+   * It is *also* what this node advertises, unless {@link advertisedHost} says
+   * otherwise — which is the whole reason the two are separate fields.  Naming
+   * one routable host here keeps the historical single-value behaviour: bound
+   * and advertised alike.
+   */
   readonly host: string;
+  /**
+   * The address peers **dial** — this node's identity, not a bind target
+   * (#944).
+   *
+   * It is what goes into `selfAddress`, and from there into every gossip
+   * frame, every heartbeat and every member record, and it is what the
+   * bootstrap election orders on.  A wildcard is therefore not a value it can
+   * take: {@link ClusterOptionsValidator} refuses one, because an address
+   * meaning "all of them" identifies nothing and every node that claimed it
+   * would claim the same string.
+   *
+   * Unset is the normal case — {@link resolveAdvertisedHost} derives it, from
+   * {@link host} when that is routable and otherwise from the environment,
+   * falling back to {@link DEFAULT_ADVERTISED_HOST}.  Set it explicitly for
+   * the deployment the split exists for: bind `0.0.0.0`, advertise the pod IP.
+   */
+  readonly advertisedHost?: string;
   readonly port: number;
   /** Other nodes this node should try to contact on startup. */
   readonly seeds?: string[];
@@ -271,9 +319,20 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return new ClusterOptionsBuilder();
   }
 
-  /** Bind host. */
+  /**
+   * The interface to bind — and, unless {@link withAdvertisedHost} overrides
+   * it, the address peers dial.  A wildcard is legal here and only here.
+   */
   withHost(host: string): this {
     return this.set('host', host);
+  }
+
+  /**
+   * The address peers dial, when it differs from the bound interface — the
+   * `0.0.0.0`-bind / pod-IP-advertise split.  A wildcard is rejected (#944).
+   */
+  withAdvertisedHost(advertisedHost: string): this {
+    return this.set('advertisedHost', advertisedHost);
   }
 
   /** Bind port. */
@@ -373,6 +432,27 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
   }
   protected rules(s: Partial<ClusterOptionsType>): void {
     this.nonEmptyString('host');
+    this.nonEmptyString('advertisedHost');
+    // The advertised address is an identity, so a wildcard is not a value it
+    // can hold — it names every interface, which is to say none of them, and
+    // every node that claimed it would claim the same string (#944).  Refused
+    // here rather than left to fail later, because the later failure is a
+    // cluster that never converges and says nothing about why: each node reads
+    // the others' self-announcements as claims about itself, `maySpeakFor`
+    // turns them down, and every member map holds exactly one entry.
+    //
+    // Only ever reachable from an explicit `advertisedHost`:
+    // `resolveAdvertisedHost` cannot produce a wildcard, so a bound `0.0.0.0`
+    // arrives here already resolved to something dialable.
+    if (s.advertisedHost !== undefined && isWildcardHost(s.advertisedHost)) {
+      this.fail(
+        'advertisedHost',
+        'must be the address peers dial, not a wildcard bind address — bind the '
+        + 'wildcard with `host` and name this node\'s routable address here (or in '
+        + 'the CLUSTER_HOST / POD_IP env var)',
+        s.advertisedHost,
+      );
+    }
     // A positive integer, not port() [1..65535]: with InMemoryTransport the
     // port is a synthetic node-address discriminator (tests use e.g. 89001),
     // and validation here is transport-agnostic — the TCP range is TcpTransport's
@@ -417,8 +497,109 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
 }
 
 /**
+ * Whether a host is a bind wildcard rather than an identity.
+ *
+ * Deliberately not a general "is this routable" test: `localhost` and
+ * `127.0.0.1` are perfectly good identities for several processes on one
+ * machine, which is how the in-process suites form clusters.  What is refused
+ * is only the set of spellings that mean *"every interface"* — those are the
+ * ones every node resolves to the same string.
+ */
+export function isWildcardHost(host: string): boolean {
+  const normalized = host.trim().replace(/^\[|\]$/g, '');
+  return normalized === ''
+    || normalized === '*'
+    || normalized === '0.0.0.0'
+    || normalized === '::'
+    || normalized === '::0'
+    || normalized === '0:0:0:0:0:0:0:0';
+}
+
+/**
+ * Environment variables {@link resolveAdvertisedHost} consults, in order.
+ *
+ * Exported so a diagnostic can name exactly what was looked at, rather than
+ * repeating the list in prose that then drifts from the code.
+ */
+export const ADVERTISED_HOST_ENV_VARS = ['CLUSTER_HOST', 'POD_IP', 'HOSTNAME'] as const;
+
+/**
+ * The address this node tells its peers to dial — derived once, here, so
+ * `Cluster.join` and `bootstrapCluster` cannot answer the question differently
+ * (#944).
+ *
+ * The chain, in order:
+ *
+ *   1. an explicit {@link ClusterOptionsType.advertisedHost};
+ *   2. {@link ClusterOptionsType.host}, **when it is not a wildcard** — one
+ *      named routable host still means "bind and advertise this", which is the
+ *      historical behaviour and the reason nothing configured correctly today
+ *      moves;
+ *   3. `CLUSTER_HOST`, `POD_IP`, `HOSTNAME`, first non-empty;
+ *   4. {@link DEFAULT_ADVERTISED_HOST}.
+ *
+ * Stage 3 is an environment layer in a framework whose documented precedence is
+ * *explicit options > HOCON > built-in defaults*, and it is deliberately narrow:
+ * it applies to this one field, and it is only ever reached when the alternative
+ * is advertising a wildcard.  `POD_IP` is the one input that is right by
+ * construction — it is the address the platform assigned — and a node that
+ * would otherwise gossip `0.0.0.0` is exactly the case worth spending a layer
+ * on.  The variables are ordered by how much they mean it: `CLUSTER_HOST` is
+ * someone stating this node's address, `POD_IP` is the platform stating it, and
+ * `HOSTNAME` is a pod name that resolves only under a StatefulSet with a
+ * headless service — and is not exported at all outside a container, since it is
+ * a shell variable rather than an environment one.
+ *
+ * Stages 2 to 4 cannot produce a wildcard, so the only way one comes out is
+ * stage 1 — a caller who named it.  That is what lets
+ * {@link ClusterOptionsValidator} refuse one without qualification: every
+ * refusal is a value someone wrote, never a default they never saw.
+ */
+export function resolveAdvertisedHost(
+  options: { readonly host?: string; readonly advertisedHost?: string },
+  /** Pre-mapped env lookup (defaults to `process.env` at call time). */
+  env: Record<string, string | undefined> = process.env,
+): string {
+  // `!== undefined`, not truthiness: an explicit `''` is a configuration
+  // error, and handing it back is what lets the validator say so.  Falling
+  // through on it instead would silently substitute a working address for one
+  // the caller wrote on purpose, which is the failure mode this whole chain
+  // exists to remove.
+  if (options.advertisedHost !== undefined) return options.advertisedHost;
+  if (options.host && !isWildcardHost(options.host)) return options.host;
+  for (const name of ADVERTISED_HOST_ENV_VARS) {
+    const candidate = (env[name] ?? '').trim();
+    if (candidate && !isWildcardHost(candidate)) return candidate;
+  }
+  return DEFAULT_ADVERTISED_HOST;
+}
+
+/**
+ * Whether {@link resolveAdvertisedHost} had to look past the options to answer
+ * — nothing named an advertised host and the bind host is a wildcard, so the
+ * address this node claims came from the environment or from the built-in
+ * default rather than from anything the caller wrote.
+ *
+ * Exists so the diagnostic at the join site can be a lookup rather than a
+ * second copy of the chain's conditions, which is how the two drift apart.
+ */
+export function advertisedHostWasDerived(
+  options: { readonly host?: string; readonly advertisedHost?: string },
+): boolean {
+  return options.advertisedHost === undefined
+    && (options.host === undefined || isWildcardHost(options.host));
+}
+
+/**
  * The slice of cluster settings HOCON can supply — `actor-ts.cluster.*`
- * plus the bind address and wire cap under `actor-ts.remote.*`.
+ * plus the bind address, the advertised address and the wire cap under
+ * `actor-ts.remote.*`.
+ *
+ * `advertisedHost` is in and `seeds` is out for the same reason, read two
+ * ways.  Both are per-node identity, but only one of them is *derivable* from
+ * the platform: a Deployment gives every pod the same manifest and a different
+ * `POD_IP`, so `advertised-host = ${?POD_IP}` is one line that is correct on
+ * every node, where a seed list written once is correct on none of them.
  *
  * `seeds`, `roles`, `selfElection`, `transport` and `downing` are absent on
  * purpose: the last two are objects HOCON cannot express, and the first three
@@ -429,7 +610,8 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
-  'host' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs' | 'failureDetector' | 'maxFrameBytes'
+  'host' | 'advertisedHost' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  | 'failureDetector' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones'
 >>;
@@ -457,6 +639,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ClusterConfigDefaults]: ClusterConfigDefaults[K] } = {};
   if (config.hasPath(remote.tcp.host)) out.host = config.getString(remote.tcp.host);
+  // Absent from `reference.conf` on purpose, so `hasPath` stays false until an
+  // operator sets it and "unset means: derive it from `host`" remains
+  // expressible — the shape `sharding.shard-passivation-idle` already uses.
+  if (config.hasPath(remote.tcp.advertisedHost)) {
+    out.advertisedHost = config.getString(remote.tcp.advertisedHost);
+  }
   if (config.hasPath(remote.tcp.port)) out.port = config.getInt(remote.tcp.port);
   if (config.hasPath(remote.maxFrameBytes)) out.maxFrameBytes = config.getBytes(remote.maxFrameBytes);
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);

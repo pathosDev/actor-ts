@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`ClusterOptions.advertisedHost`** (#944), with
+  `withAdvertisedHost(...)` on both the cluster and the bootstrap
+  builders and `actor-ts.remote.tcp.advertised-host` in HOCON. A node's
+  bind address and the address it tells peers to dial are two different
+  things, and only one of them may be a wildcard: `host` is the
+  interface to bind and keeps `0.0.0.0` as its default, `advertisedHost`
+  is the identity that travels in every gossip frame, heartbeat and
+  member record.
+
+  The Kubernetes shape is what the split is for — bind `0.0.0.0` because
+  the pod does not know its address at start-up, advertise `POD_IP`
+  because that is the one the platform assigned. Left unset,
+  `advertisedHost` is derived: from `host` when that is routable, else
+  from `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, else loopback. So naming
+  one routable host still does both jobs, exactly as before.
+
+  The HOCON key ships **no leaf** in `reference.conf`, only a comment. A
+  key that is always present could not express "unset", and unset is
+  what makes that fallback chain reachable — the same shape
+  `sharding.shard-passivation-idle` already uses.
+
 - **Pause and resume time in DevTools** (#1349). One control in the header,
   or the <kbd>P</kbd> key outside a text field, stops every panel at once
   so there is time to read what is on screen.
@@ -327,6 +348,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   smoke, examples, bench:smoke, check:ui, lint:package, lint:audit.
 
 ### Fixed
+
+- **A cluster whose nodes all advertised `0.0.0.0` never formed** (#944).
+  The host a node resolved became both its bind address and its identity,
+  and the last resort of that resolution was the wildcard. Every node
+  that reached it advertised the byte-identical
+  `<system>@0.0.0.0:2552`, so each read the others' self-announcements as
+  claims about *itself*, `maySpeakFor` refused them as claims a node may
+  not make about another's status, and every member map held exactly one
+  entry — with nothing in the log to separate that from a cluster that
+  had merely not converged yet.
+
+  The fallback was reachable more often than its position suggested.
+  `POD_IP` exists only where the pod spec exports it; `HOSTNAME` is a
+  shell variable, so a service started by systemd or a process manager
+  sees `process.env.HOSTNAME === undefined`, and where it *is* set it is
+  a pod name that resolves under a StatefulSet with a headless service
+  and nowhere else.
+
+  `resolveAdvertisedHost` now fills the identity from one chain that both
+  `Cluster.join` and `bootstrapCluster` share, and no stage of that chain
+  except an explicitly named value can produce a wildcard — which is what
+  lets `ClusterOptionsValidator` refuse one outright, at construction,
+  instead of leaving a cluster to not converge. `TcpTransport` gained a bind host used for the `listen` call
+  alone, so `self` stays the identity in the handshake and in the peer
+  keys.
+
+  **BREAKING** in behaviour, not in signature: a node that named no host
+  at all used to advertise `0.0.0.0` and now advertises `127.0.0.1`.
+  Nothing configured correctly moves — a routable `host` still wins over
+  the environment — but a multi-node deployment that relied on the old
+  fallback was already broken and is now reachable only on loopback,
+  which the node says out loud at startup. Set `withAdvertisedHost(...)`,
+  `actor-ts.remote.tcp.advertised-host`, or `CLUSTER_HOST` / `POD_IP`.
 
 - **The DevTools tracing panel no longer draws every retained span twice
   after a re-subscribe (#1350).** `SpanTap.snapshot()` hands a fresh

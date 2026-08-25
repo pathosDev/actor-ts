@@ -53,7 +53,12 @@ const cluster = await Cluster.join(
 
 Was er tut:
 
-- **Lauscht** auf `host:port` auf eingehende Verbindungen.
+- **Lauscht** auf `host:port` auf eingehende Verbindungen — `host` ist
+  das Interface, an das gebunden wird, eine Wildcard gehört also hierher.
+- **Kündigt** `advertisedHost:port` in seinem Handshake an und schlüsselt
+  Peers danach. Das ist die Identität des Nodes, wird deshalb getrennt
+  aufgelöst und ist nie eine Wildcard; ungesetzt folgt sie `host`, sofern
+  der routebar ist. Siehe [Cluster — Überblick](/de/cluster/overview/).
 - **Verbindet** sich nach Bedarf mit Peers (beim ersten Send oder
   zu Seeds bei Join-Zeit).
 - **Frame-Größen-Cap** (Standard 16 MiB) — Frames, die größer sind,

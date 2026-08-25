@@ -49,6 +49,30 @@ describe('readClusterOptionsFromConfig', () => {
     });
   });
 
+  test('reads the advertised host, which the bind host does not stand in for', () => {
+    // Two keys because they are two facts: what to bind and what to tell peers
+    // to dial (#944).  Only the second may not be a wildcard.
+    const config = Config.parseString(`
+      actor-ts.remote.tcp {
+        host           = "0.0.0.0"
+        advertised-host = "10.0.0.7"
+      }
+    `);
+
+    expect(readClusterOptionsFromConfig(config))
+      .toEqual({ host: '0.0.0.0', advertisedHost: '10.0.0.7' });
+  });
+
+  test('advertisedHost is absent when the key is, so "unset" stays expressible', () => {
+    // It ships no leaf in `reference.conf` on purpose: a key that is always
+    // present could not mean "derive it from `host`", which is what every
+    // deployment that names one routable host relies on.
+    const config = Config.parseString('actor-ts.remote.tcp.host = "10.0.0.7"');
+
+    expect(readClusterOptionsFromConfig(config)).toEqual({ host: '10.0.0.7' });
+    expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-host')).toBe(false);
+  });
+
   test('omits failureDetector entirely when no threshold is configured', () => {
     const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
 

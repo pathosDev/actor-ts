@@ -313,7 +313,14 @@ export const ConfigKeys = {
   },
 
   /**
-   * Cluster bind address and wire limits — `actor-ts.remote.*`.
+   * Cluster addresses and wire limits — `actor-ts.remote.*`.
+   *
+   * `tcp.host` and `tcp.advertised-host` are two different things and only one
+   * of them may be a wildcard: the first is the interface this node binds, the
+   * second is the address it puts in every gossip frame for peers to dial back
+   * (#944).  `advertised-host` deliberately ships no leaf in `reference.conf`,
+   * so an unset one keeps meaning "derive it from `tcp.host`" instead of being
+   * permanently present and empty.
    *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
@@ -325,6 +332,7 @@ export const ConfigKeys = {
   remote: {
     tcp: {
       host: 'actor-ts.remote.tcp.host',
+      advertisedHost: 'actor-ts.remote.tcp.advertised-host',
       port: 'actor-ts.remote.tcp.port',
     },
     tls: {

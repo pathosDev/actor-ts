@@ -177,11 +177,22 @@ erwartete Replica-Anzahl setzen.
 <Aside type="caution" title="Sie verweigert einen Wildcard-Host">
   Die Wahl sortiert nach der Adresse dieses Nodes, also muss das die
   Adresse sein, die Peers anwählen. `0.0.0.0` (ebenso `::` und der
-  leere String) ist eine *Bind*-Adresse: jeder Node, der darauf
-  zurückgefallen ist, sortiert identisch, jeder hält sich für den
-  Gewinner, und jeder bildet seinen eigenen Cluster. Die Phase lehnt das
-  vorab ab. Setze `withHost(...)` explizit oder die Umgebungsvariable
-  `CLUSTER_HOST` / `POD_IP`.
+  leere String) ist eine *Bind*-Adresse: jeder Node, der sie
+  beanspruchte, sortierte identisch, jeder hielte sich für den
+  Gewinner, und jeder bildete seinen eigenen Cluster. Die Phase lehnt
+  das vorab ab.
+
+  Dorthin zu gelangen erfordert Absicht, denn ein Wildcard-Bind-Host
+  wird nicht mehr zu einer Wildcard-Identität: mit `withHost('0.0.0.0')`
+  und sonst nichts löst sich die verteilte Adresse über `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` und dann auf Loopback auf. Was dieser Guard
+  abfängt, ist ein bewusst geschriebenes
+  `withAdvertisedHost('0.0.0.0')` — und eine handgebaute `NodeAddress`,
+  die direkt an `StableObservation` geht und diese Kette nie durchläuft.
+
+  In Produktion benenne sie: `0.0.0.0` binden, `POD_IP` verteilen.
+  Loopback hält einen Single-Node-Lauf am Leben; es macht keinen
+  zweiten Node erreichbar.
 </Aside>
 
 ## Bootstrap oder einfacher Seed-Join?

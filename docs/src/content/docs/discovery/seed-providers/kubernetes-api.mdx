@@ -23,7 +23,8 @@ const provider = new KubernetesApiSeedProvider(
 
 const seeds = await provider.lookup();
 const clusterOptions = ClusterOptions.create()
-  .withHost(process.env.POD_IP!)
+  .withHost('0.0.0.0')
+  .withAdvertisedHost(process.env.POD_IP!)
   .withPort(2552)
   .withSeeds(seeds);
 await Cluster.join(
@@ -34,6 +35,28 @@ await Cluster.join(
 
 For every ready pod backing the `actor-ts` Service in the
 namespace, the provider returns `<pod-ip>:2552`.
+
+The address pair is the point of the example.  A pod does not know its
+own IP when the process starts, so it binds `0.0.0.0` — but `0.0.0.0` is
+not an identity, and a fleet of pods that all advertised it would all
+advertise the same string, each reading the others' announcements as
+claims about itself.  `POD_IP` is the address the platform assigned, so
+that is what goes out in gossip.
+
+`POD_IP` is not automatic — the pod spec has to export it:
+
+```yaml
+env:
+  - name: POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.podIP
+```
+
+With that in place `withAdvertisedHost` is optional: the resolution
+chain reads `POD_IP` on its own once the bind host is a wildcard.
+Naming it is still worth the line — it puts the deployment's intent in
+the code rather than in an environment you have to go and check.
 
 ## Configuration
 

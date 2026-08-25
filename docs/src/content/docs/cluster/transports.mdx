@@ -52,7 +52,12 @@ const cluster = await Cluster.join(
 
 What it does:
 
-- **Listens** on `host:port` for incoming connections.
+- **Listens** on `host:port` for incoming connections — `host` is the
+  interface to bind, so a wildcard belongs here.
+- **Announces** `advertisedHost:port` in its handshake, and keys peers on
+  it.  That is the node's identity, so it is resolved separately and is
+  never a wildcard; unset, it follows `host` when `host` is routable.
+  See [Cluster overview](/cluster/overview/).
 - **Connects** to peers as needed (on first send, or to seeds at
   join time).
 - **Per-frame size cap** (default 16 MiB) — frames larger than this
