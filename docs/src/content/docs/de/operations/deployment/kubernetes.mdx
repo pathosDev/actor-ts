@@ -235,6 +235,12 @@ des Frameworks stellen diese Endpunkte bereit.
   `cluster-transport` (er ist nicht von jedem Peer abgeschnitten).
   App-spezifische Checks — Datenbank erreichbar, Dependencies warm —
   kommen mit `healthChecksOf(system).addReadiness` dazu.
+  Prozessintern gated `Cluster.bootstrap` genauso:
+  `actor-ts.cluster.bootstrap.minimum-members` (oder
+  `awaitReady: { minimumMembers }` im Code) sorgt dafür, dass ein
+  aufgelöster Bootstrap nichts Geringeres bedeutet als „das Cluster hat
+  seine erwartete Größe erreicht" — auf die Replica-Anzahl setzen, genau
+  wie `required-contact-points`.
 - **`/health`** — „würde ein Neustart dieses Pods helfen?"
   Schlägt er fehl, startet K8s den Pod neu; er hängt deshalb von
   nichts außerhalb des Prozesses ab — der einzige Liveness-Check des

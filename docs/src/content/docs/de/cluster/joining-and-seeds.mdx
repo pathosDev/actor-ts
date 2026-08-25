@@ -203,6 +203,24 @@ Framework nutzt sie, um den Join zu bootstrappen. Siehe
 
 ## Den Join-Fortschritt beobachten
 
+Zuerst das Ein-Aufruf-Gate — `awaitReady` löst auf, sobald dieser Node
+`up` ist und, mit `minimumMembers`, sobald das Cluster seine erwartete
+Größe erreicht hat; `isReady` ist die synchrone Probe:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();     // probe the same predicate without waiting
+cluster.selfMember();  // this node's own record — status included
+```
+
+Mit gesetztem `timeoutMs` lehnt es mit `ClusterReadyTimeoutError` ab,
+statt raten zu lassen; ohne wartet es unbegrenzt. Siehe
+[Cluster-Bootstrap → Auf Readiness warten](/de/cluster/cluster-bootstrap/#auf-readiness-warten)
+dafür, wie `Cluster.bootstrap` dasselbe Warten standardmäßig anwendet.
+
+Für Logik, die auf *einzelne* Übergänge reagiert, die Events
+abonnieren:
+
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
@@ -217,15 +235,14 @@ cluster.subscribe((evt) => {
 
 Zwei zentrale Events:
 
-- **`SelfUp`** feuert einmal, wenn *dieser* Node auf `up`
-  übergeht. Nützliches Gate, um Arbeit zu starten, die
-  Cluster-Mitgliedschaft erfordert.
+- **`SelfUp`** feuert einmal, wenn *dieser* Node auf `up` übergeht.
 - **`MemberUp`** feuert jedes Mal, wenn *irgendein* Mitglied `up`
   erreicht.
 
-Für Startup-Logik, die andere Mitglieder braucht ("warte, bis
-mindestens 3 Nodes up sind, bevor Traffic bedient wird"), zähle
-`MemberUp`s nach `SelfUp`.
+`MemberUp`s von Hand zu zählen, um "sind mindestens 3 Nodes up?" zu
+beantworten, ist genau das, was `awaitReady({ minimumMembers: 3 })`
+ersetzt — die Subscription ist zum Reagieren auf Änderungen da, nicht
+als Startup-Gate.
 
 ## Was schiefgehen kann
 

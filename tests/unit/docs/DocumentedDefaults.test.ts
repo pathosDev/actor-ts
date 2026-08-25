@@ -27,6 +27,7 @@ import {
   DEFAULT_SELF_ELECTION_GRACE_MS,
   DEFAULT_STABLE_MARGIN_MS,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
+import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -216,6 +217,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.bootstrap.max-wait', kind: 'duration', constant: DEFAULT_MAX_WAIT_MS },
   { key: 'actor-ts.cluster.bootstrap.self-election-grace', kind: 'duration', constant: DEFAULT_SELF_ELECTION_GRACE_MS },
   { key: 'actor-ts.cluster.bootstrap.required-contact-points', kind: 'int', constant: DEFAULT_REQUIRED_CONTACT_POINTS },
+  // `await-ready` is comment-only in reference.conf (unset selects the
+  // grace-aware computed default, #1086) — no leaf, so nothing to assert.
+  { key: 'actor-ts.cluster.bootstrap.minimum-members', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS },
 
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },

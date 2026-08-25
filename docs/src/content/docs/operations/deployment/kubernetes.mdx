@@ -232,6 +232,12 @@ expose these endpoints.
   (this node is `up`) and `cluster-transport` (it is not cut off
   from every peer).  Add your per-app checks — database reachable,
   dependencies warm — with `healthChecksOf(system).addReadiness`.
+  In-process, `Cluster.bootstrap` gates the same way:
+  `actor-ts.cluster.bootstrap.minimum-members` (or
+  `awaitReady: { minimumMembers }` in code) keeps a resolved bootstrap
+  from meaning anything less than "the cluster reached its expected
+  size" — set it to the replica count, exactly like
+  `required-contact-points`.
 - **`/health`** — "would restarting this pod help?"
   Failing means K8s restarts it, so it depends on nothing outside
   the process — the framework's only liveness check is

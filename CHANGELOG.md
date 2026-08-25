@@ -11,6 +11,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Cluster readiness — wait until the cluster is actually formed**
+  (#1355).  `cluster.awaitReady({ minimumMembers, timeoutMs })` resolves
+  once this node is a full member (`up` — `weakly-up` deliberately does not
+  count, matching the `/ready` endpoint's `cluster-membership` check) and
+  the cluster has at least `minimumMembers` up members; without `timeoutMs`
+  it waits indefinitely, `whenTerminated()`-style, and `cluster.isReady()`
+  is the synchronous probe.  On a named deadline it rejects with
+  `ClusterReadyTimeoutError`, whose fields carry self's status, the up
+  count, the bar and the budget.  Deliberately membership-only — never the
+  `HealthCheckRegistry` aggregate, whose app-registered checks may depend
+  on initialisation that runs *after* bootstrap; `/ready` stays the load
+  balancer's view.
+
+  New observables: `cluster.selfMember()` (own record, tombstone included),
+  `cluster.selfElected` and `BootstrappedCluster.formedNewCluster` — a node
+  that founded its cluster is now distinguishable from one that joined an
+  existing one (#943), and `JoinTargets` carries `selfElectionGraceMs` for
+  every node.  HOCON: `actor-ts.cluster.bootstrap.minimum-members` ships as
+  a leaf (default 1 — single-node development stays zero-config);
+  `await-ready` ships comment-only, because a leaf that is always present
+  could not express "unset", and unset is what selects the grace-aware
+  computed default.
+
 - **`ClusterOptions.advertisedHost`** (#944), with
   `withAdvertisedHost(...)` on both the cluster and the bootstrap
   builders and `actor-ts.remote.tcp.advertised-host` in HOCON. A node's
@@ -170,6 +193,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Changed
+
+- **BREAKING — `Cluster.bootstrap` rejects when readiness is missed**
+  (#943, #1086).  A resolved `bootstrap()` now means a formed cluster.
+  `awaitReady` widens to `boolean | number | ClusterReadinessOptions`, its
+  default budget covers the self-election grace on **every**
+  stable-observation node — the old default under-covered N−1 of N nodes on
+  a genuine cold start (#1086) — and on timeout the bootstrap runs the
+  coordinated-shutdown pipeline and rejects with `ClusterReadyTimeoutError`
+  instead of resolving for a node still `joining` and letting it serve
+  traffic.  Migration: `awaitReady: false` plus
+  `cluster.awaitReady().catch(…)` restores the old fire-and-forget shape.
+  (`JoinTargets` literals built outside this repository need the new
+  required `selfElectionGraceMs` field.)
+
+- **BREAKING — discovery failure is no longer an empty seed list** (#943).
+  A seed-provider rejection propagates out of `Cluster.bootstrap` (the
+  just-created system is terminated first), and `AggregateSeedProvider`
+  rejects with `SeedDiscoveryError` when its chain is non-empty and every
+  provider **threw**.  A provider that *returns* an empty list is still an
+  authoritative "no peers", so `discovery: 'auto'` with an empty
+  environment keeps producing the single-node development cluster — what
+  stops existing is the DNS blip that silently became N self-elected
+  one-node clusters, each reporting a healthy bootstrap.
 
 - **BREAKING (pre-1.0): `BrokerActor.onReceive` is sealed (#709).** A
   subclass now implements the new abstract `onCommand(command)` instead of

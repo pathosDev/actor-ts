@@ -45,6 +45,7 @@
       "timeoutMs": 180000
     },
 
+    { "file": "examples/cluster/await-ready.ts", "expect": "cluster ready with 2 members" },
     { "file": "examples/cluster/counter-node.ts", "mode": "serve", "expect": "node listening on" },
     { "file": "examples/cluster/sharded-daemon-fixed-workers.ts", "expect": "polling queue" },
     { "file": "examples/cluster/sharded-daemon-hello.ts", "expect": "processes: job-C" },

@@ -6,6 +6,7 @@ import {
   StableObservationError,
 } from '../../../src/cluster/bootstrap/StableObservation.js';
 import {
+  DEFAULT_SELF_ELECTION_GRACE_MS,
   readStableObservationOptionsFromConfig,
   StableObservationOptions,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
@@ -69,6 +70,9 @@ describe('StableObservation — election', () => {
     // A grace, not 'immediate': the winner still dials its seeds first, so an
     // existing cluster gets the chance to promote it before it forms its own.
     expect(typeof targets.selfElection).toBe('number');
+    // The winner's policy IS the grace, and the grace rides along explicitly.
+    expect(targets.selfElection).toBe(DEFAULT_SELF_ELECTION_GRACE_MS);
+    expect(targets.selfElectionGraceMs).toBe(DEFAULT_SELF_ELECTION_GRACE_MS);
     expect(targets.contactPoints.map((a) => a.toString())).toEqual([
       'app@10.0.0.1:2552', 'app@10.0.0.2:2552', 'app@10.0.0.3:2552',
     ]);
@@ -85,9 +89,30 @@ describe('StableObservation — election', () => {
 
     expect(targets.isInitialSeed).toBe(false);
     expect(targets.selfElection).toBe('never');
+    // The grace still rides along: a 'never' node's readiness budget hangs on
+    // the winner's deadline, so it must know the number too (#1086).
+    expect(targets.selfElectionGraceMs).toBe(DEFAULT_SELF_ELECTION_GRACE_MS);
     expect(targets.seeds.map((a) => a.toString())).toEqual([
       'app@10.0.0.1:2552', 'app@10.0.0.2:2552',
     ]);
+  });
+
+  test('a configured grace reaches winner and non-winner alike', async () => {
+    const winner = await observationOf(
+      nodeA,
+      new ScriptedSeedProvider([[nodeA, nodeB]]),
+      { selfElectionGraceMs: 123 },
+    ).resolveJoinTargets();
+    expect(winner.selfElection).toBe(123);
+    expect(winner.selfElectionGraceMs).toBe(123);
+
+    const follower = await observationOf(
+      nodeB,
+      new ScriptedSeedProvider([[nodeA, nodeB]]),
+      { selfElectionGraceMs: 123 },
+    ).resolveJoinTargets();
+    expect(follower.selfElection).toBe('never');
+    expect(follower.selfElectionGraceMs).toBe(123);
   });
 
   test('all three observers elect the same node from the same stable set', async () => {

@@ -152,6 +152,13 @@ describe('ClusterBootstrapOptionsValidator', () => {
     expect(() => check({ name: 'app', awaitReady: 5_000 })).not.toThrow();
     expect(() => check({ name: 'app', awaitReady: -1 })).toThrow(/awaitReady/);
   });
+
+  test('awaitReady accepts a readiness bag and holds it to the readiness rules', () => {
+    expect(() => check({ name: 'app', awaitReady: { minimumMembers: 3, timeoutMs: 30_000 } })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: {} })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: { minimumMembers: 0 } })).toThrow(OptionsError);
+    expect(() => check({ name: 'app', awaitReady: { timeoutMs: 0 } })).toThrow(OptionsError);
+  });
 });
 
 describe('WebsocketClientOptionsValidator', () => {

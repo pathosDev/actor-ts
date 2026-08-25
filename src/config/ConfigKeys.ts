@@ -237,14 +237,20 @@ export const ConfigKeys = {
     },
 
     /**
-     * Stable-observation bootstrap — `actor-ts.cluster.bootstrap.*` (#148).
-     * Read once per `bootstrapCluster` call with `stableObservation` enabled,
-     * which layers them under the explicit tuning.
+     * Stable-observation bootstrap and readiness —
+     * `actor-ts.cluster.bootstrap.*` (#148, #1355).  The observation timings
+     * are read once per `bootstrapCluster` call with `stableObservation`
+     * enabled, layered under the explicit tuning; the readiness pair
+     * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
+     * call and by `Cluster.awaitReady` / `isReady`.
      *
-     * Timing only.  The election's *outcome* (`ClusterOptions.selfElection`)
-     * is deliberately not configurable here: it differs per node by
+     * The election's *outcome* (`ClusterOptions.selfElection`) is
+     * deliberately not configurable here: it differs per node by
      * construction, and one shared value would either stop every node from
-     * starting or have all of them self-elect at once.
+     * starting or have all of them self-elect at once.  `await-ready` ships
+     * comment-only in `reference.conf` for a related reason — a leaf that is
+     * always present could not express "unset", and unset is what selects
+     * the grace-aware computed default (#1086).
      */
     bootstrap: {
       stableMargin: 'actor-ts.cluster.bootstrap.stable-margin',
@@ -252,6 +258,8 @@ export const ConfigKeys = {
       maxWait: 'actor-ts.cluster.bootstrap.max-wait',
       requiredContactPoints: 'actor-ts.cluster.bootstrap.required-contact-points',
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
+      awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
+      minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
     },
 
     /**

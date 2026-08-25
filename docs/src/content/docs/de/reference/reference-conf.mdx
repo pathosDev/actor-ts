@@ -347,6 +347,20 @@ actor-ts {
       max-wait                = 60s
       required-contact-points = 1
       self-election-grace     = 10s
+
+      # Fewest up members -- self included -- before bootstrapCluster's
+      # awaitReady (and Cluster.awaitReady / isReady) counts the cluster as
+      # ready.  1 keeps single-node development working; a deployment states
+      # its replica count here, for the same reason as
+      # required-contact-points.
+      minimum-members         = 1
+
+      # await-ready ships no value on purpose -- a key that is always present
+      # could not express "unset", and unset is what selects the computed
+      # default: self-election-grace + 5s behind stable observation, 5s
+      # otherwise (#1086).  Set a duration to pin the budget regardless:
+      #
+      #   await-ready = 30s
     }
 
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
