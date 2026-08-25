@@ -126,6 +126,52 @@ Das ergibt eine **höchstens-ein-Remote-Hop**-Zustellung: ein
 Publish kettelt nie über mehrere Nodes, um einen Subscriber zu
 erreichen.
 
+## Wissen, welcher Node publiziert hat
+
+Ein Topic-Fan-out trägt keinen Sender: `tell` ist einseitig, der
+Publisher ist meist nicht die interessante Partei, und jedes
+`onReceive` eines Subscribers ist gegen den nackten Body geschrieben.
+Ein Subscriber, der auf den Publisher *autorisieren* muss, braucht mehr
+und fordert es beim Subscribe an:
+
+```ts
+mediator.tell(new Subscribe('ledger', auditor, null, /* deliverWithOrigin= */ true));
+```
+
+Jede Nachricht für diesen Subscriber trifft dann als `PubSubEnvelope`
+statt als nackter Body ein:
+
+```ts
+override onReceive(message: PubSubEnvelope<LedgerEntry>): void {
+  const { topic, message: entry, origin } = message;
+  if (origin === null) return;             // kein authentifizierter Sender
+  if (!this.mayWrite(entry.author, origin)) return;
+  this.apply(entry);
+}
+```
+
+`origin` ist **nie** ein Wert aus dem Payload.  Für eine Nachricht, die
+über die Leitung kam, ist es der Peer der Verbindung — die Identität
+aus dem Cluster-Handshake —, für eine auf diesem Node publizierte ist
+es `cluster.selfAddress`.  `null` heißt, dass der Mediator keine
+authentifizierte Identität anhängen konnte; ein Subscriber, der auf
+`origin` autorisiert, muss das als *nicht authentifiziert* lesen und
+nicht als *lokal*.
+
+Der Vergleich ist nur wegen der Höchstens-ein-Hop-Regel oben
+aussagekräftig: der Node, den ein Subscriber sieht, ist der Node, der
+publiziert hat, und kein Relay, das für jemand anderen weitergeleitet
+hat.
+
+Das Flag gehört zum **Subscriber**, nicht zum Abonnement — ein Actor
+hat ein `onReceive`, eine Mischung von Formen über seine Topics wäre
+also ein Unterscheidungsproblem, das er nicht lösen kann.  Ein
+späteres `Subscribe` desselben Actors legt die Form für alle seine
+Topics erneut fest.  `ReplicatedEventSourcedActor` ist der Nutzer im
+Repo: ein Event-Envelope nennt seinen eigenen Autor, und ohne den
+publizierenden Node gibt es nichts, wogegen sich dieser Name halten
+ließe.
+
 ## Anycast — ein Subscriber statt aller
 
 Ein drittes Argument schaltet `Publish` von Broadcast auf

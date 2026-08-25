@@ -4,8 +4,9 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
+import type { NodeAddress } from '../cluster/NodeAddress.js';
 import {
-  Publish, Subscribe, type SubscribeAcknowledgment,
+  Publish, PubSubEnvelope, Subscribe, type SubscribeAcknowledgment,
 } from '../cluster/pubsub/Messages.js';
 import type { ReplicaId } from '../crdt/Crdt.js';
 import { randomId } from '../util/RandomString.js';
@@ -53,10 +54,20 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * cluster handshake can address this actor — through the pub-sub
  * mediator or straight at its path — so an arriving envelope is
  * validated whole before any state is touched and dropped with a
- * `WARN` if it fails, never absorbed halfway (#706).  What that does
- * *not* yet establish is authorship: nothing binds an envelope's
- * `replica` to the node that sent it, so a member can still author an
- * event attributed to a peer.  See {@link ReplicatedEventEnvelope}.
+ * `WARN` if it fails, never absorbed halfway (#706).
+ *
+ * **And its author is checked, not believed.**  An envelope's `replica`
+ * is a value the sender chose, so it is held against the node the
+ * *connection* authenticated: the actor subscribes with
+ * `deliverWithOrigin`, so every topic delivery arrives as a
+ * {@link PubSubEnvelope} naming its origin, and
+ * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} decides whether
+ * that node may write under that replica id.  An envelope that reaches
+ * this mailbox with no origin at all — which is what
+ * `Cluster.dispatchEnvelope`'s generic path resolution produces, the
+ * route that bypasses pub-sub entirely — is refused for that reason
+ * alone.  Overriding {@link ReplicatedEventSourcedActor.replicaId}
+ * without overriding the predicate beside it is what re-opens this.
  *
  * **Local journal**: each replica still appends every event it
  * **observes** to its local journal (its own + every remote it
@@ -84,8 +95,6 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     a stable cluster and eventually wants #535.  Until then
  *     {@link ReplicatedEventSourcedActor.maxObservedEvents} bounds
  *     what a peer can make the history grow to.
- *   - Authorship: an envelope's `replica` is not bound to the node
- *     that sent it.
  */
 
 /**
@@ -115,10 +124,13 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * {@link ReplicatedEventSourcedActor} on why a per-replica
  * "exactly one past the highest seen" rule is *not* wanted here.
  *
- * **Not authenticated.**  Every field is peer-supplied, and this type
- * carries no binding to the node that sent it.  A member can therefore
- * author an event attributed to another replica; what it can no longer
- * do is suppress that replica's real events.
+ * **Every field is peer-supplied**, including `replica`, and nothing
+ * *in* the envelope can change that — a signature would only move the
+ * question to a key nothing in `src/cluster/` mints.  The binding is
+ * therefore made outside the payload: delivery carries the connection's
+ * peer alongside it, and
+ * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} holds `replica`
+ * against that node before a single field here is acted on.
  */
 export type ReplicatedEventEnvelope<E> = {
   readonly persistenceId: string;
@@ -206,11 +218,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    *
    *     override get replicaId(): ReplicaId { return 'eu-west'; }
    *
-   * That override is also why an arriving envelope's `replica` cannot
-   * simply be compared against the authenticated sending node: in a
-   * deployment like the one above they legitimately differ, so the check
-   * would reject every honest envelope.  Closing authorship needs a
-   * replica-to-node mapping that does not exist yet.
+   * **Overriding this means overriding
+   * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} too.**  Its
+   * default holds an arriving envelope's `replica` against the node the
+   * connection authenticated, which is exactly right while the id *is*
+   * the node address and rejects every honest envelope once it is not.
+   * The pair is the replica-to-node mapping; the framework cannot infer
+   * the second half of it.
    *
    * A getter rather than a field, so the default can read the cluster:
    * the context is attached after construction.  Read from `preStart`
@@ -220,6 +234,45 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * silently rejected by every peer.
    */
   get replicaId(): ReplicaId { return this.cluster.selfAddress.toString(); }
+
+  /**
+   * Whether `origin` — the cluster node the *connection* authenticated —
+   * may write events under `replica` (#706).
+   *
+   * This is the whole of the authorship check, and the default is an
+   * equality: with the default {@link replicaId} a replica id *is* its
+   * node's address, so a member that sets `replica` to a peer's id is
+   * refused by the one party that can tell the difference, the receiver
+   * holding the socket.  Without it, a member could author events
+   * attributed to any replica and — with a large enough `timestamp` —
+   * make them win the deterministic order for everyone.
+   *
+   * **Override it whenever you override {@link replicaId}.**  A fixed
+   * region name is not an address, so the default equality would refuse
+   * every honest envelope; the mapping has to come from the deployment:
+   *
+   *     private static readonly NODES: Record<string, string> = {
+   *       'eu-west': 'orders@10.0.1.7:2551',
+   *       'us-east': 'orders@10.0.2.9:2551',
+   *     };
+   *     override get replicaId(): ReplicaId { return 'eu-west'; }
+   *     protected override isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+   *       return OrderEntity.NODES[replica] === origin.toString();
+   *     }
+   *
+   * A `return true` here restores the pre-#706 behaviour in full, and is
+   * worth writing only for a cluster whose every member is as trusted as
+   * this actor's own process.
+   *
+   * **Sound because a replicated event crosses at most one hop.**
+   * `persist` is the only publisher and no mediator re-forwards what it
+   * received, so `origin` is the node that authored the event rather
+   * than a relay.  A store-and-forward path would have to carry the
+   * author separately for this comparison to keep its meaning.
+   */
+  protected isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+    return replica === origin.toString();
+  }
 
   abstract initialState(): State;
   abstract onEvent(state: State, event: Event): State;
@@ -472,12 +525,20 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     //    that the first user-issued persist a few hundred ms after
     //    construction reaches peer replicas.  Tests can dial this
     //    tighter; production should leave the default.
+    //
+    //    `deliverWithOrigin` is what makes the authorship check possible
+    //    at all: a bare topic fan-out carries no sender, so every
+    //    delivery arrives wrapped in the node the connection
+    //    authenticated (#706).  No `replyTo` — the acknowledgment is
+    //    informational and `onReceive` drops it.
     const pubsub = this.system.extension(DistributedPubSubId).start(
       this.cluster,
       DistributedPubSubOptions.create().withGossipIntervalMs(this.pubsubGossipIntervalMs()),
     );
     this._mediator = pubsub as unknown as ActorRef<Subscribe | Publish | unknown>;
-    pubsub.tell(new Subscribe(topicFor(this.persistenceId), this.self));
+    pubsub.tell(new Subscribe(
+      topicFor(this.persistenceId), this.self, null, /* deliverWithOrigin= */ true,
+    ));
 
     await this.onRecoveryComplete(this._state);
   }
@@ -503,16 +564,50 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     this._lease = null;
   }
 
-  override async onReceive(message: Command | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
+  override async onReceive(
+    message: Command
+      | ReplicatedEventEnvelope<Event>
+      | PubSubEnvelope<ReplicatedEventEnvelope<Event>>
+      | SubscribeAcknowledgment,
+  ): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;
     }
+    // A topic delivery, with the node the connection authenticated attached.
+    // `instanceof` is the load-bearing part: the wire carries JSON, so this
+    // class is a shape only the local mediator can have produced (#706).
+    if (message instanceof PubSubEnvelope) {
+      this._handleTopicDelivery(message);
+      return;
+    }
     if (this._isEnvelope(message)) {
-      this._handleRemote(message as ReplicatedEventEnvelope<Event>);
+      // Envelope-shaped, but it did not come in on the topic — the generic
+      // path-resolution route through `Cluster.dispatchEnvelope`, or a local
+      // `tell`.  Neither carries an identity, so `_handleRemote` refuses it;
+      // it is passed on rather than ignored so the refusal is logged.
+      this._handleRemote(message as ReplicatedEventEnvelope<Event>, null);
       return;
     }
     await this.onCommand(this._state, message as Command);
+  }
+
+  /**
+   * Unwrap a topic delivery.  A message on this actor's own topic that is
+   * not an envelope claim is not a command either — the topic is the
+   * cross-replica channel and nothing else publishes to it — so it is
+   * dropped rather than handed to `onCommand`, where a peer would be
+   * choosing which of the application's commands to run.
+   */
+  private _handleTopicDelivery(delivery: PubSubEnvelope<ReplicatedEventEnvelope<Event>>): void {
+    if (!this._isEnvelope(delivery.message)) {
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': dropped a message on the replication topic — `
+        + 'it does not claim to be an event envelope',
+      );
+      return;
+    }
+    this._handleRemote(delivery.message, delivery.origin);
   }
 
   /**
@@ -607,10 +702,10 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * the actor is the same policy the cluster's own frame validation
    * follows.
    */
-  private _handleRemote(envelope: ReplicatedEventEnvelope<Event>): void {
+  private _handleRemote(envelope: ReplicatedEventEnvelope<Event>, origin: NodeAddress | null): void {
     if (envelope.persistenceId !== this.persistenceId) return; // not for us
     if (envelope.replica === this.replicaId) return; // our own broadcast — ignore
-    const rejection = this._envelopeRejection(envelope);
+    const rejection = this._envelopeRejection(envelope) ?? this._authorshipRejection(envelope, origin);
     if (rejection !== null) {
       this.log.warn(
         `replicated-es '${this.persistenceId}': dropped a remote envelope — ${rejection}`,
@@ -678,14 +773,51 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     if (!Number.isSafeInteger(claim.seqAtReplica) || (claim.seqAtReplica as number) < 1) {
       return 'seqAtReplica must be a positive safe integer';
     }
-    // Finite only.  The sort key stays the *sender's* timestamp on purpose:
-    // `_compare` has to produce the same order on every replica, and an
-    // arrival-time stamp is local, so it would fold two replicas to different
-    // states — breaking convergence for everyone to blunt one attack.
+    // Finite only, and deliberately not "close to now".  Every check in this
+    // function has to reach the same verdict on every replica, or the two fold
+    // different histories and convergence — the guarantee the class exists for
+    // — is gone.  A shape check does; a check against the receiver's clock does
+    // not, so a skewed pair of nodes would silently disagree about which events
+    // exist.  The sort key stays the sender's timestamp for the same reason:
+    // an arrival-time stamp is local.  What makes that acceptable is authorship
+    // (see `_authorshipRejection`) — a member can still stamp
+    // `Number.MAX_SAFE_INTEGER` on an event and win the order, but only under
+    // its *own* replica id, which it could always do by writing honestly.
     if (typeof claim.timestamp !== 'number' || !Number.isFinite(claim.timestamp)) {
       return 'timestamp must be a finite number';
     }
     return vectorClockRejection(claim.vc);
+  }
+
+  /**
+   * Why this envelope's claimed author is unacceptable, or `null`.
+   *
+   * Runs after {@link _envelopeRejection}, so `replica` is already known
+   * to be a plausible string and the message names the field rather than
+   * whatever a peer put there.
+   *
+   * **A missing origin is a refusal, not a pass.**  Two routes reach this
+   * actor from a peer: the replication topic, which now carries the
+   * connection's peer, and `Cluster.dispatchEnvelope`'s generic path
+   * resolution, which delivers the raw body to any resolvable path with
+   * no identity whatsoever.  Treating the second as trusted would leave
+   * the whole attack reachable one path over from the one that was
+   * closed, so the absence of an identity is itself the reason (#706).
+   * The same rule makes a locally-`tell`ed envelope inert, which is the
+   * correct reading of it: nothing on this node may speak for a peer.
+   */
+  private _authorshipRejection(
+    envelope: ReplicatedEventEnvelope<Event>, origin: NodeAddress | null,
+  ): string | null {
+    if (origin === null) {
+      return `replica '${envelope.replica}' claims an author, but the envelope arrived with no `
+        + 'authenticated origin — it did not come in on the replication topic';
+    }
+    if (!this.isAuthorizedAuthor(envelope.replica, origin)) {
+      return `replica '${envelope.replica}' may not be written by ${origin}, the node this `
+        + 'connection authenticated (isAuthorizedAuthor said no)';
+    }
+    return null;
   }
 
   /**
@@ -833,6 +965,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     return this._events.length;
   }
 
+  /**
+   * The canonical order: payload `timestamp`, then `replica`, then
+   * `seqAtReplica`.
+   *
+   * All three come out of the envelope, and that is required rather than
+   * merely tolerated — the order has to be a function of the events alone
+   * or two replicas holding the same set compute different states.  A
+   * receive-time key would be local to each replica and would break that
+   * outright, which is why #706's "use a receive-time timestamp for
+   * ordering" is refused here and answered by binding the author instead:
+   * a forged `timestamp` is now traceable to the member that sent it and
+   * can no longer be attributed to a victim.
+   */
   private _compare(
     a: ReplicatedEventEnvelope<Event>, b: ReplicatedEventEnvelope<Event>,
   ): number {

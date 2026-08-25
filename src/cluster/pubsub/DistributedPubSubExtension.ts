@@ -3,6 +3,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import { SystemActorNames, SystemGroups, assertSpawnedAt } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Cluster } from '../Cluster.js';
+import type { NodeAddress } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
@@ -10,6 +11,7 @@ import {
   mediatorPath,
   type MediatorMessage,
 } from './DistributedPubSubMediator.js';
+import { AuthenticatedPubSubMessage, type PubSubWireMessage } from './Messages.js';
 import {
   DistributedPubSubOptions,
   readDistributedPubSubOptionsFromConfig,
@@ -59,11 +61,21 @@ export class DistributedPubSub implements Extension {
     // Route inbound publishes (remote → local) to the mediator's mailbox.
     // The handler key is the well-known path, so it has to be the path the
     // mediator actually occupies — see `assertSpawnedAt`.
+    //
+    // `from` is the connection's peer, and this is the only place it exists:
+    // the frame itself is entirely peer-chosen.  It used to be dropped here
+    // (`(env) => mediator.tell(env.body)`), which is why a topic fan-out could
+    // not tell a subscriber who published — and why an actor that authorises
+    // on the publisher had nothing to authorise against (#706).  Wrapping it
+    // in a class is what carries it through the mailbox: a peer can reproduce
+    // any tagged object inside `body`, and cannot mint a class instance.
     const wellKnownPath = mediatorPath(cluster.system.name);
     assertSpawnedAt(wellKnownPath, mediator);
     cluster._registerEnvelopeHandler(
       wellKnownPath,
-      (env: EnvelopeMessage) => mediator.tell(env.body as never),
+      (env: EnvelopeMessage, from: NodeAddress) => mediator.tell(
+        new AuthenticatedPubSubMessage(from, env.body as PubSubWireMessage) as never,
+      ),
     );
 
     return this._mediator;
