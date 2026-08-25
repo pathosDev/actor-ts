@@ -3,6 +3,7 @@ import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { KafkaOptionsValidator, type KafkaOptionsType } from '../../../../src/io/broker/KafkaOptions.js';
 import { AmqpOptionsValidator, type AmqpOptionsType } from '../../../../src/io/broker/AmqpOptions.js';
 import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../../../../src/io/broker/RedisStreamsOptions.js';
+import { MqttOptionsValidator, type MqttOptionsType } from '../../../../src/io/broker/MqttOptions.js';
 import { NatsOptionsValidator, type NatsOptionsType } from '../../../../src/io/broker/NatsOptions.js';
 import { JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../src/io/broker/JetStreamOptions.js';
 import { JetStreamKeyValueOptionsValidator, type JetStreamKeyValueOptionsType } from '../../../../src/io/broker/JetStreamKeyValueOptions.js';
@@ -391,5 +392,65 @@ describe('EmailBridgeOptionsValidator', () => {
 
   test('unset optionals always pass', () => {
     expect(() => check({ imap, smtp, target })).not.toThrow();
+  });
+});
+
+/**
+ * Client TLS material, on every broker that now takes it (#743).
+ *
+ * A certificate without its key is the one mistake catchable before the
+ * handshake, and it is worth catching *here* rather than letting the driver
+ * throw: a throw from `connectImplementation` is a connection failure to
+ * `BrokerActor`, and `reconnect.maxAttempts` defaults to Infinity — so the
+ * mistake would retry forever instead of failing the actor's start.
+ */
+describe('broker TLS material', () => {
+  const halfCertificate = { cert: 'client-certificate' } as const;
+  const halfKey = { key: 'client-key' } as const;
+  const whole = { ca: 'private-ca', cert: 'client-certificate', key: 'client-key' } as const;
+
+  test('AmqpOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<AmqpOptionsType>): void => new AmqpOptionsValidator().validate(s);
+    expect(() => check({ url: 'amqps://host:5671', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ url: 'amqps://host:5671', tls: halfKey })).toThrow(/tls/);
+    expect(() => check({ url: 'amqps://host:5671', tls: whole })).not.toThrow();
+    expect(() => check({ url: 'amqps://host:5671', tls: { ca: 'private-ca' } })).not.toThrow();
+    expect(() => check({ url: 'amqps://host:5671' })).not.toThrow();
+  });
+
+  test('RedisStreamsOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<RedisStreamsOptionsType>): void =>
+      new RedisStreamsOptionsValidator().validate(s);
+    expect(() => check({ url: 'rediss://host:6379', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ url: 'rediss://host:6379', tls: whole })).not.toThrow();
+  });
+
+  test('MqttOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<MqttOptionsType>): void => new MqttOptionsValidator().validate(s);
+    expect(() => check({ brokerUrl: 'mqtts://host:8883', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ brokerUrl: 'mqtts://host:8883', tls: whole })).not.toThrow();
+  });
+
+  test('NatsOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<NatsOptionsType>): void => new NatsOptionsValidator().validate(s);
+    expect(() => check({ servers: 'nats://host:4222', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ servers: 'nats://host:4222', tls: whole })).not.toThrow();
+  });
+
+  test('JetStreamOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<JetStreamOptionsType>): void =>
+      new JetStreamOptionsValidator().validate(s);
+    expect(() => check({ servers: 'nats://host:4222', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ servers: 'nats://host:4222', tls: whole })).not.toThrow();
+  });
+
+  // Kafka carries the material inside `ssl`, because that is kafkajs's own
+  // union — so the rule has to look through the boolean arm without tripping.
+  test('KafkaOptions checks the material arm of ssl and leaves the boolean alone', () => {
+    const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
+    expect(() => check({ brokers: ['k:9093'], ssl: halfCertificate })).toThrow(/ssl/);
+    expect(() => check({ brokers: ['k:9093'], ssl: whole })).not.toThrow();
+    expect(() => check({ brokers: ['k:9093'], ssl: true })).not.toThrow();
+    expect(() => check({ brokers: ['k:9093'], ssl: false })).not.toThrow();
   });
 });

@@ -4,6 +4,8 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
+import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { JetStreamOptionsValidator } from './JetStreamOptions.js';
 import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
@@ -207,13 +209,19 @@ export class JetStreamActor extends BrokerActor<
     return `nats://${typeof servers === 'string' ? servers : ''}`;
   }
 
+  /** @internal Test seam — override to inject a fake `nats` module. */
+  protected natsModule(): Promise<NatsModuleLike> { return natsLazy.get(); }
+
   /**
    * Build a `NatsConnectionLike`.  Override in a test subclass to
    * inject a mock connection (the `nats` peer-dep is heavy and not
    * necessary for unit tests).
+   *
+   * Overriding this replaces the connect options, TLS included — override
+   * {@link natsModule} instead when a test wants to *observe* them.
    */
   protected async createNatsConnection(): Promise<NatsConnectionLike> {
-    const nats = await natsLazy.get();
+    const nats = await this.natsModule();
     const servers = Array.isArray(this.options.servers)
       ? [...this.options.servers]
       : [this.options.servers as string];
@@ -223,6 +231,7 @@ export class JetStreamActor extends BrokerActor<
       user: this.options.user,
       pass: this.options.password,
       name: this.options.name,
+      tls: toBrokerDriverTls(this.options.tls),
     });
   }
 
@@ -673,9 +682,16 @@ export type JetStreamManagerLike = {
   };
 };
 
-interface NatsModuleLike {
+/** The `nats` module surface we use.  Exported as a test seam. */
+export interface NatsModuleLike {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
+    /**
+     * Certificate material.  nats.js reads the option object's *presence* as
+     * "negotiate TLS", so this stays `undefined` when nothing was configured
+     * rather than being an empty object (#743).
+     */
+    tls?: BrokerDriverTlsOptions;
   }): Promise<NatsConnectionLike>;
 }
 

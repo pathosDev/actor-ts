@@ -6,6 +6,7 @@ import { Terminated } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
@@ -427,6 +428,10 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       clean: this.options.cleanSession,
       keepalive: this.options.keepAlive,
       protocolVersion: this.options.protocolVersion ?? 4,
+      // mqtt.js hands its connect options straight to `tls.connect` for the
+      // `mqtts` / `wss` transports, so the certificate material sits flat
+      // beside the protocol fields rather than under a `tls` key (#743).
+      ...(toBrokerDriverTls(this.options.tls) ?? {}),
     };
     if (this.options.will) {
       connectOptions.will = {
@@ -568,6 +573,11 @@ type MqttConnectOptions = {
   /** mqtt.js: 4 (3.1.1), 5 (5.0).  We allow 4 and 5. */
   protocolVersion?: 4 | 5;
   will?: { topic: string; payload: Uint8Array | string; qos: MqttQos; retain: boolean };
+  ca?: string | Uint8Array;
+  cert?: string | Uint8Array;
+  key?: string | Uint8Array;
+  rejectUnauthorized?: boolean;
+  servername?: string;
 };
 
 type MqttPubOpts = {

@@ -49,6 +49,7 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   };
   blockMs?:      number;                          // XREADGROUP-Block; Default 5_000
   target?:       ActorRef<RedisStreamEntry>;      // Consumer-Actor für eingehende Einträge
+  tls?:          TlsTransportOptionsType;         // Cert-Material; aktiviert TLS; nur im Code
 }
 ```
 
@@ -182,6 +183,36 @@ Verbindungsabriss schon an `target` übergeben, aber noch nicht geackt
 waren, bleiben in der PEL, und der Reconnect spielt sie nicht erneut
 ein.  Die Wiederherstellung läuft über `XPENDING` + `XCLAIM`, genau wie
 bei einem Consumer-Crash.
+
+## TLS
+
+Eine `rediss://`-URL (beachte das doppelte s) startet den Handshake,
+und ioredis verifiziert den Server gegen den **System-Trust-Store**.
+Hinter einer privaten CA oder für Client-Zertifikats-Auth kommt
+`withTls` dazu:
+
+```ts
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
+new RedisStreamsActor(redisStreamsOptions);
+```
+
+Jedes Feld trägt **das Material selbst**, nie einen Pfad darauf.
+`cert` und `key` ergeben nur gemeinsam Sinn; eines ohne das andere
+wird beim Start des Actors abgelehnt.
+
+Producer- und Consumer-Client werden aus demselben Material gebaut —
+sie wählen denselben Server, brauchen also dasselbe Vertrauen.
+ioredis liest das Vorhandensein der Option als „TLS aushandeln“,
+`withTls` funktioniert also auch gegen eine schlichte
+`redis://`-URL; `rediss://` sagt dasselbe nur deutlicher.  Einen
+Config-Key hat es bewusst nicht: Ein Private Key gehört nicht in die
+`application.conf`.
 
 ## Peer-Dependency
 

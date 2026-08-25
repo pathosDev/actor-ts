@@ -48,6 +48,7 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
   password?:  string;
   token?:     string;
   subscriptions?: { subject: string; target: ActorRef<NatsMessage> }[];  // beim Connect eingerichtet
+  tls?:       TlsTransportOptionsType;   // Cert-Material; aktiviert TLS; nur im Code
 }
 ```
 
@@ -151,6 +152,33 @@ Eingehende `NatsMessage`s tragen `subject`, `payload` (ein
 `Uint8Array`) und `replyTo` (ein leerer String, wenn der Publisher
 keins gesetzt hat).  Das ist das "RPC über NATS"-Muster — ein paar
 hundert Mikrosekunden Round-Trip auf localhost.
+
+## TLS
+
+NATS hat kein `tls://`-URL-Schema, deshalb erledigt `withTls` hier
+beides: Es bringt nats.js dazu, TLS auszuhandeln, *und* sagt, was der
+Handshake vertrauen soll.  mTLS ist die übliche Produktions-Haltung:
+
+```ts
+const natsOptions = NatsOptions.create()
+  .withServers(['nats://nats.example.com:4222'])
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
+new NatsActor(natsOptions);
+```
+
+Jedes Feld trägt **das Material selbst**, nie einen Pfad darauf —
+deshalb liest das Beispiel die Dateien.  `cert` und `key` ergeben nur
+gemeinsam Sinn; eines ohne das andere wird beim Start des Actors
+abgelehnt.  Ohne `withTls` ist die Verbindung Klartext, sofern der
+Server TLS nicht erzwingt — dann verifiziert nats.js ihn gegen den
+System-Trust-Store.
+
+`JetStreamActor` nimmt dieselbe Option.  Beide haben bewusst keinen
+Config-Key: Ein Private Key gehört nicht in die `application.conf`.
 
 ## Wann NATS
 

@@ -8,6 +8,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type {
   JetStreamConsumerConfig,
@@ -24,6 +26,16 @@ export interface JetStreamOptionsType extends BrokerCommonOptionsType {
   readonly password?: string;
   /** Optional client name. */
   readonly name?: string;
+  /**
+   * TLS material forwarded to nats.js as its `tls` option — a private CA to
+   * trust, or a client certificate for mTLS.  Carries the material itself,
+   * never a path to it.
+   *
+   * Setting it also asks nats.js to negotiate TLS, so it works with a plain
+   * `nats://` server URL.  Deliberately has no HOCON leaf — a config file is
+   * the wrong place for a private key.
+   */
+  readonly tls?: TlsTransportOptionsType;
   /** Stream lifecycle config — set when this actor owns the stream. */
   readonly stream?: JetStreamStreamConfig;
   /** Consumer config — required to start a subscription. */
@@ -69,6 +81,11 @@ export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptio
     return this.set('name', name);
   }
 
+  /** TLS material for the NATS dial.  Pass the material, not a file path. */
+  withTls(tls: TlsTransportOptionsType): this {
+    return this.set('tls', tls);
+  }
+
   /** Stream lifecycle config — set when this actor owns the stream. */
   withStream(stream: JetStreamStreamConfig): this {
     return this.set('stream', stream);
@@ -99,6 +116,8 @@ export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamO
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
     this.positiveNumber('acknowledgmentTimeout');
+    const tlsProblem = findBrokerTlsProblem(s.tls);
+    if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }
 }
 

@@ -46,7 +46,7 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
     username:  string;
     password:  string;
   };
-  ssl?:        boolean;
+  ssl?:        boolean | TlsTransportOptionsType;   // true, or cert material
   producer?: {
     idempotent?:               boolean;
     allowAutoTopicCreation?:   boolean;
@@ -172,9 +172,34 @@ new KafkaActor(
 );
 ```
 
-Sowohl TLS (`ssl: true`) als auch SASL-Credentials werden an
-kafkajs durchgereicht.  Nimm Env-Variablen für Secrets;
-hardcode sie nicht in `application.conf`.
+Sowohl TLS als auch SASL-Credentials werden an kafkajs
+durchgereicht.  Nimm Env-Variablen für Secrets; hardcode sie nicht in
+`application.conf`.
+
+`withSsl(true)` verifiziert den Broker gegen den
+**System-Trust-Store**.  Hinter einer privaten CA — oder wenn der
+Broker ein Client-Zertifikat verlangt — übergibst du das Material
+statt des Booleans:
+
+```ts
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka-1:9093'])
+  .withSsl({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
+new KafkaActor(kafkaOptions);
+```
+
+Jedes Feld trägt **das Material selbst**, nie einen Pfad darauf —
+deshalb liest das Beispiel die Dateien. `cert` und `key` ergeben nur
+gemeinsam Sinn; eines ohne das andere wird beim Start des Actors
+abgelehnt.
+
+Der `ssl`-**Config**-Key bleibt bewusst boolean-only: Ein Private Key
+gehört nicht in die `application.conf`, die Material-Form ist also nur
+aus dem Code erreichbar.
 
 ## Peer-Dependency
 
