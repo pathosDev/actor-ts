@@ -15,7 +15,6 @@ import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown }
 import { Cluster } from './Cluster.js';
 import { ClusterOptions, resolveAdvertisedHost } from './ClusterOptions.js';
 import type { SelfElectionPolicy } from './ClusterOptions.js';
-import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
 import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
@@ -26,8 +25,14 @@ import {
   DEFAULT_AWAIT_READY_MS,
   DEFAULT_BIND_HOST,
   DEFAULT_PORT,
+  readClusterBootstrapDefaultsFromConfig,
 } from './ClusterBootstrapOptions.js';
-import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
+import type {
+  ClusterBootstrapConfigDefaults,
+  ClusterBootstrapOptions,
+  ClusterBootstrapOptionsType,
+} from './ClusterBootstrapOptions.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 
 /** Return value of {@link Cluster.bootstrap}. */
 export type BootstrappedCluster = {
@@ -47,6 +52,15 @@ export type BootstrappedCluster = {
    * unbind, a DevTools detach — simply never ran on SIGTERM (#549).
    */
   readonly shutdown: () => Promise<void>;
+  /**
+   * Whether this node **formed a new cluster** (it self-elected to `up`)
+   * rather than joining an existing one (a peer's leader promoted it) —
+   * the distinction #943 asks for.  A live view of `cluster.selfElected`,
+   * not a snapshot: under `awaitReady: false` a deferred election can fire
+   * after `bootstrap()` has returned, and a snapshot taken at return time
+   * would be stale exactly then.
+   */
+  readonly formedNewCluster: boolean;
 };
 
 /** Stands in for discovery when the caller passed an explicit empty seed list. */
@@ -138,8 +152,6 @@ export async function bootstrapCluster(
     ? (system.extension(ReceptionistId).start(cluster) as ActorRef<unknown>)
     : null;
 
-  await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? defaultAwaitReady(joinPlan));
-
   // Wire shutdown.  The pipeline is the whole implementation now: `leave()`
   // is a `cluster-leave` task registered by `Cluster.join`, and terminating
   // the system is the built-in `actor-system-terminate` task.  Doing it by
@@ -150,9 +162,35 @@ export async function bootstrapCluster(
   const coordinatedShutdown = system.extension(CoordinatedShutdownId);
   const shutdown = (): Promise<void> => coordinatedShutdown.run(ClusterLeavingReason.instance);
 
+  const readiness = resolveAwaitReady(
+    resolvedOptions.awaitReady,
+    readClusterBootstrapDefaultsFromConfig(system.config),
+    joinPlan,
+  );
+  if (readiness !== null) {
+    try {
+      await cluster.awaitReady(readiness);
+    } catch (err) {
+      // Unlike the JoinPlan-throw path above, `Cluster.join` HAS completed
+      // here: the cluster-leave task is registered and the receptionist may
+      // be running.  The pipeline is therefore the right teardown — a bare
+      // `system.terminate()` would skip both, the exact #549 shape.  A
+      // teardown failure must not mask the readiness error, so it is
+      // swallowed; the error the caller gets is the one that matters.
+      await shutdown().catch(() => {});
+      throw err;
+    }
+  }
+
   installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, coordinatedShutdown);
 
-  return { system, cluster, receptionist, shutdown };
+  return {
+    system,
+    cluster,
+    receptionist,
+    shutdown,
+    get formedNewCluster(): boolean { return cluster.selfElected; },
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -276,20 +314,41 @@ async function observeStableSeeds(args: {
 }
 
 /**
- * How long an unconfigured `awaitReady` waits.
+ * Normalise the `awaitReady` option into what `cluster.awaitReady` takes —
+ * or `null` for "do not wait".
  *
- * `true` — five seconds — everywhere except behind stable observation: there
- * the readiness of **every** node hangs on the election grace, not only the
- * winner's.  The winner's `SelfUp` is not due until its grace has elapsed,
- * and a non-winner's promotion cannot arrive before that same deadline fires
- * on the winner — so the flat default expired on N-1 of N nodes of every
- * genuine cold start while nothing was wrong (#1086).  The budget is the
- * grace plus the usual five seconds of slack for the join round after it.
+ * The computed budget is five seconds — except behind stable observation,
+ * where the readiness of **every** node hangs on the election grace, not
+ * only the winner's: the winner's `SelfUp` is not due until its grace has
+ * elapsed, and a non-winner's promotion cannot arrive before that same
+ * deadline fires on the winner.  A flat default therefore expired on N-1 of
+ * N nodes of every genuine cold start while nothing was wrong (#1086).
+ *
+ * Precedence per field: explicit option > `actor-ts.cluster.bootstrap.*` >
+ * the computed budget.  Layered by hand rather than through `mergeOptions`
+ * because the lowest layer is plan-dependent, not a constant.  A HOCON
+ * `await-ready = 0s` disables the wait, mirroring `awaitReady: 0`.
  */
-function defaultAwaitReady(plan: JoinPlan): boolean | number {
-  return plan.selfElectionGraceMs !== undefined
-    ? plan.selfElectionGraceMs + DEFAULT_AWAIT_READY_MS
-    : true;
+function resolveAwaitReady(
+  option: ClusterBootstrapOptionsType['awaitReady'],
+  fromConfig: ClusterBootstrapConfigDefaults,
+  plan: JoinPlan,
+): ClusterReadinessOptions | null {
+  const computedTimeoutMs = (): number => (
+    plan.selfElectionGraceMs !== undefined
+      ? plan.selfElectionGraceMs + DEFAULT_AWAIT_READY_MS
+      : DEFAULT_AWAIT_READY_MS
+  );
+  if (option === false || option === 0) return null;
+  const timeoutMs = typeof option === 'number'
+    ? option
+    : (typeof option === 'object' ? option.timeoutMs : undefined)
+      ?? fromConfig.awaitReadyMs
+      ?? computedTimeoutMs();
+  if (timeoutMs === 0) return null;
+  const minimumMembers = (typeof option === 'object' ? option.minimumMembers : undefined)
+    ?? fromConfig.minimumMembers;
+  return minimumMembers !== undefined ? { timeoutMs, minimumMembers } : { timeoutMs };
 }
 
 /**
@@ -338,39 +397,6 @@ function buildSeedProvider(
     return new AggregateSeedProvider([...spec.providers], base.log);
   }
   return spec;
-}
-
-async function awaitSelfUp(cluster: Cluster, mode: boolean | number): Promise<void> {
-  if (mode === false || mode === 0) return;
-  const timeoutMs = mode === true ? DEFAULT_AWAIT_READY_MS : mode;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
-
-  await new Promise<void>((resolve) => {
-    let done = false;
-    // `unsubscribe` is assigned AFTER cluster.subscribe() returns, but the
-    // subscribe callback may fire synchronously during replay (when
-    // self is already up).  Hold `unsubscribe` in a mutable slot so the
-    // callback can both read it without a TDZ error and clear it
-    // safely once.
-    let unsubscribe: (() => void) | null = null;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-      resolve();
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    if (typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref();
-    }
-    unsubscribe = cluster.subscribe((evt: ClusterEvent) => {
-      if (evt instanceof SelfUp) finish();
-    });
-    // If replay already fired SelfUp synchronously, finish() ran with
-    // `unsubscribe === null` and resolved — clean up the listener now.
-    if (done && unsubscribe) { (unsubscribe as () => void)(); unsubscribe = null; }
-  });
 }
 
 /**

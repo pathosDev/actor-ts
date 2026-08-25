@@ -1,6 +1,6 @@
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import { selfIsFullMember } from './ClusterHealthChecks.js';
-import { readClusterBootstrapDefaultsFromConfig } from './ClusterBootstrapOptions.js';
 import type { Cluster } from './Cluster.js';
 import type { Member } from './Member.js';
 import type { NodeAddress } from './NodeAddress.js';
@@ -188,9 +188,17 @@ export function awaitClusterReady(
   });
 }
 
-/** Explicit > `actor-ts.cluster.bootstrap.minimum-members` > built-in default. */
+/**
+ * Explicit > `actor-ts.cluster.bootstrap.minimum-members` > built-in default.
+ *
+ * Read inline rather than through `readClusterBootstrapDefaultsFromConfig`,
+ * deliberately: `ClusterBootstrapOptions.ts` value-imports this module's
+ * validator, so importing its reader back would close a runtime cycle.  The
+ * one value edge between the two files runs bootstrap-options → readiness.
+ */
 function resolveMinimumMembers(cluster: Cluster, options?: ClusterReadinessOptions): number {
   if (options?.minimumMembers !== undefined) return options.minimumMembers;
-  const fromConfig = readClusterBootstrapDefaultsFromConfig(cluster.system.config).minimumMembers;
-  return fromConfig ?? DEFAULT_MINIMUM_MEMBERS;
+  const config = cluster.system.config;
+  const key = ConfigKeys.cluster.bootstrap.minimumMembers;
+  return config.hasPath(key) ? config.getInt(key) : DEFAULT_MINIMUM_MEMBERS;
 }

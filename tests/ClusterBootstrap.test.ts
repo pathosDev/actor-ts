@@ -7,10 +7,14 @@ import {
 import {
   Cluster,
   ClusterBootstrapOptions,
+  ClusterReadyTimeoutError,
   InMemoryTransport,
   NodeAddress,
   bootstrapCluster,
+  type Transport,
+  type WireHandler,
 } from '../src/cluster/index.js';
+import type { WireMessage } from '../src/cluster/Protocol.js';
 import {
   AggregateSeedProvider,
   AutoDiscoveryOptions,
@@ -23,6 +27,27 @@ import {
   type SeedProvider,
 } from '../src/discovery/index.js';
 import { awaitCondition } from './util/AwaitCondition.js';
+
+/**
+ * Delegating transport that counts `shutdown()` calls — the observable that
+ * proves the coordinated-shutdown pipeline ran when a bootstrap rejects.
+ */
+class RecordingTransport implements Transport {
+  shutdownCalls = 0;
+
+  constructor(private readonly inner: InMemoryTransport) {}
+
+  get self(): NodeAddress { return this.inner.self; }
+  async start(): Promise<void> { await this.inner.start(); }
+  async shutdown(): Promise<void> {
+    this.shutdownCalls++;
+    await this.inner.shutdown();
+  }
+  setHandler(handler: WireHandler): void { this.inner.setHandler(handler); }
+  send(to: NodeAddress, message: WireMessage): void { this.inner.send(to, message); }
+  disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
+  peers(): NodeAddress[] { return this.inner.peers(); }
+}
 
 /* -------------------------------------------------------------------------- */
 /* Cluster.bootstrap — high-level entry point                                  */
@@ -41,14 +66,16 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const { system, cluster, receptionist, shutdown } = await Cluster.bootstrap(
+    const { system, cluster, receptionist, shutdown, formedNewCluster } = await Cluster.bootstrap(
       clusterBootstrapOptions,
     );
     try {
       expect(system.name).toBe('bootstrap-1');
       expect(cluster.selfAddress.toString()).toBe('bootstrap-1@127.0.0.1:50100');
-      // awaitReady defaults to true → SelfUp has fired (single-node self-elects).
+      // awaitReady defaults to true → resolved means ready (single-node self-elects).
       expect(cluster.upMembers().length).toBe(1);
+      expect(cluster.isReady()).toBe(true);
+      expect(formedNewCluster).toBe(true);
       expect(receptionist).toBeNull();
     } finally {
       await shutdown();
@@ -174,6 +201,9 @@ describe('Cluster.bootstrap', () => {
       );
       expect(nodeA.cluster.upMembers().length).toBe(2);
       expect(nodeB.cluster.upMembers().length).toBe(2);
+      // Joined-vs-formed (#943): A founded the cluster, B was promoted into it.
+      expect(nodeA.formedNewCluster).toBe(true);
+      expect(nodeB.formedNewCluster).toBe(false);
     } finally {
       await nodeA.shutdown();
       await nodeB.shutdown();
@@ -184,25 +214,57 @@ describe('Cluster.bootstrap', () => {
     // convergence reports.  15 s leaves the budget as the thing that fires.
   }, 15_000);
 
-  test('awaitReady=false returns before SelfUp', async () => {
+  test('awaitReady=false resolves without waiting — and says the node is not ready', async () => {
+    // Seeds nobody answers: with awaitReady disabled the bootstrap returns a
+    // handle to a node that is still joining, and the readiness surface says
+    // so instead of the old assert-nothing shape this test had.
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-4', '127.0.0.1', 50104));
-    // With no seeds, self-elects to up fast — but with awaitReady: false
-    // the bootstrap should not actively wait.  The cluster might still
-    // be up by the time we check (joining is synchronous-ish), so we
-    // just assert the call resolves without throwing.
     const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4')
       .withHost('127.0.0.1')
       .withPort(50104)
       .withTransport(transport)
+      .withSeeds(['127.0.0.1:59104'])
       .withReceptionist(false)
       .withAwaitReady(false)
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withShutdownOnSignals(false);
-    const { shutdown } = await Cluster.bootstrap(
-      clusterBootstrapOptions,
-    );
-    await shutdown();
+    const node = await Cluster.bootstrap(clusterBootstrapOptions);
+    try {
+      expect(node.cluster.selfMember()?.status).toBe('joining');
+      expect(node.cluster.isReady()).toBe(false);
+      expect(node.formedNewCluster).toBe(false);
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  test('dead seeds reject with ClusterReadyTimeoutError and tear the system down', async () => {
+    const address = new NodeAddress('bootstrap-4b', '127.0.0.1', 50114);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4b')
+      .withHost('127.0.0.1')
+      .withPort(50114)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59114'])
+      .withReceptionist(false)
+      .withAwaitReady(300)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    let caught: unknown;
+    try {
+      await Cluster.bootstrap(clusterBootstrapOptions);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((caught as ClusterReadyTimeoutError).selfStatus).toBe('joining');
+    expect((caught as ClusterReadyTimeoutError).timeoutMs).toBe(300);
+    // The coordinated-shutdown pipeline ran before the rejection surfaced:
+    // cluster-leave shut the transport down.  Without it the caller would
+    // hold no handle to a system that keeps gossiping forever.
+    expect(transport.shutdownCalls).toBe(1);
   });
 
   test('custom SeedProvider via discovery: SeedProvider', async () => {

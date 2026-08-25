@@ -2,6 +2,8 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { ClusterReadinessOptionsValidator } from './ClusterReadiness.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
@@ -183,17 +185,25 @@ export type ClusterBootstrapOptionsType = {
   readonly receptionist?: boolean;
 
   /**
-   * Wait for this node's `SelfUp` event before resolving.
+   * Wait for the cluster to be **ready** — self a full member (`up`) and at
+   * least `minimumMembers` members up — before resolving.
    *
-   *   - `true` (default) — wait up to 5 000 ms.
-   *   - `false` / `0`    — return immediately.
-   *   - a number         — wait at most that many ms.
+   *   - `true` (default) — wait with the computed budget:
+   *     `actor-ts.cluster.bootstrap.await-ready` if set, else the
+   *     self-election grace + 5 000 ms behind stable observation, else a
+   *     flat 5 000 ms.
+   *   - `false` / `0`    — return immediately, without waiting.
+   *   - a number         — the budget in ms.
+   *   - a {@link ClusterReadinessOptions} bag — full control; unset fields
+   *     fall through to the HOCON layer and then the computed budget.
    *
-   * On timeout the returned promise still resolves — the cluster
-   * keeps trying in the background.  Set a custom value when seed
-   * contact is slow (e.g. K8s pod start lag).
+   * **On timeout the bootstrap runs the coordinated-shutdown pipeline and
+   * rejects with `ClusterReadyTimeoutError`** — a resolved `bootstrap()` now
+   * means a formed cluster, never a node still `joining` (#943).  To restore
+   * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
+   * don't) yourself via `cluster.awaitReady().catch(…)`.
    */
-  readonly awaitReady?: boolean | number;
+  readonly awaitReady?: boolean | number | ClusterReadinessOptions;
 };
 
 /**
@@ -327,10 +337,12 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   }
 
   /**
-   * Wait for this node's `SelfUp` before resolving — `true` (5 000 ms),
-   * `false`/`0` (immediate), or a millisecond budget.
+   * Wait for cluster readiness before resolving — `true` (computed budget),
+   * `false`/`0` (skip), a millisecond budget, or a full
+   * {@link ClusterReadinessOptions} bag.  On timeout the bootstrap tears the
+   * system down and rejects; see {@link ClusterBootstrapOptionsType.awaitReady}.
    */
-  withAwaitReady(awaitReady: boolean | number): this {
+  withAwaitReady(awaitReady: boolean | number | ClusterReadinessOptions): this {
     return this.set('awaitReady', awaitReady);
   }
 }
@@ -351,9 +363,14 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
     // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
     this.positiveInt('port');
     this.positiveNumber('gossipIntervalMs');
-    // awaitReady is boolean | number(ms); a numeric budget must be >= 0 (0 = immediate).
+    // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
+    // must be >= 0 (0 = skip), and a bag is held to the readiness rules here
+    // — before the ActorSystem exists — rather than only at consume time.
     if (typeof s.awaitReady === 'number' && (!Number.isFinite(s.awaitReady) || s.awaitReady < 0)) {
-      this.fail('awaitReady', 'must be a boolean or a non-negative number of ms', s.awaitReady);
+      this.fail('awaitReady', 'must be a boolean, a non-negative number of ms, or a readiness options object', s.awaitReady);
+    }
+    if (typeof s.awaitReady === 'object' && s.awaitReady !== null) {
+      new ClusterReadinessOptionsValidator().validate(s.awaitReady);
     }
   }
 }
