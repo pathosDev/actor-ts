@@ -96,6 +96,7 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   protocolVersion?: 4 | 5;      // Default 4 (= MQTT 3.1.1)
   codec?: MqttCodec<unknown>;   // Default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
+  tls?: TlsTransportOptionsType;  // Cert-Material für mqtts:// / wss://; nur im Code
 }
 ```
 
@@ -243,6 +244,33 @@ Subscriber sofort ausgeliefert.  Verwende sie für Konfiguration (Geräte,
 die beim Verbinden die aktuellste Config lesen) oder den letzten
 bekannten Status.  Lass `retain` bei normalem Pub/Sub weg — sonst hält
 der Broker jede alte Nachricht für immer sichtbar.
+
+## TLS
+
+Eine `mqtts://`- oder `wss://`-URL startet den Handshake, und mqtt.js
+verifiziert den Broker per Default gegen den **System-Trust-Store**.
+Hinter einer privaten CA oder für Client-Zertifikats-Auth kommt
+`withTls` dazu:
+
+```ts
+const mqttOptions = MqttOptions.create()
+  .withBrokerUrl('mqtts://mqtt.example.com:8883')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/device.crt', 'utf8'),
+    key: fs.readFileSync('./tls/device.key', 'utf8'),
+  });
+```
+
+Jedes Feld trägt **das Material selbst**, nie einen Pfad darauf —
+deshalb liest das Beispiel die Dateien.  `cert` und `key` ergeben nur
+gemeinsam Sinn; eines ohne das andere wird beim Start des Actors
+abgelehnt.
+
+`withTls` konfiguriert den Handshake, statt einen zu starten — das
+`mqtts://`- bzw. `wss://`-Schema bleibt also nötig.  Einen Config-Key
+hat es bewusst nicht: Ein Private Key gehört nicht in die
+`application.conf`.
 
 ## Peer-Dependency
 
