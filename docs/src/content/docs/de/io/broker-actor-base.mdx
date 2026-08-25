@@ -323,6 +323,43 @@ Für einen deterministischen Test lässt sich die Zufallsquelle injizieren —
 reconnect: { initialDelayMs: 100, random: () => 0.5 }
 ```
 
+### Liveness-Deadlines
+
+Alles oben Beschriebene wird von `handleConnectionLost` ausgelöst, und
+das wird nur aufgerufen, wenn der Transport ein Ende **meldet** — ein
+`close`-Event, ein `error`, ein Stream, der `done` gemeldet hat.  Ein
+Peer, der ohne FIN oder RST verschwindet, meldet nichts davon.  Ein
+verfallener NAT-Eintrag, ein mit `SIGKILL` beendeter Container, eine
+Route, die anfängt zu verschlucken: der Socket bleibt offen, der Actor
+bleibt `connected`, und die Reconnect-Maschinerie läuft nie.
+
+Zwei Uhren schließen diese Lücke.  Beide sind **pro Protokoll
+opt-in**, weil nur die Anwendung weiß, wie still ihr Peer sein darf:
+
+- **`idleTimeoutMs`** — eine **Lese**-Deadline.  Kommt so lange nichts
+  vom Peer, wird die Verbindung über den gewöhnlichen
+  `handleConnectionLost`-Pfad als verloren gemeldet; alles auf dieser
+  Seite gilt damit unverändert: `BrokerDisconnected`, Backoff, Puffer,
+  Breaker.  Zurückgesetzt wird sie von eingehenden Bytes und
+  ausdrücklich *nicht* von ausgehenden: ein Client, der in ein
+  schwarzes Loch schreibt, ist genau der Fall, der sie auslösen muss.
+- **`connectTimeoutMs`** — eine Deadline für einen einzelnen
+  `connectImplementation`-Aufruf.  Jedes Protokoll beendet seinen
+  Connect über ein Event (`connect`, `open`, Response-Header), und
+  keines hat eine Uhr — ein Peer, der den Handshake abschließt und dann
+  stehen bleibt, hält den Actor unbegrenzt in `connecting`.  Läuft die
+  Deadline ab, wird der Versuch abgebrochen, und der Fehler nimmt den
+  Weg, den ein abgelehnter Connect ohnehin nimmt.
+
+`TcpSocketActor`, `SseActor` und `WebsocketClientActor` bieten beide
+an.  Setze `idleTimeoutMs` **oberhalb** des Heartbeats, den der Peer
+ohnehin sendet; darunter kappt die Deadline gesunde Verbindungen in
+Endlosschleife.  `0` (der Default) schaltet beide ab.
+
+Protokolle mit eigener Liveness auf Protokollebene brauchen das nicht:
+`MqttActor` hat MQTT-`keepAlive`, und `KafkaActor` fährt einen
+Consumer-Heartbeat.
+
 ### Lifecycle-Events
 
 Publisht auf `system.eventStream`:

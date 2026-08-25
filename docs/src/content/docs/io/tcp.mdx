@@ -40,10 +40,13 @@ tcp.tell({ kind: 'send', payload: 'PING\n' });
 
 ```ts
 interface TcpSocketOptionsType extends BrokerCommonOptionsType {
-  host?:    string;              // required
-  port?:    number;              // required
-  framing?: TcpFraming;          // frame extraction; default { kind: 'bytes' }
-  target?:  ActorRef<unknown>;   // required: where inbound frames go
+  host?:            string;              // required
+  port?:            number;              // required
+  framing?:         TcpFraming;          // frame extraction; default { kind: 'bytes' }
+  target?:          ActorRef<unknown>;   // required: where inbound frames go
+  idleTimeoutMs?:   number;              // read-idle deadline; default 0 (off)
+  connectTimeoutMs?: number;             // connect deadline; default 0 (off)
+  keepAliveMs?:     number;              // OS keepalive delay; default 45_000, 0 = off
 }
 ```
 
@@ -76,6 +79,42 @@ import { BrokerConnected, BrokerDisconnected } from 'actor-ts/io';
 system.eventStream.subscribe(monitorRef, BrokerConnected);
 system.eventStream.subscribe(monitorRef, BrokerDisconnected);
 ```
+
+### Detecting a peer that vanished
+
+`close` and `error` are the only events a socket raises, and a peer
+that disappears without FIN or RST raises neither.  The socket stays
+open, the actor stays `connected`, and every send goes into a kernel
+buffer nothing will ever drain.  Three knobs address that:
+
+```ts
+const tcpSocketOptions = TcpSocketOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withTarget(protocolHandler)
+  .withIdleTimeoutMs(90_000)     // no inbound bytes for 90 s → reconnect
+  .withConnectTimeoutMs(10_000); // handshake stalled for 10 s → fail the attempt
+```
+
+- **`keepAliveMs`** is the only one that is **on by default** (45 s).
+  It turns on OS-level TCP keepalive, whose probes are answered by the
+  peer's *kernel* whether or not its application has anything to say —
+  so it can never be wrong about a healthy connection, only slow: how
+  long a dead one takes to surface after the delay belongs to the OS
+  (Linux: nine probes, 75 s apart).  `0` turns it off.
+- **`idleTimeoutMs`** is a **read** deadline, reset by inbound bytes
+  and not by outbound ones — a client writing into a black hole is the
+  case it exists for.  Off by default: only you know how long your peer
+  is allowed to stay quiet, and a value below its own heartbeat
+  interval severs healthy connections in a loop.
+- **`connectTimeoutMs`** bounds one connect attempt.  Without it, a
+  peer that completes the TCP handshake and then stalls keeps the actor
+  in `connecting` for as long as it likes.
+
+Either deadline routes into `handleConnectionLost`, so the reconnect
+policy, the outbound buffer and the circuit breaker behave exactly as
+they do for an observed drop — see
+[BrokerActor base](/io/broker-actor-base/#liveness-deadlines).
 
 ## Framing
 

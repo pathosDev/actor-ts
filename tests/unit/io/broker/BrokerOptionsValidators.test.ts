@@ -204,6 +204,16 @@ describe('SseOptionsValidator', () => {
   test('rejects a non-http url', () => {
     expect(() => check({ url: 'ws://host/events' })).toThrow(OptionsError);
   });
+
+  // #753 — `0` is the documented "off" for both deadlines, so the rule has to
+  // be non-negative rather than positive: rejecting `0` would leave a
+  // HOCON-set timeout with no way to switch it off per instance.
+  test('accepts 0 for either liveness deadline and rejects a negative one', () => {
+    expect(() => check({ url: 'http://host/events', idleTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', connectTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ url: 'http://host/events', connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
+  });
 });
 
 describe('TcpSocketOptionsValidator', () => {
@@ -216,6 +226,16 @@ describe('TcpSocketOptionsValidator', () => {
 
   test('accepts a valid host/port', () => {
     expect(() => check({ host: 'localhost', port: 9000 })).not.toThrow();
+  });
+
+  // #753 — see the SSE case above for why `0` has to pass.
+  test('accepts 0 for each liveness knob and rejects a negative one', () => {
+    const base = { host: 'h', port: 9000 } as const;
+    expect(() => check({ ...base, idleTimeoutMs: 0, connectTimeoutMs: 0, keepAliveMs: 0 }))
+      .not.toThrow();
+    expect(() => check({ ...base, idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ ...base, connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
+    expect(() => check({ ...base, keepAliveMs: -1 })).toThrow(/keepAliveMs/);
   });
 
   // #372 — the nested framing caps were unvalidated.  Both are applied as
