@@ -349,6 +349,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`reEncryptObjectStorage` no longer crashes when `sampleSize` exceeds
+  the object count** (#1353). The pre-sweep keyring-completeness check
+  clamped its sample to the corpus when it picked the default, and not
+  when the caller passed one. A `sampleSize` past the end of the listing
+  walked `items` off its tail and died on `undefined.key` — a bare
+  `TypeError`, thrown before the sweep rewrote a single object.
+
+  The reason this was reachable rather than theoretical is that the
+  master-key rotation runbook suggests it: `operations/upgrades/
+  rolling-migration` shows `sampleSize: 200` as the optional override.
+  Uncomment it on a bucket holding fewer than 200 objects — a staging
+  bucket, a small tenant, a first rehearsal of the rotation — and the
+  operator tool whose whole job is to fail *safely* before touching the
+  corpus instead failed uninformatively.
+
+  The sample is now clamped at the point the default is resolved, so an
+  oversized `sampleSize` samples every object. The documented
+  `min(100, total)` default is unchanged, and the check still refuses a
+  ring that is missing a version the corpus references.
+
 - **A cluster that can never converge now says so** (#1351). Give every
   node a non-empty seed list and the default `selfElection: 'immediate'`
   — which self-elects only on an *empty* one — and no node ever reaches

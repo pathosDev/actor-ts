@@ -461,6 +461,88 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
       verifyKeyringCompleteness: false,
     })).rejects.toThrow(/no master key registered for version 0/);
   });
+
+  // #1353.  The `??` default is clamped to the corpus, the explicit
+  // override was not — so `sampleSize` past the end walked `items` off
+  // its tail and died on `undefined.key` before rewriting anything.
+  // The rolling-migration runbook suggests `sampleSize: 200` verbatim,
+  // which made every bucket holding fewer than 200 objects a TypeError.
+  test('a sampleSize larger than the corpus samples every object instead of walking off the end', async () => {
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    const v0StoreOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption(ringV0Only);
+    const v0Store = new ObjectStorageSnapshotStore(v0StoreOptions);
+    await v0Store.save('pid-A', 1, { x: 1 });
+    await v0Store.save('pid-B', 1, { x: 2 });
+
+    const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    // Two objects, the runbook's suggested override.
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1V0Retired,
+      info,
+      sampleSize: 200,
+    });
+    expect(result.scanned).toBe(2);
+    expect(result.rewrote).toBe(2);
+
+    // The oversized sample still did its job: a ring missing the
+    // retired v0 is refused, not waved through.
+    const ringV1NoRetired = (ringV1Only as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+    const otherDirBackend = new FilesystemObjectStorageBackend(
+      FilesystemObjectStorageOptions.create().withDir(mkdtempSync(join(tmpdir(), 'actor-ts-reencrypt-'))),
+    );
+    const staleStore = new ObjectStorageSnapshotStore(
+      ObjectStorageSnapshotStoreOptions.create()
+        .withBackend(otherDirBackend)
+        .withEncryption(ringV0Only),
+    );
+    await staleStore.save('pid-C', 1, { x: 3 });
+    await expect(reEncryptObjectStorage(otherDirBackend, {
+      keyPrefix: '',
+      keyring: ringV1NoRetired,
+      info,
+      sampleSize: 200,
+    })).rejects.toThrow(/keyring is incomplete/);
+  });
+
+  // The two dereference sites in the sampler are `options.skip?.(item.key)`
+  // and `backend.get(item.key)`; optional chaining short-circuits the
+  // first when no predicate is passed, so a skip predicate is what
+  // reaches it.  Pins both.
+  test('a sampleSize larger than the corpus is safe with a skip predicate too', async () => {
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(dir);
+    const backend = new FilesystemObjectStorageBackend(backendOptions);
+    const v0StoreOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption(ringV0Only);
+    const v0Store = new ObjectStorageSnapshotStore(v0StoreOptions);
+    await v0Store.save('pid-A', 1, { x: 1 });
+    await v0Store.save('pid-B', 1, { x: 2 });
+
+    const ringV1V0Retired = (ringV1ActiveV0Retired as Extract<
+      EncryptionConfig, { mode: 'client-aes256-gcm' } & { masterKeys: unknown }
+    >).masterKeys;
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '',
+      keyring: ringV1V0Retired,
+      info,
+      sampleSize: 200,
+      skip: (key) => key.includes('pid-B'),
+    });
+    expect(result.scanned).toBe(1);
+    expect(result.rewrote).toBe(1);
+  });
 });
 
 /**
