@@ -398,10 +398,24 @@ Zwei Dinge tut der Sweep bewusst nicht:
   läuft, während die Anwendung bedient.  Integrität korpusweit zu
   aktivieren ist die Migration oben, kein Nebeneffekt einer
   Schlüsselrotation.
-- **Er rotiert den Integritätsschlüssel selbst nicht.**  Für ihn gibt es
+- **Er rotiert den Integritätsschlüssel selbst nicht**, und es gibt kein
+  Fenster, das es erlauben würde.  Für den Integritätsschlüssel gibt es
   kein Versions-Byte, ein halb gesweepter Korpus wäre also nicht von
-  einem manipulierten zu unterscheiden.  Einen neuen Integritätsschlüssel
-  rollst du so aus, wie du Integrität aktiviert hast: Fenster öffnen,
+  einem manipulierten zu unterscheiden — und `allowUntaggedBodies` hilft
+  nicht, denn es lässt Bodies *ohne* Tag wieder zu.  Ein unter dem alten
+  Schlüssel getaggter Body trägt weiterhin `FLAG_INTEGRITY_HMAC` und
+  scheitert am Vergleich, bevor dieser Zweig erreicht wird — mit neuem
+  Schlüssel wie ohne.  Der Sweep ist hier fail-closed statt still halb zu
+  rollen, was die richtige Richtung ist, aber es heißt: einen
+  sweep-förmigen Weg, den Schlüssel zu wechseln, gibt es nicht.
+
+  Was funktioniert, ist die Per-Call-Überschreibung
+  `PersistenceOptions.integrity`, lesend und schreibend getrennt:
+  `load(pid, { integrity: alt })`, dann
+  `upsert(pid, revision, state, { integrity: neu })`.  Sie wirkt pro
+  `persistenceId`, hebt über das CAS die Revision jeder Entity an und hat
+  kein Snapshot-Gegenstück.  #1354 trägt die Form, die eine echte
+  Rotation bräuchte.
   neu schreiben, Fenster schließen.
 
 Einen Korpus zu sweepen, der *mitten* in der Integritätsmigration steckt

@@ -376,10 +376,22 @@ Two things the sweep deliberately does not do:
   key to — and a rotation runs while the application is serving.
   Turning integrity on corpus-wide is the migration above, not a side
   effect of rotating a key.
-- **It does not rotate the integrity key itself.**  There is no version
-  byte for it, so a half-swept corpus would be indistinguishable from a
-  tampered one.  Roll a new integrity key the same way you turned
-  integrity on: open the window, rewrite, close it.
+- **It does not rotate the integrity key itself**, and there is no
+  window that lets you.  There is no version byte for the integrity key,
+  so a half-swept corpus would be indistinguishable from a tampered one —
+  and `allowUntaggedBodies` does not help, because it re-admits bodies
+  carrying *no* tag.  A body tagged under the old key still carries
+  `FLAG_INTEGRITY_HMAC` and fails the comparison before that branch is
+  reached, with the new key and without it alike.  The sweep is
+  fail-closed here rather than silently half-rolling, which is the right
+  direction, but it means there is no sweep-shaped way to change the key.
+
+  What does work is the per-call `PersistenceOptions.integrity` override,
+  read and write independently: `load(pid, { integrity: old })` then
+  `upsert(pid, revision, state, { integrity: new })`.  It is
+  per-`persistenceId`, it bumps every entity's revision through the CAS,
+  and it has no snapshot equivalent.  #1354 carries the shape a real roll
+  would need.
 
 Sweeping a corpus that is *mid*-integrity-migration — some bodies
 tagged, some not — needs `allowUntaggedBodies: true` on the sweep as
