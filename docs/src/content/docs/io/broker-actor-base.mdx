@@ -318,7 +318,7 @@ Published on `system.eventStream`:
 | Event | When |
 | --- | --- |
 | `BrokerConnected` | A `connectImplementation` succeeded. |
-| `BrokerDisconnected` | A `disconnectImplementation` ran or a connection failed. |
+| `BrokerDisconnected` | A live connection was lost. Not published by a graceful stop. |
 | `BrokerReconnectAttempt` | A reconnect attempt is starting. |
 | `BrokerReconnectFailed` | `maxAttempts` exhausted. |
 | `BrokerBufferOverflow` | The outbound buffer dropped an envelope. |
