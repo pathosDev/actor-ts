@@ -173,7 +173,23 @@ export function transportFrameCapOf(registrations: ReadonlyArray<WebsocketRouteR
 export interface HttpServerBackend {
   readonly name: string;
 
-  /** Register all routes before `listen` is called.  Duplicate paths must be rejected. */
+  /**
+   * Register all routes before `listen` is called.
+   *
+   * A repeat of a `method` + `pattern` pair already registered **must throw**,
+   * rather than be dropped or appended.  Left to the router, a duplicate is
+   * answered by whichever registration arrived first, which turns the
+   * argument order of a `concat(...)` into the boundary deciding whether an
+   * auth-guarded route or its unguarded twin is the one that serves — and
+   * nothing anywhere says so.  Only Fastify's router used to enforce this, on
+   * one of three backends; now each backend refuses in its own words and
+   * `HttpExtension.bind` refuses backend-independently before any of them
+   * sees the route (#759).
+   *
+   * Patterns that merely *overlap* — `/users/:id` against `/users/me`, a
+   * wildcard against a literal — are not this, and are the router's business
+   * as before.
+   */
   registerRoute(route: RouteRegistration): void;
 
   /** Start listening.  Returns a ServerBinding with the actual bound port. */

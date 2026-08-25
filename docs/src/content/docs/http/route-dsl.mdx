@@ -68,7 +68,9 @@ concat(
 ```
 
 OR-combinator — multiple routes at the same level.  Matching is
-first-match-wins; order matters when patterns overlap.
+first-match-wins, so order matters when patterns *overlap* — but two
+routes declaring the **same method and the same path** are a conflict
+rather than an ordering question, and `bind()` refuses them.
 
 ```ts
 // Multiple methods on the same path:
@@ -399,16 +401,34 @@ import { Aside } from '@astrojs/starlight/components';
   codebase.
 </Aside>
 
-<Aside type="caution" title="First-match-wins in concat">
+<Aside type="caution" title="Overlapping routes vs. duplicate routes">
   ```ts
   concat(
     get(handlerA),
-    get(handlerB),   // ← never runs; handlerA always matches first
+    get(handlerB),   // ← same method, same path: bind() throws
   );
   ```
-  `concat` is OR with first-match semantics.  Two routes that
-  pattern-match the same request — only the first runs.  The
-  framework doesn't warn about this; review your routing tree.
+  An **exact duplicate** — same method *and* same pattern — is
+  rejected at `bind()`, on every backend:
+
+  ```text
+  Route conflict: GET / is declared more than once — a duplicate
+  would resolve by declaration order, so one route would silently
+  shadow the other.
+  ```
+
+  That refusal is a security guard, not tidiness.  Left to the
+  router the winner is whichever registration arrived first, so the
+  argument order of a `concat(...)` would decide whether an
+  auth-guarded route or an unguarded twin is the one that serves —
+  and nothing anywhere would say so.
+
+  Patterns that merely **overlap** are a different thing and are
+  still resolved by the backend's router: `/users/:id` against
+  `/users/me`, a wildcard against a literal.  The tie-break rules
+  there differ between Fastify, Express and Hono, so don't lean on
+  declaration order — make the patterns disjoint, or fold the
+  special case into the general handler.
 </Aside>
 
 ## Where to next
