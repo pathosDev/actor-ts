@@ -453,12 +453,16 @@ mailbox.  Drops are still reported as `drop-head` on
 vocabulary), except when the discarded message was the arriving one, which
 reports `drop-new`.
 
-<Aside type="caution" title="A bounded priority mailbox can drop on unstash">
+<Aside type="caution" title="A bounded mailbox can drop on unstash">
   `PriorityMailbox.prependUser` re-runs the priority function rather than
   pushing to the front, so `unstashAll()` goes through the same `enqueue`
   path — and therefore through the same bound.  On a full mailbox, replaying
-  the stash can discard messages.  `BoundedMailbox` behaves differently
-  here: its unstash path bypasses the bound.
+  the stash can discard messages.  `BoundedMailbox` arrives at the same
+  guarantee by a different route: the replay goes in at the head and the
+  mailbox sheds at the *tail* to make room, so what a full queue costs is its
+  newest messages rather than the ones you stashed.  Either way the bound
+  applies to the replay — and under `reject`, `unstashAll()` throws
+  `MailboxFullError` rather than dropping anything.
 </Aside>
 
 The options are validated at construction: a missing or non-callable
@@ -530,9 +534,20 @@ calls `mailbox.prependUser(envs)`, and the mailbox decides how to
 reinsert.  Notably for `PriorityMailbox`, unstashed messages are
 *re-prioritized*: a stashed `bulk` message rejoins the `bulk` tier,
 even if you stashed it while urgent messages were arriving.  Stash
-order is preserved within a priority tier.  That reinsertion goes
-through `enqueue`, so on a *bounded* priority mailbox the capacity
-applies to the replay too — see the caution above.
+order is preserved within a priority tier.
+
+**A bound applies to the replay.**  Whichever bounded mailbox you
+chose, `unstashAll()` is subject to the capacity and the overflow
+policy you set — a replay is traffic re-entering the queue, not a
+back door around it.  What differs is only where the room comes
+from: `PriorityMailbox` re-ranks, and `BoundedMailbox` puts the
+replay at the head and sheds at the tail, so a full queue loses its
+newest messages rather than the ones you deliberately parked.  Under
+`reject` nothing is lost at all — `unstashAll()` throws
+`MailboxFullError`, the whole batch stays stashed, and the failure
+reaches your actor's supervisor like any other.  Size the capacity
+for the backlog *plus* whatever you expect to stash, or accept the
+drops as the price of the bound.
 
 See [Become and stash](/fundamentals/become-and-stash/) for
 the full behavior-switching story.

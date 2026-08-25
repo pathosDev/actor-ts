@@ -193,6 +193,34 @@ describe('mailbox drop reporting (#1149)', () => {
     release();
   });
 
+  test('a drop on the unstash path reaches the counter too (#772)', async () => {
+    // The replay path used to write straight to the queue, so nothing it
+    // discarded was discarded at all — the mailbox simply grew past its
+    // capacity and `actor_mailbox_dropped_total` under-reported by the whole
+    // batch.  Now that it sheds, the drops have to arrive at the same counter
+    // the enqueue path feeds; the wiring is per-mailbox, not per-call-site,
+    // so this is the assertion that it stayed that way.
+    //
+    // The mailbox is driven directly rather than through `unstashAll()` on
+    // purpose: what is under test is the accounting, and a stash replay would
+    // put the actor's own scheduling between the drop and the sample.
+    const system = startSystem('drop-prepend');
+    const mailbox = new BoundedMailbox<number>({ capacity: 4, overflow: 'drop-head' });
+    const options = ActorOptions.create<number>().withMailbox(() => mailbox as never);
+
+    const release = await floodBehindLatch(system, options, 4);
+    expect(mailbox.size).toBe(4);
+    expect(dropSamples(system)).toEqual([]);
+
+    mailbox.prependUser([{ message: 100, sender: null }, { message: 101, sender: null }]);
+
+    const samples = dropSamples(system);
+    expect(samples.length).toBe(1);
+    expect(samples[0]!.value).toBe(2);
+    expect(samples[0]!.labels).toEqual({ class: 'Sink', reason: 'drop-head' });
+    release();
+  });
+
   test('a mailbox that does not report is left alone', async () => {
     // No `observeDrops`, no wiring, no crash — the probe has to tolerate the
     // ordinary case of a queue that simply never drops.

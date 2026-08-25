@@ -294,12 +294,34 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
    * behaviour (unstashed messages rejoin their priority tier).
    *
    * Going back through `enqueue` also means the capacity applies to the
-   * unstash path, unlike `BoundedMailbox`, where `prependUser` bypasses the
-   * bound (#772).  The consequence is worth knowing: on a bounded priority
-   * mailbox, `unstashAll()` can drop messages.
+   * unstash path.  Since #772 `BoundedMailbox` bounds its replay too, by the
+   * route its own geometry calls for — it sheds at the tail to make room at
+   * the head, where this class has only one shedding axis and re-ranking is
+   * the answer to both questions at once.  The consequence is the same on
+   * either mailbox and is worth knowing: on a bounded one, `unstashAll()` can
+   * drop messages, or throw under `reject`.
    */
   override prependUser(envelopes: Array<Envelope<T>>): void {
     for (const envelope of envelopes) this.enqueue(envelope);
+  }
+
+  /**
+   * The same entry {@link removeOldest} answers with, deliberately.
+   *
+   * The base distinguishes the two ends because a FIFO queue has two; this
+   * one is ordered by priority, and there is exactly one end it may shed from
+   * — the least important, which is what `drop-head` is not offered here for.
+   * Answering "the newest" with anything else would mean the class had two
+   * shedding axes, and the one it does not have is arrival order.
+   *
+   * Overridden rather than inherited for the reason {@link removeOldest}
+   * gives: the base scans the user queue this class does not use, so an
+   * inherited version would return `undefined` forever and any bound built on
+   * it would quietly stop enforcing — #407, one class over.  Nothing here
+   * calls it today, and that is exactly when a silent no-op gets written.
+   */
+  protected override removeNewest(): Envelope<T> | undefined {
+    return this.removeOldest();
   }
 
   override hasMessages(): boolean {
