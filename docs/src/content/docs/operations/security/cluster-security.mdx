@@ -341,6 +341,19 @@ whose event envelopes ride on pub-sub rather than on a frame kind
 of their own — see
 [what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers).
 
+Validation is only half of it. A frame can be perfectly well-formed
+and still **speak for a node that did not send it**, and that class of
+defect is closed the same way everywhere in this codebase: the
+identity is taken from the connection, not from the payload. A `leave`
+may only retire the node that sent it; gossip replaces the sending
+peer's contribution and no one else's; a sharding or singleton
+directive is honoured only when it arrived wrapped by the per-path
+envelope handler, which is the one place the authenticated address
+exists; and a replicated event's `replica` is held against the node
+that published it. A frame that reaches an actor by generic path
+resolution instead — which strips nothing but does carry no sender —
+is treated as unauthenticated rather than as trusted.
+
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
 version mismatch and a hostile peer look different in the log.

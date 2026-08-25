@@ -168,6 +168,15 @@ describe('WebsocketClientOptionsValidator', () => {
   test('rejects an unknown onInvalidMessage policy', () => {
     expect(() => check({ onInvalidMessage: 'explode' as unknown as 'drop' })).toThrow(/onInvalidMessage/);
   });
+
+  // #753 — `0` is the documented "off" for both deadlines, so the rule is
+  // non-negative rather than positive: rejecting `0` would leave a HOCON-set
+  // timeout with no way to switch it off per instance.
+  test('accepts 0 for either liveness deadline and rejects a negative one', () => {
+    expect(() => check({ idleTimeoutMs: 0, connectTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
+  });
 });
 
 describe('HTTP backend option validators', () => {

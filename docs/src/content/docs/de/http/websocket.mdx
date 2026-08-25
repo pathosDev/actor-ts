@@ -268,6 +268,29 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 Die Middleware-Sammlung steht in der
 [HTTP-Übersicht](/de/http/overview/).
 
+#### Antwort-dekorierende Middleware funktioniert ebenfalls
+
+Middleware, die `next()` aufruft und eine **dekorierte** Kopie des
+Ergebnisses zurückgibt — `securityHeaders()`, `contentSecurityPolicy()`,
+`strictTransportSecurity()`, `requestId()`, `csrfProtection()` —,
+komponiert ebenso über einer `websocket()`-Route.  Ein einziges Wrap kann
+damit einen ganzen Baum härten, ohne den Socket herauszuschneiden:
+
+```ts
+import { requestId, securityHeaders, websocket, withMiddleware } from 'actor-ts/http';
+
+withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', chat)));
+// Both run at upgrade time.  The socket opens.
+```
+
+Die Header, die solche Middleware setzt, erreichen einen **erfolgreichen**
+Handshake **nicht** — diese 101-Antwort schreibt das Backend selbst, und
+eine WebSocket-Verbindung ist kein Dokument, auf das ein Browser
+`X-Frame-Options` oder eine CSP anwenden würde.  Auf einer **Ablehnung**
+fahren sie dagegen mit: Ein 401 einer inneren `BearerTokenAuth` kommt mit
+den Security-Headern zurück — und genau das ist der Fall, auf den es
+ankommt, denn diese Antwort rendert ein Browser tatsächlich.
+
 ### Backend-eigene Middleware läuft ebenfalls
 
 `withMiddleware()` ist der portable Weg — auf jedem Backend

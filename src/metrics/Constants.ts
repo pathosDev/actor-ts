@@ -25,11 +25,17 @@ export const DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS = 2_000;
  * Queue depth below which no `actor_mailbox_size` series is minted.
  *
  * Not a display filter — a cardinality bound.  The registry mints a child
- * per label tuple and has no per-child eviction (`clear()` wipes the whole
- * thing), and `path` under sharding is `entity-<id>` where the id comes from
- * whoever addressed the shard region (#745).  A gauge over *every* actor
- * would therefore let a remote party mint a permanent series per entity id
- * for free.
+ * per label tuple, and `path` under sharding is `entity-<id>` where the id
+ * comes from whoever addressed the shard region (#745).  A gauge over
+ * *every* actor would therefore let a remote party mint a series per entity
+ * id for free.
+ *
+ * `MetricsRegistry.remove` now takes a drained or terminated actor's series
+ * back out again, so the floor bounds how many can be live at once rather
+ * than how many can ever have existed — but it is still the floor that does
+ * the bounding.  Eviction only reclaims what has stopped; without the floor
+ * a remote party could hold an arbitrary number of entity ids above it
+ * simultaneously, at one queued message each.
  *
  * **This floor is why the gauge keeps its `path` when #658 took it off
  * `actor_mailbox_dropped_total`.**  The rule the removal established is that

@@ -94,6 +94,18 @@ failing test rather than a discovery years later (#676).  Which of the
 two contexts a given peer belongs in is the rule in AGENTS.md,
 *Runtime portability*.
 
+The same guard asserts the reverse, which is what keeps this manifest a
+real boundary rather than a convention: nothing in `src/` may name an
+optional peer in an import specifier.  A driver that lives only here is
+not on the build compile's module path at all, so the library reaches it
+through `lazyImportModule(name)` and a hand-written structural type —
+`NatsConnectionLike`, `CassandraDriver` — and those stubs stay
+hand-written even for a peer that IS installed at the root, because they
+are exported and an imported specifier would land in a published `.d.ts`
+that a consumer who skipped the optional peer cannot resolve.  Drift in a
+stub is caught here, against the live broker, rather than at compile time
+in a tree that could not compile it (#676).
+
 Every suite directory has the same three files:
 
 ```

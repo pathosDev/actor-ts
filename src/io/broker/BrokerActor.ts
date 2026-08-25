@@ -153,6 +153,20 @@ export abstract class BrokerActor<
   /** Reconnect bookkeeping for the current cycle (since the last successful connect). */
   private _reconnectAttempt = 0;
 
+  /**
+   * Read-idle bookkeeping for the current connection (#753).
+   *
+   * `_idleTimeoutMs` is `0` whenever no deadline is armed, which makes it the
+   * single flag the timer callback checks — a stale wake-up that outran its
+   * cancel cannot then take a live connection down.  `_lastInboundAt` is
+   * refreshed by {@link noteInboundActivity} and read only when the timer
+   * fires; see there for why the hot path writes a timestamp instead of
+   * re-arming.
+   */
+  private _idleTimeoutCancel: (() => void) | null = null;
+  private _idleTimeoutMs = 0;
+  private _lastInboundAt = 0;
+
   /** Circuit-breaker counters.  Zero-cost when no breaker is configured. */
   private _consecutiveFailures = 0;
   private _breakerOpenUntil = 0;
@@ -226,6 +240,86 @@ export abstract class BrokerActor<
    * and triggers a reconnect cycle.
    */
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  /* ------------------------------ Liveness -------------------------------- */
+
+  /**
+   * How long the connection may stay **silent inbound** before it is declared
+   * lost.  `undefined` / `0` — the default — arms nothing.
+   *
+   * A subclass overrides this to surface its own `idleTimeoutMs` option.  It
+   * exists as a hook rather than a common option because the deadline is only
+   * honest for a transport that also calls {@link noteInboundActivity}: an
+   * option every broker advertised but only three reset would be a knob that
+   * silently severs healthy connections on the other eleven (#753).
+   */
+  protected idleTimeoutMs(): number | undefined { return undefined; }
+
+  /**
+   * How long one `connectImplementation` may take before the attempt is
+   * aborted.  `undefined` / `0` — the default — arms nothing.
+   *
+   * Overriding this without also overriding {@link abortConnectAttempt} buys
+   * nothing, which is why the default of that hook warns rather than doing
+   * nothing quietly.
+   */
+  protected connectTimeoutMs(): number | undefined { return undefined; }
+
+  /**
+   * Abort an in-flight `connectImplementation` so its own promise rejects.
+   *
+   * Called from the connect-deadline timer, and **only** for a subclass that
+   * returned a deadline from {@link connectTimeoutMs}.  Rejecting the original
+   * promise — rather than racing it and walking away — is what keeps the
+   * handles accounted for: a `Promise.race` the deadline wins leaves the
+   * subclass's connect still running, free to assign `this.socket` on top of
+   * whatever the reconnect cycle has opened since.  Here the failure travels
+   * the path a refused connect already takes, and the subclass drops its own
+   * half-open handle on the way out.
+   */
+  protected abortConnectAttempt(_cause: Error): void {
+    this.log.warn(
+      `${this.constructor.name}: connect deadline elapsed, but this actor cannot abort an `
+      + `in-flight connect — the attempt to ${this.endpointLabel()} keeps running`,
+    );
+  }
+
+  /**
+   * Record that something arrived from the peer, refreshing the read-idle
+   * deadline.  A subclass calls this from every inbound path — a TCP chunk, an
+   * SSE read, a WebSocket frame — including the ones it goes on to reject:
+   * an oversize frame is still proof the peer is alive.
+   *
+   * Deliberately a field read and a field write, with no timer work: this runs
+   * once per inbound chunk, and re-arming a scheduler handle per chunk would
+   * put a cancel + allocation on the hottest path the transport has.  The
+   * deadline timer reads the timestamp when it fires and re-arms for the
+   * remainder if the connection turned out to be busy — so a live connection
+   * costs one wake-up per `idleTimeoutMs`, no matter its throughput.  With no
+   * deadline armed — the default, and every broker that has no such option —
+   * it costs one comparison and not even the clock read.
+   */
+  protected noteInboundActivity(): void {
+    if (this._idleTimeoutMs === 0) return;
+    this._lastInboundAt = Date.now();
+  }
+
+  /**
+   * The read-idle deadline elapsed.  Default: report it as an ordinary lost
+   * connection, which is what starts the reconnect cycle.
+   *
+   * A subclass overrides this when its transport is still *holding* something
+   * — and after an idle timeout it always is.  This is the one loss the base
+   * class detects rather than the transport: nothing has closed the socket,
+   * so `handleConnectionLost` alone would flip the state machine and leave a
+   * live handle with live listeners attached for the whole backoff window, or
+   * for good under `reconnect: false`.  Each override routes into the
+   * teardown its transport already has for a connection it must abandon
+   * mid-flight.
+   */
+  protected handleIdleTimeout(cause: Error): void {
+    this.handleConnectionLost(cause);
+  }
 
   /* ------------------------- Desired subscriptions ------------------------ */
 
@@ -541,6 +635,11 @@ export abstract class BrokerActor<
     }
     this._scheduledReconnectCancel?.();
     this._scheduledReconnectCancel = null;
+    // No `_clearIdleTimeout()` here: a deadline is only ever armed on a
+    // connection, so `_transportOpened` is true whenever one exists and the
+    // `_closeTransport` below always reaches the disarm.  A third clear would
+    // be unreachable, which is worse than absent — nothing could ever fail if
+    // it stopped working.
     // Gate on transport state, not on `_state`: after a dropped
     // connection the state machine reads `disconnected` while the
     // subclass still holds sockets, clients and pending acks — the
@@ -666,7 +765,7 @@ export abstract class BrokerActor<
     // throws part-way through has still opened transport state.
     this._transportOpened = true;
     try {
-      await this.connectImplementation();
+      await this._connectWithinDeadline();
       // The subclass finished its handshake while the actor was being
       // stopped, so it is now holding live handles nobody owns: `postStop`
       // has returned and its CoordinatedShutdown task is deregistered, so
@@ -680,6 +779,10 @@ export abstract class BrokerActor<
       this._state = 'connected';
       this._reconnectAttempt = 0;
       this._consecutiveFailures = 0;
+      // Armed here rather than by the subclass, so the deadline cannot outlive
+      // a connect that was abandoned above and cannot be forgotten by a
+      // subclass that remembered `noteInboundActivity` and nothing else.
+      this._armIdleTimeout();
       this.system.eventStream.publish(
         new BrokerConnected(this.self.path.toString(), this.endpointLabel()),
       );
@@ -703,6 +806,100 @@ export abstract class BrokerActor<
       }
       this._handleReconnect(err);
     }
+  }
+
+  /**
+   * Run one `connectImplementation` under the subclass's connect deadline.
+   *
+   * A peer that completes the TCP handshake and then says nothing used to hold
+   * the actor in `connecting` for as long as it cared to: every subclass
+   * settles its connect promise on a protocol event (`connect`, `open`,
+   * response headers) and none of them has a clock (#753).  Without a
+   * deadline the reconnect machinery never runs, because the attempt that
+   * would have failed never finishes failing.
+   *
+   * The timer does not race the promise, it *pokes* it: `abortConnectAttempt`
+   * makes the subclass reject its own connect, so the failure arrives through
+   * the ordinary catch below with the subclass's own handles already dropped.
+   * Racing would leave the abandoned attempt free to finish later and adopt a
+   * socket the reconnect cycle has since replaced — the shape `_stopped` +
+   * {@link _abandonConnection} exists to clean up after, and the one worth not
+   * creating a second source of.
+   */
+  private async _connectWithinDeadline(): Promise<void> {
+    const timeoutMs = this.connectTimeoutMs();
+    if (timeoutMs === undefined || timeoutMs <= 0) {
+      await this.connectImplementation();
+      return;
+    }
+    const handle = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+      this.abortConnectAttempt(new Error(
+        `connect to ${this.endpointLabel()} did not complete within ${timeoutMs} ms`,
+      ));
+    });
+    try { await this.connectImplementation(); }
+    finally { handle.cancel(); }
+  }
+
+  /* ------------------------- Read-idle deadline (#753) -------------------- */
+
+  /**
+   * Arm the read-idle deadline for the connection just established.  A
+   * subclass that returns nothing from {@link idleTimeoutMs} gets no timer at
+   * all, so the cost for the eleven brokers with no such option is one
+   * virtual call per connect.
+   */
+  private _armIdleTimeout(): void {
+    this._clearIdleTimeout();
+    const timeoutMs = this.idleTimeoutMs();
+    if (timeoutMs === undefined || timeoutMs <= 0) return;
+    this._idleTimeoutMs = timeoutMs;
+    this._lastInboundAt = Date.now();
+    this._scheduleIdleCheck(timeoutMs);
+  }
+
+  /**
+   * Disarm it.  Idempotent, and called from both paths that end a connection —
+   * {@link handleConnectionLost}, which a subclass can reach without any
+   * teardown, and {@link _closeTransport}, which every reconnect and every
+   * stop goes through — so a timer can never outlive the connection it was
+   * measuring.
+   */
+  private _clearIdleTimeout(): void {
+    this._idleTimeoutCancel?.();
+    this._idleTimeoutCancel = null;
+    this._idleTimeoutMs = 0;
+  }
+
+  private _scheduleIdleCheck(delayMs: number): void {
+    if (this._stopped) return;
+    const handle = this.system.scheduler.scheduleOnceFunction(delayMs, () => this._onIdleDeadline());
+    this._idleTimeoutCancel = (): void => { handle.cancel(); };
+  }
+
+  /**
+   * The deadline elapsed.  Re-arm when the peer spoke since it was set —
+   * that is the whole reason {@link noteInboundActivity} may be a bare
+   * timestamp write — and otherwise route the silence into the reconnect
+   * machinery through the same door a transport event uses.
+   *
+   * `Scheduler` settles a one-shot handle before invoking it, exactly as on
+   * the reconnect path, so a `cancel()` that lands during this callback is a
+   * no-op; the `_idleTimeoutMs === 0` guard is what makes that harmless.
+   */
+  private _onIdleDeadline(): void {
+    this._idleTimeoutCancel = null;
+    if (this._stopped || this._idleTimeoutMs <= 0) return;
+    const quietForMs = Date.now() - this._lastInboundAt;
+    if (quietForMs < this._idleTimeoutMs) {
+      this._scheduleIdleCheck(this._idleTimeoutMs - quietForMs);
+      return;
+    }
+    const timeoutMs = this._idleTimeoutMs;
+    this._clearIdleTimeout();
+    this.handleIdleTimeout(new Error(
+      `no inbound data from ${this.endpointLabel()} for ${timeoutMs} ms (idle timeout)`,
+    ));
   }
 
   /**
@@ -740,6 +937,10 @@ export abstract class BrokerActor<
   private async _closeTransport(): Promise<void> {
     if (!this._transportOpened) return;
     this._transportOpened = false;
+    // Before the subclass teardown, not after: `disconnectImplementation`
+    // awaits, and a deadline that fired inside that window would report a
+    // connection the caller has already given up on.
+    this._clearIdleTimeout();
     // The live handles go with the connection; the desired set stays.
     this._subscriptionsApplied = false;
     try { await this.disconnectImplementation(); }
@@ -754,6 +955,13 @@ export abstract class BrokerActor<
     // a subclass driver callback the base class does not control, firing after
     // `postStop` set `_stopped` — a reconnect cycle on a terminated actor (#708).
     // No test pins it, because reaching it needs a subclass that misbehaves.
+    //
+    // The idle deadline goes first and unconditionally: whoever reported the
+    // loss, the connection it was measuring is gone.  `dropConnection` on the
+    // framing-cap path reaches here without a teardown, so leaving it to
+    // `_closeTransport` would keep a timer armed across the whole backoff
+    // window, firing into a state guard that discards it (#753).
+    this._clearIdleTimeout();
     if (this._stopped) return;
     if (this._state !== 'connected' && this._state !== 'connecting') return;
     this._state = 'disconnected';

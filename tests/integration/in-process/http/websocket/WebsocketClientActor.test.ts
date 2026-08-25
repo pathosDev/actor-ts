@@ -21,6 +21,14 @@ class PingServer extends WebsocketServerActor<SMessage, CMessage> {
   onMessage(m: CMessage): void { this.reply({ kind: 'pong', n: m.n }); }
 }
 
+/**
+ * Accepts the connection and never answers — the observable half of a peer
+ * whose path was silently dropped: no `close`, no `error`, no frames (#753).
+ */
+class MuteServer extends WebsocketServerActor<SMessage, CMessage> {
+  onMessage(_m: CMessage): void { /* deliberately mute */ }
+}
+
 type Rec = { events: string[]; messages: SMessage[] };
 
 class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
@@ -36,6 +44,25 @@ class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
     this.send({ kind: 'ping', n: this.rec.events.filter((e) => e === 'connected').length });
   }
   protected override onDisconnected(): void { this.rec.events.push('disconnected'); }
+}
+
+/**
+ * A client with a read-idle deadline.  Records the *cause* it was given, which
+ * is what tells an idle timeout apart from an observed `close` (#753).
+ */
+class LivenessClient extends WebsocketClientActor<CMessage, SMessage> {
+  constructor(url: string, idleTimeoutMs: number, private readonly rec: Rec) {
+    const clientOptions = WebsocketClientOptions.create<CMessage, SMessage>()
+      .withUrl(url)
+      .withIdleTimeoutMs(idleTimeoutMs)
+      .withReconnect(false);
+    super(clientOptions);
+  }
+  onMessage(m: SMessage): void { this.rec.messages.push(m); }
+  protected override onConnected(): void { this.rec.events.push('connected'); }
+  protected override onDisconnected(cause?: Error): void {
+    this.rec.events.push(`disconnected: ${cause?.message ?? '<none>'}`);
+  }
 }
 
 
@@ -135,4 +162,51 @@ describe('WebsocketClientActor', () => {
     // reconnect budget could never report its own label
     // (`tests/unit/ci/AwaitConditionBudgets.test.ts`).
   }, 15_000);
+
+  /* --------------------- read-idle deadline (#753) --------------------- */
+
+  test('a server that accepts and then says nothing is reported as lost', async () => {
+    const srvSys = mkSystem('cli-mute-srv');
+    const server = srvSys.spawn(MuteServer, 'srv');
+    const binding = await bindServer(srvSys, websocket('/ws', server));
+
+    const rec: Rec = { events: [], messages: [] };
+    const cliSys = mkSystem('cli-mute');
+    cliSys.spawn(() => new LivenessClient(`ws://127.0.0.1:${binding.port}/ws`, 80, rec), 'client');
+
+    // `close` and `error` never fire, so before the deadline existed this
+    // client reported `connected` for as long as the process ran.
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('disconnected')), {
+      timeoutMs: 4_000, label: 'the idle deadline reported the mute server as lost',
+    });
+    expect(rec.events).toContain('connected');
+    // Routed through onSocketDown, so the user hook sees the real reason
+    // rather than nothing at all.
+    expect(rec.events.find((e) => e.startsWith('disconnected'))).toContain('idle timeout');
+  });
+
+  test('inbound frames keep the deadline from firing', async () => {
+    const srvSys = mkSystem('cli-busy-srv');
+    const server = srvSys.spawn(PingServer, 'srv');
+    const binding = await bindServer(srvSys, websocket('/ws', server));
+
+    const rec: Rec = { events: [], messages: [] };
+    const cliSys = mkSystem('cli-busy');
+    const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
+      cliSys.spawn(() => new LivenessClient(`ws://127.0.0.1:${binding.port}/ws`, 500, rec), 'client');
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 2_000, label: 'the client reported its first connect',
+    });
+
+    // Traffic every 50 ms against a 500 ms deadline — a tenfold margin, so a
+    // failure here is the deadline ignoring inbound frames rather than a slow
+    // machine.  The window spans two deadlines, which is what makes the
+    // absence of a disconnect mean something.
+    for (let round = 1; round <= 24; round++) {
+      clientRef.tell(websocketSend({ kind: 'ping', n: round }));
+      await new Promise<void>((resolve) => { setTimeout(resolve, 50); });  // the elapsed time IS the assertion: two deadline windows of traffic
+    }
+    expect(rec.messages.length).toBeGreaterThan(0);
+    expect(rec.events.filter((e) => e.startsWith('disconnected'))).toEqual([]);
+  }, 10_000);
 });

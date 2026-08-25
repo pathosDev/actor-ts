@@ -21,6 +21,11 @@ For the operational context, see
 | Unauthorized join (anyone with port access can join) | mTLS (cert-based peer auth) |
 | Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
 | Replay of a captured gossip frame | TLS, plus the per-sender frame sequence every cluster enforces |
+| A member speaking for another node in a payload | Framework handlers hold a payload's claimed identity against the connection's peer — see [what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers) |
+
+mTLS is what makes the last row work rather than something it
+duplicates: holding a claim against the connection's peer is only
+worth anything once the peer is authenticated.
 
 ## Enabling TLS
 

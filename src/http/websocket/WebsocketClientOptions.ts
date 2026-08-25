@@ -45,6 +45,29 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
   /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
   readonly pingIntervalMs?: number;
+  /**
+   * Declare the connection lost after this many milliseconds without a single
+   * inbound frame, so the reconnect machinery runs (#753).  `0` or unset —
+   * the default — never does.
+   *
+   * `close` and `error` are the only other things that can report a drop, and
+   * a connection whose path was silently dropped — a NAT entry expiring, a
+   * load balancer forgetting it — produces neither.  The actor then reports
+   * `connected` indefinitely while every send goes nowhere.
+   *
+   * **This counts application frames, not pongs.**  A protocol-level pong is
+   * not delivered as a `message` event on any supported runtime, so
+   * {@link pingIntervalMs} does *not* refresh this deadline: set
+   * `idleTimeoutMs` above whatever the *server's* own heartbeat interval is,
+   * not above the client's ping interval.
+   */
+  readonly idleTimeoutMs?: number;
+  /**
+   * Abandon a connect attempt that has not reached `open` after this many
+   * milliseconds.  `0` or unset — the default — waits forever, because the
+   * handshake settles only on `open` or `error`.
+   */
+  readonly connectTimeoutMs?: number;
 }
 
 /** Fluent builder for {@link WebsocketClientOptionsType}. */
@@ -84,6 +107,16 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   withPingIntervalMs(ms: number): this {
     return this.set('pingIntervalMs', ms);
   }
+
+  /** Declare the connection lost after `ms` without an inbound frame.  Default: disabled. */
+  withIdleTimeoutMs(ms: number): this {
+    return this.set('idleTimeoutMs', ms);
+  }
+
+  /** Abandon a connect attempt that has not reached `open` after `ms`.  Default: disabled. */
+  withConnectTimeoutMs(ms: number): this {
+    return this.set('connectTimeoutMs', ms);
+  }
 }
 
 /** Validates resolved {@link WebsocketClientOptionsType} settings. */
@@ -97,6 +130,9 @@ export class WebsocketClientOptionsValidator<TOut = unknown, TIn = unknown>
     this.url('url', ['ws', 'wss']);
     this.positiveInt('maxFrameBytes');
     this.positiveNumber('pingIntervalMs');
+    // `0` is the documented "off" for both, so non-negative rather than positive.
+    this.nonNegativeInt('idleTimeoutMs');
+    this.nonNegativeInt('connectTimeoutMs');
     this.oneOf('onInvalidMessage', ['drop', 'hook', 'disconnect']);
   }
 }

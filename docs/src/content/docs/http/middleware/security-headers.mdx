@@ -87,6 +87,15 @@ import { Aside } from '@astrojs/starlight/components';
   preload list is hard to undo; be sure every subdomain serves HTTPS first.
 </Aside>
 
+## Over a WebSocket route
+
+`securityHeaders()` may wrap a `websocket()` route like any other — the
+upgrade completes. What it decorates there is the **rejection**: a
+handshake an inner auth middleware refuses comes back carrying these
+headers. An accepted handshake does not, because the backend writes that
+101 response itself. So wrap the whole tree, socket included, rather than
+carving the socket out. See [WebSocket](/http/websocket/).
+
 ## Where to next
 
 - **[CSP](/http/middleware/csp/)** — Content-Security-Policy.

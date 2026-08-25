@@ -25,7 +25,12 @@ export type {
   TcpSocketCommand,
   TcpOutbound,
 } from './TcpSocketActor.js';
-export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
+export {
+  DEFAULT_TCP_KEEP_ALIVE_MS,
+  TcpSocketOptions,
+  TcpSocketOptionsBuilder,
+  TcpSocketOptionsValidator,
+} from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
 // Framing is shared by the client and the listener, so it lives on its own.
 export type { TcpFraming, TcpFrame } from './TcpFraming.js';

@@ -54,6 +54,11 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   private socket: WebsocketLike | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WebsocketCodec<TOut, TIn> | null = null;
+  /**
+   * Rejects the handshake currently in flight, or `null` when none is — see
+   * {@link abortConnectAttempt}.
+   */
+  private connectAbort: ((cause: Error) => void) | null = null;
 
   constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
@@ -159,7 +164,38 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
     if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
     if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
+    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
+    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
     return out;
+  }
+
+  protected override idleTimeoutMs(): number | undefined { return this.options.idleTimeoutMs; }
+  protected override connectTimeoutMs(): number | undefined { return this.options.connectTimeoutMs; }
+
+  /**
+   * Route an elapsed read-idle deadline through the same door a `close` event
+   * uses, so `onDisconnected` fires and the ping timer stops whether the drop
+   * was observed or merely deduced.  The explicit `close()` is the difference
+   * between the two: after a `close` event the socket is already gone, while
+   * an idle timeout fires on one that is still nominally open — and on the
+   * connection this feature exists for, still holding a TCP socket to a peer
+   * that is not there.
+   */
+  protected override handleIdleTimeout(cause: Error): void {
+    if (this.socket) { try { this.socket.close(); } catch { /* ignore */ } }
+    this.onSocketDown(cause);
+  }
+
+  /**
+   * Fail the in-flight handshake the base class has given up on.
+   *
+   * `close()` on a socket that never opened does not reliably raise `error`
+   * on every runtime, so the pending promise is rejected directly and the
+   * socket closed alongside it — otherwise the deadline would fire, the
+   * handshake would stay pending, and the reconnect cycle would never start.
+   */
+  protected override abortConnectAttempt(cause: Error): void {
+    this.connectAbort?.(cause);
   }
 
   protected async connectImplementation(): Promise<void> {
@@ -169,9 +205,17 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     });
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      this.connectAbort = (cause: Error): void => {
+        if (settled) return;
+        settled = true;
+        this.connectAbort = null;
+        try { ws.close(); } catch { /* ignore */ }
+        reject(cause);
+      };
       ws.addEventListener('open', () => {
         if (settled) return;
         settled = true;
+        this.connectAbort = null;
         this.socket = ws;
         ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
@@ -186,6 +230,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       ws.addEventListener('error', () => {
         if (settled) return;
         settled = true;
+        this.connectAbort = null;
         try { ws.close(); } catch { /* ignore */ }
         reject(new Error('websocket connect error'));
       });
@@ -216,6 +261,11 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
 
   private handleInbound(data: unknown): void {
+    // First, before every reason this frame might be rejected: an
+    // unrecognised, oversize or undecodable frame is still the peer speaking,
+    // and the read-idle deadline asks whether it is there, not whether it is
+    // behaving (#753).
+    this.noteInboundActivity();
     const frame = normalizeInbound(data);
     if (!frame) {
       this.log.warn('WebsocketClientActor: unrecognised inbound frame type — dropped');

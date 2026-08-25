@@ -558,6 +558,17 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
 }
 
 /* -------------------- nats peer-dep type stubs --------------------- */
+/*
+ * Hand-written on purpose — not a placeholder for the real `nats` types.
+ * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * the root install deliberately does not materialise, so the build compile
+ * cannot resolve it; and these types are exported through `src/io/index.ts`,
+ * so importing the module here would emit that specifier into a published
+ * `.d.ts` a consumer who took the "optional" peer at its word cannot resolve
+ * either. Widen the stub instead. The drift a real import would have caught
+ * is covered by the live broker under `tests/integration/brokers/nats/`, and
+ * `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the boundary. #676.
+ */
 
 /**
  * Minimal `NatsConnection` surface the actor depends on.  Exported so

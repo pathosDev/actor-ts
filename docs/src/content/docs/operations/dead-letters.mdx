@@ -241,9 +241,16 @@ sending path, which is a different design and not what this is.
 
 ## Metrics
 
-`actor_dead_letters_total{outcome, recipient}` counts what the queue saw —
-`outcome` is `captured`, `replayed` or `replay-failed`. See
+`actor_dead_letters_total{outcome}` counts what the queue saw — `outcome`
+is `captured`, `replayed` or `replay-failed`. See
 [stock metrics](/observability/metrics/stock-metrics/).
+
+It carries **no recipient label**. That would be one permanent time series
+per distinct undeliverable path, and under sharding the path is
+`entity-<entityId>` — a value chosen by whoever addresses the shard region,
+at a price of one lost message per series. Which actor a letter was
+addressed to is answered where it costs nothing per-series: `list({
+recipient })` above, and the `DeadLetter` on the event stream.
 
 ## What the queue does not see
 

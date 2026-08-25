@@ -311,6 +311,42 @@ For a deterministic test, inject the randomness source — `random: () =>
 reconnect: { initialDelayMs: 100, random: () => 0.5 }
 ```
 
+### Liveness deadlines
+
+Everything above is triggered by `handleConnectionLost`, and that is
+only ever called when the transport **says** something ended — a
+`close` event, an `error`, a stream that reported `done`.  A peer that
+vanishes without sending FIN or RST says none of them.  A dropped NAT
+entry, a container killed with `SIGKILL`, a route that starts
+black-holing: the socket stays open, the actor stays `connected`, and
+the reconnect machinery never runs.
+
+Two clocks close that gap.  Both are **opt-in per protocol**, because
+only the application knows how quiet its peer is allowed to be:
+
+- **`idleTimeoutMs`** — a **read** deadline.  If nothing arrives from
+  the peer for that long, the connection is reported lost through the
+  ordinary `handleConnectionLost` path, so everything on this page
+  applies unchanged: `BrokerDisconnected`, backoff, buffer, breaker.
+  It is reset by inbound bytes and *not* by outbound ones, deliberately:
+  a client writing into a black hole is exactly the case that has to
+  trip it.
+- **`connectTimeoutMs`** — a deadline on one `connectImplementation`.
+  Every protocol settles its connect on an event (`connect`, `open`,
+  response headers) and none of them has a clock, so a peer that
+  finishes the handshake and then stalls holds the actor in
+  `connecting` indefinitely.  On expiry the attempt is aborted, and the
+  failure travels the path a refused connect already takes.
+
+`TcpSocketActor`, `SseActor` and `WebsocketClientActor` expose both.
+Set `idleTimeoutMs` **above** whatever heartbeat the peer already
+sends; below it, the deadline severs healthy connections in a loop.
+`0` (the default) disables either one.
+
+Protocols with their own protocol-level liveness do not need these:
+`MqttActor` has MQTT `keepAlive`, and `KafkaActor` runs a consumer
+heartbeat.
+
 ### Lifecycle events
 
 Published on `system.eventStream`:

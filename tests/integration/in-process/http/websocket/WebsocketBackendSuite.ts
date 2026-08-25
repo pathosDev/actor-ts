@@ -20,6 +20,7 @@ import {
   type Middleware,
   type Route,
 } from '../../../../../src/http/Route.js';
+import { requestId, securityHeaders } from '../../../../../src/http/middleware/index.js';
 import { Status } from '../../../../../src/http/Types.js';
 import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
@@ -308,6 +309,27 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const ws = await wsOpen(`${base}/ws?token=secret`);
       ws.send(JSON.stringify({ kind: 'ping', n: 1 }));
       expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 1 });
+      ws.close();
+    });
+
+    test('a response-decorating middleware above the route still lets the upgrade complete (#757)', async () => {
+      // The unit test proves this at the `compile()` seam; this one proves
+      // it end to end, through the backend's real upgrade path and a real
+      // client, on every backend the suite parameterises — which is the
+      // half a `compile()`-level assertion cannot reach, since "authorize
+      // returned null" is not yet "the socket opened".
+      //
+      // Reverting the fix fails this on all three backends with `ws errored
+      // before open`: the decorated sentinel read as a rejection, so the
+      // backend answered the upgrade with an ordinary 101-status response
+      // carrying no `Sec-WebSocket-Accept` instead of handing the socket
+      // over, and the handshake never completed.
+      const { base } = await bindServer([], (s) =>
+        withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', s))));
+
+      const ws = await wsOpen(`${base}/ws`);
+      ws.send(JSON.stringify({ kind: 'ping', n: 3 }));
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 3 });
       ws.close();
     });
 

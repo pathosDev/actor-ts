@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
  * reads, run under plain `bun test` because nothing else in the toolchain
  * would ever notice them rotting.
  *
- * Two things are worth a test here rather than a convention.
+ * Three things are worth a test here rather than a convention.
  *
  * The first is that the issue template used to point at a `SECURITY.md` that
  * had never existed in this repository, with a "(or, if absent, contact the
@@ -24,6 +24,11 @@ import { describe, expect, test } from 'bun:test';
  * suppressed ID to appear in `SECURITY.md` — and every listed ID to still be
  * suppressed — makes the list impossible to grow in the dark and impossible to
  * leave behind once #779 removes the advisories.
+ *
+ * The third is the route around that list. A dependency override rewrites the
+ * resolved closure `bun audit` reads, so it can retire an advisory without
+ * touching the `--ignore` flags at all — a suppression the table above cannot
+ * see. #676 found it while looking for a way to declare `cassandra-driver`.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -35,11 +40,20 @@ const securityTemplate = readFileSync(
   'utf8',
 );
 
-const auditScript: string = (
-  JSON.parse(readFileSync(join(REPOSITORY_ROOT, 'package.json'), 'utf8')) as {
-    scripts: Record<string, string | undefined>;
-  }
-).scripts['lint:audit'] ?? '';
+type RootManifest = {
+  scripts?: Record<string, string | undefined>;
+  peerDependencies?: Record<string, string>;
+  /** npm spelling of a transitive-version pin. */
+  overrides?: Record<string, unknown>;
+  /** yarn spelling of the same thing — bun reads both (measured, #676). */
+  resolutions?: Record<string, unknown>;
+};
+
+const rootManifest = JSON.parse(
+  readFileSync(join(REPOSITORY_ROOT, 'package.json'), 'utf8'),
+) as RootManifest;
+
+const auditScript: string = rootManifest.scripts?.['lint:audit'] ?? '';
 
 /**
  * The template's prose is a markdown blockquote wrapped across YAML lines, so
@@ -63,6 +77,34 @@ const documentedAdvisories: readonly string[] = [
   ...new Set(securityPolicy.slice(securityPolicy.indexOf('## Accepted advisories'))
     .match(advisoryPattern) ?? []),
 ].sort();
+
+/**
+ * Packages the root manifest pins past the range something in the closure
+ * declares for them — both spellings, because bun honours both.
+ */
+const overriddenPackages: readonly string[] = [
+  ...new Set([
+    ...Object.keys(rootManifest.overrides ?? {}),
+    ...Object.keys(rootManifest.resolutions ?? {}),
+  ]),
+].sort();
+
+/** The heading a dependency override has to be written up under. */
+const OVERRIDE_SECTION_HEADING = '## Dependency overrides';
+
+/**
+ * Package names written in backticks under that heading. Absent heading and
+ * all today — the manifest carries no override, which is the state this keeps
+ * from changing quietly rather than a state it forbids.
+ */
+function documentedOverrides(): readonly string[] {
+  const start = securityPolicy.indexOf(OVERRIDE_SECTION_HEADING);
+  if (start < 0) return [];
+  const rest = securityPolicy.slice(start + OVERRIDE_SECTION_HEADING.length);
+  const nextHeading = rest.indexOf('\n## ');
+  const section = nextHeading < 0 ? rest : rest.slice(0, nextHeading);
+  return [...new Set([...section.matchAll(/`([^`\n]+)`/g)].map((match) => match[1] ?? ''))].sort();
+}
 
 describe('security policy', () => {
   test('SECURITY.md exists and names a reporting channel', () => {
@@ -146,5 +188,66 @@ describe('security policy', () => {
       + 'was dropped is a policy claiming risk the project no longer carries. '
       + 'Both halves move together — see #779, which removes them.',
     ).toEqual([...suppressedAdvisories]);
+  });
+
+  /**
+   * The `--ignore` list is not the only way to make `bun audit` go quiet, and
+   * the other way leaves no trace at all.
+   *
+   * An `overrides` (npm) or `resolutions` (yarn) entry in the root manifest
+   * pins a transitive dependency past the range its parent declares, and what
+   * lands in `bun.lock` is what `bun audit` reads. Both spellings work —
+   * measured on bun 1.4.0 against a throwaway manifest declaring
+   * `adm-zip: ~0.5.10`, which resolves to 0.5.18 on its own and to 0.6.0 under
+   * either field. So an override can lift a package over the version that
+   * fixes an advisory, and `lint:audit` goes green with no flag added and no
+   * row here.
+   *
+   * That route is live and has a name. #676 needs `cassandra-driver` as a root
+   * devDependency to check the structural stub in
+   * `src/persistence/journals/CassandraClient.ts` against the real module, and
+   * cannot have it: the driver's newest release hard-pins `adm-zip: ~0.5.10`,
+   * and GHSA-xcpc-8h2w-3j85 (high) is fixed only in 0.6.0. Pinning `adm-zip`
+   * here would clear the gate in one line.
+   *
+   * It would also be the worst of the available answers, which is why this is
+   * a bijection and not a ban. npm-style overrides apply only while this
+   * package is the root project — a consumer who installs `actor-ts` and the
+   * Cassandra backend resolves the vulnerable range again — so the override
+   * would move the advisory out of *our* audit while leaving it in *their*
+   * install. A suppression at least says so out loud, in a table someone
+   * reviews. An override says nothing.
+   *
+   * Hence: overrides are allowed, in the light. Whoever adds the first one
+   * writes the section this looks for and states what it pins and why, the
+   * same discipline the advisory table above already enforces.
+   */
+  test('no dependency override silences the audit without a SECURITY.md entry', () => {
+    // Guards the guard: every assertion here filters a list read out of the
+    // root manifest, and a manifest that failed to parse into the shape above
+    // would report no overrides for the same reason it would report none if
+    // there genuinely were none.
+    expect(
+      Object.keys(rootManifest.peerDependencies ?? {}).length,
+      'The root package.json did not parse into the expected shape — the '
+      + 'override scan below read `undefined` and reported nothing, which is '
+      + 'indistinguishable from a clean manifest.',
+    ).toBeGreaterThan(20);
+    const undocumented = overriddenPackages.filter(
+      (name) => !documentedOverrides().includes(name),
+    );
+    expect(
+      undocumented,
+      'These packages are pinned by an `overrides` / `resolutions` entry in the '
+      + 'root package.json but are not written up under a '
+      + `"${OVERRIDE_SECTION_HEADING}" heading in SECURITY.md. An override `
+      + 'rewrites the closure `bun audit` reads, so it can lift a dependency '
+      + 'past the version that fixes an advisory and turn `lint:audit` green '
+      + 'with no --ignore flag and no row in the table above — a suppression '
+      + 'with no paper trail. It is also weaker than it looks for a library: '
+      + 'overrides apply only while this package is the root project, so a '
+      + 'consumer installing actor-ts resolves the original range again. Add '
+      + 'the section, name the package, and say what it pins and why (#676).',
+    ).toEqual([]);
   });
 });

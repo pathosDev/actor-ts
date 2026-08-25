@@ -370,12 +370,50 @@ export function defaultErrorResponse(err: unknown): HttpResponse {
 /* ------------------------------- Compilation ----------------------------- */
 
 /**
- * Sentinel returned by a WS route's inner `authorize` to mean "proceed
- * with the upgrade".  Middleware that calls `next()` and passes the
- * result through untouched yields this exact frozen object (identity
- * check) → accept; anything else → reject the upgrade with that response.
+ * Marks a response as *the* "proceed with the upgrade" sentinel.  A symbol
+ * key is what makes the mark survive the object spread every decorating
+ * middleware performs (`{ ...response, headers: merged }` copies own
+ * enumerable symbol properties), so acceptance can be read structurally
+ * rather than by reference identity.
+ *
+ * Module-private and unforgeable on purpose: nothing outside this file can
+ * name the symbol, so no handler or middleware can mint a response that
+ * claims to be an accepted upgrade (#757).
  */
-const WS_ACCEPT: HttpResponse = Object.freeze({ status: 101, body: null });
+const WEBSOCKET_ACCEPT = Symbol('actor-ts.websocket-accept');
+
+/** A response carrying the accept mark — the shape {@link isWebsocketAccept} reads. */
+type WebsocketAcceptResponse = HttpResponse & { readonly [WEBSOCKET_ACCEPT]: true };
+
+/**
+ * Sentinel returned by a WS route's inner `authorize` to mean "proceed with
+ * the upgrade".  Middleware that calls `next()` and returns the result —
+ * untouched, or decorated with headers via the usual spread — accepts;
+ * anything else rejects the upgrade with that response.
+ *
+ * Frozen so the mark cannot be deleted in place; the spread that copies it
+ * onto a decorated response produces an ordinary mutable object, which is
+ * fine — forging one still requires the symbol.
+ */
+const WEBSOCKET_ACCEPT_SENTINEL: WebsocketAcceptResponse =
+  Object.freeze({ status: 101, body: null, [WEBSOCKET_ACCEPT]: true as const });
+
+/**
+ * Read acceptance off a middleware's return value.
+ *
+ * Both halves are required.  The mark alone would accept a response that a
+ * middleware spread the sentinel into and then *overrode* the status on —
+ * a deliberate answer, not a pass-through — and `status === 101` alone
+ * would accept any response a handler happened to build with that status.
+ * Requiring both means only a response descended from this file's sentinel,
+ * with the protocol-switch status intact, counts as "proceed"; everything
+ * else stays a rejection, which keeps the fail-closed direction the
+ * identity check had.
+ */
+function isWebsocketAccept(response: HttpResponse): boolean {
+  return (response as Partial<WebsocketAcceptResponse>)[WEBSOCKET_ACCEPT] === true
+    && response.status === WEBSOCKET_ACCEPT_SENTINEL.status;
+}
 
 /** Flatten a Route tree into the list of concrete endpoint registrations. */
 export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[] {
@@ -433,10 +471,22 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         const inner = c.authorize;
         const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WS_ACCEPT);
-            // Identity: middleware passed the sentinel through → accept.
-            // Any other response (short-circuit or transform) → reject.
-            return response === WS_ACCEPT ? null : response;
+            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
+            // Structural: the middleware returned something descended from
+            // the sentinel → accept.  That covers both passing it through
+            // untouched and decorating it (`securityHeaders()`, `hsts()`,
+            // `requestId()`, … all spread, which carries the mark), which a
+            // reference-identity check refused (#757).  Any other response
+            // — a short-circuit, or a replacement built from scratch — is
+            // the middleware answering the request itself → reject the
+            // upgrade with it.
+            //
+            // Headers a decorator added to the sentinel are dropped on the
+            // accept path: `null` means "proceed" and the backend writes the
+            // handshake response itself, so there is nowhere to put them.
+            // Nothing is lost that reached the wire before — the decorated
+            // sentinel used to be a *rejection*.
+            return isWebsocketAccept(response) ? null : response;
           } catch (err) {
             return defaultErrorResponse(err);
           }

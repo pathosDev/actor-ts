@@ -122,6 +122,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * {@link MAILBOX_HIGH_WATER_MARK}.
    */
   private _mailboxWarnAt = MAILBOX_HIGH_WATER_MARK;
+  /**
+   * Drops counted before this cell had an actor instance, tallied by reason
+   * and flushed once the class name is known (#745).
+   *
+   * `null` rather than an always-present `Map`, because the window it covers
+   * is a few hundred microseconds at the start of one cell's life and the
+   * overwhelming majority of cells never drop a message in it — allocating a
+   * `Map` per spawn to hold nothing would be a real cost on the spawn path
+   * for a case that is close to never.
+   */
+  private _deferredMailboxDrops: Map<MailboxDropReason, number> | null = null;
+  /**
+   * True once `onCreate` has run to one of its two ends.  After that a null
+   * `actor` is not "the name is still coming" but "there will not be one",
+   * so a drop is counted immediately rather than held for a flush that will
+   * never happen.
+   */
+  private _actorCreationSettled = false;
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
@@ -1349,6 +1367,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
+      // Before `preStart`, which can suspend: the assignment above is what
+      // makes further drops count themselves directly, so anything held back
+      // has to be released in the same synchronous stretch or a drop landing
+      // during the await would be counted ahead of the older ones.
+      this._flushDeferredMailboxDrops(actor.constructor.name);
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
@@ -1375,6 +1398,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
+      // Whatever the factory or `preStart` did, drops held for a name that
+      // will now never arrive still happened, and a counter that swallowed
+      // them would disagree with a caller's own `onDrop` for the same
+      // messages.  A no-op unless the flush above already ran.
+      this._flushDeferredMailboxDrops('unknown');
       this.log.error('Actor initialization failed', err);
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to start`, err));
     }
@@ -1660,10 +1688,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * `entity-<entityId>`, i.e. chosen by whoever addresses the shard region,
    * and `spawnAnonymous` mints a fresh one per spawn forever.  Shedding is
    * a bounded mailbox's *designed* behaviour rather than an anomaly, so
-   * every such actor minted a permanent series — the registry has no
-   * per-child eviction — in a system doing nothing wrong.  `class` is a
+   * every such actor minted a permanent series in a system doing nothing
+   * wrong.  #745 gave the registry a `remove`, which does not bring the
+   * label back: eviction is honest for a gauge, whose reading is about now,
+   * and not for a counter, whose series disappearing and returning reads
+   * downstream as a reset that never happened.  `class` is a
    * source-code constant and `reason` a closed pair, so the family is now
-   * bounded by the program instead of by its traffic.
+   * bounded by the program instead of by its traffic.  The one value that
+   * is not a class name, `'unknown'`, is reachable only from a cell whose
+   * actor failed to start, which is a distinct condition rather than a
+   * timing artifact — see {@link _flushDeferredMailboxDrops}.
    *
    * Per-actor drop counts did not disappear, they moved to where the
    * cardinality budget belongs: `observeDrops` appends rather than assigns,
@@ -1677,12 +1711,59 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // exist is the wrong thing to do in that moment (#974).
     const metrics = this.system._metricsRegistry;
     if (metrics === null) return;
-    const className = this.actor?.constructor.name ?? 'unknown';
+    const actor = this.actor;
+    // `tell` enqueues on the *sender's* stack, so a burst issued in the same
+    // tick as the spawn overflows before this cell has run its `create` and
+    // before the instance exists.  Counting those under a placeholder class
+    // minted a second, meaningless series for an actor that mints its real
+    // one moments later (#745), so they are held until the name is known.
+    if (actor === null && !this._actorCreationSettled) {
+      const deferred = this._deferredMailboxDrops ?? new Map<MailboxDropReason, number>();
+      deferred.set(reason, (deferred.get(reason) ?? 0) + 1);
+      this._deferredMailboxDrops = deferred;
+      return;
+    }
+    this._countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
+  }
+
+  /** The single writer of `actor_mailbox_dropped_total`. */
+  private _countMailboxDrops(
+    metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
+  ): void {
     metrics.counter(
       'actor_mailbox_dropped_total',
       { class: className, reason },
       { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
-    ).inc();
+    ).inc(delta);
+  }
+
+  /**
+   * Attribute the drops held back by {@link _onMailboxDrop} now that the
+   * class name is settled.
+   *
+   * Called on both ends of `onCreate`: with the real name when the instance
+   * was built, and with `'unknown'` when it was not.  The second is not the
+   * placeholder this fix removed — it is the same word recovered as a real
+   * signal, because a cell whose actor never came into existence genuinely
+   * has no class, and dropping the counts instead would leave a counter
+   * quietly short of what a caller's own `onDrop` saw.
+   *
+   * Closing the deferral window is the other half of the job, and is why the
+   * flag is set before the early return: a cell whose actor failed to start
+   * can keep receiving and shedding until it finishes terminating, and those
+   * drops must count on the spot rather than pile into a tally nothing will
+   * ever flush.
+   */
+  private _flushDeferredMailboxDrops(className: string): void {
+    this._actorCreationSettled = true;
+    const deferred = this._deferredMailboxDrops;
+    if (deferred === null) return;
+    this._deferredMailboxDrops = null;
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return;
+    for (const [reason, count] of deferred) {
+      this._countMailboxDrops(metrics, className, reason, count);
+    }
   }
 
   /**

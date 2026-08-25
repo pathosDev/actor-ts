@@ -241,6 +241,42 @@ import { Aside } from '@astrojs/starlight/components';
   sufficient.
 </Aside>
 
+### Removing a series
+
+The cap bounds how many series a family **holds**; `remove` is what
+makes that a bound on how many are **live**:
+
+```ts
+metrics.gauge('queue_depth', { queue: 'orders' }).set(4_200);
+
+// The queue is gone — so is its series, and so is the slot it held.
+metrics.remove('queue_depth', { queue: 'orders' });   // → true
+```
+
+It answers `true` when a series was actually dropped, and `false` for a
+family that does not exist, a tuple that was never minted, and the
+overflow series — which stays, because it is the standing record that
+tuples were discarded and its counter holds how many.  The family
+itself survives its last series, help text and kind included.
+
+**Removed, not zeroed.**  A gauge child holds its last value, so a tuple
+that comes back is minted fresh rather than resuming at the reading it
+had before.  That is the difference the framework's own
+[`actor_mailbox_size`](/observability/metrics/stock-metrics/#mailbox-metrics)
+wanted: an actor that drains stops being reported instead of asserting
+a 0 backlog for ever.
+
+**A call, not a TTL.**  The registry cannot tell a finished entity from
+a counter for something rare — a series that has not moved in an hour
+looks identical either way — while the code that owns the instrument
+knows exactly when the subject is gone.  An age-based sweep would also
+need a clock and a timer in a primitive that has neither, and it would
+be actively wrong for counters: one that ages out and is minted again
+reads downstream as a reset that never happened.  For that reason,
+remove a **counter's** series only when what it counted is gone for
+good, not to reclaim cardinality; gauges carry no such history and are
+the intended caller.
+
 ## Reading values in-process
 
 ```ts
