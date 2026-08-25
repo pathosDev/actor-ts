@@ -22,6 +22,7 @@ import {
   DnsSeedProvider,
   KubernetesApiSeedProvider,
   KubernetesApiSeedProviderOptions,
+  SeedDiscoveryError,
   autoDiscovery,
   singleProviderDiscovery,
   type SeedProvider,
@@ -33,12 +34,16 @@ import { awaitCondition } from './util/AwaitCondition.js';
  * proves the coordinated-shutdown pipeline ran when a bootstrap rejects.
  */
 class RecordingTransport implements Transport {
+  startCalls = 0;
   shutdownCalls = 0;
 
   constructor(private readonly inner: InMemoryTransport) {}
 
   get self(): NodeAddress { return this.inner.self; }
-  async start(): Promise<void> { await this.inner.start(); }
+  async start(): Promise<void> {
+    this.startCalls++;
+    await this.inner.start();
+  }
   async shutdown(): Promise<void> {
     this.shutdownCalls++;
     await this.inner.shutdown();
@@ -351,23 +356,51 @@ describe('autoDiscovery', () => {
       .toEqual(['app@10.0.0.1:2552', 'app@10.0.0.2:2552']);
   });
 
-  test('K8s + DNS chain order — K8s wins when both apply', async () => {
+  test('K8s + DNS chain order — an all-threw chain rejects with SeedDiscoveryError', async () => {
     const autoDiscoveryOptions = AutoDiscoveryOptions.create()
       .withSystemName('app')
       .withPort(2552)
       .withEnv({ KUBERNETES_SERVICE_HOST: '10.0.0.1', CLUSTER_SERVICE_NAME: 'definitely-not-a-real-host.invalid', });
-    // K8s provider's default fetchEndpoints would touch the network; the
-    // aggregate wraps each lookup() in try/catch and falls through.  So
-    // K8s fails (no token in test env) and DNS picks up next.  We can
-    // verify the aggregate is wired by checking that an unparsable DNS
-    // host throws on lookup, proving DNS was reached.
     const provider = autoDiscovery(
       autoDiscoveryOptions,
     );
-    // K8s throws (no ServiceAccount token) → DNS resolves an
-    // invalid host → throws too → aggregate returns [].
-    const seeds = await provider.lookup();
-    expect(Array.isArray(seeds)).toBe(true);
+    // K8s throws (no ServiceAccount token in a test env) → DNS resolves an
+    // invalid host → throws too.  Since #943 an all-threw chain is a startup
+    // failure rather than [], and the error carrying both rungs' failures is
+    // also a stronger traversal proof than the old "returns an array"
+    // assertion, which could not tell the chain from a no-op.
+    let caught: unknown;
+    try {
+      await provider.lookup();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SeedDiscoveryError);
+    expect((caught as SeedDiscoveryError).errors.length).toBe(2);
+  });
+
+  test('a discovery provider whose lookup rejects fails the bootstrap (#943)', async () => {
+    const address = new NodeAddress('bootstrap-9', '127.0.0.1', 50119);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const failingProvider: SeedProvider = {
+      async lookup(): Promise<NodeAddress[]> {
+        throw new Error('EAI_AGAIN app.cluster.svc');
+      },
+    };
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-9')
+      .withHost('127.0.0.1')
+      .withPort(50119)
+      .withTransport(transport)
+      .withDiscovery(failingProvider)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    // The old catch degraded this to [] and a self-elected one-node leader in
+    // milliseconds; now the provider's own error surfaces and the system is
+    // torn down before the transport ever started.
+    await expect(Cluster.bootstrap(clusterBootstrapOptions)).rejects.toThrow('EAI_AGAIN app.cluster.svc');
+    expect(transport.startCalls).toBe(0);
   });
 
   test('CLUSTER_NAMESPACE defaults to "default"', () => {

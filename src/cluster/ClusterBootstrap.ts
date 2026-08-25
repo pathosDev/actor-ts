@@ -259,10 +259,11 @@ async function resolveSeeds(args: {
     port: args.port,
     log: args.log,
   });
-  const addrs = await provider.lookup().catch((err) => {
-    args.log('seed provider lookup failed', err);
-    return [] as NodeAddress[];
-  });
+  // A rejection propagates — into bootstrapCluster's JoinPlan catch, which
+  // terminates the just-created system and rethrows.  Catching it here and
+  // returning [] is what turned a DNS blip into a self-elected one-node
+  // cluster: an empty list reads as "we are the first node" (#943).
+  const addrs = await provider.lookup();
   return addrs
     // Filter out our own address — gossiping at ourselves is harmless but
     // adds noise to the log.
