@@ -130,6 +130,17 @@ devtools-root { display: block; }
 .dt-status--connecting .dt-status__dot { background: var(--dt-state-warn); }
 .dt-status--closed .dt-status__dot,
 .dt-status--incompatible .dt-status__dot { background: var(--dt-state-error); }
+/* Time stopped on purpose.  Accent, not a state colour: nothing is wrong, and
+   painting it like a fault would teach the reader to ignore the fault colours. */
+.dt-status--paused .dt-status__dot { background: var(--dt-accent); }
+
+/* What the pause is costing, beside the badge rather than inside it — the badge
+   is one word wide and this reading grows. */
+.dt-header__pausenote {
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+  font-variant-numeric: tabular-nums;
+}
 
 .dt-iconbutton {
   background: transparent;
@@ -173,6 +184,11 @@ devtools-root { display: block; }
 .dt-dialog__actions { display: flex; justify-content: flex-end; padding: 14px 22px 18px; }
 /* Frozen figures should not read as live ones once the dialog is gone. */
 .dt-app--offline .dt-panel { opacity: 0.55; }
+
+/* A held view is marked at the edge of the panel, not by dimming it: the whole
+   point of pausing is to read what is there, and the offline treatment above
+   makes that harder rather than easier (#1349). */
+.dt-app--paused .dt-panel { box-shadow: inset 0 2px 0 0 var(--dt-accent); }
 
 .dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
 

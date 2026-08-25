@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Pause and resume time in DevTools** (#1349). One control in the header,
+  or the <kbd>P</kbd> key outside a text field, stops every panel at once
+  so there is time to read what is on screen.
+
+  Two things stop, and the second is the point. The data stops, obviously.
+  But the *clock the panels are read against* stops with it — uptime, a
+  departed node's "last seen", and the "stopped 12s ago" badge on a
+  terminated actor. A pause that froze only delivery would still let the
+  actors panel sweep a tombstone away 30 seconds later, which is the exact
+  row somebody paused to study, and it would do it quietly. Three tests
+  fail if the clock is left running and none of the other eighty-eight
+  notice, which is why they exist.
+
+  Nothing that happens during the pause is lost, but the two kinds of
+  stream get there differently. The event tail, tracing spans and profiler
+  frames are *held* and delivered in order on resume: a tail is its frames
+  and the server keeps no past to recover them from, so dropping them
+  would lose them outright. The overview figures, actor tree, cluster view
+  and mailbox depths are discarded and re-fetched as a fresh snapshot,
+  which is exact and cheaper than replaying deltas — reusing the path the
+  client already takes on a sequence gap rather than inventing a second
+  one. Held frames are capped per stream, and the header names anything
+  the cap threw away rather than shortening a tail in silence.
+
+  The charts get no hole: the server records continuously, so resuming
+  re-reads the window and the paused stretch fills in.
+
+  Two things deliberately do not stop. A connection that dies while paused
+  still raises the offline dialog — a paused screen and a dead one look
+  identical, so the one you did not ask for has to say so. And the taps
+  keep running, so pausing is a property of your view rather than of the
+  system being watched, and costs the actor system nothing.
+
 - **A send-message action in DevTools** (#553), **off by default**. Every
   other panel reads; this one writes a JSON message into a running system,
   so it is disabled until acknowledged in code with
@@ -48,8 +81,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **An event-stream panel in DevTools** (#553). A live tail of the system
   bus — actor lifecycle events, dead letters, and whatever your actors
-  publish — with a filter over type and payload, pause, and the cluster
-  PubSub topics beside it.
+  publish — with a filter over type and payload and the cluster PubSub
+  topics beside it. Pausing the tail is the header's job (#1349).
 
   It needs a seam the bus did not have: `EventStream._observe`, one
   internal slot checked on every publish. It is checked BEFORE the

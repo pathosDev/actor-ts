@@ -9,6 +9,7 @@ import {
 import { match } from 'ts-pattern';
 
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatTime, shortActorPath } from '../../core/format.js';
 import type {
   ActorNode,
@@ -54,6 +55,7 @@ const OUTCOME_TOKENS: Readonly<Record<MessageOutcome, string>> = {
 })
 export class ExplainPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
 
   private readonly actors = new Map<string, ActorNode>();
@@ -168,9 +170,20 @@ export class ExplainPanelComponent {
     }
   }
 
+  /**
+   * The recorder keeps recording while paused; only the reading stops.
+   *
+   * This panel pulls rather than listens, so the gate in `TapClientService`
+   * does not cover it and the interval has to check for itself (#1349).
+   * Stopping the recorder instead would lose exactly the messages the reader
+   * paused in the middle of.
+   */
   private startPolling(): void {
     if (this.poll !== null) return;
-    this.poll = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
+    this.poll = setInterval(() => {
+      if (this.time.paused()) return;
+      void this.refresh();
+    }, POLL_INTERVAL_MS);
   }
 
   private stopPolling(): void {

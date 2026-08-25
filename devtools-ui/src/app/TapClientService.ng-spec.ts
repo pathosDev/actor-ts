@@ -2,6 +2,8 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TAP_SOCKET_FACTORY, TAP_URL, TapClientService } from './TapClientService.js';
+import { TimeControlService } from './TimeControlService.js';
+import { PAUSE_BUFFER_FRAMES } from '../core/timeControl.js';
 import type { DevToolsStreamId, WelcomeFrame } from '../../../src/devtools/protocol/index.js';
 
 /**
@@ -82,6 +84,9 @@ class FakeSocket {
 }
 
 const STREAM: DevToolsStreamId = 'stats';
+/** A `resync` stream and a `buffer` one — pausing treats them oppositely. */
+const STATE_STREAM: DevToolsStreamId = 'actors';
+const TAIL_STREAM: DevToolsStreamId = 'events';
 
 function welcome(overrides: Partial<WelcomeFrame> = {}): WelcomeFrame {
   return {
@@ -309,6 +314,125 @@ describe('TapClientService', () => {
       const tap = serviceUnderTest();
       // Never opened.
       await expect(tap.request('explain.fetch', {})).rejects.toThrow(/not connected/i);
+    });
+  });
+
+  describe('pausing time', () => {
+    /**
+     * Deliver `count` contiguous frames on `stream`, starting at `from`.
+     *
+     * Contiguous on purpose: a gap would trip the re-subscribe recovery and the
+     * test would be measuring that instead of the pause.
+     */
+    function deliver(stream: DevToolsStreamId, from: number, count: number): void {
+      for (let i = 0; i < count; i++) {
+        FakeSocket.latest.receives({
+          kind: 'event', stream, sequenceNumber: from + i, payload: { kind: 'x', at: from + i },
+        });
+      }
+    }
+
+    function connected(): { tap: TapClientService; time: TimeControlService } {
+      const tap = serviceUnderTest();
+      const time = TestBed.inject(TimeControlService);
+      FakeSocket.latest.opened();
+      FakeSocket.latest.receives(welcome());
+      return { tap, time };
+    }
+
+    it('holds an append-shaped stream and hands it over, in order, on resume', () => {
+      // `events` has no snapshot to recover from — the tap returns nothing,
+      // because a tail has no past — so discarding here would lose the frames
+      // outright. Holding them is the only way a pause costs nothing.
+      const { tap, time } = connected();
+      const seen: number[] = [];
+      tap.listen(TAIL_STREAM, (payload) => seen.push((payload as unknown as { at: number }).at));
+
+      deliver(TAIL_STREAM, 0, 1);
+      time.pause();
+      deliver(TAIL_STREAM, 1, 3);
+
+      expect(seen).toEqual([0]);
+      expect(tap.heldFrames()).toBe(3);
+
+      time.resume();
+      TestBed.tick();
+      expect(seen).toEqual([0, 1, 2, 3]);
+      expect(tap.heldFrames()).toBe(0);
+    });
+
+    it('discards a state-shaped stream and asks for a fresh snapshot on resume', () => {
+      // The deltas that arrived while time was stopped were thrown away, so the
+      // panel's incremental state is a guess — the same situation a sequence gap
+      // creates, and it gets the same answer rather than a second mechanism.
+      const { tap, time } = connected();
+      const seen: unknown[] = [];
+      tap.listen(STATE_STREAM, (payload) => seen.push(payload));
+      const before = FakeSocket.latest.sentOf('subscribe').length;
+
+      deliver(STATE_STREAM, 0, 1);
+      time.pause();
+      deliver(STATE_STREAM, 1, 5);
+
+      expect(seen).toHaveLength(1);
+      expect(tap.heldFrames()).toBe(0);
+      expect(FakeSocket.latest.sentOf('subscribe').length).toBe(before);
+
+      time.resume();
+      TestBed.tick();
+      expect(FakeSocket.latest.sentOf('subscribe').length).toBe(before + 1);
+    });
+
+    it('does not re-subscribe a stream nothing is listening to any more', () => {
+      // Re-subscribing for an unmounted panel would restart the server's
+      // production for a reader who has navigated away — exactly what the
+      // refcount above exists to prevent.
+      const { tap, time } = connected();
+      const release = tap.listen(STATE_STREAM, () => {});
+      time.pause();
+      deliver(STATE_STREAM, 0, 2);
+      release();
+      const before = FakeSocket.latest.sentOf('subscribe').length;
+
+      time.resume();
+      TestBed.tick();
+      expect(FakeSocket.latest.sentOf('subscribe').length).toBe(before);
+    });
+
+    it('drops a held frame at the cap and says how many it lost', () => {
+      // A pause left running overnight must cost bounded memory, and the part
+      // that did not survive has to be named — a silently shortened tail reads
+      // as a quiet system.
+      const { tap, time } = connected();
+      tap.listen(TAIL_STREAM, () => {});
+      time.pause();
+      deliver(TAIL_STREAM, 0, PAUSE_BUFFER_FRAMES + 3);
+
+      expect(tap.heldFrames()).toBe(PAUSE_BUFFER_FRAMES);
+      expect(tap.droppedFrames()).toBe(3);
+    });
+
+    it('forgets what it held for a stream whose last listener left', () => {
+      const { tap, time } = connected();
+      const release = tap.listen(TAIL_STREAM, () => {});
+      time.pause();
+      deliver(TAIL_STREAM, 0, 4);
+      expect(tap.heldFrames()).toBe(4);
+
+      release();
+      expect(tap.heldFrames()).toBe(0);
+    });
+
+    it('delivers normally again once time is running', () => {
+      const { tap, time } = connected();
+      const seen: unknown[] = [];
+      tap.listen(TAIL_STREAM, (payload) => seen.push(payload));
+
+      time.pause();
+      time.resume();
+      TestBed.tick();
+      deliver(TAIL_STREAM, 0, 2);
+      expect(seen).toHaveLength(2);
     });
   });
 

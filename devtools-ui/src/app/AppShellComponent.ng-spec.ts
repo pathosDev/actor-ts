@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShellComponent } from './AppShellComponent.js';
 import { TAP_SOCKET_FACTORY, TAP_URL, TapClientService } from './TapClientService.js';
+import { TimeControlService } from './TimeControlService.js';
 import { installDomGaps } from './testing/domGaps.js';
 import { ALL_PANELS_ACTIVE } from './testing/fakeTapSocket.js';
 import type { DevToolsPanelDescriptor, WelcomeFrame } from '../../../src/devtools/protocol/index.js';
@@ -196,6 +197,99 @@ describe('AppShellComponent', () => {
       const element = fixture.nativeElement as HTMLElement;
       expect(element.querySelector('.dt-header__system')?.textContent?.trim()).toBe('…');
       expect(element.querySelector('.dt-status')?.textContent).toContain('connecting');
+    });
+  });
+
+  describe('stopping time', () => {
+    const header = (): HTMLElement => fixture.nativeElement.querySelector('.dt-header');
+
+    const pauseButton = (): HTMLButtonElement => {
+      const found = [...header().querySelectorAll('button')]
+        .find((candidate) => ['Pause', 'Resume'].includes(candidate.textContent?.trim() ?? ''));
+      if (found === undefined) throw new Error('the header has no pause control');
+      return found;
+    };
+
+    async function connected(): Promise<void> {
+      await mount();
+      FakeSocket.latest.opened();
+      FakeSocket.latest.receives(welcome(ALL_ACTIVE));
+      fixture.detectChanges();
+    }
+
+    it('toggles between Pause and Resume, and says which state it is in', async () => {
+      await connected();
+      expect(pauseButton().textContent?.trim()).toBe('Pause');
+      expect(pauseButton().getAttribute('aria-pressed')).toBe('false');
+
+      pauseButton().click();
+      fixture.detectChanges();
+
+      expect(pauseButton().textContent?.trim()).toBe('Resume');
+      expect(pauseButton().getAttribute('aria-pressed')).toBe('true');
+      expect(TestBed.inject(TimeControlService).paused()).toBe(true);
+    });
+
+    it('says paused on the badge instead of live', async () => {
+      // Both are reasons the numbers stopped moving, and a badge reading "live"
+      // over a frozen screen is the confusing one. The state the reader caused
+      // wins.
+      await connected();
+      expect(header().querySelector('.dt-status')?.textContent).toContain('live');
+
+      pauseButton().click();
+      fixture.detectChanges();
+      expect(header().querySelector('.dt-status')?.textContent).toContain('paused');
+    });
+
+    it('reports how long time has been stopped', async () => {
+      await connected();
+      pauseButton().click();
+      fixture.detectChanges();
+
+      vi.advanceTimersByTime(42_000);
+      fixture.detectChanges();
+      expect(header().querySelector('.dt-header__pausenote')?.textContent).toContain('42 s');
+    });
+
+    it('is reachable from the keyboard', async () => {
+      await connected();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+      fixture.detectChanges();
+      expect(TestBed.inject(TimeControlService).paused()).toBe(true);
+    });
+
+    it('leaves a `p` typed into a field alone', async () => {
+      // Every panel here has a filter box. Swallowing a keystroke meant for one
+      // would be a worse bug than having no shortcut at all.
+      await connected();
+      const field = document.createElement('input');
+      document.body.appendChild(field);
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+      fixture.detectChanges();
+
+      expect(TestBed.inject(TimeControlService).paused()).toBe(false);
+      field.remove();
+    });
+
+    it('still announces a connection that dies while paused', async () => {
+      // The one thing a pause must NOT hide. A dead node and a paused screen
+      // look identical, so the offline detection is read against the wall clock
+      // rather than the pausable one.
+      await connected();
+      pauseButton().click();
+      fixture.detectChanges();
+
+      FakeSocket.latest.serverClosed();
+      fixture.detectChanges();
+      vi.advanceTimersByTime(2_500);
+      fixture.detectChanges();
+
+      const dialog = fixture.nativeElement.querySelector('.dt-dialog') as HTMLDialogElement;
+      expect(dialog.open).toBe(true);
+      expect(dialog.textContent).toContain('No node reachable');
+      // And it says which of the two stillnesses is which.
+      expect(dialog.textContent).toContain('You also have time paused');
     });
   });
 

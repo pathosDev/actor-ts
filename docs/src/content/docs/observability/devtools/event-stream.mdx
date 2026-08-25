@@ -20,10 +20,15 @@ live tail of it.
 The filter box matches on both the event type and the payload text, so
 `OrderPlaced` and `order-4711` both narrow the tail.
 
-**Pause** stops the tail so you can read it. Events published while
-paused are discarded rather than buffered — resuming into a wall of
-everything that happened meanwhile is not what the button promises.
 **Clear** empties the tail and resets the dropped counter.
+
+To stop the tail so you can read it, use **Pause** in the header — it
+stops [every panel at once](/observability/devtools/overview/#pausing-time),
+this one included. Events published while time is stopped are *held*, and
+arrive in order when you resume, so pausing costs you nothing but the
+delay. This panel used to carry a Pause button of its own that discarded
+what arrived — the right call for a button that stopped one tail, and the
+wrong one for a button that stops the world.
 
 ## Nothing is recorded until you look
 

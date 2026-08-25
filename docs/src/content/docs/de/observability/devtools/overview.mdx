@@ -76,6 +76,58 @@ in der man die Fragen tatsächlich stellt:
   Diagramme verteilt, damit sich ein Füllstand und eine Rate nie eine
   y-Achse teilen, dazu die aktuell vollsten Mailboxen.
 
+## Die Zeit anhalten
+
+Jedes Panel hier ist eine Live-Ansicht — und genau das ist falsch in dem
+Moment, in dem es interessant wird: die Zeile, die du lesen willst, ist
+weg, bevor du sie gelesen hast.  **Pause** in der Kopfzeile — oder die
+Taste <kbd>P</kbd>, überall außerhalb eines Textfelds — hält die ganze
+Ansicht auf einmal an.  **Resume** lässt sie weiterlaufen.
+
+Zwei Dinge stehen still, und das zweite ist der eigentliche Punkt:
+
+- **Die Daten.**  Kein Panel faltet Neues ein, solange die Zeit steht.
+- **Die Uhr, gegen die die Panels gelesen werden.**  Jede „vor wie
+  langer Zeit"-Angabe der UI hält mit der Ansicht still, die sie
+  beschreibt — Uptime, das *zuletzt gesehen* eines fortgegangenen
+  Knotens und das *stopped 12s ago* an einem beendeten Aktor.  Das
+  macht die Pause erst brauchbar statt bloß still: das Actors-Panel
+  behält einen gestoppten Aktor 30 Sekunden lang und kehrt ihn dann
+  weg — und 30 Sekunden sind deutlich weniger, als das Lesen eines
+  Supervisionsbaums dauert.  Pausiert bleibt er stehen.
+
+Nichts, was während der Pause passiert ist, geht verloren; die beiden
+Arten von Strom kommen aber unterschiedlich dorthin:
+
+| Ströme | Während der Pause | Beim Fortsetzen |
+| --- | --- | --- |
+| Event-Stream, Tracing-Spans, Profiler | gehalten, ältestes fällt ab einer Obergrenze weg | der Reihe nach nachgereicht |
+| Overview-Zahlen, Actors, Cluster, Mailboxen | verworfen | frischer Snapshot — die Ansicht springt auf jetzt |
+
+Die Aufteilung ist kein Kompromiss, sondern das, was die jeweiligen
+Daten sind.  Ein Tail *ist* seine Frames, und der Server hält keine
+Vergangenheit vor, aus der sie sich zurückholen ließen — Halten ist
+dort die einzige Art, sie nicht zu verlieren.  Ein Baum oder eine
+Mitgliederliste beantwortet immer nur „was gilt jetzt", und ein
+frischer Snapshot beantwortet genau das — billiger, als jedes Delta
+nachzuspielen.  Die Kopfzeile sagt, wie viele Frames gehalten werden,
+und benennt, was die Obergrenze verwerfen musste.
+
+In den Charts entsteht dabei kein Loch.  Der Server zeichnet seine
+Zahlen durchgehend auf, ob jemand hinsieht oder nicht; beim Fortsetzen
+wird das Fenster neu gelesen und die pausierte Strecke füllt sich.
+
+Zwei Dinge halten bewusst **nicht** an:
+
+- **Die Verbindungsprüfung.**  Ein Knoten, der während deiner Pause
+  stirbt, löst weiterhin den Dialog *No node reachable* aus.  Ein
+  pausierter und ein toter Bildschirm sehen gleich aus, also muss der,
+  den du nicht angefordert hast, sich melden.
+- **Der Server.**  Die Taps laufen weiter; Pausieren ist eine
+  Eigenschaft deiner Ansicht, nicht des beobachteten Systems.  Deshalb
+  kostet eine Pause das Aktorsystem auch nichts zusätzlich und darf
+  beliebig lange dauern.
+
 ## Attachen
 
 `DevTools.attach` bindet einen eigenen Server — meist das, was du

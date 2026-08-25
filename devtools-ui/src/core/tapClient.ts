@@ -37,6 +37,16 @@ export interface TapClient {
   readonly lastError: Signal<string | null>;
   /** Start receiving `stream`.  Returns the unsubscribe function. */
   listen(stream: DevToolsStreamId, listener: StreamListener): () => void;
+  /**
+   * Ask the server for a fresh snapshot of `stream`.
+   *
+   * The same call the sequence-gap recovery below makes, exposed because
+   * resuming from a pause has the same problem and deserves the same answer
+   * rather than a second mechanism (#1349): the deltas that arrived while
+   * time was stopped were discarded, so the panel's incremental state is now
+   * a guess, and a snapshot is what turns it back into the truth.
+   */
+  resubscribe(stream: DevToolsStreamId): void;
   /** Invoke a pull method. */
   request<T>(method: DevToolsRequestMethod, parameters?: unknown): Promise<T>;
 }
@@ -219,6 +229,14 @@ export function connectTap(
         expected.delete(stream);
         send({ kind: 'unsubscribe', stream });
       };
+    },
+
+    resubscribe(stream: DevToolsStreamId): void {
+      // Only for a stream somebody is still listening to: re-subscribing to
+      // one nobody reads would make the server start producing again for an
+      // unmounted panel, which is exactly what the refcount above prevents.
+      if (!listeners.has(stream) || status() !== 'open') return;
+      subscribeOnServer(stream);
     },
 
     request<T>(method: DevToolsRequestMethod, parameters?: unknown): Promise<T> {

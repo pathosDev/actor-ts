@@ -14,6 +14,7 @@ import { EChartComponent } from '../../app/charts/EChartComponent.js';
 import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
 import { buildLineChartOption, buildSparklineOption, type ChartLine } from '../../app/charts/timeSeriesOptions.js';
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatDuration, shortActorPath } from '../../core/format.js';
 import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
 import { uptimeMillis, type UptimeAnchor } from './uptime.js';
@@ -117,6 +118,7 @@ function formatMillis(value: number): string {
 })
 export class DashboardPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly chartTheme = inject(ChartThemeService).theme;
 
@@ -293,7 +295,7 @@ export class DashboardPanelComponent {
     this.destroyRef.onDestroy(this.tap.listen('stats', (payload) => {
       if (payload.kind !== 'stats-sample') return;
       this.history.push(payload);
-      this.uptimeAnchor = { uptimeMs: payload.uptimeMs, receivedAtMs: Date.now() };
+      this.uptimeAnchor = { uptimeMs: payload.uptimeMs, receivedAtMs: this.time.nowMs() };
       this.touch();
     }));
 
@@ -305,8 +307,26 @@ export class DashboardPanelComponent {
       this.frozenAtMs.update((frozen) => (open ? null : frozen ?? Date.now()));
     });
 
-    const clock = setInterval(() => this.now.set(Date.now()), CLOCK_INTERVAL_MS);
+    const clock = setInterval(() => {
+      // Uptime is interpolated locally, so it is the one figure here that would
+      // keep inventing data through a pause.  Every other tile stopped because
+      // its samples stopped.
+      if (this.time.paused()) return;
+      this.now.set(Date.now());
+    }, CLOCK_INTERVAL_MS);
     this.destroyRef.onDestroy(() => clearInterval(clock));
+
+    // Resuming jumps the charts to now, which on its own would leave a hole
+    // exactly the width of the pause.  The server records continuously
+    // (`StatsHistoryStore`), so asking for the window again fills it in —
+    // pausing then costs no history at all (#1349).
+    let wasPaused = this.time.paused();
+    effect(() => {
+      const paused = this.time.paused();
+      const resumed = wasPaused && !paused;
+      wasPaused = paused;
+      if (resumed) void this.loadHistory(this.spanMs());
+    });
 
     void this.loadHistory(this.spanMs());
   }
@@ -350,7 +370,7 @@ export class DashboardPanelComponent {
 
   /** Fold new data in.  Kept out of the computeds, which stay pure. */
   private touch(): void {
-    this.now.set(Date.now());
+    this.now.set(this.time.nowMs());
     this.revision.update((value) => value + 1);
   }
 
