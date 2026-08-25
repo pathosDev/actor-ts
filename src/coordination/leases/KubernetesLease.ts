@@ -1,16 +1,63 @@
 import type { Lease } from '../Lease.js';
-import { KubernetesLeaseOptionsValidator } from './KubernetesLeaseOptions.js';
+import { DEFAULT_TOKEN_RELOAD_INTERVAL_MS, KubernetesLeaseOptionsValidator } from './KubernetesLeaseOptions.js';
 import type { KubernetesLeaseOptions, KubernetesLeaseOptionsType } from './KubernetesLeaseOptions.js';
 import {
   createLease,
   deleteLease,
   getLease,
   K8sLeaseError,
-  loadInClusterCredentials,
+  mountedCredentialLoader,
   updateLease,
   type K8sCredentials,
   type K8sLeaseObject,
+  type MountedCredentialLoader,
 } from './K8sApi.js';
+
+/**
+ * A credential the caller supplied as a complete triple.  It carries no
+ * freshness state at all, and that is the point: a token handed to the
+ * constructor cannot be re-read from anywhere, so ageing it out would only
+ * replace it with itself and retrying a rejected one would spin.
+ */
+type ExplicitCredentials = {
+  readonly kind: 'explicit';
+  readonly credentials: K8sCredentials;
+};
+
+/**
+ * A credential read from the Pod's ServiceAccount mount.  This one does go
+ * stale — the projected token is time-bound and the kubelet rewrites the
+ * file — so the read is stamped with when it happened and with the token
+ * file's mtime, the two facts that decide whether the copy in hand may
+ * still be sent.
+ */
+type InClusterCredentials = {
+  readonly kind: 'in-cluster';
+  readonly credentials: K8sCredentials;
+  /** `Date.now()` at the read that produced this copy. */
+  readonly loadedAt: number;
+  /** The token file's `mtimeMs` immediately before that read, `null` when unavailable. */
+  readonly tokenModifiedAt: number | null;
+};
+
+/** Either credential source, tagged with which one it is. */
+type ResolvedCredentials = ExplicitCredentials | InClusterCredentials;
+
+/**
+ * True for the two statuses that reject the **credential** rather than the
+ * request.  Read off `K8sLeaseError.response` here rather than special-cased
+ * inside the CRUD wrappers, which stay status-mapping-only as their JSDoc
+ * promises.
+ *
+ * 403 counts alongside 401 even though it usually means RBAC: an expired
+ * bearer token surfaces as either depending on the authenticator chain, and
+ * being wrong costs one extra request on a path that is already failing —
+ * whereas missing the 401 costs a coordination outage that no retry clears.
+ */
+function isCredentialRejection(error: unknown): boolean {
+  if (!(error instanceof K8sLeaseError)) return false;
+  return error.response.status === 401 || error.response.status === 403;
+}
 
 /**
  * Lease backed by a Kubernetes `coordination.k8s.io/v1/Lease` object.
@@ -45,21 +92,30 @@ import {
  *      while this process has dropped it, which callers must be able
  *      to see.
  *
+ * Credentials are resolved per interaction and their lifetime depends on
+ * where they came from (#760): an explicitly supplied triple is static, the
+ * Pod's mounted ServiceAccount token is re-read on `tokenReloadIntervalMs`
+ * and immediately on a 401/403.  See {@link resolveCredentials}.
+ *
  * Failure modes that fire `onLost`:
  *   - PUT during renewal returns 409 (someone else won a race after we
  *     read the resourceVersion).
  *   - PUT during renewal returns 404 (someone deleted the lease).
  *   - Network error during renewal that the renewal-loop's retry budget
  *     can't absorb.
+ *   - PUT during renewal returns 401/403 **again** after the credential
+ *     was re-read — a revocation rather than an expiry.
  *   - The K8s API server is unreachable for longer than `ttlMs`.
  */
 export class KubernetesLease implements Lease {
   private readonly renewalIntervalMs: number;
+  private readonly tokenReloadIntervalMs: number;
   private renewalTimer: ReturnType<typeof setInterval> | null = null;
   private held = false;
   private currentLease: K8sLeaseObject | null = null;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
-  private creds: K8sCredentials | null = null;
+  private cachedCredentials: ResolvedCredentials | null = null;
+  private readonly credentialLoader: MountedCredentialLoader;
 
   private readonly options: KubernetesLeaseOptionsType;
 
@@ -72,39 +128,129 @@ export class KubernetesLease implements Lease {
     validator.validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
+    this.tokenReloadIntervalMs = this.options.tokenReloadIntervalMs
+      ?? DEFAULT_TOKEN_RELOAD_INTERVAL_MS;
+    this.credentialLoader = this.options.credentialLoader ?? mountedCredentialLoader;
   }
 
   /**
-   * Resolve credentials lazily — once on first call, cached after.
+   * Resolve credentials, distinguishing the two sources by **lifetime** and
+   * not only by shape (#760).
    *
-   * Either source is used **whole** (#599).  The per-field `??` merge this
-   * replaces let a caller-supplied `apiServerUrl` be paired with the Pod's
-   * mounted ServiceAccount token, i.e. the cluster's own bearer credential
-   * sent to a host the operator named.  `KubernetesLeaseOptionsValidator`
-   * rejects a partial triple at construction; keeping the invariant here
-   * too means no future caller can reintroduce the mix by reaching past
-   * the validator.
+   * Either source is still used **whole** (#599).  The per-field `??` merge
+   * that predates this let a caller-supplied `apiServerUrl` be paired with
+   * the Pod's mounted ServiceAccount token, i.e. the cluster's own bearer
+   * credential sent to a host the operator named.
+   * `KubernetesLeaseOptionsValidator` rejects a partial triple at
+   * construction; keeping the invariant here too means no future caller can
+   * reintroduce the mix by reaching past the validator.
+   *
+   * What differs per source is how long a resolved copy may be reused.  An
+   * explicit triple is memoised for the process lifetime because it is
+   * static by construction.  A mounted credential is not: the projected
+   * token is time-bound, so a copy is reused for at most
+   * `tokenReloadIntervalMs`, after which the token file's mtime decides
+   * between another interval on the same bytes and a fresh read.  Memoising
+   * *that* one forever is what turned a single expired token into a
+   * coordination outage no retry could clear — `ClusterSingletonManager`
+   * re-acquires on the same lease instance, so every attempt replayed the
+   * same dead bearer token until the process was restarted.
    */
-  private async getCreds(): Promise<K8sCredentials> {
-    if (this.creds) return this.creds;
-    if (this.options.apiServerUrl && this.options.authToken && this.options.caCert) {
-      this.creds = {
-        apiServerUrl: this.options.apiServerUrl,
-        authToken: this.options.authToken,
-        caCert: this.options.caCert,
-      };
-      return this.creds;
+  private async resolveCredentials(): Promise<ResolvedCredentials> {
+    const cached = this.cachedCredentials;
+    if (cached !== null) {
+      if (cached.kind === 'explicit') return cached;
+      const revalidated = await this.revalidateInClusterCredentials(cached);
+      if (revalidated !== null) {
+        this.cachedCredentials = revalidated;
+        return revalidated;
+      }
     }
-    const inCluster = await loadInClusterCredentials();
-    if (!inCluster) {
+    const loaded = await this.loadCredentials();
+    this.cachedCredentials = loaded;
+    return loaded;
+  }
+
+  /**
+   * Decide whether a cached mount read may be served again: the same
+   * credential with its clock restarted, or `null` for "read the mount
+   * again".
+   *
+   * Within the interval nothing is checked at all — that is what keeps the
+   * cost of a short interval to a `stat` rather than three file reads.  An
+   * unavailable mtime reads as *moved*, since a check that exists to skip
+   * work must fall back to doing the work when it cannot be performed.
+   */
+  private async revalidateInClusterCredentials(
+    cached: InClusterCredentials,
+  ): Promise<InClusterCredentials | null> {
+    if (Date.now() - cached.loadedAt < this.tokenReloadIntervalMs) return cached;
+    const tokenModifiedAt = await this.credentialLoader.tokenModifiedAt();
+    if (tokenModifiedAt === null || tokenModifiedAt !== cached.tokenModifiedAt) return null;
+    return { ...cached, loadedAt: Date.now() };
+  }
+
+  /** Read whichever credential source is configured, whole. */
+  private async loadCredentials(): Promise<ResolvedCredentials> {
+    if (this.options.apiServerUrl && this.options.authToken && this.options.caCert) {
+      return {
+        kind: 'explicit',
+        credentials: {
+          apiServerUrl: this.options.apiServerUrl,
+          authToken: this.options.authToken,
+          caCert: this.options.caCert,
+        },
+      };
+    }
+    const mounted = await this.credentialLoader.read();
+    if (!mounted) {
       throw new Error(
         'KubernetesLease: no credentials available.  Either supply apiServerUrl '
         + '+ authToken + caCert, or run inside a Pod with a mounted ServiceAccount '
         + `(${'/var/run/secrets/kubernetes.io/serviceaccount'}).`,
       );
     }
-    this.creds = inCluster;
-    return this.creds;
+    return {
+      kind: 'in-cluster',
+      credentials: mounted.credentials,
+      loadedAt: Date.now(),
+      tokenModifiedAt: mounted.tokenModifiedAt,
+    };
+  }
+
+  /**
+   * Run one credentialed interaction with the API server, retrying it
+   * exactly once against a freshly read credential when the first attempt
+   * came back 401/403 (#760).
+   *
+   * Only the in-cluster source retries.  A caller-supplied token has no
+   * second copy to read, so retrying it would send the same rejected bearer
+   * token twice and turn one failing request into two — which is also what
+   * bounds this against a retry loop.
+   *
+   * A retry that is itself rejected drops the cache before it rethrows.
+   * Leaving a credential the API server has just refused as the memo the
+   * next attempt starts from is precisely the defect being fixed: the
+   * caller above is a 5-second re-acquire loop, and the cache is what
+   * decides whether that loop can ever recover.
+   */
+  private async withFreshCredentials<T>(
+    operation: (credentials: K8sCredentials) => Promise<T>,
+  ): Promise<T> {
+    const resolved = await this.resolveCredentials();
+    try {
+      return await operation(resolved.credentials);
+    } catch (e) {
+      if (resolved.kind !== 'in-cluster' || !isCredentialRejection(e)) throw e;
+      this.cachedCredentials = null;
+      const reloaded = await this.resolveCredentials();
+      try {
+        return await operation(reloaded.credentials);
+      } catch (retryFailure) {
+        if (isCredentialRejection(retryFailure)) this.cachedCredentials = null;
+        throw retryFailure;
+      }
+    }
   }
 
   async acquire(): Promise<boolean> {
@@ -142,21 +288,35 @@ export class KubernetesLease implements Lease {
     return null;
   }
 
-  /** One pass of GET → CREATE-or-PUT.  Three outcomes: success / held-by-other / race. */
+  /**
+   * One pass of GET → CREATE-or-PUT.  Three outcomes: success /
+   * held-by-other / race.
+   *
+   * The whole pass sits inside {@link withFreshCredentials}, so a stale
+   * mounted token is re-read and the GET replayed rather than surfacing as
+   * a failed acquire — which is the path `ClusterSingletonManager` retries
+   * on after a lost lease.
+   */
   private async tryAcquireOnce(): Promise<'success' | 'held-by-other' | 'race'> {
-    const creds = await this.getCreds();
-    const ns = this.options.namespace;
+    return await this.withFreshCredentials((credentials) => this.acquirePass(credentials));
+  }
+
+  /** The GET → CREATE-or-PUT itself, against one already-resolved credential. */
+  private async acquirePass(
+    credentials: K8sCredentials,
+  ): Promise<'success' | 'held-by-other' | 'race'> {
+    const namespace = this.options.namespace;
     const name = this.options.name;
-    const ttlSec = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
+    const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const now = new Date().toISOString();
 
-    const existing = await getLease(creds, ns, name, this.options.client);
+    const existing = await getLease(credentials, namespace, name, this.options.client);
 
     if (existing === null) {
       // No lease object yet — create.  CREATE returns null on 409 (race lost).
-      const created = await createLease(creds, ns, {
+      const created = await createLease(credentials, namespace, {
         holderIdentity: this.options.owner,
-        leaseDurationSeconds: ttlSec,
+        leaseDurationSeconds: ttlSeconds,
         acquireTime: now,
         renewTime: now,
       }, name, this.options.client);
@@ -179,13 +339,13 @@ export class KubernetesLease implements Lease {
       spec: {
         ...existing.spec,
         holderIdentity: this.options.owner,
-        leaseDurationSeconds: ttlSec,
+        leaseDurationSeconds: ttlSeconds,
         acquireTime: now,
         renewTime: now,
         leaseTransitions: ownerChanging ? transitionsBefore + 1 : transitionsBefore,
       },
     };
-    const result = await updateLease(creds, updated, this.options.client);
+    const result = await updateLease(credentials, updated, this.options.client);
     if (!result) return 'race';
     this.held = true;
     this.currentLease = result;
@@ -266,8 +426,8 @@ export class KubernetesLease implements Lease {
       this.renewalTimer = null;
     }
     this.currentLease = null;
-    const creds = await this.getCreds();
-    await deleteLease(creds, this.options.namespace, this.options.name, this.options.client);
+    await this.withFreshCredentials((credentials) =>
+      deleteLease(credentials, this.options.namespace, this.options.name, this.options.client));
   }
 
   checkAlive(): boolean { return this.held; }
@@ -286,27 +446,29 @@ export class KubernetesLease implements Lease {
     }, this.renewalIntervalMs);
   }
 
+  /**
+   * One renewal tick.  Credential resolution is folded into the same
+   * try/catch as the PUT so that a 401/403 gets the one re-read + retry
+   * {@link withFreshCredentials} grants it before anything is declared
+   * lost — a rotated token used to reach `onLost` on the first rejection
+   * and stay there.
+   */
   private async renewOnce(): Promise<void> {
     if (!this.held || !this.currentLease) return;
-    let creds: K8sCredentials;
-    try { creds = await this.getCreds(); }
-    catch (e) {
-      this.fireLost(`renewal failed: ${(e as Error).message}`);
-      return;
-    }
     const now = new Date().toISOString();
-    const ttlSec = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
+    const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const updated: K8sLeaseObject = {
       ...this.currentLease,
       spec: {
         ...this.currentLease.spec,
         holderIdentity: this.options.owner,
-        leaseDurationSeconds: ttlSec,
+        leaseDurationSeconds: ttlSeconds,
         renewTime: now,
       },
     };
     try {
-      const result = await updateLease(creds, updated, this.options.client);
+      const result = await this.withFreshCredentials((credentials) =>
+        updateLease(credentials, updated, this.options.client));
       if (!result) {
         // 409 / 404 — somebody else won, or the object was deleted.
         this.fireLost('lease lost during renewal (conflict or 404)');

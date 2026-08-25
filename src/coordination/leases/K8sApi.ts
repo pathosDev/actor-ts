@@ -63,6 +63,70 @@ export async function loadInClusterCredentials(): Promise<K8sCredentials | null>
   }
 }
 
+/**
+ * One read of the ServiceAccount mount: the credential itself, plus the
+ * `mtimeMs` the token file carried at that moment.
+ *
+ * The mtime travels with the credential because it is what makes re-reading
+ * on a short interval affordable (#760).  A `stat` answers "still the same
+ * file" for the overwhelmingly common case where nothing rotated, so only an
+ * actual rotation pays for reading and trimming three files again.  It is
+ * `null` when the mount could not be stat'ed, which callers must read as
+ * *assume it moved* — a check that exists to skip work has to fall back to
+ * the correct branch when it cannot be performed.
+ */
+export type MountedCredentials = {
+  readonly credentials: K8sCredentials;
+  readonly tokenModifiedAt: number | null;
+};
+
+/**
+ * Reads the Pod's ServiceAccount mount.  A seam rather than a bare `fs` call
+ * because the mounted-credential path is otherwise unreachable from a test:
+ * the files live at an absolute path under `/var/run` that no test may
+ * create, so without an injectable loader the whole in-cluster branch — its
+ * rotation handling included — would be exercised by nothing at all.
+ */
+export interface MountedCredentialLoader {
+  /** Read token, CA cert and namespace whole; `null` when the mount is absent. */
+  read(): Promise<MountedCredentials | null>;
+  /** The token file's `mtimeMs`, or `null` when it cannot be stat'ed. */
+  tokenModifiedAt(): Promise<number | null>;
+}
+
+/** The token file's `mtimeMs`, or `null` when the mount cannot be stat'ed. */
+async function statMountedToken(): Promise<number | null> {
+  try {
+    const fs = await fsLazy.get();
+    const stats = await fs.stat(`${SERVICE_ACCOUNT_DIR}/token`);
+    return stats.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the mount, stamping the credential with the token file's mtime.
+ *
+ * The `stat` deliberately runs **before** the read.  Rotating between the
+ * two then records an mtime older than the bytes in hand, which costs one
+ * redundant re-read at the next interval; the other order would record an
+ * mtime newer than the bytes and miss the rotation entirely until something
+ * came back 401.
+ */
+async function readMountedCredentials(): Promise<MountedCredentials | null> {
+  const tokenModifiedAt = await statMountedToken();
+  const credentials = await loadInClusterCredentials();
+  if (!credentials) return null;
+  return { credentials, tokenModifiedAt };
+}
+
+/** The real mount reader — `node:fs/promises` against the kubelet's paths. */
+export const mountedCredentialLoader: MountedCredentialLoader = {
+  read: readMountedCredentials,
+  tokenModifiedAt: statMountedToken,
+};
+
 /* --------------------------- HTTPS request ---------------------------- */
 
 export type K8sRequestOptions = {
