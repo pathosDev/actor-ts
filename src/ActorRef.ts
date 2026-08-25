@@ -72,10 +72,9 @@ const TEMP_SEGMENT = 'temp';
  * is neither returned to the caller nor exported from `src/index.ts`, so a
  * caller holding only the promise cannot settle it by hand, and until #177
  * ("Cancelable ask") gives `ask` a cancellation handle there is nothing to
- * settle it with.  Refusing
- * zero also puts this positional argument in the same domain as every
- * option-sourced ask timeout in the framework — `ScatterGatherOptions.timeoutMs`,
- * `ClusterClientOptions.askTimeoutMs` and
+ * settle it with.  Refusing zero also puts this positional argument in the same
+ * domain as every option-sourced ask timeout in the framework —
+ * `ScatterGatherOptions.timeoutMs`, `ClusterClientOptions.askTimeoutMs` and
  * `ClusterClientReceptionistOptions.askTimeoutMs` all validate with
  * `positiveNumber`, which rejects it — and makes the documented "mandatory in
  * spirit" deadline mandatory in fact.  Omitting the argument still yields

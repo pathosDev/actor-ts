@@ -149,12 +149,12 @@ Fehler im Aufrufer und kein fehlgeschlagener Request.
 ```ts
 import { OptionsError } from 'actor-ts';
 
-const budget = deadline - Date.now();   // negative once the deadline passed
+const budget = deadline - Date.now();   // negativ, sobald die Deadline durch ist
 try {
   await counter.ask({ kind: 'get' }, budget);
 } catch (e) {
   if (e instanceof OptionsError) {
-    // budget was <= 0 — the deadline is already gone, don't ask at all
+    // budget war <= 0 — die Deadline ist bereits weg, also gar nicht erst fragen
   }
 }
 ```
