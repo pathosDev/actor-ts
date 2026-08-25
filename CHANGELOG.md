@@ -349,6 +349,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A cluster that can never converge now says so** (#1351). Give every
+  node a non-empty seed list and the default `selfElection: 'immediate'`
+  — which self-elects only on an *empty* one — and no node ever reaches
+  `up`: `leader()` is the first of `upMembers()`, and only a leader moves
+  a node from `joining` to `up`. The configuration is documented as one
+  that does not cold-start, but nothing said so at runtime.
+
+  What an operator saw instead was `AskTimeoutError` from a singleton
+  proxy, several subsystems from the cause, because
+  `ClusterSingletonManager` picks its host from `upMembers()` and there
+  was never one to pick.
+
+  The seed retry loop now carries the verdict: it runs exactly while the
+  node is stuck and cancels itself the moment it is not. After
+  `COLD_START_STALL_AFTER_SEED_ROUNDS` fruitless rounds, with no `up`
+  member known and no self-election pending, it logs one WARN — naming
+  the unanswered seed addresses when nothing has replied, and the
+  `seeds` / `selfElection` pairing when every peer is present and every
+  one of them is waiting. Once, not per round.
+
+  The check is exact rather than heuristic, so it does not fire for a
+  node joining a healthy cluster, nor while a deferred self-election is
+  still due. The round threshold exists only because the same condition
+  is briefly true, and harmless, during an ordinary simultaneous start.
+
 - **A bounded mailbox now applies its capacity, its overflow policy and its
   drop accounting to the `unstashAll()` replay path (#772).**
   `BoundedMailbox` overrode `enqueue` and nothing else, so every envelope

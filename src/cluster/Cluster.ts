@@ -8,7 +8,7 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
+import { COLD_START_STALL_AFTER_SEED_ROUNDS, MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
@@ -233,6 +233,9 @@ export class Cluster {
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
+  private seedRounds = 0;
+  private coldStartStallReported = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
@@ -743,12 +746,16 @@ export class Cluster {
         `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
       );
       this.contactSeeds();
-      // Keep retrying seed contact until self has transitioned to up,
-      // covering the case where a seed hasn't started yet.
+      // Keep retrying seed contact until self has transitioned to up, covering
+      // the case where a seed hasn't started yet — and, since this is the one
+      // timer that runs exactly while the node is stuck, carry the diagnosis
+      // for the case where it never will (#1351).
       this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
           if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
+          this.seedRounds += 1;
+          this.reportColdStartStall();
           this.contactSeeds();
         },
       );
@@ -890,6 +897,90 @@ export class Cluster {
     const message = `self-electing as first cluster member — ${reason}`;
     if (level === 'info') this.log.info(message); else this.log.debug(message);
     this.updateMember(me.withStatus('up'));
+  }
+
+  /**
+   * Say why this node is still `joining`, once, when nothing is going to
+   * change that (#1351).
+   *
+   * The condition is exact rather than a heuristic. `joining → up` is the
+   * leader's decision, `leader()` is the first of {@link upMembers}, and the
+   * only way a node reaches `up` without one is self-election. So a node that
+   * knows no `up` member and has no self-election pending cannot be promoted
+   * by anything: no leader exists to promote it, and none can come into being
+   * through it. The cluster is not slow, it is finished.
+   *
+   * `selfElectionTimer === null` is what covers both policies that strand a
+   * node here. `'never'` arms no timer at all. `'immediate'` arms none either,
+   * and its one chance has already passed: it self-elects only on an *empty*
+   * seed list, and this loop exists only when the list is non-empty. A
+   * deferred policy is the one that does hold a timer and will resolve this
+   * without help — which is why a pending one is the signal to stay quiet.
+   *
+   * Held back {@link COLD_START_STALL_AFTER_SEED_ROUNDS} rounds because the
+   * same condition is true, and harmless, for the first seconds of an ordinary
+   * simultaneous start, while the peer that will form the cluster is still
+   * coming up.
+   *
+   * Reported once. The condition holds on every round from here on, and this
+   * is a verdict on the configuration rather than an event — repeating it per
+   * round would bury the one line that matters, which is the noise this whole
+   * area was cleaned of in #1352.
+   *
+   * **Not reachable from `weakly-up`.** The retry loop cancels itself on any
+   * status but `joining`, so a node auto-promoted by `weaklyUpAfterMs` leaves
+   * this behind and can stall unreported. That gap is real, but it belongs to
+   * the loop's cancel condition rather than here, and `weaklyUpAfterMs`
+   * defaults to 0, so nothing reaches it without being configured to.
+   */
+  private reportColdStartStall(): void {
+    if (this.coldStartStallReported) return;
+    if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
+    if (this.selfElectionTimer !== null) return;
+    if (this.upMembers().length > 0) return;
+    this.coldStartStallReported = true;
+    // Every member but our own record — what this node has actually heard from,
+    // which is the half of the diagnosis it cannot state from configuration.
+    const peers = this.members.size - 1;
+    this.log.warn(
+      `still "joining" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
+      + `this node: no member is "up", so there is no leader, and only a leader moves a node `
+      + `from "joining" to "up" — ${this.coldStartStallRemedy(peers)}`,
+    );
+  }
+
+  /**
+   * The half of the stall report that depends on what this node can see.
+   *
+   * Split by peer count first, because it separates two failures that look
+   * identical in the member map but have nothing else in common: seeds nobody
+   * is answering on, and seeds answering perfectly while every node waits for
+   * a leader none of them will elect.
+   */
+  private coldStartStallRemedy(peers: number): string {
+    if (peers === 0) {
+      return 'no seed has answered at all. Seeds: '
+        + `[${this.seedAddrs.map((a) => a.toString()).join(', ')}]. Check that these are the `
+        + 'addresses those nodes advertise (not their bind addresses), that their processes are '
+        + 'running, and that the port is reachable from here';
+    }
+    return match(this.selfElection)
+      .with('immediate', () =>
+        `${peers} peer(s) are known and every one of them is stuck the same way. Each node was `
+        + "started with a non-empty seed list and selfElection: 'immediate', which self-elects "
+        + 'only on an *empty* one — so no node will ever form the cluster. Give exactly one node '
+        + 'seeds: [], or pass stableObservation: true to Cluster.bootstrap, which elects an '
+        + 'initial seed and derives the selfElection pairing itself')
+      .with('never', () =>
+        `${peers} peer(s) are known but none is "up". This node has selfElection: 'never', so it `
+        + 'waits to be promoted — the node elected to form the cluster has not reached "up"')
+      // Unreachable in practice, and kept for exhaustiveness rather than for
+      // the message: a deferred election that has already fired left this node
+      // `up`, which cancels the loop that calls this.
+      .with(P.number, (afterMs) =>
+        `${peers} peer(s) are known but none is "up", and this node's ${afterMs} ms `
+        + 'self-election grace elapsed without forming one')
+      .exhaustive();
   }
 
   private handleWire(from: NodeAddress, message: WireMessage): void {

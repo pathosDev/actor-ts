@@ -147,6 +147,20 @@ Die Retry-Schleife über `seedRetryIntervalMs` bleibt wichtig, löst aber
 ein anderes Problem: einen Seed, der *irgendwann* erreichbar ist. Ein
 erstes Mitglied kann sie nicht herbeizaubern.
 
+Sie trägt aber die Diagnose. Ein Node, der nach ein paar Kontaktrunden
+immer noch `joining` ist, kein `up`-Mitglied kennt und auf keine
+Selbstwahl mehr wartet, loggt eine WARN-Zeile, die benennt, was er sieht
+und was zu ändern ist — die unbeantworteten Seed-Adressen, wenn niemand
+geantwortet hat, oder die Kombination aus Seed-Liste und `selfElection`
+von oben, wenn alle Peers da sind und alle warten. Sie erscheint einmal,
+nicht pro Runde.
+
+Diese Zeile ist deshalb wichtig, weil das *Symptom* weit von der Ursache
+entfernt auftritt: einem so blockierten Cluster fehlt jedes `up`-Mitglied,
+ein [Cluster-Singleton](/de/cluster/singleton/overview/) wählt seinen Host
+aus den `up`-Mitgliedern, und das Erste, was die meisten Anwendungen
+bemerken, ist deshalb ein `AskTimeoutError` von einem Singleton-Proxy.
+
 ## Seed-Discovery — jenseits einer statischen Liste
 
 Eine hartcodierte Seed-Liste reicht für Tests und kleine Cluster.
