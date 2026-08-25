@@ -50,9 +50,9 @@ system.spawn(() => new TemperatureHub(MqttOptions.create()), 'hub');
 
 ## Hooks
 
-Diese überschreibst du in deiner Subklasse.  `onReceive` ist
-**versiegelt** — die Basisklasse dispatcht an die Hooks unten;
-überschreibe es nicht.
+Diese überschreibst du in deiner Subklasse.  `onReceive` und `onCommand`
+sind **versiegelt** — die Basisklassen dispatchen an die Hooks unten;
+überschreibe sie nicht.
 
 | Hook | Wann |
 | --- | --- |
@@ -61,6 +61,7 @@ Diese überschreibst du in deiner Subklasse.  `onReceive` ist
 | `onDisconnected(cause?)` | Die Verbindung brach ab; ein Reconnect-Zyklus kann folgen (gemäß Settings). |
 | `onInvalidMessage(err, message)` | `onMessage` warf einen `MqttDecodeError` (ein lazy `entity()` auf einem fehlerhaften Payload).  Default: loggen + verwerfen.  Erneut werfen zum Eskalieren. |
 | `onSelfMessage(message)` | Eine Anwendungsnachricht (`TSelf`) wurde diesem Ref getellt. |
+| `onTerminated(signal)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt; die Zustellziele, die dieser Aktor selbst beobachtet, sind bereits erledigt. |
 
 Eingehende und Lifecycle-Ereignisse werden über die Mailbox zugestellt,
 sodass `onMessage` und die Hooks stets auf dem Aktor-Thread laufen

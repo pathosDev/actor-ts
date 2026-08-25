@@ -180,7 +180,7 @@ export class NatsActor
     this.nc.publish(publish.subject, bytes, publish.replyTo ? { reply: publish.replyTo } : undefined);
   }
 
-  override onReceive(command: NatsCommand): void {
+  protected override onCommand(command: NatsCommand): void {
     // Compile-time exhaustiveness: adding a new NatsCommand variant
     // forces this site to handle it explicitly.
     match(command)

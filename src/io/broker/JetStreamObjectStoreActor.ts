@@ -265,7 +265,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
     // The one throw the base class is meant to see: no transport, so the
     // envelope goes back at the head of the buffer and a reconnect starts.
     if (!store) throw new Error('JetStreamObjectStoreActor: not connected');
-    // The real command dispatcher: `onReceive` only buffers, so every
+    // The real command dispatcher: `onCommand` only buffers, so every
     // JetStreamObjectStoreCommand variant is handled here.
     await match(env.payload)
       .with({ kind: 'put' },    (c) => this.onPut(c, store))
@@ -283,7 +283,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
    * `dispatchOutgoing`, and duplicating it here would only make the
    * admission check look like a second protocol.
    */
-  override onReceive(command: JetStreamObjectStoreCommand): void {
+  protected override onCommand(command: JetStreamObjectStoreCommand): void {
     const admitted = command.kind === 'put' ? this.admitPut(command) : command;
     if (admitted) this.enqueueOutbound(admitted);
   }

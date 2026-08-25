@@ -46,7 +46,7 @@ class RecordingBroker extends BrokerActor<RecordingOptions, NoopMessage, string,
     RecordingBroker.disconnects.push(this.self.path.toString());
   }
   protected async dispatchOutgoing(): Promise<void> { /* never sends */ }
-  onReceive(): void { /* never receives */ }
+  protected onCommand(): void { /* never receives */ }
 }
 
 const newSystem = (name: string, autoRegisterTasks = true): ActorSystem => {

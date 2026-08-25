@@ -176,7 +176,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  override onReceive(command: TcpSocketCommand): void {
+  protected override onCommand(command: TcpSocketCommand): void {
     match(command)
       .with({ kind: 'send' }, (c) => this.onSend(c))
       .exhaustive();

@@ -322,7 +322,7 @@ export class JetStreamKeyValueActor extends BrokerActor<
     // The one throw the base class is meant to see: no transport, so the
     // envelope goes back at the head of the buffer and a reconnect starts.
     if (!store) throw new Error('JetStreamKeyValueActor: not connected');
-    // The real command dispatcher: `onReceive` only buffers, so every
+    // The real command dispatcher: `onCommand` only buffers, so every
     // KeyValueOperationCommand variant is handled here.
     await match(env.payload)
       .with({ kind: 'put' },    (c) => this.onPut(c, store))
@@ -333,7 +333,7 @@ export class JetStreamKeyValueActor extends BrokerActor<
       .exhaustive();
   }
 
-  override onReceive(command: JetStreamKeyValueCommand): void {
+  protected override onCommand(command: JetStreamKeyValueCommand): void {
     match(command)
       .with({ kind: 'watch' },   (m) => this.onWatch(m))
       .with({ kind: 'unwatch' }, (m) => this.onUnwatch(m))

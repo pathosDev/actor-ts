@@ -251,7 +251,7 @@ export class GrpcClientActor
 
   protected async dispatchOutgoing(env: OutboundEnvelope<OutboundOp>): Promise<void> {
     if (!this.serviceClient) throw new Error('GrpcClientActor: not connected');
-    // The real command dispatcher: `onReceive` only enqueues, so every
+    // The real command dispatcher: `onCommand` only enqueues, so every
     // GrpcClientCommand variant is handled here.
     match(env.payload.op)
       .with({ kind: 'unary' }, (c) => this.onUnary(c))
@@ -306,7 +306,7 @@ export class GrpcClientActor
     }
   }
 
-  override onReceive(command: GrpcClientCommand): void {
+  protected override onCommand(command: GrpcClientCommand): void {
     this.enqueueOutbound({ op: command });
   }
 
