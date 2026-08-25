@@ -157,6 +157,24 @@ export function keyspaceDdl(connection: CassandraConnection): string {
  * elsewhere they can bypass this entirely.
  */
 export async function createCassandraClient(connection: CassandraConnection): Promise<CassandraClientLike> {
+  /**
+   * The one structural stub in this repository that is checked against
+   * nothing, and knowingly so.
+   *
+   * Every other optional peer is installed in one of the two dependency
+   * contexts, so its stub is verified either by a real-module import
+   * (`tests/unit/ci/OptionalPeerModuleShapes.test.ts`) or against a live
+   * server in Docker. `cassandra-driver` is in neither: its newest release
+   * hard-pins `adm-zip: ~0.5.10` and GHSA-xcpc-8h2w-3j85 is fixed only in
+   * 0.6.0, so declaring it turns `bun run lint:audit` red. `FakeCassandraClient`
+   * satisfies this shape by construction, which means a renamed `Client`
+   * export upstream breaks on first connect with every suite still green.
+   *
+   * The standing decision and the four ways out of it live in
+   * `DELIBERATELY_UNDECLARED` in
+   * `tests/unit/ci/OptionalPeerDeclarations.test.ts`, which fails if the gap
+   * is ever closed without the note going with it. #676.
+   */
   type CassandraDriver = {
     Client: new (options: unknown) => CassandraClientLike & {
       connect(): Promise<void>;

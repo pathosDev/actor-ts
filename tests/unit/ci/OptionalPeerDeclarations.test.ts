@@ -74,14 +74,30 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  *   dependency, and GHSA-xcpc-8h2w-3j85 (high — a crafted ZIP triggers a 4 GB
  *   allocation) is fixed only in `adm-zip` 0.6.0, which that range cannot
  *   reach. So no published version of the driver installs cleanly here, and
- *   the three ways out are all decisions above this test's pay grade:
- *   suppress the advisory (a new `--ignore` plus a `SECURITY.md` row —
- *   and every suppression so far predates the gate rather than being added to
- *   get a change through), stand up a Cassandra Docker suite so the brokers
- *   manifest legitimately owns it, or drop the backend. Until one is chosen,
- *   `CassandraClientLike` and the inline `CassandraDriver` type in
- *   `src/persistence/journals/CassandraClient.ts` are checked only against
- *   `FakeCassandraClient`. Refs #676.
+ *   the ways out are all decisions above this test's pay grade:
+ *
+ *   1. Suppress the advisory — a new `--ignore` plus a `SECURITY.md` row.
+ *      Every suppression on file predates the gate rather than having been
+ *      added to get a change through, so this would be the first of its kind.
+ *   2. Stand up a Cassandra Docker suite (#1169 tracks it from the coverage
+ *      side), so the brokers manifest legitimately owns the driver and the
+ *      root install never sees it.
+ *   3. Drop the backend.
+ *   4. Pin `adm-zip` past the advisory with an `overrides` / `resolutions`
+ *      entry. This one is listed because leaving it out is how it gets
+ *      rediscovered as a clever trick rather than weighed as what it is, and
+ *      it does work: bun 1.4.0 honours both spellings, taking `~0.5.10` from
+ *      0.5.18 to 0.6.0 (measured). It is also the worst of the four. npm-style
+ *      overrides apply only while this package is the root project, so it
+ *      would clear OUR audit while every consumer who installs the Cassandra
+ *      backend resolves the vulnerable range exactly as before — option 1
+ *      without the row anyone reviews.
+ *      `tests/unit/ci/SecurityPolicy.test.ts` requires any override to be
+ *      written up in `SECURITY.md`, so this route is open but not silent.
+ *
+ *   Until one is chosen, `CassandraClientLike` and the inline
+ *   `CassandraDriver` type in `src/persistence/journals/CassandraClient.ts`
+ *   are checked only against `FakeCassandraClient`. Refs #676.
  */
 const DELIBERATELY_UNDECLARED: readonly string[] = ['cassandra-driver'];
 
@@ -147,19 +163,34 @@ function rootScopedTestSources(): readonly string[] {
     .map((entry) => withoutCommentLines(readFileSync(join(testsRoot, entry), 'utf8')));
 }
 
+/** Every `src/` file the build compile (`bun run typecheck`) reads. */
+function librarySources(): readonly string[] {
+  const sourceRoot = join(REPOSITORY_ROOT, 'src');
+  return readdirSync(sourceRoot, { recursive: true, encoding: 'utf8' })
+    .map((entry) => entry.replaceAll('\\', '/'))
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((entry) => withoutCommentLines(readFileSync(join(sourceRoot, entry), 'utf8')));
+}
+
 /**
- * Optional peers that a root-scoped test imports by LITERAL specifier.
+ * Optional peers that the given sources name in a LITERAL import specifier.
  *
  * Literal is the operative word, and it is not a stylistic preference: it is
- * the only form that actually loads the real package at a fixed name. The
+ * the only form that actually resolves the real package at a fixed name. The
  * adapters deliberately use `const name = 'ws'; await import(name)` so that a
  * missing optional peer is a caught error rather than a hard module
  * resolution, and `mock.module('@aws-sdk/client-s3', …)` never loads the real
  * module at all — neither implies anything about the install. A literal
- * specifier does: that test cannot pass unless the package is really there.
+ * specifier does: the file cannot compile or run unless the package is really
+ * there.
+ *
+ * Which is why one scanner serves both directions below. Over the test tree a
+ * hit is a *requirement* — the package has to be a root devDependency. Over
+ * `src/` a hit is a *defect*, and the same substring match decides both, so
+ * the non-empty result next door is what proves this one's empty result means
+ * something.
  */
-function literallyImportedOptionalPeers(): readonly string[] {
-  const sources = rootScopedTestSources();
+function optionalPeersImportedLiterallyFrom(sources: readonly string[]): readonly string[] {
   return optionalPeers
     .filter((peer) => {
       const quoted = `'${peer}'`;
@@ -167,6 +198,10 @@ function literallyImportedOptionalPeers(): readonly string[] {
         source.includes(`import(${quoted})`) || source.includes(`from ${quoted}`));
     })
     .sort();
+}
+
+function literallyImportedOptionalPeers(): readonly string[] {
+  return optionalPeersImportedLiterallyFrom(rootScopedTestSources());
 }
 
 describe('optional peer declarations', () => {
@@ -290,6 +325,64 @@ describe('optional peer declarations', () => {
       + 'edge is not ours to rely on — when it goes, the suite fails with a '
       + '"Cannot find module" that looks nothing like a dependency-declaration '
       + 'bug. Add each one to the root `devDependencies` (#676).',
+    ).toEqual([]);
+  });
+
+  /**
+   * The opposite direction, and the one that settles #676's `nats` follow-up:
+   * nothing in `src/` may name an optional peer in an import specifier. Every
+   * adapter reaches its peer through a hand-written structural stub instead —
+   * `NatsConnectionLike`, `CassandraDriver`, `MemjsClientStatic`,
+   * `WebsocketServerLike` — and that is the design, not a placeholder.
+   *
+   * It reads like a placeholder, which is why this test exists. #676's
+   * round-4 scan comment asked for the reverse: replace the `nats` stubs in
+   * `src/io/broker/NatsActor.ts` and `src/io/broker/JetStreamActor.ts` with
+   * the module's real types "once this issue adds the missing
+   * devDependencies", so a `nats` major bump could not drift silently. The
+   * precondition never arrived and cannot. `nats` is declared only in
+   * `tests/integration/brokers/package.json`, which is deliberately not
+   * installed at the root, so the build compile cannot resolve it — measured:
+   * a type-only import of it from `src/` fails `bun run typecheck` with
+   * TS2307.
+   *
+   * Installing it at the root would not make the follow-up right either, and
+   * that is the part worth pinning, because it survives the install argument.
+   * The stubs are *exported* — `NatsConnectionLike` and its siblings reach
+   * `dist/io/index.d.ts` through `src/io/broker/index.ts`, a declared package
+   * entry point — and `tsconfig.json` emits declarations. A real
+   * `import type … from 'nats'` there would be emitted into a published
+   * `.d.ts`, so a consumer who has not installed the optional peer resolves
+   * nothing: TS2307 without `skipLibCheck`, a silent `any` with it. That is
+   * precisely the cost "optional" is supposed to spare them.
+   *
+   * So the drift the comment worried about is real and is covered elsewhere —
+   * by a live broker in Docker (`tests/integration/brokers/nats/`), which
+   * catches a rename the types would only have caught at compile time in a
+   * tree that cannot compile it. The follow-up is withdrawn, and this is the
+   * assertion that says so instead of the silence that implied it.
+   */
+  test('no optional peer is named by a literal import specifier in src/', () => {
+    const sources = librarySources();
+    // Guards the guard: an empty or mis-rooted tree walk would make the
+    // filter below vacuous, and this whole test asserts an ABSENCE.
+    expect(
+      sources.length,
+      'The src/ tree walk found almost nothing. Every assertion here filters '
+      + 'that list, and a filter over an empty list reports no violations.',
+    ).toBeGreaterThan(400);
+    const leaked = optionalPeersImportedLiterallyFrom(sources);
+    expect(
+      leaked,
+      'These optional peers are named by a literal import specifier in `src/`. '
+      + 'The library must reach every optional peer through a lazy '
+      + '`lazyImportModule(name)` and a hand-written structural type, for two '
+      + 'reasons that both outlive the install: the build compile has no '
+      + 'access to a peer that only tests/integration/brokers/package.json '
+      + 'declares, and an exported type that imports one would put that '
+      + 'specifier into a published `.d.ts`, where a consumer who took the '
+      + '"optional" at its word cannot resolve it. Widen the structural stub '
+      + 'instead (#676).',
     ).toEqual([]);
   });
 });
