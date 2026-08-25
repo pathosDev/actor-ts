@@ -347,11 +347,45 @@ Snapshots migrate on their own: `keepN` prunes the untagged ones as new
 tagged snapshots are taken, so the window can usually close after
 `keepN` saves per `persistenceId` instead of after an explicit sweep.
 
-**Integrity and master-key rotation do not compose yet.**
-`reEncryptObjectStorage` supplies no integrity key, so it cannot read
-tagged bodies and a sweep over them fails
-([#739](https://github.com/pathosDev/actor-ts/issues/739)).  Finish
-any pending key rotation before you enable integrity on a bucket.
+### Integrity and master-key rotation
+
+The two compose.  Hand the sweep the same integrity configuration the
+store has — a flat config or the very same per-`persistenceId` resolver
+— and every tag is verified on the way in and recomputed on the way out:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+Leave `integrity` out on a tagged corpus and the sweep **refuses before
+it touches anything**, naming an offending key: without the key it can
+neither read a tagged body nor write one back, and finding that out
+object by object would leave the corpus half-rotated
+([#739](https://github.com/pathosDev/actor-ts/issues/739)).
+
+Two things the sweep deliberately does not do:
+
+- **It never adds a tag to an untagged body.**  It re-seals only what
+  already carried one.  Promoting the rest would make every rewritten
+  object unreadable to any reader you have not yet given the integrity
+  key to — and a rotation runs while the application is serving.
+  Turning integrity on corpus-wide is the migration above, not a side
+  effect of rotating a key.
+- **It does not rotate the integrity key itself.**  There is no version
+  byte for it, so a half-swept corpus would be indistinguishable from a
+  tampered one.  Roll a new integrity key the same way you turned
+  integrity on: open the window, rewrite, close it.
+
+Sweeping a corpus that is *mid*-integrity-migration — some bodies
+tagged, some not — needs `allowUntaggedBodies: true` on the sweep as
+well, for the same reason the store needs it.  Without it the sweep
+stops at the first untagged body rather than assume the tag was never
+there.
 
 ## Binding a body to its key
 
@@ -395,7 +429,10 @@ Rewrite the corpus first, or reads will start failing.  For durable
 state that is a `load` + `upsert` per `persistenceId`; snapshots reach it
 through `keepN` pruning; a bucket that is mid-rotation gets there via
 `reEncryptObjectStorage`, which rebinds every body it passes and no
-longer skips one merely because its key version is current.
+longer skips one merely because its key version is current.  That
+includes the unencrypted-plus-HMAC configuration, where there is no
+master key to rotate at all: such a body is re-framed for its key and
+then left alone on every later pass.
 
 <Aside type="caution" title="The prefix is part of the key">
   The binding covers the whole storage key, `prefix` included.  Changing

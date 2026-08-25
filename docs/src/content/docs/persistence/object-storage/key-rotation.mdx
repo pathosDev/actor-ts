@@ -167,6 +167,38 @@ counted as `skippedCurrent`.  An object that decrypts under
 neither raises the original decrypt error, so a genuinely broken
 corpus is not quietly skipped.
 
+## Sweeping an integrity-protected corpus
+
+A bucket with the [integrity
+HMAC](/persistence/object-storage/encryption/#integrity-and-master-key-rotation)
+turned on needs that key here too.  The tag covers the manifest bytes,
+so the sweep has to verify it to read a body at all and recompute it to
+write one back:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+`integrity` takes the same shape the store takes — a flat config, or the
+same per-`persistenceId` resolver — so a deployment that keys integrity
+per tenant resolves the same key here that its store does.
+
+Leave it out on a tagged corpus and the sweep refuses before the first
+write, naming an offending key.  Tags are re-applied only where the body
+already carried one, so an untagged body is never promoted; a corpus
+that is still mid-integrity-migration adds `allowUntaggedBodies: true`,
+the sweep-side counterpart of the store option of the same name.
+
+The sweep does **not** rotate the integrity key itself.  Nothing on the
+wire records which integrity key sealed a body, so a half-swept corpus
+would be indistinguishable from a tampered one — roll a new integrity
+key through the store's own read-then-write window instead.
+
 ## Partial rotation with `skip`
 
 `skip(key) => boolean` **excludes** matching keys — the inverse of
@@ -185,13 +217,19 @@ Useful for per-tenant, per-actor-type, or phased rotations.
 
 ## Keyring-completeness pre-check
 
-By default the sweep samples the first encrypted objects and
+By default the sweep samples the first objects it would rewrite and
 **refuses to start** if any payload's key version is missing from
 the keyring — catching the "operator dropped the retired key too
 soon" footgun *before* a mid-sweep decrypt failure leaves the
-corpus half-rewritten.  Disable with `verifyKeyringCompleteness:
-false` only if you have independent assurance the keyring is
-complete.
+corpus half-rewritten.  The same pass answers the integrity
+question: a sampled body carrying a tag that `integrity` resolves
+no key for stops the sweep here rather than in the middle of the
+corpus.  Disable with `verifyKeyringCompleteness: false` only if
+you have independent assurance the keyring is complete.
+
+Both halves sample rather than enumerate, so both are a footgun
+catcher and not a proof — a straggler past `sampleSize` still
+aborts mid-corpus.
 
 ## Which keys the sweep can process
 
