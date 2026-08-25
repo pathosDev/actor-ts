@@ -349,6 +349,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A healthy cluster no longer logs a WARN on every gossip frame**
+  (#1352). A frame carries the sender's whole member map, so a node's
+  own record comes back to it once per round. `maySpeakFor` refuses a
+  claim about the receiving node — rule 1 of #562, unchanged — but it
+  logged every one of them, including the peer simply echoing the status
+  the node already held. At the default one-second gossip interval that
+  is a WARN per second per peer describing normal operation, and during a
+  two-node bring-up it was the loudest line present and read as the cause
+  of a failure that lay elsewhere.
+
+  An echo is now refused in silence: it would have changed nothing the
+  version comparison in `mergeMember` did not already drop. A peer that
+  *contradicts* us still surfaces, but through the same per-frame
+  machinery as every other guard on that path — one line and one
+  `cluster_gossip_records_refused_total{reason="self-claim"}` increment
+  per frame rather than per record, the property #131 established. The
+  counter still reads zero on a healthy cluster, and what a peer is
+  allowed to say about this node is untouched.
+
 - **A bounded mailbox now applies its capacity, its overflow policy and its
   drop accounting to the `unstashAll()` replay path (#772).**
   `BoundedMailbox` overrode `enqueue` and nothing else, so every envelope
