@@ -70,12 +70,27 @@ jobs:
     # code at all.
     permissions:
       contents: read
-    # Consumed by `badge`.  Written by the parse step even when the suite
-    # fails, which is exactly when the badge has to flip to red.
+    # Consumed by `badge`.  Both producers publish even when the suite fails,
+    # which is exactly when the badge has to flip to red — `stats` parses the
+    # counts out of the JUnit report, and `coverage` (which therefore runs on
+    # a red suite too) hands back the figure it gated on.
     outputs:
       pass: ${{ steps.stats.outputs.pass }}
       total: ${{ steps.stats.outputs.total }}
-      lines: ${{ steps.stats.outputs.lines }}
+      lines: ${{ steps.coverage.outputs.lines }}
+    # The run's artifacts, at the job level because two steps address them —
+    # one writes them, the next gates on them — and a path spelled twice is a
+    # path that can be edited once.  All under the runner temp dir so the
+    # workspace the badge job checks out stays clean.
+    env:
+      JUNIT_FILE: ${{ runner.temp }}/test-results.junit.xml
+      LOG_FILE: ${{ runner.temp }}/bun-test.log
+      # The lcov half of the same run.  The per-module floors cannot come from
+      # the text table even in principle: a rollup of bun's per-file
+      # percentages averages a ten-line barrel against a thousand-line
+      # coordinator, where lcov's LF:/LH: counts weight by the lines that
+      # exist.
+      COVERAGE_DIR: ${{ runner.temp }}/coverage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,10 +145,6 @@ jobs:
         # with the flag OFF and carries the exit criterion — #538.
         env:
           ACTOR_TS_SKIP_FLAKY_MNS: '1'
-          # Machine-readable counts and the run log, both in the runner temp
-          # dir so the workspace the next steps inspect stays clean.
-          JUNIT_FILE: ${{ runner.temp }}/test-results.junit.xml
-          LOG_FILE: ${{ runner.temp }}/bun-test.log
         run: |
           # bun's output goes to a FILE, never through a pipe.  Under GitHub
           # Actions bun emits one annotation line per test — ~8700 lines for
@@ -154,7 +165,10 @@ jobs:
           # red badge when the suite breaks.  bun's exit status is replayed
           # at the end so the job's own result is unchanged.
           set +e
-          bun test --coverage --reporter=junit --reporter-outfile="$JUNIT_FILE" > "$LOG_FILE" 2>&1
+          bun test --coverage \
+            --coverage-reporter=text --coverage-reporter=lcov \
+            --coverage-dir="$COVERAGE_DIR" \
+            --reporter=junit --reporter-outfile="$JUNIT_FILE" > "$LOG_FILE" 2>&1
           STATUS=$?
           set -e
 
@@ -207,15 +221,15 @@ jobs:
             TOTAL=''
           fi
 
-          # Line coverage from the "All files" aggregate row.  Bun's
-          # --coverage table is `File | % Funcs | % Lines | Uncovered`, so
-          # the LINE column is awk field $3 ($2 is % Funcs).
-          LINES=$(grep "^All files" "$LOG_FILE" | awk -F'|' '{print $3}' | tr -d ' ')
-          LINES_INT=${LINES%.*}
-          if ! [[ "$LINES_INT" =~ ^[0-9]+$ ]]; then
-            echo "::error::Could not read line coverage from the 'All files' row of the --coverage table."
-            LINES_INT=''
-          fi
+          # Coverage is NOT parsed here.  It used to be — `grep "^All files" |
+          # awk -F'|' '{print $3}'`, truncated with `${LINES%.*}` and compared
+          # as an integer in the gate step below — while a second
+          # implementation of the same parse lived in the gate script for local
+          # runs.  Two parsers over one table agreed only for as long as the
+          # floor was a whole number, and only one of them could ever gate the
+          # per-module floors, which need the lcov half of the run.  The script
+          # is the only parser now and this workflow is its caller; the badge
+          # figure comes back out of it.  #541, #1016.
 
           # Only ever publish numbers that parsed.  An absent output trips the
           # `badge` job's guard, which leaves the last good README in place —
@@ -224,69 +238,38 @@ jobs:
             echo "pass=$PASS"       >> "$GITHUB_OUTPUT"
             echo "total=$TOTAL"     >> "$GITHUB_OUTPUT"
           fi
-          if [[ -n "$LINES_INT" ]]; then
-            echo "lines=$LINES_INT" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Parsed: ${PASS:-?} of ${TOTAL:-?} tests passing, ${LINES_INT:-?}% line coverage"
+          echo "Parsed: ${PASS:-?} of ${TOTAL:-?} tests passing"
 
-          # The two statistics are not the same kind of thing, so they do not
-          # fail the same way.
-          #
-          # Line coverage feeds the ≥ 80 % gate below, and that gate is
-          # skipped when the number is missing — an unevaluated gate must not
-          # read as a passing one, so an unparseable coverage figure fails
-          # here instead.
-          #
           # The test counts only render a badge. `main` is branch-protected
           # on this check, so a cosmetic parse failure must never be able to
           # block a release: the `badge` job annotates a warning and leaves
           # the README on its previous figures, which is exactly what
-          # publishing nothing rather than a zero is for.
-          if [[ -z "$LINES_INT" ]]; then
-            exit 1
-          fi
+          # publishing nothing rather than a zero is for.  Coverage is the
+          # other kind — it gates — and the step below is what fails on it.
 
           # Propagate the original bun exit status — non-zero turns
           # the job red, but the step outputs above are already
           # written so the README job downstream still has data.
           exit $STATUS
 
-      - name: Coverage-floor gate (≥ 80%)
-        # Runs only after the test step succeeded.  Re-parses the
-        # already-captured line coverage and fails the workflow if
-        # it dropped below the floor.  Same parser as the step above,
-        # so the two see the same numbers — pin via a single source
-        # of truth (the badge update sees what the gate enforces).
+      - name: Coverage-floor gate
+        id: coverage
+        # `scripts/coverage-gate.mjs` over the two artifacts of the run that
+        # already happened — the captured log for the aggregate floor, the lcov
+        # report for the per-module ones.  It refuses `--log` without `--lcov`,
+        # so this step cannot degrade into gating half of what it says it gates.
+        # The floors themselves live in the script and nowhere else, on purpose:
+        # a COVERAGE_LINE_FLOOR here would be a second place the number lives
+        # and a way to loosen the gate without the loosening showing up in a
+        # diff of the gate.  `tests/unit/ci/CoverageGate.test.ts` asserts that.
         #
-        # Floor configured via the COVERAGE_LINE_FLOOR env var — set
-        # at the workflow level so future tightening (80 → 85 → 90)
-        # is a one-line PR rather than a script-edit.  Local devs run
-        # `bun run test:coverage:gate` to get the same check.
-        if: success() && steps.stats.outputs.lines != ''
-        env:
-          # 80 — pragmatic floor.  The worker-thread multi-node suites are
-          # quarantined on GitHub's hosted runners (Bun can't respawn
-          # functional workers after the first test — see the coverage step
-          # + #538), which removes coverage of the worker-thread machinery
-          # and drops hosted-CI line coverage to ~86%.  Rather than gate
-          # tightly against code that physically can't execute on the
-          # hosted runner, we use a pragmatic 80% floor; product code
-          # (cluster, persistence, LeaseMajority @100%, …) stays well above
-          # it.  Raising it again is part of un-quarantining, which
-          # `nightly-flakes.yml` is the evidence for.
-          COVERAGE_LINE_FLOOR: '80'
-          PARSED_LINES: ${{ steps.stats.outputs.lines }}
-        run: |
-          if [[ -z "$PARSED_LINES" ]]; then
-            echo "coverage-gate: stats.outputs.lines was empty — parser regression?  Fail loud."
-            exit 1
-          fi
-          if (( PARSED_LINES < COVERAGE_LINE_FLOOR )); then
-            echo "::error::coverage-gate: line coverage ${PARSED_LINES}% < floor ${COVERAGE_LINE_FLOOR}%"
-            echo "Add tests for under-covered files (see the per-file table in the previous step) and rerun."
-            exit 1
-          fi
-          echo "coverage-gate: PASS (${PARSED_LINES}% ≥ ${COVERAGE_LINE_FLOOR}%)"
+        # `!cancelled()` rather than `success()`: the badge figure comes out of
+        # this step now, and a red suite is exactly when the README has to stop
+        # claiming the old number.  Skipped when the suite never ran at all (a
+        # typecheck failure, a frozen-install rejection) — there is no log to
+        # read then, and an error about a missing file would bury the real one.
+        if: ${{ !cancelled() && steps.stats.conclusion != 'skipped' }}
+        run: bun scripts/coverage-gate.mjs --log="$LOG_FILE" --lcov="$COVERAGE_DIR/lcov.info"
 
   # The badge updater — the only job in this workflow that can write to the
   # repository, and deliberately the only one that runs no third-party code

@@ -91,4 +91,5 @@ export function evaluateModuleFloors(
 ): readonly ModuleVerdict[];
 export function parseAggregateLineCoverage(output: string): number | undefined;
 export function parseArguments(argv: readonly string[]): CoverageGateArguments;
+export function badgeLineCoverage(percentage: number): string;
 export function describeModuleVerdict(verdict: ModuleVerdict): string;

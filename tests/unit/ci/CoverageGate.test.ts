@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_LINE_FLOOR,
   MODULE_LINE_FLOORS,
+  badgeLineCoverage,
   describeModuleVerdict,
   evaluateModuleFloors,
   normaliseCoveragePath,
@@ -50,10 +51,38 @@ import {
  * the aggregate floor was a one-token edit in one file — which is how it went
  * from 89 to 80 (`83b0a4af`) with the reasoning living only in a commit message.
  * The ratchet policy in `AGENTS.md` is a policy only if breaking it is loud.
+ *
+ * And since #541 the gate has a caller: `test.yml` runs the suite once and
+ * hands both artifacts to this script instead of re-deriving the aggregate in
+ * bash.  The last group asserts that arrangement from the workflow's side,
+ * because the failure it prevents is silent in both directions — a second
+ * parser reappearing agrees with this one right up until the floor stops being
+ * a whole number, and the script losing its caller leaves a green `tests` check
+ * that gates nothing, which is the state this repository was already in once.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const SCRIPT = join(REPOSITORY_ROOT, 'scripts', 'coverage-gate.mjs');
+
+const agentsGuide = readFileSync(join(REPOSITORY_ROOT, 'AGENTS.md'), 'utf8');
+const testWorkflow = readFileSync(
+  join(REPOSITORY_ROOT, '.github', 'workflows', 'test.yml'),
+  'utf8',
+);
+
+/**
+ * `test.yml`'s executable lines.
+ *
+ * Comments are dropped because the assertions below ban shapes that the
+ * workflow's own comments quote verbatim — the note explaining why coverage is
+ * no longer parsed in bash contains the `grep "^All files" | awk` it replaced.
+ * A whole-file `toContain` would therefore be red for the correct change and
+ * green for the wrong one.
+ */
+const workflowStatements: readonly string[] = testWorkflow
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter((line) => line !== '' && !line.startsWith('#'));
 
 /** One lcov record, written the way bun writes them. */
 function lcovRecord(path: string, linesFound: number, linesHit: number): string {
@@ -96,15 +125,23 @@ function healthyRecordsExcept(subject: string): readonly string[] {
 type GateRun = {
   readonly status: number | null;
   readonly output: string;
+  /** Whatever the run appended to its `GITHUB_OUTPUT` file — `''` for nothing. */
+  readonly githubOutput: string;
 };
 
 /**
  * Drive the real script over captured artifacts.
  *
  * `--log` / `--lcov` is the only way to test the gate's *decision* without
- * running the whole suite inside a test — and it is the interface #1016 needs
- * anyway, since `test.yml` has already run the suite by the time a gate step
- * could call this file.
+ * running the whole suite inside a test — and it is the interface `test.yml`
+ * calls, since the workflow has already run the suite by the time a gate step
+ * could reach this file.
+ *
+ * `GITHUB_OUTPUT` is always pointed at this run's own temp file, never left to
+ * `process.env`.  Under Actions that variable is set for every step, so a suite
+ * that spawned the gate with the ambient environment would append its fixture
+ * figures to the real step-output file — the badge would then be rendered from
+ * whichever synthetic table ran last.
  */
 function runGate(files: { log?: string; lcov?: string }, environment: Record<string, string> = {}): GateRun {
   const directory = mkdtempSync(join(tmpdir(), 'actor-ts-coverage-gate-'));
@@ -120,13 +157,19 @@ function runGate(files: { log?: string; lcov?: string }, environment: Record<str
       writeFileSync(lcovPath, files.lcov);
       argv.push(`--lcov=${lcovPath}`);
     }
+    const githubOutputPath = join(directory, 'github-output.txt');
+    writeFileSync(githubOutputPath, '');
     const child = spawnSync('bun', [SCRIPT, ...argv], {
       cwd: REPOSITORY_ROOT,
       encoding: 'utf8',
-      env: { ...process.env, NO_COLOR: '1', ...environment },
+      env: { ...process.env, NO_COLOR: '1', GITHUB_OUTPUT: githubOutputPath, ...environment },
       timeout: 60_000,
     });
-    return { status: child.status, output: (child.stdout ?? '') + (child.stderr ?? '') };
+    return {
+      status: child.status,
+      output: (child.stdout ?? '') + (child.stderr ?? ''),
+      githubOutput: readFileSync(githubOutputPath, 'utf8'),
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -338,33 +381,137 @@ describe('--log / --lcov gate captured artifacts', () => {
   });
 });
 
-describe('the floors are a ratchet, not a variable', () => {
-  const agentsGuide = readFileSync(join(REPOSITORY_ROOT, 'AGENTS.md'), 'utf8');
-  const testWorkflow = readFileSync(
-    join(REPOSITORY_ROOT, '.github', 'workflows', 'test.yml'),
-    'utf8',
-  );
+/**
+ * The badge figure, which the workflow used to derive itself.
+ *
+ * `test.yml`'s `badge` job renders `coverage-~N%` into README.md from a step
+ * output; that output came from the bash parse this script replaced, so the
+ * script has to hand it back or the front page silently stops updating.  Both
+ * halves matter: the value has to be the same integer the old `${LINES%.*}`
+ * produced — otherwise the badge moves on a measurement that did not — and it
+ * has to be published on the failing paths too, because the run whose coverage
+ * dropped is exactly the run whose real figure the README should carry.
+ */
+describe('the gate publishes the badge figure', () => {
+  const healthyLcov = Object.keys(MODULE_LINE_FLOORS)
+    .map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99))
+    .join('\n');
 
-  test('the aggregate floor is the same number in the script, the workflow and AGENTS.md', () => {
-    const workflowMatch = /COVERAGE_LINE_FLOOR:\s*'(\d+)'/.exec(testWorkflow);
+  test('the integer is truncated, exactly as the bash parse truncated it', () => {
+    expect(badgeLineCoverage(93.63)).toBe('93');
+    // Not rounded: 93.99 must not render a badge that says 94.
+    expect(badgeLineCoverage(93.99)).toBe('93');
+    expect(badgeLineCoverage(90)).toBe('90');
+    expect(badgeLineCoverage(100)).toBe('100');
+  });
+
+  test('a passing run writes lines= to GITHUB_OUTPUT', () => {
+    const run = runGate({ log: coverageTable(89.85, 95.88), lcov: healthyLcov });
+    expect(run.status).toBe(0);
+    expect(run.githubOutput.trim()).toBe('lines=95');
+  });
+
+  test('a run that fails the floor still publishes its real figure', () => {
+    const run = runGate({ log: coverageTable(60, 61.5), lcov: healthyLcov });
+    expect(run.status).not.toBe(0);
+    expect(run.githubOutput.trim()).toBe('lines=61');
+  });
+
+  test('an unreadable table publishes nothing rather than a plausible zero', () => {
+    const run = runGate({ log: '7657 pass\n0 fail\n', lcov: healthyLcov });
+    expect(run.status).toBe(2);
+    expect(run.githubOutput).toBe('');
+  });
+
+  test('nothing is written when the environment has no GITHUB_OUTPUT', () => {
+    // A developer's `bun run test:coverage:gate` must not need the variable —
+    // and must not fail for its absence.
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-coverage-gate-env-'));
+    try {
+      const logPath = join(directory, 'bun-test.log');
+      const lcovPath = join(directory, 'lcov.info');
+      writeFileSync(logPath, coverageTable(89.85, 95.88));
+      writeFileSync(lcovPath, healthyLcov);
+      // Widened deliberately: `process.env` is typed as the keys bun knows
+      // about, and GITHUB_OUTPUT is not one of them — which is the whole
+      // reason this case exists.
+      const environment: Record<string, string | undefined> = { ...process.env, NO_COLOR: '1' };
+      delete environment['GITHUB_OUTPUT'];
+      const child = spawnSync('bun', [SCRIPT, `--log=${logPath}`, `--lcov=${lcovPath}`], {
+        cwd: REPOSITORY_ROOT,
+        encoding: 'utf8',
+        env: environment,
+        timeout: 60_000,
+      });
+      expect(child.status).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The aggregate floor's *value*, bound end to end rather than by comparing the
+ * constant to itself.  A floor is only a floor if a run just under it is red.
+ */
+describe('the aggregate floor bites at its configured value', () => {
+  const healthyLcov = Object.keys(MODULE_LINE_FLOORS)
+    .map((prefix) => lcovRecord(`${prefix}Healthy.ts`, 100, 99))
+    .join('\n');
+
+  test('a hundredth of a point below the floor fails', () => {
+    const run = runGate({ log: coverageTable(80, DEFAULT_LINE_FLOOR - 0.01), lcov: healthyLcov });
+    expect(run.status).not.toBe(0);
+    expect(run.output).toContain('aggregate line coverage');
+  });
+
+  test('exactly on the floor passes', () => {
+    const run = runGate({ log: coverageTable(80, DEFAULT_LINE_FLOOR), lcov: healthyLcov });
+    expect(run.status).toBe(0);
+  });
+});
+
+describe('the floors are a ratchet, not a variable', () => {
+  /**
+   * The script is the only place a floor is configured, so the agreement this
+   * asserts is between it and the prose — and, in the other direction, that
+   * `test.yml` has not started carrying a copy again.  It used to: the workflow
+   * set `COVERAGE_LINE_FLOOR: '80'`, which is both a second place the number
+   * lives and the one place it could be loosened without the loosening
+   * appearing in a diff of the gate.
+   */
+  test('the aggregate floor is the same number in the script and in AGENTS.md', () => {
     const guideMatch = /Line coverage floor is \*\*≥ (\d+) %\*\*/.exec(agentsGuide);
     // Guard the guard: a regex that stopped matching would agree with anything.
-    expect(workflowMatch).not.toBeNull();
     expect(guideMatch).not.toBeNull();
-    expect(Number(workflowMatch![1])).toBe(DEFAULT_LINE_FLOOR);
     expect(Number(guideMatch![1])).toBe(DEFAULT_LINE_FLOOR);
+  });
+
+  test('no workflow overrides the floor it is supposed to enforce', () => {
+    expect(
+      workflowStatements.filter((line) => line.includes('COVERAGE_LINE_FLOOR')),
+      'test.yml sets COVERAGE_LINE_FLOOR again. The env var still exists for a '
+      + 'local experiment, but a workflow setting it puts the enforced floor '
+      + 'somewhere a reviewer of scripts/coverage-gate.mjs cannot see it.',
+    ).toEqual([]);
   });
 
   /**
    * The bounds below are the ratchet.  They are not a second copy of the floors
-   * — they are the lowest value each floor has ever been allowed to hold, so
-   * raising a floor means raising its bound in the same commit and lowering one
-   * means deleting a bound, which is a diff a reviewer sees.  80 is the
-   * aggregate's recorded low-water mark (`83b0a4af`); 90 is where the module
-   * floors entered the tree (#541), measured at 97.39 % and 95.35 %.
+   * — they are the lowest value each floor is allowed to hold, so raising a
+   * floor means raising its bound in the same commit and lowering one means
+   * lowering a bound, which is a diff a reviewer sees.  90 is where the
+   * aggregate was ratcheted to (#541, 2026-08-25, measured at 93.63 % locally
+   * against the badge bot's hosted 93 %), and where the module floors entered
+   * the tree, measured then at 97.39 % / 95.35 % and re-measured at
+   * 97.29 % / 95.22 %.
+   *
+   * `83b0a4af`'s 80 is deliberately *not* preserved as the aggregate's bound:
+   * a low-water mark that outlives the condition that forced it is just a
+   * lower floor with extra steps.
    */
   test('no floor may be lowered without this test changing with it', () => {
-    expect(DEFAULT_LINE_FLOOR).toBeGreaterThanOrEqual(80);
+    expect(DEFAULT_LINE_FLOOR).toBeGreaterThanOrEqual(90);
     expect(MODULE_LINE_FLOORS[CLUSTER_PREFIX]).toBeGreaterThanOrEqual(90);
     expect(MODULE_LINE_FLOORS['src/persistence/']).toBeGreaterThanOrEqual(90);
   });
@@ -382,5 +529,80 @@ describe('the floors are a ratchet, not a variable', () => {
       expect(floor).toBeGreaterThan(0);
       expect(floor).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+/**
+ * The wiring, read from `test.yml` (#541, and #1016's third box).
+ *
+ * Both failures these assertions catch are silent.  A second bash parse
+ * reappearing agrees with this script for as long as the floor is a whole
+ * number and diverges the moment it is not — `${LINES%.*}` truncates before an
+ * integer compare, so a workflow floor of 90 would pass a run at 89.6 that the
+ * script fails.  And the script losing its caller leaves a green `tests` check
+ * that enforces no floor at all, which is not hypothetical: this file's own
+ * docstring claimed CI used it for months while `grep -rn coverage-gate
+ * .github/` found the name only inside comments.
+ */
+describe('CI gates the run it already made, with this script', () => {
+  test('the workflow parsed at all', () => {
+    // Guards the guard: an unreadable workflow makes every ban below vacuous.
+    expect(workflowStatements.length).toBeGreaterThan(40);
+    expect(workflowStatements.some((line) => line.startsWith('bun test --coverage'))).toBe(true);
+  });
+
+  test('test.yml calls the gate script with both artifacts', () => {
+    const calls = workflowStatements.filter((line) => line.includes('coverage-gate.mjs'));
+    expect(
+      calls,
+      'No step in test.yml runs scripts/coverage-gate.mjs. Without one the '
+      + 'per-module floors run nowhere but a developer\'s laptop, and the '
+      + 'aggregate floor is enforced by whatever the workflow does instead.',
+    ).not.toEqual([]);
+    for (const call of calls) {
+      expect(call, `"${call}" gates only half of what the gate gates.`).toContain('--log=');
+      expect(call, `"${call}" gates only half of what the gate gates.`).toContain('--lcov=');
+    }
+  });
+
+  test('test.yml produces the lcov half the module floors need', () => {
+    // The invocation is wrapped over several lines, so follow the backslash
+    // continuations rather than assuming how many there are.
+    const start = workflowStatements.findIndex((line) => line.startsWith('bun test --coverage'));
+    expect(start).toBeGreaterThanOrEqual(0);
+    const invocation: string[] = [];
+    for (let index = start; index < workflowStatements.length; index += 1) {
+      const line = workflowStatements[index]!;
+      invocation.push(line);
+      if (!line.endsWith('\\')) break;
+    }
+    const command = invocation.join(' ');
+    expect(command).toContain('--coverage-reporter=lcov');
+    // And the text table, which is what the aggregate floor reads. bun defaults
+    // to text alone, so naming lcov without it would silently drop the row.
+    expect(command).toContain('--coverage-reporter=text');
+    expect(command).toContain('--coverage-dir=');
+  });
+
+  test('test.yml does not re-derive the coverage figure in bash', () => {
+    const parsers = workflowStatements.filter(
+      (line) => /grep\b.*All files/.test(line) || /awk\s+-F'\|'/.test(line),
+    );
+    expect(
+      parsers,
+      'The "All files" row is being parsed in the workflow again. That is a '
+      + 'second implementation of scripts/coverage-gate.mjs\'s parse, and the '
+      + 'two agree only while the floor is a whole number — ${LINES%.*} '
+      + 'truncates before comparing, so a workflow floor of 90 passes a run at '
+      + '89.6 that the script fails.',
+    ).toEqual([]);
+  });
+
+  test('the ban would catch the shape it bans', () => {
+    // Guards the guard the other way: the two patterns above are worth nothing
+    // if they no longer match the lines they were written against.
+    const historical = 'LINES=$(grep "^All files" "$LOG_FILE" | awk -F\'|\' \'{print $3}\' | tr -d \' \')';
+    expect(/grep\b.*All files/.test(historical)).toBe(true);
+    expect(/awk\s+-F'\|'/.test(historical)).toBe(true);
   });
 });

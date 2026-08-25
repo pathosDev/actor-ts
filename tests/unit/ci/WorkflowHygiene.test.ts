@@ -319,8 +319,17 @@ const ZERO_DEFAULTS: readonly RegExp[] = [
 /** A `grep` anchored on bun's human-readable ` N pass` / ` N fail` summary. */
 const CONSOLE_SCRAPE = /grep\b[^|]*\b(?:pass|fail)\\?\$/;
 
-/** `OUTPUT=$(bun test …)` and its backtick spelling — bun's output via a pipe. */
-const PIPED_TEST_RUN = /(?:\$\(|`)\s*bun test\b/;
+/**
+ * `OUTPUT=$(bun test …)` and its backtick spelling — bun's output via a pipe.
+ *
+ * `scripts/coverage-gate.mjs` counts too, and not out of caution: called
+ * without `--log`/`--lcov` it runs `bun test --coverage` itself and replays
+ * every line of the output, so capturing *that* through a command substitution
+ * recreates #1194 exactly — through a command name the original pattern never
+ * mentioned. #541 gave the workflow a reason to invoke the script, so the
+ * pattern had to learn its name before the invocation arrived.
+ */
+const PIPED_TEST_RUN = /(?:\$\(|`)\s*bun\s+(?:run\s+)?(?:test\b|scripts\/coverage-gate\.mjs)/;
 
 describe('workflow hygiene', () => {
   test('the workflow directory actually parsed', () => {
@@ -455,6 +464,36 @@ describe('workflow hygiene', () => {
    * An unreadable statistic has to stay empty: the guard then skips the update
    * and the README keeps figures that were true when they were measured.
    */
+  /**
+   * The three assertions above are all of the form "no line matches this
+   * pattern", and every one of them passes when the pattern has quietly
+   * stopped matching anything at all. That is not a theoretical decay: the
+   * badge statistics that `ZERO_DEFAULTS` names were shell variables in
+   * `test.yml` until #541 moved the coverage half into
+   * `scripts/coverage-gate.mjs`, and a refactor that moved the rest would make
+   * the ban vacuous while leaving it green.
+   *
+   * So each pattern is checked against the exact line it was written against —
+   * a line that has been in this workflow's history, not an invention.
+   */
+  test('the badge-statement bans still match the shapes they ban', () => {
+    const zeroDefault = '[[ -z "$PASS" ]] && PASS=0';
+    expect(ZERO_DEFAULTS.some((pattern) => pattern.test(zeroDefault))).toBe(true);
+    expect(ZERO_DEFAULTS.some((pattern) => pattern.test('LINES_INT=${LINES:-0}'))).toBe(true);
+
+    expect(CONSOLE_SCRAPE.test('PASS=$(grep -E "^[[:space:]]+[0-9]+ pass$" "$LOG_FILE")')).toBe(true);
+
+    expect(PIPED_TEST_RUN.test('OUTPUT=$(bun test --coverage)')).toBe(true);
+    // The gate script replays the whole run when it is given no artifacts, so
+    // capturing it is the same hazard under a different name.
+    expect(PIPED_TEST_RUN.test('OUTPUT=$(bun scripts/coverage-gate.mjs)')).toBe(true);
+    expect(PIPED_TEST_RUN.test('OUTPUT=$(bun run test:coverage:gate)')).toBe(true);
+    // And the shape the workflow actually uses must not trip it, or the ban
+    // would be unsatisfiable rather than protective.
+    expect(PIPED_TEST_RUN.test('bun scripts/coverage-gate.mjs --log="$LOG_FILE" --lcov="$LCOV"'))
+      .toBe(false);
+  });
+
   test('test.yml never defaults an unreadable badge statistic to zero', () => {
     const offenders = badgeStatements.filter(
       ({ text }) => ZERO_DEFAULTS.some((pattern) => pattern.test(text)),

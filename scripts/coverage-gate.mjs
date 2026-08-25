@@ -16,33 +16,52 @@
  *   bun scripts/coverage-gate.mjs \
  *     --log=<bun-test.log> --lcov=<lcov.info>        # gate captured artifacts
  *
- * **The two floors deliberately read different artifacts.**  The aggregate row
- * is also parsed, in bash, by `.github/workflows/test.yml` (the `stats` step's
- * `grep "^All files" | awk -F'|' '{print $3}'`), and CI enforces the floor from
- * *that* number — this script has no automated caller at all today.  Keeping
- * the aggregate parse shaped like the workflow's is what stops the two from
- * disagreeing while they coexist; unifying them is #1016, which has to invert
- * this script's control flow first (see the `--log` / `--lcov` note below).
+ * **This file is the only coverage parser in the repository.**
+ * `.github/workflows/test.yml` used to re-derive the aggregate in bash — `grep
+ * "^All files" | awk -F'|' '{print $3}'`, then `${LINES%.*}` and an integer
+ * compare — and enforced the floor from *that* number, so the figure CI gated
+ * and the figure this script gated were two implementations that agreed only
+ * because the floor happened to be a whole number.  The workflow now runs the
+ * suite once and hands both of its artifacts to the second form above; the
+ * badge integer it publishes comes back out of this file too (see
+ * {@link badgeLineCoverage}).  One parse, one floor, one place to change
+ * either.  #541, #1016.
  *
  * The per-module figures cannot come from that table even in principle.  Bun
  * prints a percentage per file, and a per-directory rollup of percentages is an
  * unweighted mean: a 12-line barrel at 100 % would cancel a 600-line
  * coordinator at 40 %.  lcov carries `LF:` / `LH:` counts per file, so a module
  * is `Σ LH / Σ LF` — weighted by the lines that actually exist.  The two
- * statistics measurably disagree on this repository: the same 2026-08-19 run
- * reads 95.88 % in the `All files` row and 96.89 % as `Σ LH / Σ LF` over all
- * 1150 records.  Which is why the aggregate is left reading the row CI reads,
- * and the module floors read lcov — nothing here silently re-defines the number
- * the workflow enforces.
+ * statistics measurably disagree on this repository: the 2026-08-25 run reads
+ * 93.63 % in the `All files` row and 92.85 % as `Σ LH / Σ LF` over the same 679
+ * records, and the gap was six points wider on the smaller populations #1016
+ * measured.  Which is why the aggregate keeps reading the row the badge has
+ * always published while the module floors read lcov — nothing here silently
+ * re-defines the front-page number.
  *
- * **Known caveat on the aggregate, not on the modules.**  `bunfig.toml` does
- * not set `coverageSkipTestFiles` and bun's default for it is `false`, so every
- * file under `tests/` is its own row in the `All files` denominator — 508 of
- * them at 99.05 %, against 93.66 % for the 625 files under `src/`.  The
- * aggregate therefore reads ~2 points above product-code coverage.  That is
- * #1016's subject and this script does not pre-empt it.  The per-module floors
- * are immune to it by construction: a `src/…/` prefix cannot match a test file,
- * so those numbers are product-code coverage and nothing else.
+ * **What is no longer wrong with the aggregate, and what still is.**  It used
+ * to carry the whole test suite in its own denominator: `bunfig.toml` does not
+ * set `coverageSkipTestFiles`, and bun's default for it *was* `false`, so 508
+ * test files sat in the mean at 99.05 % and the row read ~2 points above
+ * product code.  The bun 1.4.0 pin (#1328) flipped that default.  Measured
+ * 2026-08-25 by A/B over `tests/unit/util/Lazy.test.ts`: with `bunfig.toml` as
+ * committed the report holds exactly one row, `src/util/Lazy.ts`; adding an
+ * explicit `coverageSkipTestFiles = false` brings `tests/unit/util/
+ * Lazy.test.ts` back as a second row and moves the `All files` cell with it.
+ * So the aggregate is product-code coverage now, and #1016's first bullet is
+ * satisfied by the toolchain rather than by a `bunfig.toml` line.
+ *
+ * What survives is that the row is an **unweighted mean over files**, so a
+ * 1000-line coordinator at 40 % is cancelled by ten 12-line barrels at 100 %.
+ * On this tree the two statistics have converged to within a point — the
+ * 2026-08-25 run below reads 93.63 % as the mean and 92.85 % as `Σ LH / Σ LF`
+ * over the same 679 records — but they are still different statistics, and
+ * choosing between them is the rest of #1016.  Deliberately not pre-empted
+ * here: the `All files` cell is what the README badge has published for its
+ * whole history, and swapping the statistic underneath it moves the front-page
+ * number for a reason no commit message would be attached to.  The per-module
+ * floors are immune either way — they are `Σ LH / Σ LF` from lcov, and a
+ * `src/…/` prefix cannot match a test file.
  *
  * **`--log` / `--lcov` exist so CI never runs the suite twice.**  Without them
  * the script runs `bun test --coverage` itself, which is right for a developer
@@ -53,6 +72,12 @@
  * evaluates half of itself is the failure mode #1194 taught this repository to
  * write assertions against.
  *
+ * **`GITHUB_OUTPUT`, when the environment sets it.**  The workflow's `badge`
+ * job renders `coverage-~N%` from a step output, and that output used to come
+ * from the bash parse this file replaced.  So the gate publishes `lines=` on
+ * its way through — *before* it decides anything, because a run that fails the
+ * floor is precisely a run whose true figure the README should be showing.
+ *
  * The pure functions below are exported (typed by `coverage-gate.d.mts`) and
  * the driver runs under `import.meta.main`, so
  * `tests/unit/ci/CoverageGate.test.ts` can drive the rollup against synthetic
@@ -60,35 +85,57 @@
  * indistinguishable from a real regression.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * The aggregate floor, and the value `.github/workflows/test.yml` has to keep
- * saying.  `tests/unit/ci/CoverageGate.test.ts` fails when the two drift or
- * when `AGENTS.md` stops quoting the same number — the ratchet policy recorded
- * there is only a policy if lowering the floor cannot happen in one silent
- * token edit, which is exactly what it was until that test existed.
+ * The aggregate floor.  **This is the only place it is configured** — the same
+ * rule {@link MODULE_LINE_FLOORS} has, and for the same reason: an env var in a
+ * workflow file is a second place the number lives and a way to loosen the gate
+ * without the loosening appearing in a diff of the gate.  `test.yml` used to
+ * carry `COVERAGE_LINE_FLOOR: '80'`; it no longer sets it, and
+ * `tests/unit/ci/CoverageGate.test.ts` fails if it comes back or if `AGENTS.md`
+ * stops quoting this value.  `COVERAGE_LINE_FLOOR` still overrides it for a
+ * local experiment, which is why the workflow not setting it is asserted rather
+ * than assumed.
  *
- * 80 rather than something near the measured figure is a live decision, not
- * inertia: `83b0a4af` lowered it from 89 because hosted CI then measured 86 %,
- * and the number it would be raised against today is the test-file-inflated
- * aggregate above.  Re-baselining it belongs with #1016, which fixes the
- * metric first.
+ * **90, ratcheted from 80 on 2026-08-25 (#541).**  The measurement the ratchet
+ * policy in `AGENTS.md` requires beside the number, all on the CI population
+ * (`ACTOR_TS_SKIP_FLAKY_MNS=1`, 8186 pass / 35 skip across 522 files, bun
+ * 1.4.0):
+ *
+ *   bun `All files` % Lines (what this floor gates) ....... 93.63 %
+ *   Σ LH / Σ LF over the same 679 lcov records ............ 92.85 %
+ *   Σ LH / Σ LF over the 636 records under `src/` ......... 93.81 %
+ *   hosted CI, README badge bot, 2026-08-22 (`d219e970`) ... 93 %
+ *
+ * Three properties are what make 90 safe to enforce rather than merely true
+ * today.  The gap that forced `83b0a4af` down from 89 to 80 — hosted CI
+ * measuring 86 % against a higher local figure — has closed: hosted reads 93
+ * and this machine reads 93.63, because the ~3-point local/hosted spread the
+ * 2026-08-19 note recorded lived in the test-file rows bun 1.4.0 stopped
+ * counting.  The floor clears *every* candidate statistic above, so #1016
+ * switching the aggregate to the weighted figure cannot turn CI red on its own
+ * fix — the objection that kept this at 80.  And the mean moves slowly by
+ * construction: one new wholly-uncovered file shifts it by about 93/679 ≈ 0.14
+ * points, so 3.6 points of headroom is roughly 25 files, which is a decision
+ * rather than an accident.
  */
-export const DEFAULT_LINE_FLOOR = 80;
+export const DEFAULT_LINE_FLOOR = 90;
 
 /**
  * Per-module line-coverage floors, as `Σ LH / Σ LF` over every lcov record
  * whose repository-relative path starts with the key.
  *
- * Deliberately **not** overridable by an environment variable, unlike the
- * aggregate floor.  An override in a workflow file is a second place the number
- * lives, and the one thing this table exists to prevent is a floor that can be
- * loosened without the loosening being visible in a diff of the gate itself.
+ * Deliberately **not** overridable by an environment variable at all — the
+ * aggregate floor keeps `COVERAGE_LINE_FLOOR` for local experiments, but no
+ * workflow sets it any more.  An override in a workflow file is a second place
+ * the number lives, and the one thing this table exists to prevent is a floor
+ * that can be loosened without the loosening being visible in a diff of the
+ * gate itself.
  *
  * The two entries are the subsystems #541 names, and they are the right two:
  * both coordinate distributed state, both fail in ways a unit test only catches
@@ -96,23 +143,22 @@ export const DEFAULT_LINE_FLOOR = 80;
  * aggregate floor ("product code (cluster, persistence, …) stays well above
  * it") — a claim that, until this table, nothing measured.
  *
- * **Measured 2026-08-19** over the CI population (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
+ * **Re-measured 2026-08-25** over the CI population (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
  * which removes `LeaseMajority` and with it some of `src/cluster/`'s own
- * coverage), 7695 tests, bun 1.3.1:
+ * coverage), 8186 pass / 35 skip across 522 files, bun 1.4.0 — the 2026-08-19
+ * figures beside them, from 7695 tests on bun 1.3.1:
  *
- *   src/cluster/      97.39 %  (7005/7193 lines, 81 files)
- *   src/persistence/  95.35 %  (8706/9131 lines, 157 files)
+ *   src/cluster/      97.29 %  (7317/7521 lines,  82 files)   was 97.39 %
+ *   src/persistence/  95.22 %  (8832/9275 lines, 157 files)   was 95.35 %
  *
- * 90 rather than the ~3-point band #541 asks for, on purpose.  A floor the
- * measurement cannot clear on the machine that enforces it is how the aggregate
- * floor ended up at 80: `83b0a4af` lowered it from 89 because hosted CI
- * measured 86 %.  The same platform gap is visible right now — this local
- * Windows run reads 95.88 % aggregate where the badge bot's hosted-CI figure is
- * 93 % — so a band tight enough to be interesting locally is a band that fails
- * elsewhere.  These floors buy 5–7 points of regression detection where there
- * were none, and the ratchet policy in `AGENTS.md` is the mechanism for
- * tightening them once a *hosted-CI* figure for each module exists, which needs
- * #1016 to wire this script into `test.yml` first.
+ * Both held to within a tenth of a point across ~500 added tests, which is the
+ * evidence that would justify raising them — and the reason not to yet is that
+ * these are still *local* numbers.  Wiring this script into `test.yml` (#541)
+ * means the next hosted run prints a hosted figure for each module for the
+ * first time; ratcheting on a number the enforcing machine has actually
+ * produced is the whole lesson of `83b0a4af`, which lowered the aggregate floor
+ * from 89 to 80 after hosted CI measured 86 % against a healthier local one.
+ * Until then 90 buys 5–7 points of regression detection where there were none.
  *
  * Un-quarantining raises both, `src/cluster/` most — see step 5 of the checklist
  * in `docs/…/testing/diagnosing-flakes.mdx`.
@@ -247,8 +293,12 @@ export function evaluateModuleFloors(records, floors = MODULE_LINE_FLOORS) {
  *
  * The table is `File | % Funcs | % Lines | Uncovered Line #s`, so line coverage
  * is the SECOND numeric column — `c35fd0c5` fixed this gate reading the first.
- * Shaped to match `.github/workflows/test.yml`'s `awk -F'|' '{print $3}'` for
- * as long as both exist (#1016).
+ * It was once shaped to match `.github/workflows/test.yml`'s `awk -F'|'
+ * '{print $3}'`; that bash parse is gone and this is the only one left, so the
+ * shape is now free to be strict.  It still is: the `% Funcs` cell has to be
+ * numeric before the `% Lines` cell is captured, because a table whose columns
+ * moved should read as unparseable rather than as a coverage figure taken from
+ * the wrong column.
  */
 export function parseAggregateLineCoverage(output) {
   const match = /^All files\s+\|\s+[0-9]+(?:\.[0-9]+)?\s+\|\s+([0-9]+(?:\.[0-9]+)?)/m
@@ -271,6 +321,37 @@ export function parseArguments(argv) {
     return found === undefined ? undefined : found.slice(prefix.length);
   };
   return { logPath: readFlag('log'), lcovPath: readFlag('lcov') };
+}
+
+/**
+ * The aggregate as the README badge carries it: whole percent, truncated.
+ *
+ * Truncated and not rounded, because that is what the bash parse this replaced
+ * did (`LINES_INT=${LINES%.*}`) and the badge is a number people compare across
+ * commits.  Rounding would move `coverage-~93%` to `~94%` on a measurement that
+ * had not moved — a change to README.md attributable to nothing but the
+ * refactor that was supposed to leave the figure alone, pushed by the badge bot
+ * with no diff to explain it.
+ *
+ * `Math.trunc` rather than `String(percentage).split('.')`: the string form of
+ * a float is not something to parse when the numeric answer is exact.
+ */
+export function badgeLineCoverage(percentage) {
+  return String(Math.trunc(percentage));
+}
+
+/**
+ * Hand the workflow the badge figure through `GITHUB_OUTPUT`.
+ *
+ * A no-op everywhere else, so a developer's `bun run test:coverage:gate` writes
+ * nothing.  Under Actions the file is append-only `key=value` lines; the value
+ * here is digits by construction, so it needs none of the heredoc delimiting a
+ * multi-line output would.
+ */
+function publishBadgeOutput(percentage) {
+  const outputFile = process.env.GITHUB_OUTPUT;
+  if (outputFile === undefined || outputFile === '') return;
+  appendFileSync(outputFile, `lines=${badgeLineCoverage(percentage)}\n`);
 }
 
 /** Render one module verdict as the line the gate prints for it. */
@@ -338,6 +419,11 @@ function main() {
       + ' `bun test --coverage` output.');
     process.exit(2);
   }
+  // Before any verdict.  A run that fails a floor is exactly the run whose real
+  // figure the badge should carry, and an unparseable table publishes nothing
+  // at all rather than a plausible-looking number — which is what let a green
+  // run rewrite the README to "0 of 0" in #1194.
+  publishBadgeOutput(aggregate);
 
   if (!existsSync(lcovFile)) {
     console.error(`coverage-gate: no lcov report at ${lcovFile}.`

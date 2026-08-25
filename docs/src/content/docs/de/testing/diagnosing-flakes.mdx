@@ -488,12 +488,14 @@ Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
 4. `--exclude=worker` aus dem Smoke-Schritt in `benchmarks.yml` entfernen.
    Der Worker-Benchmark ist aus exakt derselben Ursache ausgeschlossen und
    wird leicht vergessen, weil er kein Test ist.
-5. `test.yml`s pragmatischen `COVERAGE_LINE_FLOOR: '80'` neu bewerten, der
-   aus demselben Grund gesenkt wurde — und mit ihm die Modul-Untergrenzen in
-   `scripts/coverage-gate.mjs`.  `src/cluster/` misst unter seiner
-   tatsächlichen Line-Coverage, solange `LeaseMajority` nicht laufen kann;
-   seine Untergrenze ist also gegen die quarantänisierte Population gesetzt,
-   nicht gegen die echte.
+5. Jede Untergrenze in `scripts/coverage-gate.mjs` neu bewerten — die
+   aggregierte `DEFAULT_LINE_FLOOR` ebenso wie die beiden Modul-Untergrenzen.
+   Alle sind gegen die quarantänisierte Population gemessen: `src/cluster/`
+   misst unter seiner tatsächlichen Line-Coverage, solange `LeaseMajority`
+   nicht laufen kann, und die aggregierte Grenze stand aus demselben Grund
+   pragmatisch bei 80, bis sie bei 90 neu gemessen wurde.  `test.yml` hält
+   keine Kopie der Zahl mehr — zu ändern ist also eine Datei statt zweier, die
+   im Gleichschritt bleiben müssen.
 6. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
    Dequarantänisierung.
 
