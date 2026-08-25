@@ -581,6 +581,47 @@ describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
     producerA.stop(); producerB.stop();
     await kit.system.terminate();
   });
+
+  test('a generated producerId is drawn at random, not from a module counter', async () => {
+    // A `producerId` is one of the two fields an Acknowledgment carries, and
+    // the other one is a small integer — so a default of `producer-1`,
+    // `producer-2`, … handed anyone who could count the half of the pair that
+    // is not the sequence number.  The same counter was module-global, so two
+    // processes running the same service both minted `producer-1` and then
+    // shared — and kept resetting — one dedup entry in the consumer's map.
+    //
+    // The assertion reads the id off the wire rather than off the controller,
+    // because the wire is where both of those problems live.
+    const kit = quietKit('rd-generated-producer-id');
+    const identifiers: string[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const probe = kit.createTestProbe();
+      const producerOptions = ProducerControllerOptions.create<string>()
+        .withConsumer(probe as never)
+        .withResendTimeout(5_000);
+      const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+      producer.tell('body');
+      const delivery = await probe.receiveOne(4_000) as Delivery<string>;
+      identifiers.push(delivery.producerId);
+      producer.stop();
+    }
+
+    for (const identifier of identifiers) {
+      // GENERATED_PRODUCER_ID_LENGTH hex characters behind the prefix.
+      expect(identifier).toMatch(/^producer-[0-9a-f]{16}$/);
+      // Spelled out separately because the shape above is what would change
+      // silently if someone reinstated a counter with a wider format.  The
+      // bound keeps this from ever colliding with an all-digit random draw.
+      expect(identifier).not.toMatch(/^producer-[0-9]{1,4}$/);
+      // A generated id the consumer would refuse dead-letters every delivery
+      // it stamps, so the default has to sit inside the admission bound.
+      expect(identifier.length).toBeLessThanOrEqual(MAX_DELIVERY_IDENTIFIER_LENGTH);
+    }
+    expect(new Set(identifiers).size).toBe(3);
+
+    await kit.system.terminate();
+  });
 });
 
 describe('ReliableDelivery — malformed delivery (#727)', () => {
