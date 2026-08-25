@@ -171,6 +171,20 @@ Verwerfen ist der richtige Anruf für "transiente Pings, die das
 Aufbewahren nicht wert sind" — Telemetrie, Heartbeats, wo veraltete
 Nachrichten schlimmer als verlorene sind.
 
+**Wenn der Stash voll wird.** Ein Backoff-Fenster, das länger dauert, als
+der Verkehr warten kann, schiebt den Stash irgendwann über `maxStashSize`
+— und die älteste gepufferte Nachricht macht der neuesten Platz. Diese
+Nachricht wird nicht still verworfen: Sie wird zu einem
+[Dead Letter](/de/operations/dead-letters/) und trägt ihre Nutzlast sowie
+den Sender, der die Antwort bekommen hätte. Ein Überlauf ist damit
+hinterher rekonstruierbar statt eine Lücke in der Spur.
+
+Die begleitende Warnung ist **aggregiert**, nicht eine Zeile pro
+Nachricht: Sie feuert bei der ersten Verdrängung und danach bei jeder
+Verdopplung, und trägt die laufende Gesamtzahl. Sonst würde eine Flut
+gegen einen Supervisor, der in einem langen Backoff feststeckt, aus einer
+Nachrichtenflut eine Log-Flut mit genau derselben Rate machen.
+
 ### `resetCounter`
 
 ```ts

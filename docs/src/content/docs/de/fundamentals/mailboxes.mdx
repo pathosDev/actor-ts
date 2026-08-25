@@ -111,7 +111,17 @@ eine beschränkte Mailbox *da* ist — ein Label pro Actor würde also für
 jeden Actor, der sich exakt wie vorgesehen verhält, eine dauerhafte
 Metrik-Serie erzeugen. Um zu sehen, welche Instanz abwirft, ergänze ein
 eigenes `onDrop`; es läuft neben dem Stock-Counter statt an seiner
-Stelle.
+Stelle — und es bekommt den verworfenen Envelope, kann also sagen, was
+verloren ging, und nicht nur, dass etwas verloren ging.
+
+Um diesen Envelope zu behalten statt ihn nur im Vorbeigehen anzusehen,
+baue die Mailbox mit `deadLetterDrops: true`: Jede verworfene Nachricht
+wird dann zu einem [Dead Letter](/de/operations/dead-letters/), mit
+erhaltenem Sender. Der Schalter ist standardmäßig aus und nur von einer
+selbst konstruierten Mailbox aus erreichbar — der Drop läuft auf dem Stack
+des Senders, jeden abgeworfenen Envelope zu leiten ist also Arbeit, die
+genau dem Burst berechnet wird, den die Schranke billig abfedern sollte.
+Siehe [Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/#behalten-was-du-verworfen-hast).
 
 ### Eine eigene Mailbox mitbringen
 
@@ -134,24 +144,35 @@ registriert einen Observer auf dem, was du zurückgibst — sofern es
 eigene `Mailbox`-Subklasse kann es mit einer Methode:
 
 ```ts
-import { Mailbox, type Envelope, type MailboxDropReason } from 'actor-ts';
+import { Mailbox, type Envelope, type MailboxDropObserver } from 'actor-ts';
 
 class SheddingMailbox<T> extends Mailbox<T> {
-  private readonly observers: Array<(reason: MailboxDropReason) => void> = [];
+  private readonly observers: Array<MailboxDropObserver<T>> = [];
+  readonly deadLetterDrops = true;
 
-  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+  observeDrops(observer: MailboxDropObserver<T>): void {
     this.observers.push(observer);
   }
 
   override enqueue(envelope: Envelope<T>): void {
     if (this.shouldShed()) {
-      for (const observer of this.observers) observer('drop-new');
+      for (const observer of this.observers) observer('drop-new', envelope);
       return;
     }
     super.enqueue(envelope);
   }
 }
 ```
+
+Eine Meldung trägt neben dem Grund auch den Envelope, und
+`deadLetterDrops` sagt, ob die Cell daraus jeweils einen
+[Dead Letter](/de/operations/dead-letters/) machen soll.  Übergib den
+Envelope, den du wirklich verworfen hast — unter einer Policy in
+`drop-head`-Form ist das der herausgeworfene, nicht der angekommene, sonst
+benennt jeder Letter eine Nachricht, die noch in der Queue liegt.  Beides
+ist optional: Lässt du das Feld weg, wird der Drop gezählt und sonst
+nichts — genau das, was `BoundedMailbox` tut, solange du nichts anderes
+verlangst.
 
 Das Registrieren ist additiv, ein eigenes `BoundedMailboxOptions.onDrop`
 feuert also weiter neben dem Standard-Counter.  Was nicht geht, ist

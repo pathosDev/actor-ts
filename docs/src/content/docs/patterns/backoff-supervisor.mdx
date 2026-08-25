@@ -167,6 +167,19 @@ Dropping is the right call for "transient pings that aren't worth
 keeping" — telemetry, heartbeats, where stale messages are worse
 than lost ones.
 
+**When the stash fills.**  A backoff window longer than the traffic can
+wait through eventually pushes the stash past `maxStashSize`, and the
+oldest buffered message makes room for the newest.  That message is not
+discarded silently: it becomes a
+[dead letter](/operations/dead-letters/), carrying its payload and the
+sender that would have received the reply, so an overflow is
+reconstructible afterwards instead of being a gap in the trace.
+
+The accompanying warning is **aggregated**, not one line per message — it
+fires on the first eviction and again at each doubling, and carries the
+running total.  A flood against a supervisor stuck in a long backoff would
+otherwise turn a message flood into a log flood at exactly the same rate.
+
 ### `resetCounter`
 
 ```ts

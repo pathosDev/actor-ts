@@ -103,7 +103,9 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
   private readonly ordered: Array<PriorityEntry<T>> = [];
 
   constructor(options: PriorityMailboxOptions<T>) {
-    super();
+    // Read straight off the argument rather than from `settings`: the base
+    // owns the field and has to be constructed before `settings` exists.
+    super((options as Partial<PriorityMailboxOptionsType<T>>).deadLetterDrops);
     const settings = { ...(options as Partial<PriorityMailboxOptionsType<T>>) };
     new PriorityMailboxOptionsValidator<T>().validate(settings);
     this.priorityFor = settings.priorityFor!;
@@ -123,7 +125,7 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     if (capacity !== undefined && this.ordered.length >= capacity) {
       match(this.overflow)
         .with('drop-lowest-priority', () => this.shedLeastImportant(envelope))
-        .with('drop-new', () => this.reportDrop('drop-new'))
+        .with('drop-new', () => this.reportDrop('drop-new', envelope))
         .with('reject', () => { throw new MailboxFullError(capacity); })
         .exhaustive();
       return;
@@ -165,7 +167,7 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     // notification that may not be dropped, which `prependUser` can produce by
     // replaying a stashed one (#729).  The guard was already here for the
     // discipline #407 established: count removals, not intentions.
-    if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head');
+    if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head', shed);
   }
 
   /**

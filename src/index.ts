@@ -295,6 +295,7 @@ export {
 export type {
   DropReportingMailbox,
   Envelope,
+  MailboxDropObserver,
   MailboxDropReason,
   BoundedMailboxOptionsType,
   BoundedMailboxOverflow,

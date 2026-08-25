@@ -252,11 +252,36 @@ at a price of one lost message per series. Which actor a letter was
 addressed to is answered where it costs nothing per-series: `list({
 recipient })` above, and the `DeadLetter` on the event stream.
 
-## What the queue does not see
+## What the queue sees only when asked
 
-A message discarded by a **bounded or priority mailbox** never becomes a
-dead letter at all. The mailbox drop seam reports a *reason*
-(`drop-head` / `drop-new`) and never the envelope, so there is nothing to
-capture — the overflow shows up in `actor_mailbox_dropped_total` and
-nowhere else. See [mailbox sizing](/operations/tuning/mailbox-sizing/) if
-that is the loss you are chasing.
+A message discarded by a **bounded or priority mailbox** becomes a dead
+letter when — and only when — that mailbox was built with
+`deadLetterDrops`:
+
+```ts
+import { ActorOptions, BoundedMailbox, BoundedMailboxOptions } from 'actor-ts';
+
+const sheddingMailbox = BoundedMailboxOptions.create()
+  .withCapacity(1_000)
+  .withOverflow('drop-head')
+  .withDeadLetterDrops(true);
+
+const workerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox(sheddingMailbox));
+```
+
+Left off — which is the default — an overflow shows up in
+`actor_mailbox_dropped_total` and nowhere here.
+
+The switch exists because a drop happens on the **sender's** stack, and a
+dead letter is a durable capture followed by a synchronous publish: routing
+every shed envelope turns load shedding into per-message work under exactly
+the pressure the bound was drawn to absorb. Turn it on for the actors whose
+losses you would have to explain afterwards — a command stream, a delivery
+confirmation — and leave it off for the telemetry firehose the bound exists
+for. See [mailbox sizing](/operations/tuning/mailbox-sizing/).
+
+The letter carries the message, its sender and the actor it never reached —
+the same three fields every other loss path records. The envelope's MDC
+context and its tracing span do not survive it; `DeadLetter` has no slot for
+either.

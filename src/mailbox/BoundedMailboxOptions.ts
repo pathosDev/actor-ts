@@ -1,4 +1,4 @@
-import type { MailboxDropReason } from '../internal/Mailbox.js';
+import type { MailboxDropObserver } from '../internal/Mailbox.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
@@ -17,13 +17,36 @@ export type BoundedMailboxOptionsType = {
   /**
    * Optional hook fired each time a message is dropped by the overflow
    * policy.  Receives the policy that triggered the drop so the consumer
-   * can label metrics.  Never fires for `reject` — that throws instead.
+   * can label metrics, and the envelope that was discarded (#773) — which
+   * under `drop-head` is the message evicted to make room, not the arrival.
    *
    * Yours alone: the cell reports to `actor_mailbox_dropped_total` through
    * {@link DropReportingMailbox.observeDrops}, which runs alongside this
    * rather than replacing it.
+   *
+   * Runs on the **sender's** stack, with nothing between it and the `tell` —
+   * so record and return.  A hook that throws puts the throw into a sender
+   * that has no idea the receiver was bounded.
    */
-  readonly onDrop?: (reason: MailboxDropReason) => void;
+  readonly onDrop?: MailboxDropObserver;
+  /**
+   * Route every dropped envelope to `system.deadLetters`, so an overflow
+   * leaves a forensic record and not only a counter (#773).  Default `false`.
+   *
+   * Opt-in rather than always-on because the cost lands in the worst
+   * possible place: the drop happens on the sender's stack, and
+   * `DeadLetterRef.tell` runs the durable capture sink and then publishes
+   * synchronously to every event-stream subscriber.  A bound exists to
+   * absorb a burst cheaply; turning each shed message into a fan-out
+   * undoes that.  Turn it on for the actors whose losses you would have to
+   * explain afterwards — a command stream, a delivery confirmation — and
+   * leave it off for the telemetry firehose the bound was drawn for.
+   *
+   * What the dead letter carries is what every other loss path in the
+   * framework carries: the message, its sender, and this actor as the
+   * recipient.  See {@link DropReportingMailbox.deadLetterDrops}.
+   */
+  readonly deadLetterDrops?: boolean;
 };
 
 /**
@@ -49,9 +72,14 @@ export class BoundedMailboxOptionsBuilder extends OptionsBuilder<BoundedMailboxO
     return this.set('overflow', overflow);
   }
 
-  /** Hook fired on each overflow drop (for metrics). */
-  withOnDrop(onDrop: (reason: MailboxDropReason) => void): this {
+  /** Hook fired on each overflow drop, with the envelope it discarded. */
+  withOnDrop(onDrop: MailboxDropObserver): this {
     return this.set('onDrop', onDrop);
+  }
+
+  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
+  withDeadLetterDrops(deadLetterDrops: boolean): this {
+    return this.set('deadLetterDrops', deadLetterDrops);
   }
 }
 
