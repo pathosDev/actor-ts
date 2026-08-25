@@ -215,3 +215,109 @@ describe('WorkerBroker — malformed frames', () => {
     expect(bPort.posted).toEqual([good]);
   });
 });
+
+/* ------------------------------------------------------------------------ */
+/* #774 — `from` names the port the frame arrived on, not what it claims     */
+/* ------------------------------------------------------------------------ */
+
+describe('WorkerBroker — sender identity comes from the channel', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  `onMessage` took the registration key
+   * as `_sourceKey`, marked it unused, and re-posted the frame verbatim.  The
+   * receiving `MessageChannelTransport` builds its peer identity from
+   * `env.from` and hands it to `Cluster.handleWire`, so a worker that wrote a
+   * sibling's address into `from` refreshed that sibling's failure-detector
+   * timer at every other node — a dead worker kept looking alive, blocking
+   * singleton and shard failover — and had its envelopes attributed to the
+   * sibling for reply routing and every `maySpeakFor` rule.  This is the
+   * worker-mesh counterpart of `tests/multi-node/ClusterSecurity.test.ts`'s
+   * "a heartbeat is credited to the connection, not to the address it names".
+   */
+  test('a forged `from` is rewritten to the sending port\'s registered address', () => {
+    const broker = new WorkerBroker();
+    const p1 = new FakePort();
+    const p2 = new FakePort();
+    const p3 = new FakePort();
+    broker.register(addr(1), p1);
+    broker.register(addr(2), p2);
+    broker.register(addr(3), p3);
+
+    // p1 is registered as addr(1) and claims to be addr(2).
+    p1.inject(envelope(addr(2), addr(3)));
+
+    expect(p3.posted.length).toBe(1);
+    expect((p3.posted[0] as BrokeredMessage).from.port).toBe(1);
+    // The impersonated worker learns nothing about the attempt either.
+    expect(p2.posted).toEqual([]);
+  });
+
+  /**
+   * The other half of the pair: a guard that rewrote every frame, or dropped
+   * every frame, would satisfy the test above and be useless.  `toBe` and not
+   * `toEqual` — an honest frame must come out as the *same object*, which is
+   * what says the equality fast path took it rather than a rebuilt copy that
+   * merely compares equal.
+   */
+  test('an honest frame is forwarded verbatim, not rebuilt', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    const honest = envelope(addr(1), addr(2));
+    aPort.inject(honest);
+
+    expect(bPort.posted.length).toBe(1);
+    expect(bPort.posted[0]).toBe(honest);
+  });
+
+  test('a `from` naming an address nobody registered is corrected too', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    aPort.inject(envelope(addr(999), addr(2)));
+
+    expect(bPort.posted.length).toBe(1);
+    expect((bPort.posted[0] as BrokeredMessage).from.port).toBe(1);
+  });
+
+  /**
+   * Pins the boundary the fix deliberately stops at.  `toString`, `equals` and
+   * `compareTo` all exclude the incarnation, so the slot is the identity every
+   * consumer keys on and the slot is what gets corrected; the incarnation
+   * stays the sender's own claim while #940 keeps it carried-but-not-acted-on.
+   * When a merge rule first keys on it, this test is the one that has to
+   * change — deliberately, in that commit.
+   */
+  test('an incarnation on an otherwise-honest `from` is passed through (#940)', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    const claimed = new NodeAddress('sys', 'host', 1, 'a-claimed-incarnation');
+    aPort.inject(envelope(claimed, addr(2)));
+
+    expect(bPort.posted.length).toBe(1);
+    expect((bPort.posted[0] as BrokeredMessage).from.incarnation)
+      .toBe('a-claimed-incarnation');
+  });
+
+  test('a forged frame for an unknown destination is still dropped', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    aPort.inject(envelope(addr(2), addr(999)));
+
+    expect(aPort.posted).toEqual([]);
+    expect(bPort.posted).toEqual([]);
+  });
+});

@@ -147,3 +147,53 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     broker.close();
   });
 });
+
+describe('WorkerBroker — a forged `from` does not survive the hop (#774)', () => {
+  /**
+   * The unit half of this lives in `tests/unit/worker/WorkerBroker.test.ts`
+   * against a `FakePort`; this is the end-to-end half, and it is not
+   * redundant.  It runs the corrected frame through a real `MessageChannel`
+   * — so the rewritten envelope has to survive **structured clone**, which a
+   * fake port never exercises — and it asserts on the value
+   * `MessageChannelTransport` hands its `WireHandler`, which is the exact
+   * argument `Cluster.handleWire` receives as the peer identity.
+   *
+   * **Exploit walkthrough (pre-fix).**  The broker re-posted the envelope
+   * verbatim, so the address in `from` was the sender's to choose: worker 1
+   * naming worker 2 kept worker 2's failure-detector timer alive at worker 3
+   * and had its envelopes attributed to worker 2.
+   */
+  test('the peer identity the transport reports is the sending port, not the payload', async () => {
+    const broker = new WorkerBroker();
+    const hostile = new NodeAddress('wm-forge', 'w', 1);
+    const impersonated = new NodeAddress('wm-forge', 'w', 2);
+    const victim = new NodeAddress('wm-forge', 'w', 3);
+
+    const victimChannel = new MessageChannel();
+    broker.register(victim, victimChannel.port1 as unknown as PortLike);
+    const transport = new MessageChannelTransport(victim, victimChannel.port2 as unknown as PortLike);
+    const reportedSenders: NodeAddress[] = [];
+    transport.setHandler((from) => { reportedSenders.push(from); });
+    await transport.start();
+
+    // Nothing special about the attacker's wiring: it is an ordinary
+    // registered peer holding an ordinary end of an ordinary channel.
+    const hostileChannel = new MessageChannel();
+    broker.register(hostile, hostileChannel.port1 as unknown as PortLike);
+    const hostilePort = hostileChannel.port2 as unknown as PortLike;
+    hostilePort.start?.();
+    hostilePort.postMessage({
+      from: impersonated.toJSON(),
+      to: victim.toJSON(),
+      payload: { kind: 'heartbeat', from: impersonated.toJSON(), seq: 1, ts: Date.now() },
+    });
+
+    await waitFor(() => reportedSenders.length === 1, 2_000, 5, 'the forged frame to arrive');
+    expect(reportedSenders[0]!.toString()).toBe(hostile.toString());
+    expect(transport.peers().map(p => p.toString())).not.toContain(impersonated.toString());
+
+    await transport.shutdown();
+    hostileChannel.port2.close();
+    broker.close();
+  });
+});

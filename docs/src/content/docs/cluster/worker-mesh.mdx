@@ -321,6 +321,32 @@ Malformed traffic is dropped, not fatal: the broker validates a frame's
 listener.  The frame's `payload` is validated by the receiving
 transport, not by the broker.
 
+## Sender identity
+
+The broker **re-addresses every frame to the port it arrived on**.  A
+frame's `from` is the address that port was registered under — not the
+address the sending worker wrote into it:
+
+```ts
+// Worker 1 posts a frame claiming to be worker 2 …
+port1.postMessage({ from: worker2.toJSON(), to: worker3.toJSON(), payload });
+
+// … and worker 3's transport still reports worker 1 as the sender.
+```
+
+The host assigns those addresses — `WorkerCluster` mints one per slot,
+and manual wiring hands one to `broker.register` — so a receiving
+node's peer identity is derived from the channel rather than from the
+payload.  That identity is what its failure detector credits, what an
+envelope's sender is taken to be, and what every "may this peer say
+that?" rule keys on, so without the correction one worker could keep a
+dead sibling looking alive and have its own messages attributed to
+that sibling.
+
+Only the `system@host:port` slot is corrected.  The optional
+`incarnation` an address may carry is passed through as the sender
+wrote it, because nothing in the cluster keys on it yet.
+
 ## When NOT to use it
 
 <Aside type="caution" title="If multi-process works, use it">

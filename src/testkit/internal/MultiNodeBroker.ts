@@ -4,6 +4,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../../cluster/transports/MessageChannelTransport.js';
+import { withChannelSource } from '../../worker/WorkerBroker.js';
 
 /**
  * Worker-broker variant for `ParallelMultiNodeSpec` — extends the
@@ -38,7 +39,7 @@ export class MultiNodeBroker {
       throw new Error(`MultiNodeBroker: address ${key} already registered`);
     }
     this.ports.set(key, port);
-    port.onmessage = (evt) => this.onMessage(key, evt.data as BrokeredMessage);
+    port.onmessage = (evt) => this.onMessage(address, evt.data as BrokeredMessage);
     port.start?.();
   }
 
@@ -79,14 +80,25 @@ export class MultiNodeBroker {
 
   /* -------------------------------- internals ------------------------- */
 
-  private onMessage(sourceKey: string, env: BrokeredMessage): void {
+  /**
+   * `withChannelSource` is imported from the production broker rather than
+   * re-implemented, and that is the whole point of importing it: a harness
+   * that let a scenario forge `from` where production rewrites it would make
+   * `ParallelMultiNodeSpec` disagree with the mesh it stands in for, in the
+   * one direction that matters — a scenario passing here and failing in a real
+   * worker mesh (#774).  Nothing is lost for tests that *want* to speak as
+   * someone else: `Cluster.handleWire` is reachable directly, which is how
+   * `tests/multi-node/ClusterSecurity.test.ts` injects every frame it forges.
+   */
+  private onMessage(source: NodeAddress, env: BrokeredMessage): void {
     if (this.stopped) return;
+    const sourceKey = source.toString();
     if (!this.ports.has(sourceKey)) return;     // sender was unregistered
-    const targetAddr = NodeAddressConstructor.fromJSON(env.to);
-    const targetKey = targetAddr.toString();
+    const targetAddress = NodeAddressConstructor.fromJSON(env.to);
+    const targetKey = targetAddress.toString();
     if (this.blocked.has(`${sourceKey}→${targetKey}`)) return;  // partition
     const target = this.ports.get(targetKey);
     if (!target) return;                        // unknown destination
-    target.postMessage(env);
+    target.postMessage(withChannelSource(env, source));
   }
 }
