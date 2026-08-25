@@ -45,6 +45,8 @@ const englishPage = readFileSync(join(DOCUMENTATION_ROOT, SUPPLY_CHAIN_PATH), 'u
 
 const germanPage = readFileSync(join(DOCUMENTATION_ROOT, 'de', SUPPLY_CHAIN_PATH), 'utf8');
 
+const changelog = readFileSync(join(REPOSITORY_ROOT, 'CHANGELOG.md'), 'utf8');
+
 const publishWorkflow = readFileSync(
   join(REPOSITORY_ROOT, '.github', 'workflows', 'publish.yml'),
   'utf8',
@@ -139,5 +141,42 @@ describe('supply-chain documentation', () => {
       + 'veröffentlichtes Release trägt sie: die Jobs sind nach v0.16.0 gelandet.',
     ).not.toMatch(/SBOM an jedem Release/i);
     expect(germanPage).toContain('ab dem nächsten Release');
+  });
+
+  /**
+   * The same overclaim stood in the CHANGELOG as well as on the page, and only
+   * the page half stayed corrected — because only the page half is read by a
+   * test. The CHANGELOG half rotted for exactly as long as nothing looked at
+   * it, so it gets the guard rather than a promise to remember (#539).
+   */
+  test('the CHANGELOG makes the same qualified SBOM claim', () => {
+    expect(
+      changelog,
+      'CHANGELOG.md promises the SBOM "on every release" again. No published '
+      + 'release carries it: the jobs landed after v0.16.0 shipped.',
+    ).not.toMatch(/SBOM on every release/i);
+
+    expect(
+      changelog,
+      'CHANGELOG.md states that every GitHub Release already carries a '
+      + 'CycloneDX SBOM. v0.16.0 and everything before it have none.',
+    ).not.toMatch(/Every GitHub Release now carries a CycloneDX SBOM/i);
+
+    expect(changelog).toContain('from the next release onward');
+  });
+
+  /**
+   * A changelog entry says what changed. Two entries under [Unreleased] instead
+   * described a correction someone ought to make to two *other* lines, quoting
+   * them by line number — so the wrong lines stayed wrong, and the quoted
+   * numbers went stale as soon as anything was inserted above them. Neither
+   * failure is visible to a reader skimming for what shipped.
+   */
+  test('no entry describes an edit instead of making it', () => {
+    expect(
+      changelog,
+      'A CHANGELOG entry begins "Replaces the existing CHANGELOG.md line N". '
+      + 'Apply the correction to the line it names, then delete the entry.',
+    ).not.toMatch(/Replaces the existing CHANGELOG[.]md line [0-9]+/i);
   });
 });

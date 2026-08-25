@@ -4458,31 +4458,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   peer that this node itself asked to stand down, and its size is bounded
   before it is decoded. (#194).**
 
-- **Replaces the existing CHANGELOG.md line 4005, inside the [Unreleased]
-  Security section, which currently reads "`bun.lock`, a CycloneDX SBOM on
-  every release, and a `SECURITY.md` that" (#539).**
-
-  Corrected wording for that line and the one after it: "`bun.lock`, a
-  CycloneDX SBOM from the next release onward, and a `SECURITY.md` that
-  names a channel (#539).**" The claim as written is false for every
-  release that exists — the SBOM jobs landed in publish.yml five and a
-  half hours after the v0.16.0 publish run had already finished.
-
-- **Replaces the existing CHANGELOG.md line 4052, inside the [Unreleased]
-  Security section, which currently reads "Every GitHub Release now carries
-  a CycloneDX SBOM (#539).**
-
-  `--provenance`". Corrected opening for that paragraph: "The release
-  pipeline now builds a CycloneDX SBOM and attaches it to the GitHub
-  Release. The two jobs landed after v0.16.0 had already been published,
-  so the first release to carry the asset is the next one; v0.16.0 and
-  everything before it have none. `--provenance` already answered who
-  built a tarball; the SBOM answers what is inside it, so" — the rest of
-  the paragraph from "already answered who built a tarball" onward is
-  unchanged and still accurate. Note the triage report named a single
-  CHANGELOG line at 2543; its line numbers were stale and there are in
-  fact two overclaiming lines, 4005 and 4052, both needing the correction.
-
 - **The known limitation that Bun's built-in `ws` shim accepts `maxPayload`
   and enforces nothing is now test-bound instead of documented only
   (#373).**
@@ -5132,8 +5107,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of from the first upgrade.
 
 - **Security scanning and a security policy: CodeQL, an advisory gate over
-  `bun.lock`, a CycloneDX SBOM on every release, and a `SECURITY.md` that
-  names a channel (#539).**
+  `bun.lock`, a CycloneDX SBOM from the next release onward, and a
+  `SECURITY.md` that names a channel (#539).**
 
   The repository had never been statically analysed once —
   `code-scanning/alerts` answered 404 "no analysis found" — and had no
@@ -5179,8 +5154,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that fails if the two sets drift apart, so the gate is green from its
   first run and still fails on everything new.
 
-  Every GitHub Release now carries a CycloneDX SBOM. `--provenance`
-  already answered who built a tarball; the SBOM answers what is inside
+  The release pipeline now builds a CycloneDX SBOM and attaches it to the
+  GitHub Release. The two jobs landed after v0.16.0 had already been
+  published, so the first release to carry the asset is the next one;
+  v0.16.0 and everything before it have none. `--provenance` already
+  answered who built a tarball; the SBOM answers what is inside
   it, so "is release X affected by advisory Y" no longer requires
   reconstructing the closure by hand. It is generated in its own job and
   uploaded from a second one, because a job that can push to the
