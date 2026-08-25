@@ -1,9 +1,9 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
-import type {
-  BrokeredMessage,
-  PortLike,
+import {
+  isBrokeredMessage,
+  type BrokeredMessage,
+  type PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
-import { isNodeAddressData } from '../cluster/WireValidation.js';
 
 /**
  * Main-thread piece of the multi-core cluster.  Collects one `MessagePort`
@@ -84,7 +84,8 @@ export class WorkerBroker {
    * the unknown-destination case has always had, and the broker has no logger
    * to report through.  The try/catch is a backstop for the same reason — a
    * throw from anything downstream must not escape into an event callback the
-   * host cannot catch.
+   * host cannot catch.  The guard itself lives beside `BrokeredMessage`, shared
+   * with the testkit's broker fork for the reason stated there.
    *
    * `source` is the address this port was registered under — the one identity
    * on this path a worker cannot choose for itself, because the host minted it
@@ -155,19 +156,4 @@ export function withChannelSource(frame: BrokeredMessage, source: NodeAddress): 
     return frame;
   }
   return { ...frame, from: source.toJSON() };
-}
-
-/**
- * The floor a brokered envelope must clear before anything reads it.
- *
- * Only the two address fields are checked: `to` is what the broker itself
- * dereferences, and `from` is what the receiving `MessageChannelTransport`
- * dereferences the moment the frame is re-posted.  The `payload` is not
- * validated here — that is #945's brief, over on the transport, and doing it in
- * both places would mean two guards to keep in step.
- */
-function isBrokeredMessage(value: unknown): value is BrokeredMessage {
-  if (typeof value !== 'object' || value === null) return false;
-  const { to, from } = value as Partial<BrokeredMessage>;
-  return isNodeAddressData(to) && isNodeAddressData(from);
 }
