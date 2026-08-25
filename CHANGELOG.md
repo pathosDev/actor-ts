@@ -328,6 +328,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The DevTools tracing panel no longer draws every retained span twice
+  after a re-subscribe (#1350).** `SpanTap.snapshot()` hands a fresh
+  subscriber the server's whole ring, and two paths re-subscribe a stream
+  that is already open: the sequence-gap recovery in `tapClient`, and the
+  re-subscribe of every live stream after a reconnect. The panel appended
+  that snapshot to what it already held, so the flame graph and the
+  waterfall showed each span twice, a trace grew duplicated children, and
+  the span count was simply wrong.
+
+  The other stream consumers survive the same frame because their handlers
+  **replace** — `ActorTreeModel.reset` drops its map, `onClusterSnapshot`
+  calls `members.set(...)`. Tracing is the one that accumulates, so the
+  snapshot meant "here is everything" to them and "here is more" to it. It
+  now keys its ring by `spanId` (16 hex characters of crypto-grade
+  randomness, from W3C trace-context), so a span that arrives twice is
+  recognised rather than recorded again. Insertion order is unchanged: a
+  resent span keeps its own place instead of jumping to the newest end and
+  pushing a genuinely newer one out of the ring.
+
+  Rare enough to have gone unnoticed — a reconnect after a laptop wakes
+  from sleep is the likely first sighting. Not reached by the pause added
+  in #1349, which classifies `spans` as a buffered stream and replays held
+  batches rather than re-subscribing.
+
 - **`RedisStreamsActor` now routes connection loss into the shared
   `BrokerActor` reconnect machinery (#742).** It was the one subclass that
   never called `handleConnectionLost`: it registered no listener on either

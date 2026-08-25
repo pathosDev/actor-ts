@@ -136,7 +136,29 @@ export class TracingPanelComponent {
 
   readonly bufferChoices = BUFFER_CHOICES;
 
-  private spans: WireSpan[] = [];
+  /**
+   * The retained spans, keyed by `spanId` and in arrival order (#1350).
+   *
+   * A `Map` rather than an array because the same span can arrive twice and
+   * must be recognised, not appended.  `SpanTap.snapshot()` hands a fresh
+   * subscriber the server's whole ring, and two existing paths re-subscribe a
+   * stream that is already open: the sequence-gap recovery in `tapClient`, and
+   * the re-subscribe of every live stream after a reconnect.  Appending that
+   * snapshot drew every span the panel already held a second time — a doubled
+   * flame graph, duplicated children under a trace, and a span count that was
+   * simply wrong.
+   *
+   * The panels that survive the same frame do so because their handlers
+   * REPLACE — `ActorTreeModel.reset` drops its map, `onClusterSnapshot` calls
+   * `members.set(...)`.  This one accumulates, so it needs identity instead.
+   * `spanId` is 16 hex characters of crypto-grade randomness (W3C
+   * trace-context), so it is one.
+   *
+   * A `Map` keeps insertion order and re-keying an existing entry leaves that
+   * order alone, which is what makes a resent span land back in its own place
+   * rather than jumping to the end of the ring.
+   */
+  private spans = new Map<string, WireSpan>();
 
   private readonly traces = signal<readonly TraceLayout[]>([]);
   private readonly dropped = signal(0);
@@ -148,11 +170,12 @@ export class TracingPanelComponent {
 
 
   readonly summary = computed(() => {
-    const spanCount = this.spans.length;
+    const spanCount = this.spans.size;
     const traceCount = this.traces().length;
     const dropped = this.dropped();
     // Read through `traces()` so this recomputes when a batch lands; `spans`
-    // is a plain array on purpose, since it is appended to per batch.
+    // is a plain `Map` on purpose, since it is written per batch and a signal
+    // holding it would report a change the identity never made.
     return dropped > 0
       ? `${formatCount(spanCount)} spans · ${formatCount(traceCount)} traces · ${formatCount(dropped)} dropped`
       : `${formatCount(spanCount)} spans · ${formatCount(traceCount)} traces`;
@@ -258,7 +281,7 @@ export class TracingPanelComponent {
     this.destroyRef.onDestroy(this.tap.listen('spans', (payload) => {
       if (payload.kind !== 'span-batch') return;
       this.dropped.update((value) => value + payload.dropped);
-      this.spans.push(...payload.spans);
+      for (const span of payload.spans) this.spans.set(span.spanId, span);
       // Never hold more than the server retains: the ring size is the same
       // answer to "how far back do I care?" on both sides.
       this.trimSpans();
@@ -278,7 +301,7 @@ export class TracingPanelComponent {
   }
 
   onClear(): void {
-    this.spans = [];
+    this.spans.clear();
     this.dropped.set(0);
     this.openTraceId.set(null);
     this.regroup();
@@ -320,14 +343,23 @@ export class TracingPanelComponent {
     this.regroup();
   }
 
-  /** Hold no more than the server does; anything else is a slow leak. */
+  /**
+   * Hold no more than the server does; anything else is a slow leak.
+   *
+   * Oldest first, which is what the array slice did — a `Map` iterates in
+   * insertion order, and deleting through that iterator is defined.
+   */
   private trimSpans(): void {
-    const capacity = this.capacity();
-    if (this.spans.length > capacity) this.spans = this.spans.slice(this.spans.length - capacity);
+    let excess = this.spans.size - this.capacity();
+    if (excess <= 0) return;
+    for (const spanId of this.spans.keys()) {
+      this.spans.delete(spanId);
+      if (--excess === 0) return;
+    }
   }
 
   private regroup(): void {
-    const grouped = groupByTrace(this.spans);
+    const grouped = groupByTrace([...this.spans.values()]);
     this.traces.set(grouped);
     // An open trace that aged out of the buffer drops you back to the list
     // rather than to a blank graph.
