@@ -170,10 +170,21 @@ set it to the replica count you expect.
 <Aside type="caution" title="It refuses a wildcard advertised host">
   The election is ordered on this node's address, so that address has
   to be the one peers dial.  `0.0.0.0` (and `::`, and an empty string)
-  is a *bind* address: every node that fell back to it sorts
-  identically, every node believes it won, and every node forms its own
-  cluster.  The phase rejects it up front.  Set `withHost(...)`
-  explicitly, or the `CLUSTER_HOST` / `POD_IP` environment variable.
+  is a *bind* address: every node that claimed it would sort
+  identically, every node would believe it won, and every node would
+  form its own cluster.  The phase rejects it up front.
+
+  Getting there takes deliberate effort, because a wildcard bind host no
+  longer becomes a wildcard identity: with `withHost('0.0.0.0')` and
+  nothing else, the advertised address resolves through `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` and then to loopback.  What this guard catches is
+  a `withAdvertisedHost('0.0.0.0')` written on purpose — and a
+  hand-built `NodeAddress` handed straight to `StableObservation`, which
+  never passes through that chain.
+
+  In production, name it: bind `0.0.0.0`, advertise `POD_IP`.  Loopback
+  keeps a single-node run working; it does not make a second node
+  reachable.
 </Aside>
 
 ## Bootstrap or a plain seed join?

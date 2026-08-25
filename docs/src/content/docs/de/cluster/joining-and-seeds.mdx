@@ -54,7 +54,8 @@ Seeds müssen nach dem Join nicht mehr besonders sein.
 
 ```ts
 type ClusterOptionsType = {
-  host:                       string;       // Adresse dieses Nodes
+  host:                       string;       // Interface zum Binden (Wildcard ok)
+  advertisedHost?:            string;       // Adresse, die Peers wählen (nie Wildcard)
   port:                       number;       // TCP-Port dieses Nodes
   seeds?:                     string[];     // Peer-Adressen fürs Bootstrap
   roles?:                     string[];     // Rollen-Tags
@@ -86,6 +87,13 @@ const cluster = await Cluster.join(
   clusterOptions,
 );
 ```
+
+`0.0.0.0` ist dort die *Bind*-Adresse. Was dieser Node per Gossip
+verteilt, wird getrennt aufgelöst und ist nie eine Wildcard — ohne
+weitere Konfiguration verteilt er `127.0.0.1`, was für einen
+Single-Node-Entwicklungslauf genau richtig ist und der Grund, warum
+das Paar keine Beachtung braucht, solange es keine zweite Maschine
+gibt. Siehe [Cluster — Überblick](/de/cluster/overview/).
 
 Eine leere `seeds`-Liste (oder eine, die komplett unerreichbar ist)
 bedeutet, dass **dieser Node den Cluster selbst bootstrapt**. Er

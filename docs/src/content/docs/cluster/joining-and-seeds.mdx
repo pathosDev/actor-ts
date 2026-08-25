@@ -53,7 +53,8 @@ to be special after the join.
 
 ```ts
 type ClusterOptionsType = {
-  host:                       string;       // this node's address
+  host:                       string;       // interface to bind (wildcard ok)
+  advertisedHost?:            string;       // address peers dial (never a wildcard)
   port:                       number;       // this node's TCP port
   seeds?:                     string[];     // peer addresses for bootstrap
   roles?:                     string[];     // role tags
@@ -85,6 +86,13 @@ const cluster = await Cluster.join(
   clusterOptions,
 );
 ```
+
+`0.0.0.0` there is the *bind* address.  What this node gossips is
+resolved separately and is never a wildcard — with nothing else
+configured it advertises `127.0.0.1`, which is exactly right for a
+single-node development run and is why the pair needs no attention
+until there is a second machine.  See
+[Cluster overview](/cluster/overview/).
 
 An empty `seeds` list (or one that's all-unreachable) means **this
 node bootstraps the cluster by itself**.  It auto-promotes to
