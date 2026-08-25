@@ -330,7 +330,7 @@ Publisht auf `system.eventStream`:
 | Event | Wann |
 | --- | --- |
 | `BrokerConnected` | Ein `connectImplementation` war erfolgreich. |
-| `BrokerDisconnected` | Ein `disconnectImplementation` lief oder eine Verbindung ist fehlgeschlagen. |
+| `BrokerDisconnected` | Eine bestehende Verbindung ging verloren. Ein geordneter Stopp publisht es nicht. |
 | `BrokerReconnectAttempt` | Ein Reconnect-Versuch startet gerade. |
 | `BrokerReconnectFailed` | `maxAttempts` erschöpft. |
 | `BrokerBufferOverflow` | Der Outbound-Buffer hat ein Envelope verworfen. |

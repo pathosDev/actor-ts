@@ -242,6 +242,10 @@ export type {
   RedisStreamsCommand,
   RedisStreamEntry,
   RedisStreamPublish,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  IoredisClientLike,
+  IoredisClientEvent,
+  IoredisClientOptionsLike,
 } from './RedisStreamsActor.js';
 export { RedisStreamsOptions, RedisStreamsOptionsBuilder, RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 export type { RedisStreamsOptionsType } from './RedisStreamsOptions.js';
