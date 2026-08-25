@@ -4650,6 +4650,146 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING (pre-1.0): broker actors can now be given TLS certificate
+  material (#743).** `AmqpOptions`, `RedisStreamsOptions`, `MqttOptions`,
+  `NatsOptions` and `JetStreamOptions` gain an optional `tls` block with a
+  matching `withTls`, and `KafkaOptionsType.ssl` widens from `boolean` to
+  `boolean | TlsTransportOptionsType`. Until now every one of these actors
+  passed only a URL (or a boolean) to its driver and never the driver's
+  options argument, so TLS was reachable only in its default-trust-store
+  form: an operator behind a private CA, or one whose broker required a
+  client certificate, hit a handshake failure that `BrokerActor` reads as a
+  connection failure and answers with the reconnect policy — whose
+  `maxAttempts` defaults to Infinity — so the retry loop had no path to
+  success. The realistic workaround was a process-wide
+  `NODE_TLS_REJECT_UNAUTHORIZED=0`, which also disables verification on the
+  cluster transport and on every HTTP client the process makes.
+
+  The shape is `TlsTransportOptionsType`, the same one `TcpServerOptions`,
+  `ClusterClientOptions`, `GelfSinkOptions` and `SyslogSinkOptions` already
+  take, now re-exported from `actor-ts/io`. Forwarding goes through a single
+  mapping rather than a spread, because it is not identity: Node spells the
+  SNI override `servername` where this project spells it `serverName`, and
+  all five drivers hand their TLS object to `tls.connect` unchanged — a
+  spread would have carried `serverName` through, every driver would have
+  ignored it, and the connection would have verified against the wrong name.
+  None of it is readable from HOCON, deliberately, and Kafka's `ssl` config
+  key stays boolean-only: a private key does not belong in a config file.
+  Each validator now rejects a `cert` without its `key`, so the mistake fails
+  the actor's start instead of throwing inside the driver's handshake and
+  being retried forever.
+
+  Documentation (EN + DE) loses two claims that were false: that amqplib
+  takes TLS configuration through URL parameters, and that NATS mTLS material
+  reached the underlying connection. `tls-everywhere.mdx` is rewritten around
+  the distinction it was conflating — the URL scheme or `withSsl(true)` turns
+  TLS on and verifies against the system trust store, `withTls` says what the
+  handshake should trust — and now states plainly which client actors still
+  take no certificate material: `WebsocketClientActor` and `TcpSocketActor`.
+
+  *Migration:* `KafkaOptionsType['ssl']` is no longer `boolean`. Code that
+  reads it and expects one needs a `typeof ssl === 'boolean'` narrowing; code
+  that only writes `true` or `false`, and anything reading the value from
+  configuration, is unaffected.
+
+- **BREAKING (pre-1.0): duplicate HTTP route registrations are rejected at
+  `bind()` (#759)** instead of silently resolving to whichever route was
+  declared first. `HttpServerBackend.registerRoute` has always documented
+  "Duplicate paths must be rejected", but only Fastify's router enforced it:
+  `ExpressBackend` and `HonoBackend` replayed their registrations in
+  insertion order and never fell through to a second handler, so `concat()`
+  argument order silently decided whether an auth-guarded route or an
+  unguarded twin at the same method and path was the one that served — with
+  nothing logged and nothing thrown. `HttpExtension.bind` now rejects a
+  repeated `method` + `pattern` pair over the whole compiled route tree,
+  beside the websocket-duplicate and GET-vs-websocket checks it mirrors, so
+  the answer is the same on every backend including third-party ones.
+
+  *Migration:* an Express or Hono application whose route tree declares the
+  same method and pattern twice used to start and serve the first
+  declaration, and now throws at `bind()`. Remove the duplicate, or give one
+  of the two routes a distinct path. Routes that merely *overlap* —
+  `/users/:id` against `/users/me`, a wildcard against a literal — are
+  unaffected and still resolve in the backend's own router. The route-DSL
+  docs asserted the opposite in both languages, in an Aside whose own example
+  throws `FST_ERR_DUPLICATED_ROUTE` on the default backend.
+
+- **BREAKING (pre-1.0): messages a bounded or priority mailbox discards can
+  now become dead letters (#773)** instead of vanishing into a counter.
+  Overflow was the one loss path in the framework with no forensic record:
+  the drop-reporting seam carried a `reason` and never the envelope, so
+  `drop-head` bound the evicted message solely to decide whether to increment
+  `actor_mailbox_dropped_total` and then dropped the reference, while
+  `drop-new` never saw it again. An operator could tell that something had
+  been shed, never what.
+
+  The seam now carries the envelope, and each of the seven drop sites hands
+  over the one it actually let go of — under `drop-head` the message evicted
+  to make room, not the arrival. A new `deadLetterDrops` option
+  (`withDeadLetterDrops(...)`, default `false`) routes every dropped envelope
+  to `system.deadLetters`. It is opt-in on purpose: `enqueue` runs on the
+  sender's stack and `DeadLetterRef.tell` is a durable capture followed by a
+  synchronous event-stream publish, so unconditional routing would convert
+  load shedding into per-message work under exactly the pressure the bound
+  exists to absorb. Rate-limiting the dead-letter stream itself remains
+  #1179. `BackoffSupervisor` dead-letters the stash entry it evicts
+  unconditionally, because that eviction runs inside its own `onReceive` and
+  not on a sender's stack, and its stash-overflow warning is now aggregated —
+  first eviction, then each doubling — so a flood no longer turns a message
+  flood into a log flood at the same rate.
+
+  *Migration:* `observeDrops`, `reportDrop` and the `onDrop` option all take
+  a second `envelope` argument. A custom mailbox that calls its own observers
+  must pass the envelope it discarded; an observer that ignores the second
+  parameter needs no change. Known limit: the dead letter carries message,
+  sender and recipient, not the envelope's MDC `context` or tracing `trace` —
+  `DeadLetter` has no slot for either.
+
+- **`WebsocketClientActor` now closes the connection on an oversize inbound
+  frame (#750)** with code 1009, instead of dropping the frame and leaving
+  the socket open. A hostile, compromised or MITM'd peer could otherwise
+  repeat the allocation indefinitely on a single connection — one full-size
+  heap allocation and one warning line per frame, with nothing bounding
+  either. The breach now routes through the actor's normal disconnect path,
+  so another round costs the peer a full reconnect, which the inherited
+  backoff and circuit breaker already throttle. An application that relied on
+  oversize frames being dropped silently while the connection carried on will
+  now see a disconnect and a reconnect instead.
+
+  The client's `maxFrameBytes` is also now documented as post-hoc only,
+  because no runtime lets it be anything else. #750 proposed pushing the cap
+  into the transport, the way the server backends hand `maxPayload` to `ws`.
+  Measured rather than assumed: constructing the socket with a payload limit
+  and having a peer send a 4 MiB frame shows `maxPayload`,
+  `maxPayloadLength` and `maxFrameBytes` are all accepted and all ignored on
+  Bun 1.4.0, Node 26.7.0 and Deno 2.6.8, each reading back `undefined` while
+  the frame is delivered whole. Setting the option and reading it back would
+  have passed and proved nothing. The measurement is written down beside the
+  code so it need not be repeated.
+
+- **A `ProducerController` that generates its own `producerId` now draws it
+  at random (#730)** — `producer-` plus 16 hex characters of crypto-grade
+  randomness — instead of from a module-global counter. An `Acknowledgment`
+  names a `producerId` and a `seq`; the seq is a small integer by
+  construction, so a counter left a forger with only the producer's
+  incarnation token to guess. That token is still what authenticates an ack,
+  so this is defence in depth behind it and not a substitute — a
+  `producerId` a caller configures stays exactly as guessable as the name
+  they picked.
+
+  The counter was also module-global, so it was never unique across the
+  boundary that matters: two processes running the same service each minted
+  `producer-1`. Two producers under one id reaching one consumer is a
+  correctness bug, not an aesthetic one — the consumer keys dedup on
+  `producerId` and swaps the entry whenever the incarnation changes, so each
+  producer's first delivery reset the other's window and both sides
+  re-handled messages they had already absorbed.
+
+  A generated id is minted fresh on every construction, so leaving
+  `producerId` unset no longer yields anything stable across a restart. Set
+  it explicitly whenever something downstream — a log filter, a metric label,
+  the consumer's map — has to recognise the producer after one.
+
 - **BREAKING (pre-1.0): `ActorRef.ask` now requires `timeoutMs` to be a
   positive finite number (#765).** `0`, a negative value, `NaN` and
   `Infinity` throw `OptionsError` instead of producing an ask that can never
