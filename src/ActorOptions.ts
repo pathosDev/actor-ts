@@ -76,9 +76,14 @@ export type ActorOptionsType<TMessage = unknown> = {
    * which message is lost.  Cannot be combined with `mailbox`, which brings
    * its own bound.
    *
-   * What it never loses is a death-watch `Terminated`: since #729 that one
-   * arrives through a lane no overflow policy can shed, so bounding a watcher
-   * costs it backlog and not the deaths it is watching for.
+   * What it never loses is anything the framework posts through
+   * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
+   * through it — is the rule: since #729 it stamps {@link Envelope.undroppable}
+   * and routes to `Mailbox.enqueueSignal`, a lane no overflow policy can shed.
+   * Two senders use it, a death-watch `Terminated` and the `websocket-accept`
+   * command that hands an upgraded socket to its hub (#717).  So bounding a
+   * watcher costs it backlog and not the deaths it is watching for, and
+   * bounding a hub cannot orphan a socket it has already accepted.
    */
   readonly mailboxCapacity?: number;
   /**
