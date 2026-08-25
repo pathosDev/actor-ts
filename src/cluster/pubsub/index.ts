@@ -15,9 +15,11 @@ export {
 } from './DistributedPubSubOptions.js';
 export type { DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 export {
+  AuthenticatedPubSubMessage,
   CurrentTopics,
   GetTopics,
   Publish,
+  PubSubEnvelope,
   Subscribe,
   SubscribeAcknowledgment,
   SubscribeRejected,

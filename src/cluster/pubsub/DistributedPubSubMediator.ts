@@ -18,9 +18,11 @@ import { NodeAddress } from '../NodeAddress.js';
 import type { WireMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import {
+  AuthenticatedPubSubMessage,
   CurrentTopics,
   GetTopics,
   Publish,
+  PubSubEnvelope,
   Subscribe,
   SubscribeAcknowledgment,
   SubscribeRejected,
@@ -50,6 +52,7 @@ export type MediatorMessage =
   | UnsubscribeAll
   | Publish
   | GetTopics
+  | AuthenticatedPubSubMessage
   | PubSubPublishMessage
   | PubSubPublishOneMessage;
 
@@ -112,6 +115,20 @@ type CapRefusal = {
 };
 
 /**
+ * What the mediator knows about one local subscriber: where to send, and in
+ * which shape.
+ *
+ * The shape lives here rather than per subscription because an actor has one
+ * `onReceive` — see {@link Subscribe.deliverWithOrigin} — and because this
+ * entry's lifetime already follows the subscriber's exactly: written with its
+ * first subscription, dropped with its last.
+ */
+type SubscriberEntry = {
+  readonly ref: ActorRef;
+  readonly deliverWithOrigin: boolean;
+};
+
+/**
  * Cluster-wide publish/subscribe bus.  Every node hosts one mediator
  * which keeps a local Map<topic, subscribers> and gossip-replicates
  * the topic→node set so Publish can reach every subscriber with at
@@ -151,11 +168,12 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    */
   private readonly subscriptions = new BidirectionalMultiMap<string, string>(); // topic ↔ subscriber path
   /**
-   * The ref behind each subscriber path — the fan-out target, and what
-   * `unwatch` needs.  Written with a subscriber's first subscription, dropped
-   * when its last one goes, so its lifetime follows the relation exactly.
+   * The {@link SubscriberEntry} behind each subscriber path — the fan-out
+   * target, the delivery shape it asked for, and what `unwatch` needs.
+   * Written with a subscriber's first subscription, dropped when its last one
+   * goes, so its lifetime follows the relation exactly.
    */
-  private readonly subscriberRefs = new Map<string, ActorRef>();
+  private readonly subscriberRefs = new Map<string, SubscriberEntry>();
 
   readonly options: DistributedPubSubOptionsType;
 
@@ -206,9 +224,15 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       .with(P.instanceOf(Publish), (m) => this.onPublish(m))
       .with(P.instanceOf(GetTopics), (m) => this.onGetTopics(m))
       .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
-      // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
-      .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
-      .with({ kind: 'pubsub-publish-one' }, (m) => this.onPubSubPublishOne(m))
+      // Remote Publish forwarded from another mediator, with the connection's
+      // peer attached by the envelope handler.
+      .with(P.instanceOf(AuthenticatedPubSubMessage), (m) => this.onAuthenticatedPubSubMessage(m))
+      // The same two frames with no authenticated origin — a wire-shaped
+      // object that reached this mailbox some other way.  Still routed, so a
+      // subscriber that does not authorise keeps working, but delivered as
+      // having come from nowhere rather than from this node.
+      .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m, null))
+      .with({ kind: 'pubsub-publish-one' }, (m) => this.onPubSubPublishOne(m, null))
       .otherwise((m) => this.onUnhandled(m));
   }
 
@@ -216,7 +240,8 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
 
   private onSubscribe(message: Subscribe): void {
     const key = message.ref.path.toString();
-    if (!this.subscriptions.has(message.topic, key)) {
+    const changed = !this.subscriptions.has(message.topic, key);
+    if (changed) {
       const refusal = this.capRefusal(message.topic);
       if (refusal) {
         this.log.warn(
@@ -228,12 +253,11 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       }
     }
     this.getOrCreateTopicState(message.topic);
-    let changed = false;
-    if (!this.subscriptions.has(message.topic, key)) {
-      this.rememberSubscription(message.ref, message.topic);
-      this.version++;
-      changed = true;
-    }
+    // Booked on every accepted Subscribe, duplicate or not: only the pair is
+    // idempotent, while the delivery shape the message carries is a statement
+    // the subscriber is making again.
+    this.rememberSubscription(message);
+    if (changed) this.version++;
     this.log.debug(
       `[pubsub] subscribe '${message.topic}' by ${key} `
       + `(local subs now: ${this.subscriptions.get(message.topic).size}; ${changed ? 'new' : 'duplicate'})`,
@@ -294,7 +318,11 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       `[pubsub] publish '${message.topic}' → ${this.subscriptions.get(message.topic).size} local `
       + `+ ${remoteNodes.length} remote node(s)`,
     );
-    const delivered = this.deliverLocal(message.topic, message.message);
+    // A `Publish` instance in this mailbox can only have come from a local
+    // actor: the wire carries JSON, so no peer can mint the class, and the
+    // mediator's own path is claimed by the per-path envelope handler, which
+    // wraps whatever arrives.  This node is therefore the honest origin.
+    const delivered = this.deliverLocal(message.topic, message.message, this.selfOrigin());
     const payload: PubSubPublishMessage = {
       kind: 'pubsub-publish', topic: message.topic, body: message.message,
     };
@@ -335,7 +363,9 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     const index = this.rotate(state.originatedAnycast, candidateCount);
     const local = localSubscribers[index];
     if (local) {
-      if (!this.tellSubscriber(local, message.message)) this.deadLetter(message.topic, message.message);
+      if (!this.tellSubscriber(local, message.topic, message.message, this.selfOrigin())) {
+        this.deadLetter(message.topic, message.message);
+      }
       return;
     }
     this.sendWire(remoteNodes[index - localSubscribers.length]!, {
@@ -343,11 +373,27 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     });
   }
 
-  private onPubSubPublish(message: PubSubPublishMessage): void {
+  /**
+   * A publish frame that came off a connection, so the peer behind it is
+   * known.  Re-dispatched on `kind` here rather than in {@link onReceive},
+   * because only the wrapper carries the identity the two handlers need — and
+   * the wrapper is exactly what a peer cannot forge.
+   *
+   * The inner frame is still entirely peer-chosen, so a `kind` this mediator
+   * has no arm for lands in {@link onUnhandled} just as an unwrapped one does.
+   */
+  private onAuthenticatedPubSubMessage(message: AuthenticatedPubSubMessage): void {
+    match(message.message)
+      .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m, message.peer))
+      .with({ kind: 'pubsub-publish-one' }, (m) => this.onPubSubPublishOne(m, message.peer))
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  private onPubSubPublish(message: PubSubPublishMessage, origin: NodeAddress | null): void {
     // Zero local subscribers here means the sending node acted on a topic
     // claim we no longer honour — the message travelled a hop and reached
     // nobody, which is exactly what dead letters are for.
-    if (this.deliverLocal(message.topic, message.body) === 0) {
+    if (this.deliverLocal(message.topic, message.body, origin) === 0) {
       this.deadLetter(message.topic, message.body);
     }
   }
@@ -364,12 +410,14 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * {@link publishToOneSubscriber} uses — see that field for why one cursor
    * across both lists starved the remote half.
    */
-  private onPubSubPublishOne(message: PubSubPublishOneMessage): void {
+  private onPubSubPublishOne(message: PubSubPublishOneMessage, origin: NodeAddress | null): void {
     const state = this.topics.get(message.topic);
     const subscribers = this.localSubscribersOf(message.topic);
     if (!state || subscribers.length === 0) { this.deadLetter(message.topic, message.body); return; }
     const target = subscribers[this.rotate(state.forwardedAnycast, subscribers.length)]!;
-    if (!this.tellSubscriber(target, message.body)) this.deadLetter(message.topic, message.body);
+    if (!this.tellSubscriber(target, message.topic, message.body, origin)) {
+      this.deadLetter(message.topic, message.body);
+    }
   }
 
   /**
@@ -380,7 +428,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * nothing to do.  This node can only fix its own half of that, and does:
    * whatever it cannot route becomes observable (#155).
    */
-  private onUnhandled(message: MediatorInbox): void {
+  private onUnhandled(message: MediatorInbox | PubSubWireMessage): void {
     const kind = (message as { kind?: unknown } | null)?.kind;
     this.log.warn(
       `[pubsub] no handler for '${String(kind ?? message)}' → dead letters — `
@@ -390,37 +438,52 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   }
 
   /** Fan out to local subscribers; returns how many actually got the body. */
-  private deliverLocal<T>(topic: string, body: T): number {
+  private deliverLocal<T>(topic: string, body: T, origin: NodeAddress | null): number {
     let delivered = 0;
     for (const path of this.subscriptions.get(topic)) {
-      const ref = this.subscriberRefs.get(path);
-      if (ref && this.tellSubscriber(ref, body)) delivered++;
+      const entry = this.subscriberRefs.get(path);
+      if (entry && this.tellSubscriber(entry, topic, body, origin)) delivered++;
     }
     return delivered;
   }
 
   /**
-   * A topic's local subscriber refs, in subscription order — the local half of
-   * the anycast candidate list, and the reason the rotation stays positional.
-   * `subscriptions` holds paths, so this is where they are resolved back to
-   * the refs `tell` needs.
+   * A topic's local subscriber entries, in subscription order — the local half
+   * of the anycast candidate list, and the reason the rotation stays
+   * positional.  `subscriptions` holds paths, so this is where they are
+   * resolved back to what `tell` needs.
    */
-  private localSubscribersOf(topic: string): ActorRef[] {
-    const refs: ActorRef[] = [];
+  private localSubscribersOf(topic: string): SubscriberEntry[] {
+    const entries: SubscriberEntry[] = [];
     for (const path of this.subscriptions.get(topic)) {
-      const ref = this.subscriberRefs.get(path);
-      if (ref) refs.push(ref);
+      const entry = this.subscriberRefs.get(path);
+      if (entry) entries.push(entry);
     }
-    return refs;
+    return entries;
   }
 
-  /** One delivery attempt.  A subscriber that throws costs only itself. */
-  private tellSubscriber<T>(ref: ActorRef, body: T): boolean {
-    try { ref.tell(body as never); return true; } catch (e) {
-      this.log.warn(`pubsub: subscriber ${ref} threw on delivery`, e);
+  /**
+   * One delivery attempt, in the shape this subscriber asked for.  A
+   * subscriber that throws costs only itself.
+   */
+  private tellSubscriber<T>(
+    entry: SubscriberEntry, topic: string, body: T, origin: NodeAddress | null,
+  ): boolean {
+    const payload = entry.deliverWithOrigin ? new PubSubEnvelope(topic, body, origin) : body;
+    try { entry.ref.tell(payload as never); return true; } catch (e) {
+      this.log.warn(`pubsub: subscriber ${entry.ref} threw on delivery`, e);
       return false;
     }
   }
+
+  /**
+   * This node, as the origin of a publish that started here.
+   *
+   * A separate helper only so the two local-publish call sites cannot drift
+   * apart from each other, and so the claim they make has one place to be
+   * read: the address is this node's own, never a value off the wire.
+   */
+  private selfOrigin(): NodeAddress { return this.options.cluster.selfAddress; }
 
   /**
    * Remote nodes claiming `topic`, this node excluded — one anycast candidate
@@ -656,14 +719,20 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * Book a local subscription and start watching the subscriber.  A subscriber
    * on several topics is watched once — `hasRight` is what distinguishes its
    * first subscription from a later one.
+   *
+   * The entry is rewritten on every subscription, not only the first, so a
+   * subscriber that changes its mind about {@link Subscribe.deliverWithOrigin}
+   * gets what it just asked for.  The shape is per subscriber by design — see
+   * that field — so the last word wins rather than the first.
    */
-  private rememberSubscription(ref: ActorRef, topic: string): void {
-    const key = ref.path.toString();
-    if (!this.subscriptions.hasRight(key)) {
-      this.subscriberRefs.set(key, ref);
-      this.context.watch(ref);
-    }
-    this.subscriptions.add(topic, key);
+  private rememberSubscription(message: Subscribe): void {
+    const key = message.ref.path.toString();
+    if (!this.subscriptions.hasRight(key)) this.context.watch(message.ref);
+    this.subscriberRefs.set(key, {
+      ref: message.ref,
+      deliverWithOrigin: message.deliverWithOrigin,
+    });
+    this.subscriptions.add(message.topic, key);
   }
 
   /**
@@ -709,9 +778,20 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     }
     // Wrap in envelope so the receiver's Cluster routes it into the
     // mediator actor.  Publishes are "user" messages from the wire POV.
+    //
+    // Addressed with the **recipient's** system name, which is what
+    // `NodeAddress` carries.  It used to be this node's, and a cluster whose
+    // members share one system name — the ordinary shape — never noticed:
+    // `Cluster.dispatchEnvelope` matches its per-path handler on the whole
+    // path, so a frame naming the wrong system missed it and was delivered by
+    // generic path resolution instead, which strips the system authority and
+    // resolves to the very same mediator.  The delivery looked identical and
+    // was not: that route hands over the raw body with no sender, so a
+    // subscriber that asked for `deliverWithOrigin` silently got `null` from
+    // every peer whose system name differed from ours (#706).
     this.options.cluster._sendEnvelope(to, {
       kind: 'envelope',
-      to: mediatorPath(this.options.cluster.system.name),
+      to: mediatorPath(to.systemName),
       from: null,
       body: message,
       tag: message.kind === 'pubsub-publish' ? 'PubSubPublish' : 'PubSubPublishOne',
