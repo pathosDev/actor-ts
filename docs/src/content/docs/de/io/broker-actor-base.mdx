@@ -97,10 +97,15 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
   protected abstract connectImplementation(): Promise<void>;
   protected abstract disconnectImplementation(): Promise<void>;
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  protected abstract onCommand(command: Command): void | Promise<void>;
+
+  // Optional — nur für Refs, die die Subklasse selbst beobachtet:
+  protected onTerminated(signal: Terminated): void | Promise<void> {}
 }
 ```
 
-Drei Kategorien:
+Vier Kategorien:
 
 - **Settings-Glue** (`configKey`, `builtInDefaultOptions`,
   `readOptionsFromConfig`, `requiredOptions`,
@@ -109,10 +114,18 @@ Drei Kategorien:
   wie validiert wird.
 - **Protokoll-Hooks** (`connectImplementation`, `disconnectImplementation`,
   `dispatchOutgoing`) — die protokollspezifische Arbeit.
+- **Nachrichtenverarbeitung** (`onCommand`) — ein Command aus der Mailbox.
+  Hier lebt die `match(...).exhaustive()`-Dispatch-Tabelle einer Subklasse.
+- **Death-Watch** (`onTerminated`) — optional; siehe *Subscriber-Tracking*.
 
 `endpointLabel` ist die menschenlesbare Verbindungs-Identität
 ("amqp://localhost:5672", "kafka-cluster-1"), die in Log-Zeilen und
 Lifecycle-Events auftaucht.
+
+`onReceive` ist **versiegelt** — die Basisklasse besitzt die Methode, damit
+sie `Terminated` abfangen kann, bevor deine Dispatch-Tabelle es sieht.
+Implementiere stattdessen `onCommand`; dort kommt alles außer dem
+Death-Watch-Signal an.
 
 ## Was die Basisklasse für dich erledigt
 
@@ -141,29 +154,21 @@ verworfen und ein `BrokerNotConnected`-Event publisht.
 ### Subscriber-Tracking
 
 ```ts
-import { Terminated } from 'actor-ts';
-import { match, P } from 'ts-pattern';
+import { match } from 'ts-pattern';
 
-override onReceive(message: MyCommand): void {
-  // `Terminated` erreicht onReceive, gehört aber nicht zur getypten
-  // Command-Union — deshalb wird der *Match-Input* geweitet, siehe unten.
-  match<MyCommand | Terminated>(message)
-    .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
-    .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
-    .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+protected override onCommand(command: MyCommand): void {
+  match(command)
+    .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+    .with({ kind: 'unsubscribe' }, (c) => this.onUnsubscribe(c))
     .exhaustive();
 }
 
-private onTerminated(signal: Terminated): void {
-  this.pruneTerminatedSubscriber(signal.actor);
+private onSubscribe(command: SubscribeCommand): void {
+  this.subscribeRef(command.topic, command.subscriber);
 }
 
-private onSubscribe(message: SubscribeCommand): void {
-  this.subscribeRef(message.topic, message.subscriber);
-}
-
-private onUnsubscribe(message: UnsubscribeCommand): void {
-  this.unsubscribeRef(message.topic, message.subscriber);
+private onUnsubscribe(command: UnsubscribeCommand): void {
+  this.unsubscribeRef(command.topic, command.subscriber);
 }
 ```
 
@@ -173,30 +178,35 @@ lokale Ref; siehe den Hinweis weiter unten.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Der Terminated-Arm ist nicht optional">
-  `subscribeRef` startet die Death-Watch, aber die Basisklasse kann für dich
-  nicht darauf reagieren: `onReceive` ist abstrakt, jede Unterklasse besitzt
-  also ihr eigenes Dispatch, und die Basis sieht nie eine Nachricht.  Ohne den
-  Arm oben bleibt ein gestoppter Subscriber in jedem Topic, das er hielt, und
-  kostet bei jedem Fan-out ein `tell` in die Dead Letters — das war ein echter
-  Defekt (#1111), kein hypothetischer — und der `.exhaustive()`-Aufruf
-  *wirft* auf dem ungematchten Signal, was der Standard-Supervisor mit einem
-  Restart beantwortet, also mit einem vollen Broker-Reconnect pro
-  Subscriber-Tod.
+<Aside type="tip" title="Das Entfernen beim Tod erledigt die Basisklasse">
+  Oben steht nirgends `Terminated`, und das muss es auch nicht: `onReceive`
+  ist versiegelt, die Basisklasse fängt das Signal also ab, entfernt den
+  Subscriber aus jedem Topic, das er hielt, und reicht an `onCommand` nur
+  echte Commands weiter.  Deine Dispatch-Tabelle beschreibt allein dein
+  eigenes Protokoll, und `.exhaustive()` ist darauf genau richtig.
 
-  Schreib es genau wie oben, dann kann beides nicht passieren: die Weitung des
-  **Match-Inputs** auf `MyCommand | Terminated` lässt `.exhaustive()` ohne den
-  Arm nicht mehr kompilieren (`NonExhaustiveError<Terminated>`) — das Weglassen
-  ist damit ein Build-Fehler und kein Laufzeitfehler.  Der *Parameter* bleibt
-  `MyCommand`, denn `Actor<Command>` legt den Mailbox-Typ fest, und die Weitung
-  ist tragend statt kosmetisch: `P.instanceOf(Terminated)` typcheckt gegen eine
-  ungeweitete Union nicht.
+  Früher war das Aufgabe der Subklasse, und man konnte es in beide Richtungen
+  falsch machen: ein Matcher ohne `Terminated`-Arm *wirft* auf dem
+  ungematchten Signal, was der Standard-Supervisor mit einem Restart
+  beantwortet — ein voller Broker-Reconnect pro Subscriber-Tod, bis
+  `maxRetries: 10` die Bridge endgültig stoppt — und einer, der es mit
+  `.otherwise()` verschluckte, leckte stattdessen: die tote Ref blieb in
+  jedem Topic und kostete bei jedem Fan-out ein `tell` in die Dead Letters
+  (#1111, #709).
 
-  `pruneTerminatedSubscriber(ref)` entfernt den Subscriber aus allen Topics und
-  liefert zurück, ob überhaupt etwas entfernt wurde — so kannst du den Tod eines
-  Subscribers von dem jedes anderen beobachteten Actors unterscheiden.  Es macht
-  **kein** `unwatch`: die Zelle hat die Watch bereits fallen gelassen, als sie
-  `Terminated` zugestellt hat.
+  `pruneTerminatedSubscriber(ref)` gibt es weiterhin, für eine Subklasse, die
+  einen Subscriber bewusst entfernt statt auf die Death-Watch zu warten.  Es
+  liefert zurück, ob überhaupt etwas entfernt wurde, und macht **kein**
+  `unwatch`: auf dem Todespfad hat die Zelle die Watch bereits fallen
+  gelassen, wenn das Signal ankommt.
+</Aside>
+
+<Aside type="note" title="Eigene Refs beobachten">
+  Überschreibe `onTerminated(signal)`, wenn dein Aktor `context.watch` für
+  etwas anderes als einen Subscriber aufruft — ein Zustellziel, den
+  Absender einer Anfrage.  Der Hook läuft **nach** dem Entfernen durch die
+  Basisklasse, die Subscriber-Registry hat die tote Ref also bereits
+  vergessen.  `MqttActor` nutzt ihn für seine Zustellziele pro Pattern.
 </Aside>
 
 <Aside type="caution" title="Die Death-Watch feuert nur für einen lokalen Subscriber">
@@ -204,8 +214,8 @@ import { Aside } from '@astrojs/starlight/components';
   ist, und ist andernfalls ein stiller No-op — ein **entfernter** Subscriber
   erzeugt also nie ein `Terminated`: er bleibt in jedem Topic, das er hielt,
   bis der Broker-Aktor selbst stoppt, und kostet bei jedem Fan-out weiter ein
-  `tell` über die Node-Grenze.  Der Arm oben kann daran nichts ändern — das
-  Signal kommt nie an.  Nachverfolgt als #918.
+  `tell` über die Node-Grenze.  Keine `Terminated`-basierte Bereinigung kann
+  daran etwas ändern — das Signal kommt nie an.  Nachverfolgt als #918.
 </Aside>
 
 `unsubscribeRef` vergleicht über den Pfad der Ref statt über das Ref-Objekt —
@@ -402,6 +412,7 @@ bevor er überhaupt versucht, sich zu verbinden.
 ## Einen eigenen Protokoll-Actor schreiben
 
 ```ts
+import { match } from 'ts-pattern';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -431,6 +442,17 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MyPayload>): Promise<void> {
     await this.connection!.send(env.payload);
+  }
+
+  // `onReceive` ist von der Basisklasse versiegelt — implementiere `onCommand`.
+  protected override onCommand(command: Command): void {
+    match(command)
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .exhaustive();
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    this.subscribeRef(command.topic, command.subscriber);
   }
 }
 ```

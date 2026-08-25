@@ -33,18 +33,19 @@ Pod-Scheduling, Netzwerk-Partition zwischen Pods etc.
 ```ts
 type KubernetesLeaseOptionsType = {
   // Aus LeaseOptionsType:
-  name:                  string;
-  owner:                 string;
-  ttlMs:                 number;
-  renewalIntervalMs?:    number;
-  acquireRetries?:       number;
-  acquireRetryDelayMs?:  number;
+  name:                    string;
+  owner:                   string;
+  ttlMs:                   number;
+  renewalIntervalMs?:      number;
+  acquireRetries?:         number;
+  acquireRetryDelayMs?:    number;
 
   // K8s-spezifisch:
-  namespace:             string;
-  apiServerUrl?:         string;     // alle drei zusammen, oder keines
-  authToken?:            string;     // alle drei zusammen, oder keines
-  caCert?:               string;     // alle drei zusammen, oder keines
+  namespace:               string;
+  apiServerUrl?:           string;     // alle drei zusammen, oder keines
+  authToken?:              string;     // alle drei zusammen, oder keines
+  caCert?:                 string;     // alle drei zusammen, oder keines
+  tokenReloadIntervalMs?:  number;
 };
 ```
 
@@ -54,6 +55,7 @@ type KubernetesLeaseOptionsType = {
 | `apiServerUrl` | in-cluster | Die URL des K8s-API-Servers — ohne Angabe `https://kubernetes.default.svc`. Verlangt `authToken` + `caCert`. |
 | `authToken` | in-cluster | Bearer-Token für den API-Server — ohne Angabe `/var/run/secrets/kubernetes.io/serviceaccount/token`. Verlangt `apiServerUrl` + `caCert`. |
 | `caCert` | in-cluster | PEM-kodiertes CA-Zertifikat für das TLS des API-Servers — ohne Angabe `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. Verlangt `apiServerUrl` + `authToken`. |
+| `tokenReloadIntervalMs` | `60000` | Wie lange ein vom ServiceAccount-Mount gelesenes Credential wiederverwendet wird, bevor die Token-Datei erneut geprüft wird. Ohne Wirkung auf ein explizit gesetztes `authToken`. |
 
 Für Pods, die in-cluster laufen, brauchst du nur `namespace` und
 `name` (+ die Standard-`LeaseOptionsType`-Felder).  Das Framework
@@ -91,6 +93,50 @@ Adresse, für die es nicht ausgestellt wurde, nichts verloren.
 `node:https`-Request, egal was in der URL steht; eine `http://`-URL
 ergab also nie eine Klartext-Verbindung, sondern nur eine
 verwirrende.
+
+### Die Lebensdauer eines Credentials hängt von seiner Quelle ab
+
+Die beiden Quellen werden auch *nach* dem Lesen unterschiedlich
+behandelt — denn nur eine von beiden kann veralten.
+
+Ein explizit gesetztes `authToken` wird einmal gelesen und für die
+Lebensdauer des Prozesses wiederverwendet.  Es gibt nichts, woraus es
+neu gelesen werden könnte — es kam aus dem Konstruktor —, ein
+Ablaufen ließe es also nur durch sich selbst ersetzen.
+
+Das gemountete ServiceAccount-Token des Pods ist dagegen befristet:
+das projizierte Token trägt ein Ablaufdatum, und das Kubelet schreibt
+die Datei bei jeder Rotation neu.  Ein gemountetes Credential wird
+deshalb höchstens `tokenReloadIntervalMs` lang wiederverwendet;
+danach entscheidet die mtime der Token-Datei zwischen einem weiteren
+Intervall auf denselben Bytes und einem frischen Read — im
+Normalfall kostet das also einen `stat` pro Intervall und Lease statt
+drei Datei-Reads.
+
+```ts
+const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+  .withName('my-singleton-lease')
+  .withOwner(process.env.POD_NAME!)
+  .withTtlMs(30_000)
+  .withNamespace('my-app')
+  .withTokenReloadIntervalMs(30_000);
+```
+
+Zusätzlich zum Intervall **invalidiert ein 401 oder 403 vom
+API-Server das gecachte Credential**: der Mount wird erneut gelesen
+und der Request genau einmal wiederholt, bevor überhaupt etwas als
+Lease-Verlust gemeldet wird.  Ein explizites Token wird so nie
+wiederholt — es erneut zu schicken würde den Traffic auf einem
+ohnehin scheiternden Pfad nur verdoppeln.
+
+Genau das ersetzt das frühere Memoisieren des gemounteten Tokens über
+die gesamte Prozesslebensdauer, und dessen Fehlerbild war alles andere
+als subtil.  Der erste 401 feuerte `onLost`, `ClusterSingleton`
+stoppte das Kind und versuchte alle fünf Sekunden ein Re-Acquire auf
+derselben Lease-Instanz — und jeder Versuch schickte dasselbe tote
+Bearer-Token erneut.  Der Singleton blieb unten, bis der Pod neu
+gestartet wurde; und jedes Replikat, das lange genug lief, steckte im
+selben Zustand.
 
 ### Pflichtfelder werden bei der Konstruktion erzwungen
 
@@ -246,11 +292,17 @@ optimistic-concurrency Compare-and-Set — K8s rejectet mit 409, wenn
 seither jemand anderes das Objekt modifiziert hat.
 
 Wenn der Write fehlschlägt, gibt das Renewal sofort auf und feuert
-`onLost` — es gibt kein Retry-Budget innerhalb der Schleife:
+`onLost` — es gibt kein Retry-Budget innerhalb der Schleife, mit einer
+Ausnahme:
 
 - **Transient (5xx, connection refused, Timeout)** → `onLost` feuert.
 - **CAS-Conflict (409) oder 404** → ein anderer Halter hat übernommen,
   oder das Objekt wurde gelöscht; `onLost` feuert.
+- **401 / 403** → abgelehnt wurde das *Credential*, nicht der Lease.
+  Bei einem gemounteten ServiceAccount-Token wird der Mount erneut
+  gelesen und der PUT genau einmal wiederholt; erst eine zweite
+  Ablehnung feuert `onLost`.  Siehe *Die Lebensdauer eines Credentials
+  hängt von seiner Quelle ab* weiter oben.
 
 ## Verlust-Erkennung
 
@@ -308,10 +360,13 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   authToken: 'eyJ...';   // ✗ statisches Token
   ```
-  In-Cluster-Tokens werden automatisch rotiert; das via Kubelet
-  gemountete Token über den Default-Pfad zu nutzen funktioniert
-  nahtlos.  Hartkodierte Tokens laufen ab und müssen manuell
-  rotiert werden.
+  Das via Kubelet gemountete Token wird alle
+  `tokenReloadIntervalMs` neu gelesen — und bei einem 401/403
+  sofort —, ein Ablaufen kostet also einen wiederholten Request
+  statt des Lease.  Ein hartkodiertes `authToken` bekommt beides
+  nicht: es ist von Natur aus statisch, und wenn es abläuft, ist
+  der Lease verloren, bis der Prozess mit einem neuen neu
+  gestartet wird.
 </Aside>
 
 ## Tests gegen ein echtes K8s

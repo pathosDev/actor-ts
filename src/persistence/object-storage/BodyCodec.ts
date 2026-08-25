@@ -75,12 +75,18 @@ export const FLAG_ENCRYPTED = 0b100;
  * make the space ambiguous is refused up front by
  * `validateMasterKeyRing`.
  *
- * A wide-version flag was considered and dropped.  Only three bits of
- * this byte are left, spending one on a case that a sweep already
- * resolves is a poor trade, and if the format ever genuinely outgrows
- * one byte the honest move is a new magic (`ATS2`) rather than a fourth
- * conditional field in a header whose length already depends on two
- * other bits.
+ * A wide-version flag was considered and dropped.  Only two bits of
+ * this byte are left — {@link FLAG_CONTEXT_BOUND} took one after this
+ * was written — spending one on a case that a sweep already resolves is
+ * a poor trade, and if the format ever genuinely outgrows one byte the
+ * honest move is a new magic (`ATS2`) rather than a fourth conditional
+ * field in a header whose length already depends on two other bits.
+ *
+ * The other claimant on those two bits is a version byte for the
+ * *integrity* key, which is what an integrity-key roll would need and
+ * why there is no `newIntegrity` on the sweep today (#1354).  If `ATS2`
+ * ever happens, that byte should ride along rather than justify its own
+ * break.
  */
 export const FLAG_KEY_VERSIONED = 0b1000;
 /** When set, the last {@link HMAC_TAG_LENGTH} bytes are an HMAC-SHA256 over the rest. */

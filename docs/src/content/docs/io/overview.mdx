@@ -264,6 +264,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {
     // Send the payload over the connection.
   }
+  // `onReceive` is sealed by the base class, which intercepts `Terminated`.
+  protected override onCommand(command: MyCommand): void {
+    // Dispatch on the subclass's own command union.
+  }
 }
 ```
 

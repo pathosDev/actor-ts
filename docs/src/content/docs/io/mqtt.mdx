@@ -49,8 +49,9 @@ defaults to `never`.
 
 ## Hooks
 
-Override these on your subclass.  `onReceive` is **sealed** — the base
-class dispatches to the hooks below; do not override it.
+Override these on your subclass.  `onReceive` and `onCommand` are
+**sealed** — the base classes dispatch to the hooks below; do not override
+them.
 
 | Hook | When |
 | --- | --- |
@@ -59,6 +60,7 @@ class dispatches to the hooks below; do not override it.
 | `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
 | `onInvalidMessage(err, message)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
 | `onSelfMessage(message)` | An application message (`TSelf`) was told to this ref. |
+| `onTerminated(signal)` | An actor you `context.watch`ed stopped.  Inherited from `BrokerActor`; delivery targets this actor watches itself are already handled. |
 
 Inbound and lifecycle events are delivered through the mailbox, so
 `onMessage` and the hooks always run on the actor thread (single-threaded,

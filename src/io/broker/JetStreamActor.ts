@@ -319,7 +319,7 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  override onReceive(command: JetStreamCommand): void {
+  protected override onCommand(command: JetStreamCommand): void {
     // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
     match(command)

@@ -19,7 +19,9 @@
  *   - `describe('… installs …')` — the number reaches the `ws` server, is the
  *     route's own rather than the framework default, and reconciles several
  *     routes by the widest.  Reverting either backend to the constant turns
- *     all six red.
+ *     all six red.  The widest-wins cases pin a *contract*, not a shortfall:
+ *     #373 is a server-level cap by decision (see `transportFrameCapOf`), so
+ *     narrowing that reconciliation would be the regression.
  *   - `describe('… which layer refuses …')` — on Bun the cap is installed and
  *     not honoured, so the *connection actor* is what refuses the frame.  The
  *     framework guarantee still holds and is asserted positively: the
@@ -332,19 +334,32 @@ describe('Express backend — which layer refuses the oversize frame (#373)', ()
     // And the part the caveat is about.  `initiatedBy: 'server'` means the
     // connection actor's own post-materialisation check closed the socket —
     // the frame was buffered in full first, which is exactly the allocation
-    // the transport cap exists to avoid.  `'client'` means the transport
-    // refused it and the close came back off the wire.
+    // the transport cap exists to avoid.  Bun's built-in `ws` shim reads
+    // `maxPayload` back unchanged and enforces nothing, so that is the layer
+    // that gets to refuse here, with the clean 1009 it always sends.
     //
-    // Measured on this tree: Bun 1.3.1's built-in `ws` shim reads
-    // `maxPayload` back unchanged and enforces nothing, so Bun lands on
-    // `'server'`; Node with `ws` 8.20.0 refuses in `ws/lib/receiver.js` with
-    // `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH` and lands on `'client'`.  Pinning
-    // it per runtime rather than accepting either keeps this a canary: when
-    // Bun starts enforcing, this line goes red, and that red is the signal to
-    // lift the caveat in `docs/…/http/websocket.mdx` and its DE twin.
-    const refusedByTransport = detectRuntime() !== 'bun';
-    expect(closes[0]!.initiatedBy).toBe(refusedByTransport ? 'client' : 'server');
-    if (!refusedByTransport) expect(closes[0]!.code).toBe(1009);
+    // The runtime is a *premise* of that, and it is asserted as one rather
+    // than branched on.  This file runs under `bun test` and nowhere else
+    // (`package.json`: `test = bun test`), so the Node arm of the earlier
+    // `detectRuntime() !== 'bun' ? 'client' : 'server'` was never executed by
+    // any gate — and a branch no gate runs is not a canary, it is a claim
+    // wearing an assertion's clothes.  What it claimed — that the real `ws`
+    // refuses at the transport, so Node lands on `'client'` — rests on a
+    // single measurement recorded on #373 (Node 26.7.0, `ws` 8.20.0), not on
+    // anything this repository runs.  Re-measuring it belongs to the
+    // cross-runtime probe matrix in #1329, not to a line here that never
+    // executes.  Stating the premise instead keeps this file honest about
+    // what it actually checks.
+    //
+    // The canary survives the change and gets sharper: the day Bun's shim
+    // enforces `maxPayload`, `initiatedBy` becomes `'client'`, this goes red,
+    // and that red is the signal to lift the caveat in
+    // `docs/…/http/websocket.mdx` and its DE twin.  And should this file ever
+    // be taught to run off Bun, the premise fails first and by name, instead
+    // of a stale branch quietly deciding what to expect.
+    expect(detectRuntime()).toBe('bun');
+    expect(closes[0]!.initiatedBy).toBe('server');
+    expect(closes[0]!.code).toBe(1009);
   });
 
   test('a frame under the route cap still reaches the application', async () => {

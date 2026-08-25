@@ -186,7 +186,7 @@ export class RedisStreamsActor
     await this.redisProducer.xadd(...args);
   }
 
-  override onReceive(command: RedisStreamsCommand): void {
+  protected override onCommand(command: RedisStreamsCommand): void {
     match(command)
       .with({ kind: 'publish' }, (c) => this.onPublish(c))
       .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))

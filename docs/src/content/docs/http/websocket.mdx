@@ -139,13 +139,20 @@ options, then `actor-ts.http.websocket.maxFrameBytes`, then the built-in
 default — and the resolution happens when the server binds, so a
 malformed value is an error at `bind()` rather than on the first upgrade.
 
-One caveat comes from the runtime rather than the route: a server has a
-single transport shared by all its WebSocket routes (one `WebSocketServer`
-on Express, one plugin registration on Fastify, one `Bun.serve`), so where
+The transport cap is **per server, not per route**.  A server has a single
+transport shared by all its WebSocket routes (one `WebSocketServer` on
+Express, one plugin registration on Fastify, one `Bun.serve`), so where
 several routes disagree the transport takes the **widest** of their caps.
 A stricter route is unaffected in what it accepts — the connection actor
 still refuses its oversize frames with 1009 — it just does not get the
 narrower buffering window it would have had on its own.
+
+That is a decision rather than a gap.  Fastify and `Bun.serve` can hold
+only one limit at a time; Express structurally could hold one per route,
+and taking it up there would make the same configuration mean different
+things on different backends — for a limit whose whole job is bounding
+what a hostile peer can allocate, one shape everywhere beats a narrower
+window on one backend of three.
 
 <Aside type="caution" title="Two pairs have no transport cap">
 On **Deno**, `Deno.upgradeWebSocket` accepts a subprotocol and an idle

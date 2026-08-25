@@ -5,7 +5,7 @@
  * `tests/integration/in-process/cluster/sharding/ShardCountMismatch.test.ts`:
  * the count travels in `RegisterRegion`, the coordinator refuses a region that
  * disagrees, and a refused region is neither a placement candidate nor answered
- * by `onGetShardHome`.  Two things it did not reach are pinned here.
+ * by `onGetShardHome`.  Three things it did not reach are pinned here.
  *
  * **The diagnostic.**  Refusing is only useful if the operator can act on it,
  * and the whole of that is one `error` line on the region.  It named
@@ -24,6 +24,14 @@
  * outright: a leader change to a differently-configured node adopts the
  * previous leader's map and re-establishes the split routing through the load
  * path, where the `Register` handshake never runs.
+ *
+ * **The shards the region already hosts.**  Refusing a registration closes the
+ * front door and nothing else: `onRegisterRefused` set a flag and logged, so a
+ * region accepted by leader N and refused by leader N+1 kept the `localShards`
+ * and `shardHomes` the first coordinator gave it and kept delivering out of
+ * that cache — and could not be relieved of them either, since
+ * `ShardCoordinator.beginHandOff` only writes to regions it has in `regions`.
+ * The refusal now releases them.
  *
  * These run against a real single-node cluster and reach the coordinator and
  * the region by path.  Single node on purpose: this node is its own leader, so
@@ -55,7 +63,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { LogContextData } from '../../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../../src/Logger.js';
 import { coordinatorSegments, regionSegments } from '../../../util/SystemPaths.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
 
@@ -241,6 +249,23 @@ function tellAsRegion(node: Node, message: ShardingMessage): void {
     .tell(new AuthenticatedShardingMessage(node.cluster.selfAddress, message));
 }
 
+/** Whether the shard actor for `shardId` is alive on `node` right now. */
+function shardPresent(node: Node, shardId: number): boolean {
+  return node.system._resolvePath([
+    ...regionSegments(node.system.name, TYPE_NAME),
+    `shard-${shardId}`,
+  ]).isSome();
+}
+
+/** Whether the entity beneath that shard is alive on `node` right now. */
+function entityPresent(node: Node, shardId: number): boolean {
+  return node.system._resolvePath([
+    ...regionSegments(node.system.name, TYPE_NAME),
+    `shard-${shardId}`,
+    `entity-${ENTITY_ID}`,
+  ]).isSome();
+}
+
 function coordinatorState(node: Node): CoordinatorState {
   const resolved = node.system._resolvePath(coordinatorSegments(node.system.name, TYPE_NAME));
   if (resolved.isNone()) throw new Error('coordinator actor not found');
@@ -326,6 +351,49 @@ describe('a numShards refusal names a key that exists (#633)', () => {
     // And that string is the key `reference.conf` actually ships, not a second
     // spelling that happens to look right.
     expect(ConfigKeys.sharding.numberOfShards).toBe('actor-ts.sharding.number-of-shards');
+  }, 20_000);
+});
+
+describe('a refused region gives up the shards it already hosts (#633)', () => {
+  test('the refusal stops the hosted shard and nothing routes there afterwards', async () => {
+    const node = await startNode('refusal-release', 47_606);
+    // `startNode`'s round trip allocated this shard here and brought the
+    // entity up under it, so the refusal below has something to release —
+    // which is the whole difference from a region refused at startup.
+    const shardId = hashShardId(ENTITY_ID, NUM_SHARDS);
+    expect(shardPresent(node, shardId)).toBe(true);
+    expect(entityPresent(node, shardId)).toBe(true);
+
+    // The frame a coordinator on a differently-configured node sends the
+    // moment leadership reaches it. Wrapped and from the coordinator's node,
+    // because the origin gate (#584) drops an unattributed one.
+    tellAsCoordinator(node, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS,
+      regionNumShards: NUM_SHARDS + 1,
+    });
+
+    // The shard actor's stop is what makes the entity really gone: the runtime
+    // reports `Terminated` only once every child has stopped, so the entity
+    // cannot outlive the shard here the way a fire-and-forget stop would let
+    // it.
+    await awaitCondition(() => !shardPresent(node, shardId), {
+      timeoutMs: 4_000,
+      label: 'the refused region stopped the shard it was hosting',
+    });
+    expect(entityPresent(node, shardId)).toBe(false);
+
+    // And it stays given up.
+    node.region.tell({ id: ENTITY_ID, kind: 'work' });
+    // An absence, so a window is the only instrument: both assertions below
+    // hold at t=0 and a poll would return on the first tick having proved
+    // nothing. Before the fix this message was delivered locally out of the
+    // surviving `localShards`/`shardHomes` cache — the second live instance
+    // the refusal exists to prevent.
+    await sleep(300);
+    expect(delivered).toBe(1);
+    expect(shardPresent(node, shardId)).toBe(false);
   }, 20_000);
 });
 

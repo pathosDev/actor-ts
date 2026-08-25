@@ -15,6 +15,7 @@ import {
 } from '../http/index.js';
 import { exportPrometheus } from '../metrics/PrometheusExporter.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { isCollectable } from '../metrics/Metrics.js';
 import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
 import { isHealthy } from './HealthCheck.js';
 import { healthChecksOf } from './HealthCheckExtension.js';
@@ -198,13 +199,44 @@ export function managementRoutes(
     })
     : get(async () => complete(Status.NotFound, 'down endpoint disabled'));
 
-  /** GET /metrics — Prometheus text format. */
+  /**
+   * GET /metrics — Prometheus text format, or 503 when the installed
+   * registry cannot be read back (#744).
+   *
+   * A registry that forwards its writes elsewhere and keeps no copy — the
+   * `promClientRegistry` bridge is the one in the tree — collects to an
+   * empty list.  Rendered, that is a zero-byte body, and a zero-byte body
+   * is a *valid* empty 0.0.4 scrape: Prometheus records `up=1`, raises no
+   * target error, and every framework series silently stops existing, so a
+   * `rate(actor_mailbox_dropped_total[5m]) > 0` rule never fires again.  A
+   * 503 is the honest answer, because it is the one a scraper already knows
+   * how to treat as "this target is not serving metrics".
+   *
+   * The check is **per request, not at wiring time**, because
+   * `MetricsExtension.useRegistry` can install the bridge at any point —
+   * commonly after this function has returned.  A startup throw would
+   * therefore be a guard that holds for one wiring order and not the other,
+   * while taking `/health` and `/ready` down with it on the order it does
+   * catch; the route that is actually wrong is the one that should fail.
+   */
   const metricsRoute: Route = options.enableMetricsEndpoint
-    ? get(async () => ({
-      status: Status.OK,
-      body: exportPrometheus(metricsOf(system)),
-      contentType: 'text/plain; version=0.0.4; charset=utf-8',
-    }))
+    ? get(async () => {
+      const registry = metricsOf(system);
+      if (!isCollectable(registry)) {
+        return complete(
+          Status.ServiceUnavailable,
+          'metrics endpoint unavailable: the installed MetricsRegistry does not '
+          + 'support collect() — its metrics live in the collector it forwards to '
+          + '(with promClientRegistry, scrape prom-client\'s own registry instead). '
+          + 'Set enableMetricsEndpoint: false to stop exposing this route.',
+        );
+      }
+      return {
+        status: Status.OK,
+        body: exportPrometheus(registry),
+        contentType: 'text/plain; version=0.0.4; charset=utf-8',
+      };
+    })
     : get(async () => complete(Status.NotFound, 'metrics endpoint disabled'));
 
   let clusterSubtree: Route = path('cluster', concat(

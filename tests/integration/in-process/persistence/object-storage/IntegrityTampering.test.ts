@@ -455,3 +455,111 @@ describe('#613 — snapshot bodies carry an integrity tag', () => {
     expect(err).toBeInstanceOf(JournalError);
   });
 });
+
+/**
+ * #1354 — the migration window is not a key-roll mechanism.
+ *
+ * #739's docs briefly said a new integrity key rolls out "the same way
+ * you turned integrity on: open the window, rewrite, close it".  It
+ * does not: `allowUntaggedBodies` re-admits bodies carrying NO tag, and
+ * a body tagged under the old key carries `FLAG_INTEGRITY_HMAC` and
+ * dies at the HMAC comparison long before the untagged branch is
+ * reached.  The claim was withdrawn; this is what stops it coming back
+ * as a widened `allowUntaggedBodies`.
+ *
+ * The matrix below overlaps deliberately with "#579 — the window still
+ * verifies a body that DOES carry a tag", which asserts the same
+ * refusal from the anti-downgrade side.  The intent here is the other
+ * one — that widening the window is never the fix for a failed roll —
+ * so neither is redundant.
+ */
+describe('#1354 — rolling the integrity key', () => {
+  /** Writes `a` tagged under OTHER_KEY, standing in for the old key. */
+  async function writeUnderOldKey(): Promise<void> {
+    const writerOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: OTHER_KEY });
+    await new ObjectStorageDurableStateStore(writerOptions).upsert('a', 0, { balance: 100 });
+  }
+
+  const base = () => ObjectStorageDurableStateStoreOptions.create()
+    .withBackend(backend)
+    .withCompression({ algorithm: 'none' });
+
+  test('no reader configuration reads an old-key body except the old key itself', async () => {
+    await writeUnderOldKey();
+
+    const refusing = [
+      ['new key, allowUntaggedBodies: true',
+        base().withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY }).withAllowUntaggedBodies(true)],
+      ['new key, allowUntaggedBodies: false',
+        base().withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY })],
+      // No key at all is refused too — the tag is on the body, so
+      // dropping the config is not a way to step around the roll.
+      ['no integrity at all', base()],
+    ] as const;
+
+    for (const [label, options] of refusing) {
+      let err: Error | null = null;
+      try { await new ObjectStorageDurableStateStore(options).load('a'); } catch (e) { err = e as Error; }
+      expect(err, label).toBeInstanceOf(JournalError);
+    }
+
+    // …and the old key still reads, so the corpus is intact and the
+    // refusals above are about the key, not about a damaged body.
+    const oldReaderOptions = base().withIntegrity({ mode: 'hmac-sha256', integrityKey: OTHER_KEY });
+    const loaded = await new ObjectStorageDurableStateStore(oldReaderOptions).load<{ balance: number }>('a');
+    expect(loaded.toNullable()?.state).toEqual({ balance: 100 });
+  });
+
+  test('the per-call override rolls one persistenceId: read old, write new', async () => {
+    await writeUnderOldKey();
+
+    // The documented procedure — a store with no integrity config of its
+    // own, given the old key on the read and the new one on the write.
+    const roller = new ObjectStorageDurableStateStore(base());
+    const loaded = await roller.load<{ balance: number }>('a', {
+      integrity: { mode: 'hmac-sha256', integrityKey: OTHER_KEY },
+    });
+    expect(loaded.isSome()).toBe(true);
+    if (loaded.isSome()) {
+      await roller.upsert('a', loaded.value.revision, loaded.value.state, {
+        integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
+      });
+    }
+
+    // Still tagged — a roll must not quietly drop the tag.
+    const raw = new Uint8Array(readFileSync(bodyFileFor('a')));
+    expect(raw[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+
+    // Readable under the new key, and no longer under the old one.
+    const afterOptions = base().withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const after = await new ObjectStorageDurableStateStore(afterOptions).load<{ balance: number }>('a');
+    expect(after.toNullable()?.state).toEqual({ balance: 100 });
+
+    const staleOptions = base().withIntegrity({ mode: 'hmac-sha256', integrityKey: OTHER_KEY });
+    let err: Error | null = null;
+    try { await new ObjectStorageDurableStateStore(staleOptions).load('a'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
+  });
+
+  test('the roll bumps the revision — it is a write, not a re-seal in place', async () => {
+    // Worth pinning because it is the cost an operator has to plan for:
+    // a key roll is visible in the entity's revision and goes through
+    // the CAS, so it races the live application.
+    await writeUnderOldKey();
+    const store = new ObjectStorageDurableStateStore(base());
+
+    const before = await store.load<{ balance: number }>('a', {
+      integrity: { mode: 'hmac-sha256', integrityKey: OTHER_KEY },
+    });
+    expect(before.toNullable()?.revision).toBe(1);
+    if (before.isSome()) {
+      const rolled = await store.upsert('a', before.value.revision, before.value.state, {
+        integrity: { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY },
+      });
+      expect(rolled.revision).toBe(2);
+    }
+  });
+});

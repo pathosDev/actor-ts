@@ -258,7 +258,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
     }
   }
 
-  override onReceive(command: EmailBridgeCommand): void {
+  protected override onCommand(command: EmailBridgeCommand): void {
     match(command)
       .with({ kind: 'send' }, (c) => this.onSend(c))
       .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))

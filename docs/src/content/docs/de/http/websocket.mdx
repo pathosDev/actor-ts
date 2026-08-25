@@ -143,7 +143,7 @@ dann der eingebaute Default —, und zwar beim Binden des Servers; ein
 ungültiger Wert ist damit ein Fehler in `bind()` und nicht erst beim
 ersten Upgrade.
 
-Ein Vorbehalt kommt aus der Laufzeit, nicht aus der Route: Ein Server hat
+Das Transport-Limit gilt **pro Server, nicht pro Route**.  Ein Server hat
 genau einen Transport für alle seine WebSocket-Routen (ein
 `WebSocketServer` auf Express, eine Plugin-Registrierung auf Fastify, ein
 `Bun.serve`).  Wo mehrere Routen sich unterscheiden, nimmt der Transport
@@ -151,6 +151,14 @@ deshalb das **größte** ihrer Limits.  Was eine strengere Route annimmt,
 ändert das nicht — der Connection-Actor weist ihre zu großen Frames
 weiterhin mit 1009 ab —, sie bekommt nur nicht das engere Puffer-Fenster,
 das sie allein gehabt hätte.
+
+Das ist eine Entscheidung und keine Lücke.  Fastify und `Bun.serve` können
+immer nur ein einziges Limit halten; Express könnte strukturell eines pro
+Route halten, und es dort zu tun hieße, dass dieselbe Konfiguration je
+nach Backend etwas anderes bedeutet — bei einem Limit, dessen ganze
+Aufgabe es ist zu begrenzen, was eine feindliche Gegenstelle allozieren
+kann, ist eine Form überall mehr wert als ein engeres Fenster auf einem
+Backend von dreien.
 
 <Aside type="caution" title="Zwei Paare haben kein Transport-Limit">
 Auf **Deno** nimmt `Deno.upgradeWebSocket` ein Subprotokoll und ein

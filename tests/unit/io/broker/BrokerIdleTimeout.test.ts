@@ -149,7 +149,7 @@ class IdleBroker extends BrokerActor<IdleOptions, never, string> {
 
   protected async dispatchOutgoing(_envelope: OutboundEnvelope<string>): Promise<void> {}
 
-  override onReceive(_command: never): void {}
+  protected override onCommand(_command: never): void {}
 
   override async preStart(): Promise<void> {
     try { await super.preStart(); }

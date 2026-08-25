@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
 import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapterOptions.js';
-import { METRICS_OVERFLOW_LABEL_VALUE } from '../../../src/metrics/Metrics.js';
+import { METRICS_OVERFLOW_LABEL_VALUE, isCollectable } from '../../../src/metrics/Metrics.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
@@ -403,5 +403,48 @@ describe('promClientRegistry — cardinality cap', () => {
       .withRegistry(registry)
       .withMaxSeriesPerFamily(-5);
     expect(() => promClientRegistry(badOptions)).toThrow(OptionsError);
+  });
+});
+
+/**
+ * The bridge's read-back side (#744).
+ *
+ * `collect()` returning `[]` was always the intent, and until now nothing
+ * asserted it in either direction — so neither the choice nor an accidental
+ * regression of it would have been visible.  What was missing besides the
+ * assertion is the *declaration*: the framework's own readers went through
+ * `collect()` and had no way to tell an empty snapshot from an idle system.
+ *
+ * `tests/unit/metrics/NonCollectableRegistry.test.ts` covers what those
+ * readers do about it; this pins the bridge to the shape they look for.
+ */
+describe('promClientRegistry — collect() is not a source of truth', () => {
+  function bridge(): { registry: FakePromRegistry; adapted: ReturnType<typeof promClientRegistry> } {
+    const registry = makeFakeRegistry();
+    const client = makeFakeClient(registry);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(registry);
+    return { registry, adapted: promClientRegistry(promOptions) };
+  }
+
+  test('declares itself non-collectable', () => {
+    expect(bridge().adapted.collectable).toBe(false);
+    expect(isCollectable(bridge().adapted)).toBe(false);
+  });
+
+  test('collect() stays empty even after the writes landed on prom-client', () => {
+    const { registry, adapted } = bridge();
+    adapted.counter('hits_total', { node: 'a' }, { help: 'hits' }).inc(3);
+    adapted.gauge('depth', { node: 'a' }).set(7);
+    adapted.histogram('latency_seconds', { node: 'a' }).observe(0.02);
+
+    // Every mutation is on the prom-client side — this is a bridge that
+    // works, not one that dropped the writes.
+    const hits = registry.registered.find((m) => m.options.name === 'hits_total')!;
+    expect(hits.calls).toHaveLength(1);
+    // ... and none of it is readable back through the framework's interface,
+    // which is precisely what `collectable: false` exists to announce.
+    expect(adapted.collect()).toEqual([]);
   });
 });

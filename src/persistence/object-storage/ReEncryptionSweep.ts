@@ -28,6 +28,18 @@
  * it touches to the key it read it from — which is what lets an
  * operator eventually set `requireContextBinding` on the stores.
  *
+ * The integrity HMAC (#116) is the third axis, and until #739 it was the
+ * one the sweep could not see.  The tag covers the manifest bytes, so a
+ * tagged body cannot be decoded without the integrity key and cannot be
+ * written back without recomputing the tag — and `ReEncryptOptions` had
+ * no way to supply one.  A sweep over such a corpus aborted on its first
+ * tagged object, which made master-key rotation and integrity mutually
+ * exclusive: the operator had to give up tamper protection or leave a
+ * leaked master key in `retired` forever.  {@link
+ * ReEncryptOptions.integrity} closes that — tags are verified on the way
+ * in and re-applied on the way out, and the pre-sweep sampler refuses up
+ * front when a tagged body has no key to verify it with.
+ *
  * The helper operates one level below `ObjectStorageSnapshotStore` /
  * `ObjectStorageDurableStateStore` because per-pid HKDF salting means
  * the pid must be known at decrypt + re-encrypt time.  The default
@@ -35,19 +47,21 @@
  * (`<prefix><pid>/...`).
  */
 
-import type { MasterKeyRing } from '../PersistenceOptions.js';
+import type { IntegrityConfig, MasterKeyRing } from '../PersistenceOptions.js';
 import {
   ATS1_MAGIC,
   decodeBody,
   encodeBody,
   FLAG_CONTEXT_BOUND,
   FLAG_ENCRYPTED,
+  FLAG_INTEGRITY_HMAC,
   FLAG_KEY_VERSIONED,
   type DecodedBody,
   type SubKeyResolver,
 } from './BodyCodec.js';
 import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
+import { resolveIntegrity, type IntegrityResolver } from './PluginConfig.js';
 import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
 import { MAX_REPORTED_MALFORMED_KEYS } from '../Constants.js';
 
@@ -131,6 +145,62 @@ export type ReEncryptOptions = {
    */
   readonly newInfo?: string;
   /**
+   * Integrity configuration the corpus was **written** under (#116) —
+   * either a flat `IntegrityConfig` or the very
+   * per-`persistenceId` resolver the owning store was given, so that a
+   * corpus with different keys per tenant resolves the same way here as
+   * it does on the store's own read path.
+   *
+   * Required whenever a body under the prefix carries the HMAC tag.  The
+   * tag authenticates the manifest bytes, so the sweep has to verify it
+   * to read the body at all and recompute it to write one back; without
+   * the key `decodeBody` refuses the first tagged object it meets and
+   * the sweep aborts mid-corpus (#739).
+   *
+   * The tag is re-applied only where the body already carried one.  An
+   * untagged body is not promoted, because that decision is not the
+   * sweep's to make: every rewritten body would become unreadable to any
+   * reader not yet configured with the integrity key, and rotation runs
+   * while the application is serving.  Turning integrity on corpus-wide
+   * is the stores' own read-then-write migration (see
+   * {@link allowUntaggedBodies}).
+   *
+   * This is the key the corpus is already under, **not** a key to move
+   * it to.  There is deliberately no `newIntegrity` beside
+   * {@link newInfo} (#1354).  `newInfo` gets away with having no wire
+   * byte because AES-GCM decryption is its own oracle — the probe in
+   * the rewrite loop retries under the target context and only a
+   * keyholder can make that succeed.  Integrity has no such oracle
+   * that helps: nothing records which integrity key sealed a body, so
+   * every reader would have to accept both keys for the duration of
+   * the sweep — keeping the leaked key trusted for exactly the window
+   * the revocation exists to close — and the "returning is the
+   * certificate" contract (#747) would have nothing to rest on, since
+   * the pre-sweep sampler can enumerate live *master* key versions off
+   * the frame without holding a key and has no counterpart here.
+   *
+   * Rolling the integrity key is therefore a per-`persistenceId`
+   * read-old / write-new pass through the stores' per-call
+   * `PersistenceOptions.integrity`, not a sweep and not a migration
+   * window; #1354 records that and what a wire-format answer (an
+   * integrity-key version byte mirroring `FLAG_KEY_VERSIONED`) would
+   * cost.
+   */
+  readonly integrity?: IntegrityConfig | IntegrityResolver;
+  /**
+   * Re-admit untagged bodies while {@link integrity} is set — the
+   * migration window of a corpus that still holds bodies written before
+   * integrity was enabled (#579).  Mirrors the stores' option of the
+   * same name, and defaults to `false` for the same reason: a missing
+   * tag and a stripped one look identical from here, so the safe reading
+   * has to be the default and the unsafe one has to be spelled out.
+   *
+   * Without it, a sweep over a half-migrated corpus fails on the first
+   * untagged body — correct, but not what an operator rotating a key in
+   * the middle of an integrity rollout wants.
+   */
+  readonly allowUntaggedBodies?: boolean;
+  /**
    * Extracts the `persistenceId` from a backend key.  HKDF uses the
    * pid as a per-pid salt, so the sweep needs to recover it from the
    * key in order to derive the same subkey the original encrypter did.
@@ -178,9 +248,23 @@ export type ReEncryptOptions = {
    * decrypt failure (which would otherwise mid-sweep abort, leaving the
    * corpus half-rewritten).  Set `false` to skip — useful when the
    * operator has independent assurance that the keyring is complete.
+   *
+   * The same pass covers the integrity dimension (#739): a sampled body
+   * carrying the HMAC tag that {@link integrity} resolves no key for
+   * refuses the sweep here rather than at the first tagged object in the
+   * rewrite loop.  Both halves sample rather than enumerate, so both are
+   * a footgun catcher and not a proof — a straggler past `sampleSize`
+   * still aborts mid-corpus.
    */
   readonly verifyKeyringCompleteness?: boolean;
-  /** Sample size for the completeness check.  Default: min(100, total). */
+  /**
+   * Sample size for the completeness check.  Default: min(100, total).
+   *
+   * Clamped to the corpus, so a value larger than the object count
+   * samples every object rather than running off the end of the list
+   * (#1353) — the rolling-migration runbook suggests an override of
+   * 200, which a staging bucket rarely reaches.
+   */
   readonly sampleSize?: number;
 };
 
@@ -194,14 +278,25 @@ export type ReEncryptProgress = {
 export type ReEncryptResult = {
   /** Total objects examined. */
   readonly scanned: number;
-  /** Objects that were re-encrypted to the active key. */
+  /**
+   * Objects that were re-encoded — re-encrypted to the active key, and,
+   * since #739, also the unencrypted-but-tagged bodies that were
+   * re-framed only to pick up their storage-key binding (#612).  The
+   * latter have no master key to rotate; they are counted here because
+   * they cost a PUT and because a run that leaves them alone is a run
+   * whose `requireContextBinding` migration cannot finish.
+   */
   readonly rewrote: number;
   /**
    * Objects skipped because they were already at the active version
    * (the idempotent fast-path).
    */
   readonly skippedCurrent: number;
-  /** Objects skipped because they were never encrypted. */
+  /**
+   * Objects skipped because they were never encrypted — and, when they
+   * carry an integrity tag, because they are already bound to their
+   * storage key, so there is nothing left for the sweep to do to them.
+   */
   readonly skippedUnencrypted: number;
   /** Objects skipped because they aren't `ATS1`-framed (e.g. raw user blobs). */
   readonly skippedNonAts1: number;
@@ -310,6 +405,16 @@ export class ReEncryptIncompleteError extends Error {
  *     info:    'actor-ts/snapshot/v1',    // the shared legacy context
  *     newInfo: 'acme/prod/snapshot/v1',   // per-environment from now on
  *   });
+ *
+ * A corpus written with the integrity HMAC (#116) hands the same key the
+ * stores use, so every tag is verified on read and rebuilt on write:
+ *
+ *   await reEncryptObjectStorage(backend, {
+ *     keyPrefix: 'state/',
+ *     keyring,
+ *     info: 'acme/prod/durable-state/v1',
+ *     integrity: { mode: 'hmac-sha256', integrityKey },
+ *   });
  */
 export async function reEncryptObjectStorage(
   backend: ObjectStorageBackend,
@@ -348,30 +453,61 @@ export async function reEncryptObjectStorage(
   const encryptInfo = options.newInfo ?? options.info;
   const rotatingInfo = encryptInfo !== decryptInfo;
 
+  /**
+   * The HMAC key that verifies (and re-seals) the body at `key`, or
+   * `undefined` when the operator configured no integrity for its pid.
+   *
+   * Resolved per key rather than once, because `integrity` accepts the
+   * same per-`persistenceId` resolver the stores take: a deployment that
+   * keys integrity per tenant must resolve here exactly as its store
+   * does, or the sweep verifies against the wrong secret.
+   */
+  const integrityKeyFor = (key: string): Uint8Array | undefined => {
+    if (options.integrity === undefined) return undefined;
+    const resolved = resolveIntegrity(
+      options.integrity, persistenceIdFromKey(key, options.keyPrefix), { mode: 'none' },
+    );
+    return resolved.mode === 'hmac-sha256' ? resolved.integrityKey : undefined;
+  };
+
   // Pre-sweep keyring-completeness check (#109).  Sample some bodies,
   // gather their key versions, fail fast if any version isn't in the
   // keyring.  Better to refuse before touching the corpus than to
-  // half-rewrite and then crash on a missing retired key.
+  // half-rewrite and then crash on a missing retired key.  Since #739 the
+  // same pass answers the integrity half of the question.
   if (options.verifyKeyringCompleteness !== false) {
-    const sampleSize = options.sampleSize ?? Math.min(100, items.length);
+    const sampleSize = Math.min(options.sampleSize ?? 100, items.length);
     const haveVersions = new Set<number>([
       options.keyring.active.version,
       ...(options.keyring.retired?.map((r) => r.version) ?? []),
     ]);
     const missing = new Set<number>();
+    // One example is enough here, unlike the malformed-key sample: the
+    // remedy is the same for every offender — supply the key — so a list
+    // would only restate it.
+    let unverifiableKey: string | undefined;
     for (let i = 0; i < sampleSize; i++) {
       const item = items[i]!;
       if (options.skip?.(item.key)) continue;
+      // A key the loop will refuse to sweep is a key whose body says
+      // nothing about what the sweep needs — and fetching it here would
+      // spend a GET on an object we have already decided not to touch.
+      if (!isUsableSweepKey(item.key, options.keyPrefix, persistenceIdFromKey)) continue;
       const fetched = await backend.get(item.key);
       if (fetched.isNone()) continue;
       const framed = fetched.value.body;
       if (!startsWithAts1(framed)) continue;
-      const flags = framed[4]!;
-      const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
-      if (!encrypted) continue;
-      const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
-      const bodyVersion = versioned ? framed[5]! : 0;
-      if (!haveVersions.has(bodyVersion)) missing.add(bodyVersion);
+      const manifest = readManifest(framed);
+      // Gated on the rewrite decision, so a corpus that has already
+      // converged is not refused over a key the sweep would never use.
+      if (unverifiableKey === undefined
+        && manifest.integrityTagged
+        && willDecodeBody(manifest, activeVersion, rotatingInfo)
+        && integrityKeyFor(item.key) === undefined) {
+        unverifiableKey = item.key;
+      }
+      if (!manifest.encrypted) continue;
+      if (!haveVersions.has(manifest.keyVersion)) missing.add(manifest.keyVersion);
     }
     if (missing.size > 0) {
       throw new Error(
@@ -379,6 +515,16 @@ export async function reEncryptObjectStorage(
         + `reference master-key version(s) [${[...missing].sort((a, b) => a - b).join(', ')}] `
         + `which are absent from the keyring's 'active' and 'retired' lists.  `
         + `Restore those keys before sweeping, or the sweep will fail mid-corpus.`,
+      );
+    }
+    if (unverifiableKey !== undefined) {
+      throw new Error(
+        `reEncryptObjectStorage: bodies in the prefix carry an integrity HMAC (#116) but no `
+        + `integrity key was resolved for them — e.g. ${JSON.stringify(unverifiableKey)}.  `
+        + `Pass the store's own configuration as the 'integrity' option (an IntegrityConfig or `
+        + `the same per-persistenceId resolver) so the sweep can verify each tag and re-apply `
+        + `it.  Without it the sweep aborts on the first tagged body, leaving the corpus `
+        + `half-rewritten.`,
       );
     }
   }
@@ -427,39 +573,41 @@ export async function reEncryptObjectStorage(
       options.onProgress?.({ key: item.key, index, total, action: 'skipped-non-ats1' });
       continue;
     }
-    const flags = framed[4]!;
-    const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
-    if (!encrypted) {
-      result.skippedUnencrypted += 1;
-      options.onProgress?.({ key: item.key, index, total, action: 'skipped-unencrypted' });
-      continue;
-    }
-    const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
-    const bodyVersion = versioned ? framed[5]! : 0;
-    const atActiveVersion = bodyVersion === activeVersion && versioned;
+    const manifest = readManifest(framed);
+    const atActiveVersion = manifest.versioned && manifest.keyVersion === activeVersion;
     // A body written before context binding (#612) is rewritten even
     // when its key version is already current: the sweep is the only
     // tool that rewrites a whole corpus, so it is what an operator runs
     // before turning `requireContextBinding` on.  Skipping such bodies
     // would leave the migration with no way to finish.
-    const contextBound = (flags & FLAG_CONTEXT_BOUND) !== 0;
-    if (atActiveVersion && !rotatingInfo && contextBound) {
-      // Already at the active version with the new framing — nothing
-      // to do.  Bodies in the legacy unversioned format are NOT
-      // considered "at version 0" for skip purposes — we still rewrite
-      // them so the corpus ends up uniformly versioned.
-      //
-      // The `!rotatingInfo` guard is load-bearing: the manifest records
-      // the key version but not the HKDF context, so during an `info`
-      // rotation this condition is true for every not-yet-rewritten
-      // body.  Skipping on it would make the whole sweep a silent no-op
-      // that reports `skippedCurrent === scanned` and looks successful.
-      result.skippedCurrent += 1;
-      options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
+    if (!willDecodeBody(manifest, activeVersion, rotatingInfo)) {
+      // Two distinct reasons, both "nothing left to do", kept apart in
+      // the counters because they mean different things to an operator:
+      // an encrypted body is converged on the axis this tool rotates,
+      // an unencrypted one was never on it.
+      if (manifest.encrypted) {
+        result.skippedCurrent += 1;
+        options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
+      } else {
+        result.skippedUnencrypted += 1;
+        options.onProgress?.({ key: item.key, index, total, action: 'skipped-unencrypted' });
+      }
       continue;
     }
 
     const persistenceId = persistenceIdFromKey(item.key, options.keyPrefix);
+    const integrityKey = integrityKeyFor(item.key);
+    // Supplying the key is the assertion "this corpus is protected", so
+    // the codec then demands a tag on every body — see
+    // `allowUntaggedBodies` for the migration window that re-admits one.
+    const decodeIntegrity = integrityKey !== undefined
+      ? {
+          integrity: {
+            integrityKey,
+            allowUntaggedBodies: options.allowUntaggedBodies === true,
+          },
+        }
+      : {};
     const subKeyResolverFor = (hkdfInfo: string): SubKeyResolver =>
       async (keyVersion: number): Promise<Uint8Array | null> => {
         if (options.keyring.active.version === keyVersion) {
@@ -475,6 +623,7 @@ export async function reEncryptObjectStorage(
     try {
       decoded = await decodeBody(framed, {
         encryption: { subKeyFor: subKeyResolverFor(decryptInfo) },
+        ...decodeIntegrity,
         context: item.key,
       });
     } catch (decryptError) {
@@ -489,6 +638,7 @@ export async function reEncryptObjectStorage(
       try {
         decoded = await decodeBody(framed, {
           encryption: { subKeyFor: subKeyResolverFor(encryptInfo) },
+          ...decodeIntegrity,
           context: item.key,
         });
       } catch {
@@ -496,18 +646,34 @@ export async function reEncryptObjectStorage(
       }
       alreadyAtNewInfo = true;
     }
-    if (alreadyAtNewInfo && atActiveVersion && contextBound) {
+    if (alreadyAtNewInfo && atActiveVersion && manifest.contextBound) {
       // Converged on both axes — the previous run already did this one.
       result.skippedCurrent += 1;
       options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
       continue;
     }
 
-    // Re-encrypt with the active key + active version stamp.
-    const activeSubkey = await deriveSubkey(options.keyring.active.key, persistenceId, encryptInfo);
+    // Re-encrypt with the active key + active version stamp.  An
+    // unencrypted body has no master key to rotate — it is only here to
+    // pick up its #612 binding — so it is re-framed without one rather
+    // than promoted to encrypted, which would make it unreadable to a
+    // store that has no encryption configured.
+    const activeSubkey = manifest.encrypted
+      ? await deriveSubkey(options.keyring.active.key, persistenceId, encryptInfo)
+      : undefined;
     const rewritten = await encodeBody(decoded.payload, {
       compression: decoded.compression,
-      encryption: { subKey: activeSubkey, keyVersion: activeVersion },
+      ...(activeSubkey !== undefined
+        ? { encryption: { subKey: activeSubkey, keyVersion: activeVersion } }
+        : {}),
+      // Re-seal the tag only where the body already carried one.  The bit
+      // is read off the body rather than off the options on purpose: an
+      // operator who supplies `integrity` so the sweep can *read* a
+      // half-migrated corpus has not thereby asked for every untagged
+      // body in it to be promoted (#739).
+      ...(manifest.integrityTagged && integrityKey !== undefined
+        ? { integrity: { integrityKey } }
+        : {}),
       // Rewritten in place, so the binding is to the same key it came
       // from — which also upgrades a pre-#612 body on the way past.
       context: item.key,
@@ -562,6 +728,67 @@ function startsWithAts1(buffer: Uint8Array): boolean {
     && buffer[1] === ATS1_MAGIC[1]
     && buffer[2] === ATS1_MAGIC[2]
     && buffer[3] === ATS1_MAGIC[3];
+}
+
+/** The manifest bits the sweep dispatches on, read straight off the frame. */
+type BodyManifest = {
+  readonly encrypted: boolean;
+  /** True only when the version byte is both claimed and actually present. */
+  readonly versioned: boolean;
+  /** 0 for a body that carries no version byte — the implicit legacy version. */
+  readonly keyVersion: number;
+  /** Whether an HMAC-SHA256 tag is appended (#116). */
+  readonly integrityTagged: boolean;
+  /** Whether the storage key was authenticated with the body (#612). */
+  readonly contextBound: boolean;
+};
+
+function readManifest(framed: Uint8Array): BodyManifest {
+  const flags = framed[4]!;
+  // A body that claims a version byte it is too short to hold is malformed.
+  // Reading it as unversioned keeps it off every fast path, so `decodeBody`
+  // is the one that reports it — with the precise message, rather than this
+  // function inventing a version out of a byte that is not there.
+  const versioned = (flags & FLAG_KEY_VERSIONED) !== 0 && framed.length > 5;
+  return {
+    encrypted: (flags & FLAG_ENCRYPTED) !== 0,
+    versioned,
+    keyVersion: versioned ? framed[5]! : 0,
+    integrityTagged: (flags & FLAG_INTEGRITY_HMAC) !== 0,
+    contextBound: (flags & FLAG_CONTEXT_BOUND) !== 0,
+  };
+}
+
+/**
+ * Whether the sweep will decode and rewrite this body, or leave it alone.
+ *
+ * Both the pre-sweep sampler and the rewrite loop go through here, and that
+ * is the point: the sampler exists to predict what the loop will need, so a
+ * prediction that drifts from the loop either refuses a converged corpus over
+ * a key the loop never uses, or misses the gap the check was added to catch.
+ *
+ * An unencrypted body has no master key to rotate, so the only thing that
+ * could bring it here is the #612 binding — and only a tagged body carries an
+ * authenticator that could hold one.  A plain body has nothing to bind and is
+ * skipped, exactly as before integrity entered the picture.
+ */
+function willDecodeBody(
+  manifest: BodyManifest, activeVersion: number, rotatingInfo: boolean,
+): boolean {
+  if (manifest.encrypted) {
+    // Bodies in the legacy unversioned format are NOT considered "at version
+    // 0" for skip purposes — they are rewritten so the corpus ends up
+    // uniformly versioned.
+    //
+    // The `!rotatingInfo` guard is load-bearing: the manifest records the key
+    // version but not the HKDF context, so during an `info` rotation the
+    // version test is true for every not-yet-rewritten body.  Skipping on it
+    // would make the whole sweep a silent no-op that reports
+    // `skippedCurrent === scanned` and looks successful.
+    const atActiveVersion = manifest.versioned && manifest.keyVersion === activeVersion;
+    return !(atActiveVersion && !rotatingInfo && manifest.contextBound);
+  }
+  return manifest.integrityTagged && !manifest.contextBound;
 }
 
 /**

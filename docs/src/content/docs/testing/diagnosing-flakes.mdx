@@ -334,6 +334,14 @@ difference is what tells you where to look next:
   teardown race in the harness, not a timing bet in the test — so no wait, of
   any shape, could have been the cause.
 
+  That trace can no longer escape.  `MultiNodeBroker.onMessage` now routes
+  inside the try/catch the production broker has carried since #701, so a
+  destination port that throws — a worker `crash()` already terminated is the
+  case that reaches it — counts as the unroutable destination it is and the
+  frame is dropped.  The race itself is unchanged; what is gone is the part that
+  made it a *flake*, an unrelated test failing for it.  Read the entry above as
+  a record of the symptom, not as something still to reproduce.
+
 That is the value of writing an open entry down instead of guessing: an entry
 whose sleep was converted and an entry that never had one lead to different
 next steps, and only the count in `summary.json` distinguishes "seen once" from
@@ -453,11 +461,13 @@ On reaching it, un-quarantine in one commit:
 4. Drop `--exclude=worker` from `benchmarks.yml`'s smoke step.  The worker
    benchmark is excluded for exactly the same cause, and is easy to forget
    because it is not a test.
-5. Revisit `test.yml`'s pragmatic `COVERAGE_LINE_FLOOR: '80'`, lowered for
-   the same reason — and the per-module floors in `scripts/coverage-gate.mjs`
-   with it.  `src/cluster/` measures below its true line coverage for as long
-   as `LeaseMajority` cannot run, so its floor is set against the quarantined
-   population and not against the real one.
+5. Revisit every floor in `scripts/coverage-gate.mjs` — the aggregate
+   `DEFAULT_LINE_FLOOR` and the two per-module ones alike.  All of them are
+   measured against the quarantined population: `src/cluster/` reads below its
+   true line coverage for as long as `LeaseMajority` cannot run, and the
+   aggregate sat at a pragmatic 80 for the same reason until it was re-measured
+   at 90.  `test.yml` no longer carries a copy of the number, so this is one
+   file to edit rather than two to keep in step.
 6. Keep the nightly job.  It becomes the regression guard for the
    un-quarantining.
 

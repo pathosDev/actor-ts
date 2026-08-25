@@ -318,8 +318,9 @@ export class ExpressBackend implements HttpServerBackend {
     // 100 MiB first (security audit WS-3).  The number is the widest frame any
     // registered route admits, not the framework default, so a route or a
     // HOCON setting that moves `maxFrameBytes` moves this with it (#373) —
-    // one `WebSocketServer` serves every route on this app, so the routes have
-    // to agree on one limit.
+    // one `WebSocketServer` serves every route on this app.  A server per
+    // route is structurally available here, unlike on Fastify and Bun, and is
+    // deliberately not built: `transportFrameCapOf` carries the reasoning.
     const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: transportFrameCapOf(this.wsRegistered) });
     this.wss = wss;
     for (const registration of this.wsRegistered) {

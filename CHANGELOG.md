@@ -217,6 +217,93 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stops existing is the DNS blip that silently became N self-elected
   one-node clusters, each reporting a healthy bootstrap.
 
+- **BREAKING (pre-1.0): `BrokerActor.onReceive` is sealed (#709).** A
+  subclass now implements the new abstract `onCommand(command)` instead of
+  overriding `onReceive`, so the base class can intercept `Terminated` before
+  the subclass's dispatch table sees it. A stopped subscriber registered
+  through `subscribeRef` is now removed from every topic it held with no
+  cooperation from the subclass.
+
+  What went wrong before: `subscribeRef` death-watches its subscribers, and
+  `ActorCell` delivered the resulting `Terminated` into the subclass's
+  `onReceive`, where it hit a matcher written for commands. `.exhaustive()`
+  threw `NonExhaustiveError`, the default supervisor restarted the actor,
+  `preRestart` → `postStop` tore the broker connection down, and ordinary
+  subscriber churn drove the bridge past `maxRetries: 10 / 60_000` into a
+  permanent stop. A subclass that used `.otherwise()` instead survived and
+  leaked: the dead ref stayed registered and was told on each fan-out, one
+  dead letter per inbound message. The previous round's compile-time doc
+  recipe only bound a subclass that copied it verbatim; the guard is
+  unconditional now.
+
+  *Migration:* a mechanical rename. The method body is unchanged and the
+  `match(...).exhaustive()` table gets narrower, because `Terminated` is no
+  longer something a command union has to admit. A subclass that
+  death-watches refs of its own overrides the new optional
+  `onTerminated(signal)` hook, which runs after the base has pruned the
+  registry — for `MqttActor` and `WebsocketClientActor` a `Terminated` from
+  your own `context.watch` now arrives there rather than falling through
+  `.otherwise()` into `onSelfMessage`. The extension docs (EN + DE) drop the
+  widened `match<MyCommand | Terminated>` recipe and its mandatory
+  `P.instanceOf(Terminated)` arm.
+
+  Two related defects remain open and are unaffected: a remote subscriber
+  never produces a `Terminated` at all, so no interception can reach it
+  (#918), and the subscriber registry keys on the actor path while
+  death-watch keys on `path#uid`, so a re-spawned subscriber can still be
+  unsubscribed by its predecessor's signal (#1238).
+
+- **CI now gates the coverage run it already made, and
+  `scripts/coverage-gate.mjs` is the only coverage parser in the repository
+  (#541, #1016).** `test.yml` used to re-derive the aggregate figure in bash
+  and gate on that, while the script held a second implementation of the same
+  parse that nothing in CI called — so the per-module floors for
+  `src/cluster/` and `src/persistence/` ran only on developer machines. The
+  workflow now runs the suite once with both coverage reporters and hands the
+  captured log and the lcov report to the script, which refuses one artifact
+  without the other, so a step can never report a pass having evaluated half
+  the gate. `COVERAGE_LINE_FLOOR` no longer appears in any workflow: all
+  three floors are configured in the script and nowhere else, and
+  `CoverageGate.test.ts` fails if a workflow starts carrying a copy of the
+  number, if a bash parse of the `All files` row reappears, or if no CI step
+  calls the script with both artifacts.
+
+  The aggregate line-coverage floor is raised to **90 %**, from 80 %.
+  Measured on the CI population (`ACTOR_TS_SKIP_FLAKY_MNS=1`, bun 1.4.0,
+  8186 pass / 35 skip across 522 files): 93.63 % from bun's `All files` row,
+  92.85 % as `Σ LH / Σ LF` over the same 679 lcov records, 93.81 % over the
+  636 records under `src/`, against 93 % from the badge bot's hosted run. The
+  unguarded band narrows from 13 points to about 3, and 90 clears every
+  candidate statistic, so a future change to *which* statistic the aggregate
+  is cannot turn CI red on its own fix. The per-module floors stay at 90,
+  re-measured at 97.29 % and 95.22 %. The README badge's integer now comes
+  out of the gate script through `GITHUB_OUTPUT`, written before any floor
+  verdict — the run whose coverage dropped is exactly the run whose real
+  number the badge should carry.
+
+- **The WebSocket transport frame cap is stated as what it is — per server,
+  not per route (#373)** — as a decision rather than an unfinished half of
+  the issue's title. No behaviour changed. The per-route half is declined,
+  not deferred: `@fastify/websocket` registers once per instance and Bun's
+  `maxPayloadLength` belongs to the whole `Bun.serve`, so neither can hold
+  more than one limit. Express structurally could, but taking it up there
+  would satisfy the title on one backend of three and make the same
+  configuration mean different things on the other two. For a limit whose job
+  is bounding what a hostile peer can allocate, one shape everywhere beats a
+  narrower window on one backend. The cost is unchanged and still named: a
+  64 KiB route sharing a server with an 8 MiB one gets an 8 MiB buffering
+  window, though what that route *accepts* is unaffected — the connection
+  actor still refuses its oversize frames with a clean 1009, per route.
+
+  A canary branch that no gate ever ran is removed.
+  `BackendTransportFrameCap.test.ts` chose its expectation with
+  `detectRuntime() !== 'bun' ? 'client' : 'server'`, but the file only runs
+  under `bun test`, so the Node arm asserted nothing while reading as
+  evidence for a claim nothing in the repository checks. The runtime is now
+  an asserted premise followed by the one outcome it implies, which leaves
+  the canary sharper: the day Bun's built-in `ws` shim honours `maxPayload`,
+  the test goes red and the caveat in the WebSocket docs can be lifted.
+
 - **DevTools charts are Apache ECharts** (#486, part of #482). The overview's
   sparklines and line charts, the cluster ring, the tracing flame graph and
   waterfall, and the profiler icicle. What that buys is tooltips, crosshairs and
@@ -394,6 +481,71 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   smoke, examples, bench:smoke, check:ui, lint:package, lint:audit.
 
 ### Fixed
+
+- **A shard region refused for a `numShards` mismatch now releases the
+  shards it was already hosting (#633).** Refusing a registration only
+  stopped *new* placements, so a region accepted by one leader and refused by
+  its successor — what a rolling deploy that changes the count produces the
+  moment leadership reaches an already-updated node — kept the
+  `shardHomes`/`localShards` the first coordinator gave it, kept delivering
+  out of that cache, and could never be handed off, because the coordinator
+  only sends `HandOff` to a region it has registered. The split routing the
+  refusal exists to prevent therefore survived it. The refusal now stops each
+  hosted shard through the shard actor's own stop, so the entities beneath it
+  run `postStop` and a persistent one flushes rather than being dropped
+  mid-write, and drops the ownership in the same synchronous step.
+
+  A region's `Register` is also re-sent every 500 ms until the coordinator
+  acknowledges or refuses it. `Register` is fire-and-forget at a path that
+  need not exist yet — a node that joins and immediately takes leadership has
+  no coordinator behind that path until its own `sharding.start(...)` runs,
+  and the frame is dropped as an envelope with no handler. Nothing re-sent
+  it, because `ensureRegistered` runs off cluster events and the events for
+  that leadership move have already fired. The region then stayed silently
+  *unregistered*, which is worse than refused: no acknowledgment, no
+  refusal, and a new coordinator that never got the chance to say no to a
+  region still hosting shards.
+
+- **The testkit's multi-node broker validates a brokered frame before
+  dereferencing it (#701)**, the way the production worker broker has since
+  its own fix. `MultiNodeBroker.onMessage` took its argument as a
+  `BrokeredMessage` and read `env.to` straight into `NodeAddress.fromJSON`,
+  so one malformed frame from a worker threw inside `ParallelMultiNodeSpec`'s
+  own `message` listener — where nothing catches it — and failed the whole
+  test process rather than the scenario that sent it. `./testkit` is a
+  published entry point, so this was shipped code.
+
+  The frame guard now lives beside `BrokeredMessage` in
+  `MessageChannelTransport.ts` and is shared by both brokers instead of being
+  private to `WorkerBroker`: a security check copied into two files is how
+  the testkit fork kept the defect through the first fix. As a side effect of
+  the try/catch, a frame the harness forwards to a worker `crash()` has
+  already terminated is dropped instead of throwing `InvalidStateError` out
+  of `postMessage` — that failure used to be attributed to whichever test
+  happened to be running. `tests/unit/testkit/MultiNodeBroker.test.ts` is new
+  and gives that file its first coverage; it drives the broker through an
+  in-memory port shim, so unlike `ParallelMultiNodeSpec.test.ts` it runs in
+  CI rather than behind `ACTOR_TS_SKIP_FLAKY_MNS`.
+
+- **`reEncryptObjectStorage` no longer crashes when `sampleSize` exceeds
+  the object count** (#1353). The pre-sweep keyring-completeness check
+  clamped its sample to the corpus when it picked the default, and not
+  when the caller passed one. A `sampleSize` past the end of the listing
+  walked `items` off its tail and died on `undefined.key` — a bare
+  `TypeError`, thrown before the sweep rewrote a single object.
+
+  The reason this was reachable rather than theoretical is that the
+  master-key rotation runbook suggests it: `operations/upgrades/
+  rolling-migration` shows `sampleSize: 200` as the optional override.
+  Uncomment it on a bucket holding fewer than 200 objects — a staging
+  bucket, a small tenant, a first rehearsal of the rotation — and the
+  operator tool whose whole job is to fail *safely* before touching the
+  corpus instead failed uninformatively.
+
+  The sample is now clamped at the point the default is resolved, so an
+  oversized `sampleSize` samples every object. The documented
+  `min(100, total)` default is unchanged, and the check still refuses a
+  ring that is missing a version the corpus references.
 
 - **A cluster that can never converge now says so** (#1351). Give every
   node a non-empty seed list and the default `selfElection: 'immediate'`
@@ -4695,6 +4847,166 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **`KubernetesLease` no longer memoises the Pod's ServiceAccount bearer
+  token for the process lifetime (#760).** A projected token is time-bound,
+  and the cached copy had no TTL, no re-read and no invalidation on an auth
+  failure: the first 401 fired `onLost`, `ClusterSingletonManager`
+  re-acquired on the same lease instance every 5 s, and every attempt
+  replayed the same dead token — so the singleton, or the shard coordinator,
+  stayed down until the pod was restarted. CWE-613.
+
+  The two credential sources are now distinguished by lifetime rather than
+  only by shape. An explicitly supplied `apiServerUrl` + `authToken` +
+  `caCert` triple is still cached for the process lifetime, because there is
+  nowhere to re-read it from. A credential read from the ServiceAccount mount
+  is reused for at most the new `tokenReloadIntervalMs` (default 60 s), after
+  which the token file's mtime decides between another interval on the same
+  bytes and a fresh read — so the steady state costs one `stat` per interval
+  per lease. On top of that, a 401 or 403 invalidates the cached credential:
+  the mount is re-read and the operation retried exactly once, across
+  acquire, renewal and release, before anything is reported as lease loss. An
+  explicitly supplied token is never retried that way, which is what bounds
+  the retry against a loop.
+
+  `KubernetesLeaseOptions` gains `withTokenReloadIntervalMs(...)` and a
+  `withCredentialLoader(...)` test seam; `K8sApi.ts` exports
+  `MountedCredentials` and `MountedCredentialLoader`, which makes the
+  in-cluster credential path drivable from a test for the first time. The
+  documentation claimed the kubelet-mounted token "works seamlessly" — the
+  exact inverse of the implementation, steering operators toward the path
+  that carried the defect — and now states the actual reload semantics in
+  both languages.
+
+- **`FilesystemObjectStorageBackend` now confines every operation with
+  `fs.realpath` rather than string comparison alone (#748).** A symlink
+  planted inside the storage root and pointing out of it is refused instead
+  of followed — at an intermediate key segment, at `<key>` itself on the read
+  path, or at the `<key>.meta.json` sidecar — by `put`, `get`, `delete` and a
+  prefixed `list`. A root that is itself a symlink keeps working: it is
+  canonicalised and containment measured against the result. The prefixed
+  `list` case became reachable only with #746, which moved the walk's start
+  from the root to the prefix's directory.
+
+  The metadata sidecar is written through a temp file and renamed into place,
+  like the object body: its name is fully deterministic and therefore
+  pre-plantable, and `writeFile`'s default `'w'` flag follows a link and
+  truncates its target. Not `{ flag: 'wx' }`, because `get` reads that exact
+  name back and a re-put must legitimately replace it.
+
+  The JSDoc claiming the old lexical check caught "URL-encoded traversal,
+  symlinks resolved at OS level" is corrected: it did neither —
+  `path.resolve` does not URL-decode and never touches the filesystem — and
+  it cannot fire at all today, because the key validator already excludes
+  every input that could make `path.join(dir, key)` escape. Two limits are
+  now written down rather than implied away: canonicalise-then-open narrows
+  the symlink race without closing it, since portable `O_NOFOLLOW` is not
+  reachable through `node:fs`; and the check confines the backend's own
+  operations rather than sandboxing a directory other local processes may
+  write to.
+
+- **The management `GET /metrics` route no longer answers `200` with a
+  zero-byte body when the installed `MetricsRegistry` cannot be read back
+  through `collect()` (#744)**, and the DevTools overview no longer reports
+  zeros for figures it could not read. Both happened with the
+  `promClientRegistry` bridge installed — the documented "one scrape
+  endpoint" wiring — because the bridge writes through to prom-client and
+  keeps no snapshot, so its `collect()` is permanently empty. A zero-byte
+  body is a *valid* empty Prometheus 0.0.4 scrape: the target stayed
+  `up=1`, no target error was raised, and every framework series silently
+  stopped existing, so threshold rules over them never fired again. On the
+  DevTools side a busy node reported 0 messages processed, 0 mailbox drops
+  and no handler latency — the framework's own overload signal reading zero
+  on the screen an operator diagnosing a slow consumer is looking at.
+
+  `MetricsRegistry` gains an optional `readonly collectable?: boolean`, with
+  `isCollectable(registry)` as the reader's question; absent means `true`, so
+  every existing implementation inside this repository and outside it keeps
+  its meaning untouched. The `/metrics` route answers `503` naming the
+  conflict, checked per request rather than while the route tree is built,
+  because `useRegistry` commonly installs the bridge after
+  `managementRoutes` has returned — `/health` and `/ready` are unaffected.
+  `NodeFigures` and the DevTools `stats` sample gain an optional
+  `metricsUnavailable`, which rides along from every peer and is carried by
+  the totals when any one node is blind. Two JSDoc blocks described
+  `collect()` as a snapshot translated back from prom-client; they were the
+  only API-level documentation of that method and promised the opposite of
+  the implementation.
+
+- **`ConsumerController`'s per-`producerId` deduplication map is now bounded
+  (#728).** It previously kept one `{contiguous, above}` entry for every
+  distinct `producerId` it had ever admitted, with no cap, no TTL, no
+  eviction and no `postStop` trim, so its size was a function of how many
+  ids had arrived rather than of how many producers exist. Sender-chosen ids
+  off the wire made that an amplifier — one retained entry per delivery —
+  and it leaked with no sender involved at all, because a `ProducerController`
+  whose caller leaves `producerId` unset mints a fresh random one per
+  construction, so a long-lived consumer served by short-lived producers
+  accumulated an entry per producer.
+
+  Two new options, both opted out of with `Infinity`: `maxProducers`
+  (default 1024), a least-recently-used cap on the map, and
+  `producerIdleTtlMs` (default 300000), a background sweep that drops entries
+  no delivery has touched — the only mechanism that reclaims while nothing is
+  arriving. Eviction is warn-logged rather than silent, paced to at most one
+  line a minute and carrying the count it stands for, so a flood cannot trade
+  a bounded heap for an unbounded log; the peer-supplied producer id is
+  deliberately kept out of the message. Also new: a
+  `ConsumerControllerOptionsValidator` and a `trackedProducers` getter, since
+  the growth this bounds previously had no log line and no counter — the only
+  symptom was the eventual OOM.
+
+  *Behaviour change, and the price of the bound rather than a side effect:*
+  past either limit an entry is dropped, that producer's duplicate
+  suppression goes with it, and a retransmit arriving afterwards runs the
+  handler a second time. That is an at-least-once duplicate the protocol
+  already permits — it never drops a message — but a consumer legitimately
+  serving more than 1024 producers, or with producers that idle for over five
+  minutes between deliveries, should raise the corresponding value. Still
+  open on #728: `maxOutOfOrder`, the cap on the per-producer out-of-order
+  `above` set, which #643 claims in its own acceptance criteria.
+
+- **`reEncryptObjectStorage` can now sweep a corpus written with the
+  integrity HMAC (#739).** The tag authenticates the manifest bytes, so
+  `decodeBody` refused a tagged body without the integrity key,
+  `ReEncryptOptions` had no field to supply one, and the re-encode passed
+  only compression + encryption so it would have stripped the tag regardless.
+  Tamper protection and master-key revocation were therefore mutually
+  exclusive: a deployment running both had to abandon the HMAC or leave a
+  leaked key in `retired` indefinitely, because dropping it makes the
+  historical corpus undecryptable.
+
+  `integrity` takes the same shape the stores take — a flat `IntegrityConfig`
+  or the same per-`persistenceId` resolver — and is resolved per key, so a
+  deployment keyed per tenant resolves here exactly as its store does; tags
+  are verified on read and recomputed on write over the new bytes and the
+  storage-key binding, not copied across. `allowUntaggedBodies` mirrors the
+  stores' option of the same name for a corpus mid-migration, and defaults to
+  `false` for the same reason it does there. A tag is re-applied only where
+  the body already carried one: promoting an untagged body would make it
+  unreadable to any reader not yet holding the integrity key, and a rotation
+  runs while the application is serving.
+
+  The pre-sweep sampler now refuses a run whose sampled tagged bodies have no
+  integrity key to verify them, so the gap surfaces before the first `put`.
+  An unencrypted-plus-HMAC body was previously counted `skippedUnencrypted`
+  and skipped, so for that configuration the sweep reported success having
+  rewritten nothing and the context-binding migration (#612) could never
+  finish; such a body is now re-framed once for its storage key. *Behaviour
+  change:* a sweep over that corpus without `integrity` now fails where it
+  previously returned a clean-looking result.
+
+  What the sweep still cannot do is rotate the **integrity key** itself, and
+  the documentation now says so instead of offering a procedure. The first
+  draft recommended rolling it "the same way you turned integrity on"; that
+  cannot be completed — `allowUntaggedBodies` re-admits bodies carrying no
+  tag, while a body tagged under the old key still carries
+  `FLAG_INTEGRITY_HMAC` and fails the HMAC comparison before that branch is
+  reached, with the new key, without it, and with integrity disabled alike.
+  Fail-closed in every direction, so it is a dead end for the operator rather
+  than a silent half-roll. The per-call `PersistenceOptions.integrity`
+  override does work, read and write independently, per `persistenceId`;
+  #1354 carries the shape a real roll would need.
 
 - **BREAKING (pre-1.0): broker actors can now be given TLS certificate
   material (#743).** `AmqpOptions`, `RedisStreamsOptions`, `MqttOptions`,

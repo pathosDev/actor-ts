@@ -183,6 +183,15 @@ import { Aside } from '@astrojs/starlight/components';
   Otherwise debugging worker failures is painful.
 </Aside>
 
+The broker between the workers drops what it cannot route rather than
+throwing: a frame whose `to` or `from` is not a valid node address, and a
+frame for a worker `crash()` has already terminated, are both discarded.
+Until #701 either one threw inside the harness's own `message` listener,
+where nothing catches it, so one bad frame failed the whole test process
+rather than the scenario that sent it.  The trade is the one above in
+another guise: a scenario that posts a malformed frame gets silence, not a
+diagnostic.
+
 <Aside type="caution" title="Addresses are auto-allocated">
   ```ts
   // Don't pin the same address in two specs that run in parallel

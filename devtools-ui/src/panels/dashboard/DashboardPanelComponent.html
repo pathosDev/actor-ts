@@ -55,7 +55,7 @@
           @if (node.stale) { <span class="dt-badge dt-badge--error">not answering</span> }
         </span>
         <span class="dt-nodetable__figure">{{ count(node.figures.actorCount) }}</span>
-        <span class="dt-nodetable__figure">{{ count(node.figures.messagesProcessed) }}</span>
+        <span class="dt-nodetable__figure">{{ nodeMessages(node) }}</span>
         <span class="dt-nodetable__figure">{{ count(node.figures.mailboxBacklog) }}</span>
         <span class="dt-nodetable__figure">{{ count(node.figures.actorsRestarted) }}</span>
         <span class="dt-nodetable__figure">{{ count(node.figures.deadLetters) }}</span>
