@@ -72,6 +72,54 @@ the questions:
   three plots so a level and a rate never share a y-axis, plus the
   busiest mailboxes right now.
 
+## Pausing time
+
+Every panel here is a live view, which is exactly wrong at the moment it
+becomes interesting: the row you want to read is gone before you have
+read it.  **Pause** in the header — or the <kbd>P</kbd> key, anywhere
+outside a text field — stops the whole view at once.  **Resume** starts
+it again.
+
+Two things stop, and the second one is the point:
+
+- **The data.** No panel folds anything new in while time is stopped.
+- **The clock the panels are read against.**  Every "how long ago"
+  reading in the UI holds still with the view it describes — uptime, a
+  departed node's *last seen*, and the *stopped 12s ago* badge on a
+  terminated actor.  This is what makes the pause useful rather than
+  merely quiet: the actors panel keeps a stopped actor for 30 seconds
+  and then sweeps it away, and 30 seconds is well inside the time it
+  takes to read a supervision tree.  Paused, it stays.
+
+Nothing that happened during the pause is lost, but the two kinds of
+stream get there differently:
+
+| Streams | While paused | On resume |
+| --- | --- | --- |
+| Event stream, tracing spans, profiler | held, oldest dropped past a cap | delivered in order |
+| Overview figures, actors, cluster, mailboxes | discarded | fresh snapshot — the view jumps to now |
+
+The split is not a compromise, it is what each kind of data is.  A tail
+*is* its frames and the server keeps no past to recover them from, so
+holding them is the only way not to lose them.  A tree or a membership
+list only ever answers "what is true now", and a fresh snapshot answers
+that exactly — and more cheaply than replaying every delta.  The header
+says how many frames are being held, and names anything the cap had to
+throw away.
+
+The charts do not end up with a hole.  The server records its figures
+continuously whether or not anyone is watching, so resuming re-reads the
+window and the paused stretch fills in.
+
+Two things deliberately do **not** stop:
+
+- **The connection check.**  A node that dies while you are paused still
+  raises the *No node reachable* dialog.  A paused screen and a dead one
+  look identical, so the one you did not ask for has to say so.
+- **The server.**  The taps keep running; pausing is a property of your
+  view, not of the system being watched.  It is also why a pause costs
+  the actor system nothing extra and can be held as long as you like.
+
 ## Attaching
 
 `DevTools.attach` binds a server of its own — usually what you want,

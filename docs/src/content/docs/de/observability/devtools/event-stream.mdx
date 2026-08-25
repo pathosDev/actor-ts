@@ -21,11 +21,13 @@ Das Filterfeld greift sowohl auf den Event-Typ als auch auf den
 Payload-Text zu, sodass `OrderPlaced` und `order-4711` beide den Tail
 einengen.
 
-**Pause** hält den Tail an, damit du ihn lesen kannst. Während der Pause
-publizierte Events werden verworfen statt gepuffert — beim Fortsetzen in
-eine Wand von allem Zwischenzeitlichen zu laufen ist nicht, was der
-Button verspricht. **Clear** leert den Tail und setzt den
-Verworfen-Zähler zurück.
+**Clear** leert den Tail und setzt den Verworfen-Zähler zurück.
+
+Um den Tail anzuhalten und ihn zu lesen, nimm **Pause** in der Kopfzeile
+— das hält [alle Panels auf einmal](/de/observability/devtools/overview/#die-zeit-anhalten)
+an, dieses eingeschlossen. Während die Zeit steht publizierte Events
+werden *gehalten* und kommen beim Fortsetzen der Reihe nach an; Pausieren
+kostet dich also nichts außer der Verzögerung.
 
 ## Es wird nichts aufgezeichnet, bis du hinsiehst
 
