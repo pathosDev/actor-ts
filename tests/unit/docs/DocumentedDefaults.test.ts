@@ -58,7 +58,11 @@ import {
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../src/http/Constants.js';
+import {
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
+  DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
+  DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
+} from '../../../src/http/Constants.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -250,6 +254,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.websocket.onOversizeFrame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
   { key: 'actor-ts.http.websocket.onInvalidMessage', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
   { key: 'actor-ts.http.websocket.onBackpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
+  { key: 'actor-ts.http.websocket.maxPreAttachFrames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
+  { key: 'actor-ts.http.websocket.maxPreAttachBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
+  { key: 'actor-ts.http.websocket.acceptTimeoutMs', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
   { key: 'actor-ts.http.client.defaultTimeoutMs', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
   { key: 'actor-ts.http.client.maxRedirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
   { key: 'actor-ts.http.client.maxResponseBytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },

@@ -15,6 +15,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../../../../src/http/Constants.js';
+import { DEFAULT_PRE_ATTACH_BUFFER_LIMITS } from '../../../../src/http/websocket/SocketAdapter.js';
 import { transportFrameCapOf } from '../../../../src/http/backend/HttpServerBackend.js';
 import type {
   HttpServerBackend,
@@ -54,19 +55,21 @@ function registrationWithCap(maxFrameBytes: number): WebsocketRouteRegistration 
   return {
     pattern: '/ws',
     maxFrameBytes,
+    preAttachBuffer: DEFAULT_PRE_ATTACH_BUFFER_LIMITS,
     authorize: async () => null,
     onConnection: () => {},
   };
 }
 
 /**
- * Bind `makeRoutes` against a recording backend and hand back the caps it saw.
- * The system is terminated before returning — nothing here outlives the bind.
+ * Bind `makeRoutes` against a recording backend and hand back the registrations
+ * it saw.  The system is terminated before returning — nothing here outlives
+ * the bind.
  */
-async function capsHandedToBackend(
+async function registrationsHandedToBackend(
   config: ConfigObject,
   makeRoutes: (server: WebsocketServerRef<never, never, never>) => Route,
-): Promise<number[]> {
+): Promise<WebsocketRouteRegistration[]> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
@@ -80,10 +83,19 @@ async function capsHandedToBackend(
       .useBackend(backend)
       .bind(makeRoutes(server));
     await binding.unbind();
-    return backend.websocketRoutes.map((registration) => registration.maxFrameBytes);
+    return backend.websocketRoutes;
   } finally {
     await system.terminate();
   }
+}
+
+/** As above, narrowed to the frame cap each registration carried. */
+async function capsHandedToBackend(
+  config: ConfigObject,
+  makeRoutes: (server: WebsocketServerRef<never, never, never>) => Route,
+): Promise<number[]> {
+  const registrations = await registrationsHandedToBackend(config, makeRoutes);
+  return registrations.map((registration) => registration.maxFrameBytes);
 }
 
 describe('transportFrameCapOf', () => {
@@ -147,5 +159,45 @@ describe('HttpExtension.bind — the route policy reaches the backend (#373)', (
     ));
     expect(caps).toEqual([64 * 1024, 4 * 1024 * 1024]);
     expect(transportFrameCapOf(caps.map(registrationWithCap))).toBe(4 * 1024 * 1024);
+  });
+});
+
+/**
+ * #717 AC-3 — the pre-attach buffer bound travels the same road.
+ *
+ * It has to reach the *registration* rather than `onConnection`, because the
+ * backend builds the adapter — and with it the buffer — before it calls
+ * `onConnection`.  A number that arrived any later would arrive after the
+ * window it is meant to bound had already opened.
+ */
+describe('HttpExtension.bind — the pre-attach buffer bound reaches the backend (#717)', () => {
+  test('an unconfigured route hands down the built-in bounds', async () => {
+    const registrations = await registrationsHandedToBackend({}, (server) => websocket('/ws', server));
+    expect(registrations.map((registration) => registration.preAttachBuffer))
+      .toEqual([DEFAULT_PRE_ATTACH_BUFFER_LIMITS]);
+  });
+
+  test('route options outrank HOCON, and HOCON outranks the default', async () => {
+    const config = {
+      'actor-ts': { http: { websocket: { maxPreAttachFrames: 8, maxPreAttachBytes: '64K' } } },
+    };
+    const fromHocon = await registrationsHandedToBackend(config, (server) => websocket('/ws', server));
+    expect(fromHocon[0]!.preAttachBuffer).toEqual({ maxFrames: 8, maxBytes: 64 * 1024 });
+
+    const overridden = await registrationsHandedToBackend(config, (server) => {
+      const routeOptions = WebsocketRouteOptions.create()
+        .withMaxPreAttachFrames(4)
+        .withMaxPreAttachBytes(1024);
+      return websocket('/ws', server, routeOptions);
+    });
+    expect(overridden[0]!.preAttachBuffer).toEqual({ maxFrames: 4, maxBytes: 1024 });
+  });
+
+  test('each route hands down its own bound', async () => {
+    const registrations = await registrationsHandedToBackend({}, (server) => concat(
+      websocket('/narrow', server, WebsocketRouteOptions.create().withMaxPreAttachFrames(2)),
+      websocket('/wide', server, WebsocketRouteOptions.create().withMaxPreAttachFrames(500)),
+    ));
+    expect(registrations.map((registration) => registration.preAttachBuffer.maxFrames)).toEqual([2, 500]);
   });
 });

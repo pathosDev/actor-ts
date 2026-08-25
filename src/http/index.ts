@@ -163,7 +163,11 @@ export type {
   WebsocketRouteRegistration,
   ServerBinding,
 } from './backend/HttpServerBackend.js';
-export type { WebsocketSocketAdapter, WebsocketListeners } from './websocket/SocketAdapter.js';
+export type {
+  WebsocketSocketAdapter,
+  WebsocketListeners,
+  PreAttachBufferLimits,
+} from './websocket/SocketAdapter.js';
 
 // Typed WebSocket stack — websocket() directive, server actor, codecs.
 export * from './websocket/index.js';

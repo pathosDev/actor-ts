@@ -50,6 +50,50 @@ export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
 
 /**
+ * Default cap on how many inbound frames the pre-attach buffer holds — 256.
+ *
+ * **Why this exists (security, #717):** between an upgrade completing and the
+ * connection actor attaching its listeners, every arriving frame is held in
+ * `bufferWebsocketEvents`' array.  That array is drained by `setListeners` and
+ * by nothing else, so a socket whose actor never spawns — a hub that was
+ * stopped, one whose queue the accept never survived — turns an attacker's
+ * frame stream into heap growth with no ceiling at all.  The per-frame
+ * `maxFrameBytes` check lives in the actor that has not spawned yet and cannot
+ * bound the aggregate.
+ *
+ * 256 rather than a handful because the window is two mailbox hops wide, so a
+ * legitimate client sends nothing or a greeting into it and the cap has to be
+ * generous enough that no ordinary burst ever meets it; and rather than
+ * thousands because past a couple of hundred frames the peer is no longer
+ * talking to a connection it expects to be listening.
+ *
+ * It lives here rather than in `WebsocketPolicy.ts` for the same reason
+ * {@link DEFAULT_WEBSOCKET_MAX_FRAME_BYTES} does: two readers, and neither is
+ * subordinate to the other.  The route policy defaults to it, and
+ * `websocketPackageAdapter` falls back to it for an adapter built without a
+ * policy at all — a backend or a test that constructs one directly still gets
+ * a bounded buffer rather than the unbounded one this replaces.
+ */
+export const DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES = 256;
+
+/**
+ * Default cap on the bytes the pre-attach buffer holds — 4 MiB.
+ *
+ * The byte half of {@link DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES}: a count
+ * alone bounds nothing when each frame may be a megabyte.
+ *
+ * 4 MiB is four times the default `maxFrameBytes`, so a route on defaults may
+ * buffer several maximum-size frames before the connection is refused, and it
+ * matches the outbound `maxBufferedBytes` default so both directions of one
+ * connection cost the same worst case.  A route that raises `maxFrameBytes`
+ * above this should raise this with it — the *first* frame is admitted
+ * whatever its size (a single frame is already bounded by the transport's own
+ * payload limit, which is derived from `maxFrameBytes`), so a lone oversized
+ * greeting still works, but the second one meets the cap.
+ */
+export const DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES = 4 * 1024 * 1024;
+
+/**
  * Bytes a streamed static response reads per `pull` — 64 KiB.
  *
  * Not an option: it is the memory a streamed download costs, and the point of

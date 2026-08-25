@@ -439,6 +439,14 @@ actor-ts {
       maxBufferedBytes = 4M       # outbound buffer cap before backpressure
       onBackpressure   = "drop"   # drop | close
       # maxConnections is unlimited by default; set a positive integer to cap.
+      # Inbound frames held while the connection actor starts; past either cap
+      # the socket is closed with 1013 instead of buffered without bound.
+      maxPreAttachFrames = 256
+      maxPreAttachBytes  = 4M
+      # How long an admitted upgrade waits for its connection actor before the
+      # socket is closed and its maxConnections slot released.  Infinity to
+      # disable (code only — HOCON has no Infinity literal).
+      acceptTimeoutMs  = 10s
     }
   }
 
