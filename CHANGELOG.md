@@ -295,6 +295,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`RedisStreamsActor` now routes connection loss into the shared
+  `BrokerActor` reconnect machinery (#742).** It was the one subclass that
+  never called `handleConnectionLost`: it registered no listener on either
+  ioredis client, and its consumer loop answered every `XREADGROUP` rejection
+  the same way — warn, sleep 500 ms, retry the same dead client. `_state`
+  stayed `'connected'` for the whole of an outage, so the configured
+  `reconnect` backoff, the circuit breaker and the `BrokerDisconnected` health
+  signal were all inert on the consume path, and the
+  `XGROUP CREATE … MKSTREAM` bootstrap never re-ran — leaving the loop to
+  spin on `NOGROUP` after a Redis restart that lost the group. Only a
+  publishing application recovered, via the outbound path; a pure consumer
+  had no route in at all.
+
+  The driver's `error` / `close` / `end` signals are now wired to
+  `handleConnectionLost`, which also removes ioredis's unhandled-`error`
+  fallback; signals escalate only from clients that finished connecting, so a
+  refused connection is reported once rather than scheduling two competing
+  reconnect loops. The consumer loop classifies its rejections —
+  connection-level ones (socket gone, `ECONNREFUSED`, ioredis exhausting its
+  per-request retries, `NOGROUP`) hand the outage to the configured backoff
+  and leave the loop, command-level ones keep a short local retry. `NOGROUP`
+  counts as connection-level deliberately: re-running the group bootstrap is
+  the only thing that clears it, and that happens on connect. Repeated
+  identical failures collapse into one WARN per 30 s carrying the count it
+  stood in for.
+
+  `connectImplementation` can now fail — the clients are built with
+  `lazyConnect` and their `connect()` awaited, so an unreachable Redis
+  produces a failed attempt and a backoff instead of a `BrokerConnected` for
+  a broker nothing has reached. The consumer loop is bound to the client
+  generation that started it, closing a window in which a loop suspended in
+  `xreadgroup` across a reconnect would resume beside the new one, two
+  readers sharing one consumer name (#982). A `protected createClient(url)`
+  seam mirrors `NatsActor.createNatsConnection`, so all of this is testable
+  without the `ioredis` optional peer.
+
+  The Redis Streams page documents the reconnect behaviour for the first time
+  (EN + DE), and the `BrokerDisconnected` row of the BrokerActor events table
+  is corrected in both languages: it claimed the event fires when "a
+  `disconnectImplementation` ran or a connection failed", but the only
+  publish site sits inside `handleConnectionLost`, so a graceful `postStop`
+  teardown publishes nothing.
+
 - **DevTools grouped large numbers differently depending on the host**
   (#553). `formatCount` grouped thousands by rewriting the comma out of
   `toLocaleString('en-US')`, but that separator comes from the runtime's
@@ -4386,6 +4429,168 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING (pre-1.0): a `Terminated` the runtime did not emit is no
+  longer honoured (#769).** `ActorCell` retired a death-watch registration
+  on the word of the message — which carries a ref and nothing else — so any
+  in-process code holding a watcher's ref could construct a `Terminated`
+  naming a **live** actor, consume the watch, and leave the watcher
+  permanently blind to that subject's real death: the genuine notification
+  then arrived against a registration that no longer existed and was dropped
+  as unwatched. Framework-emitted instances now carry a module-private brand,
+  checked before any watch bookkeeping is touched; an unbranded instance is
+  consumed and dead-lettered with its sender attached rather than silently
+  swallowed. `watchWith` substitutions pass through the same gate.
+  `Terminated`'s constructor stays public and a hand-built instance still
+  type-checks — it is simply no longer acted upon.
+
+  *Migration:* if you constructed a `Terminated` to drive a watcher (a test
+  double, or forwarding one you received), stop the actor for real instead,
+  or send a domain message of your own.
+
+- **`BackoffSupervisor` no longer respawns on the strength of a message
+  (#769).** It matches the terminating ref by identity rather than by
+  rendered path — which omits the incarnation uid — and asks the child's own
+  cell whether it has actually terminated before nulling `currentChild`,
+  bumping the backoff counter and scheduling a respawn; a claim about a
+  running child is declined with a warning. It also stops a predecessor that
+  is somehow still alive when its replacement is spawned, rather than leaving
+  it orphaned with whatever it owned. Before, one fabricated or forwarded
+  `Terminated` left `child-1` running unwatched and unreachable beside a
+  fresh `child-2`, and skewed the backoff for every genuine failure after.
+
+- **BREAKING (pre-1.0): the object-storage backends and the master-key
+  rotation sweep now share one key policy (#747).** Three code paths
+  validated the same key strings three different ways: the filesystem
+  backend accepted a control character (legal in a POSIX filename),
+  `S3ObjectStorageBackend` validated nothing at all, and the rotation sweep —
+  the strict end — refused such a key on the way back out of the bucket,
+  counted it in `skippedMalformedKey` and returned normally. The operator
+  then followed the runbook, dropped the retired master key, and those bodies
+  became permanently undecryptable.
+
+  `ObjectStorageWriteKeyRules` is now the single declaration of the
+  write-path rule, spread into both backends and the sweep, so a key the
+  framework can write is by construction a key the sweep can process. Each
+  backend has two rule sets: strict on `put`, unchanged on
+  `get`/`delete`/`list` — tightening the read path would not reject a new bad
+  key, it would strand an object an older version already wrote, unreadable
+  and undeletable through the only backend that can reach it.
+  `S3ObjectStorageBackend` validates at all four entry points, having
+  validated at none; its rules are deliberately narrower than the
+  filesystem's, since `..` does not resolve in a bucket. A new
+  `maxLengthBytes` rule measures S3's 1024-byte ceiling in UTF-8 bytes rather
+  than UTF-16 code units, so 600 CJK characters no longer pass a check the
+  service then rejects.
+
+  *Migration:* a `put` whose key contains a control character (0x00–0x1F or
+  0x7F) now throws. Objects already stored under such a key stay fully
+  readable and deletable. Nothing else about the write paths changed.
+
+- **BREAKING (pre-1.0): `reEncryptObjectStorage` throws
+  `ReEncryptIncompleteError` instead of returning when any object was skipped
+  for a malformed key (#747).** A counter the operator has to remember to
+  read is not a safeguard when the next runbook step — dropping the retired
+  master key — is irreversible, and every skipped object is still encrypted
+  under exactly that key. The sweep finishes its pass first, so healthy
+  objects are still rotated and the operator gets every offender from one
+  run; the error carries the full `ReEncryptResult` plus a bounded sample of
+  the offending keys. A refused pass clears its progress store before
+  throwing, so the next run cannot start past the malformed key and report a
+  clean bill of health for the corpus that just failed.
+
+  *Migration:* wrap the call and catch `ReEncryptIncompleteError` if you need
+  the counts on the failing path; reading `skippedMalformedKey` off a
+  returned result now only ever yields 0. There is no opt-out flag — the
+  existing `skip` predicate is how you exclude objects that are not this
+  framework's.
+
+- **BREAKING (pre-1.0): `defaultPidFromKey` refuses a key that is not
+  exactly `<keyPrefix><persistenceId>/<leaf>` (#747)**, instead of taking the
+  first segment after the prefix and discarding the rest. The persistence id
+  becomes the HKDF salt and the sweep then rewrites the body, so a
+  plausible-but-wrong id was not a failed read — it was data re-encrypted
+  under a salt the owning store never derives again. Two mismatches produced
+  one: a `persistenceId` containing `/`, which collapsed every id under a
+  tenant onto one salt, and a `keyPrefix` shorter than the store's own
+  `prefix`, which yielded the same wrong segment for an entire corpus and
+  survives the persistenceId validator from #133 entirely, because the
+  offending segment does not come from the id.
+
+  *Migration:* set `keyPrefix` to the store's `prefix` exactly. A layout that
+  genuinely nests deeper supplies its own `pidFromKey`, which is unaffected.
+
+- **`websocket()` routes now bound the buffer that holds inbound frames
+  between the handshake completing and the connection actor attaching its
+  listeners (#717).** That buffer is drained only by `setListeners`, so a
+  socket whose actor never spawns turned a peer's frame stream into unbounded
+  heap growth — reachable on every connection, on all three backends, with no
+  configured mailbox bound and no flood needed, and not helped by the route's
+  `maxFrameBytes`, which is enforced in the actor that has not spawned. Two
+  new per-route knobs cap it: `maxPreAttachFrames` (256) and
+  `maxPreAttachBytes` (4 MiB), resolved route options > HOCON
+  (`actor-ts.http.websocket.*`) > built-in defaults and carried to the
+  backends with the route registration. Past either, the socket is closed
+  with 1013. `close` and `error` are never metered — shedding either is the
+  permanent leak #570 fixed — and the first frame is always admitted whatever
+  its size, since one frame is already bounded by the transport payload limit.
+
+- **The WebSocket accept path is self-healing (#717).** An upgrade routed at
+  a hub whose cell has already terminated used to be dead-lettered silently
+  and leave the socket orphaned with its `maxConnections` slot burned,
+  because `postSignalEnvelope` returns normally instead of throwing and the
+  wiring layer's `catch` therefore never ran; it is now detected, the socket
+  closed with 1011 and the slot released. Everything that cannot be seen
+  synchronously — a hub that stops between the send and the drain, an
+  `onReceive` an application overrode without handling `websocket-accept`, a
+  connection factory that throws — is caught by a new per-route
+  `acceptTimeoutMs` (10 s, `Infinity` disables it): if no connection actor
+  has attached inside the window the socket is closed with 1013 and the slot
+  released, and an actor that attaches after the deadline is handed the close
+  rather than a socket the framework already killed.
+
+  **BREAKING (pre-1.0):** `WebsocketRouteRegistration` now carries a required
+  `preAttachBuffer` field. Only `HttpExtension` constructs one, so a custom
+  `HttpServerBackend` that merely consumes registrations is unaffected; a
+  test double that builds one adds `preAttachBuffer:
+  DEFAULT_PRE_ATTACH_BUFFER_LIMITS`. Behaviourally, a peer that sends more
+  than 256 frames or 4 MiB before its connection actor attaches, or a hub
+  that takes longer than 10 s to produce one, now sees the connection closed
+  where it previously succeeded.
+
+  Still open on #717, deliberately: delivering `websocket-accept` *ahead* of
+  the hub's queued bulk frames. The command is undroppable but keeps its
+  place in line, and routing control traffic ahead of data is the same
+  decision #985 and #986 need — it should be taken once for all three rather
+  than three times.
+
+- **ROADMAP.md's statement of the gossip replay guard's bound is corrected,
+  and #112's remaining dependency is re-pointed from #940 to #823.** The
+  roadmap said the guard holds "while the sender is still a member". That is
+  one of three ways a receiver can be missing the high-water mark the guard
+  rests on, and it is not the ordinary one: the map holding those marks has a
+  single writer and it runs in the gossip path, so a member this node learned
+  third-party is `up` with no mark at all, and one recorded frame from it
+  merges — with the sender a full member throughout and nothing evicted
+  anywhere. The cluster-security page in both languages had already withdrawn
+  that wording and told the reader in so many words that the changelog and
+  roadmap entries said it and were wrong, so the docs pointed at a roadmap
+  correction that never landed.
+
+  The roadmap also no longer says #112 waits on #940. #940 landed
+  `NodeAddress.incarnation` as an optional field and deliberately did not act
+  on it, because a refusal keyed on an optional field is one an attacker opts
+  out of by stripping it while a legitimate older peer walks into it. The
+  issue that gates a refusal is #823, the wire break that makes the field
+  required. `GossipReplayBoundDocumented.test.ts` grows a fourth guarded text
+  and a fourth assertion, so both corrections are held by execution rather
+  than by review. No behaviour changed; the replay class itself still waits
+  on #823.
+
+  Not corrected here, and needing a decision: the `[0.16.0]` entry for #112
+  carries the same withdrawn wording ("while its sender is still a member").
+  It describes a release that has already shipped, so amending it is a
+  different call from fixing a roadmap — raised rather than taken.
 
 - **The gossip replay guard's documented bound is corrected: a recorded
   frame is refused to a receiver that holds a high-water mark for that
