@@ -351,3 +351,28 @@ export const SINGLETON_HOST_DISAGREEMENT_HOLD_MS = 2_000;
  * again, and a peer already standing down is already on the requester's list.
  */
 export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;
+
+/**
+ * How many fruitless seed-contact rounds pass before a node still stuck in
+ * `joining` says why (#1351).
+ *
+ * The check behind this is exact rather than heuristic — no `up` member is
+ * known and no self-election is scheduled, which together mean nothing can
+ * promote this node — so the count is not there to raise confidence in the
+ * diagnosis. It is there because the same condition holds *legitimately* for
+ * the first few seconds of every cold start, while the peer that will form
+ * the cluster is still coming up. A node that reports on the first round
+ * would cry wolf on every ordinary simultaneous start.
+ *
+ * Three rounds is nine seconds at the default `seed-retry-interval` of 3 s —
+ * long enough to cover a peer that is merely slow to boot (the case that
+ * prompted the number was a peer taking about nine seconds to answer its
+ * first `hello`), short enough that the line still arrives while an operator
+ * is watching the start-up they just triggered.
+ *
+ * A count of rounds rather than a duration, because it is the *rounds* that
+ * carry the evidence: each one is a full pass over the seed list with nothing
+ * to show for it. A node configured with a slow retry interval has asked for
+ * a correspondingly slower verdict.
+ */
+export const COLD_START_STALL_AFTER_SEED_ROUNDS = 3;

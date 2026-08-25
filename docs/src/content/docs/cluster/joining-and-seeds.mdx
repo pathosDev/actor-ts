@@ -145,6 +145,19 @@ The `seedRetryIntervalMs` retry loop still matters, but it solves a
 different problem: a seed that is reachable *eventually*.  It cannot
 manufacture a first member.
 
+It does, however, carry the diagnosis.  A node still `joining` after a
+few contact rounds, with no `up` member in sight and no self-election
+due, logs one WARN naming what it can see and what to change — the
+unanswered seed addresses when nothing has replied, or the seed list and
+`selfElection` pairing above when the peers are all present and all
+waiting.  It is reported once, not per round.
+
+That line is worth knowing about because the *symptom* is nowhere near
+the cause: a cluster stuck this way has no `up` member, a
+[cluster singleton](/cluster/singleton/overview/) picks its host from
+the `up` members, and so the first thing most applications notice is
+an `AskTimeoutError` from a singleton proxy.
+
 ## Seed discovery — beyond a static list
 
 A hard-coded seed list works for tests and small clusters.  For
