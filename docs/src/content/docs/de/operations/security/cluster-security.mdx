@@ -358,6 +358,21 @@ Sourcing ebenso, dessen Event-Envelopes über PubSub laufen statt
 über einen eigenen Frame-Kind — siehe
 [was eine Replica ihren Peers glaubt](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt).
 
+Validierung ist nur die Hälfte. Ein Frame kann völlig wohlgeformt
+sein und trotzdem **für einen Node sprechen, der ihn nicht gesendet
+hat**, und diese Fehlerklasse wird in dieser Codebase überall gleich
+geschlossen: die Identität kommt aus der Verbindung, nicht aus dem
+Payload. Ein `leave` darf nur den Node abmelden, der es gesendet hat;
+Gossip ersetzt den Beitrag des sendenden Peers und den sonst
+niemandes; eine Sharding- oder Singleton-Direktive wird nur befolgt,
+wenn sie vom Envelope-Handler des jeweiligen Pfads eingepackt ankam —
+der einzigen Stelle, an der die authentifizierte Adresse existiert;
+und die `replica` eines replizierten Events wird gegen den Node
+gehalten, der es publiziert hat. Ein Frame, der einen Actor
+stattdessen über die generische Pfadauflösung erreicht — die nichts
+entfernt, aber auch keinen Sender mitführt —, gilt als nicht
+authentifiziert und nicht als vertrauenswürdig.
+
 Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
 eine Versionsabweichung und ein feindlicher Peer sehen im Log

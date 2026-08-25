@@ -115,9 +115,16 @@ and then folded, holder or not.
 So single-writer mode is a **consistency** upgrade, not an
 authorization boundary.  It stops N replicas of *your* application
 writing at once; it does not stop a cluster member from publishing an
-envelope, and it does not make an observer replica reject one.  If
-what you need is "only this node's events count", that is cluster
-admission control — mTLS and membership — not the lease.
+envelope under **its own** replica id, and it does not make an
+observer replica reject one.
+
+What *is* checked on the remote path is authorship: an envelope must
+come from a node allowed to write under the `replica` it names, so a
+member cannot publish an event attributed to the lease holder.  That
+is a different question from "who may write", and the two do not
+substitute for one another.  If what you need is "only this node's
+events count", that is cluster admission control — mTLS and membership
+— not the lease.
 
 ## Failover sequence
 

@@ -131,7 +131,7 @@ Feld eines eintreffenden Event-Envelopes wurde also von einem anderen
 Node geschrieben.  Alles, was den Cluster-Handshake abschließen kann,
 erreicht einen replizierten Actor — über den PubSub-Mediator oder
 direkt über seinen Actor-Pfad — und Mitgliedschaft ist keine
-Voraussetzung.  Daraus folgen zwei Eigenschaften, und beide sind
+Voraussetzung.  Daraus folgen drei Eigenschaften, und alle drei sind
 betrieblich relevant.
 
 **Ein Envelope wird vollständig validiert, bevor irgendetwas
@@ -155,20 +155,42 @@ allen verworfen, dauerhaft, weil das Identitäts-Set gesnapshottet
 wird.  `seqAtReplica` steht weiterhin im Envelope, aber nur noch als
 letzter Tie-Break in der kanonischen Ordnung.
 
+**Der Autor eines Envelopes ist der Node, der ihn gesendet hat.**
+`replica` ist ein vom Sender gewählter Wert und wird deshalb gegen den
+Node geprüft, den die *Verbindung* authentifiziert hat, statt geglaubt
+zu werden.  Ein replizierter Actor abonniert sein Topic so, dass der
+publizierende Node mitgeliefert wird, und `isAuthorizedAuthor`
+entscheidet, ob dieser Node unter der eintreffenden `replica`-Id
+schreiben darf; der Default ist genau die Gleichheit, die der
+Default-`replicaId` wahr macht.  Ein Envelope, der den Actor ohne
+authentifizierte Herkunft erreicht — was ein direkt an den Actor-Pfad
+adressierter Frame erzeugt, PubSub also umgeht —, wird allein deswegen
+abgelehnt.
+
+Die Bindung trägt, weil ein repliziertes Event **höchstens einen Hop**
+zurücklegt: `persist` ist der einzige Publisher und kein Mediator
+leitet Empfangenes weiter — der Node, von dem ein Envelope kommt, ist
+also der Node, der ihn geschrieben hat.
+
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Die Autorschaft ist noch nicht authentifiziert">
+<Aside type="caution" title="Eine eigene replicaId braucht eine eigene Autorenprüfung">
   ```ts
-  // A member can publish an event attributed to another replica.
+  override get replicaId(): ReplicaId { return 'eu-west'; }
+
+  protected override isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+    return REPLICA_NODES[replica] === origin.toString();
+  }
   ```
-  Nichts bindet das `replica`-Feld eines Envelopes an den Node, der ihn
-  gesendet hat.  Ein Cluster-Mitglied kann also ein Event verfassen, das
-  jede Replica unter der Id eines Peers faltet und journalisiert.
-  *Unterdrücken* kann es die echten Events eines Peers nicht — das ist
-  der Teil, den die Entropie schließt —, aber eine replizierte Entity
-  ist nur so vertrauenswürdig wie die Zugangskontrolle des Clusters
-  selbst.  Betreibe Replicated ES hinter mTLS und behandle
-  Cluster-Mitgliedschaft als Privileg.
+  Die Default-Prüfung vergleicht `replica` mit der Adresse des sendenden
+  Nodes — genau richtig, solange `replicaId` diese Adresse *ist*, und
+  eine Ablehnung jedes ehrlichen Envelopes, sobald sie es nicht mehr
+  ist.  Überschreibe beides gemeinsam: die zwei sind das Mapping von
+  Replica auf Node, und dessen zweite Hälfte kann das Framework nicht
+  erraten.  Ein `return true` stellt das alte Verhalten vollständig
+  wieder her — ein Mitglied darf dann Events unter jeder Replica-Id
+  verfassen — und lohnt sich nur für einen Cluster, dessen Mitglieder
+  alle so vertrauenswürdig sind wie dieser Prozess.
 </Aside>
 
 <Aside type="note" title="Die Event-Historie ist per Ablehnung begrenzt">
