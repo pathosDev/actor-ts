@@ -2025,8 +2025,8 @@ function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOption
   const looked = ADVERTISED_HOST_ENV_VARS.join(', ');
   if (options.advertisedHost === DEFAULT_ADVERTISED_HOST) {
     system.log.warn(
-      `cluster: nothing named this node's advertised address (no host, no advertisedHost, `
-      + `no ${looked}), so it will tell peers to dial ${advertised} — reachable from this `
+      `cluster: nothing named this node's advertised address (no routable host, no `
+      + `advertisedHost, none of ${looked}), so it will tell peers to dial ${advertised} — reachable from this `
       + `machine only. Set ClusterOptions.withAdvertisedHost(...), ${ConfigKeys.remote.tcp.advertisedHost}, `
       + 'or the CLUSTER_HOST / POD_IP env var before running more than one node.',
     );
