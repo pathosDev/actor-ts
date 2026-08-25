@@ -8,6 +8,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
 
@@ -22,8 +24,19 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
     readonly username: string;
     readonly password: string;
   };
-  /** Enable TLS. */
-  readonly ssl?: boolean;
+  /**
+   * TLS: `true` for the system trust store, or the certificate **material**
+   * itself — a private CA to trust, or a client certificate for mTLS (#743).
+   *
+   * One field rather than a separate `tls` one because that is kafkajs's own
+   * shape: it takes `ssl: boolean | tls.ConnectionOptions` and this is the
+   * same union, spelled in the project's TLS vocabulary.
+   *
+   * The HOCON leaf stays **boolean-only** — a config file is the wrong place
+   * for a private key, the same call `TcpServerOptionsType.tls` makes, so the
+   * material form is reachable from code only.
+   */
+  readonly ssl?: boolean | TlsTransportOptionsType;
   /** Producer options. */
   readonly producer?: {
     readonly idempotent?: boolean;
@@ -75,8 +88,11 @@ export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> 
     return this.set('sasl', sasl);
   }
 
-  /** Enable TLS.  Default `false`. */
-  withSsl(on = true): this {
+  /**
+   * Enable TLS.  Default `false`.  Pass certificate material instead of
+   * `true` for a private CA or mTLS — the material itself, not a file path.
+   */
+  withSsl(on: boolean | TlsTransportOptionsType = true): this {
     return this.set('ssl', on);
   }
 
@@ -110,6 +126,8 @@ export class KafkaOptionsValidator extends BrokerOptionsValidator<KafkaOptionsTy
     this.commonRules(s);
     this.nonEmptyStringOrArray('brokers', s.brokers);
     this.nestedPositive('consumer.commitTimeoutMs', s.consumer?.commitTimeoutMs);
+    const tlsProblem = findBrokerTlsProblem(typeof s.ssl === 'object' ? s.ssl : undefined);
+    if (tlsProblem !== null) this.fail('ssl', tlsProblem);
   }
 }
 

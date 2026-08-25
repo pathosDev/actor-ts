@@ -25,7 +25,8 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import type { LogContextData } from '../../../src/LogContext.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
 import {
@@ -699,4 +700,107 @@ describe('BackoffSupervisor — Terminated provenance', () => {
       await sys.terminate();
     }
   }, 5_000);
+});
+
+/* ============================================================== */
+/* Stash overflow (#773)                                          */
+/* ============================================================== */
+
+/**
+ * Collects `warn` calls with their structured fields.
+ *
+ * `withSource` / `withFields` return `this` the way `NoopLogger` does, so a
+ * line the supervisor emits through its own actor-scoped logger still lands
+ * in the same list.
+ */
+class WarnCollector implements Logger {
+  readonly level = LogLevel.Warn;
+  readonly warnings: Array<{ readonly message: string; readonly args: unknown[] }> = [];
+
+  debug(): void { /* discarded */ }
+  info(): void { /* discarded */ }
+  error(): void { /* discarded */ }
+  warn(message: string, ...args: unknown[]): void { this.warnings.push({ message, args }); }
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+
+  /** The warnings whose message mentions `fragment`. */
+  about(fragment: string): Array<{ readonly message: string; readonly args: unknown[] }> {
+    return this.warnings.filter((w) => w.message.includes(fragment));
+  }
+}
+
+describe('BackoffSupervisor — stash overflow (#773)', () => {
+  test('an evicted stash entry dead-letters, and the warning aggregates', async () => {
+    // Before #773 this path was the framework's other silent loss: `shift()`
+    // threw the entry away and emitted one `log.warn` per message, so a flood
+    // against a supervisor in a backoff window destroyed the payload and
+    // amplified into the log at the same rate.
+    crashesObserved = 0; flakyStarts = 0;
+    const log = new WarnCollector();
+    const letters: unknown[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter.message); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Warn);
+    const sys = ActorSystem.create('backoff-stash-overflow', sysOptions);
+    // Long enough that the respawn timer never fires inside this test: the
+    // stash has to still be the only place those messages live when the
+    // assertions run.
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-overflow',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // Five messages into a stash of two: 1 and 2 fill it, then 3, 4 and 5
+      // each evict the oldest — so 1, 2 and 3 are the ones lost.
+      for (const value of [1, 2, 3, 4, 5]) supervisor.tell({ kind: 'echo', value });
+      await awaitCondition(() => letters.length >= 3, {
+        timeoutMs: 4_000,
+        label: 'the three evicted messages were dead-lettered',
+      });
+
+      expect(letters).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+        { kind: 'echo', value: 3 },
+      ]);
+      // Doubling, not one line per message: evictions 1 and 2 warn, eviction
+      // 3 does not.  The count is the assertion — three warnings would mean
+      // the flood is back.
+      const overflowWarnings = log.about('stash full');
+      expect(overflowWarnings).toHaveLength(2);
+      expect(overflowWarnings[1]!.args[0]).toEqual({ stashLimit: 2, droppedTotal: 2 });
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
 });

@@ -260,6 +260,49 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     this.handleConnectionLost(cause);
   }
 
+  /**
+   * An inbound frame breached `maxFrameBytes`: close with 1009 and enter the
+   * reconnect cycle.
+   *
+   * Closing rather than dropping is the *whole* of the protection available
+   * here, and it is worth being precise about what it does and does not buy.
+   * It buys nothing against the first frame — by the time this runs the
+   * runtime has already reassembled the payload on the heap, and no supported
+   * runtime's native `WebSocket` accepts a payload limit that would have
+   * stopped it (measured; see {@link websocketClientConstructor}).  What it
+   * buys is that the allocation is not *repeatable* on this connection: the
+   * previous bare `return` left the socket open, so a hostile peer could spend
+   * the same heap again, once per frame, for as long as it cared to — and
+   * emit one warning line per attempt with it (#750).  A peer that wants
+   * another round now has to pay for a full reconnect, which the inherited
+   * backoff and circuit breaker already throttle.
+   *
+   * Routed through {@link onSocketDown} rather than `handleConnectionLost`
+   * directly because the close is *ours*: the peer need not answer it, so
+   * nothing else would clear `pingTimer`, null `this.socket`, or emit
+   * `websocketClientDisconnected`.  Calling `handleConnectionLost` bare would
+   * start a reconnect while the old handle and its ping timer were still live.
+   */
+  private rejectOversizeFrame(cap: number): void {
+    // A label, not the configured URL: whatever the URL carries would
+    // otherwise be replayed into the log at a peer's prompting.  The close
+    // below bounds that to one line per dial rather than one per frame, which
+    // is why #592's latch clause was never needed — but the redaction still
+    // stands, because the peer still chooses how many dials it provokes.
+    // `redactedUrlLabel` drops the query string as well as the userinfo — a
+    // WebSocket endpoint is commonly authenticated with a `?token=…` — while
+    // keeping the path, which is what tells two connections to the same host
+    // apart (#592).
+    const endpoint = redactedUrlLabel(this.options.url ?? '<unknown>');
+    this.log.warn(
+      `WebsocketClientActor: oversize inbound frame (> ${cap} bytes) from ${endpoint} — closing with 1009`,
+    );
+    // 1009 is RFC 6455 "Message Too Big".  Order matters: `onSocketDown` nulls
+    // `this.socket`, so the close has to be issued before it runs.
+    try { this.socket?.close(1009, 'message too big'); } catch { /* ignore */ }
+    this.onSocketDown(new Error('oversize inbound frame'));
+  }
+
   private handleInbound(data: unknown): void {
     // First, before every reason this frame might be rejected: an
     // unrecognised, oversize or undecodable frame is still the peer speaking,
@@ -273,15 +316,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     }
     const cap = this.options.maxFrameBytes ?? DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;
     if (frameByteLength(frame) > cap) {
-      // A label, not the configured URL: the peer decides how often this line
-      // is written (one warn per oversize frame, with no latch), so anything
-      // secret in the URL would be replayed into the log at its discretion.
-      // `redactedUrlLabel` drops the query string as well as the userinfo — a
-      // WebSocket endpoint is commonly authenticated with a `?token=…` — while
-      // keeping the path, which is what tells two connections to the same host
-      // apart (#592).
-      const endpoint = redactedUrlLabel(this.options.url ?? '<unknown>');
-      this.log.warn(`WebsocketClientActor: dropped oversize inbound frame (> ${cap} bytes) from ${endpoint}`);
+      this.rejectOversizeFrame(cap);
       return;
     }
     let decoded: TIn;

@@ -231,6 +231,9 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   registerRoute(route: RouteRegistration): void {
+    if (this.registered.some((r) => r.method === route.method && r.pattern === route.pattern)) {
+      throw new Error(`HonoBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
+    }
     this.registered.push(route);
   }
 

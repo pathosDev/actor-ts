@@ -8,6 +8,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { NatsMessage } from './NatsActor.js';
 
@@ -22,6 +24,16 @@ export interface NatsOptionsType extends BrokerCommonOptionsType {
   readonly subscriptions?: ReadonlyArray<{ readonly subject: string; readonly target: ActorRef<NatsMessage> }>;
   /** Optional client name reported to the server. */
   readonly name?: string;
+  /**
+   * TLS material forwarded to nats.js as its `tls` option — a private CA to
+   * trust, or a client certificate for mTLS, which is the common production
+   * posture for NATS.  Carries the material itself, never a path to it.
+   *
+   * Setting it also asks nats.js to negotiate TLS, so it works with a plain
+   * `nats://` server URL.  Deliberately has no HOCON leaf — a config file is
+   * the wrong place for a private key.
+   */
+  readonly tls?: TlsTransportOptionsType;
 }
 
 export class NatsOptionsBuilder extends BrokerOptionsBuilder<NatsOptionsType> {
@@ -59,6 +71,11 @@ export class NatsOptionsBuilder extends BrokerOptionsBuilder<NatsOptionsType> {
   withName(name: string): this {
     return this.set('name', name);
   }
+
+  /** TLS material for the NATS dial.  Pass the material, not a file path. */
+  withTls(tls: TlsTransportOptionsType): this {
+    return this.set('tls', tls);
+  }
 }
 
 /** Validates resolved {@link NatsOptionsType} settings. */
@@ -69,6 +86,8 @@ export class NatsOptionsValidator extends BrokerOptionsValidator<NatsOptionsType
   protected rules(s: Partial<NatsOptionsType>): void {
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
+    const tlsProblem = findBrokerTlsProblem(s.tls);
+    if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }
 }
 

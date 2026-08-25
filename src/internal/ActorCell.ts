@@ -140,6 +140,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * never happen.
    */
   private _actorCreationSettled = false;
+  /**
+   * Does this actor's mailbox want its drops dead-lettered (#773)?
+   *
+   * Copied out of the mailbox in {@link _createMailbox} rather than read
+   * through it on every drop, and `false` for the two shapes that cannot ask:
+   * a mailbox that does not report drops at all, and one built by
+   * `withMailboxCapacity`, which has no door onto the switch — that door is
+   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   */
+  private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
@@ -1686,7 +1696,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     const mailbox = this._buildMailbox(blueprint);
-    if (reportsDrops(mailbox)) mailbox.observeDrops((reason) => this._onMailboxDrop(reason));
+    if (reportsDrops(mailbox)) {
+      // Read once, here, rather than per dropped message: the flag is fixed at
+      // the mailbox's construction, and this observer runs on the sender's
+      // stack at the moment the system is already past its capacity.
+      this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
+      mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
+    }
     return mailbox;
   }
 
@@ -1748,8 +1764,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * cardinality budget belongs: `observeDrops` appends rather than assigns,
    * so a caller's own `onDrop` still fires alongside this observer and can
    * mint a path-labelled series they have sized their own monitoring for.
+   *
+   * **The dead letter comes first, and does not depend on metrics** (#773).
+   * Overflow used to be the one loss path in this file that left no forensic
+   * record — {@link deadLetterStash}, the termination drain, a tell to a
+   * terminated cell and a watcher that refused its `Terminated` all
+   * dead-letter — and the rationale written beside those applies here
+   * unchanged: "I told an actor and nothing happened, anywhere" is
+   * unfalsifiable from the outside.  A mailbox opts in because the cost is
+   * real (see {@link _deadLetterMailboxDrops}), and once it has, a system
+   * running without a metrics registry must still get the record — which is
+   * why this sits above the early return rather than below it.
+   *
+   * The letter carries the message, the sender and this actor, exactly as
+   * every other site here builds theirs.  The envelope's MDC `context` and
+   * tracing `trace` do not survive it: `DeadLetter` has no slot for them and
+   * none of the other loss paths preserve them either, so widening the event
+   * is its own change rather than a rider on this one.
    */
-  private _onMailboxDrop(reason: MailboxDropReason): void {
+  private _onMailboxDrop(reason: MailboxDropReason, envelope: Envelope<TMessage>): void {
+    if (this._deadLetterMailboxDrops) {
+      this.system.deadLetters.tell(new DeadLetter(envelope.message, envelope.sender, this.self));
+    }
     // The one metric site here that is hot exactly when the system is in
     // trouble: a mailbox sheds load under saturation, so this runs per dropped
     // message.  Walking the extension chain to reach a registry that may not

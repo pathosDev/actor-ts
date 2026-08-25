@@ -92,6 +92,7 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   protocolVersion?: 4 | 5;      // default 4 (= MQTT 3.1.1)
   codec?: MqttCodec<unknown>;   // default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
+  tls?: TlsTransportOptionsType;  // cert material for mqtts:// / wss://; code-only
 }
 ```
 
@@ -231,6 +232,31 @@ A retained message is **stored by the broker** and delivered immediately
 to any new subscriber.  Use for configuration (devices reading the latest
 config on connect) or last-known-state.  Keep `retain` unset for normal
 pub/sub — otherwise the broker keeps every old message visible forever.
+
+## TLS
+
+An `mqtts://` or `wss://` URL starts the handshake, and mqtt.js
+verifies the broker against the **system trust store** by default.
+Behind a private CA, or for client-certificate auth, add `withTls`:
+
+```ts
+const mqttOptions = MqttOptions.create()
+  .withBrokerUrl('mqtts://mqtt.example.com:8883')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/device.crt', 'utf8'),
+    key: fs.readFileSync('./tls/device.key', 'utf8'),
+  });
+```
+
+Every field carries **the material itself**, never a path to it,
+which is why the example reads the files.  `cert` and `key` only
+mean anything together, and one without the other is rejected when
+the actor starts.
+
+`withTls` configures the handshake rather than starting one, so keep
+the `mqtts://` / `wss://` scheme.  It has no config key on purpose: a
+private key does not belong in `application.conf`.
 
 ## Peer dependency
 

@@ -39,7 +39,13 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   readonly protocols?: string | ReadonlyArray<string>;
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   readonly codec?: WebsocketCodec<TOut, TIn>;
-  /** Inbound frame size cap; oversize frames are dropped with a warning.  Default 1 MiB. */
+  /**
+   * Inbound frame size cap.  An oversize frame closes the connection with 1009
+   * ("Message Too Big") and starts the usual reconnect — not because the
+   * allocation can be prevented (no runtime's native client `WebSocket` takes
+   * a payload limit, so the frame is already on the heap when the check runs),
+   * but so that a peer cannot repeat it on the same connection.  Default 1 MiB.
+   */
   readonly maxFrameBytes?: number;
   /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
@@ -93,7 +99,13 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
     return this.set('codec', codec);
   }
 
-  /** Inbound frame size cap; oversize frames are dropped with a warning.  Default 1 MiB. */
+  /**
+   * Inbound frame size cap.  An oversize frame closes the connection with 1009
+   * ("Message Too Big") and starts the usual reconnect — not because the
+   * allocation can be prevented (no runtime's native client `WebSocket` takes
+   * a payload limit, so the frame is already on the heap when the check runs),
+   * but so that a peer cannot repeat it on the same connection.  Default 1 MiB.
+   */
   withMaxFrameBytes(bytes: number): this {
     return this.set('maxFrameBytes', bytes);
   }

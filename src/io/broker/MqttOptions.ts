@@ -26,6 +26,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 
@@ -63,6 +65,16 @@ export interface MqttOptionsType extends BrokerCommonOptionsType {
    * Default: {@link mqttJsonCodec}.  One codec per actor.
    */
   readonly codec?: MqttCodec<unknown>;
+  /**
+   * TLS material merged into mqtt.js's connect options — a private CA to
+   * trust, or a client certificate for mTLS.  Carries the material itself,
+   * never a path to it.  Pair it with an `mqtts://` or `wss://` URL: this
+   * configures the handshake, it does not turn one on.
+   *
+   * Deliberately has no HOCON leaf — a config file is the wrong place for a
+   * private key.
+   */
+  readonly tls?: TlsTransportOptionsType;
 }
 
 /** Fluent builder for {@link MqttOptionsType}. */
@@ -116,6 +128,11 @@ export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
   withCodec(codec: MqttCodec<unknown>): this {
     return this.set('codec', codec);
   }
+
+  /** TLS material for an `mqtts://` / `wss://` dial.  Pass the material, not a file path. */
+  withTls(tls: TlsTransportOptionsType): this {
+    return this.set('tls', tls);
+  }
 }
 
 /**
@@ -133,6 +150,8 @@ export class MqttOptionsValidator extends BrokerOptionsValidator<MqttOptionsType
     this.oneOf('qos', [0, 1, 2]);
     this.oneOf('protocolVersion', [4, 5]);
     this.nonNegativeInt('keepAlive'); // 0 disables keep-alive per the MQTT spec
+    const tlsProblem = findBrokerTlsProblem(_s.tls);
+    if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }
 }
 

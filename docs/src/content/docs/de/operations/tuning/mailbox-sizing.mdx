@@ -193,7 +193,8 @@ Beobachte:
   hier bewusst: eine Tiefen-Serie existiert nur für einen Actor, der
   bereits in Schwierigkeiten steckt, eine Drop-Serie dagegen für jeden
   Actor, der seine Arbeit tut. Für Drop-Zahlen pro Instanz nimm ein
-  eigenes `onDrop`.
+  eigenes `onDrop`; es bekommt neben dem Grund auch den verworfenen
+  Envelope, kann also sagen *was* verloren ging und nicht nur wie viel.
 - **`MailboxFullError`-Rate** beim Sender — taucht meist als
   Supervisor-Restarts des sendenden Actors auf.
 
@@ -207,6 +208,55 @@ Zeile alarmierst du, wenn du keinen Metrik-Stack betreibst.
   gleichermaßen ab — die Cell registriert ihren Observer auf allem, was
   `DropReportingMailbox` implementiert. Ein eigenes
   `BoundedMailboxOptions.onDrop` feuert weiter daneben.
+</Aside>
+
+## Behalten, was du verworfen hast
+
+Ein Zähler sagt, wie viel abgeworfen wurde. Er sagt nicht, was: ein
+verworfener Telemetrie-Messwert und ein verworfenes Command mit offenem
+Callback sind dasselbe Inkrement. `deadLetterDrops` schließt diese Lücke,
+indem es jeden verworfenen Envelope an die
+[Dead Letters](/de/operations/dead-letters/) leitet, wo er seine Nutzlast
+und seinen Sender behält:
+
+```ts
+import { ActorOptions, BoundedMailbox, BoundedMailboxOptions } from 'actor-ts';
+
+const commandMailbox = BoundedMailboxOptions.create()
+  .withCapacity(1_000)
+  .withOverflow('drop-new')
+  .withDeadLetterDrops(true);
+
+const commandOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox(commandMailbox));
+```
+
+`PriorityMailboxOptions` hat denselben Schalter, und dort lohnt er sich
+öfter: Eine Nachricht, die diese Mailbox abwirft, hat deine
+Prioritätsfunktion als letzte eingestuft — und nur die Nutzlast kann
+bestätigen, dass das richtig war.
+
+**Standardmäßig aus, und das ist keine Zaghaftigkeit.** Ein Drop passiert
+auf dem Stack des **Senders**, und ein Dead Letter ist eine dauerhafte
+Erfassung mit anschließender synchroner Veröffentlichung an jeden
+Event-Stream-Abonnenten — eine dauerhaft eingeschaltete Variante würde
+Load Shedding also genau in dem Moment in Arbeit pro Nachricht verwandeln,
+in dem die Schranke die Dinge billiger machen soll. Als Faustregel: Schalte
+ihn dort ein, wo du den Verlust hinterher erklären müsstest, und lass ihn
+für den Feuerwehrschlauch aus, den du bewusst begrenzt hast.
+
+Zwei Dinge ändert er nicht. Er erreicht nur Mailboxen, die du selbst
+konstruierst — `withMailboxCapacity` hat keine Tür dorthin — und der Letter
+trägt Nachricht, Sender und Empfänger, dieselben drei Felder, die jeder
+andere Verlustpfad im Framework festhält. Der MDC-Kontext und der
+Tracing-Span, die auf dem Envelope mitreisen, gehören nicht dazu.
+
+<Aside type="caution" title="Eine unverwerfbare Nachricht wird nie zum Letter">
+  Ein `Terminated` aus der Death Watch und das Command, das den Actor
+  einer WebSocket-Verbindung spawnt, sind von jeder Overflow-Policy
+  ausgenommen — sie werden also nie verworfen und deshalb auch nie
+  dead-lettered. Dass sie in der Dead-Letter-Queue fehlen, heißt, dass sie
+  angekommen sind, nicht dass sie verschwunden wären.
 </Aside>
 
 ## Die drei Overflow-Policies im Vergleich

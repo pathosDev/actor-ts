@@ -246,9 +246,10 @@ Deines Codes Fire-and-Forget.
 
 Das Signal ist nur so gut wie das ACK dahinter — deshalb verlangt der Producer,
 dass das ACK sein eigenes Inkarnations-Token zurückspiegelt, bevor er darauf
-reagiert.  `producerId` und `seq` sind beide erratbar, das Inkarnations-Token
-ist es nicht, und es verlässt den Producer nur auf Deliveries, die er
-tatsächlich gesendet hat.  Ohne diese Prüfung könnte alles, das den Producer
+reagiert.  `seq` zählt ab 1 hoch und `producerId` ist meist ein Name, den Dein
+eigener Code gewählt hat — beides ist also nicht schwer zu erraten.  Das
+Inkarnations-Token schon, und es verlässt den Producer nur auf Deliveries, die
+er tatsächlich gesendet hat.  Ohne diese Prüfung könnte alles, das den Producer
 adressieren kann, den Retransmit abbrechen und `confirm(null)` für eine
 Nachricht auslösen, die der Consumer nie gesehen hat — der Stream würde
 stillschweigend auf At-most-once herabgestuft und dabei Erfolg melden.  Beachte,

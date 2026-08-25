@@ -98,14 +98,42 @@ The management server is internal-only by default — but
 
 ## Broker actors
 
-Each broker actor has its own TLS knobs:
+Each broker actor takes TLS in **two separate steps**, and confusing
+them is the usual reason a connection that says TLS turns out not to
+verify what you meant:
+
+- **Turning TLS on** is the URL scheme — `amqps://`, `mqtts://`,
+  `rediss://`, `wss://` — or `withSsl(true)` on Kafka.  The driver
+  then verifies the broker against the **system trust store**, which
+  is all a publicly-trusted certificate needs.
+- **Supplying certificate material** is `withTls({ … })`: a private
+  CA to trust, or a client certificate for mTLS.  It configures the
+  handshake rather than starting one, so keep the TLS scheme as well.
+
+As on the cluster transport, every field carries **the material
+itself**, never a path to it — which is why each example reads the
+file.  `cert` and `key` only mean anything together; supplying one
+without the other is refused when the actor starts, rather than
+throwing inside the handshake and being retried forever as a
+connection failure.
+
+None of this is readable from HOCON, deliberately: a private key does
+not belong in a config file.  `withTls` is code-only on every broker,
+and Kafka's `ssl` config leaf stays boolean-only.
 
 ### Kafka
+
+Kafka has no URL scheme to carry TLS, so `ssl` does both jobs —
+`true` for the system trust store, or the material itself:
 
 ```ts
 const kafkaOptions = KafkaOptions.create()
   .withBrokers(['kafka-1:9093'])
-  .withSsl(true)
+  .withSsl({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  })
   .withSasl({
     mechanism: 'scram-sha-512',
     username: process.env.KAFKA_USER!,
@@ -119,43 +147,82 @@ new KafkaActor(kafkaOptions);
 ```ts
 const mqttOptions = MqttOptions.create()
   .withBrokerUrl('mqtts://mqtt.example.com:8883')
-  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS);
+  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS)
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new MqttActor(mqttOptions);
 ```
 
-`mqtts://` URL scheme.  Cert verification follows the
-underlying `mqtt` package's defaults.
+`mqtts://` starts the handshake; `withTls` decides what it trusts.
+Drop `withTls` and verification falls back to the `mqtt` package's
+defaults, which is the system trust store.
 
 ### AMQP
 
 ```ts
-const amqpOptions = AmqpOptions.create().withUrl('amqps://rabbitmq.example.com:5671');
+const amqpOptions = AmqpOptions.create()
+  .withUrl('amqps://rabbitmq.example.com:5671')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new AmqpActor(amqpOptions);
-  // amqplib uses URL params for TLS configuration
 ```
 
-`amqps://` URL scheme.
+`amqps://` plus `withTls`, which reaches amqplib as its
+`socketOptions` argument.  AMQP URL query parameters carry
+`heartbeat`, `frameMax`, `channelMax` and `locale` — **never**
+certificate material, so there is no way to express this in the URL.
 
 ### NATS
 
 ```ts
-const natsOptions = NatsOptions.create().withServers(['nats://nats.example.com:4222']);
+const natsOptions = NatsOptions.create()
+  .withServers(['nats://nats.example.com:4222'])
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
 new NatsActor(natsOptions);
-  // mTLS cert material (ca / cert / key) is supplied to the underlying
-  // nats connection — e.g. via the driver's connect options / URL.
 ```
 
-mTLS via the `tls` object — common for production NATS.
+mTLS via `withTls` — common for production NATS.  NATS has no `tls`
+URL scheme, so here `withTls` is also what asks the driver to
+negotiate TLS at all.  `JetStreamActor` takes the identical option.
 
 ### Redis Streams
 
 ```ts
-const redisStreamsOptions = RedisStreamsOptions.create().withUrl('rediss://redis.example.com:6380');
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new RedisStreamsActor(redisStreamsOptions);
-  // the `rediss://` scheme enables TLS on the connection
 ```
 
-`rediss://` URL scheme (note the double-s).
+`rediss://` URL scheme (note the double-s).  Both the producer and
+the consumer client are built from the same material.
+
+### TCP listener
+
+The one broker actor on the *inbound* side.  It takes the same
+material as the cluster transport, and supplying `ca` turns on
+client-certificate verification unless `requestClientCert: false`
+says otherwise:
+
+```ts
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindPort(9500)
+  .withTarget(handler)
+  .withTls({
+    cert: fs.readFileSync('./tls/server.crt', 'utf8'),
+    key: fs.readFileSync('./tls/server.key', 'utf8'),
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
+new TcpServerActor(tcpServerOptions);
+```
 
 ### gRPC
 
@@ -180,6 +247,22 @@ new WebsocketClientActor(webSocketClientOptions);
 
 `wss://` URL scheme.  Cert verification follows the runtime's
 TLS defaults.
+
+### Default trust store only
+
+Two client actors still take **no certificate material**, so they
+can reach a broker only when its certificate chains to a publicly
+trusted root:
+
+- `WebsocketClientActor` (above).
+- `TcpSocketActor` — the outbound TCP client.  Its listener sibling
+  `TcpServerActor` does take material; the dialling half does not.
+
+Behind a private CA, that means terminating TLS at a proxy holding a
+public certificate, or adding the CA to the host's trust store.  It
+does **not** mean `NODE_TLS_REJECT_UNAUTHORIZED=0`, which disables
+verification for every TLS connection the process makes — the cluster
+transport and every HTTP client included.
 
 ## Persistence backends
 

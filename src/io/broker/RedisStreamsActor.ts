@@ -8,6 +8,8 @@ import {
   REDIS_STREAMS_WARN_DEDUPLICATION_WINDOW_MS,
 } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
+import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 import type { RedisStreamsOptions, RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 
@@ -101,6 +103,9 @@ export class RedisStreamsActor
   protected override optionsValidator(): RedisStreamsOptionsValidator { return new RedisStreamsOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
+  /** @internal Test seam — override to inject a fake ioredis module. */
+  protected ioredisModule(): Promise<IoredisModuleLike> { return ioredisLazy.get(); }
+
   /**
    * Build one ioredis client.  Override in a test subclass to inject a fake —
    * mirrors `NatsActor.createNatsConnection`, and keeps the `ioredis`
@@ -114,11 +119,18 @@ export class RedisStreamsActor
    * otherwise if the application happens to publish something.  With it, the
    * awaited `connect()` below is the handshake, and a refused connection
    * reaches `_tryConnect`'s catch like every other broker's does.
+   *
+   * Overriding this replaces the constructor options, TLS included — override
+   * {@link ioredisModule} instead when a test wants to *observe* them.
    */
   protected async createClient(url: string): Promise<IoredisClientLike> {
-    const ioredis = await ioredisLazy.get();
+    const ioredis = await this.ioredisModule();
     const Constructor = ioredis.default ?? (ioredis as unknown as IoredisConstructor);
-    return new Constructor(url, { lazyConnect: true });
+    const driverTls = toBrokerDriverTls(this.options.tls);
+    return new Constructor(
+      url,
+      driverTls === undefined ? { lazyConnect: true } : { lazyConnect: true, tls: driverTls },
+    );
   }
 
   protected async connectImplementation(): Promise<void> {
@@ -423,14 +435,22 @@ export interface IoredisClientLike {
 /** The ioredis constructor options the actor sets; see {@link RedisStreamsActor.createClient}. */
 export type IoredisClientOptionsLike = {
   readonly lazyConnect: boolean;
+  /**
+   * Certificate material for the dial (#743).  Present only when configured:
+   * ioredis reads this option as "negotiate TLS", so an unconditional key
+   * would turn a `redis://` dial into a TLS one against a server not serving
+   * it.
+   */
+  readonly tls?: BrokerDriverTlsOptions;
 };
 
-interface IoredisConstructor {
+export interface IoredisConstructor {
   new (url: string, options: IoredisClientOptionsLike): IoredisClientLike;
 }
 
-type IoredisModule = { default?: IoredisConstructor; };
+/** The `ioredis` module surface we use.  Exported as a test seam. */
+export type IoredisModuleLike = { default?: IoredisConstructor; };
 
-const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(
-  () => lazyImportModule<IoredisModule>('ioredis', { context: 'RedisStreamsActor' }),
+const ioredisLazy: Lazy<Promise<IoredisModuleLike>> = Lazy.of(
+  () => lazyImportModule<IoredisModuleLike>('ioredis', { context: 'RedisStreamsActor' }),
 );

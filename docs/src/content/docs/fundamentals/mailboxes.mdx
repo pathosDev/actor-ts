@@ -103,7 +103,17 @@ policy that fired.  Per class, not per actor: shedding is what a bounded
 mailbox is *for*, so a per-actor label would mint a permanent metric
 series for every actor behaving exactly as designed.  To see which
 instance is shedding, add an `onDrop` of your own — it runs alongside the
-stock counter rather than replacing it.
+stock counter rather than replacing it, and it is handed the envelope that
+was discarded, so it can say what was lost and not only that something
+was.
+
+To keep that envelope rather than inspect it in passing, build the mailbox
+with `deadLetterDrops: true` and each dropped message becomes a
+[dead letter](/operations/dead-letters/) with its sender intact.  It is
+off by default, and only reachable from a mailbox you construct yourself:
+the drop runs on the sender's stack, so routing every shed envelope is
+work charged to exactly the burst the bound was meant to absorb cheaply.
+See [mailbox sizing](/operations/tuning/mailbox-sizing/#keeping-what-you-dropped).
 
 ### Bringing your own mailbox
 
@@ -126,24 +136,34 @@ an observer on whatever you return, provided it implements
 your own can by adding one method:
 
 ```ts
-import { Mailbox, type Envelope, type MailboxDropReason } from 'actor-ts';
+import { Mailbox, type Envelope, type MailboxDropObserver } from 'actor-ts';
 
 class SheddingMailbox<T> extends Mailbox<T> {
-  private readonly observers: Array<(reason: MailboxDropReason) => void> = [];
+  private readonly observers: Array<MailboxDropObserver<T>> = [];
+  readonly deadLetterDrops = true;
 
-  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+  observeDrops(observer: MailboxDropObserver<T>): void {
     this.observers.push(observer);
   }
 
   override enqueue(envelope: Envelope<T>): void {
     if (this.shouldShed()) {
-      for (const observer of this.observers) observer('drop-new');
+      for (const observer of this.observers) observer('drop-new', envelope);
       return;
     }
     super.enqueue(envelope);
   }
 }
 ```
+
+A report carries the envelope as well as the reason, and `deadLetterDrops`
+says whether the cell should turn each one into a
+[dead letter](/operations/dead-letters/).  Hand over the envelope you
+actually discarded — under a `drop-head`-shaped policy that is the one you
+evicted, not the one that arrived, or every letter will name a message that
+is still queued.  Both are optional: omit the field and the drop is counted
+and nothing more, which is what `BoundedMailbox` does unless you ask
+otherwise.
 
 Registration is additive, so a `BoundedMailboxOptions.onDrop` of your own
 keeps firing alongside the stock counter.  What you cannot do is combine

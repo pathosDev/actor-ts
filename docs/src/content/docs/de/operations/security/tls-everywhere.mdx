@@ -100,14 +100,43 @@ hilft trotzdem**:
 
 ## Broker-Actors
 
-Jeder Broker-Actor hat seine eigenen TLS-Knöpfe:
+Jeder Broker-Actor nimmt TLS in **zwei getrennten Schritten** entgegen,
+und die beiden zu verwechseln ist der übliche Grund dafür, dass eine
+Verbindung zwar TLS sagt, aber nicht das verifiziert, was gemeint war:
+
+- **TLS einschalten** macht das URL-Schema — `amqps://`, `mqtts://`,
+  `rediss://`, `wss://` — oder `withSsl(true)` bei Kafka. Der Treiber
+  verifiziert den Broker dann gegen den **System-Trust-Store**, was für
+  ein öffentlich vertrauenswürdiges Zertifikat genügt.
+- **Zertifikatsmaterial übergeben** macht `withTls({ … })`: eine private
+  CA, der vertraut werden soll, oder ein Client-Zertifikat für mTLS. Es
+  konfiguriert den Handshake, statt einen zu starten — das TLS-Schema
+  bleibt also zusätzlich nötig.
+
+Wie beim Cluster-Transport trägt jedes Feld **das Material selbst**, nie
+einen Pfad darauf — deshalb liest jedes Beispiel die Datei selbst.
+`cert` und `key` ergeben nur gemeinsam Sinn; eines ohne das andere wird
+beim Start des Actors abgelehnt, statt im Handshake zu werfen und als
+Verbindungsfehler endlos wiederholt zu werden.
+
+Nichts davon ist aus HOCON lesbar, und das mit Absicht: Ein Private Key
+gehört nicht in eine Config-Datei. `withTls` gibt es nur im Code, und
+Kafkas `ssl`-Config-Leaf bleibt boolean-only.
 
 ### Kafka
+
+Kafka hat kein URL-Schema, das TLS tragen könnte — deshalb erledigt
+`ssl` beide Aufgaben: `true` für den System-Trust-Store, oder das
+Material selbst:
 
 ```ts
 const kafkaOptions = KafkaOptions.create()
   .withBrokers(['kafka-1:9093'])
-  .withSsl(true)
+  .withSsl({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  })
   .withSasl({
     mechanism: 'scram-sha-512',
     username: process.env.KAFKA_USER!,
@@ -121,43 +150,83 @@ new KafkaActor(kafkaOptions);
 ```ts
 const mqttOptions = MqttOptions.create()
   .withBrokerUrl('mqtts://mqtt.example.com:8883')
-  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS);
+  .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS)
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new MqttActor(mqttOptions);
 ```
 
-`mqtts://`-URL-Schema. Cert-Verifizierung folgt den Defaults des
-zugrundeliegenden `mqtt`-Pakets.
+`mqtts://` startet den Handshake; `withTls` entscheidet, wem er
+vertraut. Ohne `withTls` fällt die Verifizierung auf die Defaults des
+`mqtt`-Pakets zurück, also auf den System-Trust-Store.
 
 ### AMQP
 
 ```ts
-const amqpOptions = AmqpOptions.create().withUrl('amqps://rabbitmq.example.com:5671');
+const amqpOptions = AmqpOptions.create()
+  .withUrl('amqps://rabbitmq.example.com:5671')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new AmqpActor(amqpOptions);
-  // amqplib nutzt URL-Parameter für die TLS-Konfiguration
 ```
 
-`amqps://`-URL-Schema.
+`amqps://` plus `withTls`, das amqplib als dessen
+`socketOptions`-Argument erreicht. AMQP-URL-Query-Parameter tragen
+`heartbeat`, `frameMax`, `channelMax` und `locale` — **nie**
+Zertifikatsmaterial; in der URL lässt sich das also gar nicht ausdrücken.
 
 ### NATS
 
 ```ts
-const natsOptions = NatsOptions.create().withServers(['nats://nats.example.com:4222']);
+const natsOptions = NatsOptions.create()
+  .withServers(['nats://nats.example.com:4222'])
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
 new NatsActor(natsOptions);
-  // mTLS-Cert-Material (ca / cert / key) wird an die zugrundeliegende
-  // nats-Verbindung übergeben — z. B. via Connect-Optionen / URL des Treibers.
 ```
 
-mTLS via das `tls`-Objekt — üblich für Produktions-NATS.
+mTLS via `withTls` — üblich für Produktions-NATS. NATS hat kein
+`tls`-URL-Schema, deshalb ist `withTls` hier zugleich das, was den
+Treiber überhaupt zum TLS-Aushandeln bringt. `JetStreamActor` nimmt
+dieselbe Option.
 
 ### Redis Streams
 
 ```ts
-const redisStreamsOptions = RedisStreamsOptions.create().withUrl('rediss://redis.example.com:6380');
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
 new RedisStreamsActor(redisStreamsOptions);
-  // das `rediss://`-Schema aktiviert TLS auf der Verbindung
 ```
 
-`rediss://`-URL-Schema (beachte das doppelte s).
+`rediss://`-URL-Schema (beachte das doppelte s). Producer- und
+Consumer-Client werden aus demselben Material gebaut.
+
+### TCP-Listener
+
+Der einzige Broker-Actor auf der *eingehenden* Seite. Er nimmt dasselbe
+Material wie der Cluster-Transport, und ein gesetztes `ca` schaltet die
+Client-Zertifikatsprüfung ein, sofern nicht `requestClientCert: false`
+etwas anderes sagt:
+
+```ts
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindPort(9500)
+  .withTarget(handler)
+  .withTls({
+    cert: fs.readFileSync('./tls/server.crt', 'utf8'),
+    key: fs.readFileSync('./tls/server.key', 'utf8'),
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+  });
+new TcpServerActor(tcpServerOptions);
+```
 
 ### gRPC
 
@@ -182,6 +251,22 @@ new WebsocketClientActor(webSocketClientOptions);
 
 `wss://`-URL-Schema. Cert-Verifizierung folgt den TLS-Defaults der
 Runtime.
+
+### Nur System-Trust-Store
+
+Zwei Client-Actors nehmen weiterhin **kein Zertifikatsmaterial** und
+erreichen einen Broker daher nur, wenn dessen Zertifikat auf eine
+öffentlich vertrauenswürdige Wurzel zurückführt:
+
+- `WebsocketClientActor` (oben).
+- `TcpSocketActor` — der ausgehende TCP-Client. Sein Listener-Pendant
+  `TcpServerActor` nimmt Material; die wählende Hälfte nicht.
+
+Hinter einer privaten CA heißt das: TLS an einem Proxy mit öffentlichem
+Zertifikat terminieren, oder die CA in den Trust-Store des Hosts
+aufnehmen. Es heißt **nicht** `NODE_TLS_REJECT_UNAUTHORIZED=0` — das
+deaktiviert die Verifizierung für jede TLS-Verbindung des Prozesses,
+Cluster-Transport und sämtliche HTTP-Clients eingeschlossen.
 
 ## Persistence-Backends
 

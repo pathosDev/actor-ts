@@ -17,7 +17,10 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
   private readonly overflow: BoundedMailboxOverflow;
 
   constructor(options: BoundedMailboxOptions) {
-    super();
+    // `deadLetterDrops` is read before validation because the base holds it,
+    // and the base has to be constructed first; the validator has nothing to
+    // say about a boolean anyway.
+    super((options as Partial<BoundedMailboxOptionsType>).deadLetterDrops);
     const settings = { ...(options as Partial<BoundedMailboxOptionsType>) };
     new BoundedMailboxOptionsValidator().validate(settings);
     this.capacity = settings.capacity!;
@@ -58,12 +61,12 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
           // by the size of a watch set is a smaller price than blinding the
           // watcher.  Nothing is reported, because nothing was discarded.
           const dropped = super.removeOldest();
-          if (dropped !== undefined) this.reportDrop('drop-head');
+          if (dropped !== undefined) this.reportDrop('drop-head', dropped);
           super.enqueue(env);
           return;
         }
         case 'drop-new':
-          this.reportDrop('drop-new');
+          this.reportDrop('drop-new', env);
           return;
         case 'reject':
           throw new MailboxFullError(this.capacity);
@@ -181,15 +184,15 @@ export class BoundedMailbox<T = unknown> extends DroppingMailbox<T> {
             // Nothing queued may be dropped, so there is no room to make and
             // the arrival is the one discarded — which is `drop-new`, whatever
             // the policy is called.
-            this.reportDrop('drop-new');
+            this.reportDrop('drop-new', envelope);
             break;
           }
-          this.reportDrop('drop-head');
+          this.reportDrop('drop-head', evicted);
           admitted.push(envelope);
           break;
         }
         case 'drop-new':
-          this.reportDrop('drop-new');
+          this.reportDrop('drop-new', envelope);
           break;
         default: {
           const _exhaustive: never = overflow;
