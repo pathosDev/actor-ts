@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor, type ActorClassOrFactory, type ActorFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import type { ActorRef } from '../ActorRef.js';
+import { LocalActorRef } from '../internal/LocalActorRef.js';
 import {
   Directive,
   OneForOneStrategy,
@@ -224,6 +225,16 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
 
   /** The currently-live child, or `null` while we're in a backoff window. */
   private currentChild: ActorRef<T> | null = null;
+  /**
+   * The child whose `Terminated` opened the current backoff window, held
+   * until its replacement is spawned.
+   *
+   * Only {@link stopPreviousChild} reads it, and only to make sure the
+   * predecessor is not still running when the successor appears (#769).  It is
+   * `null` outside a backoff window, so a stopped supervisor is not holding a
+   * ref to an actor it no longer supervises.
+   */
+  private previousChild: ActorRef<T> | null = null;
   /** Counter for the **next** restart's delay (0 = first respawn). */
   private restartCount = 0;
   /** Wall-clock ts of the last successful spawn, for the reset-window check. */
@@ -343,11 +354,16 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     this.context.timers.cancel(RESPAWN_TIMER_KEY);
     this.context.timers.cancel(DRAIN_TIMER_KEY);
     this.stash.length = 0;
+    // The respawn that would have consumed it is never going to happen, and
+    // the cell stops every child of ours anyway — so holding the ref past
+    // here would only make the field's own invariant untrue.
+    this.previousChild = null;
   }
 
   /* ------------------------- internals ---------------------------------- */
 
   private spawnChild(): void {
+    this.stopPreviousChild();
     this.incarnation += 1;
     const name = `${this.childName}-${this.incarnation}`;
     const child = this.context.spawn(this.options.child, name, this.options.childOptions);
@@ -377,11 +393,34 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     );
   }
 
-  private handleTerminated(t: Terminated): void {
+  private handleTerminated(message: Terminated): void {
     // Ignore stale Terminated messages from a previous incarnation —
     // can happen if we already started a respawn before the old ref's
     // Terminated finished its trip through the mailbox.
-    if (!this.currentChild || !t.actor.equals(this.currentChild)) {
+    //
+    // Identity, not `equals`: `ActorRef.equals` compares rendered paths, which
+    // omit the incarnation uid, so an address match cannot tell a name's
+    // previous occupant from its current one — the same reasoning
+    // `Router.onTerminated` records.  The supervisor spawned this child, so the
+    // ref it holds is the one that has to have died.
+    const child = this.currentChild;
+    if (child === null || message.actor !== child) {
+      return;
+    }
+    // And the notification is a claim, not a proof: it carries a ref and
+    // nothing else.  `ActorCell` now refuses to act on a `Terminated` the
+    // runtime did not emit (#769), which closes the forgery route, but a
+    // branded one still only means "the runtime sent this" — `watchNotify`
+    // builds one for whatever target it is handed.  Retiring the child,
+    // bumping the backoff counter and spawning a replacement are all
+    // irreversible, so ask the child's own cell whether it is actually gone.
+    // Safe to ask at exactly this moment: `finalizeTermination` flips the cell
+    // to `terminated` before it notifies any watcher, so a genuine
+    // notification can never arrive ahead of the state it reports.
+    if (!hasTerminated(child)) {
+      this.log.warn('BackoffSupervisor: ignoring a Terminated for a child that is still running', {
+        child: child.toString(),
+      });
       return;
     }
     // Snapshot + clear the failure flag set by the decider.  Doing it
@@ -392,7 +431,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
 
     if (!this.shouldRespawn(wasFailure)) {
       this.log.info('BackoffSupervisor: child terminated, triggerOn rejected — supervisor stops', {
-        child: t.actor.toString(),
+        child: message.actor.toString(),
         cause: wasFailure ? 'failure' : 'stop',
         triggerOn: this.triggerOn,
       });
@@ -411,6 +450,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     }
     const delay = this.policy.delayFor(this.restartCount);
     this.restartCount += 1;
+    this.previousChild = child;
     this.currentChild = null;
     // Reset the alive-confirmation flag (#67) — the next spawn starts
     // its grace window from scratch, and any messages arriving
@@ -425,7 +465,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       Math.max(0, Math.round(delay)),
     );
     this.log.info('BackoffSupervisor: child terminated, respawn scheduled', {
-      child: t.actor.toString(),
+      child: message.actor.toString(),
       cause: wasFailure ? 'failure' : 'stop',
       delayMs: delay,
       restartCount: this.restartCount,
@@ -446,6 +486,34 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       .with('failure', () => wasFailure)
       .with('stop',    () => !wasFailure)
       .exhaustive();
+  }
+
+  /**
+   * Never let a replacement child exist alongside the one it replaces.
+   *
+   * The two guards in {@link handleTerminated} should make this unreachable —
+   * a `Terminated` only opens a backoff window once the child's own cell says
+   * it is gone.  This is the backstop for the day one of them is weakened or
+   * a new path reaches `spawnChild`: a child the supervisor has stopped
+   * tracking but nobody stopped keeps whatever it owned — a broker connection,
+   * a database pool, a leased lock — and no longer answers to anything, so
+   * stopping it explicitly is strictly better than the log line that is all
+   * an orphan would otherwise produce (#769).
+   *
+   * The check is what keeps this silent on the happy path: the predecessor is
+   * already terminated by then, so nothing is sent and no dead letter is
+   * produced.  Distinct from the orphan #926 describes — that one comes from
+   * the *supervisor's* own restart resetting the incarnation counter, and the
+   * ref this field holds does not survive that restart either.
+   */
+  private stopPreviousChild(): void {
+    const previous = this.previousChild;
+    this.previousChild = null;
+    if (previous === null || hasTerminated(previous)) return;
+    this.log.warn('BackoffSupervisor: previous child still alive at respawn — stopping it', {
+      child: previous.toString(),
+    });
+    this.context.stop(previous);
   }
 
   private respawn(): void {
@@ -473,6 +541,24 @@ const RESPAWN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.respawn';
 /** Sentinel for the stash-drain timer message. */
 const DRAIN_TICK = Symbol.for('actor-ts.pattern.BackoffSupervisor.drain');
 const DRAIN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.drain';
+
+/**
+ * Has the actor behind this ref finished terminating?
+ *
+ * The one question a `Terminated` cannot answer about itself, and the reason
+ * it has to be asked of the cell instead: the message carries a ref and a pair
+ * of flags, none of which the runtime checks against reality (#769).
+ *
+ * A ref that is not local is answered `false` — "cannot confirm", not
+ * "alive" — which makes the callers conservative in the safe direction: an
+ * unconfirmable death does not retire the child, and an unconfirmable
+ * predecessor is stopped rather than left running.  A `BackoffSupervisor`
+ * spawns its own child, so in practice the ref is always local and the
+ * fallback never fires.
+ */
+function hasTerminated(ref: ActorRef): boolean {
+  return ref instanceof LocalActorRef && ref.getCell().isTerminated();
+}
 
 function resolveResetThreshold(
   rule: ResetCounter | undefined, minBackoff: number,

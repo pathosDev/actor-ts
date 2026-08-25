@@ -108,6 +108,42 @@ aktuell immer `false`: das Framework löst noch keine Node-weiten
 `Terminated`-Notifications aus.  Siehe
 [Cluster](/de/cluster/overview/) für die Membership-Geschichte.
 
+## Nur die Runtime kann einen Tod verkünden
+
+`Terminated` ist eine ganz normale exportierte Klasse, dich hält also
+nichts davon ab, selbst eine zu konstruieren — aber eine zu
+konstruieren ist nicht dasselbe, wie einen Tod zu verursachen.  Ein
+`Terminated`, das die Runtime nicht ausgelöst hat, wird **abgelehnt**:
+die empfangende Zelle verbraucht es, schickt es mit angehängtem Sender
+an die [Dead Letters](/de/operations/dead-letters/) und lässt die
+Watch-Registrierung genau so, wie sie war.
+
+Der Grund: die Notification trägt eine Ref und sonst nichts, „dieser
+Actor ist tot" ist also eine Behauptung und kein Beweis — und eine
+unbegründete zu befolgen kostet den Watcher doppelt.  Er handelt auf
+einen Tod hin, der nicht stattgefunden hat, *und* die Registrierung
+geht mit, sodass die echte Notification später auf eine Watch trifft,
+die es nicht mehr gibt, und als unbeobachtet verworfen wird.  Eine
+einzige gefälschte Nachricht würde einen Watcher für den Rest seines
+Lebens blind für dieses Subjekt machen.
+
+Zwei Konsequenzen, die man kennen sollte:
+
+- **Leite ein `Terminated` nicht an einen anderen Watcher weiter.**  Es
+  zählt für ihn nicht — und es hat nie etwas gebracht: ein Actor, der
+  das Subjekt beobachtet, bekommt seine eigene Notification ohnehin,
+  und einer, der es nicht tut, sollte nie davon erfahren.  Schick ihm
+  stattdessen eine eigene Domain-Nachricht.
+- **Ein selbst gebautes `Terminated` testet in einem Test kein Death
+  Watch.**  Stoppe den Actor wirklich; die Notification, die dann
+  folgt, ist die, die dein Handler in Produktion sieht.
+
+`watchWith`-Ersetzungen fallen unter dieselbe Regel.  Die ersetzte
+Nachricht liegt in der Zelle des Watchers selbst und wird vom selben
+Gate freigegeben, sodass ein gefälschtes Signal sie nicht still
+verbrauchen und den nächsten echten Tod zu einem `Terminated`
+herabstufen kann, für das der Watcher keinen Zweig hat.
+
 ## Eigene Termination-Nachrichten — `watchWith`
 
 `watch` liefert immer dasselbe.  Das reicht, wenn genau ein Tod

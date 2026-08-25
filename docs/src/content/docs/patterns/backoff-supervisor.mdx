@@ -88,6 +88,28 @@ flowchart TB
 The framework names successive children `child-1`, `child-2`,
 `child-3`, … so old terminations don't collide with new spawns.
 
+### A respawn needs a death, not a message about one
+
+The supervisor accepts arbitrary user messages — that is the whole
+point, it forwards them to the child — so a `Terminated` naming the
+current child is something anything holding the supervisor's ref could
+send it.  Acting on that would retire a live child, bump the backoff
+counter, and spawn a replacement beside a `child-1` nobody stopped and
+nobody watches any more.
+
+Two things stop it.  The runtime
+[refuses a `Terminated` it did not emit](/fundamentals/death-watch/)
+before the supervisor ever sees it.  And the supervisor asks the
+child's own cell whether it has actually terminated before it retires
+it, so even a genuine notification about a running actor is declined
+with a warning rather than obeyed.  If a predecessor is somehow still
+alive when its replacement is about to be spawned, it is stopped rather
+than left orphaned.
+
+None of this is configurable, and none of it costs anything on the
+ordinary path: a child that really died reports `terminated` before its
+watchers hear about it, so the check is a boolean read.
+
 ## Configuration
 
 The `BackoffOptions<T>` shape:

@@ -104,6 +104,39 @@ always `false`: the framework does not yet raise node-level
 `Terminated` notifications.  See [Cluster](/cluster/overview/) for
 the membership story.
 
+## Only the runtime can announce a death
+
+`Terminated` is an ordinary exported class, so nothing stops you
+constructing one — but constructing one is not the same as causing one.
+A `Terminated` the runtime did not emit is **refused**: the receiving
+cell consumes it, sends it to
+[dead letters](/operations/dead-letters/) with the sender attached, and
+leaves the watch registration exactly as it was.
+
+The reason is that the notification carries a ref and nothing else, so
+"that actor is dead" is a claim rather than a proof — and honouring an
+unfounded one costs the watcher twice.  It acts on a death that has not
+happened, *and* the registration goes with it, so the genuine
+notification arrives later against a watch that is no longer there and
+is dropped as unwatched.  One fabricated message would blind a watcher
+to that subject for the rest of its life.
+
+Two consequences worth knowing:
+
+- **Do not forward a `Terminated` to another watcher.**  It will not
+  count for them — and it never bought anything: an actor that watches
+  the subject already gets its own notification, and one that does not
+  was never meant to hear about it.  Send a domain message of your own
+  instead.
+- **A hand-built `Terminated` does not exercise death watch in a test.**
+  Stop the actor for real; the notification that follows is the one your
+  handler will see in production.
+
+`watchWith` substitutions are covered by the same rule.  The substituted
+message lives in the watcher's own cell and is released by the same
+gate, so a fabricated signal cannot quietly consume it and downgrade the
+next real death to a `Terminated` the watcher has no arm for.
+
 ## Custom termination messages — `watchWith`
 
 `watch` always delivers the same thing.  That is enough when one
