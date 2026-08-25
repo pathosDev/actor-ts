@@ -159,6 +159,18 @@ Useful options:
 - **`newInfo`** — rotates the HKDF context instead of (or
   alongside) the key; see
   [rotating the HKDF context](/persistence/object-storage/key-rotation/#rotating-the-hkdf-context).
+- **`integrity`** — the integrity configuration the corpus was
+  written under, in the same shape the store takes.  **Required on
+  a bucket that has the integrity HMAC turned on:** the tag covers
+  the manifest bytes, so the sweep verifies it on read and
+  recomputes it on write, and without the key it refuses before
+  the first write rather than aborting mid-corpus.  See
+  [sweeping an integrity-protected corpus](/persistence/object-storage/key-rotation/#sweeping-an-integrity-protected-corpus).
+- **`allowUntaggedBodies`** — re-admits untagged bodies while
+  `integrity` is set, for a bucket still part-way through turning
+  integrity on.  Off by default, deliberately: from the sweep's
+  position a tag that was never written and a tag that was
+  stripped look the same.
 
 The sweep is **idempotent + resumable** — an object already at
 the `active` version is skipped without a write, so re-running
@@ -257,6 +269,10 @@ import { Aside } from '@astrojs/starlight/components';
   before it starts, but nothing guards the live read path —
   always finish the sweep + retain the old key for a rollback
   window before retiring.
+
+  The same reasoning is why a bucket with the integrity HMAC on
+  cannot be swept without `integrity`: refusing the whole run is
+  the only outcome that leaves the corpus in one piece.
 </Aside>
 
 <Aside type="caution" title="Re-using a version number that is still live">

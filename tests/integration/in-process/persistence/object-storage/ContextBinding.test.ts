@@ -40,6 +40,7 @@ import { SEQ_PADDING } from '../../../../../src/persistence/Constants.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   FLAG_CONTEXT_BOUND,
+  FLAG_INTEGRITY_HMAC,
   decodeBody,
   encodeBody,
 } from '../../../../../src/persistence/object-storage/BodyCodec.js';
@@ -423,5 +424,63 @@ describe('#612 — reEncryptObjectStorage migrates a corpus to bound bodies', ()
     const strict = new ObjectStorageSnapshotStore(strictOptions);
     const loaded = await strict.loadLatest<{ v: number }>('p');
     expect(loaded.toNullable()?.state).toEqual({ v: 1 });
+  });
+
+  test('a sweep rebinds an integrity-tagged body and re-seals its tag (#739)', async () => {
+    // The configuration this migration path could not reach until #739: both
+    // authenticators on, and a body written before either of them bound the
+    // storage key.  The sweep used to abort on it for want of an integrity
+    // key, so a bucket that had turned #116 on could never be rebound and
+    // `requireContextBinding` could never be switched on either.
+    const keyring = { active: { version: 0, key: MASTER_KEY } };
+    const encryption = { mode: 'client-aes256-gcm', masterKeys: keyring, info } as const;
+    const integrity = { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY } as const;
+
+    const storageKey = 'q/00000000000000000001.json';
+    const { deriveSubkey } = await import('../../../../../src/persistence/object-storage/Encryption.js');
+    const subKey = await deriveSubkey(MASTER_KEY, 'q', info);
+    const unbound = await encodeBody(
+      utf8(JSON.stringify({ persistenceId: 'q', sequenceNr: 1, state: { v: 2 }, timestamp: 1 })),
+      {
+        compression: 'none',
+        encryption: { subKey, keyVersion: 0 },
+        integrity: { integrityKey: INTEGRITY_KEY },
+      },
+    );
+    expect(unbound[4]! & FLAG_CONTEXT_BOUND).toBe(0);
+    expect(unbound[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+    await backend.put(storageKey, unbound, { contentType: 'application/json' });
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '', keyring, info, integrity,
+    });
+    expect(result.rewrote).toBe(1);
+
+    const rewritten = (await backend.get(storageKey)).toNullable()!.body;
+    expect(rewritten[4]! & FLAG_CONTEXT_BOUND).toBe(FLAG_CONTEXT_BOUND);
+    expect(rewritten[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+
+    // The tag was recomputed over the new bytes *and* the binding rather
+    // than carried across: it verifies at this key and at no other.
+    const reread = await decodeBody(rewritten, {
+      encryption: { subKey },
+      integrity: { integrityKey: INTEGRITY_KEY },
+      context: storageKey,
+    });
+    expect(reread.contextBound).toBe(true);
+    await expect(decodeBody(rewritten, {
+      encryption: { subKey },
+      integrity: { integrityKey: INTEGRITY_KEY },
+      context: 'q/00000000000000000002.json',
+    })).rejects.toThrow(/integrity check failed/);
+
+    // And the store reads it back with both strict settings on.
+    const strictOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withEncryption(encryption)
+      .withIntegrity(integrity)
+      .withRequireContextBinding();
+    const strict = new ObjectStorageSnapshotStore(strictOptions);
+    expect((await strict.loadLatest<{ v: number }>('q')).toNullable()?.state).toEqual({ v: 2 });
   });
 });

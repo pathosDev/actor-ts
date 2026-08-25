@@ -16,6 +16,9 @@
  *   - Non-encrypted ATS1 bodies pass through untouched.
  *   - After a successful sweep, dropping the retired key from the
  *     config still lets every body decrypt.
+ *   - Integrity-tagged bodies (#116) survive the rotation with their
+ *     tag intact, and a missing integrity key is refused before the
+ *     corpus is touched (#739).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -23,6 +26,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import {
@@ -30,8 +35,15 @@ import {
   ReEncryptIncompleteError,
   reEncryptObjectStorage,
 } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
+import {
+  encodeBody,
+  FLAG_CONTEXT_BOUND,
+  FLAG_ENCRYPTED,
+  FLAG_INTEGRITY_HMAC,
+} from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import { encodePayload } from '../../../../../src/persistence/storage/PayloadCodec.js';
 import { MAX_REPORTED_MALFORMED_KEYS } from '../../../../../src/persistence/Constants.js';
-import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
+import type { EncryptionConfig, IntegrityConfig } from '../../../../../src/persistence/PersistenceOptions.js';
 import type { ObjectStorageBackend, ObjectFetched, ObjectInfo } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { some, type Option } from '../../../../../src/util/Option.js';
 
@@ -778,5 +790,223 @@ describe('reEncryptObjectStorage — a refused pass leaves no resume state (#747
     await expect(reEncryptObjectStorage(backend, {
       keyPrefix: '', keyring, info, verifyKeyringCompleteness: false, progress,
     })).rejects.toThrow(ReEncryptIncompleteError);
+  });
+});
+
+/* ==================== #739 — integrity-tagged bodies ===================== */
+
+/**
+ * The sweep is how a rotation *finishes*: it is the step that lets an
+ * operator drop a retired — possibly leaked — master key.  A corpus written
+ * with the #116 HMAC could not be swept at all.  `decodeBody` refuses a
+ * tagged body without the integrity key, `ReEncryptOptions` had nowhere to
+ * put one, and the re-encode would have stripped the tag even if it had.
+ * Tamper protection and key revocation were therefore mutually exclusive.
+ *
+ * What these pin, in order: a tagged corpus rotates end-to-end and still
+ * verifies under the store afterwards; a missing key is refused BEFORE the
+ * corpus is touched rather than on the first tagged object; the sweep
+ * re-seals only what already carried a tag, so a half-migrated corpus is
+ * neither promoted nor silently accepted; and an unencrypted tagged body —
+ * which has no master key to rotate — still picks up its #612 binding
+ * instead of being skipped forever.
+ */
+describe('reEncryptObjectStorage — #739 integrity-tagged bodies', () => {
+  const integrityKey = new Uint8Array(32).fill(0x5b);
+  const stateInfo = 'acme/test/durable-state/v1';
+  const keyringV0 = { active: { version: 0, key: v0 } };
+  const keyringV1RetiringV0 = {
+    active: { version: 1, key: v1 },
+    retired: [{ version: 0, key: v0 }],
+  };
+  const keyringV1 = { active: { version: 1, key: v1 } };
+  const hmac: IntegrityConfig = { mode: 'hmac-sha256', integrityKey };
+  const encryptionV0 = {
+    mode: 'client-aes256-gcm', masterKeys: keyringV0, info: stateInfo,
+  } as const;
+  const rotatedEncryption = {
+    mode: 'client-aes256-gcm', masterKeys: keyringV1, info: stateInfo,
+  } as const;
+  const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+  function durableStateStore(
+    backend: FilesystemObjectStorageBackend,
+    encryption: EncryptionConfig,
+    integrity?: IntegrityConfig,
+  ): ObjectStorageDurableStateStore {
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withPrefix('state/')
+      .withEncryption(encryption);
+    if (integrity) storeOptions.withIntegrity(integrity);
+    return new ObjectStorageDurableStateStore(storeOptions);
+  }
+
+  function freshBackend(): FilesystemObjectStorageBackend {
+    const backendOptions = FilesystemObjectStorageOptions.create()
+      .withDir(dir);
+    return new FilesystemObjectStorageBackend(backendOptions);
+  }
+
+  test('a tagged corpus rotates end-to-end and the rewritten bodies still verify', async () => {
+    const backend = freshBackend();
+    const store = durableStateStore(backend, encryptionV0, hmac);
+    await store.upsert('user-1', 0, { balance: 100 });
+    await store.upsert('user-2', 0, { balance: 500 });
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: 'state/',
+      keyring: keyringV1RetiringV0,
+      info: stateInfo,
+      integrity: hmac,
+    });
+    expect(result.scanned).toBe(2);
+    expect(result.rewrote).toBe(2);
+
+    // The tag survived the rewrite.  A sweep that dropped it would hand back
+    // a corpus the store's own read path then refuses as a downgrade (#579).
+    const rewritten = (await backend.get('state/user-1/state.json')).toNullable()!.body;
+    expect(rewritten[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+
+    // …and v0 can now be dropped, which is the entire point of the sweep.
+    const afterRotation = durableStateStore(backend, rotatedEncryption, hmac);
+    expect((await afterRotation.load<{ balance: number }>('user-1')).toNullable()?.state)
+      .toEqual({ balance: 100 });
+    expect((await afterRotation.load<{ balance: number }>('user-2')).toNullable()?.state)
+      .toEqual({ balance: 500 });
+  });
+
+  test('a tagged corpus without the integrity option is refused before the loop starts', async () => {
+    const backend = freshBackend();
+    const store = durableStateStore(backend, encryptionV0, hmac);
+    await store.upsert('user-1', 0, { balance: 100 });
+    // Sorts ahead of every 'state/user-…' key, so a sweep that only learned
+    // about the missing key inside the rewrite loop would have emitted one
+    // progress event before reaching a tagged body.  The pre-sweep sampler
+    // emits none — that difference is what separates the two guards.
+    const plain = await encodeBody(utf8('{}'), { compression: 'none' });
+    await backend.put('state/plain/raw.json', plain);
+
+    const events: string[] = [];
+    await expect(reEncryptObjectStorage(backend, {
+      keyPrefix: 'state/',
+      keyring: keyringV1RetiringV0,
+      info: stateInfo,
+      onProgress: (e) => events.push(e.action),
+    })).rejects.toThrow(/carry an integrity HMAC \(#116\) but no integrity key was resolved/);
+    expect(events).toEqual([]);
+  });
+
+  test('an untagged body in a tagged corpus is refused unless the window is open', async () => {
+    const backend = freshBackend();
+    const tagged = durableStateStore(backend, encryptionV0, hmac);
+    await tagged.upsert('tagged-1', 0, { v: 1 });
+    const untagged = durableStateStore(backend, encryptionV0);
+    await untagged.upsert('untagged-1', 0, { v: 2 });
+
+    // Fail-closed: from here a body written before integrity and a body
+    // whose tag was stripped look exactly alike (#579).
+    await expect(reEncryptObjectStorage(backend, {
+      keyPrefix: 'state/',
+      keyring: keyringV1RetiringV0,
+      info: stateInfo,
+      integrity: hmac,
+    })).rejects.toThrow(/no integrity tag but an integrityKey was supplied/);
+  });
+
+  test('allowUntaggedBodies sweeps a half-migrated corpus without promoting anything', async () => {
+    const backend = freshBackend();
+    const tagged = durableStateStore(backend, encryptionV0, hmac);
+    await tagged.upsert('tagged-1', 0, { v: 1 });
+    const untagged = durableStateStore(backend, encryptionV0);
+    await untagged.upsert('untagged-1', 0, { v: 2 });
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: 'state/',
+      keyring: keyringV1RetiringV0,
+      info: stateInfo,
+      integrity: hmac,
+      allowUntaggedBodies: true,
+    });
+    expect(result.rewrote).toBe(2);
+
+    const taggedBody = (await backend.get('state/tagged-1/state.json')).toNullable()!.body;
+    const untaggedBody = (await backend.get('state/untagged-1/state.json')).toNullable()!.body;
+    expect(taggedBody[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+    // Not promoted.  Turning integrity on corpus-wide is the store's own
+    // read-then-write migration, not a side effect of rotating a key — a
+    // promoted body is unreadable to every reader still without the key.
+    expect(untaggedBody[4]! & FLAG_INTEGRITY_HMAC).toBe(0);
+
+    // Both halves still read back under the configuration that wrote them.
+    const taggedAfter = durableStateStore(backend, rotatedEncryption, hmac);
+    const untaggedAfter = durableStateStore(backend, rotatedEncryption);
+    expect((await taggedAfter.load<{ v: number }>('tagged-1')).toNullable()?.state)
+      .toEqual({ v: 1 });
+    expect((await untaggedAfter.load<{ v: number }>('untagged-1')).toNullable()?.state)
+      .toEqual({ v: 2 });
+  });
+
+  test('an unencrypted tagged body is bound to its storage key, then left alone', async () => {
+    const backend = freshBackend();
+    // The pre-#612 shape of the integrity-only configuration: a tag over the
+    // bytes, and nothing saying which object those bytes belong to.  Written
+    // by hand because the store has bound its own writes since #612.
+    const storageKey = 'state/user-1/state.json';
+    const unbound = await encodeBody(
+      utf8(encodePayload({ revision: 1, state: { v: 1 }, timestamp: 1 })),
+      { compression: 'none', integrity: { integrityKey } },
+    );
+    expect(unbound[4]! & FLAG_CONTEXT_BOUND).toBe(0);
+    await backend.put(storageKey, unbound, { contentType: 'application/json' });
+
+    const sweepOptions = {
+      keyPrefix: 'state/',
+      keyring: keyringV1,
+      info: stateInfo,
+      integrity: hmac,
+    };
+    const first = await reEncryptObjectStorage(backend, sweepOptions);
+    expect(first.rewrote).toBe(1);
+    expect(first.skippedUnencrypted).toBe(0);
+
+    const rebound = (await backend.get(storageKey)).toNullable()!.body;
+    expect(rebound[4]! & FLAG_CONTEXT_BOUND).toBe(FLAG_CONTEXT_BOUND);
+    expect(rebound[4]! & FLAG_INTEGRITY_HMAC).toBe(FLAG_INTEGRITY_HMAC);
+    // Still unencrypted: the sweep rotates master keys, it does not
+    // introduce one where the deployment chose to have none.
+    expect(rebound[4]! & FLAG_ENCRYPTED).toBe(0);
+
+    // The strict reader accepts it now, which is what the rebind was for.
+    const strictOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withPrefix('state/')
+      .withIntegrity(hmac)
+      .withRequireContextBinding();
+    const strict = new ObjectStorageDurableStateStore(strictOptions);
+    expect((await strict.load<{ v: number }>('user-1')).toNullable()?.state).toEqual({ v: 1 });
+
+    // Converged, so the next pass has nothing left to do — the rebind must
+    // not turn into a PUT on every run.
+    const second = await reEncryptObjectStorage(backend, sweepOptions);
+    expect(second.rewrote).toBe(0);
+    expect(second.skippedUnencrypted).toBe(1);
+  });
+
+  test('a plain unencrypted body is still skipped untouched', async () => {
+    const backend = freshBackend();
+    const plain = await encodeBody(utf8('{"not":"ours"}'), { compression: 'none' });
+    await backend.put('state/user-1/state.json', plain);
+
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: 'state/',
+      keyring: keyringV1,
+      info: stateInfo,
+      integrity: hmac,
+    });
+    expect(result.skippedUnencrypted).toBe(1);
+    expect(result.rewrote).toBe(0);
+    const untouched = (await backend.get('state/user-1/state.json')).toNullable()!.body;
+    expect(untouched).toEqual(plain);
   });
 });

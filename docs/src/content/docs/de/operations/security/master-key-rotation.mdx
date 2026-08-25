@@ -161,6 +161,19 @@ Nützliche Optionen:
 - **`newInfo`** — rotiert den HKDF-Kontext statt (oder zusätzlich zu)
   dem Schlüssel; siehe
   [HKDF-Kontext rotieren](/de/persistence/object-storage/key-rotation/#hkdf-kontext-rotieren).
+- **`integrity`** — die Integritätskonfiguration, unter der der
+  Korpus geschrieben wurde, in derselben Form, die auch der Store
+  nimmt.  **Pflicht bei einem Bucket mit aktiviertem
+  Integritäts-HMAC:** Das Tag deckt die Manifest-Bytes ab, der
+  Sweep prüft es beim Lesen und berechnet es beim Schreiben neu —
+  ohne den Schlüssel verweigert er vor dem ersten Write, statt
+  mitten im Korpus abzubrechen.  Siehe
+  [Einen integritätsgeschützten Korpus sweepen](/de/persistence/object-storage/key-rotation/#einen-integritätsgeschützten-korpus-sweepen).
+- **`allowUntaggedBodies`** — lässt ungetaggte Bodies zu, solange
+  `integrity` gesetzt ist, für ein Bucket mitten in der Umstellung
+  auf Integrität.  Standardmäßig aus, und das mit Absicht: Von der
+  Position des Sweeps aus sehen ein nie geschriebenes und ein
+  entferntes Tag gleich aus.
 
 Der Sweep ist **idempotent + wiederaufnehmbar** — ein Objekt, das
 bereits auf der `active`-Version ist, wird ohne Write übersprungen,
@@ -263,6 +276,11 @@ import { Aside } from '@astrojs/starlight/components';
   Version vor dem Start ab, aber nichts schützt den Live-Read-Pfad —
   erst den Sweep beenden + den alten Schlüssel ein Rollback-Fenster
   lang behalten, dann ausmustern.
+
+  Aus derselben Überlegung lässt sich ein Bucket mit aktivem
+  Integritäts-HMAC nicht ohne `integrity` sweepen: Den ganzen Lauf
+  zu verweigern ist das einzige Ergebnis, das den Korpus am Stück
+  lässt.
 </Aside>
 
 <Aside type="caution" title="Eine noch lebende Versionsnummer wiederverwenden">
