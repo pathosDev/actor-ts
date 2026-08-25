@@ -3,12 +3,17 @@
  *
  * None of these is an options default, which is why they are not in an
  * `XOptions.ts`: the two token lengths are security parameters of the
- * protocol, and the identifier bound is a wire-input admission limit that is
- * deliberately not configurable — a peer-supplied cap is not a cap.  The
- * *default* `producerId` is a value `ProducerControllerOptions` documents and
- * a caller can override; how many random characters the framework draws when
- * it has to mint one is not, which is why the size lives here and the drawing
- * lives beside the field that consumes it.
+ * protocol, the identifier bound is a wire-input admission limit that is
+ * deliberately not configurable — a peer-supplied cap is not a cap — and the
+ * eviction-report interval only paces a log line.  The *default* `producerId`
+ * is a value `ProducerControllerOptions` documents and a caller can override;
+ * how many random characters the framework draws when it has to mint one is
+ * not, which is why the size lives here and the drawing lives beside the
+ * field that consumes it.
+ *
+ * The dedup-map bounds a consumer applies to its own heap are the opposite
+ * case and live in `ConsumerControllerOptions.ts`: that reasoning is about
+ * *wire input*, and a resource budget is the operator's to set.
  */
 
 /**
@@ -71,3 +76,18 @@ export const GENERATED_PRODUCER_ID_LENGTH = 16;
  * refuse must fail at construction, not silently dead-letter every delivery.
  */
 export const MAX_DELIVERY_IDENTIFIER_LENGTH = 256;
+
+/**
+ * Shortest gap, in milliseconds, between two warnings about evicted dedup
+ * entries — evictions in between are counted and reported by the next one.
+ *
+ * A warning per eviction would be the wrong trade in exactly the case the
+ * warning exists for.  Eviction only starts once the map is at
+ * `maxProducers`, and the way it gets there fastest is a flood of
+ * sender-chosen `producerId`s — so an unpaced line would turn a bounded heap
+ * back into an unbounded log, which is the same exhaustion one layer down
+ * (#728).  A minute is short enough that an operator watching a healthy
+ * service still sees the first sign of churn promptly, and long enough that
+ * a flood costs a handful of lines an hour instead of one per message.
+ */
+export const EVICTION_REPORT_INTERVAL_MS = 60_000;

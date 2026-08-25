@@ -1,15 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
+  ConsumerController,
   ReliableDelivery,
   ProducerControllerOptions,
   ProducerControllerOptionsBuilder,
   MAX_DELIVERY_IDENTIFIER_LENGTH,
 } from '../../../src/delivery/index.js';
-import type { Delivery } from '../../../src/delivery/index.js';
+import type { ConsumerControllerOptionsType, Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
@@ -778,6 +780,222 @@ describe('ReliableDelivery — malformed delivery (#727)', () => {
     expect(received).toEqual(['at-the-bound']);
 
     consumer.stop();
+    await kit.system.terminate();
+  });
+});
+
+/** Mutable slot the spawn factory writes the live controller into. */
+type ControllerSlot = { controller: ConsumerController<string> | null };
+
+describe('ReliableDelivery — dedup map resource budget (#728)', () => {
+  /**
+   * Spawn a ConsumerController and keep hold of the instance.
+   *
+   * `ReliableDelivery.consumer` hands back only a ref, and these cases assert
+   * on `trackedProducers` — the counter the map's growth had no equivalent of
+   * before this — so they need the object and not just its address.
+   */
+  const spawnBoundedConsumer = (
+    kit: TestKit,
+    slot: ControllerSlot,
+    options: ConsumerControllerOptionsType<string>,
+    name: string,
+  ): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
+    slot.controller = new ConsumerController<string>(options);
+    return slot.controller;
+  }, name);
+
+  /**
+   * Hand-rolled envelope, because the point of every case here is a
+   * `producerId` the *sender* chose.  A `ProducerController` mints one per
+   * construction and would need one actor per key.
+   */
+  const deliver = (
+    consumer: ActorRef<Delivery<string>>,
+    replyTo: unknown,
+    producerId: string,
+    seq: number,
+    body: string,
+  ): void => {
+    consumer.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId,
+      incarnation: 'incarnation-1',
+      seq,
+      body,
+      replyTo,
+    } as never);
+  };
+
+  test('maxProducers evicts the least-recently-used producer, and the map never grows past it', async () => {
+    const kit = quietKit('rd-max-producers');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // The sweep is off, so age cannot be what reclaims here — only the cap.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: 2,
+      producerIdleTtlMs: Infinity,
+    }, 'lru-consumer');
+
+    deliver(consumer, probe, 'producer-a', 1, 'a-1');
+    deliver(consumer, probe, 'producer-b', 1, 'b-1');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // A third producer needs a slot and the map is full, so the oldest goes.
+    deliver(consumer, probe, 'producer-c', 1, 'c-1');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the third producer was handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // producer-c is still remembered: its seq 1 is absorbed as a duplicate,
+    // so `received` does not move and the ack count is what to wait on.
+    deliver(consumer, probe, 'producer-c', 1, 'c-1-again');
+    await awaitCondition(() => probe.messageCount === 4, {
+      timeoutMs: 4_000,
+      label: 'the duplicate from producer-c was re-acknowledged',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'c-1']);
+
+    // producer-a is not: its window went with the eviction, so the same
+    // (producerId, incarnation, seq) runs the handler a second time.  That is
+    // what an eviction costs, and it is the at-least-once duplicate this
+    // protocol already permits — unbounded growth is what it did not.
+    deliver(consumer, probe, 'producer-a', 1, 'a-1-again');
+    await awaitCondition(() => received.length === 4, {
+      timeoutMs: 4_000,
+      label: 'the evicted producer was handled again',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'c-1', 'a-1-again']);
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    await kit.system.terminate();
+  });
+
+  test('a flood of distinct producer ids leaves the map at the cap, not at the message count', async () => {
+    // The issue's variant A in miniature: before the cap, the map held one
+    // permanent entry per distinct producerId ever admitted — so its size was
+    // a function of the message count, which the sender picks.
+    const kit = quietKit('rd-producer-flood');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: 8,
+      producerIdleTtlMs: Infinity,
+    }, 'flood-consumer');
+
+    const flood = 200;
+    for (let i = 0; i < flood; i++) deliver(consumer, probe, `flood-${i}`, 1, `m-${i}`);
+
+    await awaitCondition(() => received.length === flood, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'every flooded delivery was handled',
+    });
+    // Every one of them ran the handler — the cap bounds retention, not
+    // admission — and the map is still at eight entries.
+    expect(slot.controller?.trackedProducers).toBe(8);
+
+    await kit.system.terminate();
+  });
+
+  test('producerIdleTtlMs releases a producer that has gone quiet', async () => {
+    const kit = quietKit('rd-producer-idle-ttl');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // No cap at all, so nothing but age can reclaim: the LRU half only
+    // evicts when a *new* producer needs the slot, which is why a consumer
+    // that saw a burst and then went quiet needed a second mechanism.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 50,
+    }, 'idle-consumer');
+
+    deliver(consumer, probe, 'quiet-producer', 1, 'first');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first delivery was handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(1);
+
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the idle producer entry was swept',
+    });
+
+    // The window is genuinely gone rather than just uncounted: the same
+    // (producerId, incarnation, seq) runs the handler again.
+    deliver(consumer, probe, 'quiet-producer', 1, 'after-sweep');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the swept producer was handled again',
+    });
+    expect(received).toEqual(['first', 'after-sweep']);
+
+    await kit.system.terminate();
+  });
+
+  test('Infinity on both bounds is the documented opt-out', async () => {
+    // Also the case that would arm a `setInterval(Infinity)` if `preStart`
+    // did not check first.
+    const kit = quietKit('rd-unbounded-optout');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'unbounded-consumer');
+
+    for (let i = 0; i < 5; i++) deliver(consumer, probe, `unbounded-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === 5, {
+      timeoutMs: 4_000,
+      label: 'all five producers were handled',
+    });
+    // Settle past a sweep interval that must not exist.
+    await sleep(60);
+    expect(slot.controller?.trackedProducers).toBe(5);
+
+    await kit.system.terminate();
+  });
+
+  test('stopping the consumer releases the whole map', async () => {
+    const kit = quietKit('rd-stop-releases-map');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'stopped-consumer');
+
+    for (let i = 0; i < 3; i++) deliver(consumer, probe, `stopped-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the three producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(3);
+
+    consumer.stop();
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      label: 'postStop cleared the dedup map',
+    });
+
     await kit.system.terminate();
   });
 });

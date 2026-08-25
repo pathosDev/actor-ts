@@ -41,6 +41,10 @@ import {
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
+import {
+  ConsumerControllerOptionsValidator,
+  type ConsumerControllerOptionsType,
+} from '../../../src/delivery/ConsumerControllerOptions.js';
 import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
@@ -516,6 +520,38 @@ describe('ProducerControllerOptionsValidator', () => {
     expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1) })).toThrow(OptionsError);
     expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH) })).not.toThrow();
     expect(() => check({ producerId: 'orders' })).not.toThrow();
+  });
+});
+
+describe('ConsumerControllerOptionsValidator', () => {
+  const check = (s: Partial<ConsumerControllerOptionsType<unknown>>): void =>
+    new ConsumerControllerOptionsValidator<unknown>().validate(s);
+
+  test('rejects a maxProducers that is not a positive integer', () => {
+    expect(() => check({ maxProducers: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxProducers: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxProducers: 2.5 })).toThrow(/maxProducers/);
+    expect(() => check({ maxProducers: Number.NaN })).toThrow(/maxProducers/);
+  });
+
+  test('rejects a non-positive or non-finite producerIdleTtlMs', () => {
+    expect(() => check({ producerIdleTtlMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ producerIdleTtlMs: -1 })).toThrow(/producerIdleTtlMs/);
+    expect(() => check({ producerIdleTtlMs: Number.NaN })).toThrow(/producerIdleTtlMs/);
+  });
+
+  test('accepts Infinity on both bounds — it is the documented opt-out', () => {
+    // `Infinity` is the value that says "no cap" / "no sweep", so the generic
+    // positiveInt / positiveNumber helpers cannot be used: they reject it.
+    expect(() => check({ maxProducers: Infinity })).not.toThrow();
+    expect(() => check({ producerIdleTtlMs: Infinity })).not.toThrow();
+  });
+
+  test('accepts the built-in defaults and an unset options object', () => {
+    expect(() => check({ maxProducers: 1_024, producerIdleTtlMs: 300_000 })).not.toThrow();
+    // Every helper is a no-op on `undefined`; `handler` is required rather
+    // than bounded, and asserting it at construction is #1234.
+    expect(() => check({})).not.toThrow();
   });
 });
 
