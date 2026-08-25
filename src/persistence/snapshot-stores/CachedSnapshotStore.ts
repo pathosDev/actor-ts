@@ -2,6 +2,7 @@ import type { Cache } from '../../cache/Cache.js';
 import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { CachedSnapshotStoreOptionsValidator, DEFAULT_SNAPSHOT_CACHE_TTL_MS } from './CachedSnapshotStoreOptions.js';
 import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
@@ -63,6 +64,9 @@ export class CachedSnapshotStore implements SnapshotStore {
     this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS;
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
+
+  /** The cache is in-process; locality is whatever the wrapped store declares (#1356). */
+  get storageLocality(): StorageLocality | undefined { return this.underlying.storageLocality; }
 
   async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
     const written = await this.underlying.save<S>(persistenceId, seq, state, options);

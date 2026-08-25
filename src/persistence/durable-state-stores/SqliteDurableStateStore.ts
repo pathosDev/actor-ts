@@ -6,6 +6,7 @@ import {
   type SqliteDurableStateStoreOptions,
   type SqliteDurableStateStoreOptionsType,
 } from './SqliteDurableStateStoreOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * DurableStateStore backed by a local SQLite file.
@@ -27,6 +28,9 @@ import {
  * requires.
  */
 export class SqliteDurableStateStore extends RelationalDurableStateStore {
+  /** The one relational store on a local file — overrides the family's `'shared'` (#1356). */
+  override readonly storageLocality: StorageLocality = 'node-local';
+
   constructor(options: SqliteDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as SqliteDurableStateStoreOptionsType);
     new SqliteDurableStateStoreOptionsValidator().validate(resolvedOptions);

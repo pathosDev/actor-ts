@@ -17,6 +17,7 @@ import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 type EventRow = {
@@ -58,6 +59,8 @@ type TagIndexKeyRow = {
  * guarantee back for the round-trip.
  */
 export class CassandraJournal implements Journal {
+  /** A Cassandra/Scylla cluster any node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly options: Partial<CassandraJournalOptionsType>;
   private client: CassandraClientLike;
   /** True once `ensureStarted()` has run keyspace + table DDL. */

@@ -15,6 +15,7 @@ import { assertValidEntryTags } from '../storage/TagValidator.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 type Stmts = {
   insert: SqliteStatement;
@@ -66,6 +67,8 @@ export class SqliteJournal implements Journal {
    * limit of in-process notifications.
    */
   readonly events: JournalEventBus = new InProcessJournalEventBus();
+  /** A local file (or `:memory:`) no other node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'node-local';
 
   private db: SqliteDb | null = null;
   private stmts: Stmts | null = null;

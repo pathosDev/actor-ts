@@ -26,6 +26,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -60,6 +61,9 @@ type CachedEntry = {
 
 export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly backend: ObjectStorageBackend;
+
+  /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
+  get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
   private readonly ownsBackend: boolean;
   private readonly prefix: string;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;

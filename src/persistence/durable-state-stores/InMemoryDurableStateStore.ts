@@ -6,6 +6,7 @@ import {
 import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 
 /**
@@ -16,6 +17,8 @@ import { fromNullable, type Option } from '../../util/Option.js';
  */
 export class InMemoryDurableStateStore implements DurableStateStore {
   private readonly records = new Map<string, DurableStateRecord<unknown>>();
+  /** See `InMemoryJournal.storageLocality` — writable for shared in-process fixtures (#1356). */
+  storageLocality: StorageLocality = 'node-local';
 
   async upsert<S>(
     persistenceId: string,

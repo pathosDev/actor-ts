@@ -1,5 +1,6 @@
 import type { Option } from '../util/Option.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
+import type { StorageLocality } from './StorageLocality.js';
 
 /**
  * Storage contract for Durable State — the "event-free" cousin of Event
@@ -53,6 +54,13 @@ export interface DurableStateStore {
 
   /** Remove the record entirely.  Idempotent. */
   delete(persistenceId: string): Promise<void>;
+
+  /**
+   * Where this store's data lives relative to cluster nodes — see
+   * {@link StorageLocality}.  Optional; absence means unknown and keeps the
+   * cluster's storage advisory silent (#1356).
+   */
+  readonly storageLocality?: StorageLocality;
 
   /**
    * Best-effort teardown; idempotent.

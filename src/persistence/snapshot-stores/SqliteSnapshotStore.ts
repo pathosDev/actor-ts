@@ -8,6 +8,7 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 type Stmts = {
   insert: SqliteStatement;
@@ -27,6 +28,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private readonly options: SqliteSnapshotStoreOptionsType;
   private readonly table: string;
   private readonly keepN: number;
+  /** A local file (or `:memory:`) no other node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'node-local';
   private closed = false;
 
   private db: SqliteDb | null = null;

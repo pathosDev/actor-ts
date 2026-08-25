@@ -1,5 +1,6 @@
 import type { Snapshot } from './JournalTypes.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
+import type { StorageLocality } from './StorageLocality.js';
 import type { Option } from '../util/Option.js';
 
 /**
@@ -54,6 +55,13 @@ export interface SnapshotStore {
 
   /** Delete snapshots up to and including `toSeq`.  Useful for pruning. */
   delete(persistenceId: string, toSeq: number): Promise<void>;
+
+  /**
+   * Where this store's data lives relative to cluster nodes — see
+   * {@link StorageLocality}.  Optional; absence means unknown and keeps the
+   * cluster's storage advisory silent (#1356).
+   */
+  readonly storageLocality?: StorageLocality;
 
   /** Best-effort teardown. */
   close?(): Promise<void>;

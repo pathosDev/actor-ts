@@ -1,5 +1,6 @@
 import type { Serializer } from '../../serialization/Serializer.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { SqlDialect } from './SqlDialect.js';
 import type { SqlPool } from './SqlPool.js';
 
@@ -29,6 +30,12 @@ export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'o
 export abstract class RelationalStore extends LazyStore<SqlPool> {
   protected readonly dialect: SqlDialect;
   protected readonly serializer?: Serializer;
+  /**
+   * Every relational backend in the tree speaks to a database server any node
+   * can reach — `'shared'` is the family default.  The one local-file member,
+   * `SqliteDurableStateStore`, overrides it (#1356).
+   */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly autoCreate: boolean;
 
   protected constructor(config: RelationalStoreConfig) {

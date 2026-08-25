@@ -10,6 +10,7 @@ import {
 } from '../journals/CassandraClient.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
 type SnapshotRow = {
@@ -25,6 +26,8 @@ type SnapshotRow = {
  * When `keepN > 0`, excess snapshots are pruned on each `save`.
  */
 export class CassandraSnapshotStore implements SnapshotStore {
+  /** A Cassandra/Scylla cluster any node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly options: Partial<CassandraSnapshotStoreOptionsType>;
   private client: CassandraClientLike;
   private started = false;

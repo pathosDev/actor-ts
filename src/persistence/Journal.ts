@@ -1,5 +1,6 @@
 import type { JournalEventBus } from './JournalEventBus.js';
 import type { JournalEntry, PersistentEvent } from './JournalTypes.js';
+import type { StorageLocality } from './StorageLocality.js';
 
 /**
  * Pluggable event journal — the persistence-plugin boundary.  Core ships
@@ -166,6 +167,17 @@ export interface Journal {
    * the polling loop.
    */
   readonly events?: JournalEventBus;
+
+  /**
+   * Where this journal's data lives relative to cluster nodes — `'node-local'`
+   * storage no other node can reach, or a `'shared'` database service.  See
+   * {@link StorageLocality} for the full semantics.  Optional, and absence is
+   * meaningful like {@link raiseCompactionMark}: an undeclared journal is
+   * unknown, and the cluster's storage advisory stays silent instead of
+   * guessing (#1356).  Instance-level on purpose — one in-memory journal
+   * shared across in-process systems genuinely is `'shared'`.
+   */
+  readonly storageLocality?: StorageLocality;
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;

@@ -1,4 +1,5 @@
 import type { Option } from '../../util/Option.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * Generic object-storage abstraction — the same surface that an S3-style
@@ -63,6 +64,13 @@ export interface ObjectStorageBackend {
    * `limit` is a soft cap, the backend may return fewer entries.
    */
   list(options: { readonly prefix: string; readonly limit?: number }): Promise<ObjectInfo[]>;
+  /**
+   * Where objects written through this backend live relative to cluster
+   * nodes — the object-storage stores delegate their own declaration here,
+   * because locality is the backend's property, not the wrapper's.  See
+   * {@link StorageLocality}; absence means unknown (#1356).
+   */
+  readonly storageLocality?: StorageLocality;
   /** Optional: shut down any underlying client / file handle. */
   close?(): Promise<void>;
 }

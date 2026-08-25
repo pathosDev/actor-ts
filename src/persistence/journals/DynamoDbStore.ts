@@ -1,4 +1,5 @@
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import {
   isTableAlreadyExists,
   isTableNotFound,
@@ -51,6 +52,8 @@ export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperat
  * that works.
  */
 export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
+  /** A DynamoDB endpoint any node can reach — `'shared'` for the whole family (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly autoCreateTables: boolean;
   private readonly billingMode: 'PAY_PER_REQUEST' | 'PROVISIONED';
   private readonly provisionedThroughput?: { readonly readCapacityUnits: number; readonly writeCapacityUnits: number };

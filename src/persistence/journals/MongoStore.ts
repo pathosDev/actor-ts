@@ -1,4 +1,5 @@
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { MongoDatabaseLike, MongoResource } from './MongoClient.js';
 
 /** Wiring every MongoDB store needs, independent of which contract it implements. */
@@ -29,6 +30,8 @@ export interface MongoStoreConfig extends Omit<LazyStoreConfig<MongoResource>, '
  * myself", not "I don't need them", and the docs say so.
  */
 export abstract class MongoStore extends LazyStore<MongoResource> {
+  /** A MongoDB server/cluster any node can reach — `'shared'` for the whole family (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly autoCreateIndexes: boolean;
 
   protected constructor(config: MongoStoreConfig) {

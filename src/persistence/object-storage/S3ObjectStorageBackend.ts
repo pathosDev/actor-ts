@@ -13,6 +13,7 @@ import {
 } from './ObjectStorageBackend.js';
 import { S3ObjectStorageOptionsValidator } from './S3ObjectStorageOptions.js';
 import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3ObjectStorageOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * S3-compatible `ObjectStorageBackend` — wraps AWS SDK v3
@@ -95,6 +96,8 @@ const assertSafeKey = makeKeyValidator(S3KeyRules);
 const assertSafeWriteKey = makeKeyValidator(S3WriteKeyRules);
 
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
+  /** An S3-compatible service every node reaches (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
   private readonly bucket: string;
 
