@@ -20,6 +20,45 @@ import {
   isHealthy,
   managementRoutes,
 } from '../../../src/management/index.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
+import {
+  DefaultMetricsRegistry,
+  type Counter,
+  type CounterOptions,
+  type Gauge,
+  type GaugeOptions,
+  type Histogram,
+  type HistogramOptions,
+  type Labels,
+  type MetricSample,
+  type MetricsRegistry,
+} from '../../../src/metrics/Metrics.js';
+
+/**
+ * A registry whose writes go to a collector this process cannot read back —
+ * the shape `promClientRegistry` has (#744).  It still has to *work*, since
+ * installing it starts the mailbox-depth sampler against it; only `collect()`
+ * is blind.  The reader-side behaviour lives in
+ * `tests/unit/metrics/NonCollectableRegistry.test.ts`; here it exists only to
+ * make the management route face one.
+ */
+class WriteThroughRegistry implements MetricsRegistry {
+  readonly collectable = false;
+  private readonly foreign = new DefaultMetricsRegistry();
+
+  counter(name: string, labels?: Labels, options?: CounterOptions): Counter {
+    return this.foreign.counter(name, labels, options);
+  }
+  gauge(name: string, labels?: Labels, options?: GaugeOptions): Gauge {
+    return this.foreign.gauge(name, labels, options);
+  }
+  histogram(name: string, labels?: Labels, options?: HistogramOptions): Histogram {
+    return this.foreign.histogram(name, labels, options);
+  }
+  collect(): ReadonlyArray<MetricSample> { return []; }
+  remove(name: string, labels?: Labels): boolean { return this.foreign.remove(name, labels); }
+  clear(): void { this.foreign.clear(); }
+}
 
 describe('HealthCheckRegistry', () => {
   test('aggregates liveness + readiness separately', async () => {
@@ -284,6 +323,29 @@ describe('managementRoutes — cluster queries', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')?.toLowerCase())
       .toContain('text/plain');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  test('/metrics refuses a registry it cannot read, and leaves /health alone', async () => {
+    const { sys, cluster } = await startNode();
+    // The documented "one scrape endpoint" wiring: the operator's own
+    // collector holds the values, and this registry keeps no copy (#744).
+    sys.extension(MetricsExtensionId).useRegistry(new WriteThroughRegistry());
+    const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const metrics = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(metrics.status).toBe(503);
+    expect(await metrics.text()).toContain('collect()');
+
+    // The reason the refusal is a per-request status and not a throw from
+    // `managementRoutes`: a startup error would take the probes down too, to
+    // report a metrics problem that costs the node nothing else.
+    const health = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(health.status).toBe(200);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();

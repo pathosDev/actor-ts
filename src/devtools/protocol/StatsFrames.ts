@@ -66,6 +66,23 @@ export type NodeFigures = {
   readonly suspendedActors: number;
   readonly handlerLatency?: HandlerLatencySummary;
   readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
+  /**
+   * The three metrics-derived figures above — `messagesProcessed`,
+   * `mailboxDrops` and `handlerLatency` — could not be read on that node
+   * (#744).
+   *
+   * Set when the installed `MetricsRegistry` writes through to a foreign
+   * collector and keeps no snapshot of its own, which is what
+   * `promClientRegistry` does.  The counters then read 0 and the latency
+   * `undefined` — indistinguishable from an idle node, and the drop counter
+   * is the framework's own overload signal, so a panel showing it as zero
+   * is at its most misleading exactly when it matters.
+   *
+   * Optional and absent-means-available, so a node running an older build
+   * reports into a newer collector unchanged.  Everything else in this
+   * shape comes from the actor tree and the event stream and stays correct.
+   */
+  readonly metricsUnavailable?: boolean;
 };
 
 /** A node's figures as the serving node last heard them. */
@@ -117,6 +134,14 @@ export type StatsSamplePayload = {
   /** Actors currently suspended — the supervision-trouble signal. */
   readonly suspendedActors: number;
   readonly handlerLatency?: HandlerLatencySummary;
+  /**
+   * At least one node could not read its metrics back — see
+   * {@link NodeFigures.metricsUnavailable}.  The totals above are summed
+   * across every node, so one blind node is enough to make
+   * `messagesProcessed`, `mailboxDrops` and `handlerLatency` an
+   * undercount; the flag says so rather than letting the sum look whole.
+   */
+  readonly metricsUnavailable?: boolean;
   /** Deepest mailboxes, for the dashboard's hot-actor tile. */
   readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
   readonly cluster?: ClusterStatsSummary;

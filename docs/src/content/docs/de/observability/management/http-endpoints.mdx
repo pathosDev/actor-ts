@@ -195,6 +195,27 @@ actor_messages_processed_total{class="Worker",path="..."} 12345
 Prometheus-Textformat. Siehe
 [Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/).
 
+Antwortet stattdessen mit `503`, wenn die installierte
+`MetricsRegistry` sich nicht über `collect()` zurücklesen lässt —
+die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/)
+ist die eine im Framework, die das nicht kann, weil sie ihre
+Schreibvorgänge an prom-client weiterleitet und keinen Snapshot
+behält:
+
+```
+GET /metrics
+→ 503 Service Unavailable
+
+metrics endpoint unavailable: the installed MetricsRegistry does not
+support collect() — ...
+```
+
+Ein `200` mit leerem Body wäre schlimmer als der Fehler: eine leere
+Exposition ist ein *gültiger* Scrape, also verbucht Prometheus das
+Target als erreichbar, und jede Serie des Frameworks hört still auf
+zu existieren. Die Prüfung läuft pro Request, weil die Registry zu
+jedem Zeitpunkt im Leben des Systems ausgetauscht werden kann.
+
 ## Admin (Opt-in)
 
 ### `POST /cluster/leave`
