@@ -237,6 +237,12 @@ type JoinPlan = {
   readonly seeds: string[];
   /** Absent on the legacy path — `Cluster` then keeps its `'immediate'` default. */
   readonly selfElection?: SelfElectionPolicy;
+  /**
+   * The election grace, present exactly when stable observation ran —
+   * carried for winners and `'never'` nodes alike, because the readiness
+   * budget of a non-winner depends on the winner's grace (#1086).
+   */
+  readonly selfElectionGraceMs?: number;
 };
 
 /**
@@ -265,21 +271,24 @@ async function observeStableSeeds(args: {
   return {
     seeds: targets.seeds.map((address) => address.toString()),
     selfElection: targets.selfElection,
+    selfElectionGraceMs: targets.selfElectionGraceMs,
   };
 }
 
 /**
  * How long an unconfigured `awaitReady` waits.
  *
- * `true` — five seconds — everywhere except behind an election this node won:
- * there, `SelfUp` is not due until the self-election grace has elapsed, so the
- * flat default would time out on every genuine cold start and report a node
- * that is still `joining` as ready.  The budget is the grace plus the usual
- * five seconds of slack for the join round it is waiting on.
+ * `true` — five seconds — everywhere except behind stable observation: there
+ * the readiness of **every** node hangs on the election grace, not only the
+ * winner's.  The winner's `SelfUp` is not due until its grace has elapsed,
+ * and a non-winner's promotion cannot arrive before that same deadline fires
+ * on the winner — so the flat default expired on N-1 of N nodes of every
+ * genuine cold start while nothing was wrong (#1086).  The budget is the
+ * grace plus the usual five seconds of slack for the join round after it.
  */
 function defaultAwaitReady(plan: JoinPlan): boolean | number {
-  return typeof plan.selfElection === 'number'
-    ? plan.selfElection + DEFAULT_AWAIT_READY_MS
+  return plan.selfElectionGraceMs !== undefined
+    ? plan.selfElectionGraceMs + DEFAULT_AWAIT_READY_MS
     : true;
 }
 
