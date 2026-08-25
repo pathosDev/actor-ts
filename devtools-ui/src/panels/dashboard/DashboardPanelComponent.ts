@@ -40,6 +40,20 @@ const SPAN_STORAGE_KEY = 'actor-ts.devtools.span';
 /** Uptime has to advance on its own; nothing pushes a frame for it. */
 const CLOCK_INTERVAL_MS = 1000;
 
+/**
+ * Why three of the figures on this page can be missing.
+ *
+ * A registry that forwards its writes to a foreign collector — the
+ * `promClientRegistry` bridge — keeps no snapshot, so the server cannot read
+ * back what it wrote.  The figures then arrive as 0, which on a busy system
+ * is not just wrong but reassuring, and one of them is the framework's own
+ * overload signal (#744).
+ */
+const METRICS_UNAVAILABLE_TITLE =
+  'Unavailable — this node\'s MetricsRegistry does not support collect(). '
+  + 'With promClientRegistry these figures live on prom-client\'s own /metrics '
+  + 'route instead.';
+
 /** One figure, with the shape it has been making. */
 type Tile = {
   readonly label: string;
@@ -88,6 +102,17 @@ function spanLabel(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
   return `${Math.round(ms / 3_600_000)} h`;
+}
+
+/**
+ * What a metrics-derived tile shows when the node cannot read its registry.
+ *
+ * A dash rather than a zero, and flagged as an alert: the whole point of the
+ * flag behind it is that "0 mailbox drops" and "no reading" look identical
+ * and mean opposite things.
+ */
+function unreadableTile(label: string): Tile {
+  return { label, value: '—', alert: true, title: METRICS_UNAVAILABLE_TITLE };
 }
 
 /** Latency reads in ms, and the interesting range spans four decades. */
@@ -197,6 +222,17 @@ export class DashboardPanelComponent {
       },
       { label: 'Runtime', value: latest?.runtime ?? '—' },
       this.clusterTile(latest),
+      // Only when there is something to say.  A "Metrics: available" tile on
+      // every healthy system would be noise, and the tiles below already read
+      // as available by carrying a number.
+      ...(latest?.metricsUnavailable === true
+        ? [{
+          label: 'Metrics',
+          value: 'unavailable',
+          alert: true,
+          title: METRICS_UNAVAILABLE_TITLE,
+        } satisfies Tile]
+        : []),
     ];
   });
 
@@ -208,11 +244,16 @@ export class DashboardPanelComponent {
     const palette = this.chartTheme().series;
     const spark = (points: readonly SeriesPoint[], index: number): DevToolsChartOption | undefined =>
       (points.length > 1 ? buildSparklineOption(points, palette[index]!) : undefined);
+    // Exactly three figures here come from the metrics registry; the rest are
+    // read from the actor tree and the event stream and stay correct even
+    // when the registry cannot be collected.  Blanking the whole panel would
+    // hide the figures that are still true (#744).
+    const blind = latest.metricsUnavailable === true;
 
     return [
       { label: 'Actors', value: formatCount(latest.actorCount), option: spark(history.levels('actorCount'), 0) },
-      { label: 'Messages / s', value: history.latestRate('messagesProcessed').toFixed(1), option: spark(history.rates('messagesProcessed'), 0) },
-      { label: 'Processed messages', value: formatCount(latest.messagesProcessed) },
+      blind ? unreadableTile('Messages / s') : { label: 'Messages / s', value: history.latestRate('messagesProcessed').toFixed(1), option: spark(history.rates('messagesProcessed'), 0) },
+      blind ? unreadableTile('Processed messages') : { label: 'Processed messages', value: formatCount(latest.messagesProcessed) },
       { label: 'Spawns / s', value: history.latestRate('actorsStarted').toFixed(1), option: spark(history.rates('actorsStarted'), 1) },
       { label: 'Stops / s', value: history.latestRate('actorsStopped').toFixed(1), option: spark(history.rates('actorsStopped'), 5) },
       { label: 'Restarts', value: formatCount(latest.actorsRestarted), option: spark(history.rates('actorsRestarted'), 4), alert: latest.actorsRestarted > 0 },
@@ -220,14 +261,14 @@ export class DashboardPanelComponent {
       { label: 'Stashed', value: formatCount(latest.stashedTotal), option: spark(history.levels('stashedTotal'), 5) },
       { label: 'Suspended actors', value: formatCount(latest.suspendedActors), option: spark(history.levels('suspendedActors'), 4), alert: latest.suspendedActors > 0 },
       { label: 'Dead letters', value: formatCount(latest.deadLetters), option: spark(history.rates('deadLetters'), 3), alert: latest.deadLetters > 0 },
-      {
+      blind ? unreadableTile('Mailbox drops') : {
         label: 'Mailbox drops',
         value: formatCount(latest.mailboxDrops),
         option: spark(history.rates('mailboxDrops'), 3),
         alert: latest.mailboxDrops > 0,
         title: 'Messages a bounded mailbox threw away on overflow.',
       },
-      this.latencyTile(latest),
+      blind ? unreadableTile('Handler p99') : this.latencyTile(latest),
     ];
   });
 
@@ -337,9 +378,26 @@ export class DashboardPanelComponent {
   shorten(path: string): string { return shortActorPath(path); }
 
   nodeTitle(node: NodeSample): string {
-    return node.stale
+    const base = node.stale
       ? `Last answered ${formatDuration(this.now() - node.receivedAtMs)} ago`
       : node.figures.address;
+    return node.figures.metricsUnavailable === true
+      ? `${base} — ${METRICS_UNAVAILABLE_TITLE}`
+      : base;
+  }
+
+  /**
+   * One node's message count, or a dash when that node could not read its
+   * own registry.
+   *
+   * Per node rather than per cluster: the bridge is installed on a system,
+   * so in a mixed deployment one node can be blind while its peers report
+   * honestly, and a shared dash would throw away the peers' figures.
+   */
+  nodeMessages(node: NodeSample): string {
+    return node.figures.metricsUnavailable === true
+      ? '—'
+      : formatCount(node.figures.messagesProcessed);
   }
 
   onSpan(event: Event): void {

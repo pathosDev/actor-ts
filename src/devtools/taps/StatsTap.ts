@@ -161,6 +161,7 @@ export class StatsTap implements DevToolsTap {
       stashedTotal: total.stashedTotal,
       suspendedActors: total.suspendedActors,
       ...(total.handlerLatency === undefined ? {} : { handlerLatency: total.handlerLatency }),
+      ...(total.metricsUnavailable === true ? { metricsUnavailable: true } : {}),
       topMailboxes: total.topMailboxes,
       ...(cluster === null ? {} : { cluster }),
       nodes,
@@ -190,6 +191,11 @@ function totalOf(all: ReadonlyArray<NodeFigures>): Omit<NodeFigures, 'address' |
   let mailboxBacklog = 0;
   let stashedTotal = 0;
   let suspendedActors = 0;
+  // Any node, not every node: one blind node makes the three
+  // metrics-derived totals an undercount, and a sum that is short by an
+  // unknown amount is exactly as misleading as a single node's zeros
+  // (#744).
+  let metricsUnavailable = false;
   const mailboxes: MailboxDepthEntry[] = [];
 
   for (const figures of all) {
@@ -203,6 +209,7 @@ function totalOf(all: ReadonlyArray<NodeFigures>): Omit<NodeFigures, 'address' |
     mailboxBacklog += figures.mailboxBacklog;
     stashedTotal += figures.stashedTotal;
     suspendedActors += figures.suspendedActors;
+    if (figures.metricsUnavailable === true) metricsUnavailable = true;
     mailboxes.push(...figures.topMailboxes);
   }
   mailboxes.sort((a, b) => b.size - a.size);
@@ -219,6 +226,7 @@ function totalOf(all: ReadonlyArray<NodeFigures>): Omit<NodeFigures, 'address' |
     stashedTotal,
     suspendedActors,
     ...(latencyOf(all) === null ? {} : { handlerLatency: latencyOf(all)! }),
+    ...(metricsUnavailable ? { metricsUnavailable: true } : {}),
     topMailboxes: mailboxes.slice(0, TOP_MAILBOX_COUNT),
   };
 }
