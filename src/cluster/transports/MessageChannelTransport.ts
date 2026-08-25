@@ -1,6 +1,7 @@
 import { NodeAddress } from '../NodeAddress.js';
 import type { WireMessage } from '../Protocol.js';
 import type { Transport, WireHandler } from '../Transport.js';
+import { isNodeAddressData } from '../WireValidation.js';
 
 /**
  * Message shape carried over the underlying MessageChannel.  The broker
@@ -13,6 +14,32 @@ export type BrokeredMessage = {
   readonly to: ReturnType<NodeAddress['toJSON']>;
   readonly payload: WireMessage;
 };
+
+/**
+ * The floor a brokered envelope must clear before anything reads it.
+ *
+ * Only the two address fields are checked: `to` is what a broker dereferences
+ * to route the frame, and `from` is what the receiving
+ * {@link MessageChannelTransport} dereferences the moment the frame is
+ * re-posted.  The `payload` is not validated here — that is #945's brief, over
+ * on the transport, and doing it in both places would mean two guards to keep
+ * in step.
+ *
+ * It lives beside {@link BrokeredMessage} rather than inside a broker because
+ * there are two brokers — `WorkerBroker` in production and the testkit's
+ * `MultiNodeBroker` — and a guard copied into both is a guard that drifts.  That
+ * is not hypothetical: the testkit fork kept the unguarded shape right through
+ * #701's first fix, and nothing noticed because until then no suite named it.
+ * `src/worker/` is not an option for the shared home the way `withChannelSource`
+ * is: the third prospective caller is {@link MessageChannelTransport.onFrame}
+ * itself (#945), and `src/cluster/` importing from `src/worker/` would invert
+ * the layering both brokers already depend on.
+ */
+export function isBrokeredMessage(value: unknown): value is BrokeredMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const { to, from } = value as Partial<BrokeredMessage>;
+  return isNodeAddressData(to) && isNodeAddressData(from);
+}
 
 /**
  * MessagePort-like minimal surface — we only use these three members so

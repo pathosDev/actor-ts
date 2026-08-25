@@ -1,8 +1,8 @@
 import type { NodeAddress } from '../../cluster/NodeAddress.js';
 import { NodeAddress as NodeAddressConstructor } from '../../cluster/NodeAddress.js';
-import type {
-  BrokeredMessage,
-  PortLike,
+import {
+  isBrokeredMessage,
+  type PortLike,
 } from '../../cluster/transports/MessageChannelTransport.js';
 import { withChannelSource } from '../../worker/WorkerBroker.js';
 
@@ -39,7 +39,7 @@ export class MultiNodeBroker {
       throw new Error(`MultiNodeBroker: address ${key} already registered`);
     }
     this.ports.set(key, port);
-    port.onmessage = (evt) => this.onMessage(address, evt.data as BrokeredMessage);
+    port.onmessage = (evt) => this.onMessage(address, evt.data);
     port.start?.();
   }
 
@@ -89,16 +89,37 @@ export class MultiNodeBroker {
    * worker mesh (#774).  Nothing is lost for tests that *want* to speak as
    * someone else: `Cluster.handleWire` is reachable directly, which is how
    * `tests/multi-node/ClusterSecurity.test.ts` injects every frame it forges.
+   *
+   * `isBrokeredMessage` is imported for the same reason and settles the same
+   * disagreement one field earlier.  `frame` is `unknown` because it is whatever
+   * a worker put on its port; the `BrokeredMessage` cast this signature used to
+   * carry made `NodeAddressConstructor.fromJSON(frame.to)` a bare dereference,
+   * which since #571 does not merely mis-route a malformed address but *throws*
+   * — inside the harness's own `message` listener, where nothing catches it, so
+   * one bad frame from one worker takes the whole test process down with it
+   * (#701).  That is the defect the production broker was fixed for; this fork
+   * kept it, and no suite named this file to notice.
+   *
+   * The try/catch is the same backstop production has, and here it also swallows
+   * the teardown race `docs/…/testing/diagnosing-flakes.mdx` records: forwarding
+   * to a worker that `crash()` already terminated throws `InvalidStateError` out
+   * of `postMessage`, which used to surface as a failure of whichever test
+   * happened to be running.  A terminated peer is an unroutable destination, and
+   * unroutable destinations have always been dropped here.  The race itself is
+   * unchanged — only its escalation into an unrelated test's failure is gone.
    */
-  private onMessage(source: NodeAddress, env: BrokeredMessage): void {
+  private onMessage(source: NodeAddress, frame: unknown): void {
     if (this.stopped) return;
     const sourceKey = source.toString();
     if (!this.ports.has(sourceKey)) return;     // sender was unregistered
-    const targetAddress = NodeAddressConstructor.fromJSON(env.to);
-    const targetKey = targetAddress.toString();
-    if (this.blocked.has(`${sourceKey}→${targetKey}`)) return;  // partition
-    const target = this.ports.get(targetKey);
-    if (!target) return;                        // unknown destination
-    target.postMessage(withChannelSource(env, source));
+    if (!isBrokeredMessage(frame)) return;      // malformed → drop, never throw
+    try {
+      const targetAddress = NodeAddressConstructor.fromJSON(frame.to);
+      const targetKey = targetAddress.toString();
+      if (this.blocked.has(`${sourceKey}→${targetKey}`)) return;  // partition
+      const target = this.ports.get(targetKey);
+      if (!target) return;                      // unknown destination
+      target.postMessage(withChannelSource(frame, source));
+    } catch { /* malformed or unroutable → drop */ }
   }
 }
