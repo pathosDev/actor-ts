@@ -194,10 +194,18 @@ already carried one, so an untagged body is never promoted; a corpus
 that is still mid-integrity-migration adds `allowUntaggedBodies: true`,
 the sweep-side counterpart of the store option of the same name.
 
-The sweep does **not** rotate the integrity key itself.  Nothing on the
-wire records which integrity key sealed a body, so a half-swept corpus
-would be indistinguishable from a tampered one — roll a new integrity
-key through the store's own read-then-write window instead.
+The sweep does **not** rotate the integrity key itself, and no migration
+window lets you either.  Nothing on the wire records which integrity key
+sealed a body, so a half-swept corpus would be indistinguishable from a
+tampered one — and `allowUntaggedBodies` is not the way round it, because
+it re-admits bodies carrying *no* tag, while a body tagged under the old
+key still fails the HMAC comparison before that branch is reached.  What
+does work is the per-call `PersistenceOptions.integrity` override, read
+and write independently, one `persistenceId` at a time: see [integrity
+and master-key
+rotation](/persistence/object-storage/encryption/#integrity-and-master-key-rotation),
+and [#1354](https://github.com/pathosDev/actor-ts/issues/1354) for the
+shape a real roll would need.
 
 ## Partial rotation with `skip`
 

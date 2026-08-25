@@ -203,12 +203,20 @@ mitten in der Integritätsmigration ergänzt `allowUntaggedBodies:
 true`, das Sweep-seitige Gegenstück zur gleichnamigen
 Store-Option.
 
-Den Integritätsschlüssel selbst rotiert der Sweep **nicht**.  Auf
-der Leitung ist nirgends festgehalten, welcher Integritätsschlüssel
-einen Body versiegelt hat; ein halb gesweepter Korpus wäre also
-nicht von einem manipulierten zu unterscheiden — rolle einen neuen
-Integritätsschlüssel stattdessen über das Read-then-Write-Fenster
-des Stores aus.
+Den Integritätsschlüssel selbst rotiert der Sweep **nicht**, und es
+gibt auch kein Migrationsfenster, das es dir erlaubte.  Auf der
+Leitung ist nirgends festgehalten, welcher Integritätsschlüssel einen
+Body versiegelt hat; ein halb gesweepter Korpus wäre also nicht von
+einem manipulierten zu unterscheiden — und `allowUntaggedBodies` ist
+nicht der Weg daran vorbei, denn es lässt Bodies wieder zu, die *gar
+kein* Tag tragen, während ein unter dem alten Schlüssel getaggter Body
+weiterhin am HMAC-Vergleich scheitert, bevor dieser Zweig erreicht
+wird.  Was funktioniert, ist das `integrity`-Override pro Aufruf,
+unabhängig für Lesen und Schreiben, eine `persistenceId` nach der
+anderen: siehe [Integrität und
+Master-Key-Rotation](/de/persistence/object-storage/encryption/#integrität-und-master-key-rotation)
+sowie [#1354](https://github.com/pathosDev/actor-ts/issues/1354) für
+die Form, die ein echter Roll bräuchte.
 
 ## Teilrotation mit `skip`
 
