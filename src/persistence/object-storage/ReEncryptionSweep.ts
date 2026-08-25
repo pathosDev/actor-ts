@@ -180,7 +180,14 @@ export type ReEncryptOptions = {
    * operator has independent assurance that the keyring is complete.
    */
   readonly verifyKeyringCompleteness?: boolean;
-  /** Sample size for the completeness check.  Default: min(100, total). */
+  /**
+   * Sample size for the completeness check.  Default: min(100, total).
+   *
+   * Clamped to the corpus, so a value larger than the object count
+   * samples every object rather than running off the end of the list
+   * (#1353) — the rolling-migration runbook suggests an override of
+   * 200, which a staging bucket rarely reaches.
+   */
   readonly sampleSize?: number;
 };
 
@@ -353,7 +360,7 @@ export async function reEncryptObjectStorage(
   // keyring.  Better to refuse before touching the corpus than to
   // half-rewrite and then crash on a missing retired key.
   if (options.verifyKeyringCompleteness !== false) {
-    const sampleSize = options.sampleSize ?? Math.min(100, items.length);
+    const sampleSize = Math.min(options.sampleSize ?? 100, items.length);
     const haveVersions = new Set<number>([
       options.keyring.active.version,
       ...(options.keyring.retired?.map((r) => r.version) ?? []),
