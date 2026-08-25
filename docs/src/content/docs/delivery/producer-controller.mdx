@@ -37,7 +37,7 @@ type ProducerControllerOptionsType<T> = {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeout?:  number;       // default 500
   windowSize?:       number;       // default 16
-  producerId?:       string;       // auto-generated if omitted
+  producerId?:       string;       // randomly generated if omitted
 };
 ```
 
@@ -46,7 +46,20 @@ type ProducerControllerOptionsType<T> = {
 | `consumer` | The `ConsumerController` ref to deliver to. |
 | `resendTimeout` | How long to wait for an ack before retransmitting. |
 | `windowSize` | Flow-control window — pauses queueing after N unacked messages in flight. |
-| `producerId` | Stable identifier the consumer keys its dedup state on. Auto-generated if omitted; pin it when you want one identity across restarts in logs, metrics and the consumer's map. It does **not** carry a dedup *window* across a restart — see *Restart and the producer incarnation*. |
+| `producerId` | Stable identifier the consumer keys its dedup state on. Randomly generated if omitted; pin it when you want one identity across restarts in logs, metrics and the consumer's map. It does **not** carry a dedup *window* across a restart — see *Restart and the producer incarnation*. |
+
+**A generated `producerId` is random, not sequential.**  It used to be a module
+counter — `producer-1`, `producer-2`, … — which was wrong twice over.  An
+`Acknowledgment` names a `producerId` and a `seq`, and the seq is a small
+integer by construction, so a counter left neither half of that pair to guess.
+The counter was also shared: two processes running the same service each minted
+`producer-1`, stamped one identity onto their deliveries, and then kept
+resetting each other's dedup window at a consumer they had in common.  The
+framework now draws 16 hex characters instead.
+
+That id is minted fresh on every construction, so leaving `producerId` unset
+means there is no identity to be stable about — set it yourself whenever
+something downstream is supposed to recognise this producer after a restart.
 
 ## Backpressure
 

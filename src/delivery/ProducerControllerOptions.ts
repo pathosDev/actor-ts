@@ -19,7 +19,15 @@ export type ProducerControllerOptionsType<T> = {
   readonly windowSize?: number;
   /**
    * Stable identifier the consumer keys its dedup state on.  Generated when
-   * omitted.
+   * omitted — randomly, and freshly per construction, so leaving it unset
+   * means there is no identity to be stable *about*: pin it whenever anything
+   * downstream is supposed to recognise this producer across a restart.
+   *
+   * The generated form is deliberately not derivable from anything else.  An
+   * id that a peer can enumerate is half of the `(producerId, seq)` pair an
+   * `Acknowledgment` carries (#730), and a shared one silently corrupts the
+   * consumer's dedup window when two producers that both left this unset
+   * reach the same consumer.
    *
    * It deliberately does **not** carry a dedup *window* across a producer
    * restart.  Each incarnation of the controller stamps its own token onto

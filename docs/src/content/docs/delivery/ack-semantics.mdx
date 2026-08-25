@@ -239,9 +239,10 @@ fire-and-forget from your code's point of view.
 
 The signal is only as good as the Ack behind it, which is why the producer
 requires the Ack to echo its own incarnation token before acting on it.
-`producerId` and `seq` are both guessable; the incarnation is not, and it
-leaves the producer only on deliveries it actually sent.  Without that check,
-anything able to address the producer could cancel the retransmit and fire
+`seq` counts up from 1 and `producerId` is usually a name your own code chose,
+so neither is hard to guess; the incarnation is, and it leaves the producer
+only on deliveries it actually sent.  Without that check, anything able to
+address the producer could cancel the retransmit and fire
 `confirm(null)` for a message the consumer had never seen — downgrading the
 stream to at-most-once while reporting success.  Note what the signal still
 does *not* promise: it says the consumer accepted responsibility for the seq,

@@ -5,11 +5,20 @@ import type { Cancellable } from '../Scheduler.js';
 import { ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
-import { PRODUCER_INCARNATION_LENGTH } from './Constants.js';
+import { GENERATED_PRODUCER_ID_LENGTH, PRODUCER_INCARNATION_LENGTH } from './Constants.js';
 import { randomId } from '../util/RandomString.js';
 
-let producerSeed = 0;
-const nextProducerId = (): string => `producer-${++producerSeed}`;
+/**
+ * Mints the `producerId` for a controller whose caller did not supply one.
+ *
+ * The `producer-` prefix is kept because this string is read far more often
+ * than it is compared — a log line, a metric label, a key in the consumer's
+ * dedup map — and a bare hex blob there says nothing about what it names.
+ * Only the counter that used to follow it is gone; see
+ * {@link GENERATED_PRODUCER_ID_LENGTH} for why an enumerable, process-shared
+ * id was the wrong default (#730).
+ */
+const nextProducerId = (): string => `producer-${randomId(GENERATED_PRODUCER_ID_LENGTH)}`;
 
 /** Message sent to the ProducerController by the publishing user code. */
 export type ProducerSend<T> = {
