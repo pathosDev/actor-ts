@@ -220,6 +220,18 @@ Pick by **what the right answer is on overflow**:
 
 There's no "best" — context-dependent.
 
+<Aside type="note" title="The policy covers the unstash replay too">
+  An actor that uses `context.stash()` / `unstashAll()` re-enters its
+  own mailbox, and that path is subject to the same capacity and the
+  same policy — so budget the capacity for the backlog *plus*
+  whatever the actor parks.  A replay goes in at the head, so
+  `drop-head` makes room at the **tail**: a full queue loses its
+  newest messages rather than the ones you deliberately stashed.
+  `reject` throws `MailboxFullError` out of `unstashAll()` and admits
+  nothing, so the batch stays stashed and the failure reaches the
+  supervisor instead of turning into a silent loss.
+</Aside>
+
 ## Priority mailboxes
 
 For actors with **mixed urgency**:

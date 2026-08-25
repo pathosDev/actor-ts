@@ -87,9 +87,11 @@ export type Envelope<T = unknown> = {
    * them and holding its `maxConnections` slot — for the same one increment.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
-   * sets it, and read in two places: {@link Mailbox.removeOldest}, so an
-   * eviction steps over it, and the cell's throttle gate, so `onExcess:
-   * 'drop'` does not silently consume it either.
+   * sets it, and read in three places: {@link Mailbox.removeOldest} and
+   * {@link Mailbox.removeNewest}, so an eviction from either end steps over
+   * it; `BoundedMailbox.prependUser`, so a bound that now applies to the
+   * replay path admits it rather than shedding it (#772); and the cell's
+   * throttle gate, so `onExcess: 'drop'` does not silently consume it either.
    *
    * It travels with the envelope rather than being remembered by the mailbox
    * because the envelope outlives any one queue position: it survives a
@@ -178,8 +180,8 @@ export function reportsDrops<T>(
  * The fields stay `private`, so a subclass sees only the methods — which is
  * why swapping the backing store is not a breaking change even though
  * `Mailbox` is public and explicitly subclassable since #661 / #1002.  The
- * one seam a subclass touches is `protected` {@link removeOldest}, and its
- * signature is unchanged.
+ * seams a subclass touches are `protected` {@link removeOldest} and
+ * {@link removeNewest}, and their signatures are unchanged.
  */
 export class Mailbox<T = unknown> {
   private readonly userQueue = new RingBuffer<Envelope<T>>();
@@ -226,6 +228,20 @@ export class Mailbox<T = unknown> {
    * `DEFAULT_STASH_CAPACITY` envelopes in a single call, and
    * `unshift(...envs)` would both reindex the backlog once per envelope and
    * push the whole batch onto the call stack as arguments.
+   *
+   * **Override this whenever you override {@link enqueue} to shed load**, for
+   * the same reason {@link enqueueSignal} says so and the opposite conclusion:
+   * a signal is exempt from a bound, a replay is not.  Leaving the default in
+   * place is what made a bounded mailbox unbounded on the stash path — a
+   * batch the size of the stash arrived past the capacity check, the overflow
+   * policy and the drop accounting, so the ceiling an operator tuned against
+   * measured heap was not one (#772).  `BoundedMailbox` and `PriorityMailbox`
+   * both override it, by different routes: the former sheds at the tail to
+   * make room at the head, the latter re-enters `enqueue` so priorities are
+   * recomputed.
+   *
+   * The base is right to be unconditional here — it never discards anything,
+   * so there is nothing to consult.
    */
   prependUser(envs: Array<Envelope<T>>): void {
     this.userQueue.unshiftAll(envs);
@@ -285,6 +301,49 @@ export class Mailbox<T = unknown> {
     }
     if (held !== null) this.userQueue.unshiftAll(held);
     return undefined;
+  }
+
+  /**
+   * Remove the newest **droppable** user message, regardless of suspension.
+   *
+   * The mirror of {@link removeOldest}, and it exists because a bound has two
+   * doors, not one.  An arrival enqueued at the tail is made room for by
+   * evicting the head; a batch *prepended* at the head is made room for by
+   * evicting the tail (#772).  Both are the same rule — the arrival is
+   * admitted and a queued message goes, from whichever end is furthest from
+   * the arrival — and picking the near end instead would mean a replay
+   * destroying the very messages it just put back.
+   *
+   * Everything {@link removeOldest} documents about suspension and about
+   * {@link Envelope.undroppable} applies here unchanged, and for the same
+   * reasons: a bound that lapses while the actor is suspended is unbounded
+   * exactly when it matters most, and a lifecycle notification the framework
+   * cannot send twice is stepped over rather than evicted.  `undefined` means
+   * the queue holds nothing that may be dropped, which is how the caller tells
+   * a real eviction from a no-op.
+   *
+   * Cost is one pop on the ordinary path and O(k) when k notifications sit at
+   * the back, on the overflow path, which is already the slow one.
+   */
+  protected removeNewest(): Envelope<T> | undefined {
+    // Allocated only once something is actually stepped over, so the common
+    // case — an empty `held` — costs no array at all.
+    let held: Array<Envelope<T>> | null = null;
+    let removed: Envelope<T> | undefined;
+    for (;;) {
+      const candidate = this.userQueue.pop();
+      if (candidate === undefined) break;
+      if (candidate.undroppable !== true) {
+        removed = candidate;
+        break;
+      }
+      (held ??= []).push(candidate);
+    }
+    // `held` came off the back newest-first, so putting it back means pushing
+    // it in reverse — anything else reorders the notifications among
+    // themselves.
+    if (held !== null) for (let i = held.length - 1; i >= 0; i--) this.userQueue.push(held[i]!);
+    return removed;
   }
 
   dequeueSystem(): Envelope<unknown> | undefined {

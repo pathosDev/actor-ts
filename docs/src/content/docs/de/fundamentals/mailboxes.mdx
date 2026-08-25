@@ -489,13 +489,17 @@ gewählt hast.  Drops werden weiterhin als `drop-head` an
 geschlossenes Zwei-Werte-Vokabular), außer wenn die verworfene Nachricht
 die eingehende war — dann lautet der Grund `drop-new`.
 
-<Aside type="caution" title="Eine begrenzte Priority-Mailbox kann beim Unstash droppen">
+<Aside type="caution" title="Eine begrenzte Mailbox kann beim Unstash droppen">
   `PriorityMailbox.prependUser` führt die Priority-Funktion erneut aus,
   statt vorne einzufügen — `unstashAll()` läuft also durch denselben
   `enqueue`-Pfad und damit durch denselben Bound.  Auf einer vollen
   Mailbox kann das Wiedereinspielen des Stash Nachrichten verwerfen.
-  `BoundedMailbox` verhält sich hier anders: ihr Unstash-Pfad umgeht den
-  Bound.
+  `BoundedMailbox` kommt über einen anderen Weg zur selben Garantie:
+  das Replay geht vorne hinein, und Platz geschaffen wird am *Ende* der
+  Queue — eine volle Mailbox verliert also ihre neuesten Nachrichten
+  statt der bewusst gestashten.  So oder so gilt der Bound für das
+  Replay — und unter `reject` wirft `unstashAll()` `MailboxFullError`,
+  statt irgendetwas zu verwerfen.
 </Aside>
 
 Die Options werden bei der Konstruktion validiert: ein fehlendes oder
@@ -573,10 +577,21 @@ sie re-inserted.  Besonders bei `PriorityMailbox`: unstashed
 Nachrichten werden *re-priorisiert*: eine gestashte
 `bulk`-Nachricht reiht sich wieder in die `bulk`-Schicht ein, selbst
 wenn du sie gestasht hast, während dringende Nachrichten ankamen.
-Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.  Dieses
-Re-Insert läuft durch `enqueue`, auf einer *begrenzten* Priority-Mailbox
-gilt die Capacity also auch für das Wiedereinspielen — siehe die Warnung
-oben.
+Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
+
+**Ein Bound gilt auch für das Replay.**  Welche begrenzte Mailbox du
+auch gewählt hast: `unstashAll()` unterliegt der Capacity und der
+Overflow-Policy, die du gesetzt hast — ein Replay ist Traffic, der
+wieder in die Queue eintritt, keine Hintertür daran vorbei.
+Unterschiedlich ist nur, woher der Platz kommt: `PriorityMailbox`
+re-priorisiert, und `BoundedMailbox` setzt das Replay an die Front und
+schafft am Ende der Queue Platz — eine volle Mailbox verliert also ihre
+neuesten Nachrichten statt der bewusst geparkten.  Unter `reject` geht
+gar nichts verloren: `unstashAll()` wirft `MailboxFullError`, der
+gesamte Batch bleibt gestasht, und der Fehler erreicht den Supervisor
+deines Actors wie jeder andere.  Dimensioniere die Capacity für den
+Backlog *plus* das, was du zu stashen erwartest — oder nimm die Drops
+als Preis des Bounds in Kauf.
 
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.
