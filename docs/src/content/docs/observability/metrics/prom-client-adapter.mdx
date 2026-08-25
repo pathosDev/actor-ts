@@ -126,6 +126,21 @@ very call meant to contain the damage.
 See [cardinality discipline](/observability/metrics/core-metrics/#cardinality-discipline)
 for `bucketize`, the way to not reach the cap in the first place.
 
+## Removing a series
+
+[`remove`](/observability/metrics/core-metrics/#removing-a-series)
+forwards to prom-client's own `Metric.remove(labels)`, so a tuple whose
+subject is gone leaves both sides at once — the bridge's cap tally and
+the exposition prom-client renders.  Dropping only one of the two would
+be worse than not removing at all: a freed slot with the series still
+being scraped, or the reverse.
+
+That is the one place the adapter needs more of `prom-client` than the
+construct-and-mutate surface, so the `client` you pass in must expose
+`remove` on its `Counter` / `Gauge` / `Histogram` — every release since
+v11.2 does.  A hand-rolled stand-in that omits it is a compile error
+rather than a silent divergence.
+
 ## Peer dependency
 
 ```bash

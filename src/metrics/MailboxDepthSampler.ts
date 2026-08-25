@@ -29,16 +29,23 @@ export class MailboxDepthSampler {
   private ticker: Cancellable | null = null;
   /**
    * Label tuples that currently carry a series, keyed by path, so a mailbox
-   * that drains can be zeroed exactly once instead of leaving its last deep
-   * reading standing forever.  The registry has no per-child removal, so
-   * zeroing is the only honest way to say "this actor is no longer behind".
+   * that drains has its series removed exactly once instead of leaving its
+   * last deep reading standing forever.
    *
-   * The whole tuple is kept, not just the path: a gauge child is keyed by
-   * every label, so zeroing with a reconstructed `class` would mint a second
-   * series and leave the first standing at its last spike — doubling the
-   * cardinality this sampler is careful about instead of correcting it.  A
-   * terminated actor is gone from the tree by the time it is zeroed, so its
-   * class name is no longer derivable and has to have been remembered.
+   * This used to zero the series instead, because the registry had no
+   * per-child removal (#745).  `MetricsRegistry.remove` is what a drained
+   * mailbox deserves: a gauge reading 0 asserts that the actor exists and
+   * has no backlog, which for a *terminated* actor is a claim about
+   * something that is not there, and it kept the tuple — and its slot under
+   * the cardinality cap — for the life of the process.  An absent series
+   * says "not reporting", which is exactly the truth.
+   *
+   * The map itself stays. The registry exposes no way to enumerate a
+   * family's children, so this is the only record of which paths currently
+   * carry a series; and the whole tuple is kept, not just the path, because
+   * a child is keyed by every label — a terminated actor is gone from the
+   * tree by the time it is retired, so its class name is no longer
+   * derivable and has to have been remembered.
    */
   private readonly reported = new Map<string, { class: string; path: string }>();
 
@@ -58,9 +65,22 @@ export class MailboxDepthSampler {
     );
   }
 
+  /**
+   * Stop sampling and retire everything this sampler minted.
+   *
+   * The removal is not merely tidiness: `reported` is the only record of
+   * which tuples are live, so a `stop()` that forgot it without removing
+   * would strand every series it had minted in a registry that outlives the
+   * sampler — `MetricsExtension.useRegistry` stops one while the old
+   * registry is still installed, and a restarted sampler starts from an
+   * empty map and could never reach them again.
+   */
   stop(): void {
     this.ticker?.cancel();
     this.ticker = null;
+    for (const labels of this.reported.values()) {
+      this.registry.remove('actor_mailbox_size', labels);
+    }
     this.reported.clear();
   }
 
@@ -82,18 +102,22 @@ export class MailboxDepthSampler {
       // would stand at its spike forever with the real one beside it.
       const previous = this.reported.get(cell.path);
       if (previous !== undefined && previous.class !== labels.class) {
-        this.registry.gauge('actor_mailbox_size', previous, { help: HELP }).set(0);
+        this.registry.remove('actor_mailbox_size', previous);
       }
       this.reported.set(cell.path, labels);
       this.registry.gauge('actor_mailbox_size', labels, { help: HELP }).set(cell.mailboxSize);
     }
     // Anything previously above the floor and no longer deep — or no longer
-    // in the tree at all — reads 0 rather than its last spike.  A terminated
-    // actor leaves its series behind at 0, which is the truthful reading: it
-    // has no backlog because it has no mailbox.
+    // in the tree at all — loses its series rather than standing at its last
+    // spike.  Removal rather than a 0 reading: this family's whole contract
+    // is that a series exists only for an actor that is *already* deeply
+    // backlogged, so on a healthy system it is empty — and a drained actor
+    // is a healthy one.  It also gives the actor's slot under the
+    // cardinality cap back, which is what keeps the family's width the
+    // count of concurrent incidents rather than of incidents ever had.
     for (const [path, labels] of drained) {
       this.reported.delete(path);
-      this.registry.gauge('actor_mailbox_size', labels, { help: HELP }).set(0);
+      this.registry.remove('actor_mailbox_size', labels);
     }
   }
 }

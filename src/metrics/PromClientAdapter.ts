@@ -43,10 +43,23 @@ export type PromClientLabelValues = {
   [k: string]: string | number;
 };
 
+/**
+ * `remove` is prom-client's own per-child eviction — the object-argument
+ * overload of `Metric.remove(...)`, present since v11.2 — and it is what
+ * this bridge forwards {@link MetricsRegistry.remove} onto (#745).
+ *
+ * Declared **required** rather than optional, unlike the registry-level
+ * members below.  An optional method would let a client namespace missing
+ * it type-check and then silently diverge: the bridge would drop the tuple
+ * from its own `series` tally, freeing a cap slot, while the series itself
+ * stayed on the prom-client side and kept being scraped.  A compile error
+ * on a namespace that cannot evict is the honest outcome.
+ */
 export interface PromClientCounter {
   inc(value?: number): void;
   inc(labels: PromClientLabelValues, value?: number): void;
   labels(values: PromClientLabelValues): { inc(value?: number): void };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientGauge {
@@ -61,12 +74,14 @@ export interface PromClientGauge {
     inc(v?: number): void;
     dec(v?: number): void;
   };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientHistogram {
   observe(value: number): void;
   observe(labels: PromClientLabelValues, value: number): void;
   labels(values: PromClientLabelValues): { observe(v: number): void };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientRegistryLike {
@@ -367,6 +382,29 @@ export function promClientRegistry(
       // user's own /metrics handler.  Tests that need read-back can
       // call the prom-client registry directly.
       return [];
+    },
+
+    /**
+     * Forward a removal to prom-client's own per-child eviction (#745).
+     *
+     * The local `series` tally is dropped first and unconditionally, because
+     * it is the only thing the cardinality cap counts: leaving the key in it
+     * would keep a slot spent on a tuple that no longer exists, which is the
+     * accounting error the cap exists to prevent. `false` therefore means
+     * "this bridge never minted that tuple", not "prom-client refused".
+     *
+     * `DefaultMetricsRegistry`'s refusal to evict the overflow child falls
+     * out of the same tally rather than needing a special case here:
+     * `seriesLabelsOf` deliberately never adds the overflow tuple to
+     * `series` — it is not counted against the cap — so a removal naming it
+     * finds nothing, returns `false`, and never reaches prom-client.
+     */
+    remove(name, labels): boolean {
+      const entry = families.get(fullName(name));
+      if (entry === undefined) return false;
+      if (!entry.series.delete(labelKey(labels))) return false;
+      entry.impl.remove(asPromLabels(labels));
+      return true;
     },
 
     clear(): void {

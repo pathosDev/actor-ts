@@ -254,9 +254,16 @@ dieser hier.
 
 ## Metriken
 
-`actor_dead_letters_total{outcome, recipient}` zählt, was die Queue gesehen
-hat — `outcome` ist `captured`, `replayed` oder `replay-failed`. Siehe
+`actor_dead_letters_total{outcome}` zählt, was die Queue gesehen hat —
+`outcome` ist `captured`, `replayed` oder `replay-failed`. Siehe
 [Stock-Metriken](/de/observability/metrics/stock-metrics/).
+
+Es trägt **kein Recipient-Label**. Das wäre eine dauerhafte Zeitreihe pro
+unzustellbarem Pfad, und unter Sharding ist der Pfad `entity-<entityId>`
+— ein Wert, den derjenige wählt, der die Shard-Region adressiert, zum
+Preis einer verlorenen Nachricht pro Serie. An welchen Actor ein Letter
+adressiert war, wird dort beantwortet, wo es nichts pro Serie kostet:
+`list({ recipient })` oben und das `DeadLetter` auf dem Event-Stream.
 
 ## Was die Queue nicht sieht
 

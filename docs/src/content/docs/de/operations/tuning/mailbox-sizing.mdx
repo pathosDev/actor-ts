@@ -166,7 +166,9 @@ Beobachte:
   wartenden Nachrichten. Eine Serie entsteht erst, wenn ein Actor diese
   Marke überschreitet — ihr *Vorhandensein* ist also das Signal; auf
   einem gesunden System ist die Metrik leer. Eine geleerte Mailbox
-  liest 0 statt ihres letzten Ausschlags.
+  verliert ihre Serie, statt auf ihrem letzten Ausschlag stehen zu
+  bleiben — alarmiere also auf der Existenz der Serie, nicht auf einem
+  Übergang nach 0.
 - **`actor_mailbox_depth`** — dieselbe Größe als *Verteilung*, und sie
   deckt den Bereich ab, in dem das Gauge stumm ist. Das ist die Metrik,
   aus der du eine Kapazität ableitest: Eine `capacity` ist eine Wette auf

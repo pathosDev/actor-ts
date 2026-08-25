@@ -47,9 +47,17 @@ buckets; its p99 is your "how slow is a handler" signal.
 unbounded by default, so an actor that falls behind accumulates rather
 than sheds — and a series only exists once one crosses 10 000 queued
 messages.  Its *presence* is therefore the alert: on a healthy system
-the metric is empty.  A mailbox that drains back below the floor reads
-0 rather than its last spike, and the same threshold produces a log
-warning (repeated at each doubling) whether or not metrics are on.
+the metric is empty.  A mailbox that drains back below the floor — or
+whose actor stops — has its series **removed**, not set to 0, so
+"healthy system, no series" holds after an incident and not just before
+one.  The same threshold produces a log warning (repeated at each
+doubling) whether or not metrics are on.
+
+Removal is why the family's width counts *concurrent* incidents rather
+than incidents ever had: an actor that recovers gives its slot under the
+[cardinality cap](/observability/metrics/core-metrics/#removing-a-series)
+back.  Alert on the series existing (`count(actor_mailbox_size) > 0`) or
+on its value, not on a transition to 0 — there is no 0 to transition to.
 
 `actor_mailbox_depth` is the **distribution** the gauge cannot be, and
 the two are designed to meet at one number.  The gauge tells you *which*
@@ -219,7 +227,7 @@ than here.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `actor_dead_letters_total` | counter | `outcome`, `recipient` | Undeliverable messages the dead-letter queue captured, by outcome. |
+| `actor_dead_letters_total` | counter | `outcome` | Undeliverable messages the dead-letter queue captured, by outcome. |
 
 Only present once
 [`actor-ts.dead-letters.store`](/operations/dead-letters/) is something
@@ -229,20 +237,28 @@ this counter and nothing else: it counts every letter and retains no
 payload.  `outcome` is one of:
 
 - `captured` — a new letter entered the queue.
-- `replayed` — a letter was handed back.  The `recipient` label is where it
-  actually went, which for a replay to an alternate recipient is not the
-  path the letter was originally addressed to.
+- `replayed` — a letter was handed back.
 - `replay-failed` — a replayed letter came back, i.e. the recipient
   still cannot take it.  A rising `replay-failed` against a flat
   `captured` is a poison message being retried, not a new outage.
 
-`recipient` is the full path of the actor the message failed to reach,
-which is what makes one letter distinguishable from another — this
-counter is a *diagnostic* on a path that only fires when something is
-already wrong, so the label pays for itself.  It is unbounded in
-principle and bounded in practice by the registry's per-family series
-cap, which folds the overflow into one series rather than letting an
-incident mint them without limit.
+**There is deliberately no `recipient` label.**  It used to carry the
+full path of the actor the message failed to reach, which under sharding
+is `entity-<entityId>` — chosen by whoever addresses the shard region —
+and for an anonymous actor is a fresh path per spawn.  Against the
+[stock-label rule](#what-may-become-a-stock-label) that is a per-instance
+value with nothing paying for it: the sibling `actor_mailbox_size` keeps
+its `path` because minting one costs a sustained 10 000-message backlog,
+while minting one here cost a single undeliverable message.
+
+Which path a letter was addressed to has not gone anywhere — it was never
+only on the counter.  Every letter is published on the
+[event stream](/operations/dead-letters/) as a `DeadLetter` carrying its
+recipient ref, and under `store = "memory"` or `"persistent"` the queue
+records `recipientPath` on the entry itself.  Both are per-event rather
+than per-series, so they cost nothing permanent; `deadLetterQueue.list({
+recipient })` is the query that answers "which actor", and the counter
+answers "how much, and how is it trending".
 
 `actor_dead_letters_total` is a **loss** signal, not a backlog one.  Any
 sustained non-zero rate means messages are being sent to actors that are
@@ -398,6 +414,10 @@ import { Aside } from '@astrojs/starlight/components';
   on a healthy system it is empty.  During a broad incident it can
   still reach thousands.
 
+  What holds it down *afterwards* is that a recovered actor's series is
+  removed rather than zeroed, so the width falls back with the incident
+  instead of ratcheting up over the life of the process.
+
   The series count is then **bounded but not small**: the registry's
   [cardinality cap](/observability/metrics/core-metrics/#the-cardinality-cap)
   stops the family at 10 000 series and folds the rest into
@@ -424,10 +444,20 @@ import { Aside } from '@astrojs/starlight/components';
   you choosing to declare one per entity, which is a deployment's
   cardinality to manage rather than one the framework imposed.
 
-  `actor_mailbox_dropped_total` used to carry `path` and no longer does,
-  because it satisfied neither test: shedding is a bounded mailbox's
-  normal operation, so healthy actors minted permanent series, and under
-  sharding the value came from whoever addressed the shard region.
+  Two families have lost a per-instance label for failing that rule.
+  `actor_mailbox_dropped_total` used to carry `path`, and satisfied
+  neither test: shedding is a bounded mailbox's normal operation, so
+  healthy actors minted permanent series, and under sharding the value
+  came from whoever addressed the shard region.
+  `actor_dead_letters_total` used to carry `recipient`, the same value by
+  another name, at a price of one undeliverable message per series.
+
+  The rule is now a **gate rather than a note**.  It landed on the dead
+  letter counter one commit-day after it was written down for the drop
+  counter, because the only thing asserting it was a test pinning one
+  family's label set.  `tests/unit/metrics/StockMetrics.test.ts` now reads
+  every stock family out of `src/` and checks the whole inventory against
+  this rule, with the two per-instance labels above as named exceptions.
 </Aside>
 
 <Aside type="caution" title="Counters reset on restart">
