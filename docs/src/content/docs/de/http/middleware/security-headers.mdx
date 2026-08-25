@@ -88,6 +88,16 @@ import { Aside } from '@astrojs/starlight/components';
   sicher, dass zuerst jede Subdomain HTTPS ausliefert.
 </Aside>
 
+## Über einer WebSocket-Route
+
+`securityHeaders()` darf eine `websocket()`-Route umschließen wie jede
+andere — das Upgrade kommt zustande.  Dekoriert wird dort die
+**Ablehnung**: Ein Handshake, den eine innere Auth-Middleware abweist,
+kommt mit diesen Headern zurück.  Ein angenommener Handshake nicht, denn
+diese 101-Antwort schreibt das Backend selbst.  Wickle also den ganzen
+Baum ein, Socket eingeschlossen, statt den Socket auszuschneiden.  Siehe
+[WebSocket](/de/http/websocket/).
+
 ## Wie weiter
 
 - **[CSP](/de/http/middleware/csp/)** — Content-Security-Policy.

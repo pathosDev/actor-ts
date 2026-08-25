@@ -221,6 +221,12 @@ Wrap a `websocket()` route in `cors(...)` to reject cross-origin upgrades,
 and put auth middleware around it — `withMiddleware` runs at upgrade time,
 so it gates the handshake.
 
+A `websocket()` route needs no special treatment in the hardening stack
+above: `securityHeaders()`, `requestId()` and the rest may sit over it like
+they sit over any other route, and the upgrade still completes. Their
+headers land on a rejected handshake, not an accepted one — the backend
+writes the 101 itself. See [WebSocket](/http/websocket/).
+
 ## Checklist
 
 | Measure | How |
