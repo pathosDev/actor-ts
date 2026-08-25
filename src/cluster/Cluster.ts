@@ -543,6 +543,20 @@ export class Cluster {
     return Array.from(this.members.values()).filter((member) => member.status !== 'removed');
   }
 
+  /**
+   * Whether this node is, or is configured to become, part of a multi-node
+   * cluster: a member with an address other than our own is known, or seed
+   * addresses are configured.  `seedAddrs` is self-excluding (`_start` skips
+   * our own address), so a standalone single node stays `false` by
+   * construction.  The persistence storage advisory keys on this (#1356):
+   * per-node storage is the documented default on a single node and a
+   * silent history fork on more than one.
+   */
+  expectsRemotePeers(): boolean {
+    if (this.seedAddrs.length > 0) return true;
+    return this.getMembers().some((member) => !member.address.equals(this.selfAddress));
+  }
+
   /** Members in the `up` state, ordered by address — the "active set". */
   upMembers(): Member[] {
     return Array.from(this.members.values())

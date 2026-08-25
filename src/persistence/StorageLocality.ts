@@ -25,3 +25,13 @@
  * leave the field writable for exactly that fixture shape.
  */
 export type StorageLocality = 'node-local' | 'shared';
+
+/**
+ * The role a store was used in when the advisory reports it.
+ * `'remember-entities'` is distinct from `'journal'` on purpose: the same
+ * journal instance carries a different blast radius when it holds the
+ * sharding registry — on coordinator failover the next leader replays its
+ * own database — so that use escalates to an error where the general
+ * combination only warns (#1356).
+ */
+export type StorageUseKind = 'journal' | 'snapshot-store' | 'durable-state-store' | 'remember-entities';
