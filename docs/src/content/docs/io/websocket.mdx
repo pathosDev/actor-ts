@@ -64,6 +64,8 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
+  idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
+  connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
 }
 ```
 
@@ -234,6 +236,40 @@ WebSocket ping (control frame) is separate and handled by the
 runtime; the application-level ping is for **proxies that inspect
 payload, not frames**.
 
+## Detecting a connection that was silently dropped
+
+A ping keeps a proxy from *closing* the connection.  It does not tell
+you when one was dropped anyway — an expired NAT entry, a load
+balancer that forgot the flow, a peer killed with `SIGKILL`.  Neither
+side is notified, so `close` and `error` never fire, `onDisconnected`
+never runs, and the actor reports `connected` while every `send` goes
+nowhere.
+
+`idleTimeoutMs` is the deadline that ends that state:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withIdleTimeoutMs(90_000)      // no inbound frame for 90 s → reconnect
+  .withConnectTimeoutMs(10_000);  // handshake stalled for 10 s → fail the attempt
+```
+
+On expiry the socket is closed, `onDisconnected` runs with an
+`idle timeout` cause, and the ordinary reconnect cycle starts — the
+same path an observed `close` takes.
+
+**It counts application messages, not pongs.**  A protocol-level pong
+is not delivered as a `message` event on any supported runtime, so
+`pingIntervalMs` does **not** refresh this deadline.  Size
+`idleTimeoutMs` against the *server's* own heartbeat interval, not
+against your ping interval; below that, the deadline severs healthy
+connections in a loop.  Off by default for exactly that reason.
+
+`connectTimeoutMs` covers the other end: the handshake settles only on
+`open` or `error`, so a server that accepts the TCP connection and
+never completes the upgrade holds the actor in `connecting`
+indefinitely.
+
 ## HOCON config
 
 Client defaults can be set under
@@ -244,6 +280,8 @@ actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
   pingIntervalMs  = 30000
+  idleTimeoutMs   = 90000
+  connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
   reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { /* ... */ }
