@@ -180,6 +180,17 @@ GET /ready
 }
 ```
 
+Das prozessinterne Gegenstück ist `cluster.awaitReady()` /
+`cluster.isReady()` — dieselbe `up`-only-Mitgliedschaftssemantik, aus
+Code awaited statt über HTTP abgefragt (siehe
+[Cluster-Bootstrap → Auf Readiness warten](/de/cluster/cluster-bootstrap/#auf-readiness-warten)).
+Die beiden sind bewusst nicht gekoppelt: `awaitReady` schaut allein auf
+die Mitgliedschaft, nie auf das Readiness-Aggregat, denn app-registrierte
+Checks bestehen unter Umständen erst nach Initialisierung, die *nach*
+dem Bootstrap läuft — von innerhalb `Cluster.bootstrap` auf sie zu
+warten könnte den Start verklemmen. `/ready` bleibt die Sicht des Load
+Balancers.
+
 ## Mehrere Checks
 
 ```ts

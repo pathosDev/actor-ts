@@ -55,7 +55,8 @@ A short tour of what's in the box:
 - **Actors** — single-threaded per-mailbox processing, lifecycle hooks, stash,
   timers, become/unbecome, supervision (restart / resume / stop / escalate).
 - **Cluster** — gossip membership, φ-accrual failure detection, split-brain
-  resolvers, weakly-up, multiple transports (TCP, MessageChannel, in-memory).
+  resolvers, weakly-up, readiness gating (`cluster.awaitReady`), multiple
+  transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
 - **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with

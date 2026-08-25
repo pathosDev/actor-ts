@@ -171,6 +171,16 @@ GET /ready
 }
 ```
 
+The in-process counterpart is `cluster.awaitReady()` /
+`cluster.isReady()` — the same `up`-only membership semantics, awaited
+from code instead of scraped over HTTP (see
+[Cluster bootstrap → Waiting for readiness](/cluster/cluster-bootstrap/#waiting-for-readiness)).
+The two are deliberately not coupled: `awaitReady` looks at membership
+alone, never at the readiness aggregate, because app-registered checks
+may only pass after initialisation that runs *after* bootstrap — waiting
+on them from inside `Cluster.bootstrap` could deadlock the start.
+`/ready` remains the load balancer's view.
+
 ## Multiple checks
 
 ```ts

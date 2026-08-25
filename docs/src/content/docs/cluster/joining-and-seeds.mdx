@@ -201,6 +201,24 @@ provider model.
 
 ## Watching the join progress
 
+The one-call gate first — `awaitReady` resolves once this node is `up`
+and, with `minimumMembers`, once the cluster has reached its expected
+size; `isReady` is the synchronous probe:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();     // probe the same predicate without waiting
+cluster.selfMember();  // this node's own record — status included
+```
+
+With `timeoutMs` set it rejects with `ClusterReadyTimeoutError` instead
+of leaving you to guess; without it, it waits indefinitely.  See
+[Cluster bootstrap → Waiting for readiness](/cluster/cluster-bootstrap/#waiting-for-readiness)
+for how `Cluster.bootstrap` applies the same wait by default.
+
+For logic that reacts to *individual* transitions, subscribe to the
+events:
+
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
@@ -216,13 +234,11 @@ cluster.subscribe((evt) => {
 Two key events:
 
 - **`SelfUp`** fires once when *this* node transitions to `up`.
-  Useful gate for starting work that requires cluster
-  membership.
 - **`MemberUp`** fires every time *any* member reaches `up`.
 
-For startup logic that needs other members ("wait until at least 3
-nodes are up before serving traffic"), count `MemberUp`s after
-`SelfUp`.
+Counting `MemberUp`s by hand to answer "are at least 3 nodes up?" is
+exactly what `awaitReady({ minimumMembers: 3 })` replaces — the
+subscription is for reacting to changes, not for gating startup.
 
 ## What can go wrong
 
