@@ -8,7 +8,7 @@ import {
   OneForOneStrategy,
   type SupervisorStrategy,
 } from '../Supervision.js';
-import { Terminated } from '../SystemMessages.js';
+import { DeadLetter, Terminated } from '../SystemMessages.js';
 import {
   type BackoffPolicy,
   exponentialBackoff,
@@ -243,6 +243,15 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private incarnation = 0;
   /** Buffered messages waiting for the next child. */
   private readonly stash: StashedMessage[] = [];
+  /** Cumulative count of stash entries evicted for want of room (#773). */
+  private stashDropCount = 0;
+  /**
+   * The eviction count at which the next warning fires — see
+   * {@link evictOldestStashed}.  Starts at 1 so the first eviction is always
+   * reported, then doubles, so a sustained overflow costs log lines in the
+   * logarithm of the messages lost rather than one apiece.
+   */
+  private stashDropWarnAt = 1;
 
   constructor(options: BackoffOptions<T>) {
     super();
@@ -338,12 +347,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       return;
     }
     // 'stash' mode.
-    if (this.stash.length >= this.stashLimit) {
-      this.log.warn('BackoffSupervisor: stash full — dropping oldest message', {
-        stashLimit: this.stashLimit,
-      });
-      this.stash.shift();
-    }
+    if (this.stash.length >= this.stashLimit) this.evictOldestStashed();
     this.stash.push({ message, sender: this.sender.toNullable() });
   }
 
@@ -361,6 +365,40 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   }
 
   /* ------------------------- internals ---------------------------------- */
+
+  /**
+   * Make room in a full stash, and account for what that costs (#773).
+   *
+   * **The evicted message becomes a dead letter.**  A stash entry is an
+   * application message that was `tell`ed to this supervisor and accepted by
+   * it; every other way it can end — the drain into a child that then dies,
+   * a supervision stop — already reaches `system.deadLetters`, and there is
+   * no reason the one path that discards it on purpose should be the one
+   * that leaves no record.  Unlike a mailbox drop this is unconditional: it
+   * runs inside the supervisor's own `onReceive` rather than on the sender's
+   * stack, so nothing here is charged to whoever produced the burst.
+   *
+   * **The warning is aggregated, not per message.**  One `log.warn` per
+   * evicted message meant a supervisor stuck in a long backoff window turned
+   * a message flood into a log flood at exactly the same rate.  The line now
+   * fires on the first eviction and then at each doubling — 1, 2, 4, 8, … —
+   * the shape `ActorCell._onMailboxHighWaterMark` already uses for a
+   * condition that repeats as fast as traffic arrives, and the one that needs
+   * no tuned interval to be picked and defended.  It carries the running
+   * total, so a line arriving late still says how much was lost.
+   */
+  private evictOldestStashed(): void {
+    const evicted = this.stash.shift();
+    if (evicted === undefined) return;
+    this.system.deadLetters.tell(new DeadLetter(evicted.message, evicted.sender, this.self));
+    this.stashDropCount += 1;
+    if (this.stashDropCount < this.stashDropWarnAt) return;
+    this.log.warn('BackoffSupervisor: stash full — oldest message dead-lettered', {
+      stashLimit: this.stashLimit,
+      droppedTotal: this.stashDropCount,
+    });
+    this.stashDropWarnAt = this.stashDropCount * 2;
+  }
 
   private spawnChild(): void {
     this.stopPreviousChild();
