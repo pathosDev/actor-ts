@@ -70,6 +70,16 @@ The management server runs on a **separate port** from your app's
 main HTTP server.  Typical pattern: app on 8080 (public), management
 on 8558 (internal-only).
 
+This route reads the registry through `collect()`, so it needs a
+registry that can be read that way — the framework's own can. The
+[prom-client bridge](/observability/metrics/prom-client-adapter/)
+cannot: it forwards its writes and keeps no snapshot. With that
+bridge installed the route answers **`503`** naming the conflict,
+rather than `200` with an empty body that Prometheus would accept
+as a healthy target with no series. Scrape prom-client's own
+`/metrics` route in that setup and leave `enableMetricsEndpoint`
+off.
+
 ## Manual wiring
 
 If you're not using the management routes, route a `GET /metrics`
