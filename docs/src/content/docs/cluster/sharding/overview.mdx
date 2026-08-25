@@ -304,14 +304,24 @@ with 32 and the coordinator governs the type with 64.
 ```
 
 A refused region stays up and keeps buffering — it is never allocated a
-shard and never hosts an entity, so the misconfiguration is a stall with
-an error next to it rather than a silent split.  Fix the count and
-restart the node.
+shard, so the misconfiguration is a stall with an error next to it
+rather than a silent split.  Fix the count and restart the node.
+
+A region that *was* already hosting shards gives them up on the spot.
+That case is not exotic: it is what a rolling deploy produces the moment
+leadership reaches an already-updated node.  The region was accepted by
+the previous leader, so it holds real shards and real entities, and the
+new coordinator refuses it.  It stops each of those shards — a proper
+stop, so the entities beneath them run their `postStop` and a persistent
+one flushes — and drops the ownership in the same step, which is what
+turns the refusal into a stall on this node instead of one half of a
+split.  Nothing comes back until the counts agree; the buffered traffic
+waits.
 
 This is asynchronous by nature: a region registers after `start(...)`
-returns, retries until a coordinator exists, and re-registers on every
-leader change.  There is no call to throw from, which is why the verdict
-arrives as a log line rather than an exception.
+returns, retries until the coordinator answers, and re-registers on
+every leader change.  There is no call to throw from, which is why the
+verdict arrives as a log line rather than an exception.
 
 Two consequences worth knowing:
 
