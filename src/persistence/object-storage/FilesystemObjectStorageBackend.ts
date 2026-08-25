@@ -457,6 +457,20 @@ function listStartDirectory(prefix: string): string {
  * `d` before `d.txt`, while the keys `d/x` and `d.txt` sort the other way
  * round (`.` precedes `/`), so a `limit: 1` would have returned `d/x` where
  * the full listing starts with `d.txt`.
+ *
+ * Standing in a directory for its subtree this way assumes the comparator is
+ * prefix-monotone — that `D/` sorting before a sibling file `F` implies every
+ * `D/…` beneath it does too.  `localeCompare` is not lexicographic and does
+ * not guarantee that in general: a name holding a character that collates
+ * *primary-equal* to `/`, such as U+FF0F FULLWIDTH SOLIDUS, makes `D/` a
+ * collation-prefix of `F` and the two orders can then disagree.  Measured over
+ * every printable-ASCII sibling pair (~70k comparisons) there is no such
+ * disagreement, so the exit is exact for any key a caller is plausibly using;
+ * the exotic case still returns the right *number* of entries, correctly
+ * sorted, just not necessarily the same subset the unlimited listing starts
+ * with.  Making it exact everywhere would mean changing the comparator `list`
+ * sorts by — a contract-wide ordering decision affecting the S3 backend too,
+ * not something this walk may settle on its own.
  */
 function sortEntriesByKeyOrder(entries: DirectoryEntry[], rel: string): DirectoryEntry[] {
   const keyed = entries.map((entry) => {
