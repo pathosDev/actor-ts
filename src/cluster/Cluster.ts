@@ -85,7 +85,7 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
  * series an operator carries forever.
  */
 const GOSSIP_REFUSAL_REASONS = [
-  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame',
+  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -191,6 +191,7 @@ export class Cluster {
     'version-skew': 0,
     'timestamp-skew': 0,
     'replayed-frame': 0,
+    'self-claim': 0,
   };
 
   /**
@@ -1187,8 +1188,8 @@ export class Cluster {
    *
    * The reason is a label rather than a metric name so an operator can alert
    * on "records are being refused at all" without knowing which guard fired,
-   * and it is drawn from a closed union so the series count stays at three no
-   * matter what a peer sends — the cardinality trap #131 put a cap on.
+   * and it is drawn from a closed union so the series count is fixed by this
+   * file and not by what a peer sends — the cardinality trap #131 put a cap on.
    */
   private reportRefusals(from: NodeAddress, reason: GossipRefusalReason, count: number): void {
     if (count <= 0) return;
@@ -1214,6 +1215,9 @@ export class Cluster {
         'the frame does not out-number the last one accepted from that peer, or its sequence is not '
         + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock — `
         + 'a replay, a duplicate, or a capture with its sequence rewritten')
+      .with('self-claim', () =>
+        'a status for this node itself that is neither the one it already holds nor the leader '
+        + 'promoting it to up — this node is the author of its own status (#562)')
       .exhaustive();
   }
 
@@ -1577,10 +1581,19 @@ export class Cluster {
   ): boolean {
     if (subject.equals(this.selfAddress)) {
       if (this.isOwnPromotion(incomingStatus)) return true;
-      this.log.warn(
-        `merge: refusing ${from}'s claim that we are "${incomingStatus}" — `
-        + `this node is the author of its own status, promotion aside`,
-      );
+      // A peer echoing the status we already hold is the ordinary content of
+      // every round, not an event: our own record travels back to us in each
+      // frame, and refusing it changes nothing the version comparison in
+      // `mergeMember` would not have dropped anyway.  Logged, it is one WARN
+      // per gossip interval per peer describing a healthy cluster — which is
+      // how it came to be read as the cause of a failure that lay elsewhere.
+      //
+      // A peer that *contradicts* us is the #562 case and still surfaces, but
+      // through `refusalCounts` like every other guard on this path: one line
+      // and one counter increment per frame rather than per record (#131).
+      if (incomingStatus !== this.members.get(this.selfAddress.toString())?.status) {
+        this.refusalCounts['self-claim']++;
+      }
       return false;
     }
     if (subject.equals(from)) return true;      // a node announcing itself

@@ -772,10 +772,19 @@ zweiten Gossip-Frame des Knotens aufgehoben zu werden.
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
 Zähler `cluster_gossip_records_refused_total{reason}`, dessen
-Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`
-und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
-einem Peer Log-Verstärkung schenken statt des Wachstums, das er
-gerade verloren hat.
+Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`,
+`replayed-frame` und `self-claim` geschlossen ist. Pro Record zu
+loggen würde einem Peer Log-Verstärkung schenken statt des
+Wachstums, das er gerade verloren hat.
+
+`self-claim` ist die Regel von oben, aus Sicht des Zählers: ein
+Peer behauptet einen Status für den empfangenden Knoten, der
+weder der bereits gehaltene ist noch die Beförderung nach `up`
+durch den Leader. Dass ein Peer den Status zurückspiegelt, den der
+Knoten *tatsächlich* hält, ist der gewöhnliche Inhalt jeder
+Gossip-Runde — der eigene Record kommt in jedem Frame zurück —, und
+genau der wird abgewiesen, ohne gezählt oder geloggt zu werden. In
+einem gesunden Cluster steht der Zähler damit weiterhin auf null.
 
 ### Ein mitgeschnittener Frame lässt sich nicht bei einem Empfänger abspielen, der von seinem Absender gehört hat
 

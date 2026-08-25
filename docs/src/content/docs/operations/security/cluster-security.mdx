@@ -718,9 +718,17 @@ node's second gossip frame.
 Refused records are reported once per frame rather than once per
 record — a WARN naming the peer and the count, and the counter
 `cluster_gossip_records_refused_total{reason}`, whose `reason`
-label is closed at `version-skew`, `map-cap`, `timestamp-skew`
-and `replayed-frame`. Logging per record would hand a peer log
-amplification in place of the growth it just lost.
+label is closed at `version-skew`, `map-cap`, `timestamp-skew`,
+`replayed-frame` and `self-claim`. Logging per record would hand a
+peer log amplification in place of the growth it just lost.
+
+`self-claim` is the rule above, seen from the counter: a peer
+asserting a status for the receiving node that is neither the one
+it already holds nor the leader promoting it to `up`. A peer
+echoing the status the node *does* hold is the ordinary content of
+every gossip round — its own record travels back to it in every
+frame — so that one is refused without being counted or logged, and
+the counter still reads zero on a healthy cluster.
 
 ### A recorded frame cannot be played back to a receiver that has heard from its sender
 
