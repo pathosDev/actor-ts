@@ -17,6 +17,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
+import { bootstrapCluster } from '../../../src/cluster/ClusterBootstrap.js';
+import { ClusterBootstrapOptions } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptions,
@@ -345,6 +347,35 @@ describe('Cluster.join derives the advertised host and says when it had to', () 
       host: '0.0.0.0',
       advertisedHost: '0.0.0.0',
     })).rejects.toThrow(OptionsError);
+  });
+
+  test('bootstrapCluster reaches the same warning — it forwards only what was named', async () => {
+    // The gap this closes is easy to reintroduce: `bootstrapCluster` derives
+    // the advertised host itself, for the election and the seed filter, and if
+    // it forwarded that derived value the join would see a named address and
+    // stay quiet — silencing the warning on the path most deployments take.
+    await withoutHostEnv(async () => {
+      const log = new RecordingLogger();
+      const transport = new InMemoryTransport(
+        new NodeAddress('bootstrap-warn', DEFAULT_ADVERTISED_HOST, 57106),
+      );
+      const bootstrapOptions = ClusterBootstrapOptions.create('bootstrap-warn')
+        .withHost('0.0.0.0')
+        .withPort(57106)
+        .withTransport(transport)
+        .withReceptionist(false)
+        .withShutdownOnSignals(false)
+        .withLogger(log);
+      const { system, cluster, shutdown } = await bootstrapCluster(bootstrapOptions);
+      started.push(system);
+      try {
+        expect(cluster.selfAddress.host).toBe(DEFAULT_ADVERTISED_HOST);
+        expect(log.records.some((record) => record.level === 'warn'
+          && record.message.includes('advertised address'))).toBe(true);
+      } finally {
+        await shutdown();
+      }
+    });
   });
 
   test('however it is configured, a started node never advertises a wildcard', async () => {

@@ -113,9 +113,17 @@ export async function bootstrapCluster(
 
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
-    .withAdvertisedHost(advertisedHost)
     .withPort(port)
     .withSeeds([...seeds]);
+  // Forward only what the caller actually named, never the value derived from
+  // it.  `Cluster.join` runs the same chain over the same `host` and the same
+  // environment, so it arrives at the same answer — and it can still tell that
+  // nobody named one, which is what the startup diagnostic is keyed on.
+  // Passing the derived value would suppress that warning on the path most
+  // deployments take.
+  if (resolvedOptions.advertisedHost !== undefined) {
+    clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
+  }
   if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
   if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
   if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
