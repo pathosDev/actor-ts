@@ -1,4 +1,10 @@
-import { Mailbox, type DropReportingMailbox, type MailboxDropReason } from '../internal/Mailbox.js';
+import {
+  Mailbox,
+  type DropReportingMailbox,
+  type Envelope,
+  type MailboxDropObserver,
+  type MailboxDropReason,
+} from '../internal/Mailbox.js';
 
 /**
  * A message arrived on a full mailbox whose overflow policy is `reject`.
@@ -44,20 +50,38 @@ export class MailboxFullError extends Error {
  * `actor_mailbox_dropped_total`: the cell probes structurally for
  * `observeDrops`, so it never needs to know which mailbox it was handed.
  */
-export abstract class DroppingMailbox<T = unknown> extends Mailbox<T> implements DropReportingMailbox {
+export abstract class DroppingMailbox<T = unknown> extends Mailbox<T> implements DropReportingMailbox<T> {
   /**
    * Drop observers, in registration order.  A list rather than one slot so
    * registering is additive: the cell registers one, and a mailbox instance
    * shared between two cells (a documented mistake, but a possible one)
    * reports to both instead of the second silently unhooking the first.
    */
-  private readonly dropObservers: Array<(reason: MailboxDropReason) => void> = [];
+  private readonly dropObservers: Array<MailboxDropObserver<T>> = [];
 
   /** Number of messages dropped by the overflow policy — useful for metrics. */
   droppedCount = 0;
 
+  /**
+   * See {@link DropReportingMailbox.deadLetterDrops}.  Fixed at construction
+   * because the cell reads it once, when it registers its observer: a switch
+   * a running mailbox could flip would mean re-reading it per dropped message,
+   * on the path this class exists to keep cheap.
+   */
+  readonly deadLetterDrops: boolean;
+
+  /**
+   * The parameter is optional so an existing subclass that calls `super()`
+   * keeps compiling: opting a mailbox of your own into the dead-letter path
+   * should be a line you add, not a line you are forced to add.
+   */
+  protected constructor(deadLetterDrops?: boolean) {
+    super();
+    this.deadLetterDrops = deadLetterDrops ?? false;
+  }
+
   /** See {@link DropReportingMailbox.observeDrops} — additive. */
-  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+  observeDrops(observer: MailboxDropObserver<T>): void {
     this.dropObservers.push(observer);
   }
 
@@ -68,9 +92,17 @@ export abstract class DroppingMailbox<T = unknown> extends Mailbox<T> implements
    * each overflow branch, which is how the framework's observer came to be
    * missing from the `withMailbox` path — the wiring lived at the
    * construction site rather than at the drop.
+   *
+   * `envelope` is the one that was actually discarded, which is not always
+   * the one that arrived: a `drop-head` bound reports the message it evicted
+   * to make room, and a priority bound reports whichever end lost.  Passing
+   * the arrival instead would make every dead letter name a message that is
+   * still queued (#773), so the parameter is the *removed* envelope wherever
+   * the two differ, and each call site is written to hand over exactly what
+   * it let go of.
    */
-  protected reportDrop(reason: MailboxDropReason): void {
+  protected reportDrop(reason: MailboxDropReason, envelope: Envelope<T>): void {
     this.droppedCount++;
-    for (const observer of this.dropObservers) observer(reason);
+    for (const observer of this.dropObservers) observer(reason, envelope);
   }
 }

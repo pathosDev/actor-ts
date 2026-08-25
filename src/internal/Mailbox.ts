@@ -140,8 +140,13 @@ export type MailboxDropReason = 'drop-head' | 'drop-new';
  * `instanceof BoundedMailbox` on purpose.  Since #661 the base `Mailbox` is
  * public and subclassing it is a supported thing to do, so a queue that drops
  * for its own reasons should not be second-class in the telemetry.
+ *
+ * A report carries the **envelope** as well as the reason since #773, and a
+ * mailbox that sets {@link deadLetterDrops} also gets each dropped envelope
+ * turned into a {@link DeadLetter} — so overflow stops being the one loss
+ * path in the framework with no forensic record.
  */
-export interface DropReportingMailbox {
+export interface DropReportingMailbox<T = unknown> {
   /**
    * Register a drop observer.  Called by the cell once, before the mailbox
    * receives anything.
@@ -151,8 +156,49 @@ export interface DropReportingMailbox {
    * keep firing.  A caller who wired their own metric does not lose it
    * because the framework wired the stock one.
    */
-  observeDrops(observer: (reason: MailboxDropReason) => void): void;
+  observeDrops(observer: MailboxDropObserver<T>): void;
+  /**
+   * Should the cell turn each drop this mailbox reports into a
+   * {@link DeadLetter} on the system's dead-letter path (#773)?
+   *
+   * **The mailbox owns the switch, the cell owns the routing**, and the split
+   * is why this sits on the interface rather than in `ActorOptions`.  A
+   * `withMailbox` mailbox is configured where it is constructed and the cell
+   * never sees its options; a cell-side flag would therefore reach exactly
+   * the shape that already reports and miss the one that #1149 had to add a
+   * structural probe for.
+   *
+   * **Absent or `false` means no**, and the default is deliberate rather than
+   * timid.  `enqueue` runs on the *sender's* stack, and `DeadLetterRef.tell`
+   * runs the durable capture sink and a synchronous event-stream publish, so
+   * routing every shed envelope converts load shedding into per-message work
+   * under exactly the pressure the bound exists to absorb.  Rate-limiting the
+   * dead-letter stream itself is #1179 and belongs downstream of the capture,
+   * not here.
+   *
+   * The envelope reaches the observers either way — a drop report has always
+   * been free to carry what it lost, and an `onDrop` of your own may want it
+   * without wanting the framework's fan-out.
+   */
+  readonly deadLetterDrops?: boolean;
 }
+
+/**
+ * What a {@link DropReportingMailbox} hands an observer when it discards a
+ * message: the reason, and the envelope that was discarded (#773).
+ *
+ * A `type` rather than an `interface` because it is one callback's shape and
+ * prescribes nothing anyone implements.
+ *
+ * The envelope is the half that makes the loss *recoverable*: `message` and
+ * `sender` are what a {@link DeadLetter} is built from, and `context` /
+ * `trace` are what attribute it to the request that produced it.  Before
+ * #773 the seam carried the reason alone, so the only mailbox in the
+ * framework that discards messages was also the only loss path that could
+ * not say what it had lost.
+ */
+export type MailboxDropObserver<T = unknown> =
+  (reason: MailboxDropReason, envelope: Envelope<T>) => void;
 
 /**
  * Does this mailbox report its drops?  The structural check that keeps
@@ -161,8 +207,8 @@ export interface DropReportingMailbox {
  */
 export function reportsDrops<T>(
   mailbox: Mailbox<T>,
-): mailbox is Mailbox<T> & DropReportingMailbox {
-  return typeof (mailbox as Partial<DropReportingMailbox>).observeDrops === 'function';
+): mailbox is Mailbox<T> & DropReportingMailbox<T> {
+  return typeof (mailbox as Partial<DropReportingMailbox<T>>).observeDrops === 'function';
 }
 
 /**

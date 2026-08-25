@@ -77,13 +77,15 @@ type StoredEntry = {
  * document still called it complete.  `DeadLetterRef` therefore calls the
  * sink first and publishes second.
  *
- * **What it cannot see.**  A message discarded by a bounded or priority
- * mailbox never becomes a dead letter at all: the drop-reporting seam
- * carries a reason and not the envelope, so `DroppingMailbox` has nothing
- * to hand over.  That is the largest class of undeliverable message the
- * queue does *not* hold, and closing it needs a public widening of
- * `DropReportingMailbox.observeDrops` — deliberately out of scope here
- * rather than papered over.
+ * **What it sees only when asked.**  A message discarded by a bounded or
+ * priority mailbox reaches the queue when — and only when — that mailbox was
+ * built with `deadLetterDrops: true` (#773).  The seam now carries the
+ * envelope rather than only a reason, so `DroppingMailbox` has something to
+ * hand over; what stays opt-in is the *routing*, because a drop happens on
+ * the sender's stack and turning each one into a capture plus a publish
+ * undoes the bound it went through.  Left off, an overflow shows up in
+ * `actor_mailbox_dropped_total` and nowhere here — which is a choice the
+ * actor's author made, not a gap in the record.
  *
  * **Not every store retains a letter.**  Under `metrics` the counter is the
  * only record: `list` stays empty and `replay` answers `unknown-entry` for

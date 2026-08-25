@@ -9,6 +9,7 @@ export { Mailbox } from '../internal/Mailbox.js';
 export type {
   DropReportingMailbox,
   Envelope,
+  MailboxDropObserver,
   MailboxDropReason,
 } from '../internal/Mailbox.js';
 // The shared drop bookkeeping both built-in bounds sit on — public for the

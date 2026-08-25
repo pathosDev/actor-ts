@@ -1,4 +1,4 @@
-import type { MailboxDropReason } from '../internal/Mailbox.js';
+import type { MailboxDropObserver } from '../internal/Mailbox.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { PriorityFunction } from './PriorityMailbox.js';
@@ -51,13 +51,27 @@ export type PriorityMailboxOptionsType<T> = {
   /**
    * Optional hook fired each time a message is dropped by the overflow
    * policy.  Receives the policy that triggered the drop so the consumer can
-   * label metrics.  Never fires for `reject` — that throws instead.
+   * label metrics, and the envelope that was discarded (#773) — under
+   * `drop-lowest-priority` that is whichever end lost, which is the arrival
+   * exactly when the arrival ranked below the whole backlog.
    *
    * Yours alone: the cell reports to `actor_mailbox_dropped_total` through
    * `DropReportingMailbox.observeDrops`, which runs alongside this rather
    * than replacing it.
    */
-  readonly onDrop?: (reason: MailboxDropReason) => void;
+  readonly onDrop?: MailboxDropObserver<T>;
+  /**
+   * Route every dropped envelope to `system.deadLetters` rather than only
+   * counting it (#773).  Default `false`.
+   *
+   * Opt-in for the reason `BoundedMailboxOptionsType.deadLetterDrops` gives
+   * — the drop runs on the sender's stack and a dead letter is a durable
+   * capture plus a synchronous publish — and worth the cost more often here
+   * than there: a message shed by *this* mailbox is one the priority
+   * function ranked last, which is a claim about importance that only the
+   * payload can confirm or refute.
+   */
+  readonly deadLetterDrops?: boolean;
   /**
    * Optional hook fired each time {@link priorityFor} fails to rank a
    * message — it threw, or it answered with something that is not a usable
@@ -115,9 +129,14 @@ export class PriorityMailboxOptionsBuilder<T> extends OptionsBuilder<PriorityMai
     return this.set('overflow', overflow);
   }
 
-  /** Hook fired on each overflow drop (for metrics). */
-  withOnDrop(onDrop: (reason: MailboxDropReason) => void): this {
+  /** Hook fired on each overflow drop, with the envelope it discarded. */
+  withOnDrop(onDrop: MailboxDropObserver<T>): this {
     return this.set('onDrop', onDrop);
+  }
+
+  /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
+  withDeadLetterDrops(deadLetterDrops: boolean): this {
+    return this.set('deadLetterDrops', deadLetterDrops);
   }
 
   /** Hook fired when `priorityFor` could not rank a message (for diagnostics). */
@@ -151,6 +170,13 @@ export class PriorityMailboxOptionsValidator<T> extends OptionsValidator<Priorit
     this.oneOf('overflow', ['drop-lowest-priority', 'drop-new', 'reject']);
     if (s.overflow !== undefined && s.capacity === undefined) {
       this.fail('overflow', 'requires a capacity — an unbounded mailbox never overflows');
+    }
+    // Same reasoning one rule up: nothing is ever dropped without a bound, so
+    // asking for the drops to be dead-lettered is a no-op that reads like a
+    // guarantee — and this one would read like the *strongest* guarantee in
+    // the file.
+    if (s.deadLetterDrops !== undefined && s.capacity === undefined) {
+      this.fail('deadLetterDrops', 'requires a capacity — an unbounded mailbox never drops');
     }
   }
 }
