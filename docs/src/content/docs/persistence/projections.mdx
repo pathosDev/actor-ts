@@ -89,6 +89,34 @@ activity).
 sees exactly the events that carry it — including when the events
 were written together by one `persistAll`.
 
+### Filtering on more than one tag
+
+`withTag` accepts a **`TagFilter`**, so a projection is not limited to a
+single tag:
+
+```ts
+import type { TagFilter } from 'actor-ts/persistence';
+
+const eitherOne: TagFilter = { any: ['debit', 'credit'] };
+const bothOfThem: TagFilter = { all: ['account', 'production'] };
+const allButCancelled: TagFilter = { all: ['orders'], not: ['cancelled'] };
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('open-orders-view')
+  .withTag(allButCancelled);
+```
+
+Each operator is optional and they combine with AND.  An empty `{}`
+matches every event.
+
+**The filter is part of the cursor identity.**  A bare string keeps the
+cursor it already has, but the two spellings do not share one:
+`.withTag('orders')` stores its offset under `orders`, while
+`.withTag({ all: ['orders'] })` stores it under `all(orders)`.  Both
+select the same events, so rewriting one as the other looks harmless —
+and it silently replays the projection from the beginning.  Pick a
+spelling before the projection first runs, and keep it.
+
 ## At-least-once delivery
 
 ```ts
