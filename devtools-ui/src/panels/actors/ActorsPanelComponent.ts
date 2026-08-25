@@ -10,6 +10,7 @@ import {
 import { match, P } from 'ts-pattern';
 
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatDuration } from '../../core/format.js';
 import { ActorTreeModel, type TreeRow } from './actorsTree.js';
 import type {
@@ -69,6 +70,7 @@ type NodeGroup = {
 })
 export class ActorsPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
 
@@ -166,6 +168,10 @@ export class ActorsPanelComponent {
     // is harmless, because `touch` sweeps against the wall clock rather than
     // against how often it ran.
     const sweeper = setInterval(() => {
+      // Nothing ages while time is stopped.  This is the panel the pause
+      // exists for: the actor you want to read about is the one that just
+      // died, and it is a tombstone with thirty seconds to live (#1349).
+      if (this.time.paused()) return;
       for (const model of this.models.values()) {
         if (model.stoppedCount > 0) { this.touch(); return; }
       }
@@ -211,10 +217,17 @@ export class ActorsPanelComponent {
    * the very computation whose result was being installed.  Sweeping on the
    * way in keeps the timing (every frame, plus the one-second tick) and
    * leaves the computed pure.
+   *
+   * Guarded rather than left to the sweeper's own guard, because `touch` has
+   * a second caller: expanding a node while paused would otherwise collect
+   * every tombstone on screen as a side effect of a click that was only ever
+   * about showing more of the tree.
    */
   private touch(): void {
-    const now = Date.now();
-    for (const model of this.models.values()) model.sweep(now, STOPPED_RETENTION_MS);
+    const now = this.time.nowMs();
+    if (!this.time.paused()) {
+      for (const model of this.models.values()) model.sweep(now, STOPPED_RETENTION_MS);
+    }
     this.now.set(now);
     this.revision.update((value) => value + 1);
   }

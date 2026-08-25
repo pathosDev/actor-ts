@@ -9,6 +9,7 @@ import {
 import { match } from 'ts-pattern';
 
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatTime } from '../../core/format.js';
 import {
   BUS_EVENT_TAIL_ROWS,
@@ -30,6 +31,14 @@ import {
  * The tail is capped and newest-first.  Nothing is recorded on the server
  * until this panel subscribes, so it opens empty and fills — which is what
  * a tail is, and what the empty state says while it waits.
+ *
+ * Pausing lives in the header now and covers every panel at once (#1349).
+ * It also changed meaning here: batches published while time is stopped are
+ * held and delivered on resume, where they used to be discarded.  The old
+ * reasoning — that resuming into a wall of everything is not what the button
+ * promises — was right about a button that only stopped this one tail, and
+ * wrong about one that stops the whole view: a reader who froze the world to
+ * study it has not asked to be blinded to what it did next.
  */
 @Component({
   selector: 'devtools-eventstream-panel',
@@ -38,6 +47,7 @@ import {
 })
 export class EventStreamPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
 
   /** Newest first, capped — the tail. */
@@ -45,7 +55,7 @@ export class EventStreamPanelComponent {
   private readonly topicsResult = signal<PubSubTopicsResult | null>(null);
 
   protected readonly filter = signal('');
-  protected readonly paused = signal(false);
+  protected readonly paused = this.time.paused;
   protected readonly expanded = signal<number | null>(null);
   protected readonly dropped = signal(0);
 
@@ -71,7 +81,7 @@ export class EventStreamPanelComponent {
   protected readonly emptyMessage = computed(() => {
     if (this.tail().length > 0) return 'Nothing in the tail matches that filter.';
     return this.paused()
-      ? 'Paused. Press Resume to keep tailing.'
+      ? 'Paused. Events are being held, and arrive when you resume.'
       : 'Waiting for the first event. Nothing is recorded until this panel is'
         + ' open, so an idle system shows nothing — that is not a fault.';
   });
@@ -101,10 +111,6 @@ export class EventStreamPanelComponent {
     this.filter.set((domEvent.target as HTMLInputElement).value);
   }
 
-  protected onTogglePause(): void {
-    this.paused.update((paused) => !paused);
-  }
-
   protected onClear(): void {
     this.tail.set([]);
     this.dropped.set(0);
@@ -118,12 +124,11 @@ export class EventStreamPanelComponent {
   /**
    * Take a batch into the tail, newest first.
    *
-   * While paused the batch is discarded rather than buffered: pausing a tail
-   * means "let me read this", and resuming into a wall of everything that
-   * happened meanwhile is not what the button promises.
+   * Reached only while time runs: the tap client holds a paused stream's
+   * batches and hands them over in arrival order on resume, so this sees the
+   * same sequence either way and needs no notion of being paused itself.
    */
   private onBatch(batch: BusEventBatchPayload): void {
-    if (this.paused()) return;
     if (batch.dropped > 0) this.dropped.update((total) => total + batch.dropped);
     if (batch.events.length === 0) return;
     this.tail.update((current) => {

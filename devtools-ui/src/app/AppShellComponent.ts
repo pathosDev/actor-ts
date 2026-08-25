@@ -13,12 +13,13 @@ import { DomSanitizer, type SafeHtml } from '@angular/platform-browser';
 import { NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
 
 import { ACTOR_TS_LOGO_SVG } from '../assets/logo.js';
-import { formatDuration } from '../core/format.js';
+import { formatCount, formatDuration } from '../core/format.js';
 import { currentTheme, toggleTheme } from '../core/theme.js';
 import { DEVTOOLS_PROTOCOL_VERSION, type ConnectionStatus } from '../core/tapClient.js';
 import { panelStatusOf } from '../shell/panelStatus.js';
 import { PANEL_ROSTER } from './panelRoutes.js';
 import { TapClientService } from './TapClientService.js';
+import { TimeControlService } from './TimeControlService.js';
 
 const STATUS_LABELS: Readonly<Record<ConnectionStatus, string>> = {
   connecting: 'connecting',
@@ -36,8 +37,8 @@ const STATUS_LABELS: Readonly<Record<ConnectionStatus, string>> = {
  */
 const OFFLINE_GRACE_MS = 2_000;
 
-/** Keeps the "last contact" reading moving while there is none. */
-const OFFLINE_CLOCK_MS = 1_000;
+/** The key that stops and starts time.  Announced in the button's tooltip. */
+const PAUSE_KEY = 'p';
 
 /** One nav entry, resolved against the handshake. */
 type NavigationItem = {
@@ -57,15 +58,20 @@ type NavigationItem = {
  * PATH that is not an asset must 404 rather than return this document.  Putting
  * every navigation target in the hash is what keeps that true while still
  * giving the panels real URLs.
+ *
+ * It also carries the pause control (#1349), because stopping time is a
+ * property of the whole view rather than of whichever panel is open.
  */
 @Component({
   selector: 'devtools-root',
   imports: [RouterLink, RouterOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './AppShellComponent.html',
+  host: { '(document:keydown)': 'onKeydown($event)' },
 })
 export class AppShellComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly router = inject(Router);
 
@@ -74,16 +80,25 @@ export class AppShellComponent {
 
   readonly status = this.tap.status;
   readonly theme = currentTheme;
-  readonly statusLabel = computed(() => STATUS_LABELS[this.status()]);
+  readonly paused = this.time.paused;
   readonly systemName = computed(() => this.tap.welcome()?.systemName ?? '…');
+
+  /**
+   * `paused` outranks the connection state in the badge.
+   *
+   * Both are reasons the numbers have stopped moving, and if only one can be
+   * shown it has to be the one the reader caused — a badge reading `live` over
+   * a frozen screen is the confusing case.  Whether the connection also died
+   * meanwhile is not lost: the offline dialog still raises, over the pause.
+   */
+  readonly statusLabel = computed(() =>
+    (this.paused() ? 'paused' : STATUS_LABELS[this.status()]));
 
   private readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>('offlineDialog');
 
   /** First path segment of the current URL — the panel id. */
   private readonly activePanel = signal(this.panelFromUrl(this.router.url));
 
-  /** Ticks so the "nothing has answered for …" reading keeps moving. */
-  private readonly now = signal(Date.now());
   private readonly offlineSince = signal<number | null>(Date.now());
   /** Set when the reader chooses to look past it; cleared on recovery. */
   private readonly dismissed = signal(false);
@@ -101,14 +116,44 @@ export class AppShellComponent {
       : `actor-ts ${welcome.serverVersion} · tap protocol v${DEVTOOLS_PROTOCOL_VERSION}`;
   });
 
+  /**
+   * What the pause is costing, beside the button.
+   *
+   * The held count is the honest half: a pause is not free, and a reader who
+   * walked away for an hour should see that frames are piling up rather than
+   * discover it as a jolt on resume.  Anything the cap had to throw away is
+   * named separately, because that part is not coming back.
+   */
+  readonly pauseNote = computed(() => {
+    if (!this.paused()) return '';
+    const held = this.tap.heldFrames();
+    const dropped = this.tap.droppedFrames();
+    const parts = [formatDuration(this.time.pausedForMs())];
+    if (held > 0) parts.push(`${formatCount(held)} held`);
+    if (dropped > 0) parts.push(`${formatCount(dropped)} lost`);
+    return parts.join(' · ');
+  });
+
+  readonly pauseTitle = computed(() => (this.paused()
+    ? `Let time run again (${PAUSE_KEY.toUpperCase()})`
+    : `Stop time so you can read this (${PAUSE_KEY.toUpperCase()})`));
+
+  /**
+   * Read against the wall clock, NOT the pausable one.
+   *
+   * A connection that dies while the reader is paused still has to be
+   * announced.  Freezing this alongside everything else would leave a dead
+   * node looking exactly like a paused one, which is the one confusion this
+   * dialog exists to prevent.
+   */
   readonly offline = computed(() => {
     const since = this.offlineSince();
-    return since !== null && this.now() - since >= OFFLINE_GRACE_MS;
+    return since !== null && this.time.wallClock() - since >= OFFLINE_GRACE_MS;
   });
 
   readonly offlineFor = computed(() => {
     const since = this.offlineSince();
-    return since === null ? '' : formatDuration(this.now() - since);
+    return since === null ? '' : formatDuration(this.time.wallClock() - since);
   });
 
   readonly navigation = computed<readonly NavigationItem[]>(() => {
@@ -145,9 +190,6 @@ export class AppShellComponent {
     });
     this.destroyRef.onDestroy(() => subscription.unsubscribe());
 
-    const clock = setInterval(() => this.now.set(Date.now()), OFFLINE_CLOCK_MS);
-    this.destroyRef.onDestroy(() => clearInterval(clock));
-
     effect(() => {
       if (this.status() === 'open') {
         this.offlineSince.set(null);
@@ -179,6 +221,21 @@ export class AppShellComponent {
 
   onToggleTheme(): void { toggleTheme(); }
 
+  onTogglePause(): void { this.time.toggle(); }
+
+  /**
+   * A bare letter, so it costs no modifier — and therefore has to stay out of
+   * the way of typing.  Every panel here has a filter box, and swallowing a
+   * `p` typed into one would be a far worse bug than having no shortcut.
+   */
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key.toLowerCase() !== PAUSE_KEY) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (isTyping(event.target)) return;
+    event.preventDefault();
+    this.time.toggle();
+  }
+
   onDismissOffline(): void { this.dismissed.set(true); }
 
   /**
@@ -193,4 +250,11 @@ export class AppShellComponent {
   private panelFromUrl(url: string): string {
     return url.replace(/^\//, '').split(/[/?#]/)[0] ?? '';
   }
+}
+
+/** Whether the keystroke belongs to a field rather than to the shortcut. */
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }

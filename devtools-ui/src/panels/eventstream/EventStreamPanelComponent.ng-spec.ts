@@ -10,6 +10,7 @@ import {
 } from '../../app/testing/fakeTapSocket.js';
 import { installDomGaps } from '../../app/testing/domGaps.js';
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { EventStreamPanelComponent } from './EventStreamPanelComponent.js';
 import type { BusEvent } from '../../../../src/devtools/protocol/index.js';
 
@@ -18,7 +19,7 @@ import type { BusEvent } from '../../../../src/devtools/protocol/index.js';
  *
  * A tail is mostly about what it does when it cannot keep up, so that is
  * what most of this covers: dropping is admitted rather than hidden, pausing
- * discards rather than buffers, and the newest event stays at the top.
+ * holds what arrives meanwhile, and the newest event stays at the top.
  */
 
 let nextSequence = 0;
@@ -153,25 +154,41 @@ describe('EventStreamPanelComponent', () => {
     expect(text()).toContain('7');
   });
 
-  it('discards rather than buffers while paused', () => {
+  it('holds what arrives while paused and shows it on resume', () => {
+    // Reversed deliberately in #1349. The old behaviour — discard, on the
+    // grounds that resuming into a wall of everything is not what the button
+    // promises — was right about a button that stopped this one tail. The
+    // header control stops the whole view, and someone who froze the world to
+    // study it has not asked to be blinded to what it did next. The panel no
+    // longer owns a Pause button at all; the tap client does the holding.
     mount();
+    const time = TestBed.inject(TimeControlService);
+
     batch([event({ eventType: 'BeforePause' })]);
-    button('Pause').click();
+    time.pause();
     fixture.detectChanges();
 
     batch([event({ eventType: 'WhilePaused' })]);
+    fixture.detectChanges();
 
-    // Pausing a tail means "let me read this".  Resuming into a wall of
-    // everything that happened meanwhile is not what the button promises.
     expect(text()).not.toContain('WhilePaused');
     expect(rows()).toHaveLength(1);
     expect(text()).toContain('paused');
 
-    button('Resume').click();
+    time.resume();
+    TestBed.tick();
     fixture.detectChanges();
-    batch([event({ eventType: 'AfterResume' })]);
-    expect(text()).toContain('AfterResume');
-    expect(text()).not.toContain('WhilePaused');
+
+    expect(text()).toContain('WhilePaused');
+    expect(rows()).toHaveLength(2);
+  });
+
+  it('has no Pause button of its own any more', () => {
+    // Two controls reading "Pause" with different reach was the confusing part,
+    // so the local one is gone rather than layered under the global one.
+    mount();
+    expect(() => button('Pause')).toThrow(/no button labelled/);
+    expect(() => button('Clear')).not.toThrow();
   });
 
   it('filters on event type and on payload', () => {

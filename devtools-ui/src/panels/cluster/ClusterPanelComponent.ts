@@ -13,6 +13,7 @@ import { EChartComponent } from '../../app/charts/EChartComponent.js';
 import type { DevToolsChartOption } from '../../app/charts/echartsModules.js';
 import { buildTopologyOption, type TopologyNode } from '../../app/charts/topologyOption.js';
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatTime } from '../../core/format.js';
 import type {
   ClusterEventPayload,
@@ -114,6 +115,7 @@ function badgeToneFor(name: ClusterEventPayload['event']): string {
 })
 export class ClusterPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly chartTheme = inject(ChartThemeService).theme;
 
@@ -205,6 +207,9 @@ export class ClusterPanelComponent {
     // the stream to prompt it: membership changes are the events, and the whole
     // point of a retained member is that it stopped producing any.
     const clock = setInterval(() => {
+      // A departed node's age is a duration like any other, so it holds still
+      // while time is paused rather than counting up beside a frozen view.
+      if (this.time.paused()) return;
       if (this.members().some((member) => member.gone)) this.now.set(Date.now());
     }, GONE_CLOCK_INTERVAL_MS);
     this.destroyRef.onDestroy(() => clearInterval(clock));
@@ -264,7 +269,7 @@ export class ClusterPanelComponent {
   }
 
   private touch(): void {
-    this.now.set(Date.now());
+    this.now.set(this.time.nowMs());
     this.revision.update((value) => value + 1);
   }
 }

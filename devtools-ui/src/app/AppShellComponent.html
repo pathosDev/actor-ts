@@ -1,11 +1,24 @@
-<div class="dt-app" [class.dt-app--offline]="offline()">
+<div class="dt-app" [class.dt-app--offline]="offline()" [class.dt-app--paused]="paused()">
   <header class="dt-header">
     <span class="dt-header__logo" role="img" aria-label="actor-ts" [innerHTML]="logo"></span>
     <span class="dt-header__system">{{ systemName() }}</span>
     <span class="dt-header__spacer"></span>
-    <span class="dt-status dt-status--{{ status() }}" [title]="badgeTitle()">
+    @if (pauseNote(); as note) {
+      <span class="dt-header__pausenote">{{ note }}</span>
+    }
+    <span class="dt-status dt-status--{{ paused() ? 'paused' : status() }}" [title]="badgeTitle()">
       <span class="dt-status__dot"></span>{{ statusLabel() }}
     </span>
+    <!-- Stopping time is a property of the whole view, not of one panel, so it
+         lives beside the status badge rather than in each panel's toolbar. -->
+    <button
+      class="dt-iconbutton"
+      [class.dt-iconbutton--active]="paused()"
+      type="button"
+      [attr.aria-pressed]="paused()"
+      [title]="pauseTitle()"
+      (click)="onTogglePause()"
+    >{{ paused() ? 'Resume' : 'Pause' }}</button>
     <button class="dt-iconbutton" type="button" (click)="onToggleTheme()">
       {{ theme() === 'dark' ? 'Light mode' : 'Dark mode' }}
     </button>
@@ -63,6 +76,14 @@
           last thing the node said, frozen at that moment — it is not live. Still
           retrying, and this closes by itself the moment something answers.
         </p>
+        <!-- Raised over the pause on purpose. A paused screen and a dead node
+             look identical, so the one the reader did NOT ask for has to say so. -->
+        @if (paused()) {
+          <p class="dt-dialog__hint">
+            You also have time paused. That is not why nothing is answering — the
+            connection is read against the real clock, which never stops.
+          </p>
+        }
         <p class="dt-dialog__hint">
           Each node serves its own DevTools, so another node's port may still answer
           while this one does not.

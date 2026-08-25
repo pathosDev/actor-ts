@@ -3,11 +3,13 @@ import {
   Component,
   DestroyRef,
   computed,
+  effect,
   inject,
   signal,
 } from '@angular/core';
 
 import { TapClientService } from '../../app/TapClientService.js';
+import { TimeControlService } from '../../app/TimeControlService.js';
 import { formatCount, formatTime, shortActorPath } from '../../core/format.js';
 import type {
   DeadLettersResult,
@@ -41,6 +43,7 @@ const POLL_INTERVAL_MS = 1000;
 })
 export class DeadLettersPanelComponent {
   private readonly tap = inject(TapClientService);
+  private readonly time = inject(TimeControlService);
   private readonly destroyRef = inject(DestroyRef);
 
   private readonly result = signal<DeadLettersResult | null>(null);
@@ -75,7 +78,23 @@ export class DeadLettersPanelComponent {
 
   constructor() {
     void this.refresh();
-    this.poll = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
+    // This panel pulls rather than listens, so the pause gate in
+    // `TapClientService.listen` never sees it — the poll has to stop itself,
+    // or a frozen view would still refresh under the reader (#1349).
+    this.poll = setInterval(() => {
+      if (this.time.paused()) return;
+      void this.refresh();
+    }, POLL_INTERVAL_MS);
+
+    // Catch up at once on resume instead of waiting out the poll interval.
+    let wasPaused = this.time.paused();
+    effect(() => {
+      const paused = this.time.paused();
+      const resumed = wasPaused && !paused;
+      wasPaused = paused;
+      if (resumed) void this.refresh();
+    });
+
     this.destroyRef.onDestroy(() => {
       if (this.poll !== null) clearInterval(this.poll);
       if (this.debounce !== null) clearTimeout(this.debounce);
