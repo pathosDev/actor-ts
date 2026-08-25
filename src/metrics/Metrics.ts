@@ -252,6 +252,28 @@ export interface MetricsRegistry {
   collect(): ReadonlyArray<MetricSample>;
 
   /**
+   * Whether {@link MetricsRegistry.collect} is this registry's source of
+   * truth (#744).
+   *
+   * Optional, and **absent means `true`** — a registry that holds its own
+   * samples is collectable and says nothing, which is every implementation
+   * written before this flag existed, here and outside this repository.
+   * A registry sets it to `false` only when it forwards writes to a foreign
+   * collector and keeps no copy: its `collect()` is then empty because the
+   * values live somewhere this interface cannot reach, not because nothing
+   * has happened.
+   *
+   * The distinction has to be declared because an empty snapshot is
+   * otherwise indistinguishable from a quiet system, and rendering it as
+   * one is worse than an error: `exportPrometheus` turns it into a
+   * zero-byte 0.0.4 body, which is a *valid* empty scrape — the target
+   * stays `up=1` and every framework series simply stops existing, so
+   * threshold alerts over them never fire again.  Readers ask
+   * {@link isCollectable} and report the figures as unavailable instead.
+   */
+  readonly collectable?: boolean;
+
+  /**
    * Drop one series, so a label tuple whose subject no longer exists stops
    * being exported and stops occupying a slot under the cardinality cap
    * (#745).  Returns whether a series was actually removed.
@@ -276,6 +298,19 @@ export interface MetricsRegistry {
 
   /** Wipe the registry — primarily for tests. */
   clear(): void;
+}
+
+/**
+ * Can `registry.collect()` be believed?
+ *
+ * The default is deliberately optimistic — {@link MetricsRegistry.collectable}
+ * is optional precisely so that every registry predating the flag keeps
+ * meaning "yes" without being edited — so this reads as "not opted out"
+ * rather than "opted in".  A reader that inverted it would report a plain
+ * {@link DefaultMetricsRegistry} as unreadable.
+ */
+export function isCollectable(registry: MetricsRegistry): boolean {
+  return registry.collectable !== false;
 }
 
 /**
