@@ -8,7 +8,9 @@ It:
 
 - Receives `Delivery<T>` envelopes from one or more
   `ProducerController`s.
-- Dedups duplicates (same `producerId` + producer incarnation + `seq`).
+- Dedups duplicates (same `producerId` + producer incarnation + `seq`),
+  keeping that bookkeeping on a bounded budget — at most `maxProducers`
+  producers, and entries idle for `producerIdleTtlMs` are swept.
 - Refuses a malformed envelope — one with no `replyTo`, a `seq` that is not a
   positive safe integer, or an empty / over-long identifier — as a dead letter,
   without running the handler and without acking.
@@ -17,7 +19,7 @@ It:
   resolves; if the handler throws, no ack — the producer retransmits.
 
 ```ts
-import { ConsumerController } from 'actor-ts/delivery';
+import { ConsumerController, ConsumerControllerOptions } from 'actor-ts/delivery';
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>({
@@ -48,14 +50,69 @@ flowchart LR
 ```ts
 type ConsumerControllerOptionsType<T> = {
   handler: (body: T) => void | Promise<void>;
+  maxProducers?: number;         // default 1024,   Infinity = no cap
+  producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
 };
 ```
 
-The only setting is the handler.  Per-producer dedup state is
-managed internally — you don't configure a buffer size or
-consumer ID.  The bounds on what an incoming envelope may contain are
-deliberately not configurable either: they exist to bound wire input, and a
-limit the sender could raise is not a limit.
+| Option | What it does |
+| --- | --- |
+| `handler` | Invoked for every new (un-duplicated) message body.  Required. |
+| `maxProducers` | Most producers the dedup map holds at once.  Past it, the least-recently-used producer's entry is evicted. |
+| `producerIdleTtlMs` | How long a producer's entry survives with no delivery from it.  A background sweep drops the ones past it. |
+
+You still don't configure a buffer size or a consumer ID, and the bounds on
+what an incoming *envelope* may contain stay non-configurable: those exist to
+bound wire input, and a limit the sender could raise is not a limit.  The two
+options above are a different kind of bound — a budget this consumer applies
+to its own heap, which is exactly the sort of thing an operator should be able
+to set.
+
+```ts
+const consumerOptions = ConsumerControllerOptions.create<OrderEvent>()
+  .withHandler(async (order) => { await processOrder(order); })
+  .withMaxProducers(64)
+  .withProducerIdleTtlMs(60_000);
+
+const consumer = system.spawn(
+  () => new ConsumerController<OrderEvent>(consumerOptions),
+  'orders-consumer',
+);
+```
+
+A plain object works everywhere the builder does — `{ handler, maxProducers }`
+— and is the shorthand the rest of this page uses.
+
+### Why the dedup state has a budget
+
+The map is keyed by the `producerId` on the envelope, which the **sender**
+chooses.  Every distinct one used to cost a permanent entry, so the map's size
+was a function of how many ids had ever arrived rather than of how many
+producers exist.  That is a leak with nobody attacking it: a `ProducerController`
+whose caller leaves `producerId` unset mints a fresh random one per
+construction, so a long-lived consumer served by short-lived producers
+accumulates one entry per producer and never sheds one.  Over a cluster port,
+the same path is an amplifier — one retained entry per delivery.
+
+Eviction is not free, which is why the controller warns about it instead of
+losing windows quietly (paced to at most one line a minute, so a flood cannot
+turn a bounded heap into an unbounded log).  Dropping an entry drops that
+producer's duplicate suppression, so a retransmit arriving afterwards runs
+your handler a second time.  This protocol is at-least-once and already
+permits that; unbounded growth is what it did not.
+
+`maxProducers` only reclaims when a *new* producer needs a slot, which is why
+`producerIdleTtlMs` exists as well: a consumer that saw a burst of producers
+and then went quiet has nothing to trigger an eviction, and age is the only
+thing that releases those entries.  Keep the TTL well above your producers'
+`resendTimeout` (default 500 ms) — an entry dropped while its producer is
+still retransmitting the same seq costs one duplicate invocation.  The sweep
+runs on the TTL's own interval, so an idle entry goes between one and two of
+them.
+
+Read `consumer.trackedProducers` for the current entry count.  It should sit
+near the number of producers actually talking to this consumer; climbing with
+the message count is the symptom the budget exists to prevent.
 
 ## Handler contract
 
@@ -125,9 +182,12 @@ out-of-order seqs already delivered above it.  Every newly
 arrived seq is checked against both — duplicates skip the
 handler and re-Ack; new seqs run the handler then update state.
 
-There is no fixed buffer size and no silent drop — the producer
-keeps retransmitting unacked messages until the consumer's
-handler resolves and the Ack lands.
+There is no fixed buffer size for messages and no silent drop of one — the
+producer keeps retransmitting unacked messages until the consumer's
+handler resolves and the Ack lands.  What *is* bounded is the dedup
+bookkeeping behind it: see [Why the dedup state has a
+budget](#why-the-dedup-state-has-a-budget).  Losing an entry never drops a
+message; it costs a duplicate.
 
 ## Failure semantics
 
@@ -164,10 +224,16 @@ Each producer maintains its own seq.  The consumer dedups
 `(contiguous, above)` dedup state per `producerId`, so two
 producers' seq spaces don't collide.  The entry also records which
 *incarnation* of that `producerId` the counters describe, and a delivery from a
-new incarnation replaces it rather than adding a second entry.  That keeps the
-map at one entry per producer, at the cost of one more possible duplicate: a
-straggling delivery from the outgoing incarnation resets the window again, so a
-handful of already-handled seqs may run twice around the changeover.
+new incarnation replaces it rather than adding a second entry.  That keeps a
+restarting producer at one entry rather than one per restart, at the cost of
+one more possible duplicate: a straggling delivery from the outgoing
+incarnation resets the window again, so a handful of already-handled seqs may
+run twice around the changeover.
+
+How many entries there are in total is `maxProducers`' business, not the
+incarnation's — with more distinct producers than that, the least recently
+heard from are evicted.  Raise it when a consumer legitimately serves more
+producers than the default 1 024.
 
 Your handler sees only the body — `producerId`, `incarnation` and `seq` are
 the controller's concern.  If you need them for business
