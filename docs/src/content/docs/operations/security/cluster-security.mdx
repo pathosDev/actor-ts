@@ -354,6 +354,24 @@ that published it. A frame that reaches an actor by generic path
 resolution instead — which strips nothing but does carry no sender —
 is treated as unauthenticated rather than as trusted.
 
+A CRDT's own state is the one place that rule does not reach.
+DistributedData validates a decoded payload for **shape and
+plausibility**: a counter slot must be a non-negative integer at
+or under `MAX_COUNTER_SLOT` (≈ 2.2e12 — the largest per-slot
+value for which a full counter's `value()` is still an exact
+integer), a register timestamp may be no more than five minutes
+ahead of local time, a collection is capped at 4 096 entries, and
+a `__proto__` key is refused. It does **not** check that the
+sending peer had any business writing the slot it wrote.
+Grow-only counters merge by maximum, so any peer able to gossip
+can raise **any** replica's slot inside those bounds — the owning
+node cannot lower it again, the value is written through to the
+durable record, and `delete(key)` is best-effort because a peer
+still holding the key re-gossips it. A DistributedData counter is
+therefore trustworthy exactly as far as the set of peers you let
+onto the wire, which makes the mTLS setup above a prerequisite
+for a quota or billing counter rather than a hardening step.
+
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
 version mismatch and a hostile peer look different in the log.

@@ -30,12 +30,21 @@
  * The rules are deliberately about *shape and plausibility*, not about
  * whether a peer is allowed to say a thing.  Authority is a separate
  * question, answered by the connection's identity, not by the payload.
+ *
+ * That split is why the counter rule has two halves.  Shape says a slot is a
+ * non-negative integer; plausibility says it is under
+ * {@link MAX_COUNTER_SLOT}, which is what stops a peer pinning a slot at a
+ * value no honest replica could have counted to.  Neither says the peer had no
+ * business writing that slot in the first place — a decoded counter may still
+ * advance a slot named after somebody else.  Closing *that* needs a merge that
+ * knows which replica it is, and a replica id that survives a restart without
+ * being relearned from a peer, which is #955's half of the problem (#720).
  */
 
 
 
 
-import { MAX_CRDT_ENTRIES, MAX_TIMESTAMP_SKEW_MS } from './Constants.js';
+import { MAX_COUNTER_SLOT, MAX_CRDT_ENTRIES, MAX_TIMESTAMP_SKEW_MS } from './Constants.js';
 
 /** Thrown when a CRDT payload does not match the shape its `kind` promises. */
 export class CrdtDecodeError extends Error {
@@ -81,15 +90,30 @@ export function assertFiniteNumber(value: unknown, what: string): asserts value 
 }
 
 /**
- * A counter slot: a non-negative, safe integer.
+ * A counter slot: a non-negative integer, at or below {@link MAX_COUNTER_SLOT}.
  *
  * Grow-only counters merge by maximum, so an out-of-range value is not a
  * transient error — it is the new floor for that replica, cluster-wide.
+ *
+ * The two halves close different things and both are needed.  Safe-integer
+ * keeps `value()` returning a number at all, which is what a string slot broke.
+ * The ceiling is what keeps a peer from writing a floor no honest replica could
+ * have reached: `Number.MAX_SAFE_INTEGER` satisfies every other rule here, so
+ * before the ceiling the type check alone left the pinning half of #720 open.
+ *
+ * Vector-clock entries decode through this too, and want the same bound for
+ * the same shape of reason: an entry claiming 2^53 - 1 writes dominates every
+ * honest entry in `MVRegister.merge` and is never superseded.
  */
 export function assertCounterValue(value: unknown, what: string): asserts value is number {
   assertFiniteNumber(value, what);
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new CrdtDecodeError(`${what} must be a non-negative safe integer, got ${describe(value)}`);
+  }
+  if (value > MAX_COUNTER_SLOT) {
+    throw new CrdtDecodeError(
+      `${what} is ${value}, over the ${MAX_COUNTER_SLOT} plausibility ceiling for a counter slot`,
+    );
   }
 }
 
