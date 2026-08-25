@@ -260,6 +260,21 @@ DevTools is a debugger, and the defaults treat it as one.
   Binding to loopback is not a substitute for this. A WebSocket
   handshake is not subject to the same-origin policy, so any page in
   the developer's browser can reach `127.0.0.1`.
+- **A connected client cannot flood the tap.** Requests are answered off
+  the hub's mailbox, so one slow journal read cannot stall the other
+  tabs — which also means the mailbox is not what bounds the work. The
+  hub counts it instead: 32 requests in flight per connection and 256
+  across the tap. A request past either is refused with an `unavailable`
+  error rather than queued. The sockets are capped too, at 32
+  concurrent connections; an upgrade past that is closed with 1013
+  before it is wired up.
+
+  A panel never comes near those numbers. A client asking for thousands
+  of concurrent journal replays does, and the tap runs in the same
+  process as the actors you are debugging — so what it could starve is
+  your application, not just the debugger. See the
+  [protocol reference](/observability/devtools/protocol/) for what a
+  client should do when it is refused.
 - **The cluster side goes by the connection.** When you pass a
   `Cluster`, every node answers "how is your node doing?" over the
   cluster transport and the serving node collects the answers.  Both

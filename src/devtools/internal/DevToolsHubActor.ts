@@ -32,6 +32,10 @@ import type {
   UnsubscribeFrame,
   WelcomeFrame,
 } from '../protocol/index.js';
+import {
+  MAXIMUM_IN_FLIGHT_REQUESTS,
+  MAXIMUM_IN_FLIGHT_REQUESTS_PER_SESSION,
+} from '../Constants.js';
 
 /** Command told to the hub when a tap produces a payload. */
 export type DevToolsPublishCommand = {
@@ -77,6 +81,12 @@ export interface DevToolsHubContext {
 /** Per-connection state. */
 type DevToolsSession = {
   greeted: boolean;
+  /**
+   * Requests dispatched on this connection and not yet settled.  Lives on
+   * the session rather than being derived, because the work happens off
+   * the mailbox and there is nothing else left to count it.
+   */
+  inFlightRequests: number;
   readonly streams: Set<DevToolsStreamId>;
 };
 
@@ -86,6 +96,14 @@ export class DevToolsHubActor
   private readonly sessions = new Map<string, DevToolsSession>();
   /** Last sequence number handed out per stream; gaps mean dropped frames. */
   private readonly sequenceNumbers = new Map<DevToolsStreamId, number>();
+  /**
+   * Requests outstanding across every connection, live and closed alike
+   * (#758).  Kept on the actor rather than summed over `sessions` on
+   * demand: a request outlives the session that asked for it — the socket
+   * can drop while a replay is still folding — and the work it is doing
+   * has to keep holding its slot until it actually finishes.
+   */
+  private inFlightRequests = 0;
 
   constructor(private readonly hub: DevToolsHubContext) {
     super();
@@ -94,7 +112,7 @@ export class DevToolsHubActor
   /* --------------------------- connections --------------------------- */
 
   protected override onClientConnected(client: WebsocketConnection<DevToolsServerFrame>): void {
-    this.sessions.set(client.id, { greeted: false, streams: new Set() });
+    this.sessions.set(client.id, { greeted: false, inFlightRequests: 0, streams: new Set() });
   }
 
   protected override onClientDisconnected(
@@ -140,7 +158,7 @@ export class DevToolsHubActor
       .with({ kind: 'hello' }, (f) => this.onHello(f, client, session))
       .with({ kind: 'subscribe' }, (f) => this.onSubscribe(f, client, session))
       .with({ kind: 'unsubscribe' }, (f) => this.onUnsubscribe(f, client, session))
-      .with({ kind: 'request' }, (f) => this.onRequest(f, client))
+      .with({ kind: 'request' }, (f) => this.onRequest(f, client, session))
       .exhaustive();
   }
 
@@ -196,11 +214,23 @@ export class DevToolsHubActor
   private onRequest(
     frame: RequestFrame,
     client: WebsocketConnection<DevToolsServerFrame>,
+    session: DevToolsSession,
   ): void {
     if (!this.hub.isMethodAvailable(frame.method)) {
       client.tell(errorFrame('unavailable', `method "${frame.method}" is not available on this system`, frame.requestId));
       return;
     }
+    const refusal = this.capacityRefusal(session);
+    if (refusal !== null) {
+      // Refused, not queued: a queue is the same unbounded backlog with
+      // a slower fuse, and the client is the one holding the retry.  Not
+      // logged either — a line per refused frame under a flood would turn
+      // the log into the amplifier the cap just closed.
+      client.tell(errorFrame('unavailable', refusal, frame.requestId));
+      return;
+    }
+    session.inFlightRequests++;
+    this.inFlightRequests++;
     // Deliberately NOT awaited: a slow journal read would otherwise
     // block this hub's mailbox and stall every other connected tab.
     void this.hub.invoke(frame.method, frame.parameters)
@@ -211,7 +241,44 @@ export class DevToolsHubActor
         if (client.isOpen) {
           client.tell(errorFrame('bad-parameters', (error as Error).message, frame.requestId));
         }
-      });
+      })
+      // Last in the chain on purpose: `finally` runs exactly once however
+      // the request ends, including when the `then` arm throws and the
+      // `catch` above picks it up.  Releasing the slot inside both arms
+      // instead would double-release that path.
+      .finally(() => this.settleRequest(client.id));
+  }
+
+  /**
+   * Why this request cannot be dispatched right now, or `null` to admit
+   * it (#758).  The message is the client's only diagnosis — it names the
+   * limit it hit and that retrying is the answer.
+   */
+  private capacityRefusal(session: DevToolsSession): string | null {
+    if (session.inFlightRequests >= MAXIMUM_IN_FLIGHT_REQUESTS_PER_SESSION) {
+      return `this connection already has ${MAXIMUM_IN_FLIGHT_REQUESTS_PER_SESSION} `
+        + 'requests in flight; retry once one of them has been answered';
+    }
+    if (this.inFlightRequests >= MAXIMUM_IN_FLIGHT_REQUESTS) {
+      return `the DevTools tap is at its ceiling of ${MAXIMUM_IN_FLIGHT_REQUESTS} `
+        + 'concurrent requests across all connections; retry shortly';
+    }
+    return null;
+  }
+
+  /**
+   * Release the slot one settled request held.
+   *
+   * Looked up by connection id rather than closing over the session
+   * object, because `onClientDisconnected` may already have dropped it —
+   * a socket can close while its replay is still folding.  The hub-wide
+   * count is released either way: the work really has finished, whoever
+   * asked for it.
+   */
+  private settleRequest(clientId: string): void {
+    this.inFlightRequests--;
+    const session = this.sessions.get(clientId);
+    if (session !== undefined) session.inFlightRequests--;
   }
 
   /* ----------------------------- outbound ---------------------------- */

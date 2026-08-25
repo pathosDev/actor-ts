@@ -159,6 +159,32 @@ sicher scheitert.
 Requests werden **außerhalb** der Mailbox des Taps beantwortet, damit ein
 langsamer Journal-Read keine anderen verbundenen Tabs blockiert.
 
+### Grenzen der Nebenläufigkeit
+
+Dass außerhalb der Mailbox geantwortet wird, heißt zugleich, dass die
+Mailbox die Arbeit nicht mehr serialisiert — also zählt der Tap sie
+selbst. Eine Verbindung darf **32** Requests gleichzeitig offen haben,
+der Tap **256** über alle Verbindungen hinweg. Alles darüber wird
+abgelehnt statt eingereiht, mit einem `error`-Frame mit Code
+`unavailable` und der `requestId`, die es beantwortet.
+
+Damit hat `unavailable` zwei Bedeutungen, unterscheidbar daran, ob ein
+erneuter Versuch hilft: Dieses System hat diese Methode nicht und wird
+sie nie haben — oder der Tap ist gerade ausgelastet. Welches von beidem,
+sagt die `message`. Ein Client, der jedes `unavailable` als endgültig
+behandelt, gibt nur zu früh auf; einer, der eine fehlende Methode erneut
+versucht, bekommt nie eine Antwort. Deshalb ist die Nachricht und nicht
+der Code das, was man liest.
+
+Keine der beiden Grenzen erreicht ein Client, der sich wie ein Panel
+verhält — die gesamte mitgelieferte UI hat weniger als dreißig
+Request-Aufrufstellen, und ein Schwall davon ist eine Seite voll, keine
+Schleife. Sie existieren, weil ein `replay.diff` ein ganzes Journal
+faltet und der Tap sich den Prozess mit den Actors teilt, die untersucht
+werden. Aus demselben Grund lässt der Tap höchstens **32** gleichzeitige
+Verbindungen zu; ein weiterer Upgrade wird mit 1013 („try again later“)
+geschlossen, bevor er verdrahtet wird.
+
 ## Einen Client schreiben
 
 Typen und Helfer werden aus dem DevTools-Einstiegspunkt exportiert:
