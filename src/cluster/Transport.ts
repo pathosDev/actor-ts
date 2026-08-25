@@ -153,6 +153,18 @@ export class TcpTransport implements Transport {
      * at all.
      */
     readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    /**
+     * Interface to bind, when it differs from the one {@link self} advertises
+     * — a container binds `0.0.0.0` and tells its peers a single dialable
+     * address (#944).
+     *
+     * Defaults to `self.host`, which is what every caller that has no opinion
+     * gets and what this class did before the two were separable.  It is used
+     * for exactly one thing, the `listen` call: `self` stays the identity
+     * everywhere else, in the handshake announcement and in the peer keys,
+     * because a wildcard would identify nothing there.
+     */
+    private readonly bindHost: string = self.host,
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -160,7 +172,7 @@ export class TcpTransport implements Transport {
   async start(): Promise<void> {
     this.backend = await getTcpBackend();
     this.listener = await this.backend.listen({
-      host: this.self.host,
+      host: this.bindHost,
       port: this.self.port,
       tls: this.tls ?? undefined,
       handlers: {
@@ -170,7 +182,15 @@ export class TcpTransport implements Transport {
         onError: (_sock, err) => this.log.warn('inbound socket error', err),
       },
     });
-    this.log.info(`cluster transport listening on ${this.self.host}:${this.self.port}`);
+    // Both addresses when they differ: one line that answers "what did it
+    // bind" and "what will peers dial", which are the two questions a node
+    // that binds a wildcard makes separable.
+    this.log.info(
+      this.bindHost === this.self.host
+        ? `cluster transport listening on ${this.self.host}:${this.self.port}`
+        : `cluster transport listening on ${this.bindHost}:${this.self.port}, `
+          + `advertising ${this.self.host}:${this.self.port}`,
+    );
   }
 
   async shutdown(): Promise<void> {

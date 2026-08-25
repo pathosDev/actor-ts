@@ -16,14 +16,18 @@ import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import {
+  ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
+  DEFAULT_ADVERTISED_HOST,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  advertisedHostWasDerived,
   isRemoteTlsRequested,
+  resolveAdvertisedHost,
   withClusterConfigDefaults,
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
@@ -257,16 +261,28 @@ export class Cluster {
     // One per `Cluster` instance is one per `Cluster.join`, which is the
     // granularity the identifier is *for* — two runs on the same `host:port`
     // are two incarnations.
+    // The advertised host, not the bound one: `selfAddress` is what goes into
+    // every gossip frame, heartbeat and member record as the address peers
+    // dial back, and a wildcard is not an address (#944).  `join` fills
+    // `advertisedHost` in before constructing, so the `??` is for the private
+    // constructor's other callers rather than a second policy.
     this.selfAddress = new NodeAddress(
-      system.name, options.host, options.port, NodeAddress.mintIncarnation(),
+      system.name,
+      options.advertisedHost ?? resolveAdvertisedHost(options),
+      options.port,
+      NodeAddress.mintIncarnation(),
     );
     this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
     // someone else's transport would be a surprise.
+    // `options.host` is the *bind* target and may be a wildcard; `selfAddress`
+    // is the identity the transport announces in its handshake and keys peers
+    // on.  Passing both is what lets a container bind every interface and
+    // still tell its peers a single address to dial back (#944).
     this.transport = options.transport
-      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes);
+      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes, options.host);
     // That `null` is the transport's TLS argument, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
@@ -339,8 +355,19 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions,
   ): Promise<Cluster> {
-    const resolvedOptions = withClusterConfigDefaults(system.config, options as ClusterOptionsType);
+    const merged = withClusterConfigDefaults(system.config, options as ClusterOptionsType);
+    // Resolved here rather than in the constructor, for two reasons: the
+    // validator has to see the address the node will actually advertise (a
+    // wildcard reaching `selfAddress` is the whole of #944), and this is the
+    // one place both entry points pass through — `bootstrapCluster` calls
+    // `join`, so deriving it here is what keeps the two from answering the
+    // question differently.
+    const resolvedOptions: ClusterOptionsType = {
+      ...merged,
+      advertisedHost: resolveAdvertisedHost(merged),
+    };
     new ClusterOptionsValidator().validate(resolvedOptions);
+    if (advertisedHostWasDerived(merged)) reportDerivedAdvertisedHost(system, resolvedOptions);
     const cluster = new Cluster(system, resolvedOptions);
     const extension = system.extension(ClusterExtensionId);
     const previous = extension.get();
@@ -1974,6 +2001,41 @@ export class Cluster {
       );
     }
   }
+}
+
+/**
+ * Say out loud that nothing named this node's advertised address, and what was
+ * used instead (#944).
+ *
+ * The failure this replaces was silent by construction: a node that gossiped a
+ * wildcard produced no error, no warning and a member map of one, and the only
+ * way to tell a cluster that had not converged *yet* from one that never would
+ * was to know this defect existed.  So the derivation announces itself, and
+ * the level splits on whether the answer can be dialled from another machine:
+ * a value from the environment is a working address and reads as information,
+ * where the loopback fallback means no peer off this host can reach this node
+ * — fine for a development run, a silent outage for anything else.
+ *
+ * Emitted from `join` rather than the constructor because only `join` holds
+ * both the options as written and the value derived from them; the constructor
+ * receives one field and cannot tell which it is.
+ */
+function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOptionsType): void {
+  const advertised = `${options.advertisedHost}:${options.port}`;
+  const looked = ADVERTISED_HOST_ENV_VARS.join(', ');
+  if (options.advertisedHost === DEFAULT_ADVERTISED_HOST) {
+    system.log.warn(
+      `cluster: nothing named this node's advertised address (no host, no advertisedHost, `
+      + `no ${looked}), so it will tell peers to dial ${advertised} — reachable from this `
+      + `machine only. Set ClusterOptions.withAdvertisedHost(...), ${ConfigKeys.remote.tcp.advertisedHost}, `
+      + 'or the CLUSTER_HOST / POD_IP env var before running more than one node.',
+    );
+    return;
+  }
+  system.log.info(
+    `cluster: binding ${options.host}:${options.port} and advertising ${advertised}, `
+    + `taken from the environment (${looked}) because the bind host is a wildcard.`,
+  );
 }
 
 /** Helper — creates an InMemoryTransport for tests. */

@@ -10,7 +10,18 @@ export {
   selfIsFullMember,
   transportReachesCluster,
 } from './ClusterHealthChecks.js';
-export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
+export {
+  ClusterOptions,
+  ClusterOptionsBuilder,
+  ClusterOptionsValidator,
+  // Declared beside the validator that refuses it, not in `bootstrap/` where
+  // it started: the advertised host is a `ClusterOptions` concept and the
+  // election is only its loudest consumer (#944).
+  isWildcardHost,
+  resolveAdvertisedHost,
+  ADVERTISED_HOST_ENV_VARS,
+  DEFAULT_ADVERTISED_HOST,
+} from './ClusterOptions.js';
 export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
 export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
@@ -25,7 +36,6 @@ export {
   StableObservationOptionsBuilder,
   StableObservationOptionsValidator,
   readStableObservationOptionsFromConfig,
-  isWildcardHost,
 } from './bootstrap/index.js';
 export type {
   JoinTargets,

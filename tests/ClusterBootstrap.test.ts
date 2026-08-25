@@ -56,6 +56,61 @@ describe('Cluster.bootstrap', () => {
     }
   });
 
+  test('binds the wildcard and advertises the host it was given (#944)', async () => {
+    // The Kubernetes shape: the pod does not know its address at start-up, so
+    // it binds every interface — but what it gossips has to be the one address
+    // peers can dial back, or every node advertises the same string and none
+    // of them ever sees another member.
+    const transport = new InMemoryTransport(new NodeAddress('bootstrap-split', '10.0.0.5', 50120));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-split')
+      .withHost('0.0.0.0')
+      .withAdvertisedHost('10.0.0.5')
+      .withPort(50120)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    const { cluster, shutdown } = await Cluster.bootstrap(clusterBootstrapOptions);
+    try {
+      expect(cluster.selfAddress.toString()).toBe('bootstrap-split@10.0.0.5:50120');
+    } finally {
+      await shutdown();
+    }
+  });
+
+  test('a bare wildcard bind host resolves to a dialable address, never a wildcard', async () => {
+    // What this used to do was carry `0.0.0.0` straight into `selfAddress`.
+    // Loopback is the last resort now: reachable from this machine only, which
+    // is honest about an unconfigured node instead of colliding with every
+    // other one.
+    const saved = ['CLUSTER_HOST', 'POD_IP', 'HOSTNAME']
+      .map((name) => [name, process.env[name]] as const);
+    for (const [name] of saved) delete process.env[name];
+    const transport = new InMemoryTransport(new NodeAddress('bootstrap-wild', '127.0.0.1', 50121));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-wild')
+      .withHost('0.0.0.0')
+      .withPort(50121)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    try {
+      const { cluster, shutdown } = await Cluster.bootstrap(clusterBootstrapOptions);
+      try {
+        expect(cluster.selfAddress.toString()).toBe('bootstrap-wild@127.0.0.1:50121');
+      } finally {
+        await shutdown();
+      }
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   test('starts the receptionist by default', async () => {
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-2', '127.0.0.1', 50101));
     const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-2')

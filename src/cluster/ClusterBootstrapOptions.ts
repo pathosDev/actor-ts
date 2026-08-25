@@ -15,6 +15,19 @@ import type { ProcessSignal } from '../util/ProcessSignal.js';
 export const DEFAULT_PORT = 2552;
 
 /**
+ * Built-in default for {@link ClusterBootstrapOptionsType.host} — the
+ * interface a node binds when neither the options nor the environment name
+ * one.
+ *
+ * A wildcard is the right answer for *binding*, and only for binding: a
+ * container accepts traffic on an address it does not know at start-up, so
+ * "every interface" is what it has to say.  What this value must never become
+ * is the node's identity — see
+ * {@link ClusterBootstrapOptionsType.advertisedHost} and #944.
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
+
+/**
  * Built-in timeout for {@link ClusterBootstrapOptionsType.awaitReady} when it
  * is `true` rather than a number of milliseconds — how long `bootstrap`
  * waits for the node to reach `up` before giving up.
@@ -50,13 +63,47 @@ export type ClusterBootstrapOptionsType = {
   /* ----------------------------- Cluster ------------------------------- */
 
   /**
-   * Bind host.  Default resolution order:
+   * The interface to bind — **and, unless {@link advertisedHost} says
+   * otherwise, the address this node gossips for peers to dial back.**
+   *
+   * That second half is the part worth reading twice.  The value does not stay
+   * a bind target: it becomes `selfAddress`, which travels in every gossip
+   * frame, every heartbeat and every member record, and which the
+   * stable-observation election orders on.  Naming one routable host here is
+   * the ordinary case and covers both jobs; naming a wildcard binds every
+   * interface and leaves the advertised address to be derived (#944).
+   *
+   * Resolution order for the bind host:
    *   1. `options.host`
-   *   2. `process.env.POD_IP` (Kubernetes)
-   *   3. `process.env.HOSTNAME`
-   *   4. `'0.0.0.0'`
+   *   2. `process.env.CLUSTER_HOST`
+   *   3. `process.env.POD_IP` (Kubernetes, via the downward API)
+   *   4. `process.env.HOSTNAME`
+   *   5. {@link DEFAULT_BIND_HOST}
+   *
+   * Two caveats on the environment stages, both of which cost a cluster when
+   * they are assumed away.  `POD_IP` exists only if the pod spec exports it —
+   * it is not automatic.  And `HOSTNAME` is a *shell* variable: Docker and
+   * Kubernetes put it in the environment, but a service started by systemd or
+   * a process manager on a plain host sees `process.env.HOSTNAME === undefined`.
+   * Even when present it is the pod name, which resolves under a StatefulSet
+   * with a headless service and nowhere else — under a Deployment it is a name
+   * no peer can dial.
    */
   readonly host?: string;
+
+  /**
+   * The address peers dial, when it differs from the bound interface (#944).
+   *
+   * The Kubernetes shape, and the reason the two are separate fields: bind
+   * `0.0.0.0` because the pod does not know its address, advertise `POD_IP`
+   * because that is the one the platform assigned. A wildcard is rejected
+   * here — an address meaning "every interface" identifies nothing, and every
+   * node that claimed it would claim the same string.
+   *
+   * Unset resolves through {@link host} (when that is not a wildcard), then
+   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.
+   */
+  readonly advertisedHost?: string;
 
   /**
    * Bind port.  Default: `process.env.CLUSTER_PORT` (when present and
@@ -207,9 +254,21 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
 
   /* ----------------------------- Cluster ------------------------------- */
 
-  /** Bind host.  Defaults resolve via `POD_IP` / `HOSTNAME` / `0.0.0.0`. */
+  /**
+   * The interface to bind — and, unless {@link withAdvertisedHost} overrides
+   * it, the address gossiped for peers to dial back.  Defaults resolve via
+   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` / `0.0.0.0`.
+   */
   withHost(host: string): this {
     return this.set('host', host);
+  }
+
+  /**
+   * The address peers dial, when it differs from the bound interface — bind
+   * `0.0.0.0`, advertise the pod IP.  A wildcard is rejected (#944).
+   */
+  withAdvertisedHost(advertisedHost: string): this {
+    return this.set('advertisedHost', advertisedHost);
   }
 
   /** Bind port.  Defaults to `CLUSTER_PORT` env or `2552`. */
@@ -281,6 +340,11 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
   }
   protected rules(s: Partial<ClusterBootstrapOptionsType>): void {
     this.nonEmptyString('name');
+    this.nonEmptyString('host');
+    // Only non-emptiness here; the wildcard rule lives on
+    // `ClusterOptionsValidator`, which every path reaches — including a direct
+    // `Cluster.join` that never sees these options at all (#944).
+    this.nonEmptyString('advertisedHost');
     // Positive integer (not the TCP 1..65535 range) — the bootstrap port may
     // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
     this.positiveInt('port');

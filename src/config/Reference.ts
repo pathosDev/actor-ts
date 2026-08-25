@@ -377,6 +377,22 @@ actor-ts {
   remote {
     # Bind address of this node.  Cluster.join reads these when its options
     # leave host/port unset, so a deployment can move the address into config.
+    #
+    # host is the interface to BIND, and the wildcard below is the right
+    # default for it.  It is not an identity: what peers dial is
+    # advertised-host, which falls back to host only when host is not a
+    # wildcard, then to CLUSTER_HOST / POD_IP / HOSTNAME, then to 127.0.0.1.
+    # advertised-host ships no value on purpose -- a key that is always
+    # present could not express "unset", and unset is what makes that
+    # fallback chain reachable.  Set it wherever the bound interface and the
+    # dialable address differ, which in Kubernetes is every pod:
+    #
+    #   advertised-host = \${?POD_IP}
+    #
+    # Leaving it at the wildcard in a multi-node deployment is the failure it
+    # exists to prevent: every node advertises the identical
+    # system@0.0.0.0:2552, each reads the others' announcements as claims
+    # about itself, and every member map ends up holding one entry.
     tcp {
       host = "0.0.0.0"
       port = 2552

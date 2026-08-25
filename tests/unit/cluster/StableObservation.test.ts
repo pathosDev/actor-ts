@@ -6,10 +6,10 @@ import {
   StableObservationError,
 } from '../../../src/cluster/bootstrap/StableObservation.js';
 import {
-  isWildcardHost,
   readStableObservationOptionsFromConfig,
   StableObservationOptions,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
+import { isWildcardHost } from '../../../src/cluster/ClusterOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { SeedProvider } from '../../../src/discovery/SeedProvider.js';
 

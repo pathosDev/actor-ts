@@ -1,3 +1,4 @@
+import { isWildcardHost } from '../ClusterOptions.js';
 import type { SelfElectionPolicy } from '../ClusterOptions.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import {
@@ -6,7 +7,6 @@ import {
   DEFAULT_REQUIRED_CONTACT_POINTS,
   DEFAULT_SELF_ELECTION_GRACE_MS,
   DEFAULT_STABLE_MARGIN_MS,
-  isWildcardHost,
   StableObservationOptionsValidator,
 } from './StableObservationOptions.js';
 import type {

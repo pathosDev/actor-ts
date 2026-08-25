@@ -3,6 +3,7 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SeedProvider } from '../../discovery/SeedProvider.js';
+import { isWildcardHost } from '../ClusterOptions.js';
 import type { NodeAddress } from '../NodeAddress.js';
 
 /** Poll cadence while waiting for the contact-point set to settle. */
@@ -178,25 +179,6 @@ export class StableObservationOptionsValidator
       );
     }
   }
-}
-
-/**
- * Whether a host is a bind wildcard rather than an identity.
- *
- * Deliberately not a general "is this routable" test: `localhost` and
- * `127.0.0.1` are perfectly good identities for several processes on one
- * machine, which is how the in-process suites form clusters.  What is refused
- * is only the set of spellings that mean *"every interface"* — those are the
- * ones every node resolves to the same string.
- */
-export function isWildcardHost(host: string): boolean {
-  const normalized = host.trim().replace(/^\[|\]$/g, '');
-  return normalized === ''
-    || normalized === '*'
-    || normalized === '0.0.0.0'
-    || normalized === '::'
-    || normalized === '::0'
-    || normalized === '0:0:0:0:0:0:0:0';
 }
 
 /**
