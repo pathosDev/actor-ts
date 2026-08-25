@@ -67,6 +67,39 @@ If you don't already use prom-client, prefer the framework's
 native [Prometheus exporter](/observability/metrics/prometheus-exporter/) —
 no extra dependency.
 
+## One registry, one reader
+
+The bridge keeps **no copy** of what it writes. prom-client holds
+the values, so `collect()` on the returned registry is empty —
+permanently, by design — and the registry says so by declaring
+`collectable: false`.
+
+That is fine for the path this adapter exists for: you read the
+metrics through `register.metrics()`, exactly as you read your own.
+It matters for anything in the framework that reads the *other*
+way, through `collect()`. There are two, and both refuse rather
+than report zero:
+
+- The management [`GET /metrics`](/observability/management/http-endpoints/#get-metrics)
+  route answers **`503`** while this bridge is installed, instead of
+  `200` with an empty body. An empty body is a valid Prometheus
+  scrape — the target stays `up=1` and the framework's series simply
+  stop existing, so alerts written over them never fire again.
+- The DevTools overview shows **`unavailable`** for the three
+  figures it reads from the registry — processed messages, mailbox
+  drops and handler latency. Everything else on that page comes
+  from the actor tree and the event stream and stays correct.
+
+So: don't enable `enableMetricsEndpoint` alongside this bridge —
+scrape your own prom-client route instead, which has all the same
+series. And read framework metrics in DevTools only on a system
+using the framework's own registry.
+
+Nothing about the *writes* is affected. Every framework counter,
+gauge and histogram is on your prom-client route, live, including
+`actor_mailbox_dropped_total` — the drop counter the DevTools tile
+cannot show you.
+
 ## Configuration
 
 ```ts

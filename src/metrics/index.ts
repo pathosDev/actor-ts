@@ -4,6 +4,7 @@ export {
   DEFAULT_HISTOGRAM_BUCKETS,
   METRICS_OVERFLOW_LABEL_VALUE,
   bucketize,
+  isCollectable,
 } from './Metrics.js';
 export {
   DEFAULT_MAX_SERIES_PER_FAMILY,

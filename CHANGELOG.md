@@ -436,6 +436,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A shard region refused for a `numShards` mismatch now releases the
+  shards it was already hosting (#633).** Refusing a registration only
+  stopped *new* placements, so a region accepted by one leader and refused by
+  its successor — what a rolling deploy that changes the count produces the
+  moment leadership reaches an already-updated node — kept the
+  `shardHomes`/`localShards` the first coordinator gave it, kept delivering
+  out of that cache, and could never be handed off, because the coordinator
+  only sends `HandOff` to a region it has registered. The split routing the
+  refusal exists to prevent therefore survived it. The refusal now stops each
+  hosted shard through the shard actor's own stop, so the entities beneath it
+  run `postStop` and a persistent one flushes rather than being dropped
+  mid-write, and drops the ownership in the same synchronous step.
+
+  A region's `Register` is also re-sent every 500 ms until the coordinator
+  acknowledges or refuses it. `Register` is fire-and-forget at a path that
+  need not exist yet — a node that joins and immediately takes leadership has
+  no coordinator behind that path until its own `sharding.start(...)` runs,
+  and the frame is dropped as an envelope with no handler. Nothing re-sent
+  it, because `ensureRegistered` runs off cluster events and the events for
+  that leadership move have already fired. The region then stayed silently
+  *unregistered*, which is worse than refused: no acknowledgment, no
+  refusal, and a new coordinator that never got the chance to say no to a
+  region still hosting shards.
+
+- **The testkit's multi-node broker validates a brokered frame before
+  dereferencing it (#701)**, the way the production worker broker has since
+  its own fix. `MultiNodeBroker.onMessage` took its argument as a
+  `BrokeredMessage` and read `env.to` straight into `NodeAddress.fromJSON`,
+  so one malformed frame from a worker threw inside `ParallelMultiNodeSpec`'s
+  own `message` listener — where nothing catches it — and failed the whole
+  test process rather than the scenario that sent it. `./testkit` is a
+  published entry point, so this was shipped code.
+
+  The frame guard now lives beside `BrokeredMessage` in
+  `MessageChannelTransport.ts` and is shared by both brokers instead of being
+  private to `WorkerBroker`: a security check copied into two files is how
+  the testkit fork kept the defect through the first fix. As a side effect of
+  the try/catch, a frame the harness forwards to a worker `crash()` has
+  already terminated is dropped instead of throwing `InvalidStateError` out
+  of `postMessage` — that failure used to be attributed to whichever test
+  happened to be running. `tests/unit/testkit/MultiNodeBroker.test.ts` is new
+  and gives that file its first coverage; it drives the broker through an
+  in-memory port shim, so unlike `ParallelMultiNodeSpec.test.ts` it runs in
+  CI rather than behind `ACTOR_TS_SKIP_FLAKY_MNS`.
+
 - **`reEncryptObjectStorage` no longer crashes when `sampleSize` exceeds
   the object count** (#1353). The pre-sweep keyring-completeness check
   clamped its sample to the corpus when it picked the default, and not
@@ -4756,6 +4801,91 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **`KubernetesLease` no longer memoises the Pod's ServiceAccount bearer
+  token for the process lifetime (#760).** A projected token is time-bound,
+  and the cached copy had no TTL, no re-read and no invalidation on an auth
+  failure: the first 401 fired `onLost`, `ClusterSingletonManager`
+  re-acquired on the same lease instance every 5 s, and every attempt
+  replayed the same dead token — so the singleton, or the shard coordinator,
+  stayed down until the pod was restarted. CWE-613.
+
+  The two credential sources are now distinguished by lifetime rather than
+  only by shape. An explicitly supplied `apiServerUrl` + `authToken` +
+  `caCert` triple is still cached for the process lifetime, because there is
+  nowhere to re-read it from. A credential read from the ServiceAccount mount
+  is reused for at most the new `tokenReloadIntervalMs` (default 60 s), after
+  which the token file's mtime decides between another interval on the same
+  bytes and a fresh read — so the steady state costs one `stat` per interval
+  per lease. On top of that, a 401 or 403 invalidates the cached credential:
+  the mount is re-read and the operation retried exactly once, across
+  acquire, renewal and release, before anything is reported as lease loss. An
+  explicitly supplied token is never retried that way, which is what bounds
+  the retry against a loop.
+
+  `KubernetesLeaseOptions` gains `withTokenReloadIntervalMs(...)` and a
+  `withCredentialLoader(...)` test seam; `K8sApi.ts` exports
+  `MountedCredentials` and `MountedCredentialLoader`, which makes the
+  in-cluster credential path drivable from a test for the first time. The
+  documentation claimed the kubelet-mounted token "works seamlessly" — the
+  exact inverse of the implementation, steering operators toward the path
+  that carried the defect — and now states the actual reload semantics in
+  both languages.
+
+- **`FilesystemObjectStorageBackend` now confines every operation with
+  `fs.realpath` rather than string comparison alone (#748).** A symlink
+  planted inside the storage root and pointing out of it is refused instead
+  of followed — at an intermediate key segment, at `<key>` itself on the read
+  path, or at the `<key>.meta.json` sidecar — by `put`, `get`, `delete` and a
+  prefixed `list`. A root that is itself a symlink keeps working: it is
+  canonicalised and containment measured against the result. The prefixed
+  `list` case became reachable only with #746, which moved the walk's start
+  from the root to the prefix's directory.
+
+  The metadata sidecar is written through a temp file and renamed into place,
+  like the object body: its name is fully deterministic and therefore
+  pre-plantable, and `writeFile`'s default `'w'` flag follows a link and
+  truncates its target. Not `{ flag: 'wx' }`, because `get` reads that exact
+  name back and a re-put must legitimately replace it.
+
+  The JSDoc claiming the old lexical check caught "URL-encoded traversal,
+  symlinks resolved at OS level" is corrected: it did neither —
+  `path.resolve` does not URL-decode and never touches the filesystem — and
+  it cannot fire at all today, because the key validator already excludes
+  every input that could make `path.join(dir, key)` escape. Two limits are
+  now written down rather than implied away: canonicalise-then-open narrows
+  the symlink race without closing it, since portable `O_NOFOLLOW` is not
+  reachable through `node:fs`; and the check confines the backend's own
+  operations rather than sandboxing a directory other local processes may
+  write to.
+
+- **The management `GET /metrics` route no longer answers `200` with a
+  zero-byte body when the installed `MetricsRegistry` cannot be read back
+  through `collect()` (#744)**, and the DevTools overview no longer reports
+  zeros for figures it could not read. Both happened with the
+  `promClientRegistry` bridge installed — the documented "one scrape
+  endpoint" wiring — because the bridge writes through to prom-client and
+  keeps no snapshot, so its `collect()` is permanently empty. A zero-byte
+  body is a *valid* empty Prometheus 0.0.4 scrape: the target stayed
+  `up=1`, no target error was raised, and every framework series silently
+  stopped existing, so threshold rules over them never fired again. On the
+  DevTools side a busy node reported 0 messages processed, 0 mailbox drops
+  and no handler latency — the framework's own overload signal reading zero
+  on the screen an operator diagnosing a slow consumer is looking at.
+
+  `MetricsRegistry` gains an optional `readonly collectable?: boolean`, with
+  `isCollectable(registry)` as the reader's question; absent means `true`, so
+  every existing implementation inside this repository and outside it keeps
+  its meaning untouched. The `/metrics` route answers `503` naming the
+  conflict, checked per request rather than while the route tree is built,
+  because `useRegistry` commonly installs the bridge after
+  `managementRoutes` has returned — `/health` and `/ready` are unaffected.
+  `NodeFigures` and the DevTools `stats` sample gain an optional
+  `metricsUnavailable`, which rides along from every peer and is carried by
+  the totals when any one node is blind. Two JSDoc blocks described
+  `collect()` as a snapshot translated back from prom-client; they were the
+  only API-level documentation of that method and promised the opposite of
+  the implementation.
 
 - **`ConsumerController`'s per-`producerId` deduplication map is now bounded
   (#728).** It previously kept one `{contiguous, above}` entry for every

@@ -1,6 +1,22 @@
 import { LeaseOptionsBuilder, LeaseOptionsValidator } from '../LeaseOptions.js';
 import type { LeaseOptionsType } from '../LeaseOptions.js';
-import type { K8sFetchClient } from './K8sApi.js';
+import type { K8sFetchClient, MountedCredentialLoader } from './K8sApi.js';
+
+/**
+ * How long a credential read from the Pod's ServiceAccount mount may be
+ * reused before the token file is checked again (#760).
+ *
+ * A minute bounds how long a credential that has quietly gone stale can go
+ * on being replayed, while staying long enough that a renewal loop ticking
+ * every few seconds does not turn every tick into a file read.  It is a
+ * floor on freshness rather than the mechanism: an actual 401/403
+ * invalidates the cache immediately, whatever this is set to.
+ *
+ * Deliberately not derived from `ttlMs`.  The two measure unrelated things,
+ * and tying them would make a lease with a generous TTL hold a bounded
+ * credential for longer than the credential is valid.
+ */
+export const DEFAULT_TOKEN_RELOAD_INTERVAL_MS = 60_000;
 
 /**
  * K8s-specific additions to the common lease options.  `apiServerUrl`,
@@ -9,8 +25,10 @@ import type { K8sFetchClient } from './K8sApi.js';
  * (`/var/run/secrets/kubernetes.io/...`) whole.  A partial set is
  * rejected by `KubernetesLeaseOptionsValidator` — see there for why.
  *
- * `client` is a test seam — pass a fake `K8sFetchClient` to drive the
- * lease without a real API server.
+ * `client` and `credentialLoader` are test seams — pass a fake
+ * `K8sFetchClient` to drive the lease without a real API server, and a fake
+ * `MountedCredentialLoader` to drive the in-cluster credential path without
+ * a Pod.
  */
 export interface KubernetesLeaseOptionsType extends LeaseOptionsType {
   /** Kubernetes namespace that owns the `coordination.k8s.io/v1/Lease` object. */
@@ -21,8 +39,18 @@ export interface KubernetesLeaseOptionsType extends LeaseOptionsType {
   readonly authToken?: string;
   /** PEM-encoded CA cert for the API server.  Requires `apiServerUrl` + `authToken`; omit all three for the in-cluster ServiceAccount. */
   readonly caCert?: string;
+  /**
+   * How long a credential read from the ServiceAccount mount may be reused
+   * before the token file is checked again, in ms.  Has no effect on an
+   * explicitly supplied `authToken`, which is static by construction —
+   * there is nowhere to re-read it from.  Defaults to
+   * {@link DEFAULT_TOKEN_RELOAD_INTERVAL_MS}.
+   */
+  readonly tokenReloadIntervalMs?: number;
   /** Test seam — inject a fake fetch client. */
   readonly client?: K8sFetchClient;
+  /** Test seam — inject a fake ServiceAccount-mount reader. */
+  readonly credentialLoader?: MountedCredentialLoader;
 }
 
 /**
@@ -63,9 +91,19 @@ export class KubernetesLeaseOptionsBuilder extends LeaseOptionsBuilder<Kubernete
     return this.set('caCert', caCert);
   }
 
+  /** How long a mounted-ServiceAccount credential may be reused before the token file is checked again, in ms. */
+  withTokenReloadIntervalMs(tokenReloadIntervalMs: number): this {
+    return this.set('tokenReloadIntervalMs', tokenReloadIntervalMs);
+  }
+
   /** Test seam — inject a fake fetch client. */
   withClient(client: K8sFetchClient): this {
     return this.set('client', client);
+  }
+
+  /** Test seam — inject a fake ServiceAccount-mount reader. */
+  withCredentialLoader(credentialLoader: MountedCredentialLoader): this {
+    return this.set('credentialLoader', credentialLoader);
   }
 }
 
@@ -82,6 +120,7 @@ export class KubernetesLeaseOptionsValidator extends LeaseOptionsValidator<Kuber
     this.nonEmptyString('namespace');
     this.nonEmptyString('authToken');
     this.nonEmptyString('caCert');
+    this.positiveNumber('tokenReloadIntervalMs');
     // `https` only: the client builds an `https.request` from the URL's
     // host and port and never reads its protocol, so an `http://` URL was
     // dialed over TLS anyway — a validator that accepted it only misled.

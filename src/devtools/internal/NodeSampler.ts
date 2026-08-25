@@ -9,6 +9,7 @@
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import { MetricsExtensionId } from '../../metrics/MetricsExtension.js';
+import { isCollectable } from '../../metrics/Metrics.js';
 import { ActorLifecycleEvent, ActorRestarted, ActorStarted, ActorStopped, DeadLetter } from '../../SystemMessages.js';
 import { match, P } from 'ts-pattern';
 import { TOP_MAILBOX_COUNT } from '../Constants.js';
@@ -48,6 +49,13 @@ export class NodeSampler {
     // reading is 0 until somebody switches metrics on.  Take that over
     // the way SpanTap takes over the tracer, and hand it back on stop so
     // a system that had metrics off gets them off again.
+    //
+    // Only the *noop* case is taken over.  A registry the operator
+    // installed stays, even one this sampler cannot read back: replacing a
+    // `promClientRegistry` bridge with our own would take the operator's
+    // own `/metrics` route down to fix a DevTools panel, which is a far
+    // worse trade than a panel that says the figures are unavailable —
+    // which is what `figures()` does instead (#744).
     const metrics = this.system.extension(MetricsExtensionId);
     if (!metrics.isEnabled()) {
       metrics.enable();
@@ -100,10 +108,16 @@ export class NodeSampler {
     }
     busiest.sort((a, b) => b.size - a.size);
 
-    const metrics = this.system.extension(MetricsExtensionId).get().collect();
+    // Asked per sample rather than once at `start()`: `useRegistry` can
+    // swap the registry at any point in the system's life, including long
+    // after DevTools attached, and the answer has to follow it.
+    const registry = this.system.extension(MetricsExtensionId).get();
+    const readable = isCollectable(registry);
+    const metrics = readable ? registry.collect() : [];
     const latency = handlerLatency(metrics, HANDLER_SECONDS);
     return {
       address,
+      ...(readable ? {} : { metricsUnavailable: true }),
       systemName: this.system.name,
       uptimeMs: Date.now() - this.system.startedAtMs,
       actorCount: tree.length,
