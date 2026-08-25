@@ -3,6 +3,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../src/Actor.js';
 import { AskResponseRef, Nobody } from '../../../../src/ActorRef.js';
+import { AskTimeoutError } from '../../../../src/SystemMessages.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
@@ -17,9 +18,23 @@ import {
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { BidirectionalMap } from '../../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../../src/util/BidirectionalMultiMap.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
+
+/** The per-path envelope-handler map `Cluster._registerEnvelopeHandler` writes to. */
+type ClusterInternals = { readonly _envelopeHandlersByPath: Map<string, unknown> };
+
+/**
+ * Read that map directly, the same reach-into-privates shape
+ * `tests/unit/devtools/ClusterFederation.test.ts` uses.
+ *
+ * The registration tests below it infer the entry's fate from the catch-all
+ * handler, which is a fair proxy but one hop removed.  #765 turns on the map
+ * itself not growing, so the #765 cases read the map.
+ */
+const envelopeHandlersOf = (cluster: Cluster): Map<string, unknown> =>
+  (cluster as unknown as ClusterInternals)._envelopeHandlersByPath;
 
 async function buildCluster(
   sysName: string,
@@ -204,6 +219,62 @@ describe('RefCodec — encodeRefs', () => {
         label: 'the late reply falls through to the catch-all',
       });
       expect(unrouted).toEqual(['late']);
+    });
+
+    // #765 — the whole cross-node half of that issue rests on `_onSettled`
+    // removing the entry, and until now nothing asserted on the map itself in
+    // either direction.  These three do: two settle paths that must clear it,
+    // and the one that cannot, which is why `ActorRef.ask` refuses a deadline
+    // it could not arm a timer for.
+    describe('teardown of the per-path registration (#765)', () => {
+      const encodeAskRef = (ref: AskResponseRef<string>): string =>
+        ((encodeRefs({ replyTo: ref }, cluster) as Record<string, unknown>).replyTo as WireActorRef).path;
+
+      test('a reply drops the entry', async () => {
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-cccccccccccc', 1_000, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        new RemoteActorRef<string>(cluster.selfAddress, path, cluster).tell('pong');
+        expect(await ref.promise).toBe('pong');
+        expect(handlers.has(path)).toBe(false);
+      });
+
+      test('an expiring deadline drops the entry too — the only other settle path', async () => {
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-dddddddddddd', 20, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        let caught: unknown = null;
+        try { await ref.promise; } catch (e) { caught = e; }
+        expect(caught).toBeInstanceOf(AskTimeoutError);
+        expect(handlers.has(path)).toBe(false);
+      });
+
+      test('a ref with no deadline keeps its entry — the leak ask() now refuses to create', async () => {
+        // Stated against the primitive because `ActorRef.ask` no longer lets a
+        // caller reach this state: a non-positive `timeoutMs` arms no timer, so
+        // nothing runs the teardown and the entry outlives the ask.  Keeping the
+        // negative case here is what makes the guard's reason legible from the
+        // cluster side rather than only from the unit suite.
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-eeeeeeeeeeee', 0, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        // The elapsed time IS the assertion, so this cannot become an
+        // `awaitCondition`: the claim is that the entry is still there after
+        // time has passed, and there is no TTL sweep whose tick could be
+        // polled for instead.
+        await sleep(60);
+        expect(handlers.has(path)).toBe(true);
+
+        // Settle it by hand — the ref is otherwise immortal, and so is its entry.
+        ref.tell('drain');
+        expect(handlers.has(path)).toBe(false);
+      });
     });
   });
 });

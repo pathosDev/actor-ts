@@ -137,6 +137,47 @@ jede spätere Antwort still an Ort und Stelle verworfen (sie geht nicht
 in die Dead Letters).  Der Actor selbst ist nicht betroffen — er hat
 keine Ahnung, dass der Asker aufgegeben hat.
 
+### Es gibt keinen „ohne Deadline"-Modus
+
+`timeoutMs` muss eine **positive endliche Zahl** sein.  `0`, ein
+negativer Wert, `NaN` und `Infinity` werfen alle einen `OptionsError`
+an der Aufrufstelle, und zwar synchron — bevor die Nachricht
+verschickt wird, und als geworfener Fehler statt als rejectetes
+Promise, denn ein Argument außerhalb seines Wertebereichs ist ein
+Fehler im Aufrufer und kein fehlgeschlagener Request.
+
+```ts
+import { OptionsError } from 'actor-ts';
+
+const budget = deadline - Date.now();   // negative once the deadline passed
+try {
+  await counter.ask({ kind: 'get' }, budget);
+} catch (e) {
+  if (e instanceof OptionsError) {
+    // budget was <= 0 — the deadline is already gone, don't ask at all
+  }
+}
+```
+
+Das ist strenger, als es auf den ersten Blick wirkt, und das mit
+Absicht.  Der Timeout ist das, was den einzigen Selbstabschluss-Pfad
+der Reply-Ref scharf stellt: eine Ref ohne Timer kann nur noch durch
+eine Antwort abgeschlossen werden und sonst durch nichts — ein
+unbeantworteter Ask würde das `await` also für die Lebensdauer des
+Prozesses hängen lassen und im Cluster zusätzlich einen Eintrag in
+der Per-Path-Handler-Map hinterlassen, gegen die jedes eingehende
+Envelope geprüft wird.  Keiner der beiden Werte braucht einen
+Tippfehler, um dort anzukommen: ein berechnetes Budget wird negativ,
+sobald seine Deadline verstrichen ist, und ein untypisierter
+Konfigurationswert kommt so an, wie er geparst wurde.
+
+Für den 5-Sekunden-Default **lässt du das Argument weg** (oder
+übergibst `undefined`) — der Parameter-Default greift weiterhin:
+
+```ts
+const value = await counter.ask<number>({ kind: 'get' });
+```
+
 ## Mit einem Error antworten
 
 import { Aside } from '@astrojs/starlight/components';

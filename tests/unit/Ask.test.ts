@@ -4,6 +4,7 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { AskTimeoutError } from '../../src/SystemMessages.js';
+import { OptionsError } from '../../src/util/OptionsValidator.js';
 import { sleep } from '../util/AwaitCondition.js';
 
 const newSystem = (name = 'ask-unit'): ActorSystem => {
@@ -82,14 +83,76 @@ describe('ref.ask()', () => {
     await sys.terminate();
   });
 
-  test('timeout 0 means effectively disabled (resolves normally)', async () => {
+  // Replaces `test('timeout 0 means effectively disabled (resolves normally)')`,
+  // which asserted that `ask('hi', 0)` against an *Echo* actor resolves — the
+  // one case in which a missing deadline costs nothing, because the reply
+  // settles the ref.  #765 is the other case: with no timer armed and no reply
+  // the ref never settles at all, so the caller's `await` never returns and a
+  // cross-node ask leaves a permanent entry in `Cluster._envelopeHandlersByPath`
+  // that `dispatchEnvelope` consults on every inbound envelope.  Nothing can
+  // settle such a ref by hand — `ask` hands back the promise, not the ref — so
+  // 0 is now refused rather than reinterpreted, and the deadline the docs call
+  // "mandatory in spirit" is mandatory in fact.
+  test('a deadline that would arm no timer is refused, not left to hang forever (#765)', async () => {
+    class Silent extends Actor<string> { override onReceive(_: string): void {} }
+    const sys = newSystem();
+    const ref = sys.spawn(Silent, 'silent-no-timer');
+
+    // 0, a negative and NaN all fail `if (timeoutMs > 0)` in AskResponseRef, so
+    // without the guard each of these asks stays pending for ever.  The race
+    // bounds that observation: with the guard the throw happens before the race
+    // is even constructed, so `outcome` never moves off its initial value.
+    for (const badTimeout of [0, -1, Number.NaN]) {
+      let caught: unknown = null;
+      let outcome = 'ask was refused before it started';
+      try {
+        outcome = await Promise.race([
+          ref.ask<string>('hi', badTimeout).then(() => 'settled', () => 'settled'),
+          // The elapsed time IS the assertion, so this cannot become an
+          // `awaitCondition`: a ref that armed no timer settles on nothing, and
+          // an absence has no state to poll.  Only letting time pass separates
+          // "never going to settle" from "has not settled yet".
+          sleep(120).then(() => 'still pending — the ref armed no timer'),
+        ]);
+      } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('timeoutMs');
+      expect(outcome).toBe('ask was refused before it started');
+    }
+    await sys.terminate();
+  });
+
+  test('a non-finite deadline is refused (#765)', async () => {
+    class Silent extends Actor<string> { override onReceive(_: string): void {} }
+    const sys = newSystem();
+    const ref = sys.spawn(Silent, 'silent-non-finite');
+    for (const badTimeout of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      let caught: unknown = null;
+      try {
+        // The `.catch` is for the un-guarded tree, not this one: `Infinity`
+        // passes `> 0` and reaches `setTimeout`, where an out-of-range delay is
+        // clamped to a millisecond — so an "infinite" ask would reject almost
+        // at once.  Swallowing it keeps a failure here a failed assertion
+        // rather than an unhandled rejection somewhere else in the run.
+        void ref.ask<string>('hi', badTimeout).catch(() => undefined);
+      } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('timeoutMs');
+    }
+    await sys.terminate();
+  });
+
+  test('an omitted deadline still falls through to the default', async () => {
     class Echo extends Actor<string> {
       override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(m)); }
     }
     const sys = newSystem();
     const ref = sys.spawn(Echo, 'e');
-    const reply = await ref.ask<string>('hi', 0);
-    expect(reply).toBe('hi');
+    // The guard must not swallow the parameter default: `undefined` is what
+    // reaches it when the argument is omitted, and that has to keep resolving
+    // to DEFAULT_ASK_TIMEOUT_MS rather than tripping the new check.
+    expect(await ref.ask<string>('hi')).toBe('hi');
+    expect(await ref.ask<string>('hi', undefined)).toBe('hi');
     await sys.terminate();
   });
 
