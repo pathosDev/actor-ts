@@ -188,7 +188,9 @@ Watch:
   per actor — the two metrics deliberately differ here, because a
   depth series only exists for an actor already in trouble while a
   drop series would exist for every actor doing its job.  Use an
-  `onDrop` of your own if you need per-instance drop counts.
+  `onDrop` of your own if you need per-instance drop counts; it
+  receives the discarded envelope as well as the reason, so it can
+  say *what* was lost and not only how much.
 - **`MailboxFullError` rate** at the sender — usually surfaces
   as supervisor restarts of the sending actor.
 
@@ -202,6 +204,52 @@ alert on if you run no metrics stack.
   `withMailbox` alike — the cell registers its observer on whatever
   implements `DropReportingMailbox`.  A `BoundedMailboxOptions.onDrop` of
   your own keeps firing alongside it.
+</Aside>
+
+## Keeping what you dropped
+
+A counter says how much was shed.  It does not say what: a dropped
+telemetry sample and a dropped command with an unsettled callback are the
+same increment.  `deadLetterDrops` closes that gap by routing each
+discarded envelope to
+[dead letters](/operations/dead-letters/), where it keeps its payload and
+its sender:
+
+```ts
+import { ActorOptions, BoundedMailbox, BoundedMailboxOptions } from 'actor-ts';
+
+const commandMailbox = BoundedMailboxOptions.create()
+  .withCapacity(1_000)
+  .withOverflow('drop-new')
+  .withDeadLetterDrops(true);
+
+const commandOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox(commandMailbox));
+```
+
+`PriorityMailboxOptions` has the same switch, and there it is worth the
+cost more often: a message this mailbox sheds is one your priority function
+ranked last, and only the payload can confirm that was the right call.
+
+**Off by default, and the default is not timidity.**  A drop happens on the
+**sender's** stack, and a dead letter is a durable capture followed by a
+synchronous publish to every event-stream subscriber — so an always-on
+version would turn load shedding into per-message work at precisely the
+moment the bound exists to make things cheaper.  The rule of thumb: turn it
+on where you would have to explain the loss afterwards, leave it off for
+the firehose you bounded on purpose.
+
+Two things it does not change.  It reaches only mailboxes you construct
+yourself — `withMailboxCapacity` has no door onto it — and the letter
+carries the message, the sender and the recipient, the same three fields
+every other loss path in the framework records.  The MDC context and the
+tracing span travelling on the envelope are not among them.
+
+<Aside type="caution" title="An undroppable message never becomes a letter">
+  A death-watch `Terminated`, and the command that spawns a WebSocket
+  connection's actor, are exempt from every overflow policy — so they are
+  never dropped, and therefore never dead-lettered either.  Their absence
+  from the dead-letter queue means they arrived, not that they vanished.
 </Aside>
 
 ## The three overflow policies, compared

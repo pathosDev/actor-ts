@@ -265,12 +265,38 @@ Preis einer verlorenen Nachricht pro Serie. An welchen Actor ein Letter
 adressiert war, wird dort beantwortet, wo es nichts pro Serie kostet:
 `list({ recipient })` oben und das `DeadLetter` auf dem Event-Stream.
 
-## Was die Queue nicht sieht
+## Was die Queue nur auf Anforderung sieht
 
 Eine Nachricht, die eine **Bounded- oder Priority-Mailbox** verwirft, wird
-überhaupt nie zu einem Dead Letter. Die Drop-Meldung der Mailbox trägt einen
-*Grund* (`drop-head` / `drop-new`) und niemals den Envelope, es gibt also
-nichts zu erfassen — der Überlauf taucht in `actor_mailbox_dropped_total`
-auf und sonst nirgends. Siehe
-[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/), falls das der
-Verlust ist, dem du nachgehst.
+genau dann zu einem Dead Letter, wenn diese Mailbox mit `deadLetterDrops`
+gebaut wurde — und nur dann:
+
+```ts
+import { ActorOptions, BoundedMailbox, BoundedMailboxOptions } from 'actor-ts';
+
+const sheddingMailbox = BoundedMailboxOptions.create()
+  .withCapacity(1_000)
+  .withOverflow('drop-head')
+  .withDeadLetterDrops(true);
+
+const workerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox(sheddingMailbox));
+```
+
+Bleibt der Schalter aus — das ist die Voreinstellung —, taucht der Überlauf
+in `actor_mailbox_dropped_total` auf und hier nirgends.
+
+Der Schalter existiert, weil ein Drop auf dem Stack des **Senders**
+passiert und ein Dead Letter eine dauerhafte Erfassung mit anschließender
+synchroner Veröffentlichung ist: Jeden abgeworfenen Envelope dorthin zu
+leiten macht aus Load Shedding Arbeit pro Nachricht — und zwar genau unter
+dem Druck, den die Schranke abfedern sollte. Schalte ihn für die Actors
+ein, deren Verluste du hinterher erklären müsstest — ein Command-Stream,
+eine Zustellbestätigung — und lass ihn für den Telemetrie-Feuerwehrschlauch
+aus, für den die Schranke gedacht ist. Siehe
+[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/).
+
+Der Letter trägt die Nachricht, ihren Sender und den Actor, den sie nie
+erreicht hat — dieselben drei Felder, die jeder andere Verlustpfad
+festhält. Der MDC-Kontext des Envelopes und sein Tracing-Span überleben ihn
+nicht; `DeadLetter` hat für beides keinen Platz.
