@@ -28,6 +28,14 @@ mTLS ist das, was die letzte Zeile überhaupt trägt, und nicht etwas,
 das sie doppelt: eine Behauptung gegen den Peer der Verbindung zu
 halten, ist erst dann etwas wert, wenn dieser Peer authentifiziert ist.
 
+Diese Zeile gilt auch für das In-Process-[Worker-Mesh](/de/cluster/worker-mesh/)
+— den einzigen Pfad, auf dem sie früher nicht hielt: Der `WorkerBroker`
+adressiert jeden Frame auf den `MessagePort` um, über den er hereinkam,
+ein Worker kann also nicht die Adresse eines Geschwisters in `from`
+schreiben. Dafür ist nichts zu konfigurieren, und kein mTLS trägt es —
+der Host vergibt jedem Worker seine Adresse und hält dessen Port, die
+Bindung ist also strukturell statt authentifiziert.
+
 ## TLS aktivieren
 
 ```ts

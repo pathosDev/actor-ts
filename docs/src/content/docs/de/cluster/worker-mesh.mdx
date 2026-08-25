@@ -331,6 +331,34 @@ ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
 validiert der empfangende Transport, nicht der Broker.
 
+## Absender-Identität
+
+Der Broker **adressiert jeden Frame auf den Port um, über den er
+hereinkam**. Das `from` eines Frames ist die Adresse, unter der dieser
+Port registriert wurde — nicht die Adresse, die der sendende Worker
+hineingeschrieben hat:
+
+```ts
+// Worker 1 sendet einen Frame und behauptet, Worker 2 zu sein …
+port1.postMessage({ from: worker2.toJSON(), to: worker3.toJSON(), payload });
+
+// … und der Transport von Worker 3 meldet trotzdem Worker 1 als Absender.
+```
+
+Diese Adressen vergibt der Host — `WorkerCluster` erzeugt eine pro
+Slot, und bei manueller Verdrahtung übergibst du eine an
+`broker.register` —, die Peer-Identität eines empfangenden Nodes
+stammt also aus dem Channel und nicht aus dem Payload. Diese Identität
+ist es, die sein Failure-Detector gutschreibt, als Absender eines
+Envelopes gilt und auf die jede Regel nach dem Muster „darf dieser
+Peer das sagen?" schlüsselt. Ohne die Korrektur könnte ein Worker
+also ein totes Geschwister lebendig erscheinen lassen und seine
+eigenen Nachrichten diesem Geschwister zuschreiben lassen.
+
+Korrigiert wird nur der Slot `system@host:port`. Die optionale
+`incarnation`, die eine Adresse tragen kann, wird unverändert
+durchgereicht, weil im Cluster noch nichts auf sie schlüsselt.
+
 ## Wann NICHT verwenden
 
 <Aside type="caution" title="Wenn Multi-Process funktioniert, nutze es">

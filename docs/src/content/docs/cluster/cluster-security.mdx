@@ -27,6 +27,14 @@ mTLS is what makes the last row work rather than something it
 duplicates: holding a claim against the connection's peer is only
 worth anything once the peer is authenticated.
 
+That row covers the in-process [worker mesh](/cluster/worker-mesh/)
+too, which used to be the one path where it did not hold: `WorkerBroker`
+re-addresses every frame to the `MessagePort` it arrived on, so a
+worker cannot write a sibling's address into `from`.  Nothing has to be
+configured for it, and no mTLS underwrites it — the host assigns each
+worker's address and holds its port, so the binding is structural
+rather than authenticated.
+
 ## Enabling TLS
 
 ```ts
