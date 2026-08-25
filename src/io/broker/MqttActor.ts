@@ -118,7 +118,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     );
   }
 
-  /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
+  /**
+   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   *
+   * A `Terminated` from a `context.watch` of your own no longer arrives here —
+   * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
     this.log.warn(`MqttActor: unhandled self message: ${String(message)}`);
   }
@@ -196,13 +201,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(command: MqttActorMessage<T, TSelf>): void | Promise<void> {
-    // Terminated is delivered through onReceive (ActorCell) but isn't part
-    // of the typed mailbox union — narrow via a guard.
-    if (isTerminated(command)) {
-      this.removeTerminatedTarget(command.actor);
-      return;
-    }
+  protected override onCommand(command: MqttActorMessage<T, TSelf>): void | Promise<void> {
     // Uniform `kind` dispatch over internal signals + external commands.
     //
     // Matched against the envelope union rather than the mailbox type: `TSelf`
@@ -316,6 +315,14 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       this.registry.delete(topic);
       this.brokerUnsubscribe(topic);
     }
+  }
+
+  /**
+   * The base class prunes what {@link subscribeRef} registered; this actor keeps
+   * its own per-pattern target registry, so it still has to hear about a death.
+   */
+  protected override onTerminated(signal: Terminated): void {
+    this.removeTerminatedTarget(signal.actor);
   }
 
   private removeTerminatedTarget(ref: ActorRef): void {
@@ -515,13 +522,6 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       });
     });
   }
-}
-
-/* --------------------------- helpers ---------------------------- */
-
-/** Terminated arrives via onReceive but isn't in the typed mailbox union. */
-function isTerminated(message: unknown): message is Terminated {
-  return message instanceof Terminated;
 }
 
 /* --------------------------- MQTT 5.0 helpers -------------------------- */

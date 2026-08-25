@@ -201,7 +201,7 @@ export class TcpServerActor
 
   /* ------------------------------ outbound ------------------------------ */
 
-  override onReceive(command: TcpServerCommand): void {
+  protected override onCommand(command: TcpServerCommand): void {
     // Both commands act on a connection the listener owns, so both go through
     // the outbound path: that is what keeps a `send` followed by a `close`
     // from being reordered, and what answers either one with

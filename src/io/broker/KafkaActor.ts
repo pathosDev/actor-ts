@@ -373,7 +373,7 @@ export class KafkaActor
     });
   }
 
-  override onReceive(command: KafkaCommand): void {
+  protected override onCommand(command: KafkaCommand): void {
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(command)

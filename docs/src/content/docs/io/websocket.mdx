@@ -126,6 +126,11 @@ rest are optional overrides:
 | `onDisconnected(cause?: Error)` | The connection dropped; `cause` is set on error-driven drops. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | A frame failed to decode (only when `onInvalidMessage: 'hook'`). |
 | `onSelfMessage(message: TSelf)` | Handle the optional third type parameter — messages the actor sends to itself. |
+| `onTerminated(signal: Terminated)` | An actor you `context.watch`ed stopped.  Inherited from `BrokerActor`. |
+
+`onReceive` and `onCommand` are **sealed** — the base classes dispatch to
+the hooks above; do not override them.  A `Terminated` from a watch of your
+own arrives at `onTerminated`, not at `onSelfMessage`.
 
 ## Codecs
 

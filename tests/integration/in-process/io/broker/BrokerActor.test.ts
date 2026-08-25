@@ -23,11 +23,6 @@ import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../../src/Scheduler.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-/** `Terminated` arrives via `onReceive` but is not in the typed command union. */
-function isTerminated(message: unknown): message is Terminated {
-  return message instanceof Terminated;
-}
-
 /**
  * The window in which one *too many* of something shows up.
  *
@@ -175,8 +170,14 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   publicForget(key: string): Promise<void> { return this.forgetSubscription(key); }
   publicDesiredCount(): number { return this.desiredSubscriptionCount; }
 
-  /** How many `Terminated` messages actually removed a subscriber (#1111). */
-  terminatedPrunes = 0;
+  /**
+   * How many `Terminated` signals the sealed dispatch handed on (#1111, #709).
+   *
+   * The prune itself is the base class's now, and it runs *before* the hook —
+   * so this counts deaths the subclass was told about, and a poll on it is a
+   * barrier for a prune that has already happened.
+   */
+  terminatedSignals = 0;
 
   /**
    * Counted *after* `super.postStop()` resolves, so a test can wait on the
@@ -209,15 +210,12 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
     this.firstConnectSettled = true;
   }
 
-  override onReceive(command: FakeCommand): void {
-    // Exactly the seam `subscribeRef`'s docs prescribe: the base class cannot
-    // route `Terminated` itself, because `onReceive` is abstract and every
-    // subclass owns its own dispatch.
-    if (isTerminated(command)) {
-      if (this.pruneTerminatedSubscriber(command.actor)) this.terminatedPrunes++;
-      return;
-    }
-    /* otherwise a no-op — the tests drive this actor directly */
+  protected override onCommand(_command: FakeCommand): void {
+    /* a no-op — the tests drive this actor directly */
+  }
+
+  protected override onTerminated(_signal: Terminated): void {
+    this.terminatedSignals++;
   }
 }
 
@@ -1076,7 +1074,9 @@ describe('BrokerActor — subscribers', () => {
     // `subscribeRef` watches the ref and its JSDoc promised the removal.
     // Nothing implemented it: the reverse index existed for a `Terminated`
     // handler that did not exist, so a stopped subscriber stayed in every
-    // topic and kept costing a dead-lettered `tell` on each fan-out.
+    // topic and kept costing a dead-lettered `tell` on each fan-out.  The
+    // handler is the base class's now (#709) — this subclass only counts the
+    // signal it is handed afterwards.
     const sys = makeSystem('sub-terminated');
     const doomed = new ProbeActor();
     const doomedRef = sys.spawnAnonymous(() => doomed as unknown as Actor<unknown>);
@@ -1092,7 +1092,7 @@ describe('BrokerActor — subscribers', () => {
     expect(broker.publicSubscriberCount('a')).toBe(2);
 
     doomedRef.stop();
-    await awaitCondition(() => broker.terminatedPrunes === 1, {
+    await awaitCondition(() => broker.terminatedSignals === 1, {
       timeoutMs: 4_000, intervalMs: 25, label: 'the broker processed Terminated for the stopped subscriber',
     });
 
@@ -1279,7 +1279,7 @@ describe('BrokerActor — stop during an in-flight reconnect (#708)', () => {
   });
 });
 
-/* ------------------ The documented Terminated arm (#709) ---------------- */
+/* ---------------- The documented subclass recipe (#709) ----------------- */
 
 type SubscribeTopicCommand = {
   readonly kind: 'subscribe';
@@ -1294,19 +1294,16 @@ type FanOutCommand = {
 type RecipeCommand = SubscribeTopicCommand | FanOutCommand;
 
 /**
- * A `BrokerActor` written exactly the way `subscribeRef`'s docs prescribe: the
- * `Terminated` arm lives *inside* the matcher and delegates to a private
- * `onTerminated`, and it is the **match input** — not the parameter, which
- * `Actor<Command>` fixes — that is widened to admit the signal.
+ * A `BrokerActor` written exactly the way the docs prescribe: a `match(command)
+ * … .exhaustive()` over the subclass's **own** command union, and nothing else.
  *
- * The point of compiling it here is that the widening is what makes the arm
- * mandatory: drop the `.with(P.instanceOf(Terminated), …)` line and
- * `.exhaustive()` stops compiling with `NonExhaustiveError<Terminated>`, so
- * the omission #709 is titled after becomes a build failure instead of a
- * `NonExhaustiveError` thrown at the first subscriber death.  `P.instanceOf`
- * does *not* typecheck against an un-widened union, so a recipe that drops
- * the type argument does not compile either — `typecheck:dev` is therefore
- * the thing keeping the published recipe honest.
+ * That plain form is what #709 is titled after — it used to throw
+ * `NonExhaustiveError` on the first subscriber death, and the published recipe
+ * had to widen the match input and carry a `P.instanceOf(Terminated)` arm to
+ * stay upright.  `onReceive` is the base class's now, so the widening is gone
+ * and the union is back to what the protocol actually is.  Compiling this here
+ * is the assertion that it *stays* gone: re-introduce `Terminated` into the
+ * mailbox and `.exhaustive()` would be the thing that stops compiling.
  *
  * Counters are **static** on purpose: a restart replaces the instance, so an
  * instance field could not tell "never restarted" from "restarted and the
@@ -1328,16 +1325,15 @@ class RecipeBroker extends BrokerActor<FakeOptions, RecipeCommand, string, strin
   protected async disconnectImplementation(): Promise<void> { /* nothing to close */ }
   protected async dispatchOutgoing(): Promise<void> { /* never sends */ }
 
-  override onReceive(command: RecipeCommand): void {
-    match<RecipeCommand | Terminated>(command)
-      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
+  protected override onCommand(command: RecipeCommand): void {
+    match(command)
       .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'fan-out' }, (m) => this.onFanOut(m))
       .exhaustive();
   }
 
-  private onTerminated(signal: Terminated): void {
-    if (this.pruneTerminatedSubscriber(signal.actor)) RecipeBroker.prunes++;
+  protected override onTerminated(_signal: Terminated): void {
+    RecipeBroker.prunes++;
   }
 
   private onSubscribe(command: SubscribeTopicCommand): void {
@@ -1352,15 +1348,16 @@ class RecipeBroker extends BrokerActor<FakeOptions, RecipeCommand, string, strin
   publicConnectionState(): string { return this.connectionState; }
 }
 
-describe('BrokerActor — the documented Terminated arm (#709)', () => {
+describe('BrokerActor — the documented subclass recipe (#709)', () => {
   test('a subscriber death prunes the topic and leaves the bridge running', async () => {
     // The prune half is covered for a subclass that keeps its own counter
     // (#1111).  What was never asserted is the *availability* half this issue
     // is titled after: that handling `Terminated` costs no restart, i.e. no
-    // broker reconnect.  A subclass that omits the arm fails `.exhaustive()`,
-    // the default supervisor restarts it, `preRestart` → `postStop` tears the
-    // transport down, and `postRestart` → `preStart` reconnects — eleven
-    // subscriber deaths inside a minute then stop the bridge for good.
+    // broker reconnect.  Before the seal, a subclass whose matcher had no
+    // `Terminated` arm failed `.exhaustive()`, the default supervisor restarted
+    // it, `preRestart` → `postStop` tore the transport down, and `postRestart`
+    // → `preStart` reconnected — eleven subscriber deaths inside a minute then
+    // stopped the bridge for good.  This broker has no such arm, deliberately.
     RecipeBroker.connects = 0;
     RecipeBroker.prunes = 0;
     const sys = makeSystem('recipe-terminated');
@@ -1387,7 +1384,7 @@ describe('BrokerActor — the documented Terminated arm (#709)', () => {
 
     doomedRef.stop();
     await awaitCondition(() => RecipeBroker.prunes === 1, {
-      label: 'the matcher routed Terminated into onTerminated',
+      label: 'the sealed dispatch routed Terminated into onTerminated',
     });
 
     expect(broker.publicSubscriberCount('a')).toBe(1);

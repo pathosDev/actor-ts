@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
 import { CoordinatedShutdownId, Phases } from '../../CoordinatedShutdown.js';
+import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { OptionsValidator } from '../../util/OptionsValidator.js';
@@ -49,9 +50,13 @@ export type OutboundEnvelope<P = unknown> = {
  * Base class for actors that bridge external messaging systems
  * (MQTT, WebSocket, Kafka, …) into the actor system.  Subclasses
  * implement three protocol hooks (`connectImplementation`, `disconnectImplementation`,
- * `dispatchOutgoing`); the base class owns the lifecycle, reconnect-
- * backoff, outbound buffer, subscriber fan-out, and lifecycle-event
+ * `dispatchOutgoing`) plus `onCommand`; the base class owns the lifecycle,
+ * reconnect-backoff, outbound buffer, subscriber fan-out, and lifecycle-event
  * publishing.
+ *
+ * **`onReceive` is sealed here** — a subclass implements {@link onCommand}
+ * instead, and gets `Terminated` interception for free.  See {@link onReceive}
+ * for what that buys and why the rename was worth a breaking change.
  *
  * **Options precedence (highest first):**
  *   1. Constructor argument (per-instance overrides).
@@ -240,6 +245,66 @@ export abstract class BrokerActor<
    * and triggers a reconnect cycle.
    */
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  /* --------------------------- Sealed dispatch ---------------------------- */
+
+  /**
+   * @internal Sealed — implement {@link onCommand} instead.
+   *
+   * {@link subscribeRef} death-watches its subscribers, and `ActorCell` delivers
+   * the resulting `Terminated` straight into `onReceive`.  For as long as that
+   * method belonged to the subclass, the signal landed in a dispatch table
+   * written for commands: the documented `match(…).exhaustive()` recipe threw
+   * `NonExhaustiveError`, the default supervisor restarted the actor,
+   * `preRestart` → `postStop` tore the transport down, and eleven subscriber
+   * deaths inside a minute stopped the bridge for good.  A subclass using
+   * `.otherwise()` survived and leaked instead — the dead ref stayed in every
+   * topic it held and was told on each fan-out, one dead letter per inbound
+   * message (#709).
+   *
+   * Sealing makes the correct handling unconditional instead of something every
+   * subclass, in this repository and outside it, has to remember.  It does not
+   * take the dispatch table away: the table moves to {@link onCommand} unchanged
+   * and gets *narrower*, because `Terminated` is no longer something a command
+   * union has to admit.
+   *
+   * An `if` rather than a `match`: `Command` is an open type parameter, and
+   * ts-pattern cannot build a `Pattern<>` for a union that still contains one.
+   */
+  override onReceive(message: Command | Terminated): void | Promise<void> {
+    if (message instanceof Terminated) return this.onTerminatedSignal(message);
+    return this.onCommand(message as Command);
+  }
+
+  /**
+   * Prune first, then pass the signal on.  A subclass that watches refs of its
+   * own — `MqttActor` watches per-pattern delivery targets — still has to see
+   * the death, and pruning first means {@link onTerminated} observes a registry
+   * that has already forgotten the dead subscriber rather than one mid-update.
+   */
+  private onTerminatedSignal(signal: Terminated): void | Promise<void> {
+    this.pruneTerminatedSubscriber(signal.actor);
+    return this.onTerminated(signal);
+  }
+
+  /**
+   * Subclass: handle one command from the mailbox.  This is the hook `onReceive`
+   * used to be; the base class owns `onReceive` now (see there for why).
+   *
+   * `Terminated` never reaches it, so a `match(command).…exhaustive()` over the
+   * subclass's own command union is exactly right — which is what makes the
+   * seal worth its breaking rename.
+   */
+  protected abstract onCommand(command: Command): void | Promise<void>;
+
+  /**
+   * A watched actor stopped.  Everything {@link subscribeRef} registered for it
+   * is already gone by the time this runs, so override it only for watches the
+   * subclass installed itself.  Default: no-op.
+   */
+  protected onTerminated(_signal: Terminated): void | Promise<void> {
+    /* subclasses with their own `context.watch` calls override this */
+  }
 
   /* ------------------------------ Liveness -------------------------------- */
 
@@ -454,45 +519,19 @@ export abstract class BrokerActor<
    * Subscribe `ref` to `topic`, and start watching it if this is its first
    * subscription.
    *
-   * **The subclass has to route `Terminated` into
-   * {@link pruneTerminatedSubscriber} for the watch to mean anything.**  This
-   * doc used to claim the removal was automatic, and it was not: `onReceive`
-   * is abstract, so the base class never sees a message, and a stopped
-   * subscriber stayed in every topic it held — still told on each fan-out,
-   * into dead letters (#1111).  Sealing `onReceive` here would take the
-   * dispatch table away from all fourteen subclasses for the sake of one
-   * hook, so the seam is explicit instead:
-   *
-   * ```ts
-   * override onReceive(command: MyCommand): void {
-   *   match<MyCommand | Terminated>(command)
-   *     .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
-   *     .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
-   *     .exhaustive();
-   * }
-   *
-   * private onTerminated(signal: Terminated): void {
-   *   this.pruneTerminatedSubscriber(signal.actor);
-   * }
-   * ```
-   *
-   * Widening the *match* input rather than the parameter is what makes the
-   * arm mandatory: `exhaustive()` then refuses to compile without it
-   * (`NonExhaustiveError<Terminated>`), so forgetting it is a build failure
-   * instead of the runtime one it used to be — a `NonExhaustiveError` thrown
-   * at the first subscriber death, restarted by the default supervisor, and
-   * a full broker reconnect per restart until `maxRetries: 10` stops the
-   * bridge for good.  The parameter itself stays `MyCommand`, because
-   * `Actor<Command>` fixes the mailbox type; `P.instanceOf(Terminated)` does
-   * *not* typecheck against an un-widened union, so the widening is load-
-   * bearing and not decoration.
+   * **Removal on death is automatic and needs nothing from the subclass.**  The
+   * base class owns `onReceive` and routes `Terminated` into
+   * {@link pruneTerminatedSubscriber} itself (#709), so a stopped subscriber
+   * leaves every topic it held before the next fan-out reaches it.  It used to
+   * be the subclass's job, and the doc claimed otherwise while `onReceive` was
+   * abstract — the dead ref stayed registered and was told on each fan-out,
+   * into dead letters (#1111).
    *
    * **Local refs only.**  `context.watch` installs a watcher for a
    * `LocalActorRef` and is otherwise a silent no-op, so a remote subscriber
    * never produces a `Terminated` and stays registered until `postStop`
-   * (#918).  Whether the base class should intercept `Terminated` itself
-   * — sealing `onReceive` and renaming the subclass hook — is still open
-   * as #709.
+   * (#918) — no `Terminated`-based cleanup, here or in a subclass, can reach
+   * that case.
    */
   protected subscribeRef(topic: string, ref: ActorRef<unknown>): void {
     const path = ref.path.toString();
@@ -521,9 +560,12 @@ export abstract class BrokerActor<
   }
 
   /**
-   * Drop a stopped subscriber from every topic it held.  Subclasses call this
-   * from their `Terminated` arm; it returns whether anything was removed, so a
-   * caller can tell a subscriber's death from any other watched actor's.
+   * Drop a stopped subscriber from every topic it held.  The sealed
+   * {@link onReceive} calls this for every `Terminated`; it stays `protected`
+   * so a subclass that stops a subscriber deliberately — rather than waiting
+   * for the watch — can drop it on the spot.  Returns whether anything was
+   * removed, so a caller can tell a subscriber's death from any other watched
+   * actor's.
    *
    * Deliberately does **not** `unwatch`: the cell already dropped the watch
    * when it delivered `Terminated`, so asking again would only be a second

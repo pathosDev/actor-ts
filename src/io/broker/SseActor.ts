@@ -112,7 +112,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     throw new Error('SseActor is read-only');
   }
 
-  override onReceive(_command: SseCommand): void { /* no commands */ }
+  protected override onCommand(_command: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
 
