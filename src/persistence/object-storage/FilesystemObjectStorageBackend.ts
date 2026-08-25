@@ -53,6 +53,13 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  *    incorrect if a real writer is taking longer than `staleLockMs` for a
  *    single `put` — which shouldn't happen for the small payloads this
  *    backend targets.
+ *  - **Prefix-scoped `list`.**  A listing reads only the directory its
+ *    prefix names — everything up to the prefix's last `/` — so its cost
+ *    tracks the matched subtree rather than the number of objects in the
+ *    store.  Walking from the root and filtering afterwards made a snapshot
+ *    `loadLatest` read every *other* entity's directory, turning an O(1)
+ *    lookup into O(N) in the entity count (#746).  A positive `limit` stops
+ *    the walk rather than trimming a finished array.
  *  - **Atomic body writes.**  `put` writes to a per-process tmp file
  *    (`<key>.tmp.<pid>.<random>`), then renames over the target.  On
  *    POSIX `rename(2)` is atomic on the same filesystem; on Windows
@@ -290,17 +297,43 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     if (options.prefix !== '') assertSafeKey(options.prefix);
     const { fs, path } = await fsLazy.get();
     const root = this.dir;
-    // Prefix may include a directory portion.  We walk from root and filter.
+    // The prefix's directory portion — see `listStartDirectory` below for why
+    // the split is at the last `/`.  Starting the walk there rather than at
+    // the root is the whole of #746.
+    const startDirectory = listStartDirectory(options.prefix);
+    // Same defense-in-depth check `put` / `get` / `delete` run.  It is new
+    // here because until the walk was seeded from the prefix, `list` never
+    // joined caller-supplied text into a path at all.
+    if (startDirectory !== '') {
+      assertWithinRoot(path, root, path.join(root, startDirectory));
+    }
+    // Only a positive limit can prune the walk.  `0` and negatives keep
+    // whatever the `slice` below has always done with them.
+    const stopAt = options.limit !== undefined && options.limit > 0 ? options.limit : undefined;
     const out: ObjectInfo[] = [];
     const walk = async (rel: string): Promise<void> => {
       const full = path.join(root, rel);
-      let entries;
+      let entries: DirectoryEntry[];
       try { entries = await fs.readdir(full, { withFileTypes: true }); }
       catch (e) {
-        if ((e as { code?: string })?.code === 'ENOENT') return;
+        const code = (e as { code?: string })?.code;
+        // A prefix naming a directory nothing ever wrote to is an empty
+        // listing, not a fault — reachable only now that the walk starts at
+        // that directory instead of at the always-present root.  ENOTDIR is
+        // the same case one level up: a prefix whose directory portion is an
+        // ordinary file, which the root-anchored walk used to drop silently
+        // via the `startsWith` filter.
+        if (code === 'ENOENT' || code === 'ENOTDIR') return;
         throw e;
       }
-      for (const ent of entries) {
+      // Ordering only matters when the walk may stop early: the early exit
+      // keeps whichever entries it reached first, so depth-first order has to
+      // agree with the ascending-by-key order the contract promises.  Without
+      // a limit the walk is exhaustive and the sort below is authoritative,
+      // so we skip the per-directory sort entirely.
+      const ordered = stopAt === undefined ? entries : sortEntriesByKeyOrder(entries, rel);
+      for (const ent of ordered) {
+        if (stopAt !== undefined && out.length >= stopAt) return;
         const childRel = rel ? `${rel}/${ent.name}` : ent.name;
         if (ent.isDirectory()) {
           await walk(childRel);
@@ -315,7 +348,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         }
       }
     };
-    await walk('');
+    await walk(startDirectory);
     out.sort((a, b) => a.key.localeCompare(b.key));
     return options.limit ? out.slice(0, options.limit) : out;
   }
@@ -327,7 +360,14 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
 /* ----------------------------- internals -------------------------------- */
 
-type FsModule = {
+/** The subset of `node:fs`'s `Dirent` that `list`'s directory walk consumes. */
+export interface DirectoryEntry {
+  readonly name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+}
+
+export type FsModule = {
   fs: {
     mkdir(p: string, opts?: { recursive?: boolean }): Promise<void>;
     writeFile(
@@ -338,9 +378,7 @@ type FsModule = {
     readFile(p: string): Promise<Buffer>;
     readFile(p: string, encoding: 'utf8'): Promise<string>;
     stat(p: string): Promise<{ size: number; mtime: Date }>;
-    readdir(p: string, opts: { withFileTypes: true }): Promise<Array<{
-      name: string; isFile(): boolean; isDirectory(): boolean;
-    }>>;
+    readdir(p: string, opts: { withFileTypes: true }): Promise<DirectoryEntry[]>;
     unlink(p: string): Promise<void>;
     rename(oldPath: string, newPath: string): Promise<void>;
   };
@@ -354,13 +392,80 @@ type FsModule = {
 
 interface Buffer extends Uint8Array {}
 
-const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
+/**
+ * The backend's single route to `node:fs/promises` / `node:path`, memoised
+ * for the process lifetime.
+ *
+ * Exported — but deliberately *not* re-exported from `src/persistence/index.ts`
+ * — so a test can seed it via `Lazy.setOverride` with a counting wrapper.  The
+ * property #746 is about is how many directories a prefixed `list` reads, and
+ * that is invisible in the value `list` returns: two implementations with
+ * wildly different cost hand back byte-identical arrays.  Counting the reads
+ * is the only way to assert it, and `mock.module('node:fs/promises', …)` is not
+ * an option — replacing that module out from under Bun's own test runner hangs
+ * the run before the first test reports.  Same seam shape as
+ * `websocketClientConstructor` in `src/http/websocket/WebsocketConstructor.ts`.
+ */
+export const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
   const fsName = 'node:fs/promises';
   const pathName = 'node:path';
   const fs = (await import(fsName)) as FsModule['fs'];
   const path = (await import(pathName)) as FsModule['path'];
   return { fs, path };
 });
+
+/**
+ * The deepest directory guaranteed to hold every key `prefix` can match —
+ * the prefix up to its last `/`, as canonical path segments.
+ *
+ * Seeding `list`'s walk here instead of at the storage root is the whole of
+ * #746: the listing then costs the subtree the prefix names rather than the
+ * entire store, which is what took a snapshot `loadLatest` from O(1) in the
+ * entity count to O(N) — every other entity's directory got read to answer a
+ * question about one.
+ *
+ * The split is at the **last** `/` because the trailing piece is a *partial*
+ * segment, not a directory: `mine/e` still has to match `mine/e0/…` and
+ * `mine/e10/…` alike, so `mine` is the deepest safe entry point and the
+ * `startsWith` filter in the walk remains the correctness backstop.
+ *
+ * Empty and `.` segments are dropped so the relative paths the walk builds
+ * stay canonical — the single-slash form a root-anchored walk produced, and
+ * the form every key already on disk was written under.  A prefix carrying
+ * either can match no such key anyway (`a//b` would need a `//` in the key),
+ * so narrowing past it only skips work that could never yield a hit.  `..`
+ * never reaches here — {@link assertSafeKey} rejects it first.
+ */
+function listStartDirectory(prefix: string): string {
+  const lastSlash = prefix.lastIndexOf('/');
+  if (lastSlash === -1) return '';
+  return prefix
+    .slice(0, lastSlash)
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.')
+    .join('/');
+}
+
+/**
+ * Order one directory's entries so a depth-first walk emits keys in the same
+ * ascending order `list` sorts by — the precondition the early exit under
+ * `limit` needs, since it keeps whichever entries the walk reached first.
+ *
+ * A directory sorts under its own name plus a trailing `/`, because it stands
+ * for every key beneath it and those all carry that separator.  Without it the
+ * order is wrong wherever a directory and a file share a stem: raw names put
+ * `d` before `d.txt`, while the keys `d/x` and `d.txt` sort the other way
+ * round (`.` precedes `/`), so a `limit: 1` would have returned `d/x` where
+ * the full listing starts with `d.txt`.
+ */
+function sortEntriesByKeyOrder(entries: DirectoryEntry[], rel: string): DirectoryEntry[] {
+  const keyed = entries.map((entry) => {
+    const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+    return { entry, sortKey: entry.isDirectory() ? `${childRel}/` : childRel };
+  });
+  keyed.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  return keyed.map((k) => k.entry);
+}
 
 /**
  * Pattern emitted by `put`'s temp-file scheme — recognised by `list` to skip.

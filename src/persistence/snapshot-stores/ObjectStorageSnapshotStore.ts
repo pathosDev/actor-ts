@@ -30,9 +30,19 @@ const utf8Decoder = new TextDecoder();
 
 /**
  * SnapshotStore backed by any `ObjectStorageBackend`.  Each snapshot
- * lands at `<prefix><persistenceId>/<seq.padStart(20,'0')>.json` — the padding
- * scheme is what makes `loadLatest` cheap (single LIST with `limit:1`
- * and reverse iteration over the sorted result).
+ * lands at `<prefix><persistenceId>/<seq.padStart(20,'0')>.json`.  The
+ * padding is what lets `loadLatest` work off ordering alone: zero-padded
+ * sequence numbers sort as strings exactly as they sort as numbers, so a
+ * full LIST of that one entity's directory — ascending, per the backend
+ * contract — puts the newest snapshot last, and nothing has to be parsed
+ * to find it.
+ *
+ * That LIST carries no `limit`, deliberately.  `limit: 1` would return the
+ * **oldest** snapshot, since the contract sorts ascending; and a limit is
+ * not what bounds the cost here — the per-`persistenceId` directory in the
+ * key is.  A backend whose LIST is proportional to the whole store rather
+ * than to the prefix makes this O(N) in the entity count no matter what
+ * limit the caller passes (#746).
  *
  * `keepN`-based pruning runs after every successful save; older
  * snapshots are deleted in a best-effort post-pass.  A failed prune
