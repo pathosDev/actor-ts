@@ -197,3 +197,38 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
  * `maxObservedEvents()` rather than a bigger number.
  */
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
+
+/**
+ * Ceiling on one S3 object key, in UTF-8 bytes — 1024.
+ *
+ * A hard AWS API limit, not a tuning choice, and it is stated in *encoded
+ * bytes* rather than characters: S3 answers a longer key with a
+ * `KeyTooLongError`.  Checking it locally is what turns that into an
+ * attributable rejection naming the offending key, instead of a 400 raised
+ * several frames inside the SDK — the same reasoning the DynamoDB batch
+ * limits above are chunked on rather than discovered.
+ *
+ * Enforced through `maxLengthBytes` and not `maxLength`, for exactly the
+ * reason the limit is quoted in bytes: a key of 600 CJK characters is 1800
+ * UTF-8 bytes, so a character count would let it through and leave the
+ * rejection to the service.
+ */
+export const S3_MAX_KEY_LENGTH_BYTES = 1_024;
+
+/**
+ * How many offending keys `ReEncryptIncompleteError` carries when the
+ * master-key rotation sweep refuses to certify a corpus.
+ *
+ * The sweep counts every malformed key it meets, but it only *retains* this
+ * many: a corpus whose keys are all malformed would otherwise pin one string
+ * per object for the lifetime of the error, turning a diagnostic into a
+ * memory bound on the corpus size.  The exact total stays available as
+ * `ReEncryptResult.skippedMalformedKey`, so nothing about the verdict depends
+ * on the sample.
+ *
+ * Twenty is sized for the job the sample actually does — showing an operator
+ * enough keys to recognise the *pattern* (one bad tenant prefix, one legacy
+ * writer, a `keyPrefix` that does not match the store's) rather than
+ * enumerating the work.
+ */
+export const MAX_REPORTED_MALFORMED_KEYS = 20;

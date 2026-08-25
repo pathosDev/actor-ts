@@ -126,7 +126,13 @@ const result = await reEncryptObjectStorage(backend, {
 });
 
 console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
+console.log(`skipped, still under the old key: ${result.skippedMalformedKey}`);
 ```
+
+`keyPrefix` muss exakt der `prefix` des Stores sein. Ein kürzerer
+verschiebt bei jedem Key das persistenceId-Segment um eine Ebene,
+und der Sweep verweigert dann lieber den gesamten Korpus, als auf
+dem falschen Segment zu salzen.
 
 `info` ist Pflicht und muss exakt der Wert sein, den der
 schreibende Store verwendet.  Es ist der HKDF-Kontext, also die
@@ -163,7 +169,46 @@ Standardmäßig re-listet und re-checkt ein wiederaufgenommener Lauf
 jeden Key; übergib einen `progress`-Store, um direkt an den bereits
 erledigten Objekten vorbeizuspringen.
 
+### Ein zurückkehrender Sweep ist das Zertifikat
+
+Der Sweep gibt kein Ergebnis zurück, das du erst auditieren musst.
+Konnte der Key eines Objekts keine brauchbare persistenceId
+liefern, rotiert der Lauf alles Übrige fertig und wirft dann
+`ReEncryptIncompleteError` — denn jedes dieser Objekte liegt noch
+unter genau dem Schlüssel, den Schritt 4 gleich droppen will, und
+ein Zähler, an dessen Lektüre man sich erinnern muss, ist keine
+Absicherung.
+
+```ts
+import { ReEncryptIncompleteError } from 'actor-ts/persistence';
+
+try {
+  const result = await reEncryptObjectStorage(backend, { /* … */ });
+  // Reaching here means skippedMalformedKey === 0.  Step 4 is cleared.
+} catch (thrown) {
+  if (thrown instanceof ReEncryptIncompleteError) {
+    console.error(thrown.malformedKeys);  // a bounded sample of the offenders
+    console.error(thrown.result);         // what the pass did manage to rotate
+  }
+  throw thrown;                           // do NOT proceed to Step 4
+}
+```
+
+Landest du in diesem `catch`, hat das eine von drei Ursachen: ein
+out-of-band geschriebener Key, ein Key aus einer Version vor der
+Einführung der Control-Character-Prüfung auf `put`, oder ein
+`keyPrefix`, der nicht zum `prefix` des Stores passt. Korrigiere die
+Keys — oder schließe wirklich fremde Objekte mit `skip` aus — und
+lass den Sweep erneut laufen.
+
 ## Schritt 4 — den alten Schlüssel ausmustern
+
+**Vorbedingung: der Sweep aus Schritt 3 ist zurückgekehrt.** Er
+wirft, statt zurückzukehren, solange noch ein Objekt unter dem
+ausgemusterten Schlüssel liegt — nur ein regulär beendeter Sweep
+gibt diesen Schritt also frei. Prüfst du stattdessen ein
+Ergebnisobjekt, ist das Feld `skippedMalformedKey`, und es muss `0`
+sein.
 
 Nachdem der Sweep durch ist (jedes Item unter v2 verschlüsselt):
 

@@ -2,7 +2,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
-import { makeKeyValidator } from '../storage/KeyValidator.js';
+import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -77,9 +77,8 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  * Root} below is the defense-in-depth post-resolve check.
  */
 /**
- * Filesystem key-validation rules.  Same checks the pre-refactor
- * `assertSafeKey` enforced — exported so other FS-style backends
- * (S3, GCS) can reuse or extend.
+ * Filesystem key-validation rules for the **read** paths — `get`, `delete`,
+ * `list`.  Same checks the pre-refactor `assertSafeKey` enforced.
  *
  * See `src/persistence/storage/KeyValidator.ts` for the factory.
  */
@@ -91,7 +90,30 @@ const FilesystemKeyRules = {
   rejectRelativeTraversal: true,
 } as const;
 
+/**
+ * Filesystem key-validation rules for `put`, i.e. {@link FilesystemKeyRules}
+ * plus `rejectControlChars` (#747).
+ *
+ * POSIX filenames may legally contain 0x01–0x1F, so before this rule the
+ * backend wrote such a key without complaint — while the master-key rotation
+ * sweep, which validates with `rejectControlChars` on, refused it on the way
+ * back out.  That gap is the actual defect: the framework could write a key
+ * its own rotation tool would not process, so those bodies stayed under the
+ * retired key while the sweep reported success.  (NTFS rejects the same range
+ * outright, which is why the gap only ever opened on POSIX.)
+ *
+ * Write path only.  `get` and `delete` keep the looser set on purpose:
+ * tightening them would not reject a new bad key, it would strand an object
+ * already on disk — unreadable and undeletable through this backend — for a
+ * key the previous version wrote happily.
+ */
+const FilesystemWriteKeyRules = {
+  ...FilesystemKeyRules,
+  ...ObjectStorageWriteKeyRules,
+} as const;
+
 const assertSafeKey = makeKeyValidator(FilesystemKeyRules);
+const assertSafeWriteKey = makeKeyValidator(FilesystemWriteKeyRules);
 
 /**
  * Defense-in-depth post-`path.resolve` check that the computed
@@ -127,7 +149,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async put(key: string, body: Uint8Array, options: PutOptions = {}): Promise<{ etag: string }> {
-    assertSafeKey(key);
+    assertSafeWriteKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.dir, key);
     assertWithinRoot(path, this.dir, fullPath);

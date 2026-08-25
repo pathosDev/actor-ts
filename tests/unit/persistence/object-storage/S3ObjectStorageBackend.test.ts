@@ -56,6 +56,7 @@ import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
 } from '../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import { S3_MAX_KEY_LENGTH_BYTES } from '../../../../src/persistence/Constants.js';
 
 /** Terse builder helpers so these many constructions stay readable. */
 const s3Opts = (): S3ObjectStorageOptionsBuilder =>
@@ -468,5 +469,125 @@ describe('S3ObjectStorageBackend — close()', () => {
     ));
     await backend.list({ prefix: '' });
     await expect(backend.close()).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * #747 — until this issue the S3 backend validated no key at all.
+ *
+ * `put`/`get`/`delete`/`list` handed the caller's string straight to the SDK
+ * command constructor, which made it the one object-storage backend with no
+ * front-line key check — and the reason a rotation sweep could meet a key
+ * nothing in the framework had ever looked at.  These are unit-level because
+ * the live S3 suite is `describe.skip` without MinIO; the assertion is that
+ * the SDK is never reached, so a mocked client is the right instrument.
+ */
+describe('S3ObjectStorageBackend — key validation (#747)', () => {
+  /**
+   * Records whether the SDK was reached at all — which is the assertion in
+   * every case below.  The reply satisfies `put`, `get` and `list` alike so a
+   * key that gets through fails on nothing but its own merits.
+   */
+  const trackingBackend = (): { backend: S3ObjectStorageBackend; sent: () => number } => {
+    let sendCalls = 0;
+    const backend = new S3ObjectStorageBackend(s3OptsWithClient({
+      send: async () => {
+        sendCalls++;
+        return {
+          ETag: '"e"',
+          Body: { transformToByteArray: async () => new Uint8Array([1, 2, 3]) },
+          Contents: [],
+          IsTruncated: false,
+        };
+      },
+    }));
+    return { backend, sent: () => sendCalls };
+  };
+
+  /**
+   * Composed rather than written as a literal: a raw control byte in a source
+   * file makes git treat it as binary.
+   */
+  const keyWithControlChar = (charCode: number): string =>
+    `pid${String.fromCharCode(charCode)}x/snap.json`;
+
+  test('put refuses an empty key without reaching the SDK', async () => {
+    const { backend, sent } = trackingBackend();
+    await expect(backend.put('', new Uint8Array([0]))).rejects.toThrow(ObjectStorageBackendError);
+    await expect(backend.put('', new Uint8Array([0]))).rejects.toThrow(/must be a non-empty string/);
+    expect(sent()).toBe(0);
+  });
+
+  test('every operation refuses a NUL byte', async () => {
+    const { backend, sent } = trackingBackend();
+    await expect(backend.put('a\0b', new Uint8Array([0]))).rejects.toThrow(/invalid key/);
+    await expect(backend.get('a\0b')).rejects.toThrow(/NUL byte not allowed/);
+    await expect(backend.delete('a\0b')).rejects.toThrow(/NUL byte not allowed/);
+    await expect(backend.list({ prefix: 'a\0b' })).rejects.toThrow(/NUL byte not allowed/);
+    expect(sent()).toBe(0);
+  });
+
+  test('put refuses a control character; get and delete do not', async () => {
+    // Write path only, for the same reason as the filesystem backend: a
+    // bucket may already hold such a key, and refusing it on read would
+    // strand the object rather than prevent anything.
+    const { backend, sent } = trackingBackend();
+    await expect(backend.put(keyWithControlChar(1), new Uint8Array([0])))
+      .rejects.toThrow(/control character at index 3 [(]charCode=1[)]/);
+    expect(sent()).toBe(0);
+
+    await expect(backend.get(keyWithControlChar(1))).resolves.toBeDefined();
+    await expect(backend.delete(keyWithControlChar(1))).resolves.toBeUndefined();
+    expect(sent()).toBe(2);
+  });
+
+  test('a key over S3 own 1024-byte ceiling is refused locally', async () => {
+    const { backend, sent } = trackingBackend();
+    const tooLong = 'a'.repeat(S3_MAX_KEY_LENGTH_BYTES + 1);
+    await expect(backend.put(tooLong, new Uint8Array([0]))).rejects.toThrow(/exceeds 1024-byte limit/);
+    await expect(backend.get(tooLong)).rejects.toThrow(/exceeds 1024-byte limit/);
+    expect(sent()).toBe(0);
+
+    // Exactly at the limit is legal — the bound must not be off by one.
+    await backend.put('a'.repeat(S3_MAX_KEY_LENGTH_BYTES), new Uint8Array([0]));
+    expect(sent()).toBe(1);
+  });
+
+  test('the ceiling counts UTF-8 bytes, which is how S3 states it', async () => {
+    const { backend, sent } = trackingBackend();
+    // 600 CJK characters: well inside a 1024-*character* check, and 1800
+    // bytes on the wire.  A character count would let the SDK take the 400.
+    const cjk = '一'.repeat(600);
+    expect(cjk.length).toBeLessThan(S3_MAX_KEY_LENGTH_BYTES);
+    await expect(backend.put(cjk, new Uint8Array([0])))
+      .rejects.toThrow(/exceeds 1024-byte limit \(got 1800 UTF-8 bytes from 600 characters\)/);
+    expect(sent()).toBe(0);
+  });
+
+  test('list still accepts the empty prefix', async () => {
+    // "Everything" is the standard list-all semantic and the one shape the
+    // non-empty rules would refuse outright.
+    const { backend, sent } = trackingBackend();
+    await expect(backend.list({ prefix: '' })).resolves.toEqual([]);
+    expect(sent()).toBe(1);
+  });
+
+  test('an ordinary key is unaffected on every operation', async () => {
+    const { backend, sent } = trackingBackend();
+    await backend.put('snapshots/user-1/00000000000000000001.json', new Uint8Array([0]));
+    await backend.get('snapshots/user-1/00000000000000000001.json');
+    await backend.delete('snapshots/user-1/00000000000000000001.json');
+    await backend.list({ prefix: 'snapshots/' });
+    expect(sent()).toBe(4);
+  });
+
+  test('S3 opaque-key semantics are preserved — traversal shapes are not path rules here', async () => {
+    // Deliberately narrower than the filesystem rules: `..` does not resolve
+    // in a bucket, so refusing it would reject a legitimate key for a threat
+    // that does not exist on this backend.
+    const { backend, sent } = trackingBackend();
+    await backend.put('a/../b', new Uint8Array([0]));
+    await backend.put('/leading-slash', new Uint8Array([0]));
+    expect(sent()).toBe(2);
   });
 });

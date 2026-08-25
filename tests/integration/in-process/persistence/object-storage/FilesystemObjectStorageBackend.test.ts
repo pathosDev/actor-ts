@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomId } from '../../../../../src/util/RandomString.js';
@@ -261,8 +261,19 @@ describe('FilesystemObjectStorageBackend — path-traversal hardening', () => {
   });
 
   test('exploit: NUL byte in key is rejected (put)', async () => {
+    // Rejected as a control character rather than by the NUL-only rule since
+    // #747 tightened the write path — `rejectControlChars` subsumes NUL and
+    // reports the sharper index/charCode.  The read paths below still take
+    // the NUL branch, which is the whole point of the split.
     await expect(backend.put('safe\0../escape', bytes('evil')))
-      .rejects.toThrow(/NUL byte/);
+      .rejects.toThrow(/control character at index 4 \(charCode=0\)/);
+  });
+
+  test('exploit: NUL byte in key is still rejected on the read paths (get/delete)', async () => {
+    // The looser read rule set has to keep rejecting the genuinely dangerous
+    // shapes; only the control-character rule is write-path-only.
+    await expect(backend.get('safe\0../escape')).rejects.toThrow(/NUL byte/);
+    await expect(backend.delete('safe\0../escape')).rejects.toThrow(/NUL byte/);
   });
 
   test('exploit: traversal blocked on read paths too (get)', async () => {
@@ -319,6 +330,67 @@ describe('FilesystemObjectStorageBackend — path-traversal hardening', () => {
 
   test('invalid keys: empty string, non-string, NUL byte all rejected', async () => {
     await expect(backend.put('', bytes('x'))).rejects.toThrow(/non-empty string/);
-    await expect(backend.put('\0', bytes('x'))).rejects.toThrow(/NUL byte/);
+    await expect(backend.put('\0', bytes('x'))).rejects.toThrow(/control character/);
+  });
+});
+
+/**
+ * #747 — the write path rejects a control character; the read paths do not.
+ *
+ * The rule exists because the master-key rotation sweep refuses such a key on
+ * the way back out of the bucket, so a key this backend writes must be a key
+ * the sweep can process.  Applying it to `get`/`delete` as well would not stop
+ * a new bad key — it would strand an object an older version already wrote,
+ * leaving it unreadable *and* undeletable through the only backend that can
+ * reach it.
+ */
+describe('FilesystemObjectStorageBackend — control characters on the write path (#747)', () => {
+  /**
+   * Composed rather than written as a literal: a raw 0x01 in a source file
+   * makes git treat it as binary, and an escape sequence has to survive every
+   * tool that rewrites the file.  Same reasoning `PersistenceIdValidator`
+   * gives for scanning code points instead of matching a character class.
+   */
+  const keyWithControlChar = (charCode: number): string =>
+    `pid${String.fromCharCode(charCode)}x/snap.json`;
+
+  // 0x01 and 0x0A are legal in a POSIX filename, which is exactly why the
+  // backend used to write them: nothing below it objected.  (NTFS rejects
+  // 0x01–0x1F itself, so on Windows only the 0x7F case could ever have been
+  // written — the rule closes the gap on every platform regardless.)
+  for (const [label, charCode] of [['SOH (0x01)', 1], ['newline (0x0A)', 10], ['DEL (0x7F)', 127]] as const) {
+    test(`put rejects a key containing ${label}`, async () => {
+      await expect(backend.put(keyWithControlChar(charCode), bytes('body')))
+        .rejects.toThrow(new RegExp(`control character at index 3 [(]charCode=${charCode}[)]`));
+    });
+  }
+
+  test('nothing is written to disk when the key is refused', async () => {
+    // The refusal has to come before `mkdir`, or a rejected put still leaves
+    // a directory tree behind under an attacker-chosen name.
+    await expect(backend.put(keyWithControlChar(1), bytes('body'))).rejects.toThrow();
+    expect(await backend.list({ prefix: '' })).toEqual([]);
+  });
+
+  test('get and delete still accept a control-character key so existing objects stay reachable', async () => {
+    // 0x7F is the one control character NTFS also permits, so it can stand in
+    // for "written by a pre-#747 version" on every platform the suite runs on.
+    // Written through `node:fs` because the backend itself now refuses.
+    const strandedKey = keyWithControlChar(127);
+    mkdirSync(join(tmpRoot, `pid${String.fromCharCode(127)}x`), { recursive: true });
+    writeFileSync(join(tmpRoot, strandedKey), bytes('legacy'));
+
+    const fetched = await backend.get(strandedKey);
+    expect(fetched.isNone()).toBe(false);
+    expect(new TextDecoder().decode(fetched.toNullable()!.body)).toBe('legacy');
+
+    await backend.delete(strandedKey);
+    expect((await backend.get(strandedKey)).isNone()).toBe(true);
+  });
+
+  test('a plain key is unaffected', async () => {
+    await backend.put('pid-a/snap.json', bytes('body'));
+    const items = await backend.list({ prefix: '' });
+    expect(items.map((i) => i.key)).toEqual(['pid-a/snap.json']);
   });
 });
