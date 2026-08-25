@@ -41,6 +41,8 @@ import {
   ActorStarted,
   ActorStopped,
   DeadLetter,
+  frameworkTerminated,
+  isFrameworkTerminated,
   Kill,
   PoisonPill,
   ReceiveTimeout,
@@ -950,7 +952,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal */
   _addWatcher(watcher: ActorRef): void {
     if (this.state === 'terminated') {
-      this._notifyWatcher(watcher, new Terminated(this.self));
+      this._notifyWatcher(watcher, frameworkTerminated(this.self));
       return;
     }
     this._watchers.add(watcher);
@@ -1323,9 +1325,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * through {@link _notifyWatcher}.  Kept, and kept exempt from the mailbox
    * bound like the live paths (#729), so that wiring it later cannot
    * reintroduce the loss by taking the ordinary door.
+   *
+   * It is also the one branded-notification path that does **not** first drive
+   * its subject to `terminated` — the target is whatever the command names.
+   * That is why a watcher whose bookkeeping matters (see
+   * `BackoffSupervisor.handleTerminated`) verifies the subject is really gone
+   * rather than resting on the brand alone (#769).
    */
   private onWatchNotify(signal: WatchNotifyCommand): void {
-    this.postSignalEnvelope({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+    this.postSignalEnvelope({
+      message: frameworkTerminated(signal.target) as unknown as TMessage,
+      sender: null,
+    });
   }
 
   private onReceiveTimeout(): void | Promise<void> {
@@ -1470,7 +1481,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // when there is a watcher to hand it to: most actors are watched by nobody,
     // and the signal was being allocated for them anyway.
     if (this._watchers.size > 0) {
-      const terminated = new Terminated(this.self);
+      const terminated = frameworkTerminated(this.self);
       for (const watcher of this._watchers) this._notifyWatcher(watcher, terminated);
       this._watchers.clear();
     }
@@ -1894,33 +1905,52 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // own domain message just below.
     let delivered = message;
     let failure: Error | null = null;
-    // A `Terminated` we are not watching is consumed rather than delivered —
-    // but it is still a dispatch, so it still ends in the epilogue, exactly as
-    // it did when that epilogue was a `finally` and this was an early `return`
-    // through it.
-    let unwatched = false;
+    // A `Terminated` this cell is not going to honour is consumed rather than
+    // delivered — but it is still a dispatch, so it still ends in the epilogue,
+    // exactly as it did when that epilogue was a `finally` and this was an
+    // early `return` through it.  Two reasons reach it: the signal has no
+    // provenance, or it names a subject we are not watching.
+    let consumed = false;
     let result: void | Promise<void> = undefined;
     try {
       if (message instanceof Terminated) {
-        const key = watchKeyOf(message.actor);
-        if (!this._watching.has(key)) {
-          unwatched = true;
+        // Provenance first, before any watch bookkeeping is touched.  A watch
+        // registration is retired here on the strength of one message, and the
+        // message names its subject rather than proving anything about it — so
+        // a `Terminated` anyone could construct was enough to convince a
+        // watcher that a live actor had died, take its watch with it, and make
+        // the genuine notification arrive later as unwatched (#769).
+        //
+        // Dead-lettered rather than dropped: an unbranded `Terminated` is
+        // either a forgery or a caller forwarding a signal that was never
+        // theirs to forward, and both are worth being able to see.  The
+        // envelope's sender rides along, so the dead letter names whoever sent
+        // it.
+        if (!isFrameworkTerminated(message)) {
+          this.system.deadLetters.tell(new DeadLetter(message, env.sender, this.self));
+          consumed = true;
         } else {
-          this._watching.delete(key);
-          // The substitution belongs on the watcher, not on the dying cell:
-          // that one notifies through `_watchers`, a set of *refs*, and has no
-          // way to reach the per-watcher map.  Doing it here also covers the
-          // immediate `Terminated` that `_addWatcher` sends when the target is
-          // already gone, because `watchWith` records the message before it
-          // registers.  The envelope keeps the original signal, so a trace or
-          // an explain plan still shows the death that caused this dispatch.
-          if (this._watchWithMessages.has(key)) {
-            delivered = this._watchWithMessages.get(key) as TMessage;
-            this._watchWithMessages.delete(key);
+          const key = watchKeyOf(message.actor);
+          if (!this._watching.has(key)) {
+            consumed = true;
+          } else {
+            this._watching.delete(key);
+            // The substitution belongs on the watcher, not on the dying cell:
+            // that one notifies through `_watchers`, a set of *refs*, and has
+            // no way to reach the per-watcher map.  Doing it here also covers
+            // the immediate `Terminated` that `_addWatcher` sends when the
+            // target is already gone, because `watchWith` records the message
+            // before it registers.  The envelope keeps the original signal, so
+            // a trace or an explain plan still shows the death that caused this
+            // dispatch.
+            if (this._watchWithMessages.has(key)) {
+              delivered = this._watchWithMessages.get(key) as TMessage;
+              this._watchWithMessages.delete(key);
+            }
           }
         }
       }
-      if (!unwatched) {
+      if (!consumed) {
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         result = span
           ? tracer.withActiveSpan(span, () => behavior(delivered))
@@ -1933,7 +1963,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       failure = this._dispatchFailed(e, delivered, span);
     }
 
-    if (unwatched || failure !== null) {
+    if (consumed || failure !== null) {
       this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, failure);
       return;
     }
