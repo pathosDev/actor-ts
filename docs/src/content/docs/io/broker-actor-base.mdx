@@ -94,10 +94,15 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
   protected abstract connectImplementation(): Promise<void>;
   protected abstract disconnectImplementation(): Promise<void>;
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  protected abstract onCommand(command: Command): void | Promise<void>;
+
+  // Optional — only for refs the subclass watches itself:
+  protected onTerminated(signal: Terminated): void | Promise<void> {}
 }
 ```
 
-Three categories:
+Four categories:
 
 - **Settings glue** (`configKey`, `builtInDefaultOptions`,
   `readOptionsFromConfig`, `requiredOptions`,
@@ -106,10 +111,18 @@ Three categories:
   validate.
 - **Protocol hooks** (`connectImplementation`, `disconnectImplementation`,
   `dispatchOutgoing`) — the protocol-specific work.
+- **Message handling** (`onCommand`) — one command from the mailbox.
+  This is where a subclass's `match(...).exhaustive()` dispatch table
+  lives.
+- **Death watch** (`onTerminated`) — optional; see *Subscriber tracking*.
 
 `endpointLabel` is the human-readable connection identity
 ("amqp://localhost:5672", "kafka-cluster-1") used in log lines
 and lifecycle events.
+
+`onReceive` is **sealed** — the base class owns it, so that it can intercept
+`Terminated` before your dispatch table sees it.  Implement `onCommand`
+instead; it receives everything except the death-watch signal.
 
 ## What the base does for you
 
@@ -138,29 +151,21 @@ buffering is disabled: the message is dropped and a
 ### Subscriber tracking
 
 ```ts
-import { Terminated } from 'actor-ts';
-import { match, P } from 'ts-pattern';
+import { match } from 'ts-pattern';
 
-override onReceive(message: MyCommand): void {
-  // `Terminated` reaches onReceive but is not part of the typed command
-  // union, so the *match input* is widened to admit it — see the note below.
-  match<MyCommand | Terminated>(message)
-    .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
-    .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
-    .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+protected override onCommand(command: MyCommand): void {
+  match(command)
+    .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+    .with({ kind: 'unsubscribe' }, (c) => this.onUnsubscribe(c))
     .exhaustive();
 }
 
-private onTerminated(signal: Terminated): void {
-  this.pruneTerminatedSubscriber(signal.actor);
+private onSubscribe(command: SubscribeCommand): void {
+  this.subscribeRef(command.topic, command.subscriber);
 }
 
-private onSubscribe(message: SubscribeCommand): void {
-  this.subscribeRef(message.topic, message.subscriber);
-}
-
-private onUnsubscribe(message: UnsubscribeCommand): void {
-  this.unsubscribeRef(message.topic, message.subscriber);
+private onUnsubscribe(command: UnsubscribeCommand): void {
+  this.unsubscribeRef(command.topic, command.subscriber);
 }
 ```
 
@@ -170,36 +175,42 @@ see the caveat below.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="The Terminated arm is not optional">
-  `subscribeRef` starts the watch, but the base class cannot act on it for
-  you: `onReceive` is abstract, so every subclass owns its own dispatch and
-  the base never sees a message.  Without the arm above, a subscriber that
-  stops stays in every topic it held and costs a dead-lettered `tell` on each
-  fan-out — this was a real defect (#1111), not a hypothetical — and the
-  `.exhaustive()` call *throws* on the unmatched signal, which the default
-  supervisor answers with a restart, i.e. a full broker reconnect per
-  subscriber death.
+<Aside type="tip" title="Removal on death is the base class's job">
+  Nothing above mentions `Terminated`, and nothing needs to: `onReceive` is
+  sealed, so the base class catches the signal, drops the subscriber from
+  every topic it held, and hands `onCommand` only real commands.  Your
+  dispatch table is over your own protocol and `.exhaustive()` is exactly
+  right on it.
 
-  Write it exactly as above and neither can happen: widening the **match
-  input** to `MyCommand | Terminated` makes `.exhaustive()` refuse to compile
-  without the arm (`NonExhaustiveError<Terminated>`), so the omission is a
-  build failure rather than a runtime one.  The *parameter* stays
-  `MyCommand` — `Actor<Command>` fixes the mailbox type — and the widening
-  is load-bearing rather than cosmetic: `P.instanceOf(Terminated)` does not
-  typecheck against an un-widened union.
+  This used to be the subclass's job, and getting it wrong was easy in both
+  directions: a matcher without a `Terminated` arm *throws* on the unmatched
+  signal, which the default supervisor answers with a restart — a full broker
+  reconnect per subscriber death, until `maxRetries: 10` stops the bridge for
+  good — and one that swallowed it with `.otherwise()` leaked instead, the
+  dead ref staying in every topic and costing a dead-lettered `tell` on each
+  fan-out (#1111, #709).
 
-  `pruneTerminatedSubscriber(ref)` removes the subscriber from every topic
-  and returns whether it removed anything, so you can tell a subscriber's
-  death from any other watched actor's.  It does **not** `unwatch`: the cell
-  already dropped the watch when it delivered `Terminated`.
+  `pruneTerminatedSubscriber(ref)` is still there, for a subclass that stops
+  a subscriber deliberately rather than waiting for the watch.  It returns
+  whether it removed anything, and does **not** `unwatch`: on the death path
+  the cell has already dropped the watch by the time the signal arrives.
+</Aside>
+
+<Aside type="note" title="Watching refs of your own">
+  Override `onTerminated(signal)` if your actor calls `context.watch` for
+  something other than a subscriber — a delivery target, a request's
+  originator.  It runs **after** the base has pruned, so the subscriber
+  registry it sees has already forgotten the dead ref.  `MqttActor` uses it
+  for its per-pattern delivery targets.
 </Aside>
 
 <Aside type="caution" title="The watch only fires for a local subscriber">
   `context.watch` installs a watcher when the ref is a `LocalActorRef` and is
   a silent no-op otherwise, so a **remote** subscriber never produces a
   `Terminated`: it stays in every topic it held until the broker actor itself
-  stops, and keeps costing a cross-node `tell` on each fan-out.  Nothing in
-  the arm above can help — the signal never arrives.  Tracked as #918.
+  stops, and keeps costing a cross-node `tell` on each fan-out.  No
+  `Terminated`-based cleanup can help — the signal never arrives.  Tracked
+  as #918.
 </Aside>
 
 `unsubscribeRef` matches on the ref's path rather than the ref object, so
@@ -389,6 +400,7 @@ path before it ever attempts to connect.
 ## Writing a custom protocol actor
 
 ```ts
+import { match } from 'ts-pattern';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -418,6 +430,17 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MyPayload>): Promise<void> {
     await this.connection!.send(env.payload);
+  }
+
+  // `onReceive` is sealed by the base — implement `onCommand` instead.
+  protected override onCommand(command: Command): void {
+    match(command)
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .exhaustive();
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    this.subscribeRef(command.topic, command.subscriber);
   }
 }
 ```

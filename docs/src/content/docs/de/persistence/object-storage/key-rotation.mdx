@@ -174,6 +174,42 @@ sich unter keinem von beiden entschlüsseln, wird der
 ursprüngliche Entschlüsselungsfehler geworfen — ein wirklich
 defekter Bestand wird also nicht stillschweigend übersprungen.
 
+## Einen integritätsgeschützten Korpus sweepen
+
+Ein Bucket mit aktiviertem [Integritäts-HMAC](/de/persistence/object-storage/encryption/#integrität-und-master-key-rotation)
+braucht diesen Schlüssel auch hier.  Das Tag deckt die
+Manifest-Bytes ab; der Sweep muss es also prüfen, um einen Body
+überhaupt zu lesen, und neu berechnen, um einen zurückzuschreiben:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+`integrity` nimmt dieselbe Form an wie der Store — eine flache
+Config oder denselben Resolver pro `persistenceId` —, sodass ein
+Deployment mit Integrität pro Tenant hier denselben Schlüssel
+auflöst wie sein Store.
+
+Lässt du es bei einem getaggten Korpus weg, verweigert der Sweep
+den Start vor dem ersten Write und nennt einen der betroffenen
+Keys.  Tags werden nur dort neu gesetzt, wo der Body schon eines
+trug — ein ungetaggter Body wird also nie befördert; ein Korpus
+mitten in der Integritätsmigration ergänzt `allowUntaggedBodies:
+true`, das Sweep-seitige Gegenstück zur gleichnamigen
+Store-Option.
+
+Den Integritätsschlüssel selbst rotiert der Sweep **nicht**.  Auf
+der Leitung ist nirgends festgehalten, welcher Integritätsschlüssel
+einen Body versiegelt hat; ein halb gesweepter Korpus wäre also
+nicht von einem manipulierten zu unterscheiden — rolle einen neuen
+Integritätsschlüssel stattdessen über das Read-then-Write-Fenster
+des Stores aus.
+
 ## Teilrotation mit `skip`
 
 `skip(key) => boolean` **schließt** passende Keys aus — die
@@ -193,14 +229,20 @@ Nützlich für Rotation pro Tenant, pro Actor-Typ oder in Phasen.
 
 ## Keyring-Vollständigkeits-Vorabprüfung
 
-Standardmäßig sampelt der Sweep die ersten verschlüsselten
-Objekte und **verweigert den Start**, wenn die Key-Version eines
-Payloads im Keyring fehlt — das fängt den „Operator hat den
-retired-Key zu früh entfernt"-Fallstrick ab, *bevor* ein
-Mid-Sweep-Decrypt-Fehler den Korpus halb umgeschrieben
-zurücklässt.  Mit `verifyKeyringCompleteness: false` abschalten —
-nur, wenn du unabhängig sicher bist, dass der Keyring vollständig
-ist.
+Standardmäßig sampelt der Sweep die ersten Objekte, die er
+umschreiben würde, und **verweigert den Start**, wenn die
+Key-Version eines Payloads im Keyring fehlt — das fängt den
+„Operator hat den retired-Key zu früh entfernt"-Fallstrick ab,
+*bevor* ein Mid-Sweep-Decrypt-Fehler den Korpus halb umgeschrieben
+zurücklässt.  Derselbe Durchgang beantwortet die Integritätsfrage:
+Ein gesampeltes Objekt mit Tag, für das `integrity` keinen
+Schlüssel auflöst, stoppt den Sweep hier statt mitten im Korpus.
+Mit `verifyKeyringCompleteness: false` abschalten — nur, wenn du
+unabhängig sicher bist, dass der Keyring vollständig ist.
+
+Beide Hälften sampeln, statt aufzuzählen; beide sind also ein
+Fallstrick-Fänger und kein Beweis — ein Nachzügler jenseits von
+`sampleSize` bricht den Sweep weiterhin mitten im Korpus ab.
 
 ## Welche Keys der Sweep verarbeiten kann
 

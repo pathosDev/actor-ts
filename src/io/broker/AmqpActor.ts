@@ -170,7 +170,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     }
   }
 
-  override onReceive(command: AmqpCommand): void {
+  protected override onCommand(command: AmqpCommand): void {
     match(command)
       .with({ kind: 'publish' }, (c) => this.onPublish(c))
       .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))

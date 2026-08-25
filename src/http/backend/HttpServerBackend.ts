@@ -122,15 +122,26 @@ export function contentLengthExceeds(header: string | undefined, cap: number): b
  * The payload limit to install on the one transport a server's WebSocket
  * routes share — the largest frame any of them admits.
  *
- * `max` rather than per route because every shipped backend puts all of its
- * routes behind a single transport.  For two of the three that is imposed from
- * outside: `@fastify/websocket` is registered once per instance, and Bun's
- * `maxPayloadLength` belongs to the entire `Bun.serve`.  On Express it is this
- * backend's own structure rather than something `ws` dictates — one `noServer`
- * `WebSocketServer` is built for the app, though `completeUpgrade` does already
- * hold the matched registration when it calls `handleUpgrade`, so a server per
- * route is structurally available there.  It buys no *uniform* guarantee while
- * Fastify cannot follow, so one number per server it is.
+ * **Server-level, and by decision** (#373).  That issue's title asks for a
+ * *per-route* transport cap; its body sanctions "(or a server-level
+ * configurable cap)" as an alternative, and the alternative is what shipped.
+ * The per-route half was considered and declined, so read the `max` below as
+ * the contract rather than as an unfinished half of one.
+ *
+ * The reason is that two of the three shipped backends cannot follow.
+ * `@fastify/websocket` is registered once per instance, and Bun's
+ * `maxPayloadLength` belongs to the entire `Bun.serve` — in both, one number
+ * per server is imposed from outside.  Express is the exception: one `noServer`
+ * `WebSocketServer` is this backend's own structure rather than something `ws`
+ * dictates, and `completeUpgrade` already holds the matched registration when
+ * it calls `handleUpgrade`, so a server per route is structurally available
+ * there.  Building it would satisfy the title on one backend of three and
+ * leave the other two silently different — a per-route promise that holds
+ * wherever the reader does not check is worse than a server-level one that
+ * holds everywhere, because the failure mode is a security expectation, and a
+ * security expectation that is true on your laptop's backend and false in
+ * production is not a weaker guarantee but a wrong one.  So: one number per
+ * server, the same shape on all three.
  *
  * Given one number, the only safe direction is the widest: taking the smallest
  * would cut a route off below its own configured cap, which is a silent wrong

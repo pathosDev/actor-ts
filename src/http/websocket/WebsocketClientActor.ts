@@ -75,7 +75,12 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
   protected onInvalidMessage(_error: WebsocketDecodeError): void | Promise<void> {}
-  /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
+  /**
+   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   *
+   * A `Terminated` from a `context.watch` of your own no longer arrives here —
+   * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
     this.log.warn(`WebsocketClientActor: unhandled self message: ${String(message)}`);
   }
@@ -110,7 +115,9 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(command: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
+  protected override onCommand(
+    command: WebsocketClientMessage<TOut, TIn, TSelf>,
+  ): void | Promise<void> {
     // Matched against the envelope union rather than the mailbox type: `TSelf`
     // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
     // a union that still contains one.  `.otherwise` is reached exactly when
