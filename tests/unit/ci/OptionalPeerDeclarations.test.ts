@@ -74,14 +74,30 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  *   dependency, and GHSA-xcpc-8h2w-3j85 (high — a crafted ZIP triggers a 4 GB
  *   allocation) is fixed only in `adm-zip` 0.6.0, which that range cannot
  *   reach. So no published version of the driver installs cleanly here, and
- *   the three ways out are all decisions above this test's pay grade:
- *   suppress the advisory (a new `--ignore` plus a `SECURITY.md` row —
- *   and every suppression so far predates the gate rather than being added to
- *   get a change through), stand up a Cassandra Docker suite so the brokers
- *   manifest legitimately owns it, or drop the backend. Until one is chosen,
- *   `CassandraClientLike` and the inline `CassandraDriver` type in
- *   `src/persistence/journals/CassandraClient.ts` are checked only against
- *   `FakeCassandraClient`. Refs #676.
+ *   the ways out are all decisions above this test's pay grade:
+ *
+ *   1. Suppress the advisory — a new `--ignore` plus a `SECURITY.md` row.
+ *      Every suppression on file predates the gate rather than having been
+ *      added to get a change through, so this would be the first of its kind.
+ *   2. Stand up a Cassandra Docker suite (#1169 tracks it from the coverage
+ *      side), so the brokers manifest legitimately owns the driver and the
+ *      root install never sees it.
+ *   3. Drop the backend.
+ *   4. Pin `adm-zip` past the advisory with an `overrides` / `resolutions`
+ *      entry. This one is listed because leaving it out is how it gets
+ *      rediscovered as a clever trick rather than weighed as what it is, and
+ *      it does work: bun 1.4.0 honours both spellings, taking `~0.5.10` from
+ *      0.5.18 to 0.6.0 (measured). It is also the worst of the four. npm-style
+ *      overrides apply only while this package is the root project, so it
+ *      would clear OUR audit while every consumer who installs the Cassandra
+ *      backend resolves the vulnerable range exactly as before — option 1
+ *      without the row anyone reviews.
+ *      `tests/unit/ci/SecurityPolicy.test.ts` requires any override to be
+ *      written up in `SECURITY.md`, so this route is open but not silent.
+ *
+ *   Until one is chosen, `CassandraClientLike` and the inline
+ *   `CassandraDriver` type in `src/persistence/journals/CassandraClient.ts`
+ *   are checked only against `FakeCassandraClient`. Refs #676.
  */
 const DELIBERATELY_UNDECLARED: readonly string[] = ['cassandra-driver'];
 
