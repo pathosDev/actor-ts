@@ -540,9 +540,9 @@ describe('the floors are a ratchet, not a variable', () => {
  * number and diverges the moment it is not — `${LINES%.*}` truncates before an
  * integer compare, so a workflow floor of 90 would pass a run at 89.6 that the
  * script fails.  And the script losing its caller leaves a green `tests` check
- * that enforces no floor at all, which is not hypothetical: this file's own
- * docstring claimed CI used it for months while `grep -rn coverage-gate
- * .github/` found the name only inside comments.
+ * that enforces no floor at all, which is not hypothetical: the docstring of
+ * `scripts/coverage-gate.mjs` claimed CI used it for months while `grep -rn
+ * coverage-gate .github/` found the name only inside comments.
  */
 describe('CI gates the run it already made, with this script', () => {
   test('the workflow parsed at all', () => {
