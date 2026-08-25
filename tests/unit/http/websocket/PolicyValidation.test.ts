@@ -47,6 +47,29 @@ describe('WebsocketPolicyOptionsValidator', () => {
     expect(() => validator.validate({ onOversizeFrame: 'boom' as never })).toThrow(/onOversizeFrame/);
     expect(() => validator.validate({ onInvalidMessage: 'nope' as never })).toThrow(OptionsError);
   });
+
+  // #717 — the pre-attach buffer bound is a security cap, so "off" is not one
+  // of its values: unlike maxConnections and acceptTimeoutMs, neither half
+  // admits Infinity.
+  test('rejects a non-positive pre-attach bound, and does not admit Infinity', () => {
+    const validator = new WebsocketPolicyOptionsValidator();
+    expect(() => validator.validate({ maxPreAttachFrames: 0 })).toThrow(/maxPreAttachFrames/);
+    expect(() => validator.validate({ maxPreAttachFrames: 2.5 })).toThrow(OptionsError);
+    expect(() => validator.validate({ maxPreAttachFrames: Infinity })).toThrow(/maxPreAttachFrames/);
+    expect(() => validator.validate({ maxPreAttachBytes: -1 })).toThrow(/maxPreAttachBytes/);
+    expect(() => validator.validate({ maxPreAttachBytes: Infinity })).toThrow(/maxPreAttachBytes/);
+    expect(() => validator.validate({ maxPreAttachFrames: 8, maxPreAttachBytes: 1024 })).not.toThrow();
+  });
+
+  test('acceptTimeoutMs must be a positive integer, or Infinity to disable it', () => {
+    const validator = new WebsocketPolicyOptionsValidator();
+    expect(() => validator.validate({ acceptTimeoutMs: 0 })).toThrow(/acceptTimeoutMs/);
+    expect(() => validator.validate({ acceptTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => validator.validate({ acceptTimeoutMs: 1.5 })).toThrow(/acceptTimeoutMs/);
+    expect(() => validator.validate({ acceptTimeoutMs: Number.NaN })).toThrow(/acceptTimeoutMs/);
+    expect(() => validator.validate({ acceptTimeoutMs: Infinity })).not.toThrow();
+    expect(() => validator.validate({ acceptTimeoutMs: 30_000 })).not.toThrow();
+  });
 });
 
 describe('resolveWebsocketPolicy — validates the merged policy', () => {
@@ -66,6 +89,30 @@ describe('resolveWebsocketPolicy — validates the merged policy', () => {
     const sys = systemWith({});
     expect(() => resolveWebsocketPolicy(sys, { maxConnections: -5 })).toThrow(OptionsError);
     expect(resolveWebsocketPolicy(sys, { maxConnections: 10 }).maxConnections).toBe(10);
+    await sys.terminate();
+  });
+
+  test('the #717 leaves resolve from HOCON, with their units (bytes, duration)', async () => {
+    const sys = systemWith({
+      'actor-ts': {
+        http: {
+          websocket: { maxPreAttachFrames: 12, maxPreAttachBytes: '2M', acceptTimeoutMs: '30s' },
+        },
+      },
+    });
+    const policy = resolveWebsocketPolicy(sys, {});
+    expect(policy.maxPreAttachFrames).toBe(12);
+    expect(policy.maxPreAttachBytes).toBe(2 * 1024 * 1024);
+    // `getDuration`, so an operator writes "30s" rather than counting zeroes —
+    // the `Ms` in the field name is for the code side, which has no unit of
+    // its own to read.
+    expect(policy.acceptTimeoutMs).toBe(30_000);
+    await sys.terminate();
+  });
+
+  test('a bad HOCON acceptTimeoutMs throws OptionsError at resolution', async () => {
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { acceptTimeoutMs: 0 } } } });
+    expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/acceptTimeoutMs/);
     await sys.terminate();
   });
 });

@@ -193,6 +193,29 @@ corpus half-rewritten.  Disable with `verifyKeyringCompleteness:
 false` only if you have independent assurance the keyring is
 complete.
 
+## Which keys the sweep can process
+
+The sweep derives its HKDF salt from the object's **key** and then
+rewrites the body, so a key it cannot read reliably is a body it
+must not touch.  Two rules follow, and both are enforced:
+
+- **No control characters.**  Every object-storage backend rejects
+  them on `put`, so a key this framework writes is always a key the
+  sweep accepts.  Reads and deletes stay permissive, so an object
+  written by an older version is still reachable.
+- **Exactly `<keyPrefix><persistenceId>/<leaf>`.**  That is the
+  layout both built-in stores use — `<pid>/<seq>.json` for
+  snapshots, `<pid>/state.json` for durable state.  A key with an
+  extra level is refused rather than read as its first segment: a
+  `persistenceId` containing `/`, or a `keyPrefix` shorter than the
+  store's own `prefix`, would otherwise yield a *plausible but
+  wrong* salt for the whole corpus.  A different layout supplies its
+  own `pidFromKey`.
+
+Set `keyPrefix` to the store's `prefix` exactly.  Sweeping
+`'snapshots/'` when the store writes under `'snapshots/prod/'` is
+the second case above, and the sweep refuses it.
+
 ## Confirming completion
 
 Read the returned counts — a complete sweep has `scanned ===
@@ -208,8 +231,32 @@ if (result.rewrote === 0) {
 }
 ```
 
-There is no separate "list stragglers" helper; the counts are the
-source of truth.
+That equation leaves out `skippedMalformedKey` on purpose: **a
+returning sweep always has it at zero.**  A pass that met such a key
+finishes rotating everything else and then throws
+`ReEncryptIncompleteError` instead of returning, because those
+objects are still under the key you were about to retire.  The error
+carries the full `result` plus a sample of the offending keys.
+
+```ts
+import { ReEncryptIncompleteError } from 'actor-ts/persistence';
+
+try {
+  await reEncryptObjectStorage(backend, { keyPrefix: 'state/', keyring, info });
+} catch (thrown) {
+  if (thrown instanceof ReEncryptIncompleteError) {
+    console.error(thrown.message);          // names the keys, says not to drop the key
+    console.error(thrown.malformedKeys);    // a bounded sample
+    console.error(thrown.result.rewrote);   // what did get rotated
+  }
+  throw thrown;
+}
+```
+
+Fix those keys, or — if they are not this framework's objects —
+exclude them with the `skip` predicate above and re-run.  There is
+no separate "list stragglers" helper; the counts are the source of
+truth.
 
 ## After the sweep
 

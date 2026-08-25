@@ -48,7 +48,8 @@ import {
 } from './BodyCodec.js';
 import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
-import { makeKeyValidator } from '../storage/KeyValidator.js';
+import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
+import { MAX_REPORTED_MALFORMED_KEYS } from '../Constants.js';
 
 /* ============================ progress (#109) ============================ */
 
@@ -211,12 +212,64 @@ export type ReEncryptResult = {
    * us, and the sweep derives its HKDF salt from the key.  Since it then
    * *rewrites* the body, a key that yields the wrong salt would not merely fail
    * — it would re-encrypt data under a salt the owning store never reproduces,
-   * leaving it permanently undecryptable.  Such keys are skipped instead, and
-   * a non-zero count here is worth investigating: nothing the framework writes
-   * produces one.
+   * leaving it permanently undecryptable.  Such keys are skipped instead.
+   *
+   * **A non-zero count fails the sweep** (#747): `reEncryptObjectStorage`
+   * finishes the pass and then throws {@link ReEncryptIncompleteError} rather
+   * than returning, because the run's whole purpose is to certify that the
+   * retired key can be dropped — and every object counted here is one still
+   * encrypted under it.  Reading this field off a *returned* result therefore
+   * only ever yields `0`; the non-zero case is on the error.
+   *
+   * Reaching it needs a key this framework did not write — either one added
+   * out-of-band, one written by a version that predates the control-character
+   * rule on the write path (#747), or a `keyPrefix` that does not line up with
+   * the owning store's own `prefix`, which shifts every key's pid segment by
+   * one.  Excluding deliberately foreign objects is what `skip` is for.
    */
   readonly skippedMalformedKey: number;
 };
+
+/**
+ * Thrown when the sweep completed its pass but cannot certify the corpus,
+ * because {@link ReEncryptResult.skippedMalformedKey} objects were left
+ * behind (#747).
+ *
+ * A counter alone was not enough.  The rotation runbook's next step is to
+ * drop the retired master key, and every skipped object is still encrypted
+ * under it — so a result that has to be *inspected* to notice the problem
+ * puts an irreversible action behind an optional read.  The sweep is the
+ * thing that tells the operator "you may now drop v1"; it says so by
+ * returning, and it must not return here.
+ *
+ * Thrown at the end of the pass rather than at the first bad key on purpose:
+ * every healthy object still gets rotated, and the operator gets the whole
+ * set of offenders from one run instead of one per run.
+ */
+export class ReEncryptIncompleteError extends Error {
+  constructor(
+    /** Counts from the pass that just finished, `skippedMalformedKey` included. */
+    public readonly result: ReEncryptResult,
+    /**
+     * Up to `MAX_REPORTED_MALFORMED_KEYS` of the offending keys — a sample
+     * for recognising the pattern, not the full list.  `result
+     * .skippedMalformedKey` is the exact count.
+     */
+    public readonly malformedKeys: readonly string[],
+  ) {
+    const shown = malformedKeys.map((key) => JSON.stringify(key)).join(', ');
+    const elided = result.skippedMalformedKey - malformedKeys.length;
+    super(
+      `reEncryptObjectStorage: ${result.skippedMalformedKey} of ${result.scanned} objects were `
+      + `skipped because their key yields no usable persistence id, so they are still encrypted `
+      + `under a key this sweep was meant to retire.  Do NOT drop the retired master key.  `
+      + `Offending key(s): ${shown}${elided > 0 ? ` (+${elided} more)` : ''}.  `
+      + `Either correct those keys, or exclude them with the 'skip' predicate if they are not `
+      + `this framework's objects.`,
+    );
+    this.name = 'ReEncryptIncompleteError';
+  }
+}
 
 /**
  * Re-encrypt every body under `keyPrefix` to the active key in `keyring`.
@@ -230,6 +283,13 @@ export type ReEncryptResult = {
  * — they bubble up immediately and stop the sweep.  Run the sweep again
  * after fixing the underlying issue; already-rewritten objects are
  * idempotent on the next pass.
+ *
+ * **Returning is the certificate.**  A key that yields no usable persistence
+ * id is skipped rather than rewritten under a salt nobody can reproduce, and
+ * a pass that skipped any such key throws {@link ReEncryptIncompleteError}
+ * at the end instead of returning (#747) — the corpus is not fully under the
+ * active key, so the runbook's next step (dropping the retired key) would
+ * destroy those bodies.  Exclude genuinely foreign objects with `skip`.
  *
  *   const result = await reEncryptObjectStorage(backend, {
  *     keyPrefix: 'snapshots/',
@@ -269,6 +329,10 @@ export async function reEncryptObjectStorage(
     skippedNonAts1: 0,
     skippedMalformedKey: 0,
   };
+  // Bounded sample for the failure message — the exact count lives in
+  // `result.skippedMalformedKey`, so retaining every key would only add a
+  // per-object memory cost to a run that is already going to fail.
+  const malformedKeys: string[] = [];
   // Validates the whole ring, not just `active` (#111).  The sweep's own
   // resolver below matches `active` before `retired`, so a version that
   // appears on both would decide silently which key a historical body is
@@ -345,6 +409,7 @@ export async function reEncryptObjectStorage(
     // under the wrong salt is unrecoverable.  See `skippedMalformedKey`.
     if (!isUsableSweepKey(item.key, options.keyPrefix, persistenceIdFromKey)) {
       result.skippedMalformedKey += 1;
+      if (malformedKeys.length < MAX_REPORTED_MALFORMED_KEYS) malformedKeys.push(item.key);
       options.onProgress?.({ key: item.key, index, total, action: 'skipped-malformed-key' });
       continue;
     }
@@ -470,10 +535,22 @@ export async function reEncryptObjectStorage(
       });
     }
   }
-  // Successful end → clear progress so a fresh re-run starts from the
+  // End of the pass → clear progress so a fresh re-run starts from the
   // beginning.  If we crashed instead, the saved progress stays on
   // disk and the next call resumes.
+  //
+  // Cleared before the malformed-key verdict below, and that ordering is
+  // load-bearing: `lastKey` advances on rewrites, so leaving resume state
+  // behind would let the re-run start *past* a malformed key and finish with
+  // `skippedMalformedKey === 0` — a clean bill of health for the exact corpus
+  // this call is about to refuse.  A pass that reached the end has no work
+  // left to resume anyway.
   if (options.progress) await options.progress.clear();
+  // Every object counted here is still under a key the operator is about to
+  // drop, so the sweep must not hand back a result that reads as success.
+  if (result.skippedMalformedKey > 0) {
+    throw new ReEncryptIncompleteError({ ...result }, malformedKeys);
+  }
   return result;
 }
 
@@ -488,22 +565,24 @@ function startsWithAts1(buffer: Uint8Array): boolean {
 }
 
 /**
- * Default pid extractor for the layouts the built-in object-storage
- * stores use: `<keyPrefix><pid>/<rest>`.  Returns the substring
- * between the prefix and the next `/`.  Used as the HKDF salt at
- * decrypt + re-encrypt time, so it MUST match what the original
- * write site used.
- */
-/**
- * Key-level rules shared with the storage backends.  Reused rather than
- * re-stated so the sweep cannot drift from the front-line validator; control
- * characters and NUL in a key that came out of a bucket mean the key was not
- * written by this framework.
+ * Key-level rules for a key that came back out of the bucket.
+ *
+ * `ObjectStorageWriteKeyRules` is the same object `FilesystemWriteKeyRules`
+ * and `S3WriteKeyRules` spread into their own write rules, so a key either
+ * backend accepted on `put` is a key this check accepts (#747).  Only the
+ * factory was ever shared — the rules themselves were restated, and the sweep
+ * being the strict end of that mismatch is what let the framework write keys
+ * its own rotation tool then refused.
+ *
+ * The path-traversal rules the filesystem backend adds are deliberately
+ * absent: they bound where a key may *write*, and nothing here writes to a
+ * path — the sweep reads and rewrites keys the backend itself already
+ * vetted.
  */
 const assertSweepKeyShape = makeKeyValidator({
   errorClass: Error,
   errorPrefix: 'reEncryptObjectStorage: key',
-  rejectControlChars: true,
+  ...ObjectStorageWriteKeyRules,
 });
 
 /**
@@ -516,24 +595,66 @@ const assertSweepKeyShape = makeKeyValidator({
  * sweep rewrites the body afterwards, that is silent, permanent data loss
  * rather than a failed read.  A custom `pidFromKey` is covered too, since the
  * check runs on its output.
+ *
+ * The extractor is called inside the guard rather than beside it: a custom
+ * `pidFromKey` that throws on a key it does not recognise is stating the same
+ * thing `''` states, and routing both through the malformed counter means the
+ * caller sees one verdict — {@link ReEncryptIncompleteError}, naming the key —
+ * instead of a bare extractor stack trace from the middle of the corpus.
  */
 function isUsableSweepKey(
   key: string,
   keyPrefix: string,
   pidFromKey: (key: string, keyPrefix: string) => string,
 ): boolean {
+  let persistenceId: string;
   try {
     assertSweepKeyShape(key);
+    persistenceId = pidFromKey(key, keyPrefix);
   } catch {
     return false;
   }
-  const persistenceId = pidFromKey(key, keyPrefix);
   return typeof persistenceId === 'string' && persistenceId.trim().length > 0;
 }
 
+/**
+ * Default pid extractor for the layouts the built-in object-storage stores
+ * use: `<keyPrefix><pid>/<leaf>` — `<prefix><pid>/<seq>.json` for
+ * `ObjectStorageSnapshotStore`, `<prefix><pid>/state.json` for
+ * `ObjectStorageDurableStateStore`.  The result is the HKDF salt at decrypt
+ * and re-encrypt time, so it MUST match what the original write site used.
+ *
+ * Returns `''` — which {@link isUsableSweepKey} reads as "not sweepable" —
+ * for anything that is not exactly one non-empty segment followed by one
+ * non-empty leaf.  It used to return the first segment and discard the rest
+ * (#747), which turned two distinct mismatches into a *plausible* id and
+ * therefore a wrong salt:
+ *
+ *   - a `persistenceId` containing `/` — `snapshots/tenant/user1/00…json`
+ *     yielded `'tenant'`, one salt shared by every pid under that tenant;
+ *   - a `keyPrefix` shorter than the owning store's own `prefix` — sweeping
+ *     `'snapshots/'` when the store writes `'snapshots/prod/'` yielded
+ *     `'prod'` for the entire corpus.
+ *
+ * Neither is caught by validating the persistence id at the actor boundary
+ * (#133), because in the second case the bad segment does not come from the
+ * id at all.  Refusing the key shape is what catches both, and refusing is
+ * safe in a way that guessing is not: the sweep *rewrites* what it reads, so
+ * a wrong salt is not a failed decrypt, it is a body re-encrypted under a
+ * salt the owning store never derives again.  A layout that genuinely nests
+ * deeper supplies its own `pidFromKey`.
+ */
 function defaultPidFromKey(key: string, keyPrefix: string): string {
-  let start = 0;
-  if (key.startsWith(keyPrefix)) start = keyPrefix.length;
-  const slash = key.indexOf('/', start);
-  return slash < 0 ? key.slice(start) : key.slice(start, slash);
+  if (!key.startsWith(keyPrefix)) return '';
+  const remainder = key.slice(keyPrefix.length);
+  const slash = remainder.indexOf('/');
+  if (slash <= 0) return '';
+  // Exactly one separator: a second one means the key carries a level the
+  // built-in layouts do not have, and the segment before it is not reliably
+  // the pid.
+  if (remainder.indexOf('/', slash + 1) >= 0) return '';
+  // A non-empty leaf, so `<pid>/` on its own is refused rather than read as
+  // a pid whose object happens to have no name.
+  if (slash === remainder.length - 1) return '';
+  return remainder.slice(0, slash);
 }

@@ -131,6 +131,33 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   withMaxConnections(max: number): this {
     return this.set('maxConnections', max);
   }
+
+  /**
+   * Cap the inbound frames held while the connection actor is starting.  Past
+   * it the socket is closed with 1013 rather than buffered without bound
+   * (#717).  Default 256.
+   */
+  withMaxPreAttachFrames(frames: number): this {
+    return this.set('maxPreAttachFrames', frames);
+  }
+
+  /**
+   * The byte half of `withMaxPreAttachFrames`.  Raise it alongside
+   * `withMaxFrameBytes` on a route that expects large frames immediately after
+   * the handshake — the first frame is exempt, the second is not.  Default 4 MiB.
+   */
+  withMaxPreAttachBytes(bytes: number): this {
+    return this.set('maxPreAttachBytes', bytes);
+  }
+
+  /**
+   * How long an admitted upgrade waits for its connection actor before the
+   * socket is closed and its `maxConnections` slot released.  `Infinity`
+   * disables the watchdog.  Default 10 s.
+   */
+  withAcceptTimeoutMs(milliseconds: number): this {
+    return this.set('acceptTimeoutMs', milliseconds);
+  }
 }
 
 /**

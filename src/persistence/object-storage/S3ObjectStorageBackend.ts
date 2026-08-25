@@ -1,6 +1,8 @@
 import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { wrapError } from '../../util/WrapError.js';
+import { S3_MAX_KEY_LENGTH_BYTES } from '../Constants.js';
+import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -46,6 +48,52 @@ export type S3Credentials = {
   readonly sessionToken?: string;
 };
 
+/**
+ * S3 key-validation rules for the **read** paths — `get`, `delete`, `list`.
+ *
+ * Deliberately narrow.  An S3 key is an opaque UTF-8 string and `..` does
+ * not resolve to anything, so the path-traversal rules the filesystem
+ * backend needs would buy nothing here.  What is left is what S3 itself
+ * would reject anyway, checked locally so the rejection names the key
+ * instead of surfacing as an SDK 400: a NUL byte, and the 1024-byte
+ * ceiling ({@link S3_MAX_KEY_LENGTH_BYTES}).
+ *
+ * Until #747 this backend validated nothing at all — `put`/`get`/`delete`/
+ * `list` handed the caller's key straight to the SDK, which made it the one
+ * object-storage backend with no front-line key check.
+ *
+ * See `src/persistence/storage/KeyValidator.ts` for the factory and for why
+ * the write path is stricter than this.
+ */
+const S3KeyRules = {
+  errorClass: ObjectStorageBackendError,
+  errorPrefix: 'invalid key',
+  rejectNul: true,
+  maxLengthBytes: S3_MAX_KEY_LENGTH_BYTES,
+} as const;
+
+/**
+ * S3 key-validation rules for `put`, i.e. {@link S3KeyRules} plus
+ * `rejectControlChars`.
+ *
+ * A key holding a control character is one the master-key rotation sweep
+ * refuses on the way back out of the bucket, and a body the sweep refuses is
+ * a body that stays under the retired key.  Writing such a key is therefore
+ * the framework producing a corpus its own operator tooling cannot finish —
+ * so the rule belongs on the way in.
+ *
+ * It is on the write path only: applying it to `get`/`delete` would not
+ * reject a new bad key, it would strand an object already written under the
+ * old rules, leaving it unreadable *and* undeletable through this backend.
+ */
+const S3WriteKeyRules = {
+  ...S3KeyRules,
+  ...ObjectStorageWriteKeyRules,
+} as const;
+
+const assertSafeKey = makeKeyValidator(S3KeyRules);
+const assertSafeWriteKey = makeKeyValidator(S3WriteKeyRules);
+
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
   private readonly bucket: string;
@@ -67,6 +115,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async put(key: string, body: Uint8Array, options: PutOptions = {}): Promise<{ etag: string }> {
+    assertSafeWriteKey(key);
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
     const command = new sdk.PutObjectCommand({
@@ -98,6 +147,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async get(key: string): Promise<Option<ObjectFetched>> {
+    assertSafeKey(key);
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
     const command = new sdk.GetObjectCommand({ Bucket: this.bucket, Key: key });
@@ -123,6 +173,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async delete(key: string): Promise<void> {
+    assertSafeKey(key);
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
     const command = new sdk.DeleteObjectCommand({ Bucket: this.bucket, Key: key });
@@ -135,6 +186,10 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async list(options: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
+    // Empty prefix means "everything" — the standard list-all semantic, and
+    // the one shape the non-empty key rules would reject outright.  Same
+    // exemption the filesystem backend makes.
+    if (options.prefix !== '') assertSafeKey(options.prefix);
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
     const out: ObjectInfo[] = [];

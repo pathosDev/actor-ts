@@ -265,7 +265,10 @@ export class FastifyBackend implements HttpServerBackend {
       },
       (socket: WebsocketPackageSocket, req: FastifyRequest) => {
         const adapted = this.adaptRequest(req);
-        reg.onConnection(adapted, websocketPackageAdapter(socket, { remoteAddress: adapted.remoteAddress }));
+        reg.onConnection(adapted, websocketPackageAdapter(socket, {
+          remoteAddress: adapted.remoteAddress,
+          preAttachBuffer: reg.preAttachBuffer,
+        }));
       },
     );
   }

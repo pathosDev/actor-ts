@@ -128,6 +128,61 @@ Verarbeitung crasht, lässt den Eintrag einfach in der PEL stehen.
 Der nächste Consumer, der mit derselben Group startet, kann dort
 weitermachen, wo der vorige aufgehört hat (via XPENDING + XCLAIM).
 
+## Verbindungsverlust und Reconnect
+
+Der Actor öffnet zwei Verbindungen — einen Producer, einen Consumer —
+und führt beide auf den gemeinsamen
+[`BrokerActor`](/de/io/broker-actor-base/)-Lifecycle zurück.  `reconnect`
+und `circuitBreaker` bedeuten hier also dasselbe wie bei jedem anderen
+Broker:
+
+```ts
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('redis://localhost:6379')
+  .withStreams(['orders'])
+  .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
+  .withTarget(handler)
+  .withReconnect({ initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 })
+  .withCircuitBreaker(5, 60_000);
+```
+
+Was das konkret bringt:
+
+- **Eine abgelehnte Verbindung lässt den Connect scheitern.**  Die
+  Clients werden lazy geöffnet und der Handshake wird abgewartet — ein
+  nicht erreichbares Redis erzeugt also einen fehlgeschlagenen Versuch
+  und einen Backoff, kein `BrokerConnected` für einen Broker, den nie
+  jemand erreicht hat.
+- **Eine abgerissene Verbindung wird gemeldet.**  Die `error`- /
+  `close`- / `end`-Signale des Treibers landen auf
+  `BrokerDisconnected`, sodass ein reiner Consumer-Actor — einer, der
+  nie publisht — für einen Health-Check genauso sichtbar ist wie ein
+  produzierender.
+- **Ein fehlgeschlagenes `XREADGROUP` wird klassifiziert.**  Eine
+  Ablehnung auf Verbindungsebene (Socket geschlossen, `ECONNREFUSED`,
+  ioredis hat seine Retries pro Request aufgebraucht) beendet die
+  Consumer-Schleife und übergibt den Ausfall an den konfigurierten
+  Backoff.  Eine Ablehnung auf Kommandoebene wird an Ort und Stelle
+  wiederholt, und Wiederholungen desselben Fehlers werden zu einem
+  einzigen Log-Eintrag zusammengefasst, der die Anzahl der
+  unterdrückten Vorkommen mitführt.
+- **Die Consumer Group wird neu angelegt.**  `XGROUP CREATE … MKSTREAM`
+  läuft bei jedem Connect — ein Redis-Neustart, der die Group verloren
+  hat, heilt also beim nächsten Reconnect, statt sich auf `NOGROUP`
+  festzudrehen.  Genau deshalb gilt eine `NOGROUP`-Antwort als
+  Verbindungsebene: nichts anderes führt das Bootstrapping erneut aus.
+
+`ioredis` reconnected zusätzlich intern, und die beiden Ebenen
+behindern sich nicht: seine Retries sind das, worauf eine Ablehnung auf
+Kommandoebene wartet, und die des Frameworks übernehmen, sobald ioredis
+aufgibt.
+
+Was es **nicht** bringt, ist Redelivery: Einträge, die beim
+Verbindungsabriss schon an `target` übergeben, aber noch nicht geackt
+waren, bleiben in der PEL, und der Reconnect spielt sie nicht erneut
+ein.  Die Wiederherstellung läuft über `XPENDING` + `XCLAIM`, genau wie
+bei einem Consumer-Crash.
+
 ## Peer-Dependency
 
 ```bash

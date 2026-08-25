@@ -96,6 +96,9 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
   maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
+  maxPreAttachFrames?: number;                        // Frame-Limit im Aufbaufenster; Default 256
+  maxPreAttachBytes?:  number;                        // Byte-Limit im Aufbaufenster; Default 4 MiB
+  acceptTimeoutMs?:    number;                        // Aufbau-Frist; Default 10 000, Infinity schaltet ab
 };
 ```
 
@@ -182,6 +185,42 @@ das Backend den Aufbau der WebSocket-Bridge und nennt die Version im
 Fehler.  Deshalb beginnt der Peer-Range bei 1.2.0; ein einfaches
 `npm install @hono/node-ws` wählt von sich aus eine ausreichend neue Version.
 </Aside>
+
+#### Das Aufbaufenster einer Verbindung
+
+Zwischen dem Abschluss des Handshakes und dem Moment, in dem der
+Connection-Actor seine Listener anhängt, liegt ein kurzes Fenster — zwei
+Mailbox-Schritte —, in dem der Socket lebt und niemand mitliest.  Frames,
+die darin ankommen, werden gehalten und in dem Moment nachgespielt, in dem
+der Actor anhängt; verloren geht also nichts.  Zwei Stellschrauben
+begrenzen, was dieses Fenster kosten darf, und beide gibt es, weil sein
+Ende nicht garantiert ist: den Actor spawnt der Hub, und ein Hub, der
+gestoppt wurde, hängt oder umkonfiguriert wurde, liefert unter Umständen
+nie einen.
+
+- **`maxPreAttachFrames` / `maxPreAttachBytes`** begrenzen, was gehalten
+  wird.  Jenseits davon wird der Socket mit **1013** ("try again later")
+  geschlossen statt weiter gepuffert.  Ein legitimer Client schickt in
+  dieses Fenster nichts oder eine Begrüßung, die Defaults — 256 Frames,
+  4 MiB — liegen also um Größenordnungen über normalem Verkehr; abgewiesen
+  wird ein Peer, der in eine noch gar nicht angenommene Verbindung
+  hineinstreamt.  Der **erste** Frame wird immer angenommen, unabhängig von
+  seiner Größe (`maxFrameBytes` begrenzt ihn ohnehin bereits) — eine Route,
+  die `maxFrameBytes` über 4 MiB hebt, muss `maxPreAttachBytes` also nur
+  mitheben, wenn ihre Clients *mehrere* solcher Frames auf einmal senden.
+- **`acceptTimeoutMs`** begrenzt, wie lange das Fenster offen bleiben darf.
+  Hat sich innerhalb dieser Frist kein Connection-Actor angehängt, wird der
+  Socket mit 1013 geschlossen und sein `maxConnections`-Platz freigegeben.
+  Standardmäßig zehn Sekunden: ein gesunder Hub hängt sich in Mikrosekunden
+  an, das hier ist also ein Auffangnetz und keine Liveness-Regel — und ein
+  Actor, der nach der Frist doch noch auftaucht, bekommt das Close statt
+  eines Sockets, den das Framework längst geschlossen hat.  `Infinity`
+  schaltet es ab.
+
+Beides ist nicht versehentlich erreichbar.  Beides beantwortet dieselbe
+Störung: ein aufgewerteter Socket ohne Actor dahinter, der vorher für die
+Lebensdauer des Prozesses offen blieb, Frames sammelte, die niemand je
+abholt, und einen Platz belegte, den niemand je zurückgibt.
 
 ### Origin-Allowlist (CSWSH-Schutz)
 
@@ -337,7 +376,10 @@ einzige Referenz auf einen Socket trägt, dessen Handshake bereits
 abgeschlossen ist.  Es zu verlieren würde diesen Socket aufgewertet
 zurücklassen, ohne dass etwas daran hängt: keine Listener, eingehende
 Frames stapeln sich ungelesen, und sein `maxConnections`-Platz bleibt
-belegt, bis der Client aufgibt.
+belegt, bis der Client aufgibt.  Einen Hub, der aus einem anderen Grund
+nicht antworten kann — er ist gestoppt, oder er kommt nie zu dem Kommando —,
+fängt stattdessen [das Aufbaufenster](#das-aufbaufenster-einer-verbindung)
+ab: es schließt den Socket und gibt den Platz zurück.
 
 **Was eine Begrenzung dagegen weiterhin verwirft, ist der Rest.**
 Eingehende Frames und die Signale `onClientConnected` /
@@ -469,6 +511,9 @@ actor-ts.http.websocket {
   onInvalidMessage = close
   maxBufferedBytes = 4194304
   onBackpressure   = drop
+  maxPreAttachFrames = 256
+  maxPreAttachBytes  = 4M
+  acceptTimeoutMs    = 10s
 }
 ```
 

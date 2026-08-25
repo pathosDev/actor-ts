@@ -426,7 +426,10 @@ export class ExpressBackend implements HttpServerBackend {
     wss.handleUpgrade(pending.request, pending.socket, pending.head, (ws) => {
       // Keep wss.clients populated so the unbind terminate-walk works.
       wss.emit('connection', ws, pending.request);
-      registration.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+      registration.onConnection(adapted, websocketPackageAdapter(ws, {
+        remoteAddress: adapted.remoteAddress,
+        preAttachBuffer: registration.preAttachBuffer,
+      }));
     });
   }
 
