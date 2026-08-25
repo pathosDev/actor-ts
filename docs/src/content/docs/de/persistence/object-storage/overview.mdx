@@ -145,6 +145,26 @@ keine S3-Kosten.  Richtig für:
 - **Kleine Single-Node-Deployments** — wenn du speziell das
   Object-Storage-Interface ohne S3 willst.
 
+Das Root-Verzeichnis ist die gesamte Welt dieses Backends.  Ein
+Key mit `..`, absolutem Präfix oder NUL-Byte wird direkt
+abgelehnt, und jede Operation kanonisiert zusätzlich den Pfad, den
+sie gleich anfasst — ein Symlink, der im Root liegt und aus ihm
+herauszeigt, wird also abgelehnt statt verfolgt.  Das Root *selbst*
+darf ein Symlink sein: jede Operation löst es auf und misst das
+Containment am Ergebnis, `/var/lib/app -> /mnt/data` funktioniert
+also normal.
+
+Zwei Grenzen sollte man kennen, denn sonst nimmt man mehr an, als
+die Prüfung leistet.  Sie liest das Dateisystem und handelt
+danach, lehnt also einen bereits vorhandenen Link ab, kann aber
+das Rennen gegen einen nicht gewinnen, der genau dazwischen
+gelegt wird — portables `O_NOFOLLOW` ist über `node:fs` nicht
+erreichbar.  Und sie schließt die *eigenen* Operationen des
+Backends ein; sie ist keine Sandbox um ein Verzeichnis, in das
+andere lokale Prozesse schreiben dürfen.  Wenn nicht
+vertrauenswürdige Nutzer Einträge im Storage-Root anlegen können,
+ist das bereits das größere Problem.
+
 ### S3
 
 ```ts
