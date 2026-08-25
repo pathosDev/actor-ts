@@ -8,6 +8,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { AmqpQueueBinding } from './AmqpActor.js';
 
 export interface AmqpOptionsType extends BrokerCommonOptionsType {
@@ -19,6 +21,16 @@ export interface AmqpOptionsType extends BrokerCommonOptionsType {
   readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
   /** Whether to auto-ack consumed deliveries.  Default: true. */
   readonly autoAcknowledge?: boolean;
+  /**
+   * TLS material forwarded to amqplib's `socketOptions` — a private CA to
+   * trust, or a client certificate for mTLS.  Carries the material itself,
+   * never a path to it.  Pair it with an `amqps://` URL: this configures the
+   * handshake, it does not turn one on.
+   *
+   * Deliberately has no HOCON leaf — a config file is the wrong place for a
+   * private key, the same call `TcpServerOptionsType.tls` makes.
+   */
+  readonly tls?: TlsTransportOptionsType;
 }
 
 export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
@@ -46,6 +58,11 @@ export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
   withAutoAcknowledge(on = true): this {
     return this.set('autoAcknowledge', on);
   }
+
+  /** TLS material for an `amqps://` dial.  Pass the material, not a file path. */
+  withTls(tls: TlsTransportOptionsType): this {
+    return this.set('tls', tls);
+  }
 }
 
 /** Validates resolved {@link AmqpOptionsType} settings. */
@@ -57,6 +74,8 @@ export class AmqpOptionsValidator extends BrokerOptionsValidator<AmqpOptionsType
     this.commonRules(s);
     this.url('url', ['amqp', 'amqps']);
     this.nonNegativeInt('prefetch'); // 0 = unlimited (AMQP semantics)
+    const tlsProblem = findBrokerTlsProblem(s.tls);
+    if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }
 }
 

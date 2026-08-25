@@ -5,6 +5,8 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
+import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { AmqpOptionsValidator } from './AmqpOptions.js';
 import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
@@ -94,9 +96,14 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   protected override optionsValidator(): AmqpOptionsValidator { return new AmqpOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
+  /** @internal Test seam — override to inject a fake amqplib module. */
+  protected amqpModule(): Promise<AmqpModuleLike> { return amqpLazy.get(); }
+
   protected async connectImplementation(): Promise<void> {
-    const amqp = await amqpLazy.get();
-    this.connection = await amqp.connect(this.options.url!);
+    const amqp = await this.amqpModule();
+    // `socketOptions` is amqplib's own second argument and is where ca / cert
+    // / key belong; `undefined` reproduces the one-argument call exactly.
+    this.connection = await amqp.connect(this.options.url!, toBrokerDriverTls(this.options.tls));
     this.channel = await this.connection.createChannel();
     await this.channel.prefetch(this.options.prefetch ?? 1);
     this.connection.on('error', (e: Error) => this.handleConnectionLost(e));
@@ -203,12 +210,19 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
 
 /* ----------------------------- internals -------------------------------- */
 
-type AmqpRawMessage = {
+/**
+ * The amqplib shapes below are exported as test seams, so a subclass
+ * overriding {@link AmqpActor.amqpModule} — the injection point the TLS
+ * forwarding is asserted through (#743) — can satisfy them without the
+ * `amqplib` peer-dep.  Before that seam existed the only way to reach the
+ * driver call was to reimplement `connectImplementation` wholesale.
+ */
+export type AmqpRawMessage = {
   content: Uint8Array;
   properties?: Record<string, unknown>;
 };
 
-interface AmqpChannelLike {
+export interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;
   assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
@@ -226,17 +240,18 @@ interface AmqpChannelLike {
   close(): Promise<void>;
 }
 
-interface AmqpConnectionLike {
+export interface AmqpConnectionLike {
   createChannel(): Promise<AmqpChannelLike>;
   on(event: 'error', listener: (err: Error) => void): void;
   on(event: 'close', listener: () => void): void;
   close(): Promise<void>;
 }
 
-interface AmqpLibModule {
-  connect(url: string): Promise<AmqpConnectionLike>;
+/** The `amqplib` module surface we use.  Exported as a test seam. */
+export interface AmqpModuleLike {
+  connect(url: string, socketOptions?: BrokerDriverTlsOptions): Promise<AmqpConnectionLike>;
 }
 
-const amqpLazy: Lazy<Promise<AmqpLibModule>> = Lazy.of(
-  () => lazyImportModule<AmqpLibModule>('amqplib', { context: 'AmqpActor' }),
+const amqpLazy: Lazy<Promise<AmqpModuleLike>> = Lazy.of(
+  () => lazyImportModule<AmqpModuleLike>('amqplib', { context: 'AmqpActor' }),
 );

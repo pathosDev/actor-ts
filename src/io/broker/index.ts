@@ -18,6 +18,12 @@ export {
   BrokerBufferOverflow,
   BrokerNotConnected,
 } from './BrokerEvents.js';
+// Client-side TLS material (#743).  `TlsTransportOptionsType` is the shape
+// every `withTls` on this side takes; re-exported here because reaching it
+// through `actor-ts/cluster` to configure a message broker made no sense.
+export { toBrokerDriverTls, findBrokerTlsProblem } from './BrokerTls.js';
+export type { BrokerDriverTlsOptions } from './BrokerTls.js';
+export type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 
 // Phase 1 actors
 export { TcpSocketActor } from './TcpSocketActor.js';
@@ -97,6 +103,9 @@ export type {
   KafkaCommand,
   KafkaRecord,
   KafkaPublish,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  KafkajsModule,
+  KafkaConstructor,
 } from './KafkaActor.js';
 export { KafkaOptions, KafkaOptionsBuilder, KafkaOptionsValidator } from './KafkaOptions.js';
 export type { KafkaOptionsType } from './KafkaOptions.js';
@@ -106,6 +115,11 @@ export type {
   AmqpDelivery,
   AmqpPublish,
   AmqpQueueBinding,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  AmqpModuleLike,
+  AmqpConnectionLike,
+  AmqpChannelLike,
+  AmqpRawMessage,
 } from './AmqpActor.js';
 export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
@@ -248,6 +262,8 @@ export type {
   RedisStreamEntry,
   RedisStreamPublish,
   // Test seams (re-exported so subclasses can satisfy the mock shape).
+  IoredisModuleLike,
+  IoredisConstructor,
   IoredisClientLike,
   IoredisClientEvent,
   IoredisClientOptionsLike,
