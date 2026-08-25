@@ -13,6 +13,8 @@ import { none, some, type Option } from '../util/Option.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
+import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import {
@@ -611,6 +613,26 @@ export class Cluster {
   /** True if this node is currently the leader. */
   isLeader(): boolean {
     return this.leader().exists((l) => l.address.equals(this.selfAddress));
+  }
+
+  /**
+   * Resolve once this node is a full member (`up`) and at least
+   * `minimumMembers` members are `up`; with `timeoutMs` set, reject with
+   * `ClusterReadyTimeoutError` when the deadline fires first.  Without
+   * `timeoutMs` it waits indefinitely, like `ActorSystem.whenTerminated()` —
+   * see {@link ClusterReadinessOptions.timeoutMs} for why no default
+   * deadline exists at this layer.
+   */
+  awaitReady(options?: ClusterReadinessOptions): Promise<void> {
+    return awaitClusterReady(this, options);
+  }
+
+  /**
+   * Synchronous probe of the same predicate {@link awaitReady} waits on.
+   * `timeoutMs` is ignored — a probe has no deadline.
+   */
+  isReady(options?: ClusterReadinessOptions): boolean {
+    return isClusterReadyNow(this, options);
   }
 
   /**

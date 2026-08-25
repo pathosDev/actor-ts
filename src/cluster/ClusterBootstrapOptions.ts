@@ -1,5 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
@@ -354,6 +356,38 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
       this.fail('awaitReady', 'must be a boolean or a non-negative number of ms', s.awaitReady);
     }
   }
+}
+
+/**
+ * The readiness knobs of the `actor-ts.cluster.bootstrap` block, in the
+ * shape {@link bootstrapCluster} and `Cluster.awaitReady` layer between the
+ * explicit options and the built-in defaults.  `awaitReadyMs` has no
+ * `reference.conf` value on purpose: a leaf that is always present could not
+ * express "unset", and unset is what selects the grace-aware computed
+ * default (#1086) — the same reasoning as `advertised-host`.
+ */
+export type ClusterBootstrapConfigDefaults = {
+  readonly awaitReadyMs?: number;
+  readonly minimumMembers?: number;
+};
+
+/**
+ * Read the readiness pair of the bootstrap block.  Only keys actually
+ * present are returned, so an absent one falls through to the computed /
+ * built-in default instead of landing as an explicit `undefined`.
+ */
+export function readClusterBootstrapDefaultsFromConfig(
+  config: Config,
+): ClusterBootstrapConfigDefaults {
+  const keys = ConfigKeys.cluster.bootstrap;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: {
+    -readonly [K in keyof ClusterBootstrapConfigDefaults]:
+    ClusterBootstrapConfigDefaults[K]
+  } = {};
+  if (config.hasPath(keys.awaitReady)) out.awaitReadyMs = config.getDuration(keys.awaitReady);
+  if (config.hasPath(keys.minimumMembers)) out.minimumMembers = config.getInt(keys.minimumMembers);
+  return out;
 }
 
 /**

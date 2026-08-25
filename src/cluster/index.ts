@@ -10,6 +10,17 @@ export {
   selfIsFullMember,
   transportReachesCluster,
 } from './ClusterHealthChecks.js';
+// In-process readiness (#1355) — the wait `bootstrapCluster` uses, public so
+// hand-wired `Cluster.join` callers get the same one.
+export {
+  ClusterReadinessOptionsValidator,
+  ClusterReadyTimeoutError,
+  DEFAULT_MINIMUM_MEMBERS,
+  awaitClusterReady,
+  clusterIsReady,
+  isClusterReadyNow,
+} from './ClusterReadiness.js';
+export type { ClusterReadinessOptions } from './ClusterReadiness.js';
 export {
   ClusterOptions,
   ClusterOptionsBuilder,
@@ -24,8 +35,13 @@ export {
 } from './ClusterOptions.js';
 export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
-export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
-export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
+export {
+  ClusterBootstrapOptions,
+  ClusterBootstrapOptionsBuilder,
+  ClusterBootstrapOptionsValidator,
+  readClusterBootstrapDefaultsFromConfig,
+} from './ClusterBootstrapOptions.js';
+export type { ClusterBootstrapOptionsType, ClusterBootstrapConfigDefaults } from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 // Stable-observation bootstrap (#148).
