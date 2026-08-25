@@ -144,6 +144,15 @@ export class HttpExtension implements Extension {
         // Reject duplicate / conflicting patterns up front — clearer than
         // the backend's own boot-time error, and it catches the WS-vs-GET
         // collision (a WS route occupies the GET verb at its pattern).
+        //
+        // The HTTP-vs-HTTP pass belongs here, and not only in the backends,
+        // because only Fastify's router rejects a repeated method+pattern
+        // today: Express and Hono replay their registrations in insertion
+        // order and answer with the first that matches, so `concat()`
+        // argument order would quietly decide which of an auth-guarded route
+        // and an unguarded twin is reachable — a security boundary nobody
+        // reads argument order as.  Deciding it here makes the answer the
+        // same on every backend (#759).
         const wsPatterns = new Set<string>();
         for (const route of wsRoutes) {
           if (wsPatterns.has(route.pattern)) {
@@ -151,12 +160,22 @@ export class HttpExtension implements Extension {
           }
           wsPatterns.add(route.pattern);
         }
+        const httpEndpoints = new Set<string>();
         for (const route of httpRoutes) {
           if (route.method === 'GET' && wsPatterns.has(route.pattern)) {
             throw new Error(
               `Route conflict: GET ${route.pattern} collides with a websocket() route on the same path.`,
             );
           }
+          const endpoint = `${route.method} ${route.pattern}`;
+          if (httpEndpoints.has(endpoint)) {
+            throw new Error(
+              `Route conflict: ${endpoint} is declared more than once — a duplicate `
+              + 'would resolve by declaration order, so one route would silently '
+              + 'shadow the other.',
+            );
+          }
+          httpEndpoints.add(endpoint);
         }
 
         // Wrap each HTTP route's handler with a request log + timing.

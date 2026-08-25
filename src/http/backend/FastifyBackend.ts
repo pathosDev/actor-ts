@@ -110,6 +110,13 @@ export class FastifyBackend implements HttpServerBackend {
    * became the source (#465).
    */
   registerRoute(route: RouteRegistration): void {
+    // Ahead of `app.route`, which would also reject this — but with
+    // `FST_ERR_DUPLICATED_ROUTE`, wording that changes with Fastify and that
+    // the other two backends cannot produce.  Rejecting here makes the refusal
+    // the backend's own and identical across all three (#759).
+    if (this.registered.some((r) => r.method === route.method && r.pattern === route.pattern)) {
+      throw new Error(`FastifyBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
+    }
     this.registered.push(route);
     this.app.route({
       method: route.method,
