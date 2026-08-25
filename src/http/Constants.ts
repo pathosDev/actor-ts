@@ -40,12 +40,25 @@ export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
  * `XOptions.ts` owns both readers, and writing the number down per reader is
  * what let the transport side drift open in the first place.
  *
- * What a backend hands its runtime as the *transport* frame limit is derived
- * from the routes it registered, not from this constant: `transportFrameCapOf`
- * takes the widest cap any of them resolved to, so a route or a HOCON setting
- * that moves `maxFrameBytes` moves the buffering window with it (#373).  This
- * number is where that resolution starts when nothing else says otherwise, and
- * `transportFrameCapOf`'s own fallback for a server with no WebSocket routes.
+ * What a *server* backend hands its runtime as the transport frame limit is
+ * derived from the routes it registered, not from this constant:
+ * `transportFrameCapOf` takes the widest cap any of them resolved to, so a
+ * route or a HOCON setting that moves `maxFrameBytes` moves the buffering
+ * window with it (#373).  This number is where that resolution starts when
+ * nothing else says otherwise, and `transportFrameCapOf`'s own fallback for a
+ * server with no WebSocket routes.
+ *
+ * **On the client that second sentence does not hold, and the paragraph above
+ * has to be read narrowly there.**  `WebsocketClientActor` dials through the
+ * runtime's native `WebSocket`, which on every supported runtime ignores a
+ * payload limit passed to its constructor (measured — see
+ * `WebsocketConstructor.ts`).  So there is no client transport cap to move:
+ * the peer's frame is buffered in full at whatever ceiling the runtime's own
+ * receiver imposes, and `maxFrameBytes` decides only what happens next.  What
+ * it delivers there is that the decoder and the mailbox never see the payload,
+ * and that the connection is closed with 1009 so the peer cannot spend the
+ * heap twice on one socket (#750) — not the "exhausts the process" protection
+ * the first paragraph promises, which is a server-side property.
  */
 export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
 

@@ -197,12 +197,22 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft. Das
   Limit zu senken — pro Route oder über
   `actor-ts.http.websocket.maxFrameBytes` — verkleinert dieses Puffer-Fenster
-  mit. **Zwei Kombinationen haben kein Transport-Limit** und puffern den Frame,
+  mit. **Drei Stellen haben kein Transport-Limit** und puffern den Frame,
   bevor sie ihn abweisen: Hono auf **Deno**, dessen `upgradeWebSocket`
-  überhaupt kein Payload-Limit anbietet, und **Bun** mit dem Express- oder
+  überhaupt kein Payload-Limit anbietet; **Bun** mit dem Express- oder
   Fastify-Backend, wo `ws` auf Buns eingebauten Shim auflöst, der `maxPayload`
-  zwar annimmt und zurückliefert, aber nicht durchsetzt. Siehe
-  [WebSocket](/de/http/websocket/).
+  zwar annimmt und zurückliefert, aber nicht durchsetzt; und der **ausgehende**
+  [`WebsocketClientActor`](/de/io/websocket/) auf *jeder* Laufzeit — kein
+  natives Client-`WebSocket` beachtet ein Payload-Limit, das man seinem
+  Konstruktor übergibt, gemessen auf Bun, Node und Deno, wo die Option
+  angenommen wird, als `undefined` zurückkommt und ein 4-MiB-Frame trotzdem
+  vollständig zugestellt wird. Auf dem Client greift das Limit also nur im
+  Nachhinein, und was es bringt, ist, dass der Verstoß *endgültig* ist: Ein zu
+  großer Frame schließt die Verbindung mit 1009, sodass das Gegenüber die
+  Allokation auf diesem Socket nicht wiederholen kann. Beachte, dass das
+  Bedrohungsmodell dort ein anderes ist — das Gegenüber ist ein Endpunkt, den
+  du selbst gewählt hast, oder ein MITM auf einer unverschlüsselten
+  `ws://`-Verbindung. Siehe [WebSocket](/de/http/websocket/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.

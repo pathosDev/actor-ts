@@ -62,7 +62,7 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
-  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
+  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
@@ -187,14 +187,28 @@ Ein `WebsocketFrame` ist `{ kind: 'text'; data: string }` oder
 einen `WebsocketDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
 wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
 
-Ein zu großer Frame wird mit einer Warnung verworfen, eine pro Frame — das
-Gegenüber bestimmt also, wie oft diese Zeile geschrieben wird.  Sie benennt
-die Verbindung deshalb mit einem redigierten Label
-(`wss://feed.example.com/ws/orders`) statt mit `url`: Userinfo und
-Query-String fallen weg, denn ein WebSocket-Endpunkt wird üblicherweise mit
-einem `?token=…` authentifiziert, und der Pfad bleibt erhalten, weil er zwei
-Verbindungen zum selben Host unterscheidet.  Dieselbe Maskierung steht
-deinem eigenen Code als
+Ein zu großer Frame **schließt die Verbindung** mit Code 1009 ("Message Too
+Big") und startet den üblichen Reconnect, statt an Ort und Stelle verworfen
+zu werden.  Sei dir im Klaren darüber, was das bringt und was nicht: Die
+Allokation verhindert es **nicht**.  Anders als die Server-Backends hat der
+Client kein Transport-Limit, an das er die Grenze durchreichen könnte — kein
+natives `WebSocket` der unterstützten Runtimes beachtet ein Payload-Limit,
+das man seinem Konstruktor übergibt.  Wenn `maxFrameBytes` geprüft wird, hat
+die Runtime den Frame also längst vollständig auf dem Heap zusammengesetzt.
+Was das Schließen bringt: Das Gegenüber kann diesen Heap nicht *erneut* auf
+derselben Verbindung ausgeben — ohne den Close ließe sich eine einzige
+Verbindung dazu bringen, die Allokation für jeden beliebigen weiteren Frame
+zu wiederholen.  Eine weitere Runde kostet das Gegenüber jetzt einen
+vollständigen Reconnect, den der `reconnect`-Backoff und der Circuit Breaker
+bereits drosseln.  Siehe
+[Untrusted Input begrenzen](/de/http/security/#untrusted-input-begrenzen).
+
+Begleitet wird der Close von einer Warnzeile.  Sie benennt die Verbindung
+mit einem redigierten Label (`wss://feed.example.com/ws/orders`) statt mit
+`url`: Userinfo und Query-String fallen weg, denn ein WebSocket-Endpunkt
+wird üblicherweise mit einem `?token=…` authentifiziert, und der Pfad bleibt
+erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.
+Dieselbe Maskierung steht deinem eigenen Code als
 [`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
 
 ## Reconnect und Buffering
