@@ -133,6 +133,23 @@ begrenzen soll.
 Siehe [Kardinalitätsdisziplin](/de/observability/metrics/core-metrics/#kardinalitätsdisziplin)
 für `bucketize`, den Weg, die Grenze gar nicht erst zu erreichen.
 
+## Eine Serie entfernen
+
+[`remove`](/de/observability/metrics/core-metrics/#eine-serie-entfernen)
+reicht an prom-clients eigenes `Metric.remove(labels)` weiter — ein
+Tupel, dessen Gegenstand weg ist, verlässt damit beide Seiten
+gleichzeitig: die Serien-Zählung der Bridge und die Exposition, die
+prom-client rendert. Nur eine von beiden zu treffen wäre schlimmer als
+gar nicht zu entfernen: ein freigegebener Platz, während die Serie
+weiter gescrapt wird, oder umgekehrt.
+
+Das ist die eine Stelle, an der der Adapter mehr von `prom-client`
+braucht als die Konstruieren-und-Mutieren-Oberfläche. Der `client`, den
+du übergibst, muss also `remove` auf seinen `Counter` / `Gauge` /
+`Histogram` anbieten — jedes Release seit v11.2 tut das. Ein
+selbstgebauter Ersatz, der es weglässt, ist ein Compile-Fehler statt
+eines stillen Auseinanderlaufens.
+
 ## Peer-Dependency
 
 ```bash

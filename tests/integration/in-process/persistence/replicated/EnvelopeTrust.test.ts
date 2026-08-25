@@ -17,9 +17,11 @@
  *
  *   1. **Pre-claiming buys nothing.** The key is now a per-event id minted
  *      from 96 bits of entropy at `persist` time — the `ORSet` remedy from
- *      #722, which is the precedent that transfers. Transport binding does
- *      not: `replicaId` is documented as legitimately *not* the sending
- *      node's address.
+ *      #722, which is the precedent that transfers. Authorship binding is a
+ *      different half and does not cover this one: the pre-claim below is
+ *      sent by a member that is entirely honest about *who it is*, and only
+ *      guesses a key belonging to someone else. `EnvelopeAuthorship.test.ts`
+ *      owns the other half.
  *   2. **A malformed envelope is dropped, whole, before anything is
  *      mutated.** `_absorb` used to add the key, splice the event in and
  *      refold state, and only *then* die inside `VectorClock.fromData` — so
@@ -29,11 +31,13 @@
  *      from the history would change the fold and evicting a key would reopen
  *      double-apply.
  *
- * The forged envelopes are delivered with a plain `ref.tell`, which is exactly
- * what the pub-sub mediator does to a subscriber (`tellSubscriber` →
- * `ref.tell(body)`) and also what `Cluster.dispatchEnvelope` does for any
- * resolvable path — the two reachable routes, without the cluster machinery in
- * the way.
+ * The forged envelopes are delivered exactly as the pub-sub mediator now
+ * delivers to a subscriber that asked for `deliverWithOrigin` — a
+ * `PubSubEnvelope` carrying the node the connection authenticated — so the
+ * cluster machinery is out of the way while the shape reaching the actor is
+ * the real one. `deliverFromPeer` names the sending node explicitly, which is
+ * what lets every case below be a *legitimate* member behaving badly rather
+ * than one that is refused before its payload is ever read.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
@@ -44,6 +48,7 @@ import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { PubSubEnvelope } from '../../../../../src/cluster/pubsub/Messages.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 import type { LogContextData } from '../../../../../src/LogContext.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
@@ -242,6 +247,25 @@ async function drainWithSentinel(replica: Replica, marker: number): Promise<void
   });
 }
 
+/** The cross-replica topic — the only channel a peer's envelope may arrive on. */
+const TOPIC = `replicated-es:${PERSISTENCE_ID}`;
+
+/**
+ * Deliver an envelope the way the mediator does for an origin-subscriber.
+ *
+ * `sendingNode` is the node the *connection* authenticated, and it is a
+ * separate argument from whatever the envelope claims on purpose: every case
+ * in this file is a member that has already completed the handshake, so
+ * passing the envelope's own `replica` here models the peer whose events these
+ * genuinely are, and passing a different address models the impersonation
+ * `EnvelopeAuthorship.test.ts` is about.
+ */
+function deliverFromPeer(replica: Replica, envelope: unknown, sendingNode: string): void {
+  replica.ref.tell(
+    new PubSubEnvelope(TOPIC, envelope, NodeAddress.parse(sendingNode)) as unknown as Command,
+  );
+}
+
 const warningsMatching = (replica: Replica, needle: string): LogRecord[] =>
   replica.logger.records.filter((record) => record.level === 'warn' && record.message.includes(needle));
 
@@ -285,35 +309,41 @@ describe('replicated envelope trust — event ids (#706)', () => {
     resetSpies();
     const replica = await startReplica('trust-preclaim', 70_503);
     try {
-      // The whole attack, in the two shapes a peer can send it. Both claim the
-      // victim's replica id and its `seqAtReplica`, which is all the pre-fix
-      // deduplication key was made of.
+      // The attack, sent by a member that authorship binding cannot touch: it
+      // publishes under its *own* replica id, from its own node, and only
+      // guesses the deduplication key its victim's next event will carry.
+      // Nothing about the sender is a lie, so only the key's entropy stands
+      // between this and the victim being censored.
+      const attackerReplica = 'trust-attacker@h:70599';
       const preClaimedWithLegacyKeyAsId: ReplicatedEventEnvelope<Event> = {
         ...victimEnvelope,
+        replica: attackerReplica,
         eventId: `${victimEnvelope.replica}#${victimEnvelope.seqAtReplica}`,
         event: { kind: 'added', n: 1 },
       };
       const preClaimedWithNoId = {
         persistenceId: victimEnvelope.persistenceId,
-        replica: victimEnvelope.replica,
+        replica: attackerReplica,
         seqAtReplica: victimEnvelope.seqAtReplica,
         vc: victimEnvelope.vc,
         timestamp: victimEnvelope.timestamp,
         event: { kind: 'added', n: 2 },
       } as unknown as ReplicatedEventEnvelope<Event>;
 
-      replica.ref.tell(preClaimedWithLegacyKeyAsId as unknown as Command);
-      replica.ref.tell(preClaimedWithNoId as unknown as Command);
-      // The victim's real event, byte-for-byte as its own journal holds it.
-      replica.ref.tell(victimEnvelope as unknown as Command);
+      deliverFromPeer(replica, preClaimedWithLegacyKeyAsId, attackerReplica);
+      deliverFromPeer(replica, preClaimedWithNoId, attackerReplica);
+      // The victim's real event, byte-for-byte as its own journal holds it,
+      // arriving from the victim's own node.
+      deliverFromPeer(replica, victimEnvelope, victimEnvelope.replica);
       await drainWithSentinel(replica, 9);
 
       expect(
         appliedAmounts,
         "the victim's genuine event was suppressed by a pre-claimed deduplication key",
       ).toContain(4_242);
-      // Guessing the old key still lands an event of the attacker's own — that
-      // is impersonation, which needs authorship binding and is not this fix.
+      // The attacker's own event lands, as any member's honest write does —
+      // which is what makes the case above a real pre-claim rather than a
+      // message that was refused before its key was ever read.
       expect(appliedAmounts).toContain(1);
       // The `eventId`-less shape is refused outright rather than absorbed.
       expect(appliedAmounts).not.toContain(2);
@@ -398,7 +428,9 @@ describe('replicated envelope trust — shape validation (#706)', () => {
 
       hostile.forEach((testCase, index) => {
         const base = testCase.envelope as Record<string, unknown>;
-        replica.ref.tell({
+        // Sent by the peer whose id the case claims, so authorship never
+        // enters into it: every refusal below is the shape check's doing.
+        deliverFromPeer(replica, {
           ...base,
           // Both identity fields are made unique per case *after* the spread,
           // and only where the case did not deliberately replace the shared
@@ -409,7 +441,7 @@ describe('replicated envelope trust — shape validation (#706)', () => {
             ? `${peerReplica}#${index.toString(16).padStart(REPLICATED_EVENT_ID_ENTROPY_CHARACTERS, '0')}`
             : base.eventId,
           event: { kind: 'added', n: amountFor(index) },
-        } as unknown as Command);
+        }, peerReplica);
       });
       await drainWithSentinel(replica, 9);
 
@@ -430,7 +462,7 @@ describe('replicated envelope trust — shape validation (#706)', () => {
 
       // The validator has to discriminate, not just refuse. Without this every
       // assertion above would also pass a fix that dropped everything.
-      replica.ref.tell({ ...wellFormed, event: { kind: 'added', n: 777 } } as unknown as Command);
+      deliverFromPeer(replica, { ...wellFormed, event: { kind: 'added', n: 777 } }, peerReplica);
       await drainWithSentinel(replica, 8);
       expect(appliedAmounts, 'a well-formed peer envelope was refused too').toContain(777);
     } finally {
@@ -445,7 +477,10 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
     TrustCounter.observedEventsCeiling = 3;
     const replica = await startReplica('trust-ceiling', 70_506);
     try {
-      const peerReplica = 'peer-far-away';
+      // An address rather than a bare name: the default `isAuthorizedAuthor`
+      // holds a replica id against the node it arrives from, so a peer id that
+      // is not a node address cannot be a legitimate sender here.
+      const peerReplica = 'peer-far-away@h:70998';
       const peerEnvelope = (index: number): unknown => ({
         persistenceId: PERSISTENCE_ID,
         replica: peerReplica,
@@ -458,7 +493,7 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
         event: { kind: 'added', n: 200 + index },
       });
 
-      for (let index = 1; index <= 3; index++) replica.ref.tell(peerEnvelope(index) as Command);
+      for (let index = 1; index <= 3; index++) deliverFromPeer(replica, peerEnvelope(index), peerReplica);
       await drainWithSentinel(replica, 9);
       expect(appliedAmounts).toContain(201);
       expect(appliedAmounts).toContain(202);
@@ -468,8 +503,8 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
       // The sentinel above is itself a local persist, so the history is at 4
       // already — past a ceiling of 3, which is the point: local writes are
       // never refused.
-      replica.ref.tell(peerEnvelope(4) as Command);
-      replica.ref.tell(peerEnvelope(5) as Command);
+      deliverFromPeer(replica, peerEnvelope(4), peerReplica);
+      deliverFromPeer(replica, peerEnvelope(5), peerReplica);
       await drainWithSentinel(replica, 7);
 
       expect(appliedAmounts, 'a remote event was absorbed past the ceiling').not.toContain(204);

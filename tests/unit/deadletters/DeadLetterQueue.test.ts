@@ -64,8 +64,7 @@ describe('DeadLetterQueue — metrics store', () => {
         { timeoutMs: 4_000, label: 'the counter saw the letter' },
       );
       const sample = registry.collect().find((s) => s.name === 'actor_dead_letters_total')!;
-      expect(sample.labels.outcome).toBe('captured');
-      expect(String(sample.labels.recipient)).toContain('/user/gone');
+      expect(sample.labels).toEqual({ outcome: 'captured' });
 
       // The whole point: counted, and not retained.
       expect(await sys.deadLetterQueue.list()).toEqual([]);
@@ -203,7 +202,13 @@ describe('DeadLetterQueue — memory store', () => {
     }
   });
 
-  test('actor_dead_letters_total ticks with the recipient as a label', async () => {
+  test('actor_dead_letters_total carries outcome and nothing per-recipient (#745)', async () => {
+    // `recipient` used to be here, carrying the full recipient path — which
+    // under sharding is `entity-<id>`, chosen by whoever addressed the shard
+    // region, and for an anonymous actor is a fresh path per spawn.  Unlike
+    // the sibling `actor_mailbox_size{path}`, whose 10 000-message reporting
+    // floor is what pays for its per-instance label, minting one here cost a
+    // single undeliverable message.
     const sys = newSystem('dlq-metric', { store: 'memory' });
     const registry = sys.extension(MetricsExtensionId).enable();
     try {
@@ -213,10 +218,42 @@ describe('DeadLetterQueue — memory store', () => {
         { timeoutMs: 4_000, label: 'the counter was minted' },
       );
       const sample = registry.collect().find((s) => s.name === 'actor_dead_letters_total')!;
-      expect(sample.labels.outcome).toBe('captured');
-      expect(String(sample.labels.recipient)).toContain('/user/gone');
+      expect(Object.keys(sample.labels)).toEqual(['outcome']);
+      expect(sample.labels).toEqual({ outcome: 'captured' });
     } finally {
       await sys.terminate();
+    }
+  });
+
+  test('the series count does not grow with the number of distinct recipients (#745)', async () => {
+    // The property the label removal buys, stated as growth rather than as a
+    // number at one N: with `recipient` this read 1 and 6, which satisfies
+    // any single-N expectation you care to write, and every one of those
+    // series was permanent.
+    const few = newSystem('dlq-cardinality-few', { store: 'memory' });
+    const many = newSystem('dlq-cardinality-many', { store: 'memory' });
+    const fewRegistry = few.extension(MetricsExtensionId).enable();
+    const manyRegistry = many.extension(MetricsExtensionId).enable();
+    const seriesOf = (registry: { collect: () => ReadonlyArray<{ name: string }> }): number =>
+      registry.collect().filter((s) => s.name === 'actor_dead_letters_total').length;
+    try {
+      await deadLetterTo(few, 'gone-0', 'lost');
+      for (let index = 0; index < 6; index++) await deadLetterTo(many, `gone-${index}`, 'lost');
+
+      await awaitCondition(() => seriesOf(fewRegistry) > 0 && seriesOf(manyRegistry) > 0, {
+        timeoutMs: 4_000,
+        label: 'both systems counted their letters',
+      });
+
+      expect(seriesOf(manyRegistry)).toBe(seriesOf(fewRegistry));
+      expect(seriesOf(manyRegistry)).toBe(1);
+      // The path did not vanish with the label — it is on every entry, where
+      // it costs nothing per-series.
+      const entries = await many.deadLetterQueue.list();
+      expect(new Set(entries.map((e) => e.recipientPath)).size).toBe(6);
+    } finally {
+      await few.terminate();
+      await many.terminate();
     }
   });
 });

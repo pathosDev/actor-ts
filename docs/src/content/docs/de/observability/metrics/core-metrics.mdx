@@ -248,6 +248,44 @@ import { Aside } from '@astrojs/starlight/components';
   nicht die ~1 000, die auf den ersten Blick reichen würden.
 </Aside>
 
+### Eine Serie entfernen
+
+Die Grenze beschränkt, wie viele Serien eine Familie **hält**;
+`remove` macht daraus eine Schranke dafür, wie viele **lebendig** sind:
+
+```ts
+metrics.gauge('queue_depth', { queue: 'orders' }).set(4_200);
+
+// Die Queue ist weg — ihre Serie auch, und der Platz, den sie belegte.
+metrics.remove('queue_depth', { queue: 'orders' });   // → true
+```
+
+Es antwortet `true`, wenn tatsächlich eine Serie entfernt wurde, und
+`false` für eine Familie, die es nicht gibt, für ein Tupel, das nie
+erzeugt wurde, und für die Overflow-Serie — die bleibt, weil sie der
+stehende Nachweis dafür ist, dass Tupel verworfen wurden, und ihr
+Counter hält, wie viele. Die Familie selbst überlebt ihre letzte Serie,
+samt Hilfetext und Art.
+
+**Entfernt, nicht genullt.** Ein Gauge-Child hält seinen letzten Wert,
+ein zurückkehrendes Tupel wird also frisch erzeugt und setzt nicht bei
+dem Wert fort, den es vorher hatte. Genau das wollte das framework-eigene
+[`actor_mailbox_size`](/de/observability/metrics/stock-metrics/#mailbox-metriken):
+ein Actor, der abarbeitet, hört auf zu melden, statt für immer einen
+Rückstau von 0 zu behaupten.
+
+**Ein Aufruf, kein TTL.** Die Registry kann eine fertige Entity nicht von
+einem Counter für etwas Seltenes unterscheiden — eine Serie, die sich
+eine Stunde nicht bewegt hat, sieht in beiden Fällen gleich aus —,
+während der Code, dem das Instrument gehört, genau weiß, wann sein
+Gegenstand weg ist. Ein altersbasierter Durchlauf bräuchte außerdem Uhr
+und Timer in einem Primitiv, das beides nicht hat, und wäre für Counter
+schlicht falsch: einer, der herausaltert und neu erzeugt wird, liest sich
+downstream als ein Reset, den es nie gab. Entferne die Serie eines
+**Counters** deshalb nur, wenn das Gezählte endgültig weg ist, nicht um
+Kardinalität zurückzugewinnen; Gauges haben keine solche Historie und
+sind der vorgesehene Aufrufer.
+
 ## Werte im Prozess auslesen
 
 ```ts

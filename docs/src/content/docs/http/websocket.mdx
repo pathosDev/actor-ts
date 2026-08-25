@@ -249,6 +249,28 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 
 See the [HTTP overview](/http/overview/) for the middleware set.
 
+#### Response-decorating middleware works too
+
+A middleware that calls `next()` and returns a **decorated** copy of the
+result — `securityHeaders()`, `contentSecurityPolicy()`,
+`strictTransportSecurity()`, `requestId()`, `csrfProtection()` — composes
+over a `websocket()` route as well, so one wrap can harden a whole tree
+without carving the socket out of it:
+
+```ts
+import { requestId, securityHeaders, websocket, withMiddleware } from 'actor-ts/http';
+
+withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', chat)));
+// Both run at upgrade time.  The socket opens.
+```
+
+The headers such a middleware adds do **not** reach a *successful*
+handshake — the backend writes that 101 response itself, and a WebSocket
+connection is not a document a browser would apply `X-Frame-Options` or a
+CSP to. They do ride on a **rejection**: a 401 from an inner
+`BearerTokenAuth` comes back with the security headers on it, which is the
+case that matters, since that response really is rendered by a browser.
+
 ### Backend-native middleware runs too
 
 `withMiddleware()` is the portable path — it works the same on every

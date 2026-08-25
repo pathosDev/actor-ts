@@ -33,6 +33,8 @@ type FakePromMetric = {
     registers?: unknown[];
   };
   readonly calls: RecordedCall[];
+  /** Tuples handed to `remove` — prom-client's own per-child eviction. */
+  readonly removed: Record<string, string | number>[];
 };
 
 interface FakePromRegistry {
@@ -62,10 +64,11 @@ function makeFakeClient(reg: FakePromRegistry): {
   }
   function instance(type: 'counter' | 'gauge' | 'histogram', allowed: RecordedCall['type'][]) {
     return function FakeMetric(this: Record<string, unknown>, options: FakePromMetric['options']) {
-      const metric: FakePromMetric = { options, calls: [] };
+      const metric: FakePromMetric = { options, calls: [], removed: [] };
       reg.registered.push(metric);
       this['__metric'] = metric;
       this['labels'] = (labels: Record<string, string | number>) => makeChild(metric, labels, allowed);
+      this['remove'] = (labels: Record<string, string | number>) => { metric.removed.push(labels); };
       // Direct (no-labels) mutators land on `{}`-keyed series.
       if (allowed.includes('inc')) this['inc'] = (v: number = 1) => metric.calls.push({ type: 'inc', labels: {}, value: v });
       if (allowed.includes('dec')) this['dec'] = (v: number = 1) => metric.calls.push({ type: 'dec', labels: {}, value: v });
@@ -180,6 +183,60 @@ describe('promClientRegistry', () => {
       'actor_ts_members_up',
       'actor_ts_messages_delivered_total',
     ]);
+  });
+
+  test('remove forwards to prom-client and frees the slot it held (#745)', () => {
+    const reg = makeFakeRegistry();
+    const client = makeFakeClient(reg);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(reg)
+      .withMaxSeriesPerFamily(2);
+    const adapted = promClientRegistry(promOptions);
+
+    adapted.gauge('depth', { path: '/a' }).set(1);
+    adapted.gauge('depth', { path: '/b' }).set(2);
+
+    expect(adapted.remove('depth', { path: '/a' })).toBe(true);
+    const metric = reg.registered.find((m) => m.options.name === 'depth')!;
+    expect(metric.removed).toEqual([{ path: '/a' }]);
+
+    // The freed slot is the point: without dropping the tuple from the
+    // bridge's own tally the family would still read as full and fold the
+    // next path into `__overflow__`.
+    adapted.gauge('depth', { path: '/c' }).set(3);
+    const written = metric.calls.map((c) => String(c.labels['path']));
+    expect(written).toEqual(['/a', '/b', '/c']);
+    expect(written).not.toContain(METRICS_OVERFLOW_LABEL_VALUE);
+  });
+
+  test('remove answers false for tuples this bridge never minted, and never for the overflow one', () => {
+    const reg = makeFakeRegistry();
+    const client = makeFakeClient(reg);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(reg)
+      .withMaxSeriesPerFamily(1);
+    const adapted = promClientRegistry(promOptions);
+
+    adapted.counter('hits', { route: '/a' }).inc();
+    const originalWarn = console.warn;
+    console.warn = (): void => {};
+    try {
+      adapted.counter('hits', { route: '/b' }).inc();   // folds into overflow
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(adapted.remove('nothing-here', { route: '/a' })).toBe(false);
+    expect(adapted.remove('hits', { route: '/b' })).toBe(false);
+    // The overflow tuple is deliberately never counted against the cap, so it
+    // is not in the tally either — which is what refuses it here, with no
+    // special case of its own.
+    expect(adapted.remove('hits', { route: METRICS_OVERFLOW_LABEL_VALUE })).toBe(false);
+
+    const metric = reg.registered.find((m) => m.options.name === 'hits')!;
+    expect(metric.removed).toEqual([]);
   });
 
   test('registering the same name with two types throws', () => {

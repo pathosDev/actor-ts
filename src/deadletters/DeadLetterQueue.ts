@@ -248,11 +248,11 @@ export class DeadLetterQueue {
       replayCount: entry.replayCount + 1,
     });
     recipient.tell(entry.payload.message as never, this.resolve(entry.senderPath));
-    // Labelled with the destination, not the recorded path: the counter
-    // answers "where did we hand letters back to", and a redirect that
-    // reported the dead address would attribute the delivery to an actor
-    // that received nothing.
-    this.count('replayed', destinationPath);
+    this.count('replayed');
+    // The destination, not the recorded path: a redirect that reported the
+    // dead address would name an actor that received nothing.  The counter
+    // no longer carries a path at all (see `count`), so this distinction now
+    // lives only in the returned result — which is where a caller reads it.
     return { kind: 'replayed', recipientPath: destinationPath };
   }
 
@@ -335,7 +335,7 @@ export class DeadLetterQueue {
       // entry nothing will ever read would be the cost an operator chose it
       // to avoid.  Nothing is replayable here, so the replay bookkeeping is
       // unreachable too and the outcome is always `captured`.
-      this.count('captured', deadLetter.recipient.path.toString());
+      this.count('captured');
       return;
     }
 
@@ -362,7 +362,7 @@ export class DeadLetterQueue {
       this.replayed.delete(oldest.value);
     }
 
-    this.count(previous === undefined ? 'captured' : 'replay-failed', entry.recipientPath);
+    this.count(previous === undefined ? 'captured' : 'replay-failed');
     if (this.settings.store === 'persistent') {
       this.enqueueWrite({ kind: 'captured', entry }, stored);
     }
@@ -406,17 +406,30 @@ export class DeadLetterQueue {
   }
 
   /**
-   * `actor_dead_letters_total`, labelled by outcome and recipient path.
+   * `actor_dead_letters_total`, labelled by outcome alone.
    *
-   * The path label is precedented by `actor_mailbox_dropped_total` and safe
-   * for the same reason: the registry caps series per family and folds the
-   * overflow into one, so an unbounded set of recipients costs a bounded
-   * number of series (#131, closed).
+   * **There is deliberately no `recipient` label** (#745).  It carried
+   * `deadLetter.recipient.path.toString()`, which under sharding is
+   * `entity-<entityId>` — chosen by whoever addressed the shard region — and
+   * for an anonymous actor is a fresh path per spawn.  Its JSDoc used to
+   * justify that as "precedented by `actor_mailbox_dropped_total`", a
+   * precedent #658 had removed one commit-day earlier, and it satisfied
+   * neither half of the rule that replaced it: a stock label's values must
+   * be bounded by what the deployment declares, and minting one must cost
+   * more than a single message.  The sibling `actor_mailbox_size` keeps its
+   * `path` precisely because a 10 000-message backlog is that price; one
+   * undeliverable message is not.
+   *
+   * The path did not disappear with the label — it was never only here.
+   * Every letter is published on the event stream as a {@link DeadLetter}
+   * carrying its `recipient` ref, and a queue in `memory` or `persistent`
+   * store records `recipientPath` on the entry itself.  Both are per-event
+   * rather than per-series, so they cost nothing permanent.
    */
-  private count(outcome: 'captured' | 'replayed' | 'replay-failed', recipientPath: string): void {
+  private count(outcome: 'captured' | 'replayed' | 'replay-failed'): void {
     metricsOf(this.system).counter(
       'actor_dead_letters_total',
-      { outcome, recipient: recipientPath },
+      { outcome },
       { help: 'Undeliverable messages captured by the dead-letter queue, by outcome.' },
     ).inc();
   }

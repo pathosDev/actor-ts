@@ -12,6 +12,7 @@ import {
   bucketize,
   DefaultMetricsRegistry,
   METRICS_OVERFLOW_LABEL_VALUE,
+  overflowLabelsOf,
 } from '../../../src/metrics/Metrics.js';
 import {
   DEFAULT_MAX_SERIES_PER_FAMILY,
@@ -248,6 +249,58 @@ describe('MetricsExtension.enable(options)', () => {
     } finally {
       void system.terminate();
     }
+  });
+});
+
+describe('DefaultMetricsRegistry — eviction against the cap (#745)', () => {
+  test('a removed series gives its slot back, so the next tuple is real again', () => {
+    // The cap bounds how many series a family holds; removal is what makes
+    // that a bound on how many are *live* rather than on how many can ever
+    // have existed.  Without it a family that reached its cap once stayed at
+    // it for the life of the process, folding every later tuple into the
+    // overflow series even after everything it was measuring had gone.
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 4 });
+    captureWarnings(() => {
+      for (let index = 0; index < 4; index++) registry.gauge('depth', { path: `/p-${index}` }).set(1);
+      registry.gauge('depth', { path: '/p-4' }).set(1);      // folds into overflow
+    });
+    expect(seriesOf(registry, 'depth').map((s) => s.labels.path))
+      .toContain(METRICS_OVERFLOW_LABEL_VALUE);
+
+    // Two of the four entities passivated.
+    expect(registry.remove('depth', { path: '/p-0' })).toBe(true);
+    expect(registry.remove('depth', { path: '/p-1' })).toBe(true);
+
+    registry.gauge('depth', { path: '/p-5' }).set(3);
+    const minted = seriesOf(registry, 'depth').find((s) => s.labels.path === '/p-5');
+    expect(minted?.value).toBe(3);
+  });
+
+  test('the overflow series is the one child that cannot be removed', () => {
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 2 });
+    const { warnings } = captureWarnings(() => {
+      for (let index = 0; index < 5; index++) registry.counter('hits', { route: `/r-${index}` }).inc();
+
+      // It is the record that this family discarded tuples — and its counter
+      // still holds how many — so removing it would erase evidence of loss.
+      expect(registry.remove('hits', overflowLabelsOf(['route']))).toBe(false);
+
+      // Removing it would also re-arm the once-per-family warning, since the
+      // overflow key doubles as that flag.  Freeing a real slot and
+      // overflowing again therefore stays silent.
+      registry.remove('hits', { route: '/r-0' });
+      registry.counter('hits', { route: '/r-6' }).inc();
+    });
+
+    const overflow = seriesOf(registry, 'hits')
+      .find((s) => s.labels.route === METRICS_OVERFLOW_LABEL_VALUE);
+    expect(overflow).toBeDefined();
+    // /r-2, /r-3 and /r-4 before the removal, /r-6 after: the overflow child
+    // occupies one of the family's two slots itself, so freeing one real
+    // series leaves the family still at its cap.  Its total accumulates
+    // across that rather than restarting.
+    expect(overflow!.value).toBe(4);
+    expect(warnings).toHaveLength(1);
   });
 });
 

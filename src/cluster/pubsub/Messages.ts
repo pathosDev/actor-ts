@@ -1,5 +1,5 @@
 import type { ActorRef } from '../../ActorRef.js';
-import type { NodeAddressData } from '../NodeAddress.js';
+import type { NodeAddress, NodeAddressData } from '../NodeAddress.js';
 
 /* ============================ User-facing API ============================= */
 
@@ -15,12 +15,25 @@ export type PubSubSubscriberRef = ActorRef<SubscribeAcknowledgment | SubscribeRe
  * empty for the documented call shape `mediator.tell(new Subscribe(…))`
  * from outside an actor: the caller most in need of the refusal was the one
  * who could not receive it.  Left `null`, the reply still follows `sender`.
+ *
+ * `deliverWithOrigin` swaps the delivery shape: every message for this
+ * subscriber arrives as a {@link PubSubEnvelope} naming the node it came
+ * from, instead of as the bare body.  Opt-in rather than the default, because
+ * the bare body is what every existing subscriber's `onReceive` is written
+ * against — but a subscriber that acts on *who* published cannot work without
+ * it, since a topic fan-out otherwise carries no sender at all (#706).
+ *
+ * The flag belongs to the **subscriber**, not to the subscription: one actor
+ * has one `onReceive`, so a mixture of shapes across its topics would be a
+ * discrimination problem it has no way to solve.  A second `Subscribe` from
+ * the same actor therefore restates the shape for all of its topics.
  */
 export class Subscribe {
   constructor(
     public readonly topic: string,
     public readonly ref: ActorRef,
     public readonly replyTo: PubSubSubscriberRef | null = null,
+    public readonly deliverWithOrigin: boolean = false,
   ) {}
 }
 
@@ -63,6 +76,67 @@ export class Publish<T = unknown> {
     public readonly topic: string,
     public readonly message: T,
     public readonly delivery: PubSubDelivery = 'all-subscribers',
+  ) {}
+}
+
+/**
+ * What a subscriber that asked for `deliverWithOrigin` receives instead of the
+ * bare body: the message, the topic it came in on, and the cluster node the
+ * transport authenticated it as coming from.
+ *
+ * **`origin` is never a value out of the payload.**  For a message that
+ * crossed the wire it is the connection's peer, which
+ * `Cluster.dispatchEnvelope` hands the mediator's envelope handler; for one
+ * published on this node it is `cluster.selfAddress`.  `null` means the
+ * mediator had no authenticated identity to attach — a wire-shaped frame
+ * injected straight into its mailbox — and a subscriber that authorises on
+ * `origin` must treat that as *unauthenticated*, not as *local*.
+ *
+ * **Sound only because a publish crosses at most one hop.**  The mediator
+ * never re-forwards what it received, so the node a subscriber sees is the
+ * node that published, not a relay — which is what lets a subscriber compare
+ * `origin` against a claim inside `message` and have the comparison mean
+ * something (#706).
+ *
+ * Deliberately a class: a wire body is always plain JSON, so `instanceof` is
+ * proof this was minted locally by the mediator rather than reproduced by a
+ * peer inside its own payload — the same reasoning as
+ * `AuthenticatedShardingMessage` (#584, #712).
+ */
+export class PubSubEnvelope<T = unknown> {
+  constructor(
+    public readonly topic: string,
+    public readonly message: T,
+    public readonly origin: NodeAddress | null,
+  ) {}
+}
+
+/**
+ * A pub-sub wire frame together with the peer whose connection it arrived on.
+ *
+ * The identity is known at the transport and was thrown away one line later:
+ * `DistributedPubSub.start` registered `(env) => mediator.tell(env.body)`, so
+ * the `from` that `Cluster.dispatchEnvelope` passes never reached the mediator
+ * and could not reach a subscriber (#706).  This wrapper is what carries it
+ * through the mailbox.
+ *
+ * **Deliberately a class, not a `{ kind }` tag** — same reasoning as
+ * {@link PubSubEnvelope} and the sharding/singleton wrappers it copies: a peer
+ * can reproduce any tagged object verbatim inside `body`, and cannot mint a
+ * class instance.  A frame that misses the per-path handler and reaches the
+ * mediator through generic path resolution therefore arrives unwrapped, and is
+ * treated as having no authenticated origin.
+ */
+export class AuthenticatedPubSubMessage {
+  constructor(
+    /** Connection-authenticated sender.  Never a value out of the payload. */
+    public readonly peer: NodeAddress,
+    /**
+     * What the peer sent.  Typed as the wire union because that is what it
+     * claims to be; the mediator re-dispatches on `kind` and drops whatever
+     * matches no arm.
+     */
+    public readonly message: PubSubWireMessage,
   ) {}
 }
 

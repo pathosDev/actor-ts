@@ -367,10 +367,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and nowhere else.
 
   `resolveAdvertisedHost` now fills the identity from one chain that both
-  `Cluster.join` and `bootstrapCluster` share, and it cannot return a
-  wildcard — which is what lets `ClusterOptionsValidator` refuse one
-  outright, at construction, instead of leaving a cluster to not
-  converge. `TcpTransport` gained a bind host used for the `listen` call
+  `Cluster.join` and `bootstrapCluster` share, and no stage of that chain
+  except an explicitly named value can produce a wildcard — which is what
+  lets `ClusterOptionsValidator` refuse one outright, at construction,
+  instead of leaving a cluster to not converge. `TcpTransport` gained a bind host used for the `listen` call
   alone, so `self` stays the identity in the handshake and in the peer
   keys.
 
@@ -381,6 +381,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   fallback was already broken and is now reachable only on loopback,
   which the node says out loud at startup. Set `withAdvertisedHost(...)`,
   `actor-ts.remote.tcp.advertised-host`, or `CLUSTER_HOST` / `POD_IP`.
+
+- **The DevTools tracing panel no longer draws every retained span twice
+  after a re-subscribe (#1350).** `SpanTap.snapshot()` hands a fresh
+  subscriber the server's whole ring, and two paths re-subscribe a stream
+  that is already open: the sequence-gap recovery in `tapClient`, and the
+  re-subscribe of every live stream after a reconnect. The panel appended
+  that snapshot to what it already held, so the flame graph and the
+  waterfall showed each span twice, a trace grew duplicated children, and
+  the span count was simply wrong.
+
+  The other stream consumers survive the same frame because their handlers
+  **replace** — `ActorTreeModel.reset` drops its map, `onClusterSnapshot`
+  calls `members.set(...)`. Tracing is the one that accumulates, so the
+  snapshot meant "here is everything" to them and "here is more" to it. It
+  now keys its ring by `spanId` (16 hex characters of crypto-grade
+  randomness, from W3C trace-context), so a span that arrives twice is
+  recognised rather than recorded again. Insertion order is unchanged: a
+  resent span keeps its own place instead of jumping to the newest end and
+  pushing a genuinely newer one out of the ring.
+
+  Rare enough to have gone unnoticed — a reconnect after a laptop wakes
+  from sleep is the likely first sighting. Not reached by the pause added
+  in #1349, which classifies `spans` as a buffered stream and replays held
+  batches rather than re-subscribing.
 
 - **`RedisStreamsActor` now routes connection loss into the shared
   `BrokerActor` reconnect machinery (#742).** It was the one subclass that
@@ -4516,6 +4540,182 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   defect would now catch it.
 
 ### Security
+
+- **BREAKING (pre-1.0): a replicated event's author is now bound to the node
+  that sent it (#706).** `ReplicatedEventSourcedActor` took an envelope's
+  `replica` — the id that keys the vector clock, prefixes every event id and
+  breaks ties in the canonical order — straight out of the broadcast payload,
+  so any cluster member could publish an event attributed to a peer and, with
+  `timestamp: Number.MAX_SAFE_INTEGER`, make it sort last and win the fold on
+  every replica, in the peer's name and in the peer's journal. The actor now
+  holds `replica` against the node the connection authenticated, and refuses
+  an envelope that reaches it with no authenticated origin at all — which also
+  closes the second route, where `Cluster.dispatchEnvelope` resolves any path
+  and delivers the raw body with no identity, so a pub-sub-only fix would have
+  left the attack reachable one path over.
+
+  `DistributedPubSub` can now tell a subscriber which node published:
+  `new Subscribe(topic, ref, replyTo, /* deliverWithOrigin= */ true)` delivers
+  a `PubSubEnvelope` carrying `topic`, `message` and `origin` instead of the
+  bare body. Every other subscriber is untouched, which is why it is opt-in.
+  `origin` is the connection's peer for a message that crossed the wire and
+  this node for a local publish; `null` means unauthenticated rather than
+  local. The identity rides through the mailbox inside an
+  `AuthenticatedPubSubMessage` class, because a peer can reproduce any tagged
+  object verbatim inside a payload and cannot mint a class instance.
+
+  *Migration:* an application that overrides `replicaId` with anything other
+  than its node's address must now also override
+  `isAuthorizedAuthor(replica, origin)` to supply the replica-to-node mapping.
+  The default is an equality against the sending node's address, which is
+  exactly right while the id *is* that address and refuses every honest
+  envelope once it is not. An application on the default `replicaId` needs no
+  change. Handing an actor an envelope by telling it directly — tests,
+  tooling — no longer works either: it is dropped with a `WARN` for want of an
+  authenticated origin.
+
+  Two sub-remedies are refused rather than deferred, with the reasoning
+  recorded at the check site: strict per-replica `seqAtReplica` monotonicity
+  (pub-sub dead-letters a publish with no live subscriber and nothing
+  retransmits, so a gap is normal and permanent, and a successor rule would
+  suppress that replica forever) and a receive-time ordering key (`_compare`
+  must be a function of the events alone, or two replicas holding the same set
+  compute different states).
+
+- **Fixed on the way: the pub-sub mediator addressed a remote publish with its
+  own system name rather than the recipient's (#706).** A cluster whose members
+  share one system name never noticed — the frame missed the receiver's
+  per-path envelope handler and was delivered by generic path resolution to the
+  very same mediator, identical delivery minus the sender. A cluster whose
+  nodes do not share a system name lost the publisher's identity on every hop.
+
+- **BREAKING (pre-1.0): metric series can now be evicted, and two stock
+  families stopped minting series nothing paid for (#745).**
+  `MetricsRegistry` gains `remove(name, labels)`, implemented by
+  `DefaultMetricsRegistry`, `NoopMetricsRegistry` and the prom-client bridge.
+  Until now `clear()` was the only removal path and its own documentation
+  called it a test hook, so a label tuple whose subject had gone kept its slot
+  under the per-family cardinality cap for the life of the process. It is a
+  call rather than a TTL on purpose: the registry cannot tell a finished entity
+  from a counter for something rare, an age-based sweep would need a clock and
+  a timer in a primitive that has neither, and a counter that ages out and
+  returns reads downstream as a reset that never happened. The overflow series
+  is the one child `remove` refuses, because it is the standing record that
+  tuples were discarded.
+
+  `actor_mailbox_size` retires a drained, relabelled or terminated actor's
+  series instead of setting it to 0, so "on a healthy system this family is
+  empty" holds after an incident and not only before one.
+  `actor_mailbox_dropped_total` no longer mints a stray `class="unknown"`
+  series: a burst issued in the same tick as a spawn overflows before the cell
+  has an actor instance, and those drops are now held by reason and attributed
+  once the class name is known. `unknown` stays reachable only from a cell
+  whose actor failed to start, where it is accurate.
+
+  The stock-label rule — a stock label's values must be bounded by what the
+  deployment declares, never by traffic, by how many actors have been spawned,
+  or by a value a remote party supplies — is now a gate rather than a note.
+  `tests/unit/metrics/StockMetrics.test.ts` reads every stock family out of
+  `src/` and checks the whole inventory against it, with
+  `actor_mailbox_size{path}` and `persistence_projection_*{projection}` as
+  named exceptions carrying the reason each is affordable. The dead-letter
+  label had landed one commit-day after the rule was written down, because the
+  only thing asserting it was a test pinning one family's label set.
+
+  *Migration:* `actor_dead_letters_total` loses its `recipient` label, which
+  under sharding is `entity-<entityId>` — chosen by whoever addresses the
+  shard region — at a cost of one permanent series per undeliverable message.
+  The
+  path is unchanged on the `DeadLetter` published to the event stream and on
+  the queue's own entries, so use `deadLetterQueue.list({ recipient })` for
+  "which actor" and the counter for the rate. `MetricsRegistry` has a fourth
+  method, so an external implementation must add `remove`; the prom-client
+  bridge's structural `client` type now requires `Metric.remove`, present in
+  every prom-client since v11.2. An alert written on `actor_mailbox_size`
+  transitioning to 0 will no longer fire — alert on the series existing, or on
+  its value.
+
+- **Broker client actors now notice a peer that vanishes without closing the
+  connection (#753).** `TcpSocketActor`, `SseActor` and
+  `WebsocketClientActor` treated an explicit transport event — `close`,
+  `error`, a stream's `done` — as the only way a connection could end, so a
+  dropped NAT entry, a container killed with SIGKILL or a black-holing route
+  left the actor reporting `connected` indefinitely: no `BrokerDisconnected`,
+  no reconnect, and every send going into a socket that leads nowhere. The
+  read-only direction — an SSE stream, an idle WebSocket — had no recovery
+  path at all.
+
+  `idleTimeoutMs` on `TcpSocketOptions`, `SseOptions` and
+  `WebsocketClientOptions` declares the connection lost after that long
+  without a single inbound byte, routing into the existing reconnect machinery
+  so backoff, the circuit breaker and the outbound buffer behave exactly as
+  they do for an observed drop. It is a *read* deadline — reset by inbound
+  traffic and deliberately not by outbound — because a client writing into a
+  black hole is the case it exists for. Off by default: a deadline below the
+  peer's own heartbeat interval severs healthy connections in a loop.
+  `connectTimeoutMs` on the same three bounds one connect attempt, since every
+  transport settled its connect on a protocol event and none had a clock. Also
+  off by default. `keepAliveMs` on `TcpSocketOptions` enables OS-level TCP
+  keepalive and is **on by default** at 45 s (`0` disables it) — it is the one
+  liveness knob that cannot be wrong about a healthy connection, because a
+  probe is answered by the peer's kernel whether or not its application has
+  anything to say.
+
+  On the WebSocket client, `idleTimeoutMs` counts application frames and **not**
+  pongs: a protocol-level pong is not delivered as a `message` event on any
+  supported runtime, so `pingIntervalMs` does not refresh the deadline. Size it
+  against the *server's* heartbeat interval. All three knobs are readable from
+  HOCON under `actor-ts.io.broker.{tcp,sse,websocket}` and rejected by the
+  options validators when negative.
+
+- **WebSocket upgrades are no longer refused under response-decorating
+  middleware (#757).** `compile()` signalled "proceed with the upgrade" by
+  reference identity against a frozen sentinel, so every middleware that calls
+  `next()` and returns a decorated *copy* of the result — `securityHeaders()`,
+  `contentSecurityPolicy()`, `strictTransportSecurity()`, `requestId()`,
+  `csrfProtection()` — broke that identity and turned every upgrade beneath it
+  into a rejection carrying a bogus `{ status: 101 }` pseudo-response, with
+  nothing logged. Acceptance is now tagged structurally with a module-private
+  symbol that survives object spread. The direction was fail-closed, but the
+  failure mode taught operators to carve the WebSocket subtree out from under
+  their hardening middleware — and DevTools, which wraps its whole tree
+  including the socket, lost its socket outright to a decorating `auth`
+  middleware. Wrapping a whole route tree, socket included, is now correct.
+
+  Headers a decorator adds reach a *rejected* handshake but not an accepted
+  one, since the backend writes the 101 response itself. Nothing regresses: a
+  decorated sentinel previously **was** a rejection.
+
+- **Guarded two routes by which the optional-peer and audit rules could be
+  bypassed with nothing going red (#676).** `bun audit` can be silenced by a
+  dependency override as well as by an `--ignore` flag: an `overrides` /
+  `resolutions` entry rewrites the resolved closure that lands in `bun.lock`,
+  which is what the audit reads, so pinning a transitive dependency past the
+  version that fixes an advisory clears the gate with no flag added and nothing
+  to review. Measured on bun 1.4.0, both spellings are honoured.
+  `tests/unit/ci/SecurityPolicy.test.ts` now requires any such pin to be
+  written up under a `## Dependency overrides` heading in `SECURITY.md` — the
+  same bijection the `--ignore` list already had. No override exists today; the
+  guard is so the first one is a decision someone reviewed. It matters most for
+  a library: npm-style overrides apply only while this package is the root
+  project, so an override would clear this repo's audit while every consumer
+  resolved the vulnerable range exactly as before.
+
+  Nothing in `src/` may name an optional peer in a literal import specifier,
+  asserted in `tests/unit/ci/OptionalPeerDeclarations.test.ts` across all 27
+  optional peers and 670 source files with no exclusions. This withdraws the
+  follow-up that asked for the hand-written `nats` type stubs to be replaced
+  with the module's real types: `nats` is declared only in the brokers
+  manifest, so the build compile cannot resolve it (TS2307, measured), and the
+  stubs are exported through `src/io/index.ts`, so an imported specifier would
+  be emitted into a published `.d.ts` that a consumer who took the optional
+  peer at its word cannot resolve.
+
+  `cassandra-driver` remains the one optional peer declared in neither
+  dependency context, still blocked on GHSA-xcpc-8h2w-3j85. Its allow-list note
+  now records four ways out rather than three, with the fourth measured and
+  ranked last. Choosing between them is a maintainer decision, not an
+  implementer's.
 
 - **BREAKING (pre-1.0): a `Terminated` the runtime did not emit is no
   longer honoured (#769).** `ActorCell` retired a death-watch registration

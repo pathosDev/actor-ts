@@ -120,10 +120,17 @@ und dann gefaltet — Holder oder nicht.
 Single-Writer-Modus ist damit ein **Konsistenz**-Upgrade, keine
 Autorisierungsgrenze.  Er verhindert, dass N Replicas *deiner*
 Anwendung gleichzeitig schreiben; er verhindert nicht, dass ein
-Cluster-Mitglied einen Envelope publiziert, und er lässt eine
-Observer-Replica keinen ablehnen.  Wenn du "nur die Events dieses Nodes
-zählen" brauchst, ist das Cluster-Zugangskontrolle — mTLS und
-Mitgliedschaft — und nicht das Lease.
+Cluster-Mitglied einen Envelope unter **seiner eigenen** Replica-Id
+publiziert, und er lässt eine Observer-Replica keinen ablehnen.
+
+Geprüft *wird* auf dem Remote-Pfad die Autorschaft: ein Envelope muss
+von einem Node kommen, der unter der genannten `replica` schreiben
+darf — ein Mitglied kann also kein Event verfassen, das dem
+Lease-Holder zugeschrieben wird.  Das ist eine andere Frage als "wer
+darf schreiben", und die beiden ersetzen einander nicht.  Wenn du "nur
+die Events dieses Nodes zählen" brauchst, ist das
+Cluster-Zugangskontrolle — mTLS und Mitgliedschaft — und nicht das
+Lease.
 
 ## Failover-Sequenz
 

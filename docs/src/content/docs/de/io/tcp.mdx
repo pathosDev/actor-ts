@@ -40,10 +40,13 @@ tcp.tell({ kind: 'send', payload: 'PING\n' });
 
 ```ts
 interface TcpSocketOptionsType extends BrokerCommonOptionsType {
-  host?:    string;              // erforderlich
-  port?:    number;              // erforderlich
-  framing?: TcpFraming;          // Frame-Extraktion; Default { kind: 'bytes' }
-  target?:  ActorRef<unknown>;   // erforderlich: wohin eingehende Frames gehen
+  host?:            string;              // erforderlich
+  port?:            number;              // erforderlich
+  framing?:         TcpFraming;          // Frame-Extraktion; Default { kind: 'bytes' }
+  target?:          ActorRef<unknown>;   // erforderlich: wohin eingehende Frames gehen
+  idleTimeoutMs?:   number;              // Lese-Idle-Deadline; Default 0 (aus)
+  connectTimeoutMs?: number;             // Connect-Deadline; Default 0 (aus)
+  keepAliveMs?:     number;              // OS-Keepalive-Verzögerung; Default 45_000, 0 = aus
 }
 ```
 
@@ -78,6 +81,46 @@ import { BrokerConnected, BrokerDisconnected } from 'actor-ts/io';
 system.eventStream.subscribe(monitorRef, BrokerConnected);
 system.eventStream.subscribe(monitorRef, BrokerDisconnected);
 ```
+
+### Einen verschwundenen Peer erkennen
+
+`close` und `error` sind die einzigen Events, die ein Socket auslöst —
+und ein Peer, der ohne FIN oder RST verschwindet, löst keines von
+beiden aus.  Der Socket bleibt offen, der Actor bleibt `connected`, und
+jedes Senden landet in einem Kernel-Puffer, den nie jemand leert.  Drei
+Stellschrauben adressieren das:
+
+```ts
+const tcpSocketOptions = TcpSocketOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withTarget(protocolHandler)
+  .withIdleTimeoutMs(90_000)     // no inbound bytes for 90 s → reconnect
+  .withConnectTimeoutMs(10_000); // handshake stalled for 10 s → fail the attempt
+```
+
+- **`keepAliveMs`** ist die einzige, die **standardmäßig an** ist
+  (45 s).  Sie schaltet TCP-Keepalive auf OS-Ebene ein; dessen Probes
+  beantwortet der *Kernel* des Peers, unabhängig davon, ob dessen
+  Anwendung etwas zu sagen hat — sie kann sich über eine gesunde
+  Verbindung also nie irren, sondern höchstens langsam sein: wie lange
+  eine tote nach der Verzögerung braucht, um aufzufallen, entscheidet
+  das OS (Linux: neun Probes im Abstand von 75 s).  `0` schaltet sie
+  aus.
+- **`idleTimeoutMs`** ist eine **Lese**-Deadline, zurückgesetzt von
+  eingehenden Bytes und ausdrücklich nicht von ausgehenden — ein Client,
+  der in ein schwarzes Loch schreibt, ist genau der Fall, für den sie
+  existiert.  Standardmäßig aus: nur du weißt, wie lange dein Peer still
+  sein darf, und ein Wert unterhalb seines eigenen Heartbeat-Intervalls
+  kappt gesunde Verbindungen in Endlosschleife.
+- **`connectTimeoutMs`** begrenzt einen einzelnen Verbindungsversuch.
+  Ohne sie hält ein Peer, der den TCP-Handshake abschließt und dann
+  stehen bleibt, den Actor beliebig lange in `connecting`.
+
+Beide Deadlines laufen in `handleConnectionLost`, sodass
+Reconnect-Policy, Outbound-Puffer und Circuit Breaker sich exakt so
+verhalten wie bei einem beobachteten Abbruch — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#liveness-deadlines).
 
 ## Framing
 

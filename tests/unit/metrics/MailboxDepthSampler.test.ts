@@ -60,6 +60,11 @@ describe('MailboxDepthSampler (#1148)', () => {
     // one label tuple and then a different one.  Without retiring the first,
     // the `'?'` reading would stand at its spike forever with the real one
     // beside it — one actor, two series, one of them permanently wrong.
+    //
+    // Since #745 retiring means *removing*.  Zeroing was what the registry
+    // could do at the time, and it left the `'?'` tuple standing at 0 for the
+    // life of the process — a series asserting that an actor of a class that
+    // never existed has no backlog.
     const system = createSystem('depth-relabel');
     const registry = new DefaultMetricsRegistry();
     const sampler = new MailboxDepthSampler(system, registry, 60_000, FLOOR);
@@ -79,11 +84,9 @@ describe('MailboxDepthSampler (#1148)', () => {
     sampler.sample();
 
     const after = depthSamples(registry);
-    expect(after.length).toBe(2);
-    const stale = after.find((s) => s.labels.class === '?');
-    const live = after.find((s) => s.labels.class === 'Sink');
-    expect(stale!.value).toBe(0);
-    expect(live!.value).toBeGreaterThanOrEqual(FLOOR);
+    expect(after.length).toBe(1);
+    expect(after[0]!.labels.class).toBe('Sink');
+    expect(after[0]!.value).toBeGreaterThanOrEqual(FLOOR);
 
     release();
     await system.terminate();
@@ -91,9 +94,10 @@ describe('MailboxDepthSampler (#1148)', () => {
 
   test('a system whose actors stay below the floor mints no series at all', async () => {
     // The floor is a cardinality bound, not a display filter: `path` under
-    // sharding is attacker-influenced and the registry has no per-child
-    // eviction (#745), so "quiet system, zero series" is the property that
-    // matters, not "quiet system, series reading zero".
+    // sharding is attacker-influenced (#745), so "quiet system, zero series"
+    // is the property that matters, not "quiet system, series reading zero".
+    // Eviction reclaims what has stopped; only the floor keeps a remote party
+    // from holding an arbitrary number of entity ids above it at once.
     const system = createSystem('depth-below');
     const registry = new DefaultMetricsRegistry();
     const sampler = new MailboxDepthSampler(system, registry, 60_000, FLOOR);
@@ -107,7 +111,13 @@ describe('MailboxDepthSampler (#1148)', () => {
     await system.terminate();
   });
 
-  test('a drained mailbox reads 0 rather than its last spike, under the same label tuple', async () => {
+  test('a drained mailbox loses its series rather than standing at its last spike (#745)', async () => {
+    // The family's contract is that a series exists only for an actor that is
+    // *already* deeply backlogged, so its presence is the alert and a healthy
+    // system is empty.  A drained actor is a healthy one, and until #745 gave
+    // the registry a `remove` it stayed represented for ever — at 0, which is
+    // a truthful reading of a metric that should not have been there at all,
+    // and which held its slot under the cardinality cap regardless.
     const system = createSystem('depth-drain');
     const registry = new DefaultMetricsRegistry();
     const sampler = new MailboxDepthSampler(system, registry, 60_000, FLOOR);
@@ -116,7 +126,6 @@ describe('MailboxDepthSampler (#1148)', () => {
     sampler.sample();
     const spike = depthSamples(registry);
     expect(spike.length).toBe(1);
-    const labels = spike[0]!.labels;
 
     release();
     // Let the released backlog drain before the second sample.  Not pollable for
@@ -125,14 +134,62 @@ describe('MailboxDepthSampler (#1148)', () => {
     await Bun.sleep(50);
     sampler.sample();
 
-    const after = depthSamples(registry);
-    // One series, not two: zeroing has to reuse the tuple it minted, or the
-    // original would stand at its spike forever while a second appeared
-    // beside it.
-    expect(after.length).toBe(1);
-    expect(after[0]!.value).toBe(0);
-    expect(after[0]!.labels).toEqual(labels);
+    expect(depthSamples(registry)).toEqual([]);
 
+    await system.terminate();
+  });
+
+  test('a path that falls behind again is minted fresh, not resumed at its old depth', async () => {
+    // The consequence of removing rather than zeroing that a caller can
+    // actually observe: a gauge child holds its last value, so a re-minted
+    // tuple that resumed an evicted one would report the earlier spike until
+    // the next `set` — and between the two samples a scrape would read a
+    // backlog that had already drained.
+    const system = createSystem('depth-remint');
+    const registry = new DefaultMetricsRegistry();
+    const sampler = new MailboxDepthSampler(system, registry, 60_000, FLOOR);
+    const release = wedged(system, FLOOR * 3);
+
+    sampler.sample();
+    // The tuple the sampler minted, taken from the sample rather than rebuilt,
+    // so this is provably the one it went on to evict.
+    const labels = depthSamples(registry)[0]!.labels;
+
+    release();
+    // Let the released backlog drain before the second sample.  Not pollable:
+    // mailbox depth reaches the registry only through `sample()`, and calling
+    // that inside a predicate would mutate what the assertions then read.
+    await Bun.sleep(50);
+    sampler.sample();
+    expect(depthSamples(registry)).toEqual([]);
+
+    expect(registry.gauge('actor_mailbox_size', labels).value).toBe(0);
+
+    await system.terminate();
+  });
+
+  test('stop() retires everything it minted, so a restart cannot strand a series', async () => {
+    // `reported` is the only record of which tuples are live, so a `stop()`
+    // that cleared it without removing would leave every series it had minted
+    // unreachable in a registry that outlives the sampler —
+    // `MetricsExtension.useRegistry` stops one while the old registry is still
+    // installed, and a fresh sampler starts from an empty map.
+    const system = createSystem('depth-stop');
+    const registry = new DefaultMetricsRegistry();
+    const sampler = new MailboxDepthSampler(system, registry, 60_000, FLOOR);
+    const release = wedged(system, FLOOR * 3);
+    // Let the cell run its `create`, so the class label has settled before the
+    // sample — `stop()` has to remove the tuple it actually minted, and a `'?'`
+    // reading here would let a wrong-tuple removal pass by coincidence.
+    await Bun.sleep(10);
+
+    sampler.sample();
+    expect(depthSamples(registry).length).toBe(1);
+
+    sampler.stop();
+    expect(depthSamples(registry)).toEqual([]);
+
+    release();
     await system.terminate();
   });
 
