@@ -550,8 +550,10 @@ export const ADVERTISED_HOST_ENV_VARS = ['CLUSTER_HOST', 'POD_IP', 'HOSTNAME'] a
  * headless service — and is not exported at all outside a container, since it is
  * a shell variable rather than an environment one.
  *
- * The result is never a wildcard, which is what lets
- * {@link ClusterOptionsValidator} refuse one without qualification.
+ * Stages 2 to 4 cannot produce a wildcard, so the only way one comes out is
+ * stage 1 — a caller who named it.  That is what lets
+ * {@link ClusterOptionsValidator} refuse one without qualification: every
+ * refusal is a value someone wrote, never a default they never saw.
  */
 export function resolveAdvertisedHost(
   options: { readonly host?: string; readonly advertisedHost?: string },
