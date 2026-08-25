@@ -246,8 +246,8 @@ payload.  `outcome` is one of:
 full path of the actor the message failed to reach, which under sharding
 is `entity-<entityId>` — chosen by whoever addresses the shard region —
 and for an anonymous actor is a fresh path per spawn.  Against the
-[stock-label rule](#what-may-become-a-stock-label) that is a per-instance
-value with nothing paying for it: the sibling `actor_mailbox_size` keeps
+stock-label rule at the end of this page that is a per-instance value
+with nothing paying for it: the sibling `actor_mailbox_size` keeps
 its `path` because minting one costs a sustained 10 000-message backlog,
 while minting one here cost a single undeliverable message.
 
