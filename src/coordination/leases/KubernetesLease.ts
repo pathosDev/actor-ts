@@ -83,8 +83,10 @@ function isCredentialRejection(error: unknown): boolean {
  *      `acquireRetries` times.
  *
  *   2. **renewal loop** — every `renewalIntervalMs` (default `ttl/3`),
- *      GET + PUT to bump `renewTime`.  A 409 / 404 / network error here
- *      is treated as 'lease lost' and fires `onLost(reason)`.
+ *      PUT a bumped `renewTime`.  At most one renewal PUT is ever
+ *      outstanding, and a rejected one is re-read before ownership is
+ *      given up (#761), so only a *foreign* holder, a deleted object or
+ *      an unanswerable API server fires `onLost(reason)`.
  *
  *   3. **release()** — DELETE the lease (404 is treated as success).
  *      Cancels the renewal timer first, and rejects if the DELETE
@@ -98,19 +100,54 @@ function isCredentialRejection(error: unknown): boolean {
  * and immediately on a 401/403.  See {@link resolveCredentials}.
  *
  * Failure modes that fire `onLost`:
- *   - PUT during renewal returns 409 (someone else won a race after we
- *     read the resourceVersion).
- *   - PUT during renewal returns 404 (someone deleted the lease).
+ *   - A rejected renewal PUT whose re-read shows a different
+ *     `holderIdentity` — someone else won a race after we read the
+ *     resourceVersion.
+ *   - A rejected renewal PUT whose re-read finds no lease object at all —
+ *     someone deleted it.
  *   - Network error during renewal that the renewal-loop's retry budget
- *     can't absorb.
+ *     can't absorb, including a failed re-read: ownership that cannot be
+ *     confirmed may not be assumed.
  *   - PUT during renewal returns 401/403 **again** after the credential
  *     was re-read — a revocation rather than an expiry.
  *   - The K8s API server is unreachable for longer than `ttlMs`.
+ *
+ * A 409 whose re-read still names this owner is deliberately *not* one of
+ * them: that is this holder conflicting with its own earlier write, and
+ * the record is still ours (#761).
  */
 export class KubernetesLease implements Lease {
   private readonly renewalIntervalMs: number;
   private readonly tokenReloadIntervalMs: number;
   private renewalTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * The renewal currently on the wire, or `null` when none is — the guard
+   * that keeps two renewals from overlapping (#761).
+   *
+   * `setInterval` fires on wall-clock cadence, not on completion, so a
+   * request that outlives `renewalIntervalMs` is *joined* by the next tick
+   * rather than replacing it.  That is ordinary rather than exotic here:
+   * the default interval is `ttlMs / 3` — 5 s at the 15 s TTL the docs
+   * recommend — while the HTTP client's own timeout is 10 s, so a single
+   * request may legitimately span two ticks.  Both writes are then built
+   * from the same `currentLease` snapshot and carry the same
+   * `metadata.resourceVersion`, so the API server's optimistic concurrency
+   * rejects one of *this holder's own* writes.
+   *
+   * Skipping the overlapping tick rather than queueing it is deliberate: a
+   * renewal carries nothing the next one will not carry, so a coalesced
+   * tick would only duplicate a write that is already in flight, and the
+   * loop resumes on the following tick either way.
+   *
+   * It holds the promise rather than a boolean so the slot can be cleared
+   * by *identity*.  `release()` and `fireLost()` both drop the lease while
+   * a PUT may still be on the wire, and a fresh `acquire()` on the same
+   * instance — which is exactly what `ClusterSingletonManager` does — can
+   * start a new renewal before that PUT settles.  A boolean reset would
+   * then clear the new renewal's guard on the old one's completion, which
+   * is the overlap this field exists to prevent.
+   */
+  private renewalInFlight: Promise<void> | null = null;
   private held = false;
   private currentLease: K8sLeaseObject | null = null;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
@@ -416,7 +453,10 @@ export class KubernetesLease implements Lease {
    *
    * Renewal is stopped and local state dropped before the request, so a
    * failed DELETE cannot leave a timer quietly renewing a lease this
-   * process considers released.
+   * process considers released.  What it cannot cancel is a renewal PUT
+   * already on the wire; {@link renewalInFlight} is deliberately left set
+   * until that request settles, so a re-`acquire()` on this instance
+   * cannot start a second one alongside it (#761).
    */
   async release(): Promise<void> {
     if (!this.held) return;
@@ -447,20 +487,46 @@ export class KubernetesLease implements Lease {
   }
 
   /**
-   * One renewal tick.  Credential resolution is folded into the same
-   * try/catch as the PUT so that a 401/403 gets the one re-read + retry
+   * One renewal tick — or nothing at all, when the previous tick's PUT has
+   * not come back yet.  See {@link renewalInFlight} for why a tick that
+   * finds one outstanding is dropped rather than queued (#761).
+   */
+  private async renewOnce(): Promise<void> {
+    if (this.renewalInFlight !== null) return;
+    const lease = this.currentLease;
+    if (!this.held || lease === null) return;
+    const attempt = this.renewalPass(lease);
+    this.renewalInFlight = attempt;
+    try {
+      await attempt;
+    } finally {
+      // By identity, not a bare null: a release + re-acquire may have
+      // installed a *newer* attempt while this one was still on the wire,
+      // and clearing that one's slot would let the two overlap.
+      if (this.renewalInFlight === attempt) this.renewalInFlight = null;
+    }
+  }
+
+  /**
+   * The renewal PUT itself, against the lease snapshot the tick started
+   * from.  Credential resolution is folded into the same try/catch as the
+   * PUT so that a 401/403 gets the one re-read + retry
    * {@link withFreshCredentials} grants it before anything is declared
    * lost — a rotated token used to reach `onLost` on the first rejection
    * and stay there.
+   *
+   * The snapshot is a parameter rather than a re-read of `currentLease`
+   * because the field may be nulled by `release()` or `fireLost()` while
+   * this is running; the write has to be built from the state the tick
+   * decided to renew.
    */
-  private async renewOnce(): Promise<void> {
-    if (!this.held || !this.currentLease) return;
+  private async renewalPass(lease: K8sLeaseObject): Promise<void> {
     const now = new Date().toISOString();
     const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const updated: K8sLeaseObject = {
-      ...this.currentLease,
+      ...lease,
       spec: {
-        ...this.currentLease.spec,
+        ...lease.spec,
         holderIdentity: this.options.owner,
         leaseDurationSeconds: ttlSeconds,
         renewTime: now,
@@ -469,18 +535,66 @@ export class KubernetesLease implements Lease {
     try {
       const result = await this.withFreshCredentials((credentials) =>
         updateLease(credentials, updated, this.options.client));
-      if (!result) {
-        // 409 / 404 — somebody else won, or the object was deleted.
-        this.fireLost('lease lost during renewal (conflict or 404)');
+      if (result === null) {
+        await this.reconcileRejectedRenewal();
         return;
       }
-      this.currentLease = result;
+      // Guarded because `release()` may have run while the PUT was on the
+      // wire: adopting a resourceVersion into a lease this process has
+      // already dropped would resurrect state nothing reads back.
+      if (this.held) this.currentLease = result;
     } catch (e) {
       const message = e instanceof K8sLeaseError
         ? `renewal http error: ${e.message}`
         : `renewal error: ${(e as Error).message}`;
       this.fireLost(message);
     }
+  }
+
+  /**
+   * Decide what a rejected renewal PUT actually means, by reading the
+   * record back before ownership is given up (#761).
+   *
+   * `updateLease` maps both 409 and 404 to `null`, and a 409 is *not*
+   * evidence of a takeover — it only says the `resourceVersion` moved.
+   * The in-flight guard above removes the source this issue was filed
+   * for, but not the others: a re-`acquire()` on a still-held lease PUTs
+   * from its own GET while a renewal tick holds the older version, and
+   * anything else with write access to the object — another controller,
+   * a finalizer, a `kubectl label` — bumps the version without touching
+   * `holderIdentity` at all.  Concluding "lost" from the status alone
+   * stops the singleton for a lease this pod still owns, and the K8s
+   * record then names this pod with a fresh `renewTime`, so no other pod
+   * may take over either — a self-inflicted outage on both sides.
+   *
+   * The re-read is what distinguishes the three cases, and only the
+   * `holderIdentity` on the server is trusted to do it:
+   *
+   *   - **gone** — someone deleted the object; the lease really is lost.
+   *   - **a different holder** — a real takeover; the lease really is lost.
+   *   - **still this owner** — ours all along.  Adopt the server's
+   *     `resourceVersion`, which is also what lets the *next* tick's CAS
+   *     match instead of conflicting again on the same stale version.
+   *
+   * A re-read that fails outright falls through to the caller's catch and
+   * fires `onLost`: ownership that cannot be confirmed may not be assumed.
+   */
+  private async reconcileRejectedRenewal(): Promise<void> {
+    const current = await this.withFreshCredentials((credentials) =>
+      getLease(credentials, this.options.namespace, this.options.name, this.options.client));
+    if (current === null) {
+      this.fireLost('lease lost during renewal (the lease object was deleted)');
+      return;
+    }
+    const holder = current.spec.holderIdentity;
+    if (holder !== this.options.owner) {
+      // Falsy rather than nullish for the description: a missing field and
+      // an empty string both mean unowned, which is how `isStillHeldByOther`
+      // reads them too.  Either way the record is not ours any more.
+      this.fireLost(`lease lost during renewal (now held by ${holder ? holder : 'nobody'})`);
+      return;
+    }
+    if (this.held) this.currentLease = current;
   }
 
   private fireLost(reason: string): void {
