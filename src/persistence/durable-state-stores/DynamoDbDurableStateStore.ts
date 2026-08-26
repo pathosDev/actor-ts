@@ -1,3 +1,4 @@
+import { DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
@@ -66,6 +67,13 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
   /** One item per persistence id, so the partition key alone is the whole schema. */
   protected tables(): DynamoDbTableSchema[] {
     return [{ tableName: this.tableName, partitionKey: 'pid' }];
+  }
+
+  async storageIdentity(): Promise<string> {
+    // No sort key on this table — the sentinel partition key alone is the item.
+    return this.storageIdentityFromTable(this.tableName, {
+      pid: stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+    });
   }
 
   async upsert<S>(

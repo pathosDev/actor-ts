@@ -43,6 +43,14 @@ export class InMemoryJournal implements Journal {
    * `'shared'` after construction (#1356).
    */
   storageLocality: StorageLocality = 'node-local';
+  /**
+   * Minted per instance (#1358) — which makes the shared-fixture case exact
+   * for free: one instance handed to several in-process systems is one
+   * database and reports one identity; two instances report two.
+   */
+  private readonly mintedStorageIdentity: string = crypto.randomUUID();
+
+  async storageIdentity(): Promise<string> { return this.mintedStorageIdentity; }
 
   async append<E>(
     persistenceId: string,

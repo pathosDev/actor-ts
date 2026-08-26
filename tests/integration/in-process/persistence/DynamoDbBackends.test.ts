@@ -584,3 +584,31 @@ describe('registerDynamoDbPlugins', () => {
     }
   });
 });
+
+describe('DynamoDB storage identity (#1358)', () => {
+  test('per TABLE: a second store on the same table shares, another table differs', async () => {
+    const operations = new FakeDynamoDb();
+    const journal = journalWith(operations);
+    const identity = await journal.storageIdentity();
+    expect(identity).toMatch(/^[0-9a-f-]{36}$/);
+
+    // Same table, fresh store — the conditional put loses and the stored
+    // item wins.
+    expect(await journalWith(operations).storageIdentity()).toBe(identity);
+
+    // The snapshot store's own table is its own unit of divergence.
+    const snapshotStore = new DynamoDbSnapshotStore(
+      DynamoDbSnapshotStoreOptions.create().withOperations(operations),
+    );
+    expect(await snapshotStore.storageIdentity()).not.toBe(identity);
+  });
+
+  test('the identity item is invisible to persistence-id enumeration', async () => {
+    const operations = new FakeDynamoDb();
+    const journal = journalWith(operations);
+    await journal.append('order-1', [{ event: 'created' }], 0);
+    await journal.storageIdentity();
+
+    expect(await journal.persistenceIds()).toEqual(['order-1']);
+  });
+});

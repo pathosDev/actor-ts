@@ -64,6 +64,14 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
   /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
   get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
+
+  /** Identity is the backend's too — bucket/directory = database (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.backend.storageIdentity === undefined) {
+      throw new JournalError('ObjectStorageDurableStateStore.storageIdentity: the backend declares none');
+    }
+    return this.backend.storageIdentity();
+  }
   private readonly ownsBackend: boolean;
   private readonly prefix: string;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;

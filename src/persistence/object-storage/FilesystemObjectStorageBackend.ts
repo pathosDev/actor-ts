@@ -6,6 +6,7 @@ import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyVali
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
+  resolveObjectStorageIdentity,
   type ObjectFetched,
   type ObjectInfo,
   type ObjectStorageBackend,
@@ -151,7 +152,16 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
    * same escape hatch the in-memory stores carry (#1356).
    */
   storageLocality: StorageLocality = 'node-local';
+  private mintedStorageIdentity: string | null = null;
   private readonly dir: string;
+
+  /** Identity of the directory — every store over this backend shares it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.mintedStorageIdentity === null) {
+      this.mintedStorageIdentity = await resolveObjectStorageIdentity(this);
+    }
+    return this.mintedStorageIdentity;
+  }
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 

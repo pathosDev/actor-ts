@@ -63,6 +63,13 @@ export interface SnapshotStore {
    */
   readonly storageLocality?: StorageLocality;
 
+  /**
+   * Identity of the database behind this store, minted on first contact and
+   * persisted in the database itself — see {@link Journal.storageIdentity}
+   * for the full semantics (#1358).  Optional; absence means unknown.
+   */
+  storageIdentity?(): Promise<string>;
+
   /** Best-effort teardown. */
   close?(): Promise<void>;
 }

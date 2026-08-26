@@ -179,6 +179,21 @@ export interface Journal {
    */
   readonly storageLocality?: StorageLocality;
 
+  /**
+   * The identity of the database behind this journal — a random value minted
+   * on first contact and persisted **in the database itself**, stable across
+   * restarts and identical for every store that opens the same database.  It
+   * answers the question {@link storageLocality} cannot: whether two nodes'
+   * `'shared'`-capable stores actually reached the *same instance* (#1358).
+   * Two nodes each on their own Postgres mint two identities; the cluster
+   * compares them and says so out loud.
+   *
+   * Optional like the locality, and absence means unknown.  Implementations
+   * may reject (missing DDL rights, operator-managed schema) — callers treat
+   * a rejection as unknown, never as fatal.
+   */
+  storageIdentity?(): Promise<string>;
+
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;
 }

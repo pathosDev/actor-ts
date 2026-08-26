@@ -1,4 +1,4 @@
-import { DYNAMODB_MAX_BATCH_ITEMS } from '../Constants.js';
+import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import { type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -69,6 +69,13 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
 
   protected tables(): DynamoDbTableSchema[] {
     return [{ tableName: this.tableName, partitionKey: 'pid', sortKey: { name: 'seq', type: 'N' } }];
+  }
+
+  async storageIdentity(): Promise<string> {
+    return this.storageIdentityFromTable(this.tableName, {
+      pid: stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+      seq: numberAttribute(0),
+    });
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {

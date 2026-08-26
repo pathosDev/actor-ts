@@ -5,6 +5,7 @@ import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
@@ -30,7 +31,26 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private readonly keepN: number;
   /** A local file (or `:memory:`) no other node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'node-local';
+  private cachedStorageIdentity: string | null = null;
   private closed = false;
+
+  /** Identity of the database file — see `STORAGE_IDENTITY_TABLE` for why it is unprefixed (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
+    await this.ensureOpen();
+    const database = this.db!;
+    database
+      .prepare(`INSERT OR IGNORE INTO ${STORAGE_IDENTITY_TABLE}(singleton, identity) VALUES (1, ?)`)
+      .run(crypto.randomUUID());
+    const row = database
+      .prepare(`SELECT identity FROM ${STORAGE_IDENTITY_TABLE} WHERE singleton = 1`)
+      .get() as { identity: string } | null | undefined;
+    if (row == null || typeof row.identity !== 'string' || row.identity.length === 0) {
+      throw new JournalError('SqliteSnapshotStore.storageIdentity: identity row missing after insert');
+    }
+    this.cachedStorageIdentity = row.identity;
+    return row.identity;
+  }
 
   private db: SqliteDb | null = null;
   private stmts: Stmts | null = null;
@@ -131,6 +151,10 @@ export class SqliteSnapshotStore implements SnapshotStore {
         payload        TEXT NOT NULL,
         timestamp      INTEGER NOT NULL,
         PRIMARY KEY (persistence_id, sequence_nr)
+      );
+      CREATE TABLE IF NOT EXISTS ${STORAGE_IDENTITY_TABLE} (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        identity  TEXT NOT NULL
       );
     `);
     this.stmts = {

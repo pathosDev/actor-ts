@@ -78,6 +78,7 @@ function withoutCommentLines(source: string): string {
 type ScannedStoreFile = {
   readonly path: string;
   readonly declares: boolean;
+  readonly declaresIdentity: boolean;
   readonly inheritsDeclaringBase: boolean;
 };
 
@@ -96,6 +97,7 @@ function scanStoreFiles(): readonly ScannedStoreFile[] {
       files.push({
         path,
         declares: source.includes('storageLocality'),
+        declaresIdentity: source.includes('storageIdentity'),
         inheritsDeclaringBase: extendsDeclaringBase.test(source),
       });
     }
@@ -206,6 +208,18 @@ describe('storageLocality declarations', () => {
       + '— fine for third-party code, silent rot for ours. Declare '
       + '`\'node-local\'` or `\'shared\'` on the class (or its family base), '
       + 'with the JSDoc saying why (#1356).',
+    ).toEqual([]);
+
+    const withoutIdentity = storeFiles
+      .filter((file) => !file.declaresIdentity && !file.inheritsDeclaringBase)
+      .map((file) => file.path);
+    expect(
+      withoutIdentity,
+      'These store classes neither implement `storageIdentity()` nor extend a '
+      + 'base that implements it for the family. Without it, two nodes on two '
+      + 'different databases of this backend are indistinguishable to the '
+      + 'cluster (#1358) — mint an identity in the database on first contact, '
+      + 'or delegate to what the store wraps.',
     ).toEqual([]);
   });
 });

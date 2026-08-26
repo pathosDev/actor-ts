@@ -19,6 +19,10 @@ export class InMemoryDurableStateStore implements DurableStateStore {
   private readonly records = new Map<string, DurableStateRecord<unknown>>();
   /** See `InMemoryJournal.storageLocality` — writable for shared in-process fixtures (#1356). */
   storageLocality: StorageLocality = 'node-local';
+  /** See `InMemoryJournal.mintedStorageIdentity` — one instance, one identity (#1358). */
+  private readonly mintedStorageIdentity: string = crypto.randomUUID();
+
+  async storageIdentity(): Promise<string> { return this.mintedStorageIdentity; }
 
   async upsert<S>(
     persistenceId: string,

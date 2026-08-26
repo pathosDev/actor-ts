@@ -1,7 +1,9 @@
 import type { Serializer } from '../../serialization/Serializer.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { JournalError } from '../JournalTypes.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
-import type { SqlDialect } from './SqlDialect.js';
+import { expandPlaceholders, type SqlDialect } from './SqlDialect.js';
 import type { SqlPool } from './SqlPool.js';
 
 /** Wiring every relational store needs, independent of which contract it implements. */
@@ -47,6 +49,51 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
     this.dialect = config.dialect;
     this.serializer = config.serializer;
     this.autoCreate = config.autoCreateTables ?? true;
+  }
+
+  private mintedStorageIdentity: string | null = null;
+
+  /**
+   * Identity of the database behind the pool — per **database**, not per
+   * store: the journal, snapshot and durable-state stores over one pool read
+   * the same `storage_identity` row, which is the point (#1358).  Two nodes
+   * on two databases of the same engine mint two identities, and the cluster
+   * says so.  A dialect without {@link SqlDialect.storageIdentityDdl}, or an
+   * operator-managed schema without the table, surfaces as a rejection the
+   * caller treats as unknown.
+   */
+  async storageIdentity(): Promise<string> {
+    if (this.mintedStorageIdentity !== null) return this.mintedStorageIdentity;
+    const pool = await this.ensureOpen();
+    const identityDdl = this.dialect.storageIdentityDdl;
+    if (identityDdl === undefined) {
+      throw new JournalError(
+        `${this.storeName}.storageIdentity: dialect '${this.dialect.name}' declares no ${STORAGE_IDENTITY_TABLE} table`,
+      );
+    }
+    if (this.autoCreate) {
+      for (const statement of identityDdl(STORAGE_IDENTITY_TABLE)) await pool.query(statement);
+    }
+    try {
+      await pool.query(
+        expandPlaceholders(`INSERT INTO ${STORAGE_IDENTITY_TABLE} (singleton, identity) VALUES (?, ?)`, this.dialect),
+        [1, crypto.randomUUID()],
+      );
+    } catch (e) {
+      // Losing the insert race to a sibling store on the same database is the
+      // expected path — the winner's row is the identity.
+      if (!this.dialect.isDuplicateKeyError(e)) this.fail('storageIdentity', e);
+    }
+    const result = await pool.query(
+      expandPlaceholders(`SELECT identity FROM ${STORAGE_IDENTITY_TABLE} WHERE singleton = ?`, this.dialect),
+      [1],
+    );
+    const identity = result.rows[0]?.['identity'];
+    if (typeof identity !== 'string' || identity.length === 0) {
+      throw new JournalError(`${this.storeName}.storageIdentity: identity row missing after insert`);
+    }
+    this.mintedStorageIdentity = identity;
+    return identity;
   }
 
   /** Statements that create this store's tables, run once when `autoCreateTables`. */

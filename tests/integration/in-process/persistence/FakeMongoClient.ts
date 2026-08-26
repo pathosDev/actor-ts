@@ -176,7 +176,11 @@ class FakeCollection<TDocument extends MongoDocument> implements MongoCollection
     const index = this.documents.findIndex((document) => matches(document, filter));
     if (index >= 0) {
       const current = this.documents[index] as MongoDocument;
-      const next = applyUpdate(current, update);
+      // `$setOnInsert` only writes on the insert half of an upsert — on a
+      // matched document it is a no-op, which is exactly what makes the
+      // storage-identity claim (#1358) idempotent.
+      const { $setOnInsert: _ignoredOnMatch, ...updateWithoutInsertOnly } = update;
+      const next = applyUpdate(current, updateWithoutInsertOnly);
       this.documents[index] = next as TDocument;
       return { matchedCount: 1, modifiedCount: 1, upsertedCount: 0 };
     }
@@ -227,13 +231,17 @@ class FakeCollection<TDocument extends MongoDocument> implements MongoCollection
   }
 }
 
-/** Apply `$set` / `$max` — the only update operators the stores emit. */
+/** Apply `$set` / `$max` / `$setOnInsert` — the only update operators the stores emit. */
 function applyUpdate(current: MongoDocument, update: MongoDocument): MongoDocument {
   const next: MongoDocument = { ...current };
   for (const [operator, operand] of Object.entries(update)) {
     const fields = operand as MongoDocument;
     switch (operator) {
       case '$set':
+      // Reaches `applyUpdate` only on the insert half of an upsert —
+      // `updateOne` strips it for a matched document — so here it writes
+      // like `$set`, which is MongoDB's semantics for the created document.
+      case '$setOnInsert':
         for (const [field, value] of Object.entries(fields)) next[field] = value;
         break;
       case '$max':

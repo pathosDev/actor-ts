@@ -1,4 +1,4 @@
-import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_MAX_TRANSACTION_ITEMS } from '../Constants.js';
+import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_MAX_TRANSACTION_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
@@ -109,6 +109,13 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
 
   protected tables(): DynamoDbTableSchema[] {
     return [{ tableName: this.tableName, partitionKey: 'pid', sortKey: { name: 'seq', type: 'N' } }];
+  }
+
+  async storageIdentity(): Promise<string> {
+    return this.storageIdentityFromTable(this.tableName, {
+      pid: stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+      seq: numberAttribute(0),
+    });
   }
 
   async append<E>(
@@ -284,6 +291,12 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
         const page = await operations.scan({
           TableName: this.tableName,
           ProjectionExpression: 'pid',
+          // The identity item (#1358) lives in this table under a sentinel
+          // key — it is metadata, not a stream, so enumeration skips it.
+          FilterExpression: 'pid <> :storageIdentitySentinel',
+          ExpressionAttributeValues: {
+            ':storageIdentitySentinel': stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+          },
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         });
         for (const item of page.Items ?? []) found.add(readString(item, 'pid'));
