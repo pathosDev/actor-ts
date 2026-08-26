@@ -446,6 +446,43 @@ await this.persistAll([
 The batch is still written atomically — per-event tags do not split
 it into several appends.
 
+### What a tag may contain
+
+Like a persistence ID, a tag is rarely a constant — it is usually
+built from the event (`` `tenant-${event.tenantId}` ``, an optional
+label).  And like an ID it is more than a value: every backend
+turns the list into a *storage shape*, and they do not all pick the
+same one.  `journal.append()` therefore refuses a list that cannot
+mean the same thing everywhere, before a single row is written:
+
+| Rejected | Why |
+| --- | --- |
+| an empty tag | it means something different on every store — dropped from the tag table but kept in the comma-separated column the SQL journals read back from, indexed as a queryable `''` bucket on MongoDB, one hot `tag = ''` partition on the Cassandra tag index, and a rejected item on DynamoDB, whose string sets may not hold an empty member.  The usual source is a `[category, subCategory ?? '']` shape with the second slot unfilled |
+| the same tag twice on one event | the same spread: Cassandra's `set<text>` and the tag table's idempotent insert collapse it, MongoDB and the CSV column keep it, and DynamoDB fails the whole append, since a string set may not repeat a member |
+| longer than **255** characters | a tag is indexed, and an unbounded one bloats both the event row and every index built over it |
+| more than **64** tags on one event | the same bound, counted per event — a `persistAll` of ten events may carry 64 each, not 64 between them |
+| a comma | the SQLite and relational journals store tags as a comma-separated column, so a `,` inside one would split into extra tags on read — a caller could append entries to a peer event's tag list |
+| control characters | tags are interpolated into log lines, so a newline lets a caller forge log records |
+
+Everything else is allowed.  Tags are compared byte for byte, so
+`'Order'` and `'order'` are two tags and not a repeat, and a
+trailing space makes a third.
+
+Check your own tags against these rules without starting an actor:
+
+```ts
+import { assertValidTags } from 'actor-ts/persistence';
+
+assertValidTags(tagsFor(event));
+```
+
+**Reading is never refused.**  Only `append` validates, so a stream
+written before these rules — one that already carries an empty or
+repeated tag — replays unchanged, and `journal.read(id, 1)` hands
+back exactly the list it stored.  What changes is that new appends
+with such a list now throw, so filter them in `tagsFor` rather than
+letting the journal decide.
+
 ## Schema evolution — event adapters
 
 When event shapes change over time (a field is renamed, a value
