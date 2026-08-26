@@ -483,6 +483,42 @@ back exactly the list it stored.  What changes is that new appends
 with such a list now throw, so filter them in `tagsFor` rather than
 letting the journal decide.
 
+**Copying such a stream counts as a write.**  Read and append are
+the two halves the rule above splits, and a journal-to-journal copy
+is both at once: `migrateBetweenJournals` reads a historical tag
+list and offers it straight to the target's `append`.  So a legacy
+stream replays forever but cannot be copied *as it stands* — the
+one case the split does not cover on its own.
+
+The copy says so before it writes anything.  It walks the source in
+a read-only preflight and raises `MigrationTagError`, naming the
+persistence ID and the sequence number, with the target and the
+progress store untouched; a run that gets as far as its first
+`append` goes on to finish.  Two ways forward, both on the copy:
+
+```ts
+import { migrateBetweenJournals } from 'actor-ts/persistence';
+
+// Decide for yourself what the legacy list should have been …
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+
+// … or take the two repairs that need no judgement.  Empty members
+// are dropped and repeats collapsed.
+const result = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${result.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+`'sanitize'` fixes only those two shapes.  A comma, a control
+character, an over-long tag or too many tags still refuses under it,
+because repairing those means inventing a tag or discarding one the
+caller meant — `eventTransform` is where that decision belongs.
+See [Migration recipes](/persistence/migration/recipes/) for the
+full copy story.
+
 ## Schema evolution — event adapters
 
 When event shapes change over time (a field is renamed, a value

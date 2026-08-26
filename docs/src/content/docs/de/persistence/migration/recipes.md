@@ -364,6 +364,67 @@ Zwei Konsequenzen für einen gepaarten Lauf:
   Stream umzunummerieren — mehr kann ein Target, das keine Marke
   festhalten kann, ehrlicherweise nicht anbieten.
 
+### "Was, wenn die Quelle Tags trägt, die `append` nicht mehr annimmt?"
+
+Sie wird zurückgewiesen — und zwar, bevor irgendetwas geschrieben ist.
+
+Die Tag-Validierung läuft nur auf Schreibpfaden.  Ein Journal, das
+vor diesen Regeln geschrieben wurde, spielt also für immer
+unverändert ab; dieses Versprechen bleibt.  Bei einer Kopie reicht
+es nicht mehr: Sie liest eine historische Liste und reicht sie an
+das `append` des Ziels weiter — und das ist ein Schreibvorgang.  Die
+beiden Formen, die ältere Releases üblicherweise hinterlassen haben,
+sind ein **leerer** Tag (`['orders', '']`, aus einem
+`[category, subCategory ?? '']`, dessen zweiter Platz nie gefüllt
+wurde) und **derselbe Tag zweimal**.
+
+`migrateBetweenJournals` geht die Quelle zuerst in einem rein
+lesenden Vorlauf durch und weist deshalb mit `MigrationTagError`
+zurück — mit Persistence-ID und Sequenznummer im Text —, während
+Ziel und Fortschrittsspeicher noch unberührt sind.  Was es vorher
+tat, war schlechter als eine Zurückweisung: Es traf die kaputte
+Liste erst an dem `append`, das sie ablehnte, und ließ ein teilweise
+gefülltes Ziel zurück, einen abgeschnittenen Stream und
+Fortschrittseinträge, die die Streams davor als erledigt auswiesen.
+Ein erneuter Lauf mit `skipExistingPersistenceIds` ging dann glatt
+am abgeschnittenen vorbei, weil das Ziel *irgendwelche* Daten dafür
+hatte.
+
+Zwei Wege hindurch.  Die Listen selbst umschreiben:
+
+```ts
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+```
+
+Oder sich für die beiden Reparaturen entscheiden, die kein Urteil
+erfordern — ein leerer Eintrag fällt weg, eine Wiederholung wird
+zusammengefaltet:
+
+```ts
+const copied = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${copied.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+Die Zahl steht mit Absicht im Ergebnis: Historische Daten zu
+reparieren heißt, sie zu ändern — ein Lauf, der saubere Tags
+erwartet hat, kann so darauf bestehen, dass sie null ist.
+`'sanitize'` hört dort auf: Ein Komma, ein Control-Zeichen, ein zu
+langer Tag oder zu viele Tags an einem Event werden auch damit
+zurückgewiesen, denn sie zu reparieren hieße, einen Tag zu erfinden
+oder einen zu verwerfen, den der Aufrufer so gemeint hat.  Diese
+Entscheidung gehört in `eventTransform`, in Code, den jemand lesen
+kann.
+
+Der Vorlauf deckt jede Zurückweisung der Kopie ab, nicht nur Tags:
+Ein Loch in den Sequenznummern der Quelle und ein komprimiertes
+Präfix, das das Ziel nicht abbilden kann, werden ebenfalls dort
+entschieden.  Er kostet ein zusätzliches Lesen der Quelle — bei
+einem Resume nur über das, was noch zu kopieren ist.
+
 ### "Meine Snapshots sind verschlüsselt — kommt die Kopie damit klar?"
 
 Nur, wenn du ihr sagst, welche Schlüssel sie verwenden soll — und

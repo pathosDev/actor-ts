@@ -468,6 +468,7 @@ export type {
   SchemaRegistration,
   SchemaDescriptor,
   // #87 — journal-to-journal + snapshot-store-to-snapshot-store copy.
+  InvalidTagPolicy,
   MigrateJournalsOptions,
   MigrateJournalsResult,
   MigrateSnapshotStoresOptions,
@@ -507,6 +508,8 @@ export {
   InMemoryMigrationProgressStore,
   // #630 — a compacted source the target journal cannot represent.
   CompactedSourceError,
+  // #740 — a source tag list the target's `append` refuses.
+  MigrationTagError,
 } from './migration/index.js';
 
 // Persistence Query — read-side query layer for projections.

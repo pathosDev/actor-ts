@@ -57,8 +57,10 @@ export {
   migrateBetweenSnapshotStores,
   InMemoryMigrationProgressStore,
   CompactedSourceError,
+  MigrationTagError,
 } from './JournalMigration.js';
 export type {
+  InvalidTagPolicy,
   MigrateJournalsOptions,
   MigrateJournalsResult,
   MigrateSnapshotStoresOptions,
