@@ -23,6 +23,7 @@ import {
   LeaderChanged,
 } from '../src/cluster/index.js';
 import type { ActorRef } from '../src/index.js';
+import { InMemoryJournal, PersistenceExtensionId } from '../src/persistence/index.js';
 import { awaitCondition, sleep } from './util/AwaitCondition.js';
 
 /**
@@ -50,12 +51,15 @@ async function startNode<TMessage>(options: {
   port: number;
   seeds?: string[];
   roles?: string[];
+  /** Runs before the node joins — wiring that must precede `sharding.start`. */
+  prepareSystem?: (system: ActorSystem) => void;
   sharding: (sharding: ClusterSharding) => ActorRef<TMessage>;
 }): Promise<NodeContext<TMessage>> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(options.systemName, sysOptions);
+  options.prepareSystem?.(system);
   const clusterOptions = ClusterOptions.create()
     .withHost(options.host)
     .withPort(options.port)
@@ -410,9 +414,21 @@ test('rememberEntities re-creates entities on the new owner after node death', a
     );
   };
 
-  const n1 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.1', port: 37001, sharding: mk('n1') });
-  const n2 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], sharding: mk('n2') });
-  const n3 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.3', port: 37003, seeds: ['10.16.0.1:37001'], sharding: mk('n3') });
+  // The registry must be ONE database for the whole cluster — the coordinator
+  // is leader-hosted, and a per-node journal survives only as long as the
+  // leader does (this test kills a non-leader, which is why per-node journals
+  // once passed here).  Since #1356 the auto path refuses that shape outright,
+  // so the three roles share one instance, declared as what it genuinely is —
+  // the same fixture shape as tests/multi-node/ShardingRememberEntities.
+  const registryJournal = new InMemoryJournal();
+  registryJournal.storageLocality = 'shared';
+  const shareRegistryJournal = (system: ActorSystem): void => {
+    system.extension(PersistenceExtensionId).setJournal(registryJournal);
+  };
+
+  const n1 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.1', port: 37001, prepareSystem: shareRegistryJournal, sharding: mk('n1') });
+  const n2 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.2', port: 37002, seeds: ['10.16.0.1:37001'], prepareSystem: shareRegistryJournal, sharding: mk('n2') });
+  const n3 = await startNode<CounterCommand>({ systemName: 'rem', host: '10.16.0.3', port: 37003, seeds: ['10.16.0.1:37001'], prepareSystem: shareRegistryJournal, sharding: mk('n3') });
 
   await awaitCondition(() => [n1, n2, n3].every(n => n.cluster.upMembers().length === 3), {
     timeoutMs: 4_000,

@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
+import { StorageLocalityError } from '../../persistence/StorageLocality.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   SystemGroups,
@@ -584,7 +585,28 @@ export class ClusterSharding {
     if (!options.rememberEntities) return undefined;
     if (options.rememberEntitiesStore === null) return undefined;
     if (options.rememberEntitiesStore) return options.rememberEntitiesStore;
-    const journal = this.system.extension(PersistenceExtensionId).journal;
+    const persistenceExtension = this.system.extension(PersistenceExtensionId);
+    const journal = persistenceExtension.journal;
+    // The one fail-fast of the storage-locality guard (#1356), and only on
+    // this auto path — an explicit store or `null` above is the user's own
+    // wiring.  The registry must be one database for the whole cluster: the
+    // coordinator is leader-hosted, and on failover the next leader calls
+    // `store.load(typeName)` against whatever ITS node's journal holds — the
+    // multi-node suite hand-injects one shared journal into every role
+    // precisely because of this, and nothing else checks it.
+    if (journal.storageLocality === 'node-local' && this.cluster.expectsRemotePeers()) {
+      throw new StorageLocalityError(
+        `cluster.sharding: rememberEntities=true auto-wired its registry from this node's journal, `
+        + `but '${journal.constructor.name}' declares node-local storage and the cluster expects remote `
+        + 'peers — on coordinator failover the next leader replays ITS OWN journal and forgets every '
+        + 'remembered entity (#1356). Wire a shared journal, pass an explicit rememberEntitiesStore '
+        + '(e.g. CassandraRememberEntitiesStore), or pass rememberEntitiesStore: null to keep the '
+        + 'registry in memory only.',
+      );
+    }
+    // Wired while standalone it cannot be un-wired later, so the arrival of
+    // the first remote peer surfaces this note at error level instead.
+    persistenceExtension.noteStoreUse('remember-entities', journal, 'error');
     return new JournalRememberEntitiesStore(journal);
   }
 

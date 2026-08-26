@@ -35,3 +35,18 @@ export type StorageLocality = 'node-local' | 'shared';
  * combination only warns (#1356).
  */
 export type StorageUseKind = 'journal' | 'snapshot-store' | 'durable-state-store' | 'remember-entities';
+
+/**
+ * Refusal raised where the node-local combination is provably broken rather
+ * than merely suspicious — today only the auto-wired remember-entities
+ * registry over a `'node-local'` journal in a cluster expecting remote peers
+ * (#1356).  A class of its own, exported, for the same reason
+ * `SnapshotIntegrityError` and `JournalIntegrityError` are: callers
+ * discriminate on the class, and `error.name === '…'` breaks on rewording.
+ */
+export class StorageLocalityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StorageLocalityError';
+  }
+}
