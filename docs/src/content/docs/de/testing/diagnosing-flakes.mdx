@@ -28,6 +28,14 @@ ankommt:
 | **flaky** — in einigen Läufen umgefallen | Das Ergebnis hängt an Timing, Reihenfolge oder Maschine. | Gegen den Katalog unten halten. |
 | **durchgehend rot** — in jedem Lauf umgefallen | Kaputt.  Wiederholung sagt dir nichts Neues. | Reparieren oder ein Issue aufmachen.  Das ist kein Flake. |
 
+Eine Lücke in diesem Urteil, die man kennen sollte, bevor man einer leeren
+Tabelle glaubt: Ein Test, der **innerhalb eines einzelnen Laufs mehr als einmal**
+umfällt, fällt derzeit aus *beiden* Kategorien heraus — der Harness schreibt dann
+„No test failed in any run that reported“ und endet mit Exit-Code 0, auch wenn
+kein einziger Lauf grün war (#1359).  Ein Hook-Timeout ist der einfachste Weg
+dorthin, weil der ganze Block auf eine `(unnamed)`-Identität zusammenfällt.  Bis
+das behoben ist: `runs: N/N green` lesen, nicht die PASS-Zeile.
+
 Drei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
 **nie beendet wurde** (siehe unten), einen Lauf, der **gar keinen
 JUnit-Report** erzeugt hat (Bun starb, bevor der Reporter geflusht hat — die
@@ -135,6 +143,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | --- | --- | --- |
 | Fester Sleep vor einer Assertion | Wird umgestellt, mit Ratsche | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
 | Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
+| Echte Arbeit in einem Hook, gegen ein Limit, das niemand gesetzt hat | Geklärt | `(unnamed)` und „a beforeEach/afterEach hook timed out“, ohne Testnamen |
 | Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
@@ -217,6 +226,69 @@ größtes erreichbares Budget plus 1 s muss in den Cap passen — und verfolgt
 auch Budgets, die über einen modulweiten Helper erreicht werden.  Buns
 Verhalten misst der Test in einem Kindprozess nach, statt es anzunehmen: Ändert
 Bun das, sagt die Prüfung es, statt still bedeutungslos zu werden.
+
+### Echte Arbeit in einem Hook, gegen ein Limit, das niemand gesetzt hat
+
+Bun deckelt einen **Hook** bei 5 000 ms, genau wie einen Test — und das Mittel
+aus dem vorigen Abschnitt hat ein Gegenstück, von dem man leicht nichts weiß:
+`beforeAll(fn, timeoutMs)` nimmt ein zweites Argument, so wie `test()` ein
+drittes nimmt.
+
+`tests/unit/docs/DocSampleHarnessEndToEnd.test.ts` ist der Fall, den diese Suite
+hatte (#1282).  Sein `beforeAll` schreibt einen Fixture-Dokumentationsbaum und
+lässt dann zweimal den Doc-Sample-Harness laufen — und jeder dieser Läufe startet
+zweimal `bunx tsc`, weil die Fixture bewusst einen nicht parsebaren Fence enthält
+und das erneute Prüfen des Rests ohne ihn genau die Eigenschaft ist, für die es
+die Datei gibt.  Der Hook treibt also vier Compiler nacheinander: 3,1 s im
+Leerlauf, 4,3 s in einem vollen `bun test`, 9,0 s, wenn mehrere Kopien der Datei
+um die Maschine konkurrieren.  Gegen ein Limit von 5 000 ms ist das kein langsamer
+Test, sondern ein Münzwurf — allein lief die Datei jedes Mal durch, und im Lauf
+der ganzen Suite fiel sie in etwa drei von vier Läufen um.
+
+Zwei Dinge machen diese Familie schwerer lesbar als die Test-Timeout-Familie oben:
+
+- **Der Fehlschlag benennt nichts.**  Er erscheint als
+  `(fail) <describe> > (unnamed) [5001.31ms]` mit *„a beforeEach/afterEach hook
+  timed out for this test“* — die falsche Hook-Art, und kein Testname, weil kein
+  Test schuld ist.  Im Log nach dem Dateinamen zu greppen findet ihn; nach einem
+  Testnamen zu greppen nicht.
+- **Er meldet zu wenig davon, was nicht lief.**  Jeder Test des Blocks fällt aus,
+  und *ein* Fehlschlag wird verbucht.  Grün führt dieselbe Datei 13 Tests pro Lauf
+  aus; rot war es einer.
+
+Das Mittel sind gestaffelte Budgets, keine einzelne größere Zahl:
+
+```ts
+const RUN_BUDGET_MS = 30_000;               // what one spawned run may take
+const HOOK_BUDGET_MS = 3 * RUN_BUDGET_MS;   // a backstop, not the budget
+
+function run(): Run {
+  const startedAt = performance.now();
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: RUN_BUDGET_MS });
+  if (result.error !== undefined || result.signal !== null) {
+    const elapsed = Math.round(performance.now() - startedAt);
+    throw new Error(`${command} did not complete after ${elapsed} ms`);
+  }
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+beforeAll(() => {
+  /* … */
+}, HOOK_BUDGET_MS);       // reached only if the stall was not in a spawn
+```
+
+Dass der Cap des Hooks über dem Budget der Arbeit selbst liegt, ist Absicht.  Ein
+geworfener Fehler trägt das Kommando, die verstrichene Zeit und das gerissene
+Budget; Buns Hook-Timeout trägt nichts davon.  Dasselbe Prinzip wie im Abschnitt
+darüber — **der Cap ist ein Auffangnetz, das Budget ist das, was meldet** — nur
+eine Ebene weiter außen, auf einen Hook angewandt.
+
+Die Größe ist eine Messung, keine Schätzung.  Miss den Hook unter der Last, die
+ihn tatsächlich umbringt (mehrere Kopien der Datei gleichzeitig laufen zu lassen
+ist der billigste Weg dorthin), lass dann ein Vielfaches des schlechtesten Werts
+stehen und schreib die Zahlen neben die Konstante — damit die nächste Person ein
+gemessenes Budget von einem unterscheiden kann, das so lange verdoppelt wurde, bis
+das Rot weg war.
 
 ### Buns Timer-Quantum
 

@@ -130,6 +130,49 @@ const EXEMPT_PAGE = [
   '```',
 ].join('\n');
 
+/**
+ * What one harness run may take before it is stuck rather than merely slow.
+ *
+ * A run is **two** `bunx tsc` compiles, not one: the fixture deliberately
+ * carries an unparseable fence, and dropping it to re-check the rest is the
+ * first of the two properties above.  `beforeAll` makes two runs, so the hook
+ * spawns four compilers in series — which is why its cost tracks the machine's
+ * load rather than the size of the fixture.
+ *
+ * Measured on this tree at `299c0b5c` (Windows, 32 CPUs, bun 1.4.0), per run
+ * and per hook, worst of each set: **idle** 1.66 s / 3.06 s; inside a **full
+ * `bun test`** 2.72 s / 4.32 s; with **4 copies of this file in flight** 3.33 s
+ * / 5.30 s; with **8 copies** 5.33 s / 8.97 s.  Bun caps a hook at 5 000 ms
+ * unless it is told otherwise, and nothing raises that globally — so the hook
+ * crossed its cap from the third case on, and the file failed roughly three
+ * whole-suite runs in four as `(unnamed)` (#1282).
+ *
+ * 30 s is ~6x the slowest run ever measured here, so a loaded machine does not
+ * reach it, while a genuinely wedged compiler is still named in seconds rather
+ * than at the hook's backstop below.
+ */
+const RUN_BUDGET_MS = 30_000;
+
+/**
+ * The hook's cap is a backstop, not the budget — it sits clear of both runs'
+ * budgets on purpose, so a stall is reported by {@link run}, which names the
+ * script, its flags and the elapsed time.  Bun's own hook timeout names none of
+ * that: it reports `(unnamed)` and calls a `beforeAll` a
+ * `beforeEach/afterEach` hook, which is what made #1282 read as a mystery.
+ * Reaching this cap therefore means the hook stalled somewhere that is *not* a
+ * spawn — writing the fixture pages, say.
+ */
+const HOOK_BUDGET_MS = 3 * RUN_BUDGET_MS;
+
+/**
+ * `--measure` classifies fences and exits before anything is emitted, so it
+ * never compiles — but it is still a {@link run}, and its call site is a
+ * `test()` rather than the hook.  The cap has to clear `RUN_BUDGET_MS` or the
+ * budget could never be the thing that reports, which is its own flake shape
+ * (`docs/…/testing/diagnosing-flakes.mdx`).
+ */
+const MEASURE_BUDGET_MS = RUN_BUDGET_MS + 15_000;
+
 type Run = { readonly status: number; readonly stdout: string; readonly stderr: string };
 
 let fixture = '';
@@ -138,11 +181,25 @@ let plain: Run;
 let report: Run;
 
 function run(...extra: string[]): Run {
+  const startedAt = performance.now();
   const result = spawnSync(
     process.execPath,
     [SCRIPT, `--docs=${relative(ROOT, fixture).split('\\').join('/')}`, `--out=${outName}`, ...extra],
-    { cwd: ROOT, encoding: 'utf8' },
+    { cwd: ROOT, encoding: 'utf8', timeout: RUN_BUDGET_MS },
   );
+  // A run the budget killed — or one that never started — carries no exit
+  // status, so without this it reads as `status: -1` with empty output and fails
+  // whichever assertion inspects that output first, burying the cause under a
+  // diff of two empty strings.
+  if (result.error !== undefined || result.signal !== null) {
+    const elapsed = Math.round(performance.now() - startedAt);
+    throw new Error(
+      `check-doc-samples.mjs ${extra.join(' ') || '(no flags)'} did not complete: `
+      + `${result.error?.message ?? `killed by ${result.signal}`} after ${elapsed} ms, `
+      + `against a ${RUN_BUDGET_MS} ms budget. Each run spawns two \`bunx tsc\` compiles; `
+      + 'if a real machine reaches this, the budget is wrong — report the figure on #1282.',
+    );
+  }
   return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
@@ -165,7 +222,7 @@ beforeAll(() => {
   writeFileSync(join(fixture, 'exempt.mdx'), EXEMPT_PAGE, 'utf8');
   plain = run();
   report = run('--report');
-});
+}, HOOK_BUDGET_MS);
 
 afterAll(() => {
   rmSync(fixture, { recursive: true, force: true });
@@ -241,7 +298,7 @@ describe('the doc-sample harness over a fixture tree', () => {
   test('--report names the exemption reason so it can be reviewed', () => {
     const measured = run('--measure');
     expect(measured.stdout).toContain('two modules in one fence');
-  });
+  }, MEASURE_BUDGET_MS);
 
   test('the generated tree is cleaned up', () => {
     expect(plain.stdout).not.toContain('ENOENT');
