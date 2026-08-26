@@ -4848,6 +4848,115 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING (pre-1.0): `assertValidTags` now rejects empty and duplicate
+  event tags (#740).** The validator exempted the empty tag on the documented
+  grounds that "every backend already skips them on write". No backend did.
+  The SQLite and relational journals dropped it from their tags *table* while
+  still writing it into the comma-separated `tags` column they read back
+  from, so `['order', '']` round-tripped verbatim; MongoDB indexed it as a
+  queryable `''` bucket that a `{all: ['']}` query matches; the Cassandra tag
+  index opened one hot `tag = ''` partition, the exact shape that index
+  exists to avoid; and DynamoDB rejected the whole item, since a string-set
+  member may be neither empty nor repeated. One `tagsFor` returning
+  `[category, subCategory ?? '']` therefore had a different outcome on every
+  store, up to a request-triggered hard write failure on one of them.
+
+  Both rules are enforced centrally rather than as a filter copied into six
+  write paths that can drift apart again — the same trade the existing comma
+  rule makes. An empty tag is refused with a message naming its index, since
+  `JSON.stringify('')` identifies nothing in a list of ten, and a repeat is
+  checked last so a tag that is both malformed and repeated reports the flaw
+  the caller can act on. Tags are compared byte for byte: `'Order'` and
+  `'order'` are two tags, not a repeat.
+
+  *Migration:* a `tagsFor` that can return an empty string or the same tag
+  twice now throws instead of silently behaving differently per backend.
+  Filter or de-duplicate before returning.
+
+- **BREAKING (pre-1.0): a decoded CRDT counter slot is bounded by
+  `MAX_COUNTER_SLOT` (2 199 023 255 551, or 2^41 − 1), and
+  `GCounter.increment` refuses to build one past it (#720).** Grow-only
+  counters merge by componentwise maximum, so a slot is a floor no honest
+  operation lowers: before this, a peer able to gossip could write
+  `Number.MAX_SAFE_INTEGER` into *any* replica's slot — a non-negative safe
+  integer, so it passed every decode rule — pinning that counter
+  cluster-wide, irreversibly, and through to the durable record.
+
+  The bound is derived rather than chosen. `GCounter.value()` sums the slots
+  and the decoder admits at most `MAX_CRDT_ENTRIES` (4 096) of them, so
+  `floor(MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES)` is the largest per-slot
+  ceiling for which a fully saturated counter still sums to an exact integer.
+  It is deliberately not configurable: raising it would be configuring
+  `value()` into silent lossiness, which is the failure the bound exists to
+  prevent. `MVRegister` vector-clock entries are bounded by the same rule —
+  an entry claiming 2^53 − 1 writes dominated every honest entry and was
+  never superseded — and `PNCounter` and `GCounterMap` inherit both halves
+  through `GCounter`.
+
+  *Migration:* count a coarser unit. Kibibytes rather than bytes is the only
+  shape of counter the ceiling binds on in practice, and an aggregate above
+  2.2e12 per replica had already left float64's exact range. Still open on
+  #720: own-slot authority in `merge`, blocked on #955.
+
+- **`KubernetesLease` no longer loses a lease to itself under ordinary
+  API-server latency (#761).** `startRenewalLoop` fired `void renewOnce()` on
+  a bare `setInterval` with no outstanding-request tracking, and the
+  arithmetic makes an overlap ordinary rather than exotic: the default
+  renewal interval is `ttlMs / 3` — 5 s at the recommended 15 s TTL — while
+  the HTTP client's own timeout is 10 s, so one request may legitimately span
+  two ticks. Both writes were then built from the same `currentLease`
+  snapshot and carried the same `metadata.resourceVersion`, so the API
+  server's optimistic concurrency rejected one of *this holder's own* writes.
+  The resulting 409 was mapped to `onLost`, stopping a singleton whose lease
+  was still on the record — and, since that record named this pod with a
+  fresh `renewTime`, no other pod could take it over either.
+
+  Two changes fix it: an in-flight guard that skips a renewal tick while one
+  is still on the wire, and a re-GET before ownership is given up. A rejected
+  PUT now fires `onLost` only when the object is gone or names a different
+  `holderIdentity`, and otherwise adopts the server's `resourceVersion` and
+  keeps holding. A re-read that itself fails still fires `onLost`: ownership
+  that cannot be confirmed may not be assumed.
+
+- **Bounded concurrent request handling on the DevTools tap (#758).**
+  `DevToolsHubActor` answers a `request` frame off its mailbox on purpose — a
+  slow journal read must not stall the other connected tabs — which also
+  meant nothing counted the work: a client could send `request` frames as
+  fast as it could write them and hold thousands of concurrent journal reads
+  and full-state replays against the process it shares with the application's
+  own actors. `replay.diff` folds an entire journal, twice, and the existing
+  per-request paging clamps bound one window rather than the number of
+  windows.
+
+  In-flight requests are now capped at 32 per connection and 256 across all
+  connections, and anything past either is refused with an `error` frame
+  carrying code `unavailable` and the `requestId` it answers, rather than
+  queued. The hub-wide cap is the one that binds: nothing capped how many
+  sockets a client opened, so a per-connection cap alone would simply have
+  multiplied by the connection count. The DevTools WebSocket route also sets
+  `maxConnections` to 32 as defence in depth — a behaviour change for anyone
+  opening more than 32 concurrent DevTools clients against one system, and
+  not configurable.
+
+- **`retry()` now clamps every computed backoff delay to the 32-bit timer
+  limit (#771)** — 2 147 483 647 ms, about 24.9 days — before awaiting it.
+  `setTimeout` coerces its argument to a 32-bit signed integer, so a larger
+  delay silently fired after 1 ms: an exponential backoff with `maxDelayMs`
+  omitted did not wait longer as it grew, it stopped waiting altogether and
+  turned into a hot loop against the dependency that was already failing — at
+  exactly the attempt an operator believes is most conservative. With
+  `delayMs: 1000, factor: 10` that was attempt 8. The same misconfiguration
+  now degrades to a very long wait, which is visible and fixable.
+
+  `RetryOptions` gains `randomFactor` (a jitter fraction in `[0, 1]`) and a
+  `random` seam for deterministic tests. Without jitter the schedule is a
+  pure function of the attempt counter, so every caller that failed on the
+  same upstream event retried in the same millisecond and the synchronised
+  herd could hold a recovering service down. `randomFactor` defaults to `0`,
+  so this is additive and an existing `retry` keeps its exact schedule;
+  `0.2` is the spread `exponentialBackoff` and the broker reconnect loop
+  already default to.
+
 - **`KubernetesLease` no longer memoises the Pod's ServiceAccount bearer
   token for the process lifetime (#760).** A projected token is time-bound,
   and the cached copy had no TTL, no re-read and no invalidation on an auth
