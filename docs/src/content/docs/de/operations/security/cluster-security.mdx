@@ -373,6 +373,27 @@ stattdessen über die generische Pfadauflösung erreicht — die nichts
 entfernt, aber auch keinen Sender mitführt —, gilt als nicht
 authentifiziert und nicht als vertrauenswürdig.
 
+Der Zustand eines CRDTs ist die eine Stelle, an die diese Regel
+nicht reicht. DistributedData prüft ein dekodiertes Payload auf
+**Form und Plausibilität**: ein Counter-Slot muss eine
+nichtnegative Ganzzahl höchstens `MAX_COUNTER_SLOT` sein
+(≈ 2,2e12 — der größte Wert pro Slot, bei dem `value()` eines
+vollen Counters noch eine exakte Ganzzahl ist), ein
+Register-Timestamp darf höchstens fünf Minuten vor der lokalen
+Zeit liegen, eine Collection ist auf 4 096 Einträge gedeckelt,
+und ein `__proto__`-Key wird abgewiesen. Was es **nicht** prüft,
+ist, ob der sendende Peer überhaupt etwas in dem Slot zu suchen
+hatte, den er beschrieben hat. Grow-only-Counter mergen per
+Maximum, also kann jeder Peer, der gossipen darf, **jeden**
+Replika-Slot innerhalb dieser Schranken anheben — der besitzende
+Node bekommt ihn nicht wieder herunter, der Wert wandert in den
+durablen Record, und `delete(key)` ist Best-Effort, weil ein Peer,
+der den Key noch hält, ihn zurückgossipt. Ein
+DistributedData-Counter ist damit genau so vertrauenswürdig wie
+die Menge der Peers, die du auf die Leitung lässt — was das
+mTLS-Setup oben für einen Quota- oder Billing-Counter zur
+Voraussetzung macht statt zur Härtungsmaßnahme.
+
 Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
 eine Versionsabweichung und ein feindlicher Peer sehen im Log
