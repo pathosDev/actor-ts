@@ -498,6 +498,44 @@ wurde.  Neu ist nur, dass ein Append mit einer solchen Liste jetzt
 wirft — filtere sie also in `tagsFor`, statt das Journal entscheiden
 zu lassen.
 
+**Einen solchen Stream zu kopieren zählt als Schreiben.**  Lesen und
+Append sind die beiden Hälften, die die Regel oben trennt — und eine
+Journal-zu-Journal-Kopie ist beides zugleich: `migrateBetweenJournals`
+liest eine historische Tag-Liste und reicht sie direkt an das `append`
+des Ziels weiter.  Ein Alt-Stream spielt also für immer ab, lässt sich
+aber *so, wie er ist*, nicht kopieren — der eine Fall, den die
+Trennung allein nicht abdeckt.
+
+Die Kopie sagt das, bevor sie irgendetwas schreibt.  Sie geht die
+Quelle in einem rein lesenden Vorlauf durch und wirft
+`MigrationTagError` mit Persistence-ID und Sequenznummer, während Ziel
+und Fortschrittsspeicher unberührt bleiben; ein Lauf, der bis zu
+seinem ersten `append` kommt, läuft auch zu Ende.  Zwei Wege nach
+vorn, beide an der Kopie:
+
+```ts
+import { migrateBetweenJournals } from 'actor-ts/persistence';
+
+// Selbst entscheiden, was die Alt-Liste hätte sein sollen …
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+
+// … oder die beiden Reparaturen nehmen, die kein Urteil erfordern.
+// Leere Einträge fallen weg, Wiederholungen werden zusammengefaltet.
+const result = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${result.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+`'sanitize'` repariert nur diese beiden Formen.  Ein Komma, ein
+Control-Zeichen, ein zu langer Tag oder zu viele Tags werden auch
+damit zurückgewiesen: Sie zu reparieren hieße, einen Tag zu erfinden
+oder einen zu verwerfen, den der Aufrufer so gemeint hat — diese
+Entscheidung gehört in `eventTransform`.  Die ganze Kopier-Geschichte
+steht in den [Migrations-Rezepten](/de/persistence/migration/recipes/).
+
 ## Schema-Evolution — Event-Adapter
 
 Wenn sich Event-Formen über die Zeit ändern (ein Feld wird umbenannt,

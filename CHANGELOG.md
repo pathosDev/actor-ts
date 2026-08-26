@@ -542,6 +542,54 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **BREAKING (pre-1.0): `migrateBetweenJournals` no longer stops halfway
+  through a copy (#740).** Every refusal it can raise — a tag list the
+  target's `append` rejects, a compacted prefix the target cannot represent,
+  a hole in the source's sequence numbers — is now decided in a read-only
+  preflight over the whole run, so a copy either refuses with the target and
+  the progress store untouched, or it runs to completion. It could previously
+  leave behind a partly populated target, one truncated stream, and progress
+  entries claiming the persistence ids before it were done — a shape a re-run
+  with `skipExistingPersistenceIds` walked straight past, because the target
+  held some data for the truncated stream.
+
+  This was found by the wave's own verification pass, as a regression the
+  wave itself introduced: #740's tag rules made `append` reject an empty or
+  repeated tag, and a migration is a read and a write at once. A journal
+  written before those rules could still be replayed but no longer copied,
+  because the copy hands the source's `tags` straight to `target.append`
+  behind a pass-through default `eventTransform`. It now fails with a
+  `MigrationTagError` naming the persistence id and the sequence number.
+  Reading such a stream is still never refused; copying it is a write, and
+  that distinction is now stated on the persistent-actor and
+  migration-recipes pages in both languages.
+
+  `invalidTags: 'sanitize'` is the opt-in repair, and it covers exactly the
+  two shapes a repair can be honest about: an empty member is dropped, a
+  repeat is collapsed, and `MigrateJournalsResult.eventsWithSanitizedTags`
+  counts every list it changed — so rewriting historical data is a number in
+  the result rather than a silent edit. A comma, a control character, an
+  over-long tag or too many tags on one event still refuse under it, because
+  repairing those means inventing a tag or discarding one the caller meant.
+  `eventTransform` is where that decision belongs.
+
+- **The DevTools overview's Throughput chart no longer draws a line from
+  metrics the node could not read (#744).** The tiles fed by an unreadable
+  `MetricsRegistry` were dashed, but the chart below them kept plotting
+  `messages / s` from the same counter — so one panel reported "no reading"
+  and "zero traffic" at once. A blind node reports that counter as 0 on every
+  sample, so the result was not a gap but a flat line along the axis: a
+  positive claim that the system handled nothing, made in the shape readers
+  trust most, at the moment they are scanning a busy system for a slow
+  consumer.
+
+  The chart now leaves the line out, keeps its axis, and names the omission
+  in the legend, in the same warn colour as the dashed tiles. The block is
+  not blanked: `dead letters / s` beside it is counted off the event stream,
+  stays true, and is the series an operator reaches for during exactly the
+  incident this flag appears in. The legend's peak reading is computed over
+  the lines that survive, so it describes what is drawn.
+
 - **`DocSampleHarnessEndToEnd` no longer fails most whole-suite runs on
   a timeout nobody set (#1282).** Its `beforeAll` runs the doc-sample
   harness twice, and each of those runs spawns `bunx tsc` twice — the
@@ -5024,6 +5072,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   opening more than 32 concurrent DevTools clients against one system, and
   not configurable.
 
+  The slot release is bound on the rejection path as well as the resolve
+  path. The cap releases in a `.finally` precisely so the slot comes back
+  however the request ends, but nothing tested the rejection half — moving
+  the release into the `.then` arm left every test under
+  `tests/unit/devtools/` green while wedging the hub at its ceiling for a
+  client that sends only requests it knows will fail. Rejection is the cheap
+  path: `replay.state` and `replay.diff` reject the moment the registry has
+  no such persistence id, without reading a byte of journal.
+
 - **`retry()` now clamps every computed backoff delay to the 32-bit timer
   limit (#771)** — 2 147 483 647 ms, about 24.9 days — before awaiting it.
   `setTimeout` coerces its argument to a 32-bit signed integer, so a larger
@@ -5123,7 +5180,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `managementRoutes` has returned — `/health` and `/ready` are unaffected.
   `NodeFigures` and the DevTools `stats` sample gain an optional
   `metricsUnavailable`, which rides along from every peer and is carried by
-  the totals when any one node is blind. Two JSDoc blocks described
+  the totals when any one node is blind. That first pass covered the tiles
+  and missed the Throughput chart beneath them; the entry under Fixed above
+  records the follow-up. Two JSDoc blocks described
   `collect()` as a snapshot translated back from prom-client; they were the
   only API-level documentation of that method and promised the opposite of
   the implementation.

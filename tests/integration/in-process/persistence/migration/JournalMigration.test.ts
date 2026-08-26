@@ -328,9 +328,11 @@ describe('migrateBetweenJournals — compacted sources (#630)', () => {
   test('refuses a source stream with a hole rather than renumbering the tail', async () => {
     const holed = new HoledJournal([1, 2, 4]);
     await expect(migrateBetweenJournals(holed, target)).rejects.toThrow(/has a gap/);
-    // The two events before the hole are already across; the copy stops there
-    // rather than writing event 4 at sequence 3.
-    expect((await target.read('holed', 1)).map((e) => e.sequenceNr)).toEqual([1, 2]);
+    // Nothing at all is written — not even the two events ahead of the hole,
+    // which the copy used to leave behind before the refusal moved into the
+    // preflight (#740 follow-up).  A truncated stream plus an exception is the
+    // shape that makes a re-run with `skipExistingPersistenceIds` walk past it.
+    expect(await target.read('holed', 1)).toEqual([]);
   });
 });
 

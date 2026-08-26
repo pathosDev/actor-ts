@@ -87,8 +87,14 @@ than report zero:
   stop existing, so alerts written over them never fire again.
 - The DevTools overview shows **`unavailable`** for the three
   figures it reads from the registry — processed messages, mailbox
-  drops and handler latency. Everything else on that page comes
-  from the actor tree and the event stream and stays correct.
+  drops and handler latency. Its **Throughput** chart leaves the
+  `messages / s` line out for the same reason and names it in the
+  legend, rather than drawing a flat line at zero: a chart is more
+  persuasive than a tile, and that line would be making exactly the
+  claim the tile beside it refuses to make. The dead-letter line
+  next to it is counted off the event stream and stays, as does
+  everything else on the page — it comes from the actor tree and
+  the event stream and stays correct.
 
 So: don't enable `enableMetricsEndpoint` alongside this bridge —
 scrape your own prom-client route instead, which has all the same
