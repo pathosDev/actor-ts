@@ -358,5 +358,12 @@ function primaryKeys(row: Row): string[] {
     return ['tag', 'persistence_id'];
   }
   if ('persistence_id' in row) return ['persistence_id'];
+  if ('singleton' in row) {
+    // storage_identity (#1358) — one row, keyed on the constant 1.  Without
+    // this shape the fallthrough below would key on ALL columns, so a second
+    // `INSERT … IF NOT EXISTS` with a fresh identity would not collide and
+    // the LWT claim the stores rely on would be untested.
+    return ['singleton'];
+  }
   return Object.keys(row);
 }

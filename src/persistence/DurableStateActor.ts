@@ -13,6 +13,7 @@ import type { StateAdapter } from './migration/Adapter.js';
 import { decodeState, encodeState } from './migration/Envelope.js';
 import type { DurableStateOptions, DurableStateOptionsType } from './DurableStateOptions.js';
 import { DurableStateOptionsValidator } from './DurableStateOptions.js';
+import { PersistenceExtensionId } from './PersistenceExtension.js';
 
 /**
  * Base class for actors that persist a single state value per
@@ -91,6 +92,9 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   protected integrity(): IntegrityConfig | undefined { return undefined; }
 
   override async preStart(): Promise<void> {
+    // The storage-locality latch (#1356) — same seam as `PersistentActor`:
+    // the store the options carry is in actual use from here on.
+    this.system.extension(PersistenceExtensionId).noteStoreUse('durable-state-store', this.options.store);
     const adapter = this.stateAdapter();
     const loaded = await this.options.store.load<unknown>(
       this.options.persistenceId, this.persistenceOptions(),

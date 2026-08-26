@@ -66,6 +66,13 @@ export interface SqlDialect {
   journalDdl(tables: JournalTableNames): string[];
   snapshotDdl(table: string): string[];
   durableStateDdl(table: string): string[];
+  /**
+   * Statements that create the one-row `storage_identity` table naming the
+   * database instance (#1358).  Optional: a dialect without it leaves the
+   * relational family's `storageIdentity()` rejecting, which callers treat
+   * as unknown rather than fatal.
+   */
+  storageIdentityDdl?(table: string): string[];
 
   /* -------------------------- dialect-owned DML ------------------------- */
 

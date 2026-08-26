@@ -55,20 +55,20 @@ flowchart LR
 Das Journal und der Durable-State-Store sind **austauschbar**.  Das
 Framework liefert mit:
 
-| Backend | Journal | Durable State | Snapshot Store | Indizierte Tag-Query | Runtimes |
-| --- | --- | --- | --- | --- | --- |
-| In-Memory | ✓ | ✓ | ✓ | In-Process-Scan | alle |
-| SQLite | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | alle |
-| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | alle |
-| PostgreSQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
-| MariaDB / MySQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
-| Microsoft SQL Server | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
-| MongoDB | ✓ | ✓ | ✓ | ✓ (Multikey-Index) | alle |
-| DynamoDB | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
-| Cloudflare D1 | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | alle |
-| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
-| Cassandra | ✓ | — | ✓ | ✓ (Tag-Index-Tabelle) | alle |
-| Filesystem / S3 (Object Storage) | — | ✓ | ✓ | n/a | alle |
+| Backend | Journal | Durable State | Snapshot Store | Indizierte Tag-Query | Über Knoten geteilt | Runtimes |
+| --- | --- | --- | --- | --- | --- | --- |
+| In-Memory | ✓ | ✓ | ✓ | In-Process-Scan | ✗ (pro Prozess) | alle |
+| SQLite | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | ✗ (pro Knoten) | alle |
+| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | ✓ | alle |
+| PostgreSQL | ✓ | ✓ | ✓ | — (Polling-Scan) | ✓ | alle |
+| MariaDB / MySQL | ✓ | ✓ | ✓ | — (Polling-Scan) | ✓ | alle |
+| Microsoft SQL Server | ✓ | ✓ | ✓ | — (Polling-Scan) | ✓ | alle |
+| MongoDB | ✓ | ✓ | ✓ | ✓ (Multikey-Index) | ✓ | alle |
+| DynamoDB | ✓ | ✓ | ✓ | — (Polling-Scan) | ✓ | alle |
+| Cloudflare D1 | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | ✓ | alle |
+| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (Polling-Scan) | ✓ | alle |
+| Cassandra | ✓ | — | ✓ | ✓ (Tag-Index-Tabelle) | ✓ | alle |
+| Filesystem / S3 (Object Storage) | — | ✓ | ✓ | n/a | S3 ✓ / Filesystem ✗ | alle |
 
 CockroachDB und YugabyteDB sind keine eigenen Backends — sie sprechen das
 PostgreSQL-Wire-Protokoll, die Postgres-Stores bedienen sie also unverändert.
@@ -344,9 +344,69 @@ den auch andere schreiben können.  Der Replay wirft dann
 ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
 
 Für Produktion deckt die **SQLite**-Kombination aus Journal +
-Snapshot Single-Node-Deployments ab; das
-**Cassandra**-Journal deckt Multi-Node-Cluster ab, in denen das
-Journal geteilt werden muss.
+Snapshot Single-Node-Deployments ab; ein geteiltes Backend —
+**Cassandra**, **PostgreSQL** oder jede andere Zeile mit ✓ in der
+Matrix-Spalte „Über Knoten geteilt" — deckt Multi-Node-Cluster ab,
+in denen jeder Knoten *dasselbe* Journal replayen muss.  Was
+„dasselbe" heißt und wie das Cluster es prüft, klärt der nächste
+Abschnitt.
+
+## Storage-Lokalität & Identität
+
+Persistenter State im Cluster hat eine harte Voraussetzung, die
+kein Typsystem ausdrücken kann: **jeder Knoten muss dieselbe
+Datenbank lesen und schreiben.**  Sharding verschiebt Entities
+zwischen Knoten, und die verschobene Entity replayt das Journal,
+das ihr *neuer* Knoten öffnet.  Bei Pro-Knoten-Storage — einer
+SQLite-Datei, den In-Memory-Defaults — öffnet jeder Knoten seine
+*eigene* Datenbank, und nichts schlägt jemals fehl: der
+optimistische Head-Check vergleicht gegen die lokale Datei, also
+sammeln sich zwei divergierende Historien unter einer Persistence-Id
+an, ohne Fehler auf irgendeiner Seite.  Zwei Knoten, zwei
+Historien — und welche Antwort man bekommt, hängt davon ab,
+welchen Knoten man fragt.
+
+Das Framework sichert das entlang zweier unabhängiger Linien ab:
+
+**Lokalität — was der Store *ist*.**  Jeder mitgelieferte Store
+deklariert `storageLocality: 'node-local' | 'shared'` — eine
+SQLite-Datei oder eine In-Memory-Map kann nie geteilt sein, ein
+Datenbank-Dienst schon.  Trägt ein `'node-local'`-Store einen
+persistenten Actor, während das Cluster Remote-Peers hat (oder
+später bekommt), loggt der Knoten eine Warnung pro Store-Art,
+greifbar über die Nadel `node-local storage`.  Eine Kombination
+verweigert statt zu warnen: `rememberEntities: true` auf dem
+automatisch verdrahteten Default-Pfad wirft `StorageLocalityError`,
+weil die Sharding-Registry Leader-gehostet ist und beim Failover
+nachweislich forkt — siehe
+[Remember Entities](/de/cluster/sharding/remember-entities/).
+
+**Identität — welche Datenbank es tatsächlich *ist*.**  Eine
+`'shared'`-Deklaration sagt, dass das Backend geteilt sein
+*könnte* — nicht, dass zwei Knoten wirklich dieselbe Instanz
+erreicht haben: zwei Knoten mit je *ihrem eigenen* PostgreSQL, ein
+veralteter Connection-String, ein zurückgespieltes Backup —
+gleiche Technologie, andere Datenbank, identische stille
+Divergenz.  Deshalb prägt jeder Store beim ersten Kontakt eine
+zufällige Identität und persistiert sie *in der Datenbank selbst*
+(`storageIdentity()`); die Knoten gossippen die Identitäten der
+tatsächlich genutzten Stores auf ihren Member-Records, und jeder
+Knoten, der bei einem Peer eine andere Identität für dieselbe
+Store-Art sieht, sagt es — einmal pro Art, greifbar über die Nadel
+`storage identity differs`.
+
+Beide Prüfungen sind konstruktionsbedingt konservativ.  Ein Store,
+der keines der beiden Member deklariert, ist *unbekannt* und
+bleibt still — ein Fremd-Backend wird nie an einem Default
+gemessen, den es nicht gewählt hat — und [Replicated Event
+Sourcing](/de/persistence/replicated-event-sourcing/overview/),
+dessen Pro-Knoten-Journale gewollt sind, löst keine von beiden
+aus.  Eigener Store?  Deklariere `storageLocality` und
+implementiere `storageIdentity()` als: beim ersten Kontakt einen
+Zufallswert prägen, in der Datenbank persistieren, fortan den
+gespeicherten zurückgeben — die mitgelieferten Stores halten ihn
+in einer einzeiligen `storage_identity`-Tabelle (bzw. einem Objekt
+unter dem Root-Schlüssel `storage-identity`).
 
 Jedes Backend speichert Payloads im selben getaggten
 JSON-Tree-Format, sodass `Date` / `Map` / `Set` / `bigint` /

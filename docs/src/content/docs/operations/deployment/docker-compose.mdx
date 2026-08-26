@@ -121,11 +121,20 @@ cassandra:
 
 A single Cassandra container backs all three actor-ts nodes.
 Sharing the journal lets sharded entities migrate between
-nodes naturally.
+nodes naturally.  One *container* means one *database instance*
+— three nodes each running their own Cassandra container would
+be three databases, which is the same failure as SQLite-per-node
+below, just with more moving parts.
 
-For **simple local dev**, you can use SQLite per-node — but
-sharded entities couldn't migrate (each node only knows its
-own SQLite file).
+Per-node SQLite in a compose cluster is **not** a lighter
+alternative — and the failure is worse than "entities couldn't
+migrate": they migrate fine, and silently recover the wrong
+history from the destination node's file, forking state with no
+error anywhere.  The cluster warns about the combination (and
+`rememberEntities` refuses it); see [storage locality &
+identity](/persistence/overview/#storage-locality--identity).
+For simple local dev, keep it to a single node, or accept the
+warning knowingly for stateless entities.
 
 ## Restarts
 

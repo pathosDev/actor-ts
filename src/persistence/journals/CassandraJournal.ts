@@ -15,8 +15,10 @@ import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 type EventRow = {
@@ -58,6 +60,40 @@ type TagIndexKeyRow = {
  * guarantee back for the round-trip.
  */
 export class CassandraJournal implements Journal {
+  /** A Cassandra/Scylla cluster any node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
+  private cachedStorageIdentity: string | null = null;
+
+  /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
+    await this.ensureStarted();
+    const table = this.qualified(STORAGE_IDENTITY_TABLE);
+    if (this.options.autoCreateTables ?? true) {
+      await this.client.execute(
+        `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
+      );
+    }
+    // The same LWT the append path trusts — losing the claim to a sibling
+    // store on the same keyspace is the expected path.
+    await this.client.execute(
+      `INSERT INTO ${table} (singleton, identity) VALUES (?, ?) IF NOT EXISTS`,
+      [1, crypto.randomUUID()],
+      this.conditionalOptions(),
+    );
+    const response = await this.client.execute(
+      `SELECT identity FROM ${table} WHERE singleton = ?`,
+      [1],
+      this.readOptions(),
+    );
+    const identity = (response.rows[0] as { identity?: unknown } | undefined)?.identity;
+    if (typeof identity !== 'string' || identity.length === 0) {
+      throw new JournalError('CassandraJournal.storageIdentity: identity row missing after insert');
+    }
+    this.cachedStorageIdentity = identity;
+    return identity;
+  }
+
   private readonly options: Partial<CassandraJournalOptionsType>;
   private client: CassandraClientLike;
   /** True once `ensureStarted()` has run keyspace + table DDL. */

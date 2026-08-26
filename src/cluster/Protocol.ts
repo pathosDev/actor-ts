@@ -56,6 +56,30 @@ export function isMemberStatus(value: unknown): value is MemberStatus {
     && (MEMBER_STATUSES as readonly string[]).includes(value);
 }
 
+/**
+ * Longest storage identity accepted off the wire (#1358).  The in-repo
+ * stores mint 36-character UUIDs; the headroom admits other honest schemes
+ * while capping what a hostile or broken peer can make every member record
+ * carry — the same cap-untrusted-input posture as the frame-size limits.
+ */
+export const MAX_STORAGE_IDENTITY_LENGTH = 64;
+
+/**
+ * Identities of the stores a member actually uses, claimed by that member
+ * (#1358).  Optional on the wire in both directions — absent on nodes that
+ * predate the field and on nodes whose stores declare none — and absence
+ * means no cross-check, which keeps a mixed-version cluster silent instead
+ * of wrong.  Values are member-supplied strings: `Member.fromData` caps and
+ * type-checks them before they enter the member map, dropping a bad field
+ * rather than the record, because the field is advisory and the member is
+ * not.
+ */
+export type StorageIdentitiesData = {
+  readonly journal?: string;
+  readonly snapshotStore?: string;
+  readonly durableStateStore?: string;
+};
+
 export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;
@@ -63,6 +87,8 @@ export type MemberData = {
   readonly version: number;
   /** Arbitrary role tags used to filter placement (e.g. "backend"). */
   readonly roles?: string[];
+  /** See {@link StorageIdentitiesData} — omitted when the member claims none. */
+  readonly storageIdentities?: StorageIdentitiesData;
   /**
    * Wall-clock instant at which the tombstone was created, set only
    * when `status === 'removed'` (#75).  Travels in gossip so every

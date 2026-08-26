@@ -1,6 +1,6 @@
 import { NodeAddress } from './NodeAddress.js';
-import { isMemberStatus, MEMBER_STATUSES } from './Protocol.js';
-import type { MemberData, MemberStatus } from './Protocol.js';
+import { isMemberStatus, MAX_STORAGE_IDENTITY_LENGTH, MEMBER_STATUSES } from './Protocol.js';
+import type { MemberData, MemberStatus, StorageIdentitiesData } from './Protocol.js';
 
 /**
  * Immutable description of a cluster member at a point in time.  Member
@@ -23,6 +23,8 @@ export class Member {
     public readonly version: number,
     roles: Iterable<string> = [],
     public readonly removedAt?: number,
+    /** Store identities this member claims for itself — see {@link StorageIdentitiesData} (#1358). */
+    public readonly storageIdentities?: StorageIdentitiesData,
   ) {
     this.roles = new Set(roles);
   }
@@ -45,9 +47,13 @@ export class Member {
     };
     // `removedAt` only ever set on tombstones — omit otherwise to
     // keep gossip bytes proportional to status, not member count.
-    return this.removedAt !== undefined
+    // `storageIdentities` follows the same omit-when-absent rule.
+    const withTombstoneAge = this.removedAt !== undefined
       ? { ...data, removedAt: this.removedAt }
       : data;
+    return this.storageIdentities !== undefined
+      ? { ...withTombstoneAge, storageIdentities: this.storageIdentities }
+      : withTombstoneAge;
   }
 
   /**
@@ -74,11 +80,26 @@ export class Member {
       data.version,
       data.roles ?? [],
       data.removedAt,
+      sanitizeStorageIdentities(data.storageIdentities),
     );
   }
 
   withStatus(status: MemberStatus): Member {
-    return new Member(this.address, status, this.version + 1, this.roles, this.removedAt);
+    return new Member(this.address, status, this.version + 1, this.roles, this.removedAt, this.storageIdentities);
+  }
+
+  /**
+   * The same member carrying identity claims — same `version` on purpose
+   * (#1358).  The claims ride an overlay lane outside the merge clock: a
+   * bump here would race the leader's status transitions to the same
+   * `version + 1`, which has no tie-break (`Cluster.publishStorageIdentity`
+   * tells that story).  Used by the receive side to fill claims into a
+   * record it otherwise ignores.
+   */
+  withStorageIdentities(storageIdentities: StorageIdentitiesData): Member {
+    return new Member(
+      this.address, this.status, this.version, this.roles, this.removedAt, storageIdentities,
+    );
   }
 
   /**
@@ -90,11 +111,32 @@ export class Member {
    * tombstones cluster-wide (#75).
    */
   withRemoved(removedAt: number): Member {
-    return new Member(this.address, 'removed', this.version + 1, this.roles, removedAt);
+    return new Member(this.address, 'removed', this.version + 1, this.roles, removedAt, this.storageIdentities);
   }
 
   toString(): string {
     const rolesSuffix = this.roles.size > 0 ? ` roles=[${Array.from(this.roles).join(',')}]` : '';
     return `Member(${this.address}, ${this.status}, v${this.version}${rolesSuffix})`;
   }
+}
+
+/**
+ * Cap and type-check the member-supplied identity strings before they enter
+ * the member map — the same wire posture `fromData`'s status check carries
+ * (#563): a value off the wire is a claim, not a fact.  A bad field is
+ * dropped rather than failing the record, because the field is advisory and
+ * the member is not — refusing the record would let one malformed claim
+ * suppress a peer's whole membership.
+ */
+function sanitizeStorageIdentities(data: unknown): StorageIdentitiesData | undefined {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const record = data as Record<string, unknown>;
+  const sanitized: { journal?: string; snapshotStore?: string; durableStateStore?: string } = {};
+  for (const field of ['journal', 'snapshotStore', 'durableStateStore'] as const) {
+    const value = record[field];
+    if (typeof value === 'string' && value.length > 0 && value.length <= MAX_STORAGE_IDENTITY_LENGTH) {
+      sanitized[field] = value;
+    }
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }

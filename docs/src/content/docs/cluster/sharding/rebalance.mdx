@@ -190,7 +190,14 @@ incarnations — the rebalance is equivalent to a restart with the
 buffered message acting as the first command.
 
 If state matters across rebalance, use persistence.  This isn't
-optional.
+optional — and it carries a prerequisite of its own: **the
+destination replays whatever journal *its* node opens**, so the
+promise only holds when every node reads the *same* database.
+Per-node storage (a SQLite file, the in-memory defaults) turns a
+rebalance into a silent state fork instead — the entity recovers a
+different history with no error anywhere.  The cluster warns about
+that combination; see [storage locality &
+identity](/persistence/overview/#storage-locality--identity).
 
 ## Force-reallocation
 

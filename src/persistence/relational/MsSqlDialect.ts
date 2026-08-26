@@ -95,6 +95,13 @@ export const msSqlDialect: SqlDialect = {
            CONSTRAINT [PK_${table}] PRIMARY KEY ([persistence_id])`),
   ],
 
+  storageIdentityDdl: (table) => [
+    createTable(table,
+      `           [singleton] INT NOT NULL,
+           [identity]  NVARCHAR(64) NOT NULL,
+           CONSTRAINT [PK_${table}] PRIMARY KEY ([singleton])`),
+  ],
+
   // No `INSERT IGNORE` / `ON CONFLICT DO NOTHING` in T-SQL.  `INSERT … SELECT …
   // WHERE NOT EXISTS` is the portable equivalent; the caller ignores the row
   // count, and a genuine race here is impossible because the events row for the

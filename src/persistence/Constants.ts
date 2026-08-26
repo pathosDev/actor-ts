@@ -62,6 +62,25 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * Table (SQL) holding the one-row database identity (#1358).  Deliberately a
+ * fixed name shared by the SQLite stores and the whole relational family, and
+ * deliberately NOT stem-prefixed like the event tables: the identity belongs
+ * to the *database*, so every store that opens the same database — a journal
+ * and a snapshot store sharing one SQLite file, the relational trio over one
+ * pool — reads the same row.  That sharing is the semantics, not a collision.
+ */
+export const STORAGE_IDENTITY_TABLE = 'storage_identity';
+
+/**
+ * Sentinel partition key of the DynamoDB identity item (#1358).  Lives inside
+ * each store's own table — DynamoDB's unit of divergence is the table, so the
+ * identity is per table and a node on a mistyped table name mismatches too.
+ * The `/` is what makes it collision-proof: `assertValidPersistenceId`
+ * refuses path separators, so no user stream can ever occupy this key.
+ */
+export const DYNAMODB_STORAGE_IDENTITY_KEY = '_actor-ts/storage-identity';
+
+/**
  * Ceiling on one Cloudflare D1 REST response body, in bytes — 64 MiB.
  *
  * D1 is the one backend that speaks over `HttpClient`, so it inherited that

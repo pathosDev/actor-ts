@@ -6,6 +6,7 @@ import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyVali
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
+  resolveObjectStorageIdentity,
   type ObjectFetched,
   type ObjectInfo,
   type ObjectStorageBackend,
@@ -17,6 +18,7 @@ import {
   FilesystemObjectStorageOptionsValidator,
 } from './FilesystemObjectStorageOptions.js';
 import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * Filesystem-backed `ObjectStorageBackend` — stores each object as a file
@@ -250,7 +252,23 @@ async function realPathWithinRoot(
 }
 
 export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
+  /**
+   * A directory on this machine's disk — `'node-local'` by default.  The
+   * multi-process safety above is per-machine (advisory file locks); a
+   * genuinely shared mount may declare `'shared'` after construction, the
+   * same escape hatch the in-memory stores carry (#1356).
+   */
+  storageLocality: StorageLocality = 'node-local';
+  private mintedStorageIdentity: string | null = null;
   private readonly dir: string;
+
+  /** Identity of the directory — every store over this backend shares it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.mintedStorageIdentity === null) {
+      this.mintedStorageIdentity = await resolveObjectStorageIdentity(this);
+    }
+    return this.mintedStorageIdentity;
+  }
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 

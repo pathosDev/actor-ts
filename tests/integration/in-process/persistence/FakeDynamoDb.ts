@@ -268,7 +268,31 @@ export class FakeDynamoDb implements DynamoDbOperations {
     const name = input.TableName as string;
     const table = this.table(name);
     this.log.push(`scan ${name} ${consistencyOf(input)}`);
-    return this.page(table, [...this.readView(name, table, input).values()], input);
+    const view = this.applyScanFilter(input, [...this.readView(name, table, input).values()]);
+    return this.page(table, view, input);
+  }
+
+  /**
+   * The one `FilterExpression` form the stores emit: the journal's
+   * persistence-id scan excluding the storage-identity sentinel (#1358).
+   * Anything else throws, per the narrow-expression philosophy above — a
+   * silently ignored filter would let a test assert over unfiltered data
+   * while believing otherwise.
+   */
+  private applyScanFilter(
+    input: Record<string, unknown>,
+    items: DynamoDbItem[],
+  ): DynamoDbItem[] {
+    const expression = input.FilterExpression as string | undefined;
+    if (expression === undefined) return items;
+    const form = expression.match(/^pid <> (:[A-Za-z][A-Za-z0-9]*)$/);
+    if (!form) throw new Error(`FakeDynamoDb: unsupported FilterExpression ${expression}`);
+    const values = input.ExpressionAttributeValues as Record<string, { S?: string }> | undefined;
+    const excluded = values?.[form[1]!]?.S;
+    if (excluded === undefined) {
+      throw new Error(`FakeDynamoDb: FilterExpression names ${form[1]} but no string value was supplied`);
+    }
+    return items.filter((item) => (item.pid as { S?: string } | undefined)?.S !== excluded);
   }
 
   /**

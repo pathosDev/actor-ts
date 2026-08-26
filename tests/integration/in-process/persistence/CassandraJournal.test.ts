@@ -259,3 +259,39 @@ describe('CassandraJournal + SnapshotStore — integration', () => {
     await snaps.close();
   });
 });
+
+describe('Cassandra storage identity (#1358)', () => {
+  test('one keyspace, one identity: shared by both stores, stable across store instances', async () => {
+    const client = new FakeCassandraClient();
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const journal = new CassandraJournal(journalOptions);
+    const identity = await journal.storageIdentity();
+    expect(identity).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await journal.storageIdentity()).toBe(identity);
+
+    // The snapshot store on the same keyspace reads the same row — the
+    // identity belongs to the database, not to the store family.
+    const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const snapshotStore = new CassandraSnapshotStore(snapshotStoreOptions);
+    expect(await snapshotStore.storageIdentity()).toBe(identity);
+
+    // A fresh store over the same database loses the LWT claim and adopts
+    // the stored row — minted once, never re-minted.
+    const reopenedOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const reopened = new CassandraJournal(reopenedOptions);
+    expect(await reopened.storageIdentity()).toBe(identity);
+
+    await journal.close();
+    await snapshotStore.close();
+    await reopened.close();
+  });
+});

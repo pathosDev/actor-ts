@@ -309,3 +309,18 @@ describe('registerMongoPlugins', () => {
     }
   });
 });
+
+describe('Mongo storage identity (#1358)', () => {
+  test('one database, one identity; a different database differs', async () => {
+    const client = new FakeMongoClient();
+    const journal = journalWith(client);
+    const identity = await journal.storageIdentity();
+    expect(identity).toMatch(/^[0-9a-f-]{36}$/);
+
+    // A second store over the same client loses the $setOnInsert upsert and
+    // adopts the stored document — minted once, never re-minted.
+    expect(await journalWith(client).storageIdentity()).toBe(identity);
+
+    expect(await journalWith(new FakeMongoClient()).storageIdentity()).not.toBe(identity);
+  });
+});

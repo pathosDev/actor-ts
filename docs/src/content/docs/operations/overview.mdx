@@ -23,7 +23,9 @@ For a non-trivial actor system going to production:
 
 ```
 □ Persistence backend chosen + production-grade
-   (e.g. SQLite for single-node, Cassandra for multi-node)
+   (SQLite for single-node; multi-node needs ONE database
+   instance shared by all nodes — Cassandra, PostgreSQL, … —
+   not one per node)
 □ Cluster wired up (if multi-node) with concrete seed strategy
 □ Downing strategy configured (split-brain protection)
 □ Coordinated shutdown configured with SIGTERM hooks

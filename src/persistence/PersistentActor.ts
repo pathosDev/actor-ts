@@ -246,6 +246,10 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     const ext = this.system.extension(PersistenceExtensionId);
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
+    // The storage-locality latch (#1356) sits here, at actual use — a
+    // cluster whose default stores stay unused must never warn about them.
+    ext.noteStoreUse('journal', this._journal);
+    ext.noteStoreUse('snapshot-store', this._snapshotStore);
     // Fencing, before recovery on purpose (#1166): an instance that does not
     // own this entity must not read its history either, or it spends the
     // window until its first write serving answers from state another writer

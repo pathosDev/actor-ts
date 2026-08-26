@@ -18,6 +18,7 @@ import { resolveCompression, resolveEncryption, resolveIntegrity } from '../obje
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -61,6 +62,17 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly maxDecompressedBytes: number;
 
   private readonly serializer?: Serializer;
+
+  /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
+  get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
+
+  /** Identity is the backend's too — bucket/directory = database (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.backend.storageIdentity === undefined) {
+      throw new JournalError('ObjectStorageSnapshotStore.storageIdentity: the backend declares none');
+    }
+    return this.backend.storageIdentity();
+  }
 
   constructor(options: ObjectStorageSnapshotStoreOptions) {
     const resolvedOptions = (options as ObjectStorageSnapshotStoreOptionsType);

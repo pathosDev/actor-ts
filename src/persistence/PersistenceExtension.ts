@@ -1,10 +1,13 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
+import type { StorageUseKind } from './StorageLocality.js';
+import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAdvisory.js';
 
 /**
  * System-wide access point to the currently-configured journal and
@@ -19,11 +22,37 @@ export class PersistenceExtension implements Extension {
 
   private _journal: Journal | null = null;
   private _snapshotStore: SnapshotStore | null = null;
+  private readonly storageAdvisory: StorageLocalityAdvisory;
 
   constructor(private readonly system: ActorSystem) {
     // Ship the in-memory reference plug-in out of the box.
     this.registerJournal('actor-ts.persistence.journal.in-memory', () => new InMemoryJournal());
     this.registerSnapshotStore('actor-ts.persistence.snapshot-store.in-memory', () => new InMemorySnapshotStore());
+    const clusterExtension = system.extension(ClusterExtensionId);
+    this.storageAdvisory = new StorageLocalityAdvisory(
+      {
+        current: () => clusterExtension.get().toNullable(),
+        onRegister: (listener) => clusterExtension._onRegister(listener),
+      },
+      system.log.withSource('persistence'),
+    );
+  }
+
+  /**
+   * Record that a store instance is actually in use for `kind`, feeding the
+   * storage-locality advisory (#1356).  Called from the seams where
+   * cluster-relevant persistent state is wired — `PersistentActor` /
+   * `DurableStateActor` `preStart`, the remember-entities auto-wiring — and
+   * deliberately NOT from the lazy {@link journal} / {@link snapshotStore}
+   * getters: resolving the default in-memory stores for a system that never
+   * spawns a persistent actor must not warn.
+   */
+  noteStoreUse(
+    kind: StorageUseKind,
+    store: ObservedStore,
+    level: 'warn' | 'error' = 'warn',
+  ): void {
+    this.storageAdvisory.noteStoreUse(kind, store, level);
   }
 
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {

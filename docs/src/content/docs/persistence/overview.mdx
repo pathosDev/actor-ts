@@ -55,20 +55,20 @@ flowchart LR
 The journal and the durable-state store are **pluggable**.  The
 framework ships:
 
-| Backend | Journal | Durable state | Snapshot store | Indexed tag query | Runtimes |
-| --- | --- | --- | --- | --- | --- |
-| In-memory | ✓ | ✓ | ✓ | in-process scan | all |
-| SQLite | ✓ | ✓ | ✓ | ✓ (join table) | all |
-| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (join table) | all |
-| PostgreSQL | ✓ | ✓ | ✓ | — (polling scan) | all |
-| MariaDB / MySQL | ✓ | ✓ | ✓ | — (polling scan) | all |
-| Microsoft SQL Server | ✓ | ✓ | ✓ | — (polling scan) | all |
-| MongoDB | ✓ | ✓ | ✓ | ✓ (multikey index) | all |
-| DynamoDB | ✓ | ✓ | ✓ | — (polling scan) | all |
-| Cloudflare D1 | ✓ | ✓ | ✓ | ✓ (join table) | all |
-| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (polling scan) | all |
-| Cassandra | ✓ | — | ✓ | ✓ (tag-index table) | all |
-| Filesystem / S3 (object storage) | — | ✓ | ✓ | n/a | all |
+| Backend | Journal | Durable state | Snapshot store | Indexed tag query | Shared across nodes | Runtimes |
+| --- | --- | --- | --- | --- | --- | --- |
+| In-memory | ✓ | ✓ | ✓ | in-process scan | ✗ (per process) | all |
+| SQLite | ✓ | ✓ | ✓ | ✓ (join table) | ✗ (per node) | all |
+| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (join table) | ✓ | all |
+| PostgreSQL | ✓ | ✓ | ✓ | — (polling scan) | ✓ | all |
+| MariaDB / MySQL | ✓ | ✓ | ✓ | — (polling scan) | ✓ | all |
+| Microsoft SQL Server | ✓ | ✓ | ✓ | — (polling scan) | ✓ | all |
+| MongoDB | ✓ | ✓ | ✓ | ✓ (multikey index) | ✓ | all |
+| DynamoDB | ✓ | ✓ | ✓ | — (polling scan) | ✓ | all |
+| Cloudflare D1 | ✓ | ✓ | ✓ | ✓ (join table) | ✓ | all |
+| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (polling scan) | ✓ | all |
+| Cassandra | ✓ | — | ✓ | ✓ (tag-index table) | ✓ | all |
+| Filesystem / S3 (object storage) | — | ✓ | ✓ | n/a | S3 ✓ / filesystem ✗ | all |
 
 CockroachDB and YugabyteDB are not separate backends — they speak the
 PostgreSQL wire protocol, so the Postgres stores serve them unchanged.  See
@@ -339,8 +339,62 @@ refuses to
 fold](/persistence/persistent-actor/#what-replay-refuses-to-fold).
 
 For production, the **SQLite** journal+snapshot combo
-covers single-node deployments; the **Cassandra** journal covers
-multi-node clusters where the journal must be shared.
+covers single-node deployments; a shared backend — **Cassandra**,
+**PostgreSQL**, or any other row with ✓ in the matrix's
+"shared across nodes" column — covers multi-node clusters, where
+every node must replay the *same* journal.  What "the same" means,
+and how the cluster checks it, is the next section.
+
+## Storage locality & identity
+
+A cluster's persistent state has one hard prerequisite the type
+system cannot express: **every node must read and write the same
+database.**  Sharding moves entities between nodes, and the moved
+entity replays whatever journal its new node opens.  With per-node
+storage — a SQLite file, the in-memory defaults — each node opens
+its *own* database, and nothing ever fails: the optimistic head
+check compares against the local file, so two divergent histories
+accumulate under one persistence id with no error on either node.
+Two nodes, two histories, and the answer you get depends on which
+node you ask.
+
+The framework guards this along two independent lines:
+
+**Locality — what the store *is*.**  Every in-repo store declares
+`storageLocality: 'node-local' | 'shared'` — a SQLite file or an
+in-memory map can never be shared, a database service can.  When a
+`'node-local'` store backs a persistent actor while the cluster has
+(or later gains) remote peers, the node logs one warning per store
+kind, greppable by the needle `node-local storage`.  One
+combination refuses outright instead of warning:
+`rememberEntities: true` on its default auto-wired path throws
+`StorageLocalityError`, because the sharding registry is
+leader-hosted and provably forks on failover — see
+[remember entities](/cluster/sharding/remember-entities/).
+
+**Identity — which database it actually *is*.**  A `'shared'`
+declaration says the backend *could* be shared, not that two nodes
+actually reached the same instance of it: two nodes each pointing
+at their own PostgreSQL, a stale connection string, a restored
+backup — same technology, different database, identical silent
+divergence.  So every store mints a random identity on first
+contact and persists it *in the database itself*
+(`storageIdentity()`); nodes gossip the identities of the stores
+they actually use on their member records, and any node that sees
+a peer claim a different identity for the same store kind says so —
+once per kind, greppable by the needle `storage identity differs`.
+
+Both checks are conservative by construction.  A store that
+declares neither member is *unknown* and stays silent — a
+third-party backend is never misjudged by a default it did not
+choose — and [replicated event
+sourcing](/persistence/replicated-event-sourcing/overview/), whose
+per-node journals are the intended design, triggers neither.
+Writing your own store?  Declare `storageLocality`, and implement
+`storageIdentity()` as: mint a random value on first contact,
+persist it in the database, return the stored one ever after — the
+in-repo stores keep it in a one-row `storage_identity` table (or an
+object under the root key `storage-identity`).
 
 Every backend stores payloads in the same tagged JSON tree format,
 so `Date` / `Map` / `Set` / `bigint` / `Uint8Array` round-trip

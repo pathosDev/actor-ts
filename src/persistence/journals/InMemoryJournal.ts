@@ -9,6 +9,7 @@ import {
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -35,6 +36,21 @@ export class InMemoryJournal implements Journal {
    */
   private readonly highWater = new Map<string, number>();
   readonly events: JournalEventBus = new InProcessJournalEventBus();
+  /**
+   * Process-private maps — `'node-local'` by default.  Writable on purpose:
+   * a fixture that hands ONE instance to several in-process systems (the
+   * multi-node suites do) genuinely is shared storage and declares itself
+   * `'shared'` after construction (#1356).
+   */
+  storageLocality: StorageLocality = 'node-local';
+  /**
+   * Minted per instance (#1358) — which makes the shared-fixture case exact
+   * for free: one instance handed to several in-process systems is one
+   * database and reports one identity; two instances report two.
+   */
+  private readonly mintedStorageIdentity: string = crypto.randomUUID();
+
+  async storageIdentity(): Promise<string> { return this.mintedStorageIdentity; }
 
   async append<E>(
     persistenceId: string,

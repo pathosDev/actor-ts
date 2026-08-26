@@ -101,12 +101,20 @@ die Entity-Menge wird im Prozessspeicher verfolgt und bei
 Koordinator-Failover verloren. Nützlich für Dev / Tests; sinnlos
 in Produktion.
 
-Ohne `rememberEntitiesStore: null` und ohne konfiguriertes Journal
+Ohne `rememberEntitiesStore: null` und ohne expliziten Store
 instanziiert das Framework automatisch einen
-`JournalRememberEntitiesStore` mit dem (standardmäßig In-Memory)
-Journal — was zum Testen in Ordnung ist, aber **einen Neustart
-nicht überlebt**. Stelle sicher, dass dein Journal in Produktion
-dauerhaft ist.
+`JournalRememberEntitiesStore` mit dem System-Journal — was zum
+Testen in Ordnung ist, aber mit dem In-Memory-Default **einen
+Neustart nicht überlebt**. Stelle sicher, dass dein Journal in
+Produktion dauerhaft ist — und *geteilt*: auf diesem Auto-Pfad
+lässt ein Journal, das node-lokalen Storage deklariert (eine
+SQLite-Datei, der In-Memory-Default), in einem Cluster mit
+Remote-Peers `sharding.start` mit `StorageLocalityError`
+fehlschlagen, statt die Registry still zu forken.  Die Auswege
+stehen im Fehler selbst: ein geteiltes Journal verdrahten, einen
+expliziten Store übergeben (z. B.
+`CassandraRememberEntitiesStore`) oder
+`rememberEntitiesStore: null` setzen.
 
 ## Eigener Store
 
@@ -243,16 +251,26 @@ import { Aside } from '@astrojs/starlight/components';
   Remember-Eintrag führt zu einer kurzen No-Op-Entity.
 </Aside>
 
-<Aside type="caution" title="Nicht ohne ein echtes Journal aktivieren">
+<Aside type="caution" title="Dauerhaft ist nötig — geteilt ist der Teil, der beißt">
   ```ts
   rememberEntities: true,
-  // ↑ aber InMemoryJournal in Produktion
+  // ↑ aber jeder Knoten hat sein eigenes Journal
   ```
   Das In-Memory-Journal verliert Daten beim Neustart — also
-  verliert der Remember-Store jede Entity-ID. Untergräbt den
-  Zweck. Paare `rememberEntities: true` in Produktion immer mit
-  einem dauerhaften Journal (SQLite für Single-Node, Cassandra
-  für Multi-Node).
+  verliert der Remember-Store jede Entity-ID. Die schärfere Falle
+  ist aber ein Journal, das **pro Knoten** dauerhaft ist: die
+  Registry liest der Coordinator, der Coordinator ist
+  Leader-gehostet, und beim Failover lädt der nächste Leader *sein
+  eigenes* Journal — die gemerkte Menge ist lautlos weg, obwohl
+  jede Datei überlebt hat.  Deshalb verweigert der automatisch
+  verdrahtete Pfad ein node-lokales Journal im Multi-Peer-Cluster
+  (`StorageLocalityError`), statt zu starten.  Paare
+  `rememberEntities: true` auf einem einzelnen Knoten mit SQLite,
+  im Cluster mit einem wirklich geteilten Journal (Cassandra,
+  PostgreSQL, …) — oder einem `CassandraRememberEntitiesStore`.
+  Der explizite `coordinatorStateStore`, wo du einen
+  konfigurierst, braucht dieselbe Geteilt-Eigenschaft aus
+  demselben Grund.
 </Aside>
 
 ## Wohin als Nächstes

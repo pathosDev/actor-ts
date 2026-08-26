@@ -563,7 +563,14 @@ mistake that spawns the same entity twice, and two instances both
 recover and both accept commands.
 
 The journal survives that: appends are conditional on the sequence
-number, so one writer loses with `JournalConcurrencyError`.  The
+number, so one writer loses with `JournalConcurrencyError`.  One
+prerequisite carries all of it: **both writers must be appending to
+the same journal.**  Two nodes each on their own database cannot
+conflict — each head check runs against its own file — which is why
+per-node storage in a cluster forks history silently instead of
+losing a race loudly, and why the framework warns about it
+([storage locality &
+identity](/persistence/overview/#storage-locality--identity)).  The
 damage is **outside** the journal.  By the time the loser finds out it
 has already run `onCommand` for the command that triggered the write —
 and if that handler charged a card, sent a mail or called a downstream

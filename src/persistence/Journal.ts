@@ -1,5 +1,6 @@
 import type { JournalEventBus } from './JournalEventBus.js';
 import type { JournalEntry, PersistentEvent } from './JournalTypes.js';
+import type { StorageLocality } from './StorageLocality.js';
 
 /**
  * Pluggable event journal — the persistence-plugin boundary.  Core ships
@@ -166,6 +167,32 @@ export interface Journal {
    * the polling loop.
    */
   readonly events?: JournalEventBus;
+
+  /**
+   * Where this journal's data lives relative to cluster nodes — `'node-local'`
+   * storage no other node can reach, or a `'shared'` database service.  See
+   * {@link StorageLocality} for the full semantics.  Optional, and absence is
+   * meaningful like {@link raiseCompactionMark}: an undeclared journal is
+   * unknown, and the cluster's storage advisory stays silent instead of
+   * guessing (#1356).  Instance-level on purpose — one in-memory journal
+   * shared across in-process systems genuinely is `'shared'`.
+   */
+  readonly storageLocality?: StorageLocality;
+
+  /**
+   * The identity of the database behind this journal — a random value minted
+   * on first contact and persisted **in the database itself**, stable across
+   * restarts and identical for every store that opens the same database.  It
+   * answers the question {@link storageLocality} cannot: whether two nodes'
+   * `'shared'`-capable stores actually reached the *same instance* (#1358).
+   * Two nodes each on their own Postgres mint two identities; the cluster
+   * compares them and says so out loud.
+   *
+   * Optional like the locality, and absence means unknown.  Implementations
+   * may reject (missing DDL rights, operator-managed schema) — callers treat
+   * a rejection as unknown, never as fatal.
+   */
+  storageIdentity?(): Promise<string>;
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;

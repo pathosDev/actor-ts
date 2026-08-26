@@ -2,6 +2,7 @@ import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import { none, some, type Option } from '../../util/Option.js';
 import type {
   InMemorySnapshotStoreOptions,
@@ -32,6 +33,12 @@ import type {
 export class InMemorySnapshotStore implements SnapshotStore {
   private readonly store = new Map<string, Snapshot<unknown>[]>();
   private readonly keepN: number;
+  /** See `InMemoryJournal.storageLocality` — writable for shared in-process fixtures (#1356). */
+  storageLocality: StorageLocality = 'node-local';
+  /** See `InMemoryJournal.mintedStorageIdentity` — one instance, one identity (#1358). */
+  private readonly mintedStorageIdentity: string = crypto.randomUUID();
+
+  async storageIdentity(): Promise<string> { return this.mintedStorageIdentity; }
 
   constructor(options: InMemorySnapshotStoreOptions = {}) {
     this.keepN = (options as InMemorySnapshotStoreOptionsType).keepN ?? 0;

@@ -1,7 +1,8 @@
 import type { Cache } from '../../cache/Cache.js';
-import type { Snapshot } from '../JournalTypes.js';
+import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { CachedSnapshotStoreOptionsValidator, DEFAULT_SNAPSHOT_CACHE_TTL_MS } from './CachedSnapshotStoreOptions.js';
 import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
@@ -62,6 +63,17 @@ export class CachedSnapshotStore implements SnapshotStore {
     this.cache = resolvedOptions.cache;
     this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS;
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
+  }
+
+  /** The cache is in-process; locality is whatever the wrapped store declares (#1356). */
+  get storageLocality(): StorageLocality | undefined { return this.underlying.storageLocality; }
+
+  /** Identity is the wrapped store's, for the same reason (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.underlying.storageIdentity === undefined) {
+      throw new JournalError('CachedSnapshotStore.storageIdentity: the wrapped store declares none');
+    }
+    return this.underlying.storageIdentity();
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {

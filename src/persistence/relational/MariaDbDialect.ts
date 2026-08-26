@@ -69,6 +69,14 @@ export const mariaDbDialect: SqlDialect = {
          )`,
   ],
 
+  storageIdentityDdl: (table) => [
+    `CREATE TABLE IF NOT EXISTS ${table} (
+           singleton INT NOT NULL,
+           identity  VARCHAR(64) NOT NULL,
+           PRIMARY KEY (singleton)
+         )`,
+  ],
+
   insertTagSql: (tagsTable) =>
     `INSERT IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
 

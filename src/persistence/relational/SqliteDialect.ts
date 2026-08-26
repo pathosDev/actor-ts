@@ -72,6 +72,13 @@ export const sqliteDialect: SqlDialect = {
          )`,
   ],
 
+  storageIdentityDdl: (table) => [
+    `CREATE TABLE IF NOT EXISTS ${table} (
+           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+           identity  TEXT NOT NULL
+         )`,
+  ],
+
   insertTagSql: (tagsTable) =>
     `INSERT OR IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
 

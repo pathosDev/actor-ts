@@ -247,6 +247,14 @@ For real production setups, **co-locate the offset store with
 the read model** so they crash together — that minimizes the
 re-processing window.
 
+In a cluster, the offset store needs the same property the journal
+does: **one database, not one per node.**  A
+`DurableStateOffsetStore` over node-local storage gives every node
+its own cursor, and a projection that moves between nodes then
+re-processes events one node already handled — or skips the ones
+the other node's cursor is past.  See [storage locality &
+identity](/persistence/overview/#storage-locality--identity).
+
 ## Polling
 
 ```ts

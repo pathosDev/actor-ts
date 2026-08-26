@@ -34,6 +34,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   could not express "unset", and unset is what selects the grace-aware
   computed default.
 
+- **Storage locality + identity: a cluster now says when two nodes are
+  not reading the same database** (#1356, #1358). Two nodes over
+  per-node storage — a SQLite file each, the in-memory defaults, or two
+  separate instances of a shared-capable backend — fork every entity's
+  history silently: each node's optimistic head check runs against its
+  own database, so `JournalConcurrencyError` structurally cannot fire
+  across nodes, and a rebalanced entity recovers whatever its
+  destination holds. Nothing in the framework could even see the
+  combination. Now two independent guards can:
+
+  - Every in-repo store declares
+    `storageLocality: 'node-local' | 'shared'` (an optional contract
+    member on `Journal`, `SnapshotStore`, `DurableStateStore` and
+    `ObjectStorageBackend` — absence means unknown and stays silent, so
+    third-party stores are never misjudged; instance-level, so a
+    genuinely shared in-memory fixture declares itself `'shared'`). A
+    `'node-local'` store backing a `PersistentActor` or
+    `DurableStateActor` while the cluster has — or later gains — remote
+    peers logs one warning per store kind (needle: `node-local
+    storage`). Single-node systems, clusters without persistent actors,
+    and replicated event sourcing (whose per-node journals are the
+    design) stay silent structurally.
+  - Every in-repo store also mints a random **storage identity** on
+    first contact and persists it in the database itself
+    (`storageIdentity()` — a one-row `storage_identity` table on the
+    SQL family, an LWT row on Cassandra, a `$setOnInsert` document on
+    MongoDB, a sentinel item per table on DynamoDB, an object under
+    `storage-identity` on object storage, a per-instance value
+    in-memory). Nodes gossip the identities of the stores they actually
+    use as an optional member-record field — mixed-version safe, capped
+    and type-checked off the wire — and any node that sees a peer claim
+    a different identity for the same store kind warns once per kind
+    (needle: `storage identity differs`). That is the check the
+    locality declaration cannot make: two nodes each on their *own*
+    Postgres, a stale connection string, a restored backup. Resolution
+    is cluster-gated — a system that never clusters never mints — and
+    the claims ride an overlay lane outside the member version clock,
+    because a version bump raced the leader's `joining → up` promotion
+    to the same value and wedged cluster formation.
+
+  Docs: a new "Storage locality & identity" section anchors the
+  persistence overview (EN+DE), with a "shared across nodes" column in
+  the backend matrix and corrections to the pages that presented
+  per-node SQLite in a cluster as workable.
+
 - **`ClusterOptions.advertisedHost`** (#944), with
   `withAdvertisedHost(...)` on both the cluster and the bootstrap
   builders and `actor-ts.remote.tcp.advertised-host` in HOCON. A node's
@@ -216,6 +261,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   environment keeps producing the single-node development cluster — what
   stops existing is the DNS blip that silently became N self-elected
   one-node clusters, each reporting a healthy bootstrap.
+
+- **BREAKING (pre-1.0): `rememberEntities: true` on the auto-wired path
+  refuses a node-local journal in a multi-peer cluster (#1356).**
+  `sharding.start` now throws `StorageLocalityError` where it
+  previously started and silently forked the registry per node — the
+  registry is read by the leader-hosted coordinator, so on failover the
+  next leader loaded *its own* journal and forgot every remembered
+  entity (the multi-node suite hand-injects one shared journal
+  precisely because of this). Migration: wire a shared journal, pass an
+  explicit `rememberEntitiesStore` (e.g.
+  `CassandraRememberEntitiesStore`), or pass
+  `rememberEntitiesStore: null` for the in-memory registry.
+  `ShardedDaemonProcess` is unaffected: it wires its registry
+  explicitly and only warns, because its liveness tick respawns daemons
+  whether or not the registry survives failover.
 
 - **BREAKING (pre-1.0): `BrokerActor.onReceive` is sealed (#709).** A
   subclass now implements the new abstract `onCommand(command)` instead of

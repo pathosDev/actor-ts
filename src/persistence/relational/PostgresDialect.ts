@@ -58,6 +58,13 @@ export const postgresDialect: SqlDialect = {
          )`,
   ],
 
+  storageIdentityDdl: (table) => [
+    `CREATE TABLE IF NOT EXISTS ${table} (
+           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+           identity  TEXT NOT NULL
+         )`,
+  ],
+
   insertTagSql: (tagsTable) =>
     `INSERT INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
 

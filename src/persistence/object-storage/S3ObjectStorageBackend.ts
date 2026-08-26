@@ -6,6 +6,7 @@ import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyVali
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
+  resolveObjectStorageIdentity,
   type ObjectFetched,
   type ObjectInfo,
   type ObjectStorageBackend,
@@ -13,6 +14,7 @@ import {
 } from './ObjectStorageBackend.js';
 import { S3ObjectStorageOptionsValidator } from './S3ObjectStorageOptions.js';
 import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3ObjectStorageOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * S3-compatible `ObjectStorageBackend` — wraps AWS SDK v3
@@ -95,7 +97,18 @@ const assertSafeKey = makeKeyValidator(S3KeyRules);
 const assertSafeWriteKey = makeKeyValidator(S3WriteKeyRules);
 
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
+  /** An S3-compatible service every node reaches (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
+  private mintedStorageIdentity: string | null = null;
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
+
+  /** Identity of the bucket — every store over this backend shares it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.mintedStorageIdentity === null) {
+      this.mintedStorageIdentity = await resolveObjectStorageIdentity(this);
+    }
+    return this.mintedStorageIdentity;
+  }
   private readonly bucket: string;
 
   constructor(options: S3ObjectStorageOptions) {

@@ -10,6 +10,8 @@ export type { EventDispatcherBuilder, EventDispatcherIncomplete } from './EventD
 
 export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
+export type { StorageLocality, StorageUseKind } from './StorageLocality.js';
+export { StorageLocalityError } from './StorageLocality.js';
 export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because

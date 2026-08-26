@@ -157,6 +157,41 @@ override snapshotPolicy() { return everyNEvents(100); }
 
 See [Snapshots](/persistence/snapshots/).
 
+### Symptom: an entity's state depends on which node answers
+
+**State jumps back after a rebalance or deploy; remembered
+entities vanish after a coordinator failover; a projection
+processes events twice.**
+
+Cause: **each node reads its own database.**  Per-node storage
+(a SQLite file each, separate in-memory stores, two nodes each
+pointing at *their own* Postgres) means a moved entity replays
+whatever its new node holds.  Nothing errors — the optimistic
+append check runs against the local database, so it structurally
+cannot fire across nodes.
+
+Diagnostics — two log needles, both once per node:
+
+```
+node-local storage        # the store can never be shared (#1356)
+storage identity differs  # shared-capable, but two instances (#1358)
+```
+
+The second one also catches misconfiguration you can't see in the
+backend name: stale connection strings, a restored backup, two
+"identical" database containers.
+
+Fix: point every node at the **same database instance** — see
+[storage locality &
+identity](/persistence/overview/#storage-locality--identity) — or
+use [replicated event
+sourcing](/persistence/replicated-event-sourcing/overview/) where
+per-node journals are the intended design.  There is **no
+automatic repair** for histories that already diverged: pick the
+surviving database per persistence id and re-seed the others from
+it (`migrateBetweenJournals`), then fix the wiring before
+restarting.
+
 ### Symptom: events recovered but state is wrong
 
 **On restart, the actor's state doesn't match what it should
