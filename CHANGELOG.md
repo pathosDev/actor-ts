@@ -482,6 +482,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`DocSampleHarnessEndToEnd` no longer fails most whole-suite runs on
+  a timeout nobody set (#1282).** Its `beforeAll` runs the doc-sample
+  harness twice, and each of those runs spawns `bunx tsc` twice — the
+  fixture carries an unparseable fence on purpose, so the script's
+  second pass always fires — which puts four compilers in series against
+  bun's undeclared 5 000 ms hook cap. Idle the hook takes 3.1 s and the
+  file passed; inside a full `bun test` it takes 4.3 s and under
+  contention 9.0 s, so it failed roughly three whole-suite runs in four,
+  on clean `develop` as much as on a branch. The compiles are unchanged
+  and still real — reducing them would delete the two properties the file
+  exists to prove. What changed is that the budgets are stated and
+  layered: each spawn carries a 30 s budget and throws an error naming the
+  script, its flags and the elapsed time, and the hook's 90 s cap is a
+  backstop behind it. Measured before and after under identical load
+  (16 repeats, 8 in flight): **0/16 runs green with 17 test executions,
+  against 16/16 green with 208**.
+
+  The failure was also unreadable, which is why it stood for a week: bun
+  reports a hook timeout as `(unnamed)` and calls a `beforeAll` a
+  `beforeEach/afterEach` hook, and the whole 13-test block collapses to
+  one recorded failure. Hence the named error: reaching the hook cap now
+  means the stall was somewhere other than a spawn.
+  `docs/…/testing/diagnosing-flakes.mdx` (EN + DE) carries it as a new
+  catalog family, with the caveat that `bun run test:stress` cannot
+  currently name this shape (#1359).
+
 - **A shard region refused for a `numShards` mismatch now releases the
   shards it was already hosting (#633).** Refusing a registration only
   stopped *new* placements, so a region accepted by one leader and refused by

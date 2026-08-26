@@ -26,6 +26,13 @@ identity.  Its output splits the two cases that matter:
 | **flaky** — failed in some runs | The outcome depends on timing, ordering or the machine. | Match it against the catalog below. |
 | **consistently failing** — failed in every run | Broken.  Repetition tells you nothing more. | Fix it, or open an issue.  It is not a flake. |
 
+One gap in that verdict, worth knowing before you trust an empty table: a test
+that fails **more than once inside a single run** currently falls out of *both*
+categories, and the harness then prints "No test failed in any run that
+reported" and exits 0 — even with zero runs green (#1359).  A hook timeout is the
+easy way to hit it, since the whole block collapses to one `(unnamed)` identity.
+Until that is fixed, read `runs: N/N green` rather than the PASS line.
+
 Other things it names rather than swallows: a run that **never exited** (see
 below), a run that produced **no JUnit report at all** (Bun died before the
 reporter flushed, so those failures are missing from the totals rather than
@@ -122,6 +129,7 @@ Causes this suite has actually had, with how each was settled.
 | --- | --- | --- |
 | Fixed sleep before an assertion | Converting, ratcheted | `await sleep(N)` then `expect(...)` on state a background step produces |
 | A budget the per-test timeout cannot reach | Gated | `this test timed out after 5000ms` where an `awaitCondition` label was expected |
+| Real work in a hook, against a cap nobody set | Settled | `(unnamed)` and "a beforeEach/afterEach hook timed out", naming no test |
 | Bun's timer quantum | Settled | An elapsed-time assertion fails by ~15 ms, on an idle machine |
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
@@ -199,6 +207,66 @@ test('shards rebalance when a node leaves', async () => {
 reached through a module-level helper too.  It re-measures bun's behaviour in
 a child process rather than assuming it, so the day bun changes, the gate says
 so instead of quietly meaning nothing.
+
+### Real work in a hook, against a cap nobody set
+
+Bun caps a **hook** at 5 000 ms exactly as it caps a test — and the previous
+section's remedy has a counterpart that is easy not to know exists:
+`beforeAll(fn, timeoutMs)` takes a second argument, just as `test()` takes a
+third.
+
+`tests/unit/docs/DocSampleHarnessEndToEnd.test.ts` is the case this suite had
+(#1282).  Its `beforeAll` writes a fixture documentation tree and then runs the
+doc-sample harness twice — and each of those runs spawns `bunx tsc` twice, because
+the fixture deliberately contains an unparseable fence and re-checking the rest
+without it is the property the file exists to prove.  So the hook drives four
+compilers in series: 3.1 s idle, 4.3 s inside a full `bun test`, 9.0 s with copies
+of the file contending.  Against a 5 000 ms cap that is not a slow test, it is a
+coin flip — the file passed every time it was run alone and failed roughly three
+whole-suite runs in four.
+
+Two things make this family harder to read than the test-timeout one above:
+
+- **The failure names nothing.**  It reports as
+  `(fail) <describe> > (unnamed) [5001.31ms]` with *"a beforeEach/afterEach hook
+  timed out for this test"* — the wrong hook kind, and no test name, because no
+  test is at fault.  Grepping the log for the file name finds it; grepping for a
+  test name does not.
+- **It under-reports how much did not run.**  Every test in the block is skipped
+  and *one* failure is recorded.  The same file green executes 13 tests per run;
+  red it executed 1.
+
+The remedy is layered budgets rather than one larger number:
+
+```ts
+const RUN_BUDGET_MS = 30_000;               // what one spawned run may take
+const HOOK_BUDGET_MS = 3 * RUN_BUDGET_MS;   // a backstop, not the budget
+
+function run(): Run {
+  const startedAt = performance.now();
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: RUN_BUDGET_MS });
+  if (result.error !== undefined || result.signal !== null) {
+    const elapsed = Math.round(performance.now() - startedAt);
+    throw new Error(`${command} did not complete after ${elapsed} ms`);
+  }
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+beforeAll(() => {
+  /* … */
+}, HOOK_BUDGET_MS);       // reached only if the stall was not in a spawn
+```
+
+The hook's cap sits clear of the work's own budget on purpose.  A thrown error
+carries the command, the elapsed time and the budget it blew; bun's hook timeout
+carries none of the three.  Same principle as the section above — **the cap is a
+backstop; the budget is what reports** — applied one level out, to a hook.
+
+Sizing it is a measurement, not a guess.  Time the hook under the load that
+actually breaks it (running several copies of the file at once is the cheapest
+way to get there), then leave a multiple of the worst figure, and write the
+figures next to the constant so the next person can tell a budget that was
+measured from one that was doubled until the red went away.
 
 ### Bun's timer quantum
 
