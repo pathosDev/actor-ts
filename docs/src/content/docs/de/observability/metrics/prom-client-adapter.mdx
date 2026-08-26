@@ -90,9 +90,15 @@ beide verweigern die Antwort, statt Null zu melden:
   geschriebene Alerts nie wieder feuern.
 - Die DevTools-Übersicht zeigt **`unavailable`** für die drei Werte,
   die sie aus der Registry liest: verarbeitete Nachrichten,
-  Mailbox-Drops und Handler-Latenz. Alles andere auf dieser Seite
-  stammt aus dem Aktorenbaum und dem Event-Stream und bleibt
-  korrekt.
+  Mailbox-Drops und Handler-Latenz. Ihr **Throughput**-Diagramm
+  lässt die Linie `messages / s` aus demselben Grund weg und nennt
+  sie in der Legende, statt eine flache Null zu zeichnen: Ein
+  Diagramm überzeugt stärker als eine Kachel, und diese Linie würde
+  genau die Behauptung aufstellen, die die Kachel daneben
+  verweigert. Die Dead-Letter-Linie daneben wird aus dem
+  Event-Stream gezählt und bleibt — ebenso alles andere auf dieser
+  Seite: Es stammt aus dem Aktorenbaum und dem Event-Stream und
+  bleibt korrekt.
 
 Also: aktiviere `enableMetricsEndpoint` nicht zusammen mit dieser
 Bridge — scrape stattdessen deine eigene prom-client-Route, die
