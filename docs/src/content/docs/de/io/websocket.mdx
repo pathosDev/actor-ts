@@ -193,6 +193,20 @@ Ein `WebsocketFrame` ist `{ kind: 'text'; data: string }` oder
 einen `WebsocketDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
 wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
 
+`data` ist auf jeder Laufzeitumgebung ein schlichtes `Uint8Array`.  Der
+Client setzt beim Verbindungsaufbau `binaryType` des Sockets auf
+`'arraybuffer'`, denn die Laufzeitumgebungen sind sich über den
+Standardwert uneins — Bun liefert einen Node-`Buffer`, Node und Deno
+liefern ein `Blob` —, und ein `Blob` gibt seine Bytes nur asynchron
+heraus, was der Eingangspfad nicht bezahlen kann: Darauf zu warten würde
+die `maxFrameBytes`-Prüfung hinter einen Microtask schieben und die
+Garantie aufgeben, dass Frames in Ankunftsreihenfolge bei `onMessage`
+landen.  Zwei Folgen sind wissenswert.  Die Bytes gehören immer dem Frame
+selbst und sind nie ein Ausschnitt aus einem gepoolten Puffer,
+`frame.data.buffer` darfst du also weiterreichen.  Und der Wert ist auch
+auf Bun ein `Uint8Array` und kein `Buffer` — für `toString('hex')` und
+Verwandte greifst du also zu `Buffer.from(frame.data)`.
+
 Ein zu großer Frame **schließt die Verbindung** mit Code 1009 ("Message Too
 Big") und startet den üblichen Reconnect, statt an Ort und Stelle verworfen
 zu werden.  Sei dir im Klaren darüber, was das bringt und was nicht: Die

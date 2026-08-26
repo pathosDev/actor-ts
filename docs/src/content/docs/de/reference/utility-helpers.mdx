@@ -488,8 +488,13 @@ schreibt, der eine URL ablehnt.
 Identität: Schema, Host, Port und Pfad, ohne Userinfo *und* ohne Query-String —
 ein WebSocket-Endpunkt wird üblicherweise mit einem `?token=…` authentifiziert.
 Der Pfad bleibt bewusst erhalten, denn er unterscheidet zwei Verbindungen zum
-selben Host. Nimm die Funktion für eine Zeile, die du wiederholt ausgibst, etwa
-eine Warnung pro Frame; genau dafür setzt der `WebsocketClientActor` sie ein.
+selben Host. Nimm die Funktion überall dort, wo eine Gegenstelle beeinflusst,
+wie oft eine Zeile geschrieben wird — also überall dort, wo die URL sonst nach
+fremdem Gutdünken ins Log gespiegelt würde. Der `WebsocketClientActor` setzt sie
+für seine Warnung über zu große Frames ein. Diese Zeile entsteht nicht mehr pro
+Frame: Der Verstoß schließt die Verbindung, eine Gegenstelle bekommt also eine
+Zeile pro Verbindungsaufbau. Die Redaktion bleibt trotzdem nötig, denn wie viele
+Verbindungsaufbauten es gibt, entscheidet weiterhin die Gegenstelle.
 
 <Aside type="tip" title="Eine Stelle für das, was durchgerutscht ist">
   Beiden Funktionen hilft nichts gegen ein Geheimnis, das in den Feldern eines

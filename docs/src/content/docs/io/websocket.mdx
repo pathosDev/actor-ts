@@ -190,6 +190,18 @@ A `WebsocketFrame` is `{ kind: 'text'; data: string }` or
 `WebsocketDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
 enforced on the **raw frame before decode**.
 
+`data` is a plain `Uint8Array` on every runtime.  The client sets the
+socket's `binaryType` to `'arraybuffer'` when it dials, because the
+runtimes disagree about the default — Bun hands over a Node `Buffer`,
+Node and Deno hand over a `Blob` — and a `Blob` yields its bytes only
+asynchronously, which the inbound path cannot afford: awaiting it would
+move the `maxFrameBytes` check behind a microtask and stop guaranteeing
+that frames reach `onMessage` in arrival order.  Two consequences worth
+knowing.  The bytes are always the frame's own, never a window into a
+pooled buffer, so `frame.data.buffer` is safe to hand on.  And the value
+is a `Uint8Array` and not a `Buffer` even on Bun, so reach for
+`Buffer.from(frame.data)` if you want `toString('hex')` and friends.
+
 An oversize frame **closes the connection** with code 1009 ("Message Too
 Big") and starts the usual reconnect, rather than being dropped in place.
 Be clear about what that does and does not buy you: it does **not** stop
