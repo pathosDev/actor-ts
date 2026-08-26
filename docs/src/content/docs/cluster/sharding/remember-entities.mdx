@@ -98,11 +98,18 @@ Passing `null` falls back to the v1 in-memory-only behavior — the
 entity set is tracked in process memory and lost on coordinator
 failover.  Useful for dev / tests; pointless in production.
 
-Without `rememberEntitiesStore: null` and without a configured
-journal, the framework auto-instantiates a `JournalRememberEntitiesStore`
-backed by the (in-memory by default) journal — which is fine for
-testing but **doesn't survive restart**.  Make sure your journal
-is durable in production.
+Without `rememberEntitiesStore: null` and without an explicit store,
+the framework auto-instantiates a `JournalRememberEntitiesStore`
+backed by the system journal — which is fine for testing but, with
+the in-memory default, **doesn't survive restart**.  Make sure your
+journal is durable in production — and *shared*: on this auto path
+a journal that declares node-local storage (a SQLite file, the
+in-memory default) in a cluster expecting remote peers makes
+`sharding.start` throw `StorageLocalityError` rather than fork the
+registry silently.  The ways out are in the error itself: wire a
+shared journal, pass an explicit store (e.g.
+`CassandraRememberEntitiesStore`), or pass
+`rememberEntitiesStore: null`.
 
 ## Custom store
 
@@ -236,15 +243,24 @@ import { Aside } from '@astrojs/starlight/components';
   to a brief no-op entity.
 </Aside>
 
-<Aside type="caution" title="Don't enable without a real journal">
+<Aside type="caution" title="Durable is necessary, shared is the part that bites">
   ```ts
   rememberEntities: true,
-  // ↑ but using InMemoryJournal in production
+  // ↑ but every node has its own journal
   ```
   The in-memory journal loses data on restart — so the remember
-  store loses every entity ID.  Defeats the purpose.  Always pair
-  `rememberEntities: true` with a durable journal (SQLite for
-  single-node, Cassandra for multi-node) in production.
+  store loses every entity ID.  But the sharper trap is a journal
+  that is durable **per node**: the registry is read by the
+  coordinator, the coordinator is leader-hosted, and on failover
+  the next leader loads *its own* journal — the remembered set is
+  silently gone even though every file survived.  This is why the
+  auto-wired path refuses a node-local journal in a multi-peer
+  cluster (`StorageLocalityError`) instead of starting.  Pair
+  `rememberEntities: true` with SQLite on a single node, and with
+  a genuinely shared journal (Cassandra, PostgreSQL, …) — or a
+  `CassandraRememberEntitiesStore` — in a cluster.  The explicit
+  `coordinatorStateStore`, where you configure one, needs the same
+  shared property for the same reason.
 </Aside>
 
 ## Where to next

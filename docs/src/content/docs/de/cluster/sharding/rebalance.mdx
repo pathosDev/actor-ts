@@ -210,7 +210,14 @@ Restart, bei dem die gepufferte Nachricht als erstes Kommando
 wirkt.
 
 Wenn State über Rebalance hinweg zählt, nutze Persistenz. Das ist
-nicht optional.
+nicht optional — und es hat selbst eine Voraussetzung: **das Ziel
+replayt das Journal, das *sein* Knoten öffnet.**  Das Versprechen
+hält also nur, wenn jeder Knoten *dieselbe* Datenbank liest.
+Pro-Knoten-Storage (eine SQLite-Datei, die In-Memory-Defaults)
+macht aus dem Rebalance stattdessen einen stillen State-Fork — die
+Entity recovert eine andere Historie, ohne Fehler irgendwo.  Das
+Cluster warnt vor dieser Kombination; siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität).
 
 ## Zwangsweise Neuallokation
 

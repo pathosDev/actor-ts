@@ -120,11 +120,21 @@ cassandra:
 
 Ein einzelner Cassandra-Container untermauert alle drei actor-ts-Nodes.
 Ein geteiltes Journal lässt sharded Entities natürlich zwischen
-Nodes migrieren.
+Nodes migrieren.  Ein *Container* heißt eine
+*Datenbank-Instanz* — drei Nodes mit je einem eigenen
+Cassandra-Container wären drei Datenbanken, also derselbe Fehler
+wie SQLite-pro-Node unten, nur mit mehr beweglichen Teilen.
 
-Für **einfache lokale Entwicklung** kannst du SQLite pro Node nehmen
-— aber sharded Entities könnten dann nicht migrieren (jeder Node
-kennt nur seine eigene SQLite-Datei).
+SQLite pro Node ist in einem Compose-Cluster **keine** leichtere
+Alternative — und der Fehler ist schlimmer als „Entities könnten
+nicht migrieren": sie migrieren problemlos und recovern dabei
+lautlos die falsche Historie aus der Datei des Zielknotens — der
+State forkt, ohne Fehler irgendwo.  Das Cluster warnt vor der
+Kombination (und `rememberEntities` verweigert sie); siehe
+[Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität).
+Für einfache lokale Entwicklung bleib bei einem Knoten — oder nimm
+die Warnung für zustandslose Entities bewusst in Kauf.
 
 ## Restarts
 

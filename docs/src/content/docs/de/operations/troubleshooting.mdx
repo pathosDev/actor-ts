@@ -162,6 +162,42 @@ override snapshotPolicy() { return everyNEvents(100); }
 
 Siehe [Snapshots](/de/persistence/snapshots/).
 
+### Symptom: der State einer Entity hängt davon ab, welcher Knoten antwortet
+
+**State springt nach einem Rebalance oder Deploy zurück;
+Remembered Entities verschwinden nach einem Coordinator-Failover;
+eine Projektion verarbeitet Events doppelt.**
+
+Ursache: **jeder Knoten liest seine eigene Datenbank.**
+Pro-Knoten-Storage (je eine SQLite-Datei, getrennte
+In-Memory-Stores, zwei Knoten mit je *ihrem eigenen* Postgres)
+heißt: eine verschobene Entity replayt, was ihr neuer Knoten
+gerade hält.  Nichts schlägt fehl — der optimistische Append-Check
+läuft gegen die lokale Datenbank und kann über Knoten hinweg
+strukturell nicht feuern.
+
+Diagnose — zwei Log-Nadeln, beide einmal pro Knoten:
+
+```
+node-local storage        # der Store kann nie geteilt sein (#1356)
+storage identity differs  # teilbar, aber zwei Instanzen (#1358)
+```
+
+Die zweite fängt auch Fehlkonfiguration, die man dem Backend-Namen
+nicht ansieht: veraltete Connection-Strings, ein zurückgespieltes
+Backup, zwei „identische" Datenbank-Container.
+
+Fix: alle Knoten auf **dieselbe Datenbank-Instanz** zeigen lassen —
+siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität)
+— oder [Replicated Event
+Sourcing](/de/persistence/replicated-event-sourcing/overview/)
+nutzen, wo Pro-Knoten-Journale das gewollte Design sind.  Für
+bereits divergierte Historien gibt es **keine automatische
+Reparatur**: pro Persistence-Id die überlebende Datenbank wählen,
+die anderen daraus neu befüllen (`migrateBetweenJournals`) und die
+Verdrahtung vor dem Neustart fixen.
+
 ### Symptom: Events wiederhergestellt, aber State ist falsch
 
 **Nach Restart entspricht der State des Actors nicht dem, was er
