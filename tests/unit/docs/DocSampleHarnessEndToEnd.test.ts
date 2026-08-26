@@ -1,7 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
+
+// `beforeAll` runs the harness twice, and each run is a REAL `tsc` compile
+// against `src/` — that is the point of this suite (see the header).  Two
+// compiles share bun's 5 s default hook budget and exceed it on a loaded
+// Windows runner (6.4 s measured), so the budget follows the compiles.
+setDefaultTimeout(60_000);
 
 /**
  * The doc-sample harness driven end to end over a fixture documentation tree,
