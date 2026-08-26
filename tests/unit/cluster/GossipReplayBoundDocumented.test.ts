@@ -198,6 +198,17 @@ describe('#112 — the replay bound is stated the way the tests measure it', () 
       germanSection.heading,
       `${GERMAN_PAGE}: same claim, German side — "${germanSection.heading}".`,
     ).not.toMatch(/solange sein Absender Member ist/i);
+    // The roadmap needs the same negative, and for a sharper reason than the
+    // pages do: its guard is otherwise keyword presence alone, so a passage can
+    // name all three ways the mark can be missing *while denying they matter*
+    // and still pass every other assertion here.  Verified by writing exactly
+    // such a bullet and watching this file stay green without this line.
+    expect(
+      roadmapResidual,
+      `${ROADMAP}: the retrospective claims the guard holds while the sender is `
+      + 'a member. It does not, and this file exists because that wording '
+      + 'survived two review passes in three places.',
+    ).not.toMatch(/holds (?:only )?while (?:its |the )?sender is (?:still )?a member/i);
   });
 
   test('every guarded text names every way the mark can be missing', () => {
