@@ -192,12 +192,26 @@ function librarySources(): readonly string[] {
  */
 function optionalPeersImportedLiterallyFrom(sources: readonly string[]): readonly string[] {
   return optionalPeers
-    .filter((peer) => {
-      const quoted = `'${peer}'`;
-      return sources.some((source) =>
-        source.includes(`import(${quoted})`) || source.includes(`from ${quoted}`));
-    })
+    .filter((peer) => sources.some((source) => literalSpecifier(peer).test(source)))
     .sort();
+}
+
+/**
+ * Matches a literal specifier naming `peer`, in every spelling that resolves
+ * the real package.
+ *
+ * Two of them used to slip through a pair of exact substring checks, and both
+ * were measured rather than imagined: `from "ws"` with double quotes, and a
+ * subpath like `from 'ws/index.js'`. Neither is exotic, and for the ten
+ * optional peers that are root devDependencies neither is caught downstream
+ * either — `tsc` resolves the module, so TS2307 never fires, the specifier is
+ * emitted into the published `.d.ts`, and a consumer who took the peer at its
+ * word cannot resolve it. That is the exact harm this guard exists to prevent,
+ * so the scan has to be as wide as the claim it makes.
+ */
+function literalSpecifier(peer: string): RegExp {
+  const escaped = peer.replaceAll(/[.*+?^${}()|[\]\\]/g, (match) => `\\${match}`);
+  return new RegExp(`(?:from|import\\()\\s*['"]${escaped}(?:/[^'"]*)?['"]`);
 }
 
 function literallyImportedOptionalPeers(): readonly string[] {

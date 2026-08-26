@@ -5,8 +5,16 @@ name: tests
 # test result: source code, ANY test subtree (unit, multi-node,
 # smoke, AND integration — tests that share helpers in
 # `tests/integration/` could shift unit-test imports), dependency
-# manifest, tsconfig.  Docs-only / README-only / ROADMAP / CHANGELOG
-# changes deliberately skip — they can't change test outcomes.
+# manifest, tsconfig — and the prose the suite reads.
+#
+# That last clause is not decoration.  This file used to say docs-only,
+# README-only, ROADMAP and CHANGELOG changes "can't change test outcomes",
+# and five test files now read exactly those: SupplyChainDocs (CHANGELOG +
+# two pages), GossipReplayBoundDocumented (ROADMAP + two pages),
+# RateLimitEvictionClaims, ExampleWiringClaims and SleepRatchet.  A
+# ROADMAP-only edit turning one of those claims back was measured red while
+# CI would not have run at all.  A guard CI skips on the file it guards is
+# a guard only for whoever runs the suite locally.
 
 on:
   # Run on every branch push (feature work merges locally, so a branch push
@@ -21,6 +29,10 @@ on:
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.dev.json'
+      - 'docs/**'
+      - 'ROADMAP.md'
+      - 'CHANGELOG.md'
+      - 'README.md'
       - '.github/workflows/test.yml'
   pull_request:
     branches: [main, develop]
@@ -32,6 +44,10 @@ on:
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.dev.json'
+      - 'docs/**'
+      - 'ROADMAP.md'
+      - 'CHANGELOG.md'
+      - 'README.md'
       - '.github/workflows/test.yml'
   workflow_dispatch:
 
