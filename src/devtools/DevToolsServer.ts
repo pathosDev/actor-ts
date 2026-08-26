@@ -40,6 +40,7 @@ import {
   type DevToolsHubContext,
 } from './internal/DevToolsHubActor.js';
 import { isLoopbackHost, type DevToolsOptionsType, type DevToolsPanelOptionsType } from './DevToolsOptions.js';
+import { MAXIMUM_HUB_CONNECTIONS } from './Constants.js';
 import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
 import { ClusterTap } from './taps/ClusterTap.js';
@@ -356,11 +357,20 @@ export class DevToolsServer implements DevToolsHubContext {
     // to the same-origin policy, so binding to loopback keeps the tap off
     // the network but does nothing about the page the developer is browsing.
     // `allowedOrigins` widens this; it does not replace it.
+    //
+    // `maxConnections` is the socket half of #758: the route default is
+    // `Infinity`, and the hub keeps a session per connection.  The work a
+    // connection can start is capped in the hub itself; this caps how many
+    // may ask at all.
     const socket = websocket(
       this.hubRef as never,
       this.settings.allowedOrigins === undefined
-        ? { requireSameOrigin: true }
-        : { requireSameOrigin: true, allowedOrigins: this.settings.allowedOrigins },
+        ? { requireSameOrigin: true, maxConnections: MAXIMUM_HUB_CONNECTIONS }
+        : {
+          requireSameOrigin: true,
+          allowedOrigins: this.settings.allowedOrigins,
+          maxConnections: MAXIMUM_HUB_CONNECTIONS,
+        },
     );
 
     const api = path('api', concat(

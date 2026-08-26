@@ -277,6 +277,22 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   Die Bindung an Loopback ersetzt das nicht. Ein WebSocket-Handshake
   unterliegt nicht der Same-Origin-Policy, jede Seite im Browser der
   entwickelnden Person erreicht also `127.0.0.1`.
+- **Ein verbundener Client kann den Tap nicht fluten.** Requests werden
+  außerhalb der Mailbox des Hubs beantwortet, damit ein langsamer
+  Journal-Read nicht die übrigen Tabs blockiert — womit die Mailbox die
+  Arbeit auch nicht mehr begrenzt. Stattdessen zählt der Hub sie: 32
+  offene Requests pro Verbindung und 256 über den ganzen Tap. Ein
+  Request darüber hinaus wird mit einem `unavailable`-Fehler abgelehnt
+  statt eingereiht. Auch die Sockets sind gedeckelt, bei 32
+  gleichzeitigen Verbindungen; ein Upgrade darüber hinaus wird mit 1013
+  geschlossen, bevor es verdrahtet wird.
+
+  An diese Zahlen kommt ein Panel nie heran. Ein Client, der Tausende
+  gleichzeitiger Journal-Replays anfordert, schon — und der Tap läuft im
+  selben Prozess wie die Actors, die du untersuchst. Was er aushungern
+  könnte, ist also deine Anwendung, nicht nur der Debugger. Was ein
+  Client bei einer Ablehnung tun sollte, steht in der
+  [Protokoll-Referenz](/de/observability/devtools/protocol/).
 - **Die Cluster-Seite richtet sich nach der Verbindung.** Übergibst du
   einen `Cluster`, beantwortet jeder Knoten über den Cluster-Transport
   die Frage „Wie geht es deinem Knoten?“, und der ausliefernde Knoten

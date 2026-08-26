@@ -196,6 +196,66 @@ describe('retry', () => {
     } catch (e) { caught = e; }
     expect((caught as Error).message).toContain('>= 1');
   });
+
+  test('an omitted maxDelayMs clamps to the 32-bit timer limit', async () => {
+    // The `Number.POSITIVE_INFINITY` branch (#771), which no other test in
+    // this block reaches: with no cap and `factor > 1` the computed delay
+    // crosses 2_147_483_647 ms, where `setTimeout` coerces its argument to a
+    // 32-bit signed integer and fires after 1 ms instead — inverting the
+    // backoff into a hot loop against the dependency that is already down.
+    // The `sleep` seam records the number `retry` asked for, which is exactly
+    // the value that would otherwise reach the timer.
+    const requestedDelays: number[] = [];
+    try {
+      await retry(async () => { throw new Error('fail'); }, {
+        attempts: 4,
+        delayMs: 1_000,
+        factor: 10_000,
+        sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+      });
+    } catch { /* expected */ }
+    // 1e3, 1e7, then 1e11 — the third would overflow, and lands on the clamp.
+    expect(requestedDelays).toEqual([1_000, 10_000_000, 2_147_483_647]);
+    for (const ms of requestedDelays) expect(ms).toBeLessThanOrEqual(2_147_483_647);
+  });
+
+  test('randomFactor jitters the delay from the injected random source', async () => {
+    // Two runs differing only in the random source must produce different
+    // schedules — the herd-synchronisation half of #771.  `random` is the
+    // same escape hatch `exponentialBackoff` exposes, so this asserts the
+    // exact schedule rather than a statistical property.
+    const scheduleWith = async (random: () => number, randomFactor?: number): Promise<number[]> => {
+      const requestedDelays: number[] = [];
+      try {
+        await retry(async () => { throw new Error('fail'); }, {
+          attempts: 3,
+          delayMs: 100,
+          factor: 2,
+          randomFactor,
+          random,
+          sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+        });
+      } catch { /* expected */ }
+      return requestedDelays;
+    };
+
+    // random() = 0 maps to the -randomFactor edge, 1 to the +randomFactor one.
+    expect(await scheduleWith(() => 0, 0.5)).toEqual([50, 100]);
+    expect(await scheduleWith(() => 1, 0.5)).toEqual([150, 300]);
+    expect(await scheduleWith(() => 0.5, 0.5)).toEqual([100, 200]);
+    // Omitting randomFactor leaves the schedule deterministic even with a
+    // random source in hand — the contract every caller written before this
+    // option had.
+    expect(await scheduleWith(() => 1)).toEqual([100, 200]);
+  });
+
+  test('randomFactor must be in [0, 1]', async () => {
+    let caught: unknown = null;
+    try {
+      await retry(async () => 1, { attempts: 2, delayMs: 1, randomFactor: 1.5 });
+    } catch (e) { caught = e; }
+    expect((caught as Error).message).toContain('randomFactor must be in [0, 1]');
+  });
 });
 
 describe('composition', () => {

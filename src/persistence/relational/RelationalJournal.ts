@@ -143,9 +143,13 @@ export class RelationalJournal extends RelationalStore implements Journal {
           await transaction.query(this.statements.insertEvent, [
             persistenceId, seq, encodePayload(entry.event, this.serializer), tagString, now,
           ]);
+          // No empty-tag filter here: `assertValidEntryTags` above rejected
+          // the append outright, so the list cannot hold one.  The filter used
+          // to live here *instead* of at the choke point, which left the CSV
+          // column on the line above carrying the empty member the tags table
+          // dropped — one append recorded two different ways (#740).
           if (tags) {
             for (const tag of tags) {
-              if (tag.length === 0) continue;
               await transaction.query(this.statements.insertTag, [persistenceId, seq, tag, now]);
             }
           }

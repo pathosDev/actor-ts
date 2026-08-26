@@ -24,8 +24,8 @@ const TEST_CREDS = {
  * the namespace the tests operate in, supports the four operations
  * (GET / POST / PUT / DELETE), and respects optimistic concurrency via
  * `metadata.resourceVersion`.  Exposes a few hooks (forceConflictNext,
- * forceMissingNext) so tests can drive the failure paths without timing
- * tricks.
+ * forceMissingNext, blockPuts, bumpResourceVersion) so tests can drive the
+ * failure paths without timing tricks.
  */
 class FakeK8sServer implements K8sFetchClient {
   private leases = new Map<string, K8sLeaseObject>();
@@ -50,6 +50,17 @@ class FakeK8sServer implements K8sFetchClient {
    * cases and used to be discarded here.
    */
   log: Array<{ method: string; path: string; body?: unknown; authToken: string }> = [];
+  /**
+   * The highest number of PUTs that were ever inside {@link request} at the
+   * same instant.  The direct observable for the in-flight guard (#761):
+   * the defect is two renewal PUTs overlapping, and this counts exactly
+   * that, without the test having to reason about which one won.
+   */
+  maxConcurrentPuts = 0;
+  private putsInProgress = 0;
+  /** Resolvers for the PUTs {@link blockPuts} is holding open, oldest first. */
+  private readonly parkedPutResolvers: Array<() => void> = [];
+  private putsBlocked = false;
 
   async request(credentials: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse> {
     this.log.push({
@@ -96,23 +107,7 @@ class FakeK8sServer implements K8sFetchClient {
     }
 
     if (options.method === 'PUT' && name) {
-      const incoming = options.body as K8sLeaseObject;
-      const key = `${ns}/${name}`;
-      if (this.forceConflictNext) {
-        this.forceConflictNext = false;
-        return { status: 409, body: { code: 409, reason: 'Conflict' } };
-      }
-      const existing = this.leases.get(key);
-      if (!existing) return { status: 404, body: { code: 404 } };
-      if (existing.metadata.resourceVersion !== incoming.metadata.resourceVersion) {
-        return { status: 409, body: { code: 409, reason: 'Conflict' } };
-      }
-      const updated: K8sLeaseObject = {
-        ...incoming,
-        metadata: { ...incoming.metadata, resourceVersion: String(this.rvCounter++) },
-      };
-      this.leases.set(key, updated);
-      return { status: 200, body: updated };
+      return await this.servePut(ns, name, options.body as K8sLeaseObject);
     }
 
     if (options.method === 'DELETE' && name) {
@@ -127,6 +122,80 @@ class FakeK8sServer implements K8sFetchClient {
     }
 
     return { status: 405, body: { code: 405 } };
+  }
+
+  /**
+   * The PUT branch, split out so the concurrency bookkeeping can wrap the
+   * whole of it — including the parking {@link blockPuts} performs, which
+   * is the point: a request held open is still in flight, and counting it
+   * as such is what makes the overlap observable (#761).
+   */
+  private async servePut(
+    namespace: string,
+    name: string,
+    incoming: K8sLeaseObject,
+  ): Promise<K8sResponse> {
+    this.putsInProgress++;
+    this.maxConcurrentPuts = Math.max(this.maxConcurrentPuts, this.putsInProgress);
+    try {
+      if (this.putsBlocked) {
+        await new Promise<void>((resolve) => { this.parkedPutResolvers.push(resolve); });
+      }
+      if (this.forceConflictNext) {
+        this.forceConflictNext = false;
+        return { status: 409, body: { code: 409, reason: 'Conflict' } };
+      }
+      const key = `${namespace}/${name}`;
+      const existing = this.leases.get(key);
+      if (!existing) return { status: 404, body: { code: 404 } };
+      if (existing.metadata.resourceVersion !== incoming.metadata.resourceVersion) {
+        return { status: 409, body: { code: 409, reason: 'Conflict' } };
+      }
+      const updated: K8sLeaseObject = {
+        ...incoming,
+        metadata: { ...incoming.metadata, resourceVersion: String(this.rvCounter++) },
+      };
+      this.leases.set(key, updated);
+      return { status: 200, body: updated };
+    } finally {
+      this.putsInProgress--;
+    }
+  }
+
+  /**
+   * Test helper — hold every PUT from now on open instead of answering it.
+   *
+   * Parking the request rather than delaying it behind a timer is what
+   * makes the overlap deterministic: while one is parked, any PUT that
+   * arrives is unambiguously a second one on the wire, with no sleep to
+   * tune and nothing for a loaded machine to reorder.
+   */
+  blockPuts(): void { this.putsBlocked = true; }
+
+  /** Test helper — answer every parked PUT and stop parking new ones. */
+  unblockPuts(): void {
+    this.putsBlocked = false;
+    for (const resolve of this.parkedPutResolvers.splice(0)) resolve();
+  }
+
+  /** Test helper — how many PUTs are parked right now. */
+  parkedPuts(): number { return this.parkedPutResolvers.length; }
+
+  /**
+   * Test helper — move the stored `resourceVersion` on without touching the
+   * spec, and return the new one.
+   *
+   * This is what the tail of an overlapping renewal looks like from the
+   * holder's side: its own earlier PUT landed and bumped the version, so
+   * the write it has already built carries a stale one and is rejected —
+   * by the holder itself, against a record that still names it (#761).
+   */
+  bumpResourceVersion(namespace: string, name: string): string {
+    const key = `${namespace}/${name}`;
+    const existing = this.leases.get(key)!;
+    const resourceVersion = String(this.rvCounter++);
+    this.leases.set(key, { ...existing, metadata: { ...existing.metadata, resourceVersion } });
+    return resourceVersion;
   }
 
   /**
@@ -529,21 +598,95 @@ describe('KubernetesLease — renewal loop', () => {
     await lease.release();
   });
 
-  test('renewal 409 fires onLost(reason) and stops the loop', async () => {
+  test('renewal 409 whose re-read shows a foreign holder fires onLost(reason) and stops the loop', async () => {
     const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 30 }));
     let lostReason: string | null = null;
     lease.onLost((reason) => { lostReason = reason; });
     await lease.acquire();
-    server.forceConflictNext = true;
+    // A real takeover, not a forced status: another pod rewrites the record,
+    // which both moves the `resourceVersion` (so our next PUT is rejected)
+    // and changes `holderIdentity` (so the re-read confirms the loss).
+    // Forcing a bare 409 no longer proves anything here — since #761 that is
+    // also what a holder conflicting with its own write looks like, and the
+    // re-read would find this owner still on the record.
+    server.seedLease('default', {
+      apiVersion: 'coordination.k8s.io/v1',
+      kind: 'Lease',
+      metadata: { name: 'test-lease', namespace: 'default' },
+      spec: {
+        holderIdentity: 'other-pod',
+        leaseDurationSeconds: 5,
+        acquireTime: new Date().toISOString(),
+        renewTime: new Date().toISOString(),
+        leaseTransitions: 2,
+      },
+    });
     // `fireLost` clears `held` before it calls the handlers, so a non-null
     // reason already implies the `checkAlive()` assertion below.
     await awaitCondition(() => lostReason !== null, {
-      label: 'the renewal 409 fired onLost',
+      label: 'the renewal 409 against a foreign holder fired onLost',
     });
     // Written only by the `onLost` callback, so flow analysis still has
     // `lostReason` at its `null` initialiser here.
     expect<string | null>(lostReason).toContain('lease lost');
+    expect<string | null>(lostReason).toContain('other-pod');
     expect(lease.checkAlive()).toBe(false);
+    await lease.release();
+  });
+
+  test('a renewal tick that finds one already on the wire is skipped, not sent (#761)', async () => {
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 20 }));
+    let lostReason: string | null = null;
+    lease.onLost((reason) => { lostReason = reason; });
+    await lease.acquire();
+
+    // Model the API-server latency spike the issue is about: the first
+    // renewal PUT is held open, and the ticks that fire meanwhile would each
+    // build their write from the same `currentLease` snapshot and carry the
+    // same stale `resourceVersion`.
+    server.blockPuts();
+    await awaitCondition(() => server.parkedPuts() === 1, {
+      label: 'the first renewal PUT reached the API server',
+    });
+    // The assertion is an absence — no second PUT — so the wait has to
+    // outlive several of the 20 ms ticks that would have produced one.
+    await sleep(100);
+    expect(server.maxConcurrentPuts).toBe(1);
+    expect(server.parkedPuts()).toBe(1);
+
+    // The stalled request finally lands.  It is the *only* one, so it CASes
+    // cleanly, nothing 409s, and no ownership was ever in question.
+    server.unblockPuts();
+    const afterUnblock = server.peek('default', 'test-lease')!.metadata.resourceVersion;
+    await awaitCondition(
+      () => server.peek('default', 'test-lease')!.metadata.resourceVersion !== afterUnblock,
+      { label: 'the renewal loop resumed once the stalled PUT settled' },
+    );
+    expect<string | null>(lostReason).toBeNull();
+    expect(lease.checkAlive()).toBe(true);
+    await lease.release();
+  });
+
+  test('a 409 whose re-read still names this owner keeps the lease held (#761)', async () => {
+    const lease = new KubernetesLease(baseOptions({ renewalIntervalMs: 20 }));
+    let lostReason: string | null = null;
+    lease.onLost((reason) => { lostReason = reason; });
+    await lease.acquire();
+
+    // The tail of a self-conflict, whatever produced it: the server's
+    // version moved while `holderIdentity` did not, so the next tick's CAS
+    // is rejected by this holder's own earlier write.  Concluding "lost"
+    // from the 409 alone stops a singleton whose lease is still on the
+    // record — and, since the record names this pod with a fresh
+    // `renewTime`, no other pod may take it over either.
+    const bumped = server.bumpResourceVersion('default', 'test-lease');
+    await awaitCondition(
+      () => server.peek('default', 'test-lease')!.metadata.resourceVersion !== bumped,
+      { label: 'the renewal loop adopted the new resourceVersion and wrote again' },
+    );
+    expect<string | null>(lostReason).toBeNull();
+    expect(lease.checkAlive()).toBe(true);
+    expect(server.peek('default', 'test-lease')!.spec.holderIdentity).toBe('test-pod');
     await lease.release();
   });
 
@@ -559,7 +702,7 @@ describe('KubernetesLease — renewal loop', () => {
     await awaitCondition(() => lostReason !== null, {
       label: 'the renewal 404 fired onLost',
     });
-    expect(lostReason).not.toBeNull();
+    expect<string | null>(lostReason).toContain('deleted');
     expect(lease.checkAlive()).toBe(false);
     await lease.release();
   });
@@ -570,11 +713,15 @@ describe('KubernetesLease — renewal loop', () => {
     const unregister = lease.onLost(() => { calls++; });
     await lease.acquire();
     unregister();
-    server.forceConflictNext = true;
+    // Deleting the object rather than forcing a 409: since #761 a bare 409
+    // is re-read and found to be this holder's own, so it fires nothing at
+    // all — which would leave this case passing for the wrong reason.
+    server.deleteForTest('default', 'test-lease');
     // The assertion is an absence: the unregistered handler must never fire, so
     // the wait has to outlive the 30 ms renewal tick that would have called it.
     await sleep(80);
     expect(calls).toBe(0);
+    expect(lease.checkAlive()).toBe(false);
     await lease.release();
   });
 });

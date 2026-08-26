@@ -1,15 +1,31 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SqliteJournal } from '../../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions } from '../../../../src/persistence/journals/SqliteJournalOptions.js';
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
 import { SqliteSnapshotStore } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
 import { SqliteSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
+import { getSqliteDriver } from '../../../../src/runtime/sqlite/index.js';
 
 /** Journals and snapshot stores we create per test, auto-closed after. */
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   while (cleanups.length) await cleanups.shift()!();
+});
+
+/**
+ * One temp directory for the cases that need a real file — a `:memory:`
+ * database cannot be reopened by a second connection, and the legacy-CSV case
+ * has to write a row the journal itself would now refuse.
+ */
+const tempDirectory = mkdtempSync(join(tmpdir(), 'actor-ts-sqlite-journal-'));
+afterAll(() => {
+  // Best-effort: on Windows the SQLite driver can release its file handle a
+  // beat after close(), and a locked file must not fail the suite.
+  try { rmSync(tempDirectory, { recursive: true, force: true }); } catch { /* leave the temp dir to the OS */ }
 });
 
 function newJournal(): SqliteJournal {
@@ -60,6 +76,52 @@ describe('SqliteJournal', () => {
     await journal.append('p', [{ event: 'e1', tags: ['orders', 'vip'] }, { event: 'e2', tags: ['orders', 'vip'] }], 0);
     const events = await journal.read('p', 1);
     for (const e of events) expect([...(e.tags ?? [])]).toEqual(['orders', 'vip']);
+  });
+
+  test('a CSV with an empty member can no longer be written (#740)', async () => {
+    // The CSV column is `tags.join(',')` and `read` is `tags.split(',')`, with
+    // nothing in between — so an empty member survives that round-trip as a
+    // real tag while the tags *table* used to drop it, one append recorded two
+    // different ways.  Rejecting at the validator is what closes it: the
+    // trailing comma the join would produce is now unreachable.
+    const journal = newJournal();
+    await expect(journal.append('p', [{ event: 'e1', tags: ['orders', ''] }], 0))
+      .rejects.toThrow(/empty tag/);
+    await expect(journal.append('p', [{ event: 'e1', tags: ['', 'orders'] }], 0))
+      .rejects.toThrow(/empty tag/);
+    await expect(journal.append('p', [{ event: 'e1', tags: ['orders', 'orders'] }], 0))
+      .rejects.toThrow(/duplicate tag/);
+    // Nothing was written, so no row carries a comma that splits into an
+    // empty member on read.
+    expect(await journal.highestSeq('p')).toBe(0);
+    expect(await journal.read('p', 1)).toEqual([]);
+  });
+
+  test('a legacy CSV row written before the rule still reads back (#740)', async () => {
+    // "Reading is never refused" — the promise the persistence-id rules
+    // already make.  Validation lives only in `append`, so a database that
+    // predates #740 keeps handing back exactly the tag list it stored,
+    // trailing empty member and all.  A real file, because the raw row has to
+    // be written by a second connection to the same database.
+    const path = join(tempDirectory, 'legacy-csv.sqlite');
+    const legacyJournal = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    await legacyJournal.append('p', [{ event: 'e1', tags: ['orders'] }], 0);
+    await legacyJournal.close();
+
+    const driver = await getSqliteDriver();
+    const raw = driver.open(path);
+    try {
+      // What SqliteJournal v0 would have stored for `['orders', '']`.
+      raw.prepare('UPDATE events SET tags = ? WHERE persistence_id = ? AND sequence_nr = ?')
+        .run('orders,', 'p', 1);
+    } finally {
+      raw.close();
+    }
+
+    const reopened = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    cleanups.push(() => reopened.close());
+    const events = await reopened.read('p', 1);
+    expect([...(events[0]!.tags ?? [])]).toEqual(['orders', '']);
   });
 
   test('read range is inclusive on both ends', async () => {

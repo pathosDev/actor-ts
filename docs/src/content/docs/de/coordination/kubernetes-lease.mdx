@@ -291,28 +291,58 @@ Der `resourceVersion` aus dem letzten Read macht den Write zu einem
 optimistic-concurrency Compare-and-Set — K8s rejectet mit 409, wenn
 seither jemand anderes das Objekt modifiziert hat.
 
+**Höchstens ein Renewal-PUT ist jemals unterwegs.**  `renewalIntervalMs`
+ist eine Wall-Clock-Taktung, kein Budget pro Request: der Default ist
+`ttlMs / 3` — 5 s bei der oben empfohlenen TTL von 15 s — während der
+HTTP-Client selbst einen Timeout von 10 s hat, ein einzelner Request
+also legitim über zwei Takte laufen kann.  Ein Takt, der einen noch
+offenen Request vorfindet, wird **übersprungen**, nicht eingereiht: ein
+Renewal trägt nichts, was der nächste nicht auch trägt.  Ohne diesen
+Schutz werden beide Writes aus demselben Snapshot gebaut und tragen
+denselben `resourceVersion` — der API-Server rejectet dann einen der
+*eigenen* Writes des Halters, siehe unten (#761).
+
 Wenn der Write fehlschlägt, gibt das Renewal sofort auf und feuert
-`onLost` — es gibt kein Retry-Budget innerhalb der Schleife, mit einer
-Ausnahme:
+`onLost` — es gibt kein Retry-Budget innerhalb der Schleife, mit zwei
+Ausnahmen:
 
 - **Transient (5xx, connection refused, Timeout)** → `onLost` feuert.
-- **CAS-Conflict (409) oder 404** → ein anderer Halter hat übernommen,
-  oder das Objekt wurde gelöscht; `onLost` feuert.
+- **CAS-Conflict (409) oder 404** → das Objekt wird erneut gelesen,
+  bevor der Besitz aufgegeben wird: ein 409 sagt nur, dass sich der
+  `resourceVersion` bewegt hat, nicht dass jemand anderes den Lease
+  übernommen hat.  Was der Re-Read findet, entscheidet:
+  - **weg** → jemand hat das Objekt gelöscht; `onLost` feuert.
+  - **eine andere `holderIdentity`** → eine echte Übernahme; `onLost`
+    feuert.
+  - **weiterhin dieser Owner** → nichts wurde verloren.  Der
+    `resourceVersion` des Servers wird übernommen, damit der CAS des
+    nächsten Takts passt, und die Schleife hält weiter.
 - **401 / 403** → abgelehnt wurde das *Credential*, nicht der Lease.
   Bei einem gemounteten ServiceAccount-Token wird der Mount erneut
   gelesen und der PUT genau einmal wiederholt; erst eine zweite
   Ablehnung feuert `onLost`.  Siehe *Die Lebensdauer eines Credentials
   hängt von seiner Quelle ab* weiter oben.
 
+Ein Re-Read, der selbst fehlschlägt, fällt in den transienten Fall und
+feuert `onLost`: Besitz, der nicht bestätigt werden kann, darf nicht
+angenommen werden.
+
 ## Verlust-Erkennung
 
 `onLost` feuert, wenn:
 
-- Ein Renewal-PUT einen CAS-Conflict zurückgibt.
+- Ein Renewal-PUT abgelehnt wird **und** der Re-Read eine andere
+  `holderIdentity` zeigt — oder gar kein Lease-Objekt mehr.
 - Das Framework feststellt, dass der Lease von jemandem anderem
   modifiziert wurde (ein Probe-GET vor einer kritischen
   Operation).
 - Netzwerk-Partition Renewals länger als `ttlMs` verhindert.
+
+**Nicht** feuert es bei einem CAS-Conflict, dessen Re-Read weiterhin
+diesen Owner nennt.  Dann kollidiert der Halter mit einem seiner
+eigenen Writes — ein anderer Controller, der das Objekt anfasst, oder
+ein re-`acquire()`, das mit einem Renewal rennt — und der Record gehört
+weiterhin uns.
 
 Der Handler sollte den eigentumsabhängigen State sofort fallen
 lassen — siehe [Lease-API](/de/coordination/lease-api/) für den
@@ -323,7 +353,9 @@ Vertrag.
 Jeder Lease-Halter erzeugt:
 
 - 1 GET + (potenziell) 1 CREATE beim Acquire.
-- 1 PUT alle `renewalIntervalMs`, solange gehalten.
+- 1 PUT alle `renewalIntervalMs`, solange gehalten — plus 1
+  zusätzlicher GET bei dem seltenen Takt, dessen PUT abgelehnt
+  wird, um herauszufinden, ob der Lease wirklich verloren ist.
 - 1 DELETE beim Release.
 
 Für eine 30-Sekunden-TTL mit 10-Sekunden-Renewal sind das

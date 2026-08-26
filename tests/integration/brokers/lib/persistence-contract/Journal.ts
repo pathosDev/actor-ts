@@ -8,6 +8,7 @@
  * automatically checked everywhere instead of being added to whichever
  * backend's hand-written suite happened to prompt it (#390).
  */
+import type { Journal } from '../../../../../src/persistence/Journal.js';
 import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
 import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
@@ -27,6 +28,33 @@ function compactionMarkSkip(harness: JournalHarness): string | null {
   return harness.capabilities?.compactionMark === false
     ? 'journal does not implement the optional raiseCompactionMark'
     : null;
+}
+
+/**
+ * Assert that `append` refuses a tag list, at sequence 0 so a store that let
+ * it through would be caught by the `highestSeq` check that follows.
+ *
+ * Matched on the message rather than through `expectThrows`, which keys on
+ * `error.name`: the tag rules throw a plain `Error`, so the name says nothing
+ * and a `JournalError` wrapping some unrelated driver failure would satisfy it.
+ */
+async function assertRejectsTagList(
+  journal: Journal,
+  persistenceId: string,
+  tags: ReadonlyArray<string>,
+  what: string,
+): Promise<void> {
+  try {
+    await journal.append(persistenceId, [{ event: 'rejected', tags }], 0);
+  } catch (e) {
+    const message = (e as Error).message;
+    assert(
+      /empty tag|duplicate tag/.test(message),
+      `${what}: expected the tag rules to reject it, got ${message}`,
+    );
+    return;
+  }
+  throw new Error(`assertion failed: ${what} was accepted — ${JSON.stringify(tags)} must be refused on every backend`);
 }
 
 export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
@@ -292,6 +320,37 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           assertEqual(read[0]!.tags, ['order'], 'the first event is unaffected');
           // An untagged event inside a tagged batch stays untagged.
           assert(read[2]!.tags === undefined, 'an untagged event in a tagged batch reports no tags');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
+      name: 'no journal accepts an empty or duplicate tag',
+      skip: (harness) => (harness.capabilities?.tags === false ? 'store does not support tags' : null),
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('degenerate-tags');
+        // The one place the #740 asymmetry is observable.  An empty tag used
+        // to mean something different on every store — dropped from the SQL
+        // tags table but kept in the CSV column read back from it, indexed as
+        // a queryable '' bucket on MongoDB, a hot `tag = ''` partition on the
+        // Cassandra tag index, and a rejected item on DynamoDB, whose string
+        // set may hold neither an empty nor a repeated member.  A repeat had
+        // the same spread.  Asserting the *rejection* rather than the storage
+        // shape is deliberate: the in-process fakes model no set semantics at
+        // all (FakeDynamoDb has no `SS` handling), so a scenario written
+        // against what the store keeps would pass vacuously there while the
+        // live service failed the append.
+        try {
+          await assertRejectsTagList(journal, persistenceId, ['tenant-1', ''], 'an empty tag');
+          await assertRejectsTagList(journal, persistenceId, [''], 'a lone empty tag');
+          await assertRejectsTagList(journal, persistenceId, ['order', 'order'], 'a duplicate tag');
+          // Nothing was written by any of the three, so the stream is untouched
+          // and the next legitimate append still starts at 1.
+          assertEqual(await journal.highestSeq(persistenceId), 0, 'no rejected append left a row behind');
+          const written = await journal.append(persistenceId, [{ event: 'ok', tags: ['order', 'payment'] }], 0);
+          assertEqual(written.map((e) => e.sequenceNr), [1], 'a well-formed tag list still appends');
         } finally {
           await closeQuietly(journal);
         }

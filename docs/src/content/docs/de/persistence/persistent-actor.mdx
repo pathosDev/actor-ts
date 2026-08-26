@@ -458,6 +458,46 @@ await this.persistAll([
 Der Batch wird weiterhin atomar geschrieben — Tags pro Event teilen
 ihn nicht in mehrere Appends auf.
 
+### Was ein Tag enthalten darf
+
+Wie eine Persistenz-ID ist ein Tag selten eine Konstante — meist
+wird er aus dem Event gebaut (`` `tenant-${event.tenantId}` ``, ein
+optionales Label).  Und wie eine ID ist er mehr als ein Wert: jedes
+Backend macht aus der Liste eine *Storage-Form*, und sie wählen
+nicht dieselbe.  `journal.append()` weist deshalb eine Liste
+zurück, die nicht überall dasselbe bedeuten kann — bevor eine
+einzige Zeile geschrieben ist:
+
+| Zurückgewiesen | Warum |
+| --- | --- |
+| ein leerer Tag | er bedeutet in jedem Store etwas anderes — aus der Tag-Tabelle verworfen, aber in der kommaseparierten Spalte behalten, aus der die SQL-Journale zurücklesen; auf MongoDB als abfragbarer `''`-Bucket indiziert; auf dem Cassandra-Tag-Index eine einzige heiße `tag = ''`-Partition; und auf DynamoDB ein abgelehntes Item, denn ein String-Set darf kein leeres Element enthalten.  Die übliche Quelle ist eine Form `[category, subCategory ?? '']`, deren zweiter Platz leer geblieben ist |
+| derselbe Tag zweimal an einem Event | dieselbe Spreizung: Cassandras `set<text>` und der idempotente Insert in die Tag-Tabelle falten ihn zusammen, MongoDB und die CSV-Spalte behalten ihn, und DynamoDB lässt den ganzen Append scheitern, weil ein String-Set kein Element wiederholen darf |
+| länger als **255** Zeichen | ein Tag wird indiziert, und ein unbegrenzter bläht sowohl die Event-Zeile als auch jeden darüber gebauten Index auf |
+| mehr als **64** Tags an einem Event | dieselbe Schranke, pro Event gezählt — ein `persistAll` über zehn Events darf je 64 tragen, nicht 64 insgesamt |
+| ein Komma | die SQLite- und die relationalen Journale legen Tags in einer kommaseparierten Spalte ab; ein `,` darin würde beim Lesen in zusätzliche Tags zerfallen — ein Aufrufer könnte Einträge in die Tag-Liste eines Nachbar-Events schreiben |
+| Control-Zeichen | Tags werden in Logzeilen interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
+
+Alles andere ist erlaubt.  Tags werden Byte für Byte verglichen:
+`'Order'` und `'order'` sind zwei Tags und keine Wiederholung, und
+ein angehängtes Leerzeichen ergibt einen dritten.
+
+Prüfe deine eigenen Tags gegen diese Regeln, ohne einen Actor zu
+starten:
+
+```ts
+import { assertValidTags } from 'actor-ts/persistence';
+
+assertValidTags(tagsFor(event));
+```
+
+**Lesen wird nie verweigert.**  Nur `append` validiert — ein Stream,
+der vor diesen Regeln geschrieben wurde und bereits einen leeren
+oder wiederholten Tag trägt, spielt unverändert ab, und
+`journal.read(id, 1)` liefert genau die Liste zurück, die gespeichert
+wurde.  Neu ist nur, dass ein Append mit einer solchen Liste jetzt
+wirft — filtere sie also in `tagsFor`, statt das Journal entscheiden
+zu lassen.
+
 ## Schema-Evolution — Event-Adapter
 
 Wenn sich Event-Formen über die Zeit ändern (ein Feld wird umbenannt,

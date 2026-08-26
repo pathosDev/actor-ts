@@ -282,25 +282,51 @@ The `resourceVersion` from the last read turns the write into an
 optimistic-concurrency compare-and-set — K8s rejects with 409 if anyone
 else mutated the object since.
 
+**At most one renewal PUT is ever on the wire.**  `renewalIntervalMs`
+is a wall-clock cadence, not a per-request budget: the default is
+`ttlMs / 3` — 5 s at the 15 s TTL recommended above — while the HTTP
+client's own timeout is 10 s, so a single request may legitimately span
+two ticks.  A tick that finds one still outstanding is **skipped**, not
+queued: a renewal carries nothing the next one will not carry.  Without
+that guard the two writes are built from the same snapshot and carry
+the same `resourceVersion`, and the API server rejects one of the
+holder's *own* writes — see below (#761).
+
 If the write fails, renewal gives up immediately and fires `onLost` —
-there is no retry budget inside the loop, with one exception:
+there is no retry budget inside the loop, with two exceptions:
 
 - **Transient (5xx, connection refused, timeout)** → fire `onLost`.
-- **CAS conflict (409) or 404** → another holder took over, or the
-  object was deleted; fire `onLost`.
+- **CAS conflict (409) or 404** → the object is re-read before
+  ownership is given up, because a 409 only says the `resourceVersion`
+  moved, not that anyone else took the lease.  What the re-read finds
+  decides:
+  - **gone** → someone deleted the object; fire `onLost`.
+  - **a different `holderIdentity`** → a real takeover; fire `onLost`.
+  - **still this owner** → nothing was lost.  The server's
+    `resourceVersion` is adopted so the next tick's CAS matches, and
+    the loop keeps holding.
 - **401 / 403** → the *credential* was rejected, not the lease.  For a
   mounted ServiceAccount token the mount is read again and the PUT
   retried exactly once; only a second rejection fires `onLost`.  See
   *Credential lifetime depends on the source* above.
 
+A re-read that itself fails falls through to the transient case and
+fires `onLost`: ownership that cannot be confirmed may not be assumed.
+
 ## Loss detection
 
 `onLost` fires when:
 
-- A renewal PUT returns CAS conflict.
+- A renewal PUT is rejected **and** the re-read shows a different
+  `holderIdentity`, or no lease object at all.
 - The framework observes the lease was modified by someone else
   (a probe GET before some critical operation).
 - Network partition prevents renewal for longer than `ttlMs`.
+
+It does **not** fire on a CAS conflict whose re-read still names this
+owner.  That is the holder conflicting with one of its own writes —
+another controller bumping the object, or a re-`acquire()` racing a
+renewal — and the record is still ours.
 
 The handler should drop ownership state immediately — see
 [Lease API](/coordination/lease-api/) for the contract.
@@ -310,7 +336,9 @@ The handler should drop ownership state immediately — see
 Each lease holder generates:
 
 - 1 GET + (potentially) 1 CREATE on acquire.
-- 1 PUT every `renewalIntervalMs` while holding.
+- 1 PUT every `renewalIntervalMs` while holding — and 1 extra GET
+  on the rare tick whose PUT is rejected, to find out whether the
+  lease was actually lost.
 - 1 DELETE on release.
 
 For a 30-second TTL with 10-second renewal, that's **~6 API

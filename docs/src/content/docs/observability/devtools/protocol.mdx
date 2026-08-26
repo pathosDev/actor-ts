@@ -153,6 +153,29 @@ client that ignored the handshake still fails safely.
 Requests are answered **off** the tap's mailbox, so a slow journal read
 cannot stall other connected tabs.
 
+### Concurrency limits
+
+Answering off the mailbox also means the mailbox is no longer what
+serialises the work, so the tap counts it instead. One connection may
+have **32** requests in flight at a time, and the tap **256** across all
+connections. Anything past either is refused rather than queued, with an
+`error` frame carrying code `unavailable` and the `requestId` it answers.
+
+That gives `unavailable` two meanings, told apart by whether retrying
+helps: this system does not have that method, and never will, or the tap
+is busy right now. The `message` says which. A client that treats every
+`unavailable` as permanent will merely give up early; one that retries a
+missing method will never get an answer, which is why the message rather
+than the code is the thing to read.
+
+Neither limit is reachable by a client behaving like a panel — the whole
+bundled UI has fewer than thirty request call sites, and a burst is a
+page's worth of them, not a loop. They are there because a `replay.diff`
+folds an entire journal and the tap shares its process with the actors
+being debugged. For the same reason the tap admits at most **32**
+concurrent connections; a further upgrade is closed with 1013 ("try
+again later") before it is wired up.
+
 ## Writing a client
 
 The types and helpers are exported from the DevTools entry point:

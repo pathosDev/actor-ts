@@ -115,9 +115,15 @@ export class SqliteJournal implements Journal {
         // tag-search can do an indexed lookup instead of a CSV scan.
         // Both inserts run inside the same transaction — partial
         // writes are impossible.
+        //
+        // No empty-tag filter here: `assertValidEntryTags` above rejected the
+        // append outright, so the list reaching this loop cannot hold one.
+        // The filter used to live here *instead* of at the choke point, which
+        // meant the CSV column on the line above kept the empty member the
+        // join table dropped — the same append recorded two different ways
+        // (#740).
         if (tags) {
           for (const tag of tags) {
-            if (tag.length === 0) continue;
             stmts.insertTag.run(persistenceId, seq, tag, now);
           }
         }
@@ -416,6 +422,13 @@ export class SqliteJournal implements Journal {
 
     const fill = db.transaction((items: CsvRow[]) => {
       for (const row of items) {
+        // The empty-member filter stays, and only here.  These rows were
+        // written before `assertValidTags` rejected an empty tag (#740), so a
+        // legacy CSV really can carry `'orders,'` — and the tags table's `tag`
+        // column is NOT NULL and part of the primary key, so an `''` member
+        // would index the whole stream under one useless key.  Dropping it on
+        // backfill is not a rewrite: `read` still returns the CSV verbatim, so
+        // the stored event keeps the tag list it was written with.
         const tagList = row.tags.split(',').filter((t) => t.length > 0);
         for (const tag of tagList) {
           stmts.insertTag.run(row.persistence_id, row.sequence_nr, tag, row.timestamp);

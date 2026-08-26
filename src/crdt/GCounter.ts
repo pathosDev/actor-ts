@@ -1,3 +1,4 @@
+import { MAX_COUNTER_SLOT } from './Constants.js';
 import type { Crdt, ReplicaId } from './Crdt.js';
 import {
   assertCounterValue,
@@ -15,6 +16,11 @@ import {
  * counts, total bytes uploaded.  For workloads that also need
  * decrements (cart sizes, available stock) reach for {@link PNCounter}.
  *
+ * **One slot is capped** at {@link MAX_COUNTER_SLOT} ≈ 2.2e12, so a
+ * saturated counter still sums exactly.  It binds in practice on exactly
+ * one shape of counter — raw bytes on a long-lived replica — and the
+ * answer there is a coarser unit, kibibytes rather than bytes.
+ *
  * **Math sanity:** `merge` is the per-key max of the two state maps,
  * which is the standard join-semilattice on `Map<ReplicaId, ℕ>`.
  *
@@ -31,13 +37,28 @@ export class GCounter implements Crdt<GCounter> {
 
   /**
    * Bump the count for `replica` by `delta` (default `1`).  `delta`
-   * must be `>= 0` — increments are the only allowed operation.
+   * must be `>= 0` — increments are the only allowed operation — and the
+   * resulting slot must stay under {@link MAX_COUNTER_SLOT}.
+   *
+   * The ceiling is checked here as well as in the decoder because it has to be
+   * a property of the *type*, not of one direction of travel.  A slot built
+   * past it locally would be legal in memory and rejected by every peer that
+   * received it and by this replica's own durable record on the next reload —
+   * divergence with a warning line as its only symptom (#720).  Failing on the
+   * increment that crosses the line names the operation that did it.
    */
   increment(replica: ReplicaId, delta: number = 1): GCounter {
     if (delta < 0) throw new Error(`GCounter.increment requires delta >= 0, got ${delta}`);
     if (!Number.isFinite(delta)) throw new Error(`GCounter.increment requires a finite delta`);
     const next = new Map(this.state);
-    next.set(replica, (next.get(replica) ?? 0) + delta);
+    const count = (next.get(replica) ?? 0) + delta;
+    if (count > MAX_COUNTER_SLOT) {
+      throw new Error(
+        `GCounter.increment would put replica '${replica}' at ${count}, `
+        + `over the ${MAX_COUNTER_SLOT} ceiling a decoded slot may hold`,
+      );
+    }
+    next.set(replica, count);
     return new GCounter(next);
   }
 
