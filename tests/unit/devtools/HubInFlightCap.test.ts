@@ -74,15 +74,11 @@ class FakeConnection extends ActorRef<DevToolsServerFrame> implements WebsocketC
 }
 
 /**
- * A hub context whose `invoke` never settles on its own — the shape the
- * issue is about.  A real `replay.diff` folds a whole journal; here the
- * test decides when each one finishes, so "in flight" is exact rather
- * than a race against a timer.
+ * The half of {@link DevToolsHubContext} the cap never exercises.  The
+ * two stand-ins below differ only in how `invoke` settles, which is the
+ * entire subject of this file.
  */
-class ManualHub implements DevToolsHubContext {
-  /** One entry per dispatched invocation, each settleable on demand. */
-  readonly dispatched: Array<() => void> = [];
-
+abstract class StubHub implements DevToolsHubContext {
   welcome(): Omit<WelcomeFrame, 'kind' | 'protocolVersion'> {
     return {
       serverVersion: '0.0.0-test',
@@ -105,13 +101,26 @@ class ManualHub implements DevToolsHubContext {
     return true;
   }
 
-  invoke(_method: DevToolsRequestMethod, _parameters: unknown): Promise<unknown> {
+  abstract invoke(method: DevToolsRequestMethod, parameters: unknown): Promise<unknown>;
+
+  streamSubscribersChanged(_stream: DevToolsStreamId, _count: number): void {}
+}
+
+/**
+ * A hub context whose `invoke` never settles on its own — the shape the
+ * issue is about.  A real `replay.diff` folds a whole journal; here the
+ * test decides when each one finishes, so "in flight" is exact rather
+ * than a race against a timer.
+ */
+class ManualHub extends StubHub {
+  /** One entry per dispatched invocation, each settleable on demand. */
+  readonly dispatched: Array<() => void> = [];
+
+  override invoke(_method: DevToolsRequestMethod, _parameters: unknown): Promise<unknown> {
     return new Promise<unknown>((resolve) => {
       this.dispatched.push(() => resolve(null));
     });
   }
-
-  streamSubscribersChanged(_stream: DevToolsStreamId, _count: number): void {}
 
   /** Finish every outstanding invocation and let the hub release the slots. */
   async settleAll(): Promise<void> {
@@ -119,6 +128,23 @@ class ManualHub implements DevToolsHubContext {
     // Settlement runs in a `.finally`, a microtask behind the resolve.
     await Promise.resolve();
     await Promise.resolve();
+  }
+}
+
+/**
+ * A hub context whose `invoke` always rejects — the *cheap* path, and
+ * the one a client wanting the hub wedged would drive.  `replay.state`
+ * and `replay.diff` reject the moment the registry has no such
+ * persistence id, without reading a byte of journal, and
+ * `DevToolsServer.invoke` turns any handler throw into a rejection too.
+ */
+class RejectingHub extends StubHub {
+  /** Requests that reached the context instead of being refused by a cap. */
+  invocations = 0;
+
+  override invoke(_method: DevToolsRequestMethod, _parameters: unknown): Promise<unknown> {
+    this.invocations++;
+    return Promise.reject(new Error('no replay target registered for "orders-1"'));
   }
 }
 
@@ -134,10 +160,14 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/** A hub actor on its own system, serving `context`. */
+function spawnHub(context: DevToolsHubContext): HubRef {
+  return newSystem('devtools-in-flight').spawn(() => new DevToolsHubActor(context), 'devtools-hub');
+}
+
 function newHub(): { hub: HubRef; manual: ManualHub } {
   const manual = new ManualHub();
-  const hub = newSystem('devtools-in-flight').spawn(() => new DevToolsHubActor(manual), 'devtools-hub');
-  return { hub, manual };
+  return { hub: spawnHub(manual), manual };
 }
 
 /** Complete the handshake, so the hub will accept request frames. */
@@ -177,9 +207,10 @@ async function answerTo(connection: FakeConnection, requestId: number): Promise<
 
 /**
  * Fill the hub-wide ceiling from fresh sessions, each taking as much of
- * its own budget as is still needed, and return them.  `alreadyInFlight`
- * says how many slots the caller believes are already taken — passing 0
- * and reaching the ceiling is itself the assertion that none were.
+ * its own budget as is still needed, and return them.  Counts dispatches
+ * from wherever `manual` already stands rather than from zero, so a
+ * second call on the same hub reaching the ceiling again is itself the
+ * assertion that the first call's slots came back.
  */
 async function saturateHubCeiling(
   hub: HubRef,
@@ -268,6 +299,47 @@ describe('DevTools hub in-flight request cap (#758)', () => {
     const answer = await answerTo(connection, overflowId);
     expect((answer as ErrorFrame).code).toBe('unavailable');
     expect(manual.dispatched.length).toBe(MAXIMUM_IN_FLIGHT_REQUESTS_PER_SESSION);
+  });
+
+  test('a rejected request hands its slot back like a settled one', async () => {
+    // The release sits in a `.finally` for exactly this path, and until
+    // now nothing held it there: moving it into the `.then` arm keeps
+    // every other test in this file — and every other test under
+    // `tests/unit/devtools/` — green, while a client sending nothing but
+    // requests that reject wedges the hub at its ceiling permanently.
+    const rejecting = new RejectingHub();
+    const hub = spawnHub(rejecting);
+    const connection = await connect(hub, 'ws-1');
+
+    // Past the hub-wide ceiling deliberately, one full session budget at
+    // a time, and a batch only goes out once every request in the one
+    // before it has been answered.  That covers both counters: the
+    // per-session one would bind within the second batch, the hub-wide
+    // one after eight of them.
+    const perBatch = MAXIMUM_IN_FLIGHT_REQUESTS_PER_SESSION;
+    const batches = Math.ceil((MAXIMUM_IN_FLIGHT_REQUESTS + 1) / perBatch);
+    for (let batch = 0; batch < batches; batch++) {
+      const sent = (batch + 1) * perBatch;
+      requestMany(hub, connection, batch * perBatch + 1, perBatch);
+      await awaitCondition(
+        () => connection.received.filter((frame) => frame.kind === 'error').length === sent,
+        { label: `the hub answered all ${sent} requests` },
+      );
+    }
+
+    // Every answer is the method's own rejection...
+    const first = connection.answersTo(1)[0]!;
+    expect(first.kind).toBe('error');
+    expect((first as ErrorFrame).code).toBe('bad-parameters');
+
+    // ...and not one of them is a capacity refusal.  Asserted on the
+    // message rather than the count because which cap the first refusal
+    // quotes says which of the two counters stopped being released.
+    const refusals = connection.received.filter(
+      (frame): frame is ErrorFrame => frame.kind === 'error' && frame.code === 'unavailable',
+    );
+    expect(refusals[0]?.message).toBeUndefined();
+    expect(rejecting.invocations).toBe(batches * perBatch);
   });
 
   test('many sessions cannot multiply their way past the hub-wide ceiling', async () => {
