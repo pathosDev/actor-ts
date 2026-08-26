@@ -194,11 +194,21 @@ import { Aside } from '@astrojs/starlight/components';
   // Ein einzelnes fehlgeschlagenes Renewal feuert onLost sofort — kein Retry
   ```
   Keines der eingebauten Backends retried Renewals.  Das erste
-  fehlgeschlagene Renew — ein verlorenes Race, ein `409`/`404`
-  oder ein beliebiger transienter Backend-Fehler — feuert
-  `onLost` und verliert den Lease sofort.  `acquireRetries` gilt
-  nur für `acquire()`, nie für den Renewal-Loop; behandle daher
-  jedes `onLost` als echten Eigentumswechsel.
+  fehlgeschlagene Renew — ein verlorenes Race oder ein beliebiger
+  transienter Backend-Fehler — feuert `onLost` und verliert den
+  Lease sofort.  `acquireRetries` gilt nur für `acquire()`, nie
+  für den Renewal-Loop; behandle daher jedes `onLost` als echten
+  Eigentumswechsel.
+
+  Das Einzige, was `KubernetesLease` nicht für bare Münze nimmt,
+  ist ein abgelehnter Write: ein `409` sagt nur, dass sich der
+  `resourceVersion` bewegt hat, also wird das Objekt zuerst
+  erneut gelesen, und `onLost` feuert nur, wenn der Record weg
+  ist oder jemand anderen nennt.  Das ist ein Backend-Detail,
+  kein schwächerer Vertrag — `onLost` bedeutet weiterhin, dass
+  der Besitz weg ist.  `InMemoryLease` hat diese Unterscheidung
+  gar nicht zu treffen und verliert den Lease beim ersten
+  Fehlschlag. (#761)
 </Aside>
 
 ## Wohin als Nächstes
