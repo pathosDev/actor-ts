@@ -348,6 +348,9 @@ devtools-root { display: block; }
 }
 .dt-legend__item { display: inline-flex; align-items: center; gap: 6px; }
 .dt-legend__swatch { width: 10px; height: 3px; border-radius: 0; }
+/* A series the chart is not drawing, in the same warn colour the tiles use for
+   the same reason — the two are one reading, split across the page (#744). */
+.dt-legend__missing { color: var(--dt-state-warn); }
 .dt-legend__peak { margin-left: auto; font-family: var(--dt-font-mono); }
 
 /* -------------------------- horizontal bar rows ------------------------- */

@@ -80,6 +80,15 @@
                 <span class="dt-legend__swatch" [style.background]="line.color"></span>{{ line.label }}
               </span>
             }
+            <!-- Named rather than merely absent. A reader who knows this chart
+                 would take a missing line for a rendering fault, and the flag
+                 behind it exists precisely because "not measured" and
+                 "measured as zero" must not look the same (#744). No swatch:
+                 there is no line for it to stand for. -->
+            @if (chart.unavailable) {
+              <span class="dt-legend__missing" [title]="unavailableTitle"
+                >{{ chart.unavailable }} — unavailable</span>
+            }
             <!-- ECharts has no peak reading, and it is the one number that
                  makes two charts comparable at a glance. -->
             <span class="dt-legend__peak">peak {{ chart.peak }}</span>

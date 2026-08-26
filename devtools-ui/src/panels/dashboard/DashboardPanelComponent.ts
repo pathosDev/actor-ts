@@ -70,7 +70,21 @@ type ChartBlock = {
   readonly lines: readonly ChartLine[];
   readonly peak: string;
   readonly option: DevToolsChartOption;
+  /**
+   * The series this chart is *not* drawing, because the node could not read
+   * the figures behind it (#744).  Absent when everything it plots was
+   * measured.
+   */
+  readonly unavailable?: string;
 };
+
+/**
+ * A chart before its option and its peak are computed — both of which are
+ * derived from `lines`, so the list below declares only what it chooses.
+ * Stated as a subset of {@link ChartBlock} rather than repeated, so a field
+ * added there cannot go missing here.
+ */
+type ChartDraft = Omit<ChartBlock, 'peak' | 'option'>;
 
 /**
  * The timespan this browser last chose.
@@ -148,6 +162,14 @@ export class DashboardPanelComponent {
   private readonly chartTheme = inject(ChartThemeService).theme;
 
   readonly spanChoices = STATS_HISTORY_SPANS_MS;
+
+  /**
+   * The one explanation behind every "unavailable" reading on this page.
+   *
+   * The tiles reach it through `Tile.title`; the chart legend has no tile to
+   * carry it, so it reads this directly rather than repeating the sentence.
+   */
+  readonly unavailableTitle = METRICS_UNAVAILABLE_TITLE;
 
   private readonly history = new StatsHistory(HISTORY_CAPACITY, storedSpanMs());
   private uptimeAnchor: UptimeAnchor | null = null;
@@ -292,21 +314,37 @@ export class DashboardPanelComponent {
    * Three charts rather than one, because a level and a rate cannot share a
    * y-axis honestly: a backlog of 400 flattens a 2/s line to nothing.  Each
    * chart holds one kind of quantity and scales to its own peak.
+   *
+   * Exactly one line here is metrics-derived — `messages / s` — and it is left
+   * out rather than drawn when the registry cannot be read (#744).  The figures
+   * arrive as a steady 0, so plotting them draws a flat line at zero, and a
+   * flat line at zero is a claim: it says the system handled nothing.  That is
+   * the same claim the tile beside it already refuses to make, and a chart is
+   * the more persuasive of the two.
+   *
+   * The block loses a line rather than blanking, because `dead letters / s` is
+   * counted off the event stream and stays true — and it is precisely the
+   * series someone reaches for during the incident that put the flag there.
+   * The legend names what is missing: an unexplained gap where a line used to
+   * be reads as a rendering fault, which is a different wrong answer, not a
+   * better one.
    */
   readonly charts = computed<readonly ChartBlock[]>(() => {
     this.revision();
     const theme = this.chartTheme();
     const history = this.history;
+    const blind = this.latest()?.metricsUnavailable === true;
     const line = (label: string, index: number, points: readonly SeriesPoint[]): ChartLine =>
       ({ label, color: theme.series[index]!, points });
 
-    const blocks: Array<{ title: string; lines: ChartLine[] }> = [
+    const drafts: readonly ChartDraft[] = [
       {
         title: 'Throughput',
         lines: [
-          line('messages / s', 0, history.rates('messagesProcessed')),
+          ...(blind ? [] : [line('messages / s', 0, history.rates('messagesProcessed'))]),
           line('dead letters / s', 3, history.rates('deadLetters')),
         ],
+        ...(blind ? { unavailable: 'messages / s' } : {}),
       },
       {
         title: 'Actors',
@@ -324,11 +362,13 @@ export class DashboardPanelComponent {
       },
     ];
 
-    return blocks.map((block) => ({
-      title: block.title,
-      lines: block.lines,
-      peak: formatCount(Math.max(...block.lines.map((entry) => peakOf(entry.points)), 0)),
-      option: buildLineChartOption(block.lines, theme),
+    return drafts.map((draft) => ({
+      title: draft.title,
+      lines: draft.lines,
+      // Over the lines that survive, so the reading describes what is drawn.
+      peak: formatCount(Math.max(...draft.lines.map((entry) => peakOf(entry.points)), 0)),
+      option: buildLineChartOption(draft.lines, theme),
+      ...(draft.unavailable === undefined ? {} : { unavailable: draft.unavailable }),
     }));
   });
 
