@@ -373,13 +373,34 @@ import { Aside } from '@astrojs/starlight/components';
   next read — and the in-memory `JournalEventBus` is local to the
   process, so push-based queries miss cross-process events.
 
-  For multi-process setups, use **Cassandra** (built for shared
-  state) or **one SQLite per process** with strict pid partitioning.
-
   If you share a file anyway, `busyTimeoutMs` is what decides whether a
   write blocked by the other process waits or fails — and because the
   driver is synchronous, that wait freezes your event loop for its
   whole duration.
+</Aside>
+
+<Aside type="danger" title="Don't give cluster nodes one SQLite file each — that fails silently">
+  The inverse setup is the dangerous one, because nothing ever
+  errors.  Two cluster nodes, each with its own healthy
+  `events.db`: a sharded entity that rebalances to the other node
+  replays *that* node's file — state jumps back or vanishes, its
+  next events fork a second history under the same persistence id,
+  and the optimistic append check can never fire, because each
+  node's check runs against its own file.  "One SQLite per process
+  with strict pid partitioning" only holds while an entity never
+  moves, and rebalance and singleton failover exist precisely to
+  move them.
+
+  The framework says this out loud since the storage-locality
+  guard: clustering with remote peers over a node-local store logs
+  a warning (needle: `node-local storage`), and
+  `rememberEntities: true` on the auto-wired path refuses to start.
+  The fix is a backend every node genuinely shares — see the
+  ["shared across nodes" column and *Storage locality &
+  identity*](/persistence/overview/#storage-locality--identity) —
+  or [replicated event
+  sourcing](/persistence/replicated-event-sourcing/overview/) where
+  per-node journals are the intended design.
 </Aside>
 
 <Aside type="caution" title="Filesystem matters">
@@ -412,8 +433,13 @@ import { Aside } from '@astrojs/starlight/components';
 Three signals you've outgrown single-file SQLite:
 
 1. **Multi-node** — you need actors on N nodes to share the same
-   event stream.  SQLite per-node doesn't work; switch to
-   Cassandra.
+   event stream.  SQLite per-node doesn't just scale poorly here,
+   it silently corrupts: each node replays its own file, so a
+   moved entity recovers a different history with no error
+   anywhere (the cluster warns —
+   [storage locality](/persistence/overview/#storage-locality--identity)).
+   Switch to a shared backend: Cassandra, PostgreSQL, or any
+   "shared across nodes" row of the backend matrix.
 2. **Sustained 100K+ events/sec** — SQLite can handle it with
    tuning but you're at the edges; columnar / distributed engines
    are designed for it.

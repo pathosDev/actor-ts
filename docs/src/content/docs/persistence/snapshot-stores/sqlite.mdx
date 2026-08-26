@@ -112,6 +112,16 @@ bottleneck.  Consider compression
 ([Object storage compression](/persistence/object-storage/compression/))
 or a different snapshot strategy.
 
+## One node only, like the journal
+
+The snapshot file is node-local storage: two cluster nodes with a
+snapshot file each fork exactly like two journals do — and a stale
+snapshot on the other node even *masks* journal divergence, because
+recovery fast-forwards to it before replaying anything.  The
+storage-locality guard warns about this combination the same way it
+does for the journal; see [storage locality &
+identity](/persistence/overview/#storage-locality--identity).
+
 ## Where to next
 
 - **[Snapshots](/persistence/snapshots/)** — the

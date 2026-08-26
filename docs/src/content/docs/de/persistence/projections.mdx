@@ -260,6 +260,15 @@ Für echte Produktions-Setups **kollokiere den Offset-Store mit
 dem Read-Model**, sodass sie zusammen abstürzen — das minimiert
 das Re-Processing-Fenster.
 
+Im Cluster braucht der Offset-Store dieselbe Eigenschaft wie das
+Journal: **eine Datenbank, nicht eine pro Knoten.**  Ein
+`DurableStateOffsetStore` über node-lokalem Storage gibt jedem
+Knoten seinen eigenen Cursor — eine Projektion, die zwischen
+Knoten wandert, verarbeitet dann Events erneut, die ein Knoten
+schon abgearbeitet hat, oder überspringt die, hinter denen der
+Cursor des anderen bereits steht.  Siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität).
+
 ## Polling
 
 ```ts

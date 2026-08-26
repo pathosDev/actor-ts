@@ -543,8 +543,15 @@ Orchestrierungsfehler, der dieselbe Entity zweimal spawnt: schon
 recovern zwei Instanzen und nehmen beide Commands an.
 
 Das Journal übersteht das: Appends sind an die Sequenznummer
-gebunden, also verliert ein Writer mit `JournalConcurrencyError`. Der
-Schaden liegt **außerhalb** des Journals. Bis der Verlierer es merkt,
+gebunden, also verliert ein Writer mit `JournalConcurrencyError`.
+Eine Voraussetzung trägt das alles: **beide Writer müssen an
+dasselbe Journal appenden.**  Zwei Knoten mit je eigener Datenbank
+können nicht kollidieren — jeder Head-Check läuft gegen die eigene
+Datei — weshalb Pro-Knoten-Storage im Cluster die Historie still
+forkt, statt ein Rennen laut zu verlieren, und weshalb das
+Framework davor warnt ([Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität)).
+Der Schaden liegt **außerhalb** des Journals. Bis der Verlierer es merkt,
 hat er `onCommand` für das auslösende Command bereits ausgeführt — und
 wenn dieser Handler eine Karte belastet, eine Mail verschickt oder
 einen Downstream aufgerufen hat, macht das nichts rückgängig. Bis zu

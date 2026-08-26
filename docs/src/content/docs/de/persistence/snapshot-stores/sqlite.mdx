@@ -114,6 +114,17 @@ der Bottleneck.  Überlege Kompression
 ([Object-Storage-Kompression](/de/persistence/object-storage/compression/))
 oder eine andere Snapshot-Strategie.
 
+## Ein Knoten, wie beim Journal
+
+Die Snapshot-Datei ist node-lokaler Storage: Zwei Cluster-Knoten
+mit je einer Snapshot-Datei forken genau wie zwei Journale — und
+ein veralteter Snapshot auf dem anderen Knoten *maskiert*
+Journal-Divergenz sogar, weil das Recovery erst zu ihm
+vorspult, bevor es irgendetwas replayt.  Der
+Storage-Lokalitäts-Guard warnt vor dieser Kombination genauso wie
+beim Journal; siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität).
+
 ## Wie geht's weiter
 
 - **[Snapshots](/de/persistence/snapshots/)** — die
