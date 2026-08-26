@@ -41,12 +41,30 @@ import {
   type WebsocketClientSignal,
 } from './WebsocketMessages.js';
 import { websocketClientConstructor, type WebsocketLike } from './WebsocketConstructor.js';
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import {
+  DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
+  MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH,
+} from '../Constants.js';
 import {
   frameByteLength,
   normalizeInbound,
   type WebsocketFrame,
 } from './Types.js';
+
+/**
+ * A short, log-safe name for an inbound payload that could not be normalised:
+ * the constructor's name (`Blob`, `MessageEvent`, `Number`), never the value.
+ * Truncated because a hand-rolled socket could in principle hand over an object
+ * whose constructor name is peer-influenced, and this line is written from a
+ * path a peer triggers.
+ */
+function inboundShapeLabel(data: unknown): string {
+  if (data === null) return 'null';
+  if (data === undefined) return 'undefined';
+  const name = (data as { constructor?: { name?: unknown } }).constructor?.name;
+  const label = typeof name === 'string' && name.length > 0 ? name : typeof data;
+  return label.slice(0, MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH);
+}
 
 export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {
@@ -59,6 +77,12 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * {@link abortConnectAttempt}.
    */
   private connectAbort: ((cause: Error) => void) | null = null;
+  /**
+   * Whether this connection has already reported a payload it could not
+   * normalise — see {@link warnUnrecognisedFrame}.  Per connection, not per
+   * actor: a shape that appears after a reconnect is worth one more line.
+   */
+  private unrecognisedFrameWarned = false;
 
   constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
@@ -205,11 +229,53 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     this.connectAbort?.(cause);
   }
 
+  /**
+   * Ask the socket for `ArrayBuffer` binary payloads instead of taking the
+   * runtime's default.
+   *
+   * The defaults disagree, and the disagreement was silently losing traffic:
+   * measured over a real connection, Bun 1.4.0 hands the `message` listener a
+   * `Buffer`, while Node 26.7.0 and Deno 2.6.8 hand it a **`Blob`**.  A `Blob`
+   * carries `size`, not `byteLength`, and is neither `ArrayBuffer` nor
+   * `Uint8Array` nor an array, so it matched no branch of
+   * {@link normalizeInbound} — every binary frame was dropped as
+   * "unrecognised" on those two runtimes, at any size, and `maxFrameBytes`
+   * never saw it either, which quietly reopened #750 for binary frames.
+   *
+   * The alternative fix — teaching `normalizeInbound` about `Blob` — was
+   * rejected, and the reason is the `await` it needs.  `Blob` yields its bytes
+   * only through `arrayBuffer()`, so `handleInbound` would have to resume on a
+   * later microtask, and two things break there.  Frame **order** stops being
+   * guaranteed: `handleInbound` is called straight from the socket's event
+   * listener, and today the `self.tell` per frame happens in arrival order by
+   * construction; behind a promise it happens in resolution order, which is
+   * not specified to match.  And the `maxFrameBytes` check moves behind that
+   * microtask, so a peer's *next* oversize frame is already in flight before
+   * the close for the first is issued — the precise property #750 exists to
+   * provide.  (`Blob.size` would keep the size check synchronous, but the
+   * decode still could not be, so the ordering problem stands.)  Setting
+   * `binaryType` costs one assignment at dial time and keeps the whole inbound
+   * path synchronous, so that is the mechanism, and `normalizeInbound` stays
+   * `Blob`-free on purpose.
+   *
+   * Set here rather than in {@link websocketClientConstructor} because this is
+   * the code whose correctness depends on it: `WebsocketClientConstructor` is
+   * an exported seam, and a custom one — or the test override — would
+   * otherwise reintroduce the defect from outside this file.  Guarded, since a
+   * hand-rolled `WebsocketLike` may define the property as read-only or not at
+   * all; the value is advisory and a socket that ignores it lands on the
+   * unrecognised-frame path, which now says so once and names the shape.
+   */
+  private requestArrayBufferPayloads(ws: WebsocketLike): void {
+    try { ws.binaryType = 'arraybuffer'; } catch { /* socket does not offer it */ }
+  }
+
   protected async connectImplementation(): Promise<void> {
     const ctor = await websocketClientConstructor.get();
     const ws = ctor.create(this.options.url!, {
       protocols: this.options.protocols,
     });
+    this.requestArrayBufferPayloads(ws);
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       this.connectAbort = (cause: Error): void => {
@@ -224,6 +290,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         settled = true;
         this.connectAbort = null;
         this.socket = ws;
+        this.unrecognisedFrameWarned = false;
         ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
         ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
@@ -310,6 +377,35 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     this.onSocketDown(new Error('oversize inbound frame'));
   }
 
+  /**
+   * Report a payload {@link normalizeInbound} could not turn into a frame —
+   * once per connection, naming the shape.
+   *
+   * Both halves are the lesson of the `Blob` regression this method was
+   * written for.  **Naming the shape**, because the old line said only
+   * "unrecognised inbound frame type" and that is unactionable: it is the same
+   * sentence whether the socket handed us a `Blob`, a `MessageEvent` nobody
+   * unwrapped, or a number, and the answer differs in each case.  **Latching**,
+   * because the volume is the peer's to choose: a frame per line is the
+   * unbounded, remote-driven log #750 closed for the oversize path, and the
+   * reason a `Blob` survived unnoticed is that it looked like ordinary noise
+   * repeated forever.  Unlike an oversize frame this does not close the
+   * connection: an unrecognised shape is far more often our own end
+   * misconfigured — it was, here — and the payload is released immediately, so
+   * it is not the repeatable allocation that made closing right in #750.
+   *
+   * The label is a constructor name, not the payload, and it is length-capped:
+   * nothing about the value itself reaches the log.
+   */
+  private warnUnrecognisedFrame(data: unknown): void {
+    if (this.unrecognisedFrameWarned) return;
+    this.unrecognisedFrameWarned = true;
+    this.log.warn(
+      `WebsocketClientActor: unrecognised inbound frame type (${inboundShapeLabel(data)}) — dropped; `
+      + 'further occurrences on this connection are not logged',
+    );
+  }
+
   private handleInbound(data: unknown): void {
     // First, before every reason this frame might be rejected: an
     // unrecognised, oversize or undecodable frame is still the peer speaking,
@@ -318,7 +414,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     this.noteInboundActivity();
     const frame = normalizeInbound(data);
     if (!frame) {
-      this.log.warn('WebsocketClientActor: unrecognised inbound frame type — dropped');
+      this.warnUnrecognisedFrame(data);
       return;
     }
     const cap = this.options.maxFrameBytes ?? DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;

@@ -123,3 +123,16 @@ export const DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES = 4 * 1024 * 1024;
  * bytes are fetched once it does.
  */
 export const STATIC_FILE_READ_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Longest constructor name `WebsocketClientActor` puts in the line that reports
+ * an inbound payload it could not turn into a frame — 32 characters.
+ *
+ * The line names the *shape* (`Blob`, `MessageEvent`, `Number`) and never the
+ * value, because it is written from a path a peer triggers.  A constructor name
+ * is not peer-supplied on any supported runtime, but the socket behind the
+ * actor is a replaceable seam, so the length is bounded rather than trusted.
+ * 32 clears every name the three runtimes produce with room to spare, and a
+ * name longer than that is not a diagnostic anyway.
+ */
+export const MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH = 32;
