@@ -2,6 +2,15 @@ import type { Logger } from '../Logger.js';
 import type { StorageLocality, StorageUseKind } from './StorageLocality.js';
 
 /**
+ * The store-kind half of the gossiped identity vocabulary — string-identical
+ * to `keyof StorageIdentitiesData` on the cluster side, and deliberately
+ * declared here rather than imported: the advisory talks to the cluster
+ * through the structural view below, and vocabulary shared by value would
+ * be the one runtime edge this module is built not to have.
+ */
+export type StorageIdentityField = 'journal' | 'snapshotStore' | 'durableStateStore';
+
+/**
  * The slice of a cluster the advisory needs — structural on purpose, so the
  * unit tests fake it without transports or timers, and so this module needs
  * no import from the cluster layer.  `Cluster` satisfies it as-is.
@@ -14,6 +23,8 @@ export type ClusterStorageView = {
     listener: (event: unknown) => void,
     options?: { readonly replayMode?: 'events' | 'snapshot' },
   ): () => void;
+  /** Gossip one of this node's resolved store identities on the self member (#1358). */
+  publishStorageIdentity(field: StorageIdentityField, identity: string): void;
 };
 
 /**
@@ -32,6 +43,24 @@ type NodeLocalStoreUse = {
   readonly kind: StorageUseKind;
   readonly storeName: string;
   readonly level: 'warn' | 'error';
+};
+
+/** The shape both seams hand in — any store contract satisfies it. */
+export type ObservedStore = {
+  readonly storageLocality?: StorageLocality;
+  storageIdentity?(): Promise<string>;
+};
+
+/**
+ * Which identity field a store use feeds.  `'remember-entities'` maps onto
+ * the journal on purpose: the auto-wired registry IS the system journal, so
+ * a sharded-daemon-only system still publishes a journal identity.
+ */
+const IDENTITY_FIELD_BY_KIND: Record<StorageUseKind, StorageIdentityField> = {
+  'journal': 'journal',
+  'snapshot-store': 'snapshotStore',
+  'durable-state-store': 'durableStateStore',
+  'remember-entities': 'journal',
 };
 
 /**
@@ -64,6 +93,9 @@ type NodeLocalStoreUse = {
 export class StorageLocalityAdvisory {
   private readonly reported = new Set<StorageUseKind>();
   private readonly pending = new Map<StorageUseKind, NodeLocalStoreUse>();
+  private readonly storageIdentitySources = new Map<StorageIdentityField, ObservedStore>();
+  private readonly identityResolutionStarted = new Set<StorageIdentityField>();
+  private readonly resolvedStorageIdentities = new Map<StorageIdentityField, string>();
   private armedCluster: ClusterStorageView | null = null;
   private unsubscribe: (() => void) | null = null;
 
@@ -72,8 +104,16 @@ export class StorageLocalityAdvisory {
     private readonly log: Logger,
   ) {
     // Future joins (including leave + rejoin, which builds a NEW Cluster):
-    // re-arm on the new instance so parked notes survive the swap.
-    source.onRegister((cluster) => { if (this.pending.size > 0) this.arm(cluster); });
+    // re-publish what already resolved — the new instance starts with an
+    // empty self record — resolve what was only parked, and re-arm so parked
+    // notes survive the swap.
+    source.onRegister((cluster) => {
+      for (const [field, identity] of this.resolvedStorageIdentities) {
+        cluster.publishStorageIdentity(field, identity);
+      }
+      this.resolveParkedStorageIdentities();
+      if (this.pending.size > 0) this.arm(cluster);
+    });
   }
 
   /**
@@ -84,9 +124,13 @@ export class StorageLocalityAdvisory {
    */
   noteStoreUse(
     kind: StorageUseKind,
-    store: { readonly storageLocality?: StorageLocality },
+    store: ObservedStore,
     level: 'warn' | 'error' = 'warn',
   ): void {
+    // Identity resolution runs for EVERY declared store, `'shared'` ones
+    // above all — two nodes on two instances of a shared-capable backend is
+    // precisely the case the locality half below cannot see (#1358).
+    this.startStorageIdentityResolution(kind, store);
     if (store.storageLocality !== 'node-local') return;
     if (this.reported.has(kind) || this.pending.has(kind)) return;
     const use: NodeLocalStoreUse = { kind, storeName: store.constructor.name, level };
@@ -97,6 +141,39 @@ export class StorageLocalityAdvisory {
     }
     this.pending.set(kind, use);
     if (cluster !== null) this.arm(cluster);
+  }
+
+  /**
+   * Remember which store answers for `field`, and resolve it once a cluster
+   * exists.  Resolution is deliberately cluster-gated: it *writes* — the
+   * identity is minted into the database on first contact — and a system
+   * that never clusters must not grow a `storage_identity` row or object it
+   * has no reader for.  The promise runs beside recovery, a failure logs at
+   * debug and stays unknown, and the result reaches whichever cluster is
+   * joined now or joins later.
+   */
+  private startStorageIdentityResolution(kind: StorageUseKind, store: ObservedStore): void {
+    const field = IDENTITY_FIELD_BY_KIND[kind];
+    if (this.identityResolutionStarted.has(field)) return;
+    if (store.storageIdentity === undefined) return;
+    if (!this.storageIdentitySources.has(field)) this.storageIdentitySources.set(field, store);
+    if (this.source.current() !== null) this.resolveParkedStorageIdentities();
+  }
+
+  private resolveParkedStorageIdentities(): void {
+    for (const [field, store] of this.storageIdentitySources) {
+      if (this.identityResolutionStarted.has(field)) continue;
+      this.identityResolutionStarted.add(field);
+      void store.storageIdentity!.call(store).then(
+        (identity) => {
+          this.resolvedStorageIdentities.set(field, identity);
+          this.source.current()?.publishStorageIdentity(field, identity);
+        },
+        (reason) => this.log.debug(
+          `persistence: ${field} storage identity unresolved — treated as unknown (#1358): ${String(reason)}`,
+        ),
+      );
+    }
   }
 
   private arm(cluster: ClusterStorageView): void {

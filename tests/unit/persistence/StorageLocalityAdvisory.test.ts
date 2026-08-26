@@ -25,9 +25,14 @@ class FakeClusterView implements ClusterStorageView {
   peers = false;
   subscribeCalls = 0;
   unsubscribeCalls = 0;
+  readonly publishedStorageIdentities: Array<{ readonly field: string; readonly identity: string }> = [];
   private listeners: Array<(event: unknown) => void> = [];
 
   expectsRemotePeers(): boolean { return this.peers; }
+
+  publishStorageIdentity(field: string, identity: string): void {
+    this.publishedStorageIdentities.push({ field, identity });
+  }
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.subscribeCalls += 1;
@@ -65,6 +70,28 @@ class NodeLocalJournal { readonly storageLocality = 'node-local' as const; }
 class NodeLocalSnapshotStore { readonly storageLocality = 'node-local' as const; }
 class SharedJournal { readonly storageLocality = 'shared' as const; }
 class UndeclaredJournal {}
+
+class SharedJournalWithIdentity {
+  readonly storageLocality = 'shared' as const;
+  resolutionCalls = 0;
+  constructor(private readonly identity: string = 'database-a') {}
+  async storageIdentity(): Promise<string> {
+    this.resolutionCalls += 1;
+    return this.identity;
+  }
+}
+
+class JournalWithFailingIdentity {
+  readonly storageLocality = 'shared' as const;
+  async storageIdentity(): Promise<string> { throw new Error('no DDL rights'); }
+}
+
+function afterResolution(): Promise<void> {
+  // Settle the fire-and-forget identity chain (the async storageIdentity()
+  // plus its .then before the publish).  Several callers assert an ABSENCE
+  // of publications afterwards, and an absence cannot be polled for.
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 function harness(): { source: FakeClusterSource; log: RecordingLogger; advisory: StorageLocalityAdvisory } {
   const source = new FakeClusterSource();
@@ -196,6 +223,105 @@ describe('peers arriving late', () => {
     first.peers = true;
     first.emitMembershipEvent();
     expect(nodeLocalWarnings(log)).toHaveLength(1);
+  });
+
+  test('identities resolve for shared stores above all, and publish to the joined cluster', async () => {
+    // The locality half is rightly silent for a `'shared'` store — the
+    // identity is the only signal left for two instances of a shared-capable
+    // backend, which is why resolution must not hide behind the warn path.
+    const { source, log, advisory } = harness();
+    const cluster = new FakeClusterView();
+    source.register(cluster);
+
+    advisory.noteStoreUse('journal', new SharedJournalWithIdentity('database-a'));
+    advisory.noteStoreUse('journal', new SharedJournalWithIdentity('ignored-duplicate'));
+    advisory.noteStoreUse('remember-entities', new SharedJournalWithIdentity('ignored-same-field'));
+    advisory.noteStoreUse('snapshot-store', new SharedJournalWithIdentity('database-b'));
+    await afterResolution();
+
+    expect(cluster.publishedStorageIdentities).toEqual([
+      { field: 'journal', identity: 'database-a' },
+      { field: 'snapshotStore', identity: 'database-b' },
+    ]);
+    expect(nodeLocalWarnings(log)).toEqual([]);
+  });
+
+  test('a remember-entities-only system still publishes a journal identity', async () => {
+    const { source, advisory } = harness();
+    const cluster = new FakeClusterView();
+    source.register(cluster);
+
+    advisory.noteStoreUse('remember-entities', new SharedJournalWithIdentity('registry-journal'));
+    await afterResolution();
+
+    expect(cluster.publishedStorageIdentities).toEqual([
+      { field: 'journal', identity: 'registry-journal' },
+    ]);
+  });
+
+  test('a system that never joins a cluster never resolves — resolution writes, and nothing would read it', async () => {
+    // The gating is load-bearing: `storageIdentity()` MINTS on first contact,
+    // so an ungated resolution would grow a `storage_identity` row or object
+    // in every single-node application (and pollute every put-recording
+    // fixture) for a value nobody compares.
+    const { advisory } = harness();
+    const journal = new SharedJournalWithIdentity('database-a');
+
+    advisory.noteStoreUse('journal', journal);
+    await afterResolution();
+
+    expect(journal.resolutionCalls).toBe(0);
+  });
+
+  test('a store parked before any join resolves at the join — and republishes to the rejoin', async () => {
+    const { source, advisory } = harness();
+    const journal = new SharedJournalWithIdentity('database-a');
+    advisory.noteStoreUse('journal', journal);
+    await afterResolution();
+    expect(journal.resolutionCalls).toBe(0);
+
+    const first = new FakeClusterView();
+    source.register(first);
+    await afterResolution();
+    expect(journal.resolutionCalls).toBe(1);
+    expect(first.publishedStorageIdentities).toEqual([{ field: 'journal', identity: 'database-a' }]);
+
+    // Leave + rejoin builds a NEW Cluster with an empty self record — the
+    // advisory carries the already-resolved identities across, without
+    // asking the store again.
+    const second = new FakeClusterView();
+    source.register(second);
+    expect(second.publishedStorageIdentities).toEqual([{ field: 'journal', identity: 'database-a' }]);
+    expect(journal.resolutionCalls).toBe(1);
+  });
+
+  test('a failing resolution logs at debug and publishes nothing', async () => {
+    const { source, log, advisory } = harness();
+    const cluster = new FakeClusterView();
+    source.register(cluster);
+
+    advisory.noteStoreUse('journal', new JournalWithFailingIdentity());
+    await afterResolution();
+
+    expect(cluster.publishedStorageIdentities).toEqual([]);
+    const debugRecords = log.records.filter((record) => record.level === 'debug'
+      && record.message.includes('storage identity unresolved'));
+    expect(debugRecords).toHaveLength(1);
+  });
+
+  test('a store without an identity publishes nothing and stays retryable per field', async () => {
+    const { source, advisory } = harness();
+    const cluster = new FakeClusterView();
+    source.register(cluster);
+
+    advisory.noteStoreUse('journal', new SharedJournal());
+    await afterResolution();
+    expect(cluster.publishedStorageIdentities).toEqual([]);
+
+    // The field was never claimed, so a later store that CAN answer still may.
+    advisory.noteStoreUse('journal', new SharedJournalWithIdentity('late-database'));
+    await afterResolution();
+    expect(cluster.publishedStorageIdentities).toEqual([{ field: 'journal', identity: 'late-database' }]);
   });
 
   test('a store noted after the release is judged against the current membership', () => {

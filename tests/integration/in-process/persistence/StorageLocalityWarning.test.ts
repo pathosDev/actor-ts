@@ -12,7 +12,7 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 import { RecordingLogger, type RecordedLog } from '../../../util/RecordingLogger.js';
 
 /**
@@ -60,6 +60,10 @@ function clusterOptions(systemName: string, port: number): ClusterOptionsBuilder
 
 function nodeLocalWarnings(log: RecordingLogger): RecordedLog[] {
   return log.records.filter((record) => record.message.includes('node-local storage'));
+}
+
+function identityMismatchWarnings(log: RecordingLogger): RecordedLog[] {
+  return log.records.filter((record) => record.message.includes('storage identity differs'));
 }
 
 /** Spawn a probe and wait for its first reply, so recovery demonstrably ran. */
@@ -157,6 +161,101 @@ describe('node-local stores meeting a cluster with remote peers', () => {
         label: 'node A warned about journal + snapshot store once the peer joined',
       });
       expect(nodeLocalWarnings(logA).map((record) => record.level)).toEqual(['warn', 'warn']);
+    } finally {
+      if (nodeB !== null) await nodeB.leave();
+      await nodeA.leave();
+      await systemB.terminate();
+      await systemA.terminate();
+    }
+  });
+});
+
+describe('two databases behind shared-capable stores', () => {
+  test('the identity mismatch is said out loud where the locality guard is rightly silent', async () => {
+    // The scenario #1358 was opened for: both journals declare 'shared' —
+    // truthfully, the backend COULD be shared — but each node holds its own
+    // instance.  No locality warning may fire; the gossiped identity is the
+    // only signal left.  The snapshot store is ONE instance across both
+    // systems so the single expected mismatch is the journal's,
+    // deterministically.
+    const sharedSnapshotStore = new InMemorySnapshotStore();
+    sharedSnapshotStore.storageLocality = 'shared';
+
+    const { system: systemA, log: logA } = loggingSystem('sl-ident-two');
+    const journalA = new InMemoryJournal();
+    journalA.storageLocality = 'shared';
+    systemA.extension(PersistenceExtensionId).setJournal(journalA);
+    systemA.extension(PersistenceExtensionId).setSnapshotStore(sharedSnapshotStore);
+    const nodeA = await Cluster.join(systemA, clusterOptions('sl-ident-two', 56_251));
+
+    const { system: systemB, log: logB } = loggingSystem('sl-ident-two');
+    const journalB = new InMemoryJournal();
+    journalB.storageLocality = 'shared';
+    systemB.extension(PersistenceExtensionId).setJournal(journalB);
+    systemB.extension(PersistenceExtensionId).setSnapshotStore(sharedSnapshotStore);
+    let nodeB: Cluster | null = null;
+    try {
+      await runProbe(systemA, 'ident-probe-a', 'identProbeA');
+      nodeB = await Cluster.join(
+        systemB,
+        clusterOptions('sl-ident-two', 56_252).withSeeds(['sl-ident-two@h:56251']),
+      );
+      await runProbe(systemB, 'ident-probe-b', 'identProbeB');
+
+      await awaitCondition(
+        () => identityMismatchWarnings(logA).length + identityMismatchWarnings(logB).length >= 1,
+        { timeoutMs: 4_000, label: 'one side reported the journal identity mismatch' },
+      );
+      const warnings = [...identityMismatchWarnings(logA), ...identityMismatchWarnings(logB)];
+      for (const warning of warnings) {
+        expect(warning.level).toBe('warn');
+        expect(warning.message).toContain('journal storage identity differs');
+        expect(warning.message).toContain('#1358');
+      }
+      // The locality half stayed silent — 'shared' was a true statement
+      // about the backend, just not about the instance.
+      expect(nodeLocalWarnings(logA)).toEqual([]);
+      expect(nodeLocalWarnings(logB)).toEqual([]);
+    } finally {
+      if (nodeB !== null) await nodeB.leave();
+      await nodeA.leave();
+      await systemB.terminate();
+      await systemA.terminate();
+    }
+  });
+
+  test('one shared instance is one identity — no mismatch', async () => {
+    const sharedJournal = new InMemoryJournal();
+    sharedJournal.storageLocality = 'shared';
+    const sharedSnapshotStore = new InMemorySnapshotStore();
+    sharedSnapshotStore.storageLocality = 'shared';
+
+    const { system: systemA, log: logA } = loggingSystem('sl-ident-one');
+    systemA.extension(PersistenceExtensionId).setJournal(sharedJournal);
+    systemA.extension(PersistenceExtensionId).setSnapshotStore(sharedSnapshotStore);
+    const nodeA = await Cluster.join(systemA, clusterOptions('sl-ident-one', 56_261));
+
+    const { system: systemB, log: logB } = loggingSystem('sl-ident-one');
+    systemB.extension(PersistenceExtensionId).setJournal(sharedJournal);
+    systemB.extension(PersistenceExtensionId).setSnapshotStore(sharedSnapshotStore);
+    let nodeB: Cluster | null = null;
+    try {
+      await runProbe(systemA, 'same-probe-a', 'sameProbeA');
+      nodeB = await Cluster.join(
+        systemB,
+        clusterOptions('sl-ident-one', 56_262).withSeeds(['sl-ident-one@h:56261']),
+      );
+      await runProbe(systemB, 'same-probe-b', 'sameProbeB');
+
+      await awaitCondition(
+        () => nodeA.upMembers().length === 2 && nodeB!.upMembers().length === 2,
+        { timeoutMs: 4_000, label: 'both nodes see a 2-member cluster' },
+      );
+      // A couple of gossip rounds with identities on both member records.
+      await sleep(200);
+
+      expect(identityMismatchWarnings(logA)).toEqual([]);
+      expect(identityMismatchWarnings(logB)).toEqual([]);
     } finally {
       if (nodeB !== null) await nodeB.leave();
       await nodeA.leave();

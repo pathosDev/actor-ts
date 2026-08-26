@@ -6,8 +6,8 @@ import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
-import type { StorageLocality, StorageUseKind } from './StorageLocality.js';
-import { StorageLocalityAdvisory } from './StorageLocalityAdvisory.js';
+import type { StorageUseKind } from './StorageLocality.js';
+import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAdvisory.js';
 
 /**
  * System-wide access point to the currently-configured journal and
@@ -49,7 +49,7 @@ export class PersistenceExtension implements Extension {
    */
   noteStoreUse(
     kind: StorageUseKind,
-    store: { readonly storageLocality?: StorageLocality },
+    store: ObservedStore,
     level: 'warn' | 'error' = 'warn',
   ): void {
     this.storageAdvisory.noteStoreUse(kind, store, level);

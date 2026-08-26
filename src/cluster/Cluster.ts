@@ -67,6 +67,7 @@ import type {
   LeaveMessage,
   MemberData,
   MemberStatus,
+  StorageIdentitiesData,
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
@@ -129,6 +130,17 @@ const CLUSTER_LEAVE_TASK_NAME = 'cluster-leave';
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
  */
+
+/** The three store kinds a member's identity claims cover (#1358). */
+const STORAGE_IDENTITY_FIELDS = ['journal', 'snapshotStore', 'durableStateStore'] as const;
+
+/** Wire field → the store-kind word the mismatch warning speaks (#1358). */
+const STORAGE_IDENTITY_FIELD_LABELS: Record<keyof StorageIdentitiesData, string> = {
+  journal: 'journal',
+  snapshotStore: 'snapshot-store',
+  durableStateStore: 'durable-state-store',
+};
+
 export class Cluster {
   readonly selfAddress: NodeAddress;
   readonly selfRoles: ReadonlySet<string>;
@@ -557,6 +569,100 @@ export class Cluster {
     return this.getMembers().some((member) => !member.address.equals(this.selfAddress));
   }
 
+  /**
+   * THIS node's resolved store identities — the facts
+   * {@link publishStorageIdentity} gossips on the self member and
+   * {@link checkStorageIdentityAgreement} compares peers against (#1358).
+   * Filled lazily as stores resolve; a value that arrives before `_start`
+   * mints the self member waits here and seeds it.
+   */
+  private readonly selfStorageIdentities: { journal?: string; snapshotStore?: string; durableStateStore?: string } = {};
+  /** One mismatch warning per store kind per node lifetime — same latch shape as the #1356 advisory. */
+  private readonly storageIdentityMismatchReported = new Set<keyof StorageIdentitiesData>();
+
+  /**
+   * Record one of this node's store identities (#1358).  Deliberately NOT a
+   * version-bumped member update: the version clock has one lane and the
+   * leader is already writing in it — a self bump here raced the leader's
+   * `joining → up` promotion to the same `version + 1`, and with no
+   * equal-version tie-break in `mergeMember` (#935's class) the two sides
+   * wedged, each ignoring the other's record forever.  Instead the claims
+   * ride as an overlay: {@link memberDataForGossip} stamps them onto every
+   * self record this node sends, and receivers fill them in version-neutrally
+   * ({@link adoptStorageIdentities}).  The next gossip round spreads them; no
+   * membership event fires — nothing about the topology changed.
+   */
+  publishStorageIdentity(field: keyof StorageIdentitiesData, identity: string): void {
+    this.selfStorageIdentities[field] = identity;
+  }
+
+  /**
+   * The gossiped form of a member — the self record leaves stamped with the
+   * current identity claims, whatever version it carries.  See
+   * {@link publishStorageIdentity} for why this is a stamp and not a stored
+   * member update.
+   */
+  private memberDataForGossip(member: Member): MemberData {
+    if (!member.address.equals(this.selfAddress)) return member.toData();
+    const identities = this.selfStorageIdentitiesSnapshot();
+    if (identities === undefined) return member.toData();
+    return { ...member.toData(), storageIdentities: identities };
+  }
+
+  /**
+   * Fill identity claims into a record we otherwise ignore (equal or older
+   * version).  Fill-only and version-neutral on purpose: the claims are the
+   * subject node's own statement riding an overlay lane, so adopting them
+   * must neither advance the merge clock nor overwrite claims we already
+   * hold — a genuinely changed identity arrives with a new incarnation's
+   * higher version and takes the full merge path.
+   */
+  private adoptStorageIdentities(existing: Member, incoming: Member): void {
+    if (incoming.storageIdentities === undefined) return;
+    if (existing.storageIdentities !== undefined) return;
+    if (incoming.address.equals(this.selfAddress)) return;
+    this.setMember(existing.withStorageIdentities(incoming.storageIdentities));
+    this.checkStorageIdentityAgreement(incoming);
+  }
+
+  private selfStorageIdentitiesSnapshot(): StorageIdentitiesData | undefined {
+    const { journal, snapshotStore, durableStateStore } = this.selfStorageIdentities;
+    if (journal === undefined && snapshotStore === undefined && durableStateStore === undefined) return undefined;
+    return { ...this.selfStorageIdentities };
+  }
+
+  /**
+   * Two members claiming different identities for the same store kind are
+   * not reading the same database — the failure #1358 exists to surface,
+   * and the one that no locality declaration can catch: two nodes each on
+   * their own Postgres, a stale connection string, a restored backup.  Once
+   * per kind per node lifetime, at warn: by the time this fires the
+   * divergence may already be real, and the operator needs the pointer, not
+   * a page per gossip round.  Only claims both sides actually make are
+   * compared — absence stays silent (mixed versions, undeclared stores,
+   * replicated event sourcing, which publishes nothing).
+   */
+  private checkStorageIdentityAgreement(member: Member): void {
+    if (member.address.equals(this.selfAddress)) return;
+    const claims = member.storageIdentities;
+    if (claims === undefined) return;
+    for (const field of STORAGE_IDENTITY_FIELDS) {
+      const ours = this.selfStorageIdentities[field];
+      const theirs = claims[field];
+      if (ours === undefined || theirs === undefined || ours === theirs) continue;
+      if (this.storageIdentityMismatchReported.has(field)) continue;
+      this.storageIdentityMismatchReported.add(field);
+      this.log.warn(
+        `persistence: ${STORAGE_IDENTITY_FIELD_LABELS[field]} storage identity differs between this node `
+        + `and ${member.address} — the two are not reading the same database, so an entity that moves `
+        + 'between them recovers a different history: two nodes, two histories, no error on either '
+        + '(#1358). Point every node at the SAME database instance (matching connection strings, one '
+        + 'bucket, one keyspace), or use replicated event sourcing where per-node journals are the '
+        + 'intended design.',
+      );
+    }
+  }
+
   /** Members in the `up` state, ordered by address — the "active set". */
   upMembers(): Member[] {
     return Array.from(this.members.values())
@@ -740,7 +846,12 @@ export class Cluster {
     // version is still a monotonically-increasing logical clock;
     // the epoch only ensures a fresh process starts above any
     // version that previous incarnation could have reached.
-    const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
+    const me = new Member(
+      this.selfAddress, 'joining', Date.now(), this.selfRoles,
+      // Store identities that resolved before the join seed the member here;
+      // later ones arrive through `publishStorageIdentity` (#1358).
+      undefined, this.selfStorageIdentitiesSnapshot(),
+    );
     // Same seed, same argument: peers hold a high-water mark per sender, so a
     // fresh process has to start above every frame the previous incarnation of
     // this address ever sent (#112).
@@ -830,7 +941,7 @@ export class Cluster {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
-      members: [me.toData()],
+      members: [this.memberDataForGossip(me)],
     };
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
@@ -1474,7 +1585,7 @@ export class Cluster {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
-      members: Array.from(this.members.values()).map(member => member.toData()),
+      members: Array.from(this.members.values()).map(member => this.memberDataForGossip(member)),
     };
     this.transport.send(target.address, gossip);
     // Stock metric: gossip rounds count.
@@ -1904,6 +2015,7 @@ export class Cluster {
       // record that was going to be dropped anyway never consumes cap headroom.
       if (!this.admitsMember(incoming, existing)) return;
       this.setMember(incoming);
+      this.checkStorageIdentityAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       // If we first learn about the member already in a terminal or
@@ -1938,6 +2050,7 @@ export class Cluster {
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
       this.setMember(incoming);
+      this.checkStorageIdentityAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       if (incoming.status !== 'joining') {
@@ -1946,7 +2059,13 @@ export class Cluster {
       return;
     }
 
-    if (incoming.version <= existing.version) return; // older or equal, ignore
+    if (incoming.version <= existing.version) {
+      // Ignored for membership — but the identity overlay still lands, or a
+      // claim published after a member's last status change would never
+      // spread (#1358).
+      this.adoptStorageIdentities(existing, incoming);
+      return;
+    }
     // The mirror of the revival check: a live member gossiped as `removed`
     // moves into the tombstone bucket, which frees a live slot for the next
     // flood while keeping the map entry.  Refused when the bucket is full, and
@@ -1958,6 +2077,7 @@ export class Cluster {
       );
     }
     this.setMember(incoming);
+    this.checkStorageIdentityAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
   }
 
@@ -1982,9 +2102,19 @@ export class Cluster {
    */
   private withLocalSelfIdentity(member: Member): Member {
     if (!member.address.equals(this.selfAddress)) return member;
-    if (member.address.incarnation === this.selfAddress.incarnation) return member;
+    // The store identities get the same substitution as the incarnation, for
+    // the same reason (#1358): they are a fact this node owns.  A leader
+    // promoting us from a view that predates our publication would otherwise
+    // merge a self record without them — wholesale, per the rule above — and
+    // wipe what only this node can know.
+    const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    if (member.address.incarnation === this.selfAddress.incarnation
+      && ownIdentities === member.storageIdentities) {
+      return member;
+    }
     return new Member(
       this.selfAddress, member.status, member.version, member.roles, member.removedAt,
+      ownIdentities,
     );
   }
 
