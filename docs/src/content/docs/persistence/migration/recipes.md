@@ -347,6 +347,60 @@ Two consequences for a paired run:
   rather than renumber the stream — refusing is the only honest
   answer a target that cannot record a mark can give.
 
+### "What if the source has tags `append` no longer accepts?"
+
+It is refused, and the refusal arrives before anything is written.
+
+Tag validation runs on writes only, so a journal written before
+those rules landed replays unchanged forever — that promise is not
+going anywhere.  A copy is where it stops being enough: it reads a
+historical list and hands it to the target's `append`, which is a
+write.  The two shapes an older release commonly left behind are an
+**empty** tag (`['orders', '']`, from a
+`[category, subCategory ?? '']` whose second slot was never filled)
+and the **same tag twice**.
+
+`migrateBetweenJournals` walks the source in a read-only preflight
+first, so it refuses with `MigrationTagError` — naming the
+persistence ID and the sequence number — with the target and the
+progress store still untouched.  What it used to do was worse than
+refusing: it met the bad list on the `append` that rejected it,
+leaving a partly populated target, one truncated stream, and
+progress entries claiming the streams before it were done.  A
+re-run with `skipExistingPersistenceIds` then walked straight past
+the truncated one, because the target held *some* data for it.
+
+Two ways through.  Rewrite the lists yourself:
+
+```ts
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+```
+
+Or opt into the two repairs that need no judgement — an empty
+member dropped, a repeat collapsed:
+
+```ts
+const copied = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${copied.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+The count is in the result on purpose: repairing historical data is
+a change to it, so a run that expected clean tags can assert the
+number is zero.  `'sanitize'` stops there — a comma, a control
+character, an over-long tag or too many tags on one event still
+refuse under it, because repairing those means inventing a tag or
+discarding one the caller meant.  `eventTransform` is where that
+decision belongs, in code someone can read.
+
+The preflight covers every refusal the copy has, not only tags: a
+hole in the source's sequence numbers and a compacted prefix the
+target cannot represent are decided there too.  It costs one extra
+read of the source — on a resume, only of what is left to copy.
+
 ### "My snapshots are encrypted — does the copy handle that?"
 
 Only if you tell it which keys to use, and you tell it **twice**:
