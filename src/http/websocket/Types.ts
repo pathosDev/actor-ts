@@ -72,6 +72,19 @@ export function frameByteLength(frame: WebsocketFrame): number {
  *   - `Array<Buffer>` (fragmented)  → merged binary frame (the `ws`
  *                                     package delivers fragments this way)
  *
+ * **`Blob` is deliberately not on that list.**  A native client `WebSocket`
+ * delivers one whenever `binaryType` is `'blob'`, which is the default on Node
+ * and Deno — and a `Blob` yields its bytes only through `arrayBuffer()`, so a
+ * branch for it would make this function async and, with it, every caller's
+ * inbound path.  That is not affordable there: it would put the frame-size
+ * check behind a microtask and stop guaranteeing that frames are handed on in
+ * arrival order.  The invariant that keeps a `Blob` from reaching here is set
+ * at the socket instead — `WebsocketClientActor.requestArrayBufferPayloads`,
+ * which reasons the trade-off out in full, and the server backends' adapters,
+ * whose `onMessage` is typed `string | Uint8Array`.  If a `Blob` ever does
+ * arrive, it lands on the `null` path below, and the client's report of that
+ * names the shape.
+ *
  * Returns `null` for shapes we don't recognise (caller logs + drops).
  */
 export function normalizeInbound(data: unknown): WebsocketFrame | null {

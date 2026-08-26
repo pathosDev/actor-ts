@@ -469,8 +469,13 @@ that rejects a URL.
 scheme, host, port and path, with the userinfo *and* the query string dropped —
 a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
 kept deliberately, since it is what tells two connections to the same host
-apart. Use it for a line you emit repeatedly, such as a per-frame warning; the
-`WebsocketClientActor` uses it for exactly that.
+apart. Use it wherever a remote peer influences how often a line is written —
+which is to say wherever the URL would otherwise be replayed into the log at
+someone else's discretion. The `WebsocketClientActor` uses it for its
+oversize-frame warning. That line is no longer written per frame: the breach
+closes the connection, so a peer gets one line per dial. The redaction stands
+regardless, because a peer that provokes reconnects still decides how many
+dials there are.
 
 <Aside type="tip" title="One place to catch what slipped through">
   Neither function can help with a credential that reached a log record's

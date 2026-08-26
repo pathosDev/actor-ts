@@ -36,6 +36,17 @@ export interface WebsocketLike {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   ping?(): void;
+  /**
+   * Which shape binary payloads arrive in on the `message` listener.  The
+   * three supported runtimes disagree on the default — `'nodebuffer'` on Bun,
+   * `'blob'` on Node and Deno — so {@link WebsocketClientActor} sets it
+   * explicitly rather than inheriting one; its
+   * `requestArrayBufferPayloads` reasons out why `'blob'` is not usable on a
+   * synchronous inbound path.  Optional because a hand-rolled
+   * `WebsocketLike` need not have the property; the assignment tolerates its
+   * absence.
+   */
+  binaryType?: 'blob' | 'arraybuffer' | 'nodebuffer';
 }
 
 export type WebsocketClientConstructorOptions = {
