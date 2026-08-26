@@ -78,20 +78,29 @@ jobs:
       pass: ${{ steps.stats.outputs.pass }}
       total: ${{ steps.stats.outputs.total }}
       lines: ${{ steps.coverage.outputs.lines }}
-    # The run's artifacts, at the job level because two steps address them —
-    # one writes them, the next gates on them — and a path spelled twice is a
-    # path that can be edited once.  All under the runner temp dir so the
-    # workspace the badge job checks out stays clean.
-    env:
-      JUNIT_FILE: ${{ runner.temp }}/test-results.junit.xml
-      LOG_FILE: ${{ runner.temp }}/bun-test.log
-      # The lcov half of the same run.  The per-module floors cannot come from
-      # the text table even in principle: a rollup of bun's per-file
-      # percentages averages a ten-line barrel against a thousand-line
-      # coordinator, where lcov's LF:/LH: counts weight by the lines that
-      # exist.
-      COVERAGE_DIR: ${{ runner.temp }}/coverage
     steps:
+      # The run's artifacts, defined once because two steps address them — one
+      # writes them, the next gates on them — and a path spelled twice is a
+      # path that can be edited once.  All under the runner temp dir so the
+      # workspace the badge job checks out stays clean.
+      #
+      # This is a step rather than a job-level `env:` block because the
+      # `runner` context is not available there — GitHub rejects the whole
+      # file at validation time, so the workflow does not run at all.
+      # `$RUNNER_TEMP` is the same directory, reachable from any step's shell.
+      - name: Resolve the run's artifact paths
+        run: |
+          {
+            echo "JUNIT_FILE=$RUNNER_TEMP/test-results.junit.xml"
+            echo "LOG_FILE=$RUNNER_TEMP/bun-test.log"
+            # The lcov half of the same run.  The per-module floors cannot come
+            # from the text table even in principle: a rollup of bun's per-file
+            # percentages averages a ten-line barrel against a thousand-line
+            # coordinator, where lcov's LF:/LH: counts weight by the lines that
+            # exist.
+            echo "COVERAGE_DIR=$RUNNER_TEMP/coverage"
+          } >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing in this job talks to the remote: no test, source file or
