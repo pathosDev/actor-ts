@@ -42,6 +42,12 @@ examples/chat/frontend-*/node_modules/
 examples/chat/frontend-*/dist/
 examples/chat/frontend-*/.next/
 
+# Angular's build cache, written at the repository root by the DevTools UI half
+# of `bun run typecheck` and by `bun run build:ui` — 7 MB of it, and untracked
+# until now. The examples' own `.angular/` directories were already ignored;
+# this is the one the root toolchain produces.
+.angular/
+
 # Voice-sample runtime data (currently empty — voice persists nothing — but kept
 # for parity with chat in case a future iteration adds recording / voicemail).
 examples/voice/data/
