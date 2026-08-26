@@ -3,6 +3,8 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { Scheduler } from '../../../src/Scheduler.js';
+import type { Cancellable } from '../../../src/Scheduler.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
   ConsumerController,
@@ -16,10 +18,50 @@ import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-/** A silent TestKit — every case here would otherwise log its own warnings. */
-const quietKit = (name: string): TestKit => TestKit.create(name, TestKitOptions.create()
-  .withLogger(new NoopLogger())
-  .withLogLevel(LogLevel.Off));
+/**
+ * A silent TestKit — every case here would otherwise log its own warnings.
+ *
+ * The optional scheduler is how a case observes what an actor's `preStart`
+ * did: a schedule that was never armed leaves no other trace.
+ */
+const quietKit = (name: string, scheduler?: Scheduler): TestKit => {
+  const kitOptions = TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  if (scheduler !== undefined) kitOptions.withScheduler(scheduler);
+  return TestKit.create(name, kitOptions);
+};
+
+/** One repeating schedule, as the actor that armed it asked for it. */
+type ArmedFixedRate = { readonly initialDelayMs: number; readonly intervalMs: number };
+
+/**
+ * A real {@link Scheduler} that additionally records every repeating
+ * schedule armed on it.
+ *
+ * A `preStart` that *refuses* to arm leaves nothing else to assert on.  The
+ * sweep it would otherwise arm is harmless every time it fires — with an
+ * infinite TTL the cutoff is `-Infinity`, so the very first entry is fresh
+ * and the loop breaks — so no counter, no map size and no amount of waiting
+ * can tell an armed schedule from an absent one.  The arm itself is the only
+ * observable, which is why the test watches the seam it happens on.
+ *
+ * It delegates to `super` rather than swallowing the call: a schedule that
+ * *is* armed has to keep behaving exactly as it does in production, or the
+ * positive control below would prove nothing about the real thing.
+ */
+class RecordingScheduler extends Scheduler {
+  readonly armedFixedRates: ArmedFixedRate[] = [];
+
+  override scheduleAtFixedRateFunction(
+    initialDelayMs: number,
+    intervalMs: number,
+    task: () => void,
+  ): Cancellable {
+    this.armedFixedRates.push({ initialDelayMs, intervalMs });
+    return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+  }
+}
 
 describe('ReliableDelivery — happy path', () => {
   test('producer → consumer delivers every message exactly once', async () => {
@@ -847,9 +889,22 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
     });
     expect(slot.controller?.trackedProducers).toBe(2);
 
-    // A third producer needs a slot and the map is full, so the oldest goes.
-    deliver(consumer, probe, 'producer-c', 1, 'c-1');
+    // Touch producer-a again before the eviction below, which is the whole
+    // difference between least-recently-used and first-in-first-out: a and b
+    // arrived in that order, so arrival order condemns a and recency condemns
+    // b.  Without this delivery the two policies pick the same victim and
+    // every assertion that follows holds under either — which is what made
+    // the map's insertion order deletable with the suite still green.
+    deliver(consumer, probe, 'producer-a', 2, 'a-2');
     await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the second delivery from producer-a was handled',
+    });
+
+    // A third producer needs a slot and the map is full, so the least
+    // recently used of the two goes — b, not a.
+    deliver(consumer, probe, 'producer-c', 1, 'c-1');
+    await awaitCondition(() => received.length === 4, {
       timeoutMs: 4_000,
       label: 'the third producer was handled',
     });
@@ -858,22 +913,32 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
     // producer-c is still remembered: its seq 1 is absorbed as a duplicate,
     // so `received` does not move and the ack count is what to wait on.
     deliver(consumer, probe, 'producer-c', 1, 'c-1-again');
-    await awaitCondition(() => probe.messageCount === 4, {
+    await awaitCondition(() => probe.messageCount === 5, {
       timeoutMs: 4_000,
       label: 'the duplicate from producer-c was re-acknowledged',
     });
-    expect(received).toEqual(['a-1', 'b-1', 'c-1']);
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1']);
 
-    // producer-a is not: its window went with the eviction, so the same
+    // And so is producer-a, because it was used after b: its already-seen
+    // seq 1 is a duplicate too.  Under first-in-first-out a is the entry that
+    // was dropped instead, and this delivery runs the handler again.
+    deliver(consumer, probe, 'producer-a', 1, 'a-1-again');
+    await awaitCondition(() => probe.messageCount === 6, {
+      timeoutMs: 4_000,
+      label: 'the duplicate from producer-a was re-acknowledged',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1']);
+
+    // producer-b is the one that lost its window: the same
     // (producerId, incarnation, seq) runs the handler a second time.  That is
     // what an eviction costs, and it is the at-least-once duplicate this
     // protocol already permits — unbounded growth is what it did not.
-    deliver(consumer, probe, 'producer-a', 1, 'a-1-again');
-    await awaitCondition(() => received.length === 4, {
+    deliver(consumer, probe, 'producer-b', 1, 'b-1-again');
+    await awaitCondition(() => received.length === 5, {
       timeoutMs: 4_000,
       label: 'the evicted producer was handled again',
     });
-    expect(received).toEqual(['a-1', 'b-1', 'c-1', 'a-1-again']);
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1', 'b-1-again']);
     expect(slot.controller?.trackedProducers).toBe(2);
 
     await kit.system.terminate();
@@ -947,9 +1012,77 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
     await kit.system.terminate();
   });
 
+  test('the sweep reaches an idle producer parked behind a busy one', async () => {
+    // The other half of what the map's least-recently-used ordering buys, and
+    // the one that is a leak rather than a policy change when it goes.  Every
+    // entry moving to the back on use is what keeps the map ascending by
+    // `lastSeenAtMs`, which is the premise `sweepIdleProducers` breaks on —
+    // so in arrival order a stale entry sitting behind a continuously
+    // refreshed one is never reached, and #728 is back for exactly the
+    // producer that stopped talking.
+    const kit = quietKit('rd-sweep-behind-busy');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // No cap, so the sweep is the only thing that can reclaim anything.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 120,
+    }, 'sweep-order-consumer');
+
+    // busy-producer first, so it is the entry an arrival-ordered map parks in
+    // front of the idle one.
+    deliver(consumer, probe, 'busy-producer', 1, 'busy-first');
+    deliver(consumer, probe, 'idle-producer', 1, 'idle-first');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // Keep busy-producer fresh across every sweep, six ticks to a TTL.  A
+    // re-delivery of a seq it has already seen is enough: the entry is looked
+    // up — and moved to the back — before the duplicate check refuses it, so
+    // this costs no handler call and `received` stays at two.
+    const busyTicker = kit.system.scheduler.scheduleAtFixedRateFunction(20, 20, () => {
+      deliver(consumer, probe, 'busy-producer', 1, 'busy-again');
+    });
+    try {
+      // Both halves matter.  The size is what the ordering fixes; `received`
+      // staying at two is what says the survivor is the *busy* one, so a
+      // sweep that took both and let the ticker re-add one cannot pass for a
+      // sweep that reached past a fresh entry.
+      await awaitCondition(
+        () => slot.controller?.trackedProducers === 1 && received.length === 2,
+        {
+          timeoutMs: 4_000,
+          intervalMs: 10,
+          label: 'the idle producer was swept from behind the busy one',
+        },
+      );
+    } finally {
+      busyTicker.cancel();
+    }
+
+    // The idle one's window is genuinely gone rather than merely uncounted.
+    deliver(consumer, probe, 'idle-producer', 1, 'idle-after-sweep');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the swept producer was handled again',
+    });
+    expect(received).toEqual(['busy-first', 'idle-first', 'idle-after-sweep']);
+
+    await kit.system.terminate();
+  });
+
   test('Infinity on both bounds is the documented opt-out', async () => {
-    // Also the case that would arm a `setInterval(Infinity)` if `preStart`
-    // did not check first.
+    // Retention only: five distinct producers, no cap to evict them and no
+    // sweep to age them out.  This case cannot see whether `preStart` armed
+    // a sweep, and a comment here used to claim that it could — an armed
+    // one deletes nothing when it fires on an infinite TTL, so the map looks
+    // identical either way, and waiting longer only makes that more true.
+    // `producerIdleTtlMs: Infinity arms no sweep at all` holds that ground.
     const kit = quietKit('rd-unbounded-optout');
     const received: string[] = [];
     const probe = kit.createTestProbe();
@@ -965,9 +1098,59 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
       timeoutMs: 4_000,
       label: 'all five producers were handled',
     });
-    // Settle past a sweep interval that must not exist.
-    await sleep(60);
     expect(slot.controller?.trackedProducers).toBe(5);
+
+    await kit.system.terminate();
+  });
+
+  test('producerIdleTtlMs: Infinity arms no sweep at all', async () => {
+    // `Infinity` is the documented way to switch the sweep off, and
+    // `preStart` has to refuse to arm rather than hand the value on:
+    // `setInterval` clamps a non-finite delay to a millisecond, so a sweep
+    // armed on it is a busy timer for the life of the consumer.  It would
+    // also be harmless on every one of those ticks, which is the reason
+    // nothing downstream of the arm can notice it — see the note on
+    // `RecordingScheduler` above.
+    const scheduler = new RecordingScheduler();
+    const kit = quietKit('rd-no-sweep-armed', scheduler);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+
+    const sweepOffSlot: ControllerSlot = { controller: null };
+    const armedBeforeSweepOff = scheduler.armedFixedRates.length;
+    const sweepOff = spawnBoundedConsumer(kit, sweepOffSlot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'sweep-off-consumer');
+    // Wait on a handled delivery, so "nothing was armed" cannot be satisfied
+    // by a `preStart` that simply had not run yet.
+    deliver(sweepOff, probe, 'sweep-off-producer', 1, 'off');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the consumer with the sweep off started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRates.slice(armedBeforeSweepOff)).toEqual([]);
+
+    // The positive control, on the same seam: a finite TTL arms exactly one
+    // schedule, on exactly the interval the option names.  Without it,
+    // "nothing was armed" would hold just as well for a probe that records
+    // nothing at all.  Its TTL is long enough that it never fires here.
+    const sweepOnSlot: ControllerSlot = { controller: null };
+    const armedBeforeSweepOn = scheduler.armedFixedRates.length;
+    const sweepOn = spawnBoundedConsumer(kit, sweepOnSlot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 30_000,
+    }, 'sweep-on-consumer');
+    deliver(sweepOn, probe, 'sweep-on-producer', 1, 'on');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the consumer with the sweep on started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRates.slice(armedBeforeSweepOn)).toEqual([
+      { initialDelayMs: 30_000, intervalMs: 30_000 },
+    ]);
 
     await kit.system.terminate();
   });
