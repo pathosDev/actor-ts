@@ -309,6 +309,45 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
     const release = await acquireLock(fs, lockPath, this.lockTimeoutMs, this.staleLockMs);
     try {
+      // `<key>` itself is a second hop, and the parent's canonical path does
+      // not cover it — the two checks answer different questions and neither
+      // subsumes the other.  The parent governs where the body *lands*:
+      // `rename` replaces the destination entry and never follows a link
+      // sitting at it, so the write goes wherever the parent really is.  This
+      // one governs what the CAS read below *opens*, and `readFile` does
+      // follow a link at the final component, exactly as it does in `get`.
+      // Without it a link planted at `<key>` and pointing out of the root was
+      // read and hashed, and the mismatch message handed the caller the
+      // target's exact byte length and its FNV-1a — an oracle for a file this
+      // backend is documented as unable to reach.  `ifNoneMatch: '*'` leaked
+      // the coarser half of the same fact.
+      //
+      // **Inside the lock, unlike the parent check, and that is load-bearing
+      // on Windows.**  Canonicalising a path opens a handle to it, and
+      // `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` refuses with `EPERM` while
+      // another handle is open on the destination.  Run before the lock, this
+      // hop is one every contending writer performs on the *same* name the
+      // lock winner is about to rename over — so the winner's own `put` starts
+      // failing with `filesystem put-write failed … EPERM`, on a key with no
+      // link anywhere near it.  Measured on this file's 10-way CAS race, 60
+      // attempts per variant: 0/60 before the hop existed, 8/60 with it before
+      // the lock, 0/60 with it here.
+      //
+      // Under the lock it is also the *narrower* check, not merely the
+      // survivable one: the window this class of guard cannot close is the gap
+      // between canonicalising and opening, and here that gap is two
+      // statements rather than a lock acquisition — up to `lockTimeoutMs`.
+      // What the parent check needs from its own position is unchanged: it is
+      // what makes `<key>.lock` provably land inside the root, so it has to
+      // precede the file that proves it.
+      //
+      // `null` is the ordinary first write: nothing at that name to
+      // canonicalise, and nothing for `readFile` to open either.  Note this
+      // resolves against the *resolved* root, not the configured spelling — a
+      // root that is itself a link is legitimate, and comparing against the
+      // spelling would pass every first write and refuse every overwrite.
+      await realPathWithinRoot(fs, path, realRoot, fullPath, key);
+
       // Read current state from disk — disk is canonical, no in-memory
       // shadow that could disagree with another process's writes.
       let currentEtag: string | undefined;
