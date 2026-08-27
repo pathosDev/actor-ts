@@ -151,15 +151,32 @@ pointing out of it is refused rather than followed.  The root
 containment against the result, so `/var/lib/app -> /mnt/data`
 works normally.
 
-Two limits are worth knowing, because the alternative is assuming
-more than the check delivers.  It reads the filesystem and then
-acts on it, so it refuses a link that is already in place but
-cannot win a race against one planted in between — portable
-`O_NOFOLLOW` is not reachable through `node:fs`.  And it confines
-the backend's *own* operations; it is not a sandbox around a
-directory other local processes may write to.  If untrusted users
-can create entries inside the storage root, that is already the
-larger problem.
+"The path it is about to touch" means the object names: the key
+itself, the directories above it, and its `.meta.json` sidecar.
+The key and its parents are checked for different reasons, and
+neither check covers the other — `rename` never follows a link at
+the final component, so a linked *parent* is what moves where a
+body lands, while `get` and `put`'s compare-and-swap both open the
+key with `readFile`, which does follow one.
+
+Three limits are worth knowing, because the alternative is
+assuming more than the check delivers.  It reads the filesystem
+and then acts on it, so it refuses a link that is already in place
+but cannot win a race against one planted in between — portable
+`O_NOFOLLOW` is not reachable through `node:fs`.  It confines the
+backend's *own* operations; it is not a sandbox around a directory
+other local processes may write to.  If untrusted users can create
+entries inside the storage root, that is already the larger
+problem.
+
+And it does not cover the per-key lock file.  Taking the lock is
+an exclusive create, which refuses a link rather than following
+it — but the stale-lock recovery that runs once the acquisition
+timeout is exhausted `stat`s that name, and `stat` does follow
+one.  So a link planted at `<key>.lock` lets a file outside the
+root decide whether the lock is treated as abandoned, and a
+*dangling* link there keeps `put` and `delete` on that one key
+retrying instead of returning.
 
 ### S3
 
