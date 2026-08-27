@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { randomId } from '../../../../../src/util/RandomString.js';
 import {
   FilesystemObjectStorageBackend,
   fsLazy,
+  type FsModule,
 } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
@@ -547,6 +548,20 @@ describeIfDirectoryLinks('FilesystemObjectStorageBackend — a linked root still
       .withDir(alias);
     const aliased = new FilesystemObjectStorageBackend(aliasOptions);
 
+    await aliased.put('nested/key.json', bytes('first'), { contentType: 'application/json' });
+    // The **second** put is the one that matters, and a version of this test
+    // that stopped at the first would let a wrong fix through.  `put` now
+    // canonicalises `<key>` as well as its parent, and that hop answers `null`
+    // on a key that does not exist yet — so a check written against the
+    // configured spelling of the root instead of the resolved one is invisible
+    // on a first write and refuses every overwrite after it.
+    //
+    // Measured, by applying exactly that variant (`this.dir` in place of
+    // `realRoot` on the key hop) and running the file: 51 pass / 1 fail, the
+    // one failure being this line — `"…/alias/nested/key.json" resolves to
+    // "…/data/nested/key.json", outside root "…/alias"`.  All four tests in
+    // the linked-`<key>` block below stayed green through it, which is why
+    // this assertion has to live here and not there.
     await aliased.put('nested/key.json', bytes('through the link'), { contentType: 'application/json' });
     const fetched = await aliased.get('nested/key.json');
     expect(fetched.isSome()).toBe(true);
@@ -717,3 +732,207 @@ describe('FilesystemObjectStorageBackend — sidecar and root resolution (#748)'
     expect((await backend.get('collision/child')).isNone()).toBe(true);
   });
 });
+
+/* ------------ security: put's own read of `<key>` follows a link (#748) ------------ */
+
+/**
+ * The residual #748 left behind, and the reason it survived review: `put`
+ * canonicalises the key's **parent** directory and stops there, while the CAS
+ * step a few lines further down opens the key itself with `readFile` — which
+ * follows a link at the final component exactly the way it does in `get`.
+ *
+ * So `<root>/obj` pointing at a file outside the root was read, hashed, and
+ * its length and hash handed back to the caller in the mismatch message —
+ * measured against the pre-fix tree with the fixture below:
+ *
+ *     etag mismatch on obj: expected "fs-00000000-0", actual "fs-cb91c885-45"
+ *
+ * `45` is the target's exact size and `cb91c885` an FNV-1a over its bytes —
+ * an oracle for a file both docs pages promise is unreachable through this
+ * backend.  `ifNoneMatch: '*'` leaks the coarser half of the same fact.
+ *
+ * Driven through the `fsLazy` seam rather than a real symlink on purpose.
+ * The equivalent behavioural test needs a **file** link, which a stock Windows
+ * box cannot create without elevation — so it would sit behind
+ * `describeIfFileSymlinks` and skip on the machine this backend is developed
+ * on, which is how the gap lasted this long.
+ *
+ * A seam that models the kernel cannot also *validate* that model, so the
+ * assertions are chosen not to need it: what carries the weight is
+ * `readsOf` — which path our own code handed to `readFile` — and that is true
+ * of the real filesystem or any other.  The model only has to be right about
+ * the one fact that makes the name interesting (`realpath` and `readFile`
+ * dereference a final-component link, `rename` does not), and that fact is
+ * POSIX-specified rather than inferred here.
+ */
+describe('FilesystemObjectStorageBackend — put and a linked `<key>` (#748)', () => {
+  let outside: string;
+  let secretPath: string;
+  const secretBody = 'outside the root: not this backend\'s to read.';
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'actor-ts-objstore-put-link-'));
+    secretPath = join(outside, 'secret.bin');
+    writeFileSync(secretPath, secretBody);
+  });
+
+  afterEach(() => {
+    fsLazy.reset();
+    try { rmSync(outside, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test('put refuses a key that resolves outside the root instead of reading it', async () => {
+    const observed = plantFinalComponentLink(await fsLazy.get(), join(tmpRoot, 'obj'), secretPath);
+
+    const thrown = await backend
+      .put('obj', bytes('overwritten'), { ifMatch: '"fs-00000000-0"' })
+      .then(() => null, (e: unknown) => e as Error);
+
+    expect(thrown).not.toBeNull();
+    expect(thrown!.message).toMatch(/path-traversal/);
+    // The mechanism, not only the symptom: the escaping name must never be
+    // opened.  Asserting on the message alone would still pass an
+    // implementation that read the file and then happened to refuse.
+    expect(observed.readsOf('obj')).toEqual([]);
+    // …and neither fact the old message carried may survive into the new one.
+    // A CAS conflict is a different error class from a containment refusal,
+    // so the class is part of the assertion too.
+    expect(thrown!.message).not.toMatch(/etag mismatch/);
+    expect(thrown).not.toBeInstanceOf(ObjectStorageConcurrencyError);
+  });
+
+  test('an existence probe through the link is refused the same way', async () => {
+    // `ifNoneMatch: '*'` needs only "is anything there", so it leaks a coarser
+    // fact than the etag — and it is the precondition
+    // `resolveObjectStorageIdentity` uses on every store that opens over this
+    // backend, which is what makes the path routine rather than exotic.
+    plantFinalComponentLink(await fsLazy.get(), join(tmpRoot, 'obj'), secretPath);
+
+    await expect(backend.put('obj', bytes('claim'), { ifNoneMatch: '*' }))
+      .rejects.toThrow(/path-traversal/);
+  });
+
+  test('a refused key writes no body and no sidecar, and releases its lock', async () => {
+    // A refused key must leave the store as it found it.  It does take the
+    // per-key lock first — see the ordering test below for why that is
+    // deliberate — so the assertion is not "nothing was written" but "nothing
+    // except the lock, and the lock is gone again".
+    const observed = plantFinalComponentLink(await fsLazy.get(), join(tmpRoot, 'obj'), secretPath);
+
+    await expect(backend.put('obj', bytes('overwritten'))).rejects.toThrow(/path-traversal/);
+
+    expect(observed.writes()).toEqual([join(tmpRoot, 'obj.lock')]);
+    expect(existsSync(join(tmpRoot, 'obj.lock'))).toBe(false);
+    expect(existsSync(join(tmpRoot, 'obj.meta.json'))).toBe(false);
+    expect(readFileSync(secretPath, 'utf8')).toBe(secretBody);
+  });
+
+  test('the key is canonicalised under the lock, never before it', async () => {
+    // Ordering, pinned as a call sequence rather than left to a comment,
+    // because getting it wrong is invisible in every other assertion here and
+    // shows up only as flakiness on Windows under concurrency.
+    //
+    // Canonicalising a path opens a handle to it, and
+    // `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` refuses with EPERM while
+    // another handle is open on the destination.  Hoisting this hop above
+    // `acquireLock` makes every contending writer hold a handle on exactly
+    // the name the lock winner is about to rename over, so the winner's own
+    // `put` fails — `filesystem put-write failed … EPERM` — on a key with no
+    // link anywhere near it.  Measured on the 10-way CAS race in the
+    // concurrency block above, 60 attempts per variant: 0/60 before #748's
+    // residual was closed, 8/60 with the hop before the lock, 0/60 with it
+    // after.  Under the lock it is also the narrower check — the gap between
+    // canonicalising and opening shrinks from a lock acquisition to two
+    // statements.
+    const observed = plantFinalComponentLink(await fsLazy.get(), join(tmpRoot, 'obj'), join(tmpRoot, 'inside'));
+    writeFileSync(join(tmpRoot, 'inside'), 'v1');
+
+    await backend.put('obj', bytes('v2'));
+
+    const lockTaken = observed.indexOf('writeFile', join(tmpRoot, 'obj.lock'));
+    const keyResolved = observed.indexOf('realpath', join(tmpRoot, 'obj'));
+    expect(lockTaken).toBeGreaterThanOrEqual(0);
+    expect(keyResolved).toBeGreaterThan(lockTaken);
+    // The parent hop keeps the opposite order, and for a reason that has not
+    // changed: it is what makes `<key>.lock` provably land inside the root,
+    // so it has to run before the file that proves it.
+    expect(observed.indexOf('realpath', tmpRoot)).toBeLessThan(lockTaken);
+  });
+
+  test('a key that resolves back inside the root is still read and written', async () => {
+    // The guard must refuse where the link leaves the root and nowhere else.
+    // An implementation that rejected every resolvable `<key>` — or that
+    // skipped the CAS read to avoid the question — passes every test above
+    // and breaks every overwrite in the suite.  Same hop through the seam,
+    // pointed back inside.
+    const inside = join(tmpRoot, 'real-target');
+    writeFileSync(inside, 'v1');
+    const observed = plantFinalComponentLink(await fsLazy.get(), join(tmpRoot, 'obj'), inside);
+
+    await backend.put('obj', bytes('v2'));
+
+    expect(observed.readsOf('obj')).toEqual([join(tmpRoot, 'obj')]);
+    expect(readFileSync(join(tmpRoot, 'obj'), 'utf8')).toBe('v2');
+  });
+});
+
+/** What {@link plantFinalComponentLink} hands back — an ordered call log, queried. */
+type ObservedCalls = {
+  /** Every path passed to `readFile` that is the planted link. */
+  readsOf(name: string): string[];
+  /** Every path passed to `writeFile`, in order. */
+  writes(): string[];
+  /** Index of the first `op` call on `path` in the ordered log, or `-1`. */
+  indexOf(op: string, path: string): number;
+};
+
+/**
+ * Model a symlink at `linkPath` pointing at `targetPath`, for the two calls
+ * whose treatment of a final-component link is the whole question: `realpath`
+ * and `readFile` dereference it, `rename` does not.  Everything else delegates
+ * to the real module.
+ *
+ * Every `readFile`, `writeFile` and `realpath` is logged **in order**, because
+ * two of the properties worth asserting here are about sequence — that the
+ * escaping name is never opened, and that it is canonicalised only once the
+ * per-key lock is held.
+ */
+function plantFinalComponentLink(real: FsModule, linkPath: string, targetPath: string): ObservedCalls {
+  const log: { op: string; path: string }[] = [];
+  const follow = (p: string): string => (p === linkPath ? targetPath : p);
+  const readFile = ((p: string, encoding?: 'utf8') => {
+    log.push({ op: 'readFile', path: p });
+    return encoding === undefined
+      ? real.fs.readFile(follow(p))
+      : real.fs.readFile(follow(p), encoding);
+  }) as FsModule['fs']['readFile'];
+  fsLazy.setOverride(Promise.resolve({
+    path: real.path,
+    fs: {
+      ...real.fs,
+      readFile,
+      realpath: (p: string): Promise<string> => {
+        log.push({ op: 'realpath', path: p });
+        return real.fs.realpath(follow(p));
+      },
+      writeFile: (
+        p: string,
+        body: Uint8Array | string,
+        writeOptions?: { flag?: string; encoding?: string },
+      ): Promise<void> => {
+        log.push({ op: 'writeFile', path: p });
+        return real.fs.writeFile(p, body, writeOptions);
+      },
+    },
+  }));
+  return {
+    readsOf: (name: string): string[] =>
+      log.filter((c) => c.op === 'readFile' && c.path === join(tmpRoot, name)).map((c) => c.path),
+    // The body's temp file carries a CSPRNG suffix, so it is normalised to the
+    // stem it will be renamed onto — otherwise the expectation could not be
+    // written down at all.
+    writes: (): string[] =>
+      log.filter((c) => c.op === 'writeFile').map((c) => c.path.replace(/\.tmp\.\d+\.[0-9a-f]+$/, '')),
+    indexOf: (op: string, path: string): number => log.findIndex((c) => c.op === op && c.path === path),
+  };
+}
