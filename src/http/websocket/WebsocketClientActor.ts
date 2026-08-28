@@ -371,10 +371,19 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     this.log.warn(
       `WebsocketClientActor: oversize inbound frame (> ${cap} bytes) from ${endpoint} — closing with 1009`,
     );
-    // 1009 is RFC 6455 "Message Too Big".  Order matters: `onSocketDown` nulls
-    // `this.socket`, so the close has to be issued before it runs.
-    try { this.socket?.close(1009, 'message too big'); } catch { /* ignore */ }
+    // 1009 is RFC 6455 "Message Too Big".  Order matters, and not the way it
+    // first looks: `onSocketDown` ignores every call after the first (it nulls
+    // `this.socket` as its guard), and `close()` makes the runtime fire our own
+    // `close` listener, which calls it with the generic 'websocket closed'.
+    // Closing first therefore left the cause a race the runtime decides —
+    // measured on the `engines` floor, Bun 1.3.0 delivered 'websocket closed'
+    // where 1.4.0 delivered this one, so an operator on the floor lost the
+    // sentence saying *why* the connection went. Recording the specific cause
+    // before the close settles it everywhere; the socket is captured first
+    // because `onSocketDown` clears the field.
+    const socket = this.socket;
     this.onSocketDown(new Error('oversize inbound frame'));
+    try { socket?.close(1009, 'message too big'); } catch { /* ignore */ }
   }
 
   /**
