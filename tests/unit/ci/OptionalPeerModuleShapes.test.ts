@@ -15,11 +15,22 @@ import { compressorFor, resetCompressionCache } from '../../../src/persistence/o
  * the next person adding an optional peer.
  *
  * `cassandra-driver` is the fourth package #676 named and is deliberately NOT
- * here: it cannot be installed at the root without failing `bun run
- * lint:audit`. Its newest release (4.9.0) hard-pins `adm-zip: ~0.5.10` and
- * GHSA-xcpc-8h2w-3j85 is fixed only in 0.6.0, so no version of the driver
- * clears the gate. See `DELIBERATELY_UNDECLARED` in the guard next door, which
- * records the gap rather than hiding it.
+ * here, because it is not a root devDependency and cannot become one: its
+ * newest release (4.9.0) hard-pins `adm-zip: ~0.5.10` and GHSA-xcpc-8h2w-3j85
+ * is fixed only in 0.6.0, so no version of the driver clears `bun run
+ * lint:audit`. It is declared in `tests/integration/brokers/package.json`
+ * instead — the other of the two contexts, whose packages are absent from the
+ * root `node_modules` by design, which is what keeps the driver's closure out
+ * of `bun audit`'s surface without silencing anything.
+ *
+ * Its stub is therefore checked in the place the driver IS installed:
+ * `tests/integration/brokers/cassandra/scenarios/01-driver-shape.ts`, against
+ * a live cluster. That is not a weaker check — it also reaches the `[applied]`
+ * marker `CassandraJournal` decodes every lightweight transaction through,
+ * which is a driver-side result convention no `.d.ts` states. Adding a literal
+ * `import('cassandra-driver')` to this file would not merely fail to resolve;
+ * it would fail the "every literally imported optional peer is a root
+ * devDependency" test next door, which is the correct answer.
  *
  * What they are for is worth stating precisely, because the obvious answer is
  * wrong. Installing a package does not make any existing suite exercise it —
