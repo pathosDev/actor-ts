@@ -13318,11 +13318,20 @@ new names.
   full before the app-level `maxFrameBytes` (1 MiB default) rejected it —
   allocation-amplification DoS.  Both now pass `maxPayload:
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES` (1 MiB), so an oversized frame is rejected at the
-  protocol level.  *Caveat, since lifted:* on these backends a route that
+  protocol level.  *Caveat, since narrowed:* on these backends a route that
   raised `maxFrameBytes` above the default was still capped at the default by
-  the transport.  #373 closed that — the transport cap is now sized from the
-  route's own resolved policy on every backend — as did #586 for the Hono
-  runner-level cap.
+  the transport.  #373 replaced that constant with `transportFrameCapOf` — the
+  widest cap any of the server's routes resolved to — and #586 gave the Hono
+  backend a runner-level cap it had lacked entirely.  Both are **server-level,
+  not per-route**: #373's per-route half was considered and declined, because
+  `@fastify/websocket` registers once per instance and Bun's `maxPayloadLength`
+  belongs to the whole `Bun.serve`, so two of the three backends cannot express
+  one.  And two transports enforce no cap at all — Hono-on-Deno, whose
+  `Deno.upgradeWebSocket` has no payload option, and Bun with Express or
+  Fastify, where `ws` resolves to Bun's built-in shim, which stores `maxPayload`
+  and enforces nothing.  On those two the connection actor's own `maxFrameBytes`
+  check is the guarantee, and it closes 1009.  The `[Unreleased]` entries for
+  #373 and #586 are the accurate account.
 - **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
  .  New opt-in `maxConnections` on `websocket()`
   routes (`.withMaxConnections(n)`, or `actor-ts.http.websocket.maxConnections`
