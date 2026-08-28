@@ -69,22 +69,30 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  * admission that one adapter's types are checked against nothing, so growing
  * this list is not the way to make the coverage test below pass.
  *
- * - `cassandra-driver` — blocked on `bun run lint:audit`, not on effort. The
- *   driver's newest release (4.9.0) declares `adm-zip: ~0.5.10` as a hard
- *   dependency, and GHSA-xcpc-8h2w-3j85 (high — a crafted ZIP triggers a 4 GB
- *   allocation) is fixed only in `adm-zip` 0.6.0, which that range cannot
- *   reach. So no published version of the driver installs cleanly here, and
- *   the ways out are all decisions above this test's pay grade:
+ * **It is empty, and that is the point of #676.** The last entry was
+ * `cassandra-driver`, and it was blocked on `bun run lint:audit` rather than
+ * on effort: the driver's newest release (4.9.0) declares `adm-zip: ~0.5.10`
+ * as a hard dependency, and GHSA-xcpc-8h2w-3j85 (high — a crafted ZIP triggers
+ * a 4 GB allocation) is fixed only in `adm-zip` 0.6.0, which that range cannot
+ * reach. No published version of the driver can be a root devDependency.
+ *
+ * Four ways out were on the table, and which one was taken matters more than
+ * that one was:
  *
  *   1. Suppress the advisory — a new `--ignore` plus a `SECURITY.md` row.
  *      Every suppression on file predates the gate rather than having been
- *      added to get a change through, so this would be the first of its kind.
- *   2. Stand up a Cassandra Docker suite (#1169 tracks it from the coverage
- *      side), so the brokers manifest legitimately owns the driver and the
- *      root install never sees it.
+ *      added to get a change through, and adding one to land a change is how
+ *      a gate stops gating. Not taken.
+ *   2. **Stand up a Cassandra Docker suite** (`tests/integration/brokers/cassandra/`,
+ *      #1169 tracked it from the coverage side), so the brokers manifest
+ *      legitimately owns the driver and the root install never sees it. This
+ *      is the one that was taken. The separation is what keeps the audit
+ *      green: the driver's closure is outside `bun.lock` entirely, so
+ *      `bun audit` never reads it — nothing is silenced, there is simply
+ *      nothing there.
  *   3. Drop the backend.
  *   4. Pin `adm-zip` past the advisory with an `overrides` / `resolutions`
- *      entry. This one is listed because leaving it out is how it gets
+ *      entry. This one is recorded because leaving it out is how it gets
  *      rediscovered as a clever trick rather than weighed as what it is, and
  *      it does work: bun 1.4.0 honours both spellings, taking `~0.5.10` from
  *      0.5.18 to 0.6.0 (measured). It is also the worst of the four. npm-style
@@ -93,13 +101,19 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  *      backend resolves the vulnerable range exactly as before — option 1
  *      without the row anyone reviews.
  *      `tests/unit/ci/SecurityPolicy.test.ts` requires any override to be
- *      written up in `SECURITY.md`, so this route is open but not silent.
+ *      written up in `SECURITY.md`, so that route stays open but not silent.
  *
- *   Until one is chosen, `CassandraClientLike` and the inline
- *   `CassandraDriver` type in `src/persistence/journals/CassandraClient.ts`
- *   are checked only against `FakeCassandraClient`. Refs #676.
+ * The stub that gap left unchecked — `CassandraClientLike` and the
+ * `CassandraDriver` interface in `src/persistence/journals/CassandraClient.ts`
+ * — is now checked in the place the driver is actually installed:
+ * `tests/integration/brokers/cassandra/scenarios/01-driver-shape.ts`, against
+ * a live cluster. It cannot move to
+ * `tests/unit/ci/OptionalPeerModuleShapes.test.ts`, and not merely because the
+ * package is absent from the root install: a literal `import('cassandra-driver')`
+ * from a root-scoped test would fail the fourth test below, which is the
+ * correct answer rather than an obstacle. Closes #676.
  */
-const DELIBERATELY_UNDECLARED: readonly string[] = ['cassandra-driver'];
+const DELIBERATELY_UNDECLARED: readonly string[] = [];
 
 /**
  * Test trees whose imports another manifest resolves, so a literal specifier
@@ -271,12 +285,45 @@ describe('optional peer declarations', () => {
   });
 
   /**
+   * The allow-list is empty, on purpose, and this is what keeps it that way.
+   *
+   * Emptying it was the whole of #676: every optional peer is now installed in
+   * one of the two contexts, so every hand-written structural stub is checked
+   * against something. An entry here is the opposite — a standing admission
+   * that one adapter's types are verified by nothing at all, which is silent
+   * in every other gate (`bun run typecheck` never compiles a call site, and
+   * the adapter suites all pass against fakes).
+   *
+   * So re-filling it is allowed, and it is not allowed to be quiet. The same
+   * ratchet AGENTS.md applies to the coverage floors: adding a name means
+   * editing this assertion in the same commit, on purpose, with the reason and
+   * the issue that removes it written beside the entry. The two assertions
+   * below then start doing their job again.
+   */
+  test('the allow-list is empty, and refilling it is a deliberate act', () => {
+    expect(
+      DELIBERATELY_UNDECLARED,
+      'DELIBERATELY_UNDECLARED has an entry again. That is a claim that one '
+      + 'optional peer is installed nowhere and its structural stub is checked '
+      + 'against nothing — the exact state #676 closed. If it is genuinely the '
+      + 'right call, say so here as well as beside the entry: which of the two '
+      + 'contexts it cannot live in and why, and the issue that removes it. '
+      + 'Reaching for a `--ignore` in lint:audit instead is not the answer — '
+      + 'see the note on the constant.',
+    ).toEqual([]);
+  });
+
+  /**
    * The allow-list is the one part of this guard that can rot in the quiet
    * direction: a name left behind after the package stopped being an optional
    * peer, or misspelled from the start, suppresses nothing and looks like it
    * suppresses something — so the next real gap hides behind a dead entry.
    * Same reasoning as the bijection in `SecurityPolicy.test.ts`: the exemption
    * list and the thing it exempts have to move together.
+   *
+   * Both assertions filter an empty list today, and are kept rather than
+   * deleted: they are what the test above hands off to the moment someone
+   * decides an exemption really is warranted.
    */
   test('the allow-list holds only optional peers that are really undeclared', () => {
     const notAPeerAnyMore = DELIBERATELY_UNDECLARED.filter((peer) => !optionalPeers.includes(peer));

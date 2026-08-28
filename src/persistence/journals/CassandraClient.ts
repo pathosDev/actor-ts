@@ -158,22 +158,45 @@ export function keyspaceDdl(connection: CassandraConnection): string {
  */
 export async function createCassandraClient(connection: CassandraConnection): Promise<CassandraClientLike> {
   /**
-   * The one structural stub in this repository that is checked against
-   * nothing, and knowingly so.
+   * The module shape the lazy import is cast to.
    *
-   * Every other optional peer is installed in one of the two dependency
-   * contexts, so its stub is verified either by a real-module import
-   * (`tests/unit/ci/OptionalPeerModuleShapes.test.ts`) or against a live
-   * server in Docker. `cassandra-driver` is in neither: its newest release
-   * hard-pins `adm-zip: ~0.5.10` and GHSA-xcpc-8h2w-3j85 is fixed only in
-   * 0.6.0, so declaring it turns `bun run lint:audit` red. `FakeCassandraClient`
-   * satisfies this shape by construction, which means a renamed `Client`
-   * export upstream breaks on first connect with every suite still green.
+   * `FakeCassandraClient` satisfies it by construction, so no suite under
+   * `bun test` would notice a renamed `Client` export — it would break on
+   * first connect with everything still green. What checks it is the live
+   * suite, `tests/integration/brokers/cassandra/`, which installs the real
+   * driver from `tests/integration/brokers/package.json` and asserts this
+   * shape against it in `scenarios/01-driver-shape.ts`, down to the
+   * `[applied]` marker `CassandraJournal.executeConditional` decodes.
    *
-   * The standing decision and the four ways out of it live in
-   * `DELIBERATELY_UNDECLARED` in
-   * `tests/unit/ci/OptionalPeerDeclarations.test.ts`, which fails if the gap
-   * is ever closed without the note going with it. #676.
+   * It has to be checked there rather than by a real-module import in
+   * `tests/unit/ci/OptionalPeerModuleShapes.test.ts`, because the driver
+   * cannot be a root devDependency: 4.9.0 hard-pins `adm-zip: ~0.5.10` and
+   * GHSA-xcpc-8h2w-3j85 is fixed only in 0.6.0, so a root entry turns
+   * `bun run lint:audit` red. The brokers manifest is absent from the root
+   * `node_modules` by design, which keeps that closure out of the audit's
+   * surface without suppressing anything. #676.
+   *
+   * Measured against `cassandra-driver` 4.9.0, three divergences remain. All
+   * three are this stub being *looser* than the module, none is reachable
+   * from the call sites here, and each would need the exported
+   * {@link CassandraClientLike} and every fake implementing it to move with
+   * it — so they are recorded rather than fixed in passing:
+   *
+   *   - `Client`'s real constructor takes `DseClientOptions`, not `unknown`,
+   *     so the option bag assembled below is type-checked by nothing;
+   *   - `Client.batch` takes a *mutable* `Array`, so the `ReadonlyArray` this
+   *     stub promises is not in fact accepted (`append` passes a mutable one);
+   *   - `Client.batch` resolves a `ResultSet`, not `void` — every caller here
+   *     discards it.
+   *
+   * A `type` and not an `interface`, deliberately: `Client` is a
+   * constructor-typed *property*, which AGENTS.md exempts from the
+   * function-head rule, and every sibling module stub in `src/` is written
+   * the same way (`PgModule`, `MongoModule`, `DynamoDbSdkModule`,
+   * `MsSqlModule`, `S3SdkModule`, `GrpcModule`, `PromClientLike`). A bare
+   * construct signature — `interface X { new (…): Y }`, as in
+   * `tests/unit/cluster/ClusterTlsStartupWarning.test.ts` — is the shape that
+   * takes an `interface`.
    */
   type CassandraDriver = {
     Client: new (options: unknown) => CassandraClientLike & {

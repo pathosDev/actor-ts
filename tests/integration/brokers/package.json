@@ -20,6 +20,7 @@
     "@libsql/client": "^0.15.15",
     "mssql": "^12.7.0",
     "mongodb": "^6.21.0",
+    "cassandra-driver": "^4.0.0",
     "imapflow": "^1.7.1",
     "nodemailer": "^9.0.4"
   }
