@@ -203,12 +203,12 @@ describe('security policy', () => {
    * fixes an advisory, and `lint:audit` goes green with no flag added and no
    * row here.
    *
-   * That route is live and has a name. #676 needs `cassandra-driver` as a root
-   * devDependency to check the structural stub in
+   * That route is live and has a name. #676 needed `cassandra-driver` installed
+   * somewhere to check the structural stub in
    * `src/persistence/journals/CassandraClient.ts` against the real module, and
-   * cannot have it: the driver's newest release hard-pins `adm-zip: ~0.5.10`,
-   * and GHSA-xcpc-8h2w-3j85 (high) is fixed only in 0.6.0. Pinning `adm-zip`
-   * here would clear the gate in one line.
+   * it cannot be a root devDependency: the driver's newest release hard-pins
+   * `adm-zip: ~0.5.10`, and GHSA-xcpc-8h2w-3j85 (high) is fixed only in 0.6.0.
+   * Pinning `adm-zip` here would have cleared the gate in one line.
    *
    * It would also be the worst of the available answers, which is why this is
    * a bijection and not a ban. npm-style overrides apply only while this
@@ -217,6 +217,14 @@ describe('security policy', () => {
    * would move the advisory out of *our* audit while leaving it in *their*
    * install. A suppression at least says so out loud, in a table someone
    * reviews. An override says nothing.
+   *
+   * So neither was taken. The driver went into
+   * `tests/integration/brokers/package.json`, whose packages are absent from
+   * the root `node_modules` by design, and the stub is checked against a live
+   * cluster in `tests/integration/brokers/cassandra/`. The advisory did not
+   * move out of view: it was never in the root closure to begin with, and a
+   * consumer who installs the Cassandra backend still resolves it — which an
+   * override would have hidden from us while changing nothing for them.
    *
    * Hence: overrides are allowed, in the light. Whoever adds the first one
    * writes the section this looks for and states what it pins and why, the

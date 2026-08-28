@@ -442,8 +442,20 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
     and that is a security decision, not a packaging one. Do not reach for a
     new `--ignore`: every suppression in `lint:audit` predates the gate, and
     adding one to get a change through is how a gate stops gating. Record the
-    gap in the guard's allow-list instead and raise it. This is why
-    `cassandra-driver` is still declared nowhere (#676).
+    gap in the guard's allow-list instead and raise it.
+
+    `cassandra-driver` is the worked example, and how it ended is the lesson.
+    No published version clears the gate — 4.9.0 hard-pins `adm-zip: ~0.5.10`
+    and GHSA-xcpc-8h2w-3j85 is fixed only in 0.6.0 — so it spent two waves in
+    the allow-list, declared nowhere and typed against nothing. The answer was
+    not a suppression and not an `overrides` pin (which would clear *our*
+    audit and leave every consumer resolving the same range): it was the
+    **second context**. `tests/integration/brokers/package.json` declares it
+    and `tests/integration/brokers/cassandra/` earns the coverage against a
+    live cluster, so the driver's closure is never in the root lockfile for
+    `bun audit` to read. An unfixable advisory is a reason to move a peer to
+    the brokers manifest, not a reason to silence a gate or to leave a stub
+    unchecked (#676).
 
 ## Code style
 

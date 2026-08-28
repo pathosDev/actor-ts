@@ -1,0 +1,77 @@
+# Cassandra live-integration suite (#676, refs #1169).
+#
+# Brings up Apache Cassandra plus a runner container that exercises
+# `CassandraJournal`, `CassandraQuery` and `CassandraSnapshotStore` against it
+# through the real `cassandra-driver`.
+#
+# This suite is why `cassandra-driver` can be declared at all.  It is the one
+# optional peer whose closure carries an unfixable high advisory — 4.9.0
+# hard-pins `adm-zip: ~0.5.10`, and GHSA-xcpc-8h2w-3j85 is fixed only in 0.6.0
+# — so a root `devDependencies` entry would turn `bun run lint:audit` red.
+# `tests/integration/brokers/package.json` owns it instead: those packages are
+# absent from the root `node_modules` by design, which keeps the driver's
+# closure out of `bun audit`'s surface while still installing it *somewhere*
+# real enough to check the hand-written stub against.
+#
+# Run locally:
+#   bun run test:integration:broker cassandra
+#   bun run test:integration:broker:teardown cassandra
+
+name: actor-ts-integration-cassandra
+
+services:
+  cassandra:
+    # `latest` deliberately — integration tests want to surface upstream
+    # regressions as soon as they ship.  Production users pin themselves.
+    image: cassandra:latest
+    environment:
+      CASSANDRA_CLUSTER_NAME: actor-ts-integration
+      # The snitch is left at the image default (`SimpleSnitch`), which reports
+      # the data center as `datacenter1` — the exact string
+      # `createCassandraClient` falls back to for `localDataCenter`.  Switching
+      # to GossipingPropertyFileSnitch would need CASSANDRA_DC set here AND the
+      # same name threaded through every options builder below; the default
+      # already agrees with the code, so there is nothing to keep in sync.
+      #
+      # The heap is pinned well under the image's own sizing heuristic (which
+      # takes a quarter of host RAM).  A hosted runner has ~7 GB and also has
+      # to hold the runner container and the Docker build cache; an unbounded
+      # Cassandra there is the difference between a 90-second boot and an
+      # OOM-killed container whose failure looks like a connect timeout.
+      MAX_HEAP_SIZE: 1024M
+      HEAP_NEWSIZE: 256M
+    healthcheck:
+      # Port 9042 opens well before the node will answer CQL, so a TCP probe is
+      # not a readiness signal here — `cqlsh` executing a statement is.  This is
+      # the single most common source of flake in this suite's shape, and the
+      # runner's own retry loop is the second layer rather than the first.
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT release_version FROM system.local' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      # Cassandra's own boot is ~45-90s on a cold hosted runner.  Failures
+      # inside the start period do not count against `retries`.
+      start_period: 60s
+    networks:
+      cassandranet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/cassandra/Dockerfile.runner
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    environment:
+      # Inside the compose bridge Cassandra is reachable by service name.  The
+      # image starts with authentication off (`AllowAllAuthenticator`), so no
+      # credentials are needed — the credentials path is covered by the unit
+      # suites against the fake.
+      CASSANDRA_CONTACT_POINT: cassandra
+      CASSANDRA_PORT: "9042"
+      CASSANDRA_KEYSPACE: actor_ts_test
+    networks:
+      cassandranet: {}
+
+networks:
+  cassandranet: {}

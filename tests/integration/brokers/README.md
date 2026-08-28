@@ -47,6 +47,7 @@ tests/integration/brokers/
 ├── cockroachdb/                  # CockroachDB — pg wire (Closes #401)
 ├── yugabytedb/                   # YugabyteDB — pg wire (Closes #401)
 ├── mongodb/                      # MongoDB (Closes #397)
+├── cassandra/                    # Apache Cassandra (Closes #676, refs #1169)
 ├── dynamodb/                     # DynamoDB Local (Closes #398)
 └── email/                        # GreenMail — SMTP + IMAP (refs #1133)
 ```
@@ -106,6 +107,19 @@ that a consumer who skipped the optional peer cannot resolve.  Drift in a
 stub is caught here, against the live broker, rather than at compile time
 in a tree that could not compile it (#676).
 
+`cassandra-driver` is the case where "here" is not a preference but the
+only available home, and it is worth knowing before someone tries to
+"simplify" it back to a root devDependency.  Its 4.9.0 release hard-pins
+`adm-zip: ~0.5.10`, and GHSA-xcpc-8h2w-3j85 (high) is fixed only in 0.6.0
+— so a root entry pulls an unfixable high advisory into `bun.lock` and
+turns `bun run lint:audit` red.  Because these packages are absent from
+the root install by design, declaring it here puts the driver's whole
+closure outside the lockfile `bun audit` reads: the gate stays green
+because there is nothing there, not because anything was suppressed.  That
+is what `cassandra/scenarios/01-driver-shape.ts` buys — the same shape
+check `tests/unit/ci/OptionalPeerModuleShapes.test.ts` performs for the
+root-manifest peers, in the one place the driver can be installed at all.
+
 Every suite directory has the same three files:
 
 ```
@@ -131,6 +145,18 @@ and the runner imports it and calls `runScenarios()` from
     ├── 01-…ts
     └── 02-…ts
 ```
+
+`cassandra` is the tenth, and it is a persistence backend rather than a
+broker — worth saying why it is on this side of the split rather than the
+next.  `SqlPersistenceContext` requires three factories, and one of them is
+`makeDurableStateStore`; there is no Cassandra durable-state store, so a
+context built for the shared contract would have to fail or fake its third
+factory and the durable-state scenarios would go red or assert nothing.  Its
+four scenarios go at the seams `FakeCassandraClient` cannot reach instead:
+the driver's own module shape (see below), the LWT append serializer against
+real Paxos, the `events_by_tag` side table including compaction reaching it
+(#654), and two stores agreeing on a storage identity over one keyspace
+(#1358).
 
 **Shared persistence contract.**  The eight persistence suites —
 postgres, mariadb, libsql, mssql, cockroachdb, yugabytedb, mongodb,
@@ -169,6 +195,7 @@ bun run test:integration:broker mssql          # SQL Server 2022 + MsSql{Journal
 bun run test:integration:broker cockroachdb    # CockroachDB + the Postgres stores over pg wire
 bun run test:integration:broker yugabytedb     # YugabyteDB + the Postgres stores over pg wire
 bun run test:integration:broker mongodb        # MongoDB + Mongo{Journal,SnapshotStore,DurableStateStore}
+bun run test:integration:broker cassandra      # Cassandra + Cassandra{Journal,Query,SnapshotStore}
 bun run test:integration:broker dynamodb       # DynamoDB Local + DynamoDb{Journal,SnapshotStore,DurableStateStore}
 bun run test:integration:broker email          # GreenMail (SMTP + IMAP) + EmailBridgeActor
 ```
@@ -211,11 +238,15 @@ as a job matrix.  Skipped on PRs touching only docs / unit tests
    PID 1 — they exit cleanly on `docker compose down` instead of
    leaking zombies.
 2. Create `tests/integration/brokers/<name>/` with the three files
-   shown above.
-3. Add the npm script to `package.json` — copy an existing one,
-   swap the compose-file name.
-4. (Optional) Add the suite to the CI matrix in
-   `.github/workflows/integration-brokers.yml`.
+   shown above.  There is **no npm script to add** — `scripts/integration-compose.mjs`
+   discovers the suite from the directory, which is the whole point of #559.
+3. Add the adapter's peer-dep to `package.json` here, if it has one that no
+   other suite already declares.
+4. Add the suite to the CI matrix in
+   `.github/workflows/integration-brokers.yml`.  Not optional:
+   `tests/unit/ci/IntegrationBrokerSuites.test.ts` fails when the matrix and
+   the tree disagree in either direction, so a missing leg is a red `bun test`
+   rather than a suite that silently never runs.
 5. The scenario uses `waitForPort(host, port)` from `lib/WaitForPort.ts`
    to guard against the "container started, broker not ready yet"
    race that's the single most common source of flake.
