@@ -452,8 +452,20 @@ function scanSource(file: string, source: string): FileScan {
   return { declarations, waits, helpers };
 }
 
+/**
+ * Every `.ts` under `tests/` that this repository wrote.
+ *
+ * `node_modules` is skipped, and not as tidiness: `tests/integration/brokers/`
+ * has its own manifest, and `tests/integration/brokers/README.md` tells a
+ * developer to install it. Doing so drops a vendor tree inside the scan root,
+ * and the ratchet then counts `setTimeout` calls in code nobody here
+ * wrote — Azure MSAL's `TimeUtils` was the first to trip it — turning this
+ * gate red for anyone who followed the instructions. The ledger can only
+ * describe files the repository owns.
+ */
 function testTreeFiles(directory: string, out: string[] = []): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) testTreeFiles(path, out);
     else if (entry.name.endsWith('.ts')) out.push(path);
