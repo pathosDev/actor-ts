@@ -6652,11 +6652,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `codeql.yml` analyses the whole repository on pull requests, on pushes
   to `main` and `develop`, and weekly — weekly because CodeQL ships new
   queries continuously, so a file that was clean when it was written can
-  be flagged months later with nobody having touched it. It runs the
-  default high-precision query suite rather than `security-extended`: the
-  first analysis of a codebase this size produces an unknown number of
-  alerts and each one has to be fixed or dismissed with a recorded reason
-  before the baseline means anything.
+  be flagged months later with nobody having touched it. It started on
+  the default high-precision query suite rather than `security-extended`,
+  because the first analysis of a codebase this size produces an unknown
+  number of alerts and each one has to be fixed or dismissed with a
+  recorded reason before the baseline means anything. That baseline came
+  back clean — nine alerts, eight fixed and one dismissed, none open — so
+  #1297 widened the suite to `security-extended`. Not to
+  `security-and-quality`: its extra queries are maintainability findings,
+  which `knip` and `typecheck:dev` already gate, and routing those through
+  the code-scanning alert list would dilute the list `SECURITY.md` points
+  a reporter at.
 
   The advisory gate is `bun audit` rather than
   `actions/dependency-review-action`, and the difference is not stylistic.

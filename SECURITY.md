@@ -115,7 +115,7 @@ relying on when they install a published version:
 
 | Gate | Where | What it catches |
 | --- | --- | --- |
-| **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the default query suite. Results land in the repository's code-scanning alerts. |
+| **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the `security-extended` query suite. Results land in the repository's code-scanning alerts. |
 | **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions `bun.lock` actually pins. |
 | **SHA-pinned actions** | `tests/unit/ci/WorkflowHygiene.test.ts` | A mutable action tag being repointed under a job that holds a publishing credential. |
 | **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. |

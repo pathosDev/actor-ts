@@ -87,6 +87,12 @@ mit CodeQLs `javascript-typescript`-Pack bei jedem Pull Request,
 bei Pushes auf `main` und `develop` und wöchentlich. Funde landen
 in den Code-Scanning-Alerts des Repositorys.
 
+Die Query-Suite ist `security-extended`. Das war nicht immer so:
+Zuerst lief bewusst die engere Standard-Suite, damit die allererste
+Analyse eines Codebestands dieser Größe eine Triage ergab, die man
+auch abschließen kann. Nachdem diese Baseline sauber war, wurde die
+Suite erweitert.
+
 Der wöchentliche Lauf ist nicht redundant: CodeQL liefert
 laufend neue Queries aus, eine Datei kann also Monate nach ihrer
 Entstehung markiert werden, ohne dass jemand sie angefasst hat.

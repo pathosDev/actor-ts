@@ -84,6 +84,12 @@ CodeQL's `javascript-typescript` pack on every pull request, on
 pushes to `main` and `develop`, and weekly. Findings land in the
 repository's code-scanning alerts.
 
+The query suite is `security-extended`. It was not always: the
+narrower default suite ran first, on purpose, so that the very
+first analysis of a codebase this size produced a triage you
+could finish. Once that baseline was clean the suite was
+widened.
+
 The weekly run is not redundant: CodeQL ships new queries
 continuously, so a file that was clean when it was written can be
 flagged months later with nobody having touched it.
