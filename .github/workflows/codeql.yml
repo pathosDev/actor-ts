@@ -6,7 +6,7 @@ name: codeql
 # found" — the repository had never been analysed once.  Everything here
 # parses somebody else's bytes: cluster wire frames, HOCON, HTTP requests
 # and WebSocket payloads, persisted snapshots.  That is exactly the input
-# surface CodeQL's default queries are written for, and none of the other
+# surface CodeQL's security queries are written for, and none of the other
 # gates (`bun run typecheck`, `bun test`, publint/attw/knip) look for a
 # taint path.
 #
@@ -16,8 +16,8 @@ name: codeql
 # a file that was clean in March can be flagged in June without anybody
 # touching it.
 #
-# Analysis configuration (which paths are excluded, and why the default
-# query suite rather than `security-extended`) lives in
+# Analysis configuration (which paths are excluded, and why the suite is
+# `security-extended` since the default baseline came back clean) lives in
 # `.github/codeql/codeql-config.yml`.
 #
 # `uses:` pins are 40-character commit SHAs with the release tag in a
