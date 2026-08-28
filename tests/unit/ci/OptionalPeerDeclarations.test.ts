@@ -104,7 +104,7 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  *      written up in `SECURITY.md`, so that route stays open but not silent.
  *
  * The stub that gap left unchecked — `CassandraClientLike` and the
- * `CassandraDriver` interface in `src/persistence/journals/CassandraClient.ts`
+ * `CassandraDriver` shape in `src/persistence/journals/CassandraClient.ts`
  * — is now checked in the place the driver is actually installed:
  * `tests/integration/brokers/cassandra/scenarios/01-driver-shape.ts`, against
  * a live cluster. It cannot move to
