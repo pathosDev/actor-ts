@@ -324,9 +324,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   without the other, so a step can never report a pass having evaluated half
   the gate. `COVERAGE_LINE_FLOOR` no longer appears in any workflow: all
   three floors are configured in the script and nowhere else, and
-  `CoverageGate.test.ts` fails if a workflow starts carrying a copy of the
+  `CoverageGate.test.ts` fails if `test.yml` starts carrying a copy of the
   number, if a bash parse of the `All files` row reappears, or if no CI step
-  calls the script with both artifacts.
+  calls the script with both artifacts. Note the reach precisely: that test
+  reads `test.yml` and nothing else, so a `COVERAGE_LINE_FLOOR` set in
+  `publish.yml` or `multi-runtime.yml` would not turn it red. Neither
+  workflow runs the gate today, which is why this is a bound on the guard
+  rather than a hole in it.
 
   The aggregate line-coverage floor is raised to **90 %**, from 80 %.
   Measured on the CI population (`ACTOR_TS_SKIP_FLAKY_MNS=1`, bun 1.4.0,
@@ -745,9 +749,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   droppable the arrival is what goes, reported as `drop-new`. `reject` throws
   `MailboxFullError` *before admitting anything*, and `ActorCell.unstashAll`
   restores the stash buffer before the error travels on, so the batch stays
-  parked and `deadLetterStash` still sees it. `Envelope.undroppable` is
-  honoured on the new path, so a `Terminated` that round-tripped through a
-  stash is admitted whatever the policy says and is never counted (#729).
+  parked and `deadLetterStash` still sees it.
+
+  That last sentence holds for the untyped `context.stash()` /
+  `unstashAll()` path only. The typed `Behaviors.withStash` path
+  dead-letters the batch instead, because `StashBuffer` has already emptied
+  itself by the time it calls the cell and there is nothing left to put back.
+  The same split applies to `Envelope.undroppable`: a `Terminated` that
+  round-tripped through the untyped stash is admitted whatever the policy says
+  and is never counted (#729), and the typed buffer has no such path to
+  preserve it.
 
   New seams, because `Mailbox.userQueue` is private: `RingBuffer.pop()` and a
   protected `Mailbox.removeNewest()` beside `removeOldest`, both stepping over
@@ -777,7 +788,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   which is the parity with S3's `MaxKeys` the issue asked for; `limit: 0` and
   negative limits keep their historical `slice` semantics, and under a limit
   each directory's entries are ordered before descending so the depth-first
-  order agrees with the ascending key order the contract promises. A prefix
+  order agrees with the ascending key order the contract promises — with one
+  bound the code's own JSDoc states and this entry should too: that agreement
+  rests on `localeCompare` being prefix-monotone, which it is not for every
+  character. A key containing U+FF0F FULLWIDTH SOLIDUS, legal on NTFS and
+  POSIX alike, collates so that the early exit can stop one entry too soon.
+  No caller in `src/` passes a limit today. A prefix
   naming a directory nothing ever wrote to, or one whose directory portion is
   an ordinary file, now returns an empty listing instead of surfacing
   ENOENT/ENOTDIR — both became reachable only once the walk started at the
@@ -4982,6 +4998,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **`WebsocketClientActor` can receive binary frames on Node and Deno at all,
+  and the oversize-frame cap now covers them (#750).** Nothing in `src/` set
+  the socket's `binaryType`, so the client took the runtime default —
+  `nodebuffer` on Bun, `blob` on Node and Deno. A `Blob` has `size` rather
+  than `byteLength` and matches no branch of `normalizeInbound`, which
+  therefore returned `null` and sent every binary frame down the
+  "unrecognised inbound frame type" path: dropped, socket left open, one
+  warning per frame, whatever its size. So the cap did not apply on two of
+  three supported runtimes, and the documented `rawCodec()` client example
+  could not work there either.
+
+  Fixed by setting `binaryType = 'arraybuffer'` at dial time in
+  `connectImplementation` — not in the `WebsocketClientConstructor` seam,
+  which is exported, so a custom constructor would reintroduce the defect from
+  outside the file whose correctness depends on it. Teaching
+  `normalizeInbound` about `Blob` was rejected in writing: `Blob` yields
+  bytes only through `arrayBuffer()`, so `handleInbound` would resume on a
+  later microtask, dropping the arrival-order guarantee and moving the
+  `maxFrameBytes` check behind it — putting the next oversize frame in flight
+  before the close for the first is issued, which is the property the cap
+  exists to provide.
+
+  A new smoke case covers it on all three runtimes; without the fix it is red
+  on Node and Deno and green on Bun, which is also why every existing
+  WebSocket test stayed green through the regression — they are text-only, and
+  Bun's default hid it.
+
 - **BREAKING (pre-1.0): `assertValidTags` now rejects empty and duplicate
   event tags (#740).** The validator exempted the empty tag on the documented
   grounds that "every backend already skips them on write". No backend did.
@@ -5019,7 +5062,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   The bound is derived rather than chosen. `GCounter.value()` sums the slots
   and the decoder admits at most `MAX_CRDT_ENTRIES` (4 096) of them, so
   `floor(MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES)` is the largest per-slot
-  ceiling for which a fully saturated counter still sums to an exact integer.
+  ceiling for which a fully saturated *decoded* counter still sums to an exact
+  integer. The qualifier is load-bearing: `MAX_CRDT_ENTRIES` bounds one
+  decode, and `merge` has no slot-count cap, so slots accumulate across
+  frames. Four individually wire-valid frames of 4 096 disjoint replicas each
+  merge into a counter of 16 384 slots whose `value()` is no longer a safe
+  integer — and which can then be re-encoded by nobody, including this
+  replica's own durable store. That path is not closed here.
   It is deliberately not configurable: raising it would be configuring
   `value()` into silent lossiness, which is the failure the bound exists to
   prevent. `MVRegister` vector-clock entries are bounded by the same rule —
@@ -5358,12 +5407,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `DeadLetter` has no slot for either.
 
 - **`WebsocketClientActor` now closes the connection on an oversize inbound
-  frame (#750)** with code 1009, instead of dropping the frame and leaving
-  the socket open. A hostile, compromised or MITM'd peer could otherwise
-  repeat the allocation indefinitely on a single connection — one full-size
-  heap allocation and one warning line per frame, with nothing bounding
-  either. The breach now routes through the actor's normal disconnect path,
-  so another round costs the peer a full reconnect, which the inherited
+  frame (#750)**
+  with code 1009, instead of dropping the frame and leaving the socket open.
+  As first landed this held for text frames only; the entry below closes the
+  binary half on Node and Deno. A hostile, compromised or MITM'd peer could
+  otherwise repeat the allocation indefinitely on a single connection — one
+  full-size heap allocation and one warning line per frame, with nothing
+  bounding either. The breach now routes through the actor's normal disconnect
+  path, so another round costs the peer a full reconnect, which the inherited
   backoff and circuit breaker already throttle. An application that relied on
   oversize frames being dropped silently while the connection carried on will
   now see a disconnect and a reconnect instead.
@@ -5526,6 +5577,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   tooling — no longer works either: it is dropped with a `WARN` for want of an
   authenticated origin.
 
+  The other half of the migration is the delivery narrowing: a subscriber
+  that opts into `deliverWithOrigin` receives a `PubSubEnvelope` carrying
+  `topic`, `message` and `origin` rather than the bare body, so a handler
+  written against the old shape has to unwrap it. Every subscriber that does
+  not opt in is untouched, which is why the flag exists.
+
   Two sub-remedies are refused rather than deferred, with the reasoning
   recorded at the check site: strict per-replica `seqAtReplica` monotonicity
   (pub-sub dead-letters a publish with no live subscriber and nothing
@@ -5542,7 +5599,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nodes do not share a system name lost the publisher's identity on every hop.
 
 - **BREAKING (pre-1.0): metric series can now be evicted, and two stock
-  families stopped minting series nothing paid for (#745).**
+  families stopped minting series nothing paid for (#745).** Note what this
+  does and does not close: #745's headline family,
+  `actor_mailbox_dropped_total`, lost its unbounded `path` label in #658 and
+  gained a per-family cap in #1148/#131, both before this change. What lands
+  here is the residual the issue's own later comments named — no per-child
+  eviction, and a stray `class="unknown"` series. Per-child eviction cannot
+  help that family in any case: `remove` is documented as wrong for counters,
+  and it is one.
   `MetricsRegistry` gains `remove(name, labels)`, implemented by
   `DefaultMetricsRegistry`, `NoopMetricsRegistry` and the prom-client bridge.
   Until now `clear()` was the only removal path and its own documentation
@@ -5709,8 +5773,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   became permanently undecryptable.
 
   `ObjectStorageWriteKeyRules` is now the single declaration of the
-  write-path rule, spread into both backends and the sweep, so a key the
-  framework can write is by construction a key the sweep can process. Each
+  write-path *character* rule, spread into both backends and the sweep, so a
+  key the framework can write carries no character the sweep chokes on. The
+  qualifier matters: the `<pid>/<leaf>` shape rule the next bullet introduces
+  is enforced by neither write path, so "a key the framework can write is by
+  construction a key the sweep can process" holds for the character rule and
+  not for the shape. Each
   backend has two rule sets: strict on `put`, unchanged on
   `get`/`delete`/`list` — tightening the read path would not reject a new bad
   key, it would strand an object an older version already wrote, unreadable
@@ -5791,8 +5859,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **BREAKING (pre-1.0):** `WebsocketRouteRegistration` now carries a required
   `preAttachBuffer` field. Only `HttpExtension` constructs one, so a custom
   `HttpServerBackend` that merely consumes registrations is unaffected; a
-  test double that builds one adds `preAttachBuffer:
-  DEFAULT_PRE_ATTACH_BUFFER_LIMITS`. Behaviourally, a peer that sends more
+  test double that builds one supplies a `preAttachBuffer` of its own. The
+  defaults are reachable as `DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES` and
+  `DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES` from `actor-ts/http/websocket`;
+  the bundled `DEFAULT_PRE_ATTACH_BUFFER_LIMITS` object is deliberately not
+  exported, because the socket adapter is not part of the public surface.
+  Behaviourally, a peer that sends more
   than 256 frames or 4 MiB before its connection actor attaches, or a hub
   that takes longer than 10 s to produce one, now sees the connection closed
   where it previously succeeded.
@@ -5907,20 +5979,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#373).**
 
   Two cases assert positively that an oversize frame never reaches the
-  application on Express, and pin which layer refused it via the
-  disconnect's `initiatedBy` — `server` when the connection actor's
-  post-materialisation check closed the socket, `client` when the
-  transport refused it off the wire. Measured on this tree: Bun 1.3.1
+  application on Express. They no longer pin *which* layer refused it: the
+  `client` branch of that expectation was guarded on
+  `detectRuntime() !== 'bun'` while the file only ever runs under
+  `bun test`, so it asserted nothing while reading as evidence. It was
+  removed later in this same release cycle, and the runtime is now an
+  asserted premise followed by the one outcome it implies. Measured on this
+  tree: Bun 1.3.1
   stores both `maxPayload` and Bun's own `maxPayloadLength`, reads both
   back unchanged, and delivers a 4096-byte frame against a 1024-byte cap
   to the handler without closing, while Node 26.7.0 with `ws` 8.20.0
   refuses the same frame with `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH` and
   1009. The real package cannot be reached on Bun as a workaround — the
   specifier is shadowed and `ws`'s own `exports` field blocks its
-  subpaths. Pinning the outcome per runtime makes these a canary on the
-  peer rather than an endorsement: when the shim starts enforcing the
-  option they go red, and that is the signal to lift the caveat in the
-  WebSocket docs.
+  subpaths. Pinning the outcome makes these a canary on the peer rather
+  than an endorsement: the day Bun's shim honours `maxPayload`,
+  `initiatedBy` becomes `'client'` and the test goes red, which is the
+  signal to lift the caveat in the WebSocket docs.
 
 - **A cluster singleton hand-over request is honoured only from the peer
   address the transport authenticated, carried to the manager inside an
