@@ -122,6 +122,21 @@ Vier Kategorien:
 ("amqp://localhost:5672", "kafka-cluster-1"), die in Log-Zeilen und
 Lifecycle-Events auftaucht.
 
+**Gib den Verbindungs-String so zurück, wie er konfiguriert ist —
+redigiere ihn nicht selbst.** Die Basisklasse schickt jede
+Verwendung durch `redactedEndpointLabel()`, was Userinfo und
+Query-String entfernt; `amqp://svc:pw@rabbit:5671/orders` erreicht
+`BrokerConnected` also als `amqp://rabbit:5671/orders`. Das wiegt
+schwerer, als es aussieht: Die vier Lifecycle-Events landen auf dem
+systemweiten `EventStream`, der keinen Autorisierungsbegriff kennt
+— jeder Actor im System kann sie also lesen — und eine
+Reconnect-Schleife publiziert sie bei jedem Backoff-Tick erneut,
+über die gesamte Dauer eines Ausfalls. Eine zusammengesetzte
+Server-Liste behält ihre Gestalt und verliert jede Credential
+(`nats://***@a:4222,nats://***@b:4222`), ein Label ohne Credential
+kommt unverändert zurück. Rufe `redactedEndpointLabel()` auch in
+deinen eigenen Log-Zeilen auf.
+
 `onReceive` ist **versiegelt** — die Basisklasse besitzt die Methode, damit
 sie `Terminated` abfangen kann, bevor deine Dispatch-Tabelle es sieht.
 Implementiere stattdessen `onCommand`; dort kommt alles außer dem

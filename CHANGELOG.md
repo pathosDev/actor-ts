@@ -5029,6 +5029,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Broker lifecycle events no longer carry the connection string's
+  credential (#741).** `BrokerActor` embedded `endpointLabel()` verbatim in
+  `BrokerConnected`, `BrokerDisconnected`, `BrokerReconnectFailed` and
+  `BrokerReconnectAttempt`, and five of the shipped actors implement that hook
+  as a bare pass-through of the configured URL. A broker URL is the one
+  configuration value that routinely carries a secret inline — `AmqpOptionsType.url`
+  documents its own shape as `amqp://user:pass@host:5672/vhost`, and the
+  primary AMQP doc example is a URL with a password in it — so the credential
+  was published on the system-wide `EventStream`, which has no authorization
+  concept, on every successful connect and on every reconnect attempt. With
+  the default policy (`maxAttempts: Infinity`, up to 30 s apart) that is one
+  copy per backoff tick for the length of an outage.
+
+  Every use inside `BrokerActor` — the four events and four log lines and
+  error messages — now goes through a new `protected redactedEndpointLabel()`,
+  which applies the existing `redactedUrlLabel` helper (#590, #592): userinfo
+  and query string out, scheme, host, port and path kept, because the field's
+  only job is telling one broker from another. Redacting in the base class
+  rather than in the fifteen implementations is what covers an out-of-tree
+  subclass following the documented recipe without its author knowing the rule
+  exists; `endpointLabel()` itself is unchanged and still returns the string as
+  configured.
+
+  The composite labels were measured rather than assumed. A joined NATS or
+  Kafka server list and the email bridge's `imap://… + smtp://…` are not
+  parseable URLs, so they take the helper's scan fallback, which masks the
+  userinfo of every `scheme://` it finds and leaves the rest of the string
+  alone — `nats://***@a:4222,nats://***@b:4222`, not a single flattened host.
+  A label that never carried a credential (`tcp://host:port`, `<unknown>`) is
+  returned unchanged, which is pinned by its own test: over-redaction would
+  cost the field its whole diagnostic value.
+
 - **`WebsocketClientActor` can receive binary frames on Node and Deno at all,
   and the oversize-frame cap now covers them (#750).** Nothing in `src/` set
   the socket's `binaryType`, so the client took the runtime default —

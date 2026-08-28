@@ -23,6 +23,7 @@ import {
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
+import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 
 /**
  * Connection-lifecycle state machine.  Transitions are linear:
@@ -216,8 +217,46 @@ export abstract class BrokerActor<
     return undefined;
   }
 
-  /** Subclass: human-readable label for the connection (used in events). */
+  /**
+   * Subclass: human-readable label for the connection, used in lifecycle
+   * events and log lines.
+   *
+   * **Return the connection string as configured — do not redact it here.**
+   * Every use of it inside `BrokerActor` goes through
+   * {@link redactedEndpointLabel}, so a subclass that redacted as well would
+   * only make the label harder to read, and a subclass that forgot would be
+   * the leak.  Which is also why the redaction lives here and not in the
+   * fifteen implementations: an out-of-tree subclass following this recipe is
+   * covered without knowing the rule exists (#741).
+   */
   protected abstract endpointLabel(): string;
+
+  /**
+   * {@link endpointLabel} with the secret parts removed — what actually
+   * reaches an event, a log line or an error message.
+   *
+   * A broker connection string is the one configuration value that routinely
+   * carries a credential inline; `AmqpOptionsType.url` documents its own shape
+   * as `amqp://user:pass@host:5672/vhost`, and the primary AMQP doc example is
+   * a URL with a password in it.  The audience for this label is wider than a
+   * log file: `BrokerConnected`, `BrokerDisconnected`, `BrokerReconnectFailed`
+   * and `BrokerReconnectAttempt` all carry it on the system-wide
+   * `EventStream`, which has no authorization concept — so any actor in the
+   * system can read it — and a reconnect loop republishes it every backoff
+   * tick for as long as an outage lasts (#741).
+   *
+   * `redactedUrlLabel` is the helper #590 added and #592 already uses, and it
+   * is the right shape for the *composite* labels here too — measured rather
+   * than assumed.  A comma-joined server list (`nats://…,nats://…`) or an
+   * `imap://… + smtp://…` pair is not a parseable URL, so it takes the
+   * helper's scan fallback, which masks the userinfo of every `scheme://` it
+   * finds and leaves the rest of the string intact.  A label that never
+   * carried a credential (`tcp://host:port`, `<unknown>`) comes back
+   * unchanged, so this is a no-op wherever there is nothing to hide.
+   */
+  protected redactedEndpointLabel(): string {
+    return redactedUrlLabel(this.endpointLabel());
+  }
 
   /* ----------------------------- Protocol hooks --------------------------- */
 
@@ -345,7 +384,7 @@ export abstract class BrokerActor<
   protected abortConnectAttempt(_cause: Error): void {
     this.log.warn(
       `${this.constructor.name}: connect deadline elapsed, but this actor cannot abort an `
-      + `in-flight connect — the attempt to ${this.endpointLabel()} keeps running`,
+      + `in-flight connect — the attempt to ${this.redactedEndpointLabel()} keeps running`,
     );
   }
 
@@ -826,7 +865,7 @@ export abstract class BrokerActor<
       // subclass that remembered `noteInboundActivity` and nothing else.
       this._armIdleTimeout();
       this.system.eventStream.publish(
-        new BrokerConnected(this.self.path.toString(), this.endpointLabel()),
+        new BrokerConnected(this.self.path.toString(), this.redactedEndpointLabel()),
       );
       // Drain any buffered outbound now that we're connected.
       void this._drainBuffer();
@@ -876,7 +915,7 @@ export abstract class BrokerActor<
     }
     const handle = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       this.abortConnectAttempt(new Error(
-        `connect to ${this.endpointLabel()} did not complete within ${timeoutMs} ms`,
+        `connect to ${this.redactedEndpointLabel()} did not complete within ${timeoutMs} ms`,
       ));
     });
     try { await this.connectImplementation(); }
@@ -940,7 +979,7 @@ export abstract class BrokerActor<
     const timeoutMs = this._idleTimeoutMs;
     this._clearIdleTimeout();
     this.handleIdleTimeout(new Error(
-      `no inbound data from ${this.endpointLabel()} for ${timeoutMs} ms (idle timeout)`,
+      `no inbound data from ${this.redactedEndpointLabel()} for ${timeoutMs} ms (idle timeout)`,
     ));
   }
 
@@ -964,7 +1003,7 @@ export abstract class BrokerActor<
   private async _abandonConnection(): Promise<void> {
     this.log.warn(
       `${this.constructor.name}: a connect attempt completed after the actor stopped; `
-      + `abandoning the connection to ${this.endpointLabel()}`,
+      + `abandoning the connection to ${this.redactedEndpointLabel()}`,
     );
     this._transportOpened = true;
     await this._closeTransport();
@@ -1008,7 +1047,7 @@ export abstract class BrokerActor<
     if (this._state !== 'connected' && this._state !== 'connecting') return;
     this._state = 'disconnected';
     this.system.eventStream.publish(
-      new BrokerDisconnected(this.self.path.toString(), this.endpointLabel(), cause),
+      new BrokerDisconnected(this.self.path.toString(), this.redactedEndpointLabel(), cause),
     );
     this._handleReconnect(cause ?? new Error('connection lost'));
   }
@@ -1025,14 +1064,14 @@ export abstract class BrokerActor<
     this._reconnectAttempt++;
     if (this._reconnectAttempt > maxAttempts) {
       this.system.eventStream.publish(new BrokerReconnectFailed(
-        this.self.path.toString(), this.endpointLabel(), this._reconnectAttempt - 1, cause,
+        this.self.path.toString(), this.redactedEndpointLabel(), this._reconnectAttempt - 1, cause,
       ));
       return;
     }
     const backoff = Math.min(initial * Math.pow(factor, this._reconnectAttempt - 1), maxDelay);
     const delay = this._jitteredBackoff(backoff);
     this.system.eventStream.publish(new BrokerReconnectAttempt(
-      this.self.path.toString(), this.endpointLabel(), this._reconnectAttempt, delay,
+      this.self.path.toString(), this.redactedEndpointLabel(), this._reconnectAttempt, delay,
     ));
     this._scheduleReconnect(delay);
   }

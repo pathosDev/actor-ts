@@ -496,6 +496,17 @@ Frame: Der Verstoß schließt die Verbindung, eine Gegenstelle bekommt also eine
 Zeile pro Verbindungsaufbau. Die Redaktion bleibt trotzdem nötig, denn wie viele
 Verbindungsaufbauten es gibt, entscheidet weiterhin die Gegenstelle.
 
+Der zweite Konsument ist `BrokerActor`, und dort geht es gar nicht um ein Log:
+`redactedEndpointLabel()` ist das, was `BrokerConnected`, `BrokerDisconnected`,
+`BrokerReconnectFailed` und `BrokerReconnectAttempt` erreicht — Events auf dem
+systemweiten `EventStream`. Dieses Publikum ist größer als eine Log-Datei
+(`subscribe` kennt keinen Autorisierungsbegriff), und die Events entstehen auf
+dem Erfolgspfad: einmal pro Verbindungsaufbau und einmal pro Reconnect-Versuch.
+Der Fall zeigt außerdem, dass der Fallback echte Arbeit leistet: Eine
+zusammengesetzte Server-Liste ist keine parsebare URL, nimmt also den Scan-Pfad
+und kommt als `nats://***@a:4222,nats://***@b:4222` zurück, statt auf einen
+einzigen Host eingedampft zu werden.
+
 <Aside type="tip" title="Eine Stelle für das, was durchgerutscht ist">
   Beiden Funktionen hilft nichts gegen ein Geheimnis, das in den Feldern eines
   Log-Records gelandet ist statt in seiner Meldung. Dafür nimmt der
