@@ -1403,3 +1403,107 @@ describe('BrokerActor — the documented subclass recipe (#709)', () => {
     await sys.terminate();
   });
 });
+
+/* ------------- Credential redaction on the EventStream (#741) ------------- */
+
+/**
+ * `endpoint` is the only field on a broker lifecycle event that says *which*
+ * broker — `actorPath` does not — so a monitor has to read it.  And a broker
+ * connection string is the one configuration value that routinely carries a
+ * credential inline; `AmqpOptionsType.url` documents its own shape as
+ * `amqp://user:pass@host:5672/vhost`.
+ *
+ * What makes this worse than an error-path log: these events go to the
+ * system-wide `EventStream`, which has no authorization concept, so any actor
+ * in the system can subscribe and read them — and they fire on the *happy*
+ * path, once per successful connect and once per reconnect attempt, with the
+ * default policy retrying forever at up to 30 s for the length of an outage.
+ */
+describe('BrokerActor — a lifecycle event carries no credential (#741)', () => {
+  const SECRET_URL = 'amqp://svc-orders:S3cr3tPw@rabbit.prod:5671/orders';
+
+  /** Record the `endpoint` of every `BrokerConnected` the stream delivers. */
+  function connectedEndpoints(sys: ActorSystem): string[] {
+    const seen: string[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(m: unknown): void { seen.push((m as BrokerConnected).endpoint); }
+      })()),
+      BrokerConnected,
+    );
+    return seen;
+  }
+
+  test('BrokerConnected drops the userinfo and keeps the identity', async () => {
+    const sys = makeSystem('redact-connected');
+    const seen = connectedEndpoints(sys);
+    const { brokerReady } = spawnFake(sys, { endpoint: SECRET_URL });
+    await brokerReady;
+    await awaitCondition(() => seen.length >= 1, {
+      timeoutMs: 4_000, label: 'BrokerConnected reached its subscriber',
+    });
+
+    // Host, port and path stay: without them the field says nothing, and
+    // telling one broker from another is the whole reason it exists.
+    expect(seen[0]).toBe('amqp://rabbit.prod:5671/orders');
+    expect(seen[0]).not.toContain('S3cr3tPw');
+    expect(seen[0]).not.toContain('svc-orders');
+    await sys.terminate();
+  });
+
+  test('BrokerReconnectAttempt — the one that repeats — is redacted too', async () => {
+    const sys = makeSystem('redact-reconnect');
+    const seen: string[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(m: unknown): void { seen.push((m as BrokerReconnectAttempt).endpoint); }
+      })()),
+      BrokerReconnectAttempt,
+    );
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: SECRET_URL, reconnect: RECONNECT_EVERY_20_MS },
+      (broker) => { broker.failNextConnects = 2; },
+    );
+    await brokerReady;
+    await awaitCondition(() => seen.length >= 2, {
+      timeoutMs: 4_000, label: 'two reconnect attempts published',
+    });
+
+    for (const endpoint of seen) expect(endpoint).not.toContain('S3cr3tPw');
+    expect(seen[0]).toBe('amqp://rabbit.prod:5671/orders');
+    await sys.terminate();
+  });
+
+  test('a composite label keeps its shape and loses every credential', async () => {
+    const sys = makeSystem('redact-composite');
+    const seen = connectedEndpoints(sys);
+    // The NATS / Kafka / email-bridge shape: a joined list is not a parseable
+    // URL, so this exercises the helper's scan fallback rather than its URL
+    // path — the case a naive `new URL(...)` redaction would have mangled.
+    const { brokerReady } = spawnFake(sys, { endpoint: 'nats://u:pw@a:4222,nats://u:pw@b:4222' });
+    await brokerReady;
+    await awaitCondition(() => seen.length >= 1, {
+      timeoutMs: 4_000, label: 'BrokerConnected reached its subscriber',
+    });
+
+    expect(seen[0]).toBe('nats://***@a:4222,nats://***@b:4222');
+    await sys.terminate();
+  });
+
+  test('a label that never carried a credential is unchanged', async () => {
+    const sys = makeSystem('redact-noop');
+    const seen = connectedEndpoints(sys);
+    const { brokerReady } = spawnFake(sys, { endpoint: 'tcp://10.0.0.4:9000' });
+    await brokerReady;
+    await awaitCondition(() => seen.length >= 1, {
+      timeoutMs: 4_000, label: 'BrokerConnected reached its subscriber',
+    });
+
+    // The guard against the opposite defect.  Redaction that also ate the
+    // labels with nothing to hide would trade the field's diagnostic value
+    // for no disclosure benefit at all.
+    expect(seen[0]).toBe('tcp://10.0.0.4:9000');
+    await sys.terminate();
+  });
+});

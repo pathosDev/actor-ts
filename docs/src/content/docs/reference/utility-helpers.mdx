@@ -477,6 +477,17 @@ closes the connection, so a peer gets one line per dial. The redaction stands
 regardless, because a peer that provokes reconnects still decides how many
 dials there are.
 
+`BrokerActor` is the other consumer, and its case is not a log at all:
+`redactedEndpointLabel()` is what reaches `BrokerConnected`,
+`BrokerDisconnected`, `BrokerReconnectFailed` and `BrokerReconnectAttempt`,
+which are published on the system-wide `EventStream`. That audience is wider
+than a log file — `subscribe` has no authorization concept — and the events
+fire on the happy path, once per connect and once per reconnect attempt. It
+also shows the fallback doing real work: a joined server list is not a
+parseable URL, so it takes the scan path and comes back as
+`nats://***@a:4222,nats://***@b:4222` rather than being flattened to one
+host.
+
 <Aside type="tip" title="One place to catch what slipped through">
   Neither function can help with a credential that reached a log record's
   fields rather than its message. For that, `MultiSinkLogger` takes a

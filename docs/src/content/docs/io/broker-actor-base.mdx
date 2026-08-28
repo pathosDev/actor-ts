@@ -120,6 +120,20 @@ Four categories:
 ("amqp://localhost:5672", "kafka-cluster-1") used in log lines
 and lifecycle events.
 
+**Return the connection string as configured — do not redact it
+yourself.** The base class runs every use through
+`redactedEndpointLabel()`, which drops the userinfo and the query
+string, so `amqp://svc:pw@rabbit:5671/orders` reaches
+`BrokerConnected` as `amqp://rabbit:5671/orders`. That matters
+more than it looks: the four lifecycle events go to the
+system-wide `EventStream`, which has no authorization concept, so
+any actor in the system can read them — and a reconnect loop
+republishes on every backoff tick for the length of an outage.
+A joined server list keeps its shape and loses each credential
+(`nats://***@a:4222,nats://***@b:4222`), and a label that never
+carried one comes back unchanged. Call `redactedEndpointLabel()`
+in your own log lines too.
+
 `onReceive` is **sealed** — the base class owns it, so that it can intercept
 `Terminated` before your dispatch table sees it.  Implement `onCommand`
 instead; it receives everything except the death-watch signal.

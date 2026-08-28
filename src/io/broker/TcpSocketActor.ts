@@ -142,7 +142,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     try { sock.setKeepAlive(true, keepAliveMs); }
     catch (e) {
       this.log.warn(
-        `TcpSocketActor: could not enable TCP keepalive on ${this.endpointLabel()}: `
+        `TcpSocketActor: could not enable TCP keepalive on ${this.redactedEndpointLabel()}: `
         + `${(e as Error).message}`,
       );
     }
