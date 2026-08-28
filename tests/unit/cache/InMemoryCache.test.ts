@@ -484,6 +484,88 @@ describe('InMemoryCache — eviction prefers entries that carry no guarantee (#1
  * caller, which is why `tests/unit/http/cache/SharedCacheEviction.test.ts`
  * still characterises a same-prefix flood as an open exposure.
  */
+describe('InMemoryCache — incr adopts a counter another call seeded (#1295)', () => {
+  /** Comfortably past the caps used here, so eviction is not order-sensitive. */
+  const FLOOD_SIZE = 20;
+
+  /**
+   * The half an entry sits in used to be decided by the write that created it
+   * and never revisited, so a window opened by anything other than `incr`
+   * stayed opportunistic for its whole life however many finite-TTL `incr`
+   * calls followed — evicted first under exactly the flood the two halves
+   * exist to survive.  The shipped `rateLimit` always creates its counter
+   * through `incr`, so this was user code and shared-cache integrations
+   * rather than a live bypass of the middleware.
+   */
+  test('a counter seeded by set and driven by incr survives a key flood', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    await cache.set('rl:198.51.100.7', 0, 60_000);
+    expect(await cache.incr('rl:198.51.100.7', 60_000)).toBe(1);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    // Continues the window instead of silently restarting it.  Without the
+    // adoption this reads 1 again, which is the reset the limiter is supposed
+    // to make impossible.
+    expect(await cache.incr('rl:198.51.100.7', 60_000)).toBe(2);
+    await cache.close();
+  });
+
+  /**
+   * The other direction, and the reason adoption is keyed on the *call*: `set`
+   * must still never manufacture a guarantee.  #1080 refused that deliberately
+   * — every cached response body is a finite-TTL `set`, so protecting those
+   * would protect nothing.
+   */
+  test('a set-seeded counter nobody has incremented is still unprotected', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    await cache.set('rl:203.0.113.4', 0, 60_000);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('rl:203.0.113.4')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  /**
+   * Same reasoning as the no-TTL claim above: nothing would ever expire an
+   * unbounded counter, so adopting one would pin a slot for the life of the
+   * process rather than for the life of a window.
+   */
+  test('incr does not adopt a counter with no TTL', async () => {
+    const cache = new InMemoryCache({ maxEntries: 4, cleanupMs: 0 });
+    expect(await cache.incr('rl:forever')).toBe(1);
+    expect(await cache.incr('rl:forever')).toBe(2);
+
+    for (let i = 0; i < FLOOD_SIZE; i++) await cache.set(`rsp:/public/${i}`, i);
+
+    expect((await cache.get('rl:forever')).isNone()).toBe(true);
+    await cache.close();
+  });
+
+  /**
+   * Guards the plausible-looking wrong fix.  Adopting through `write` alone
+   * moves the key between halves but not within one, because re-inserting a
+   * key a `Map` already holds does not reorder it — so an already-guaranteed
+   * counter would quietly stop counting as used, and `incr` is one of the
+   * three operations that must count.  Here every entry carries a guarantee,
+   * so recency is the only thing left to decide the victim.
+   */
+  test('incr still bumps a counter that was already guaranteed', async () => {
+    const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+    await cache.incr('rl:a', 60_000);
+    await cache.incr('rl:b', 60_000);
+    await cache.incr('rl:c', 60_000);
+
+    await cache.incr('rl:a', 60_000);   // a is now the most recently used
+    await cache.incr('rl:d', 60_000);   // needs a slot: b is the victim
+
+    expect((await cache.get('rl:b')).isNone()).toBe(true);
+    expect((await cache.get('rl:a')).isSome()).toBe(true);
+    await cache.close();
+  });
+});
+
 describe('InMemoryCache — per-prefix quotas (#607)', () => {
   /** Comfortably past every cap used here, so eviction is not order-sensitive. */
   const FLOOD_SIZE = 20;
