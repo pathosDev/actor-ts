@@ -76,14 +76,18 @@ function newBucket(quota: number): Bucket {
  * in.  Unset, there is one bucket and this step does nothing, which is the
  * behaviour of every release before #607.
  *
- * *Step two — the guarantee.*  Inside a bucket the map is kept in two halves
- * and the write that created an entry decides which one it lands in:
+ * *Step two — the guarantee.*  Inside a bucket the map is kept in two halves,
+ * and which one an entry lands in follows from the **call** that touched it
+ * last, not from the kind of value it holds:
  *
  *   - **Guarantee-carrying** — a `setIfAbsent` claim (a lock, an idempotency
- *     marker) or an `incr` counter (a rate-limit window), *with a finite TTL*.
- *     For these the cache IS the source of truth: dropping one does not cost a
- *     round-trip, it voids the guarantee — the lock gets handed out a second
- *     time, the limit resets, the retry re-executes the handler.
+ *     marker) or a counter any `incr` has passed over (a rate-limit window),
+ *     *with a finite TTL*.  For these the cache IS the source of truth:
+ *     dropping one does not cost a round-trip, it voids the guarantee — the
+ *     lock gets handed out a second time, the limit resets, the retry
+ *     re-executes the handler.  `incr` **adopts** a live counter whoever
+ *     seeded it, so a window opened with `set(key, 0, windowMs)` and then
+ *     driven by `incr` is protected exactly like one `incr` created (#1295).
  *   - **Opportunistic** — everything written by `set` / `mset`.  Per
  *     {@link Cache}'s failure model these have a source of truth behind them,
  *     so losing one is a cache miss and the caller already handles it.
@@ -118,8 +122,10 @@ function newBucket(quota: number): Bucket {
  *
  * Three things this deliberately does not do.  A guarantee you store yourself
  * with `set` is indistinguishable from a cached body and is *not* protected —
- * except in the one case where it replaces a live claim under the same key,
- * which is how an idempotency record inherits its marker's protection.  A
+ * except where a *later* call recognises it, of which there are exactly two:
+ * a `set` replacing a live claim under the same key, which is how an
+ * idempotency record inherits its marker's protection, and an `incr` over a
+ * live finite-TTL entry, which adopts it as the counter it evidently is.  A
  * claim with **no** TTL is not protected either: an unbounded lock is the
  * wedge {@link Cache.setIfAbsent} warns about, and pinning one would make it
  * permanent.  And it cannot follow a remote backend — Redis under
@@ -227,6 +233,12 @@ export class InMemoryCache implements Cache {
     }
     const next = entry.value + 1;
     entry.value = next;
+    // Adopt before bumping, and not instead of it.  `bump` re-inserts into
+    // whichever half already holds the key, so on its own it would leave a
+    // `set`-seeded counter opportunistic forever (#1295); `write` would move
+    // the key but not the recency, because re-inserting into the half a key
+    // is already in does not reorder a `Map`.  `incr` owes the entry both.
+    if (Number.isFinite(entry.expiresAt)) this.adoptAsGuaranteed(key, entry);
     this.bump(key, entry);
     return next;
   }
@@ -380,6 +392,31 @@ export class InMemoryCache implements Cache {
     }
     bucket.guaranteed.delete(key);
     bucket.opportunistic.set(key, entry);
+  }
+
+  /**
+   * Move a live counter into its bucket's guaranteed half.
+   *
+   * The half an entry sits in is chosen when it is written and, by every other
+   * operation, never revisited — {@link bump} re-inserts into whichever half
+   * already holds the key.  That is right for `set`, which must never
+   * manufacture a guarantee, and wrong for `incr`: a rate-limit window seeded
+   * by `set(key, 0, windowMs)` and then driven by `incr` is the same window as
+   * one `incr` created, yet stayed opportunistic for its whole life — evicted
+   * first under exactly the key flood the two halves exist to survive (#1295).
+   *
+   * Deliberately keyed on the *entry's* expiry rather than on `incr`'s `ttlMs`
+   * argument: Redis semantics set the TTL only on creation, so the call that
+   * drives an existing window normally passes none, and reading the argument
+   * would adopt only the counters that least need it.
+   *
+   * A no-op when the key is already guaranteed, so a caller can bump
+   * afterwards and get the recency move `incr` owes an entry either way.
+   */
+  private adoptAsGuaranteed(key: string, entry: Entry): void {
+    const bucket = this.bucketFor(key);
+    if (!bucket.opportunistic.delete(key)) return;
+    bucket.guaranteed.set(key, entry);
   }
 
   /** Move a still-valid entry to the tail so it counts as most-recently-used. */

@@ -546,6 +546,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`incr` now adopts a counter another call seeded, so a rate-limit
+  window is protected whichever call opened it (#1295).** `InMemoryCache`
+  keeps two halves and takes its eviction victim from the opportunistic one
+  first, but the half was picked at write time and never revisited: `incr`
+  conferred the guarantee only on the branch that *created* an entry, and on
+  an existing one it merely bumped, which re-inserts into whichever half the
+  key already sits in. A window opened with `set(key, 0, windowMs)` therefore
+  stayed opportunistic for its whole life however many finite-TTL `incr` calls
+  followed — evicted first under exactly the key flood the split exists to
+  survive, which is #607's shape at a configuration the operator has been told
+  is hardened.
+
+  The condition is the *entry's* expiry, not `incr`'s `ttlMs` argument: Redis
+  semantics set a TTL only on creation, so the call that drives an existing
+  window normally passes none, and reading the argument would have adopted
+  only the counters that least needed it. Adoption is also separate from the
+  bump rather than folded into the write, because re-inserting a key a `Map`
+  already holds does not reorder it — `incr` owes an entry both the half and
+  the recency, and a test pins each.
+
+  Unchanged in both directions, which is what keeps the policy coherent:
+  `set` still never *manufactures* a guarantee, so a seeded counter nobody has
+  incremented is as evictable as any cached body; and a counter with no TTL is
+  still not adopted, for the same reason an unbounded `setIfAbsent` claim is
+  not — nothing would ever expire it, so protecting it would pin a slot for
+  the life of the process.
+
+  The shipped `rateLimit` always creates its counter through `incr`, so this
+  was a user-code and shared-cache exposure rather than a live bypass of the
+  middleware.
+
 - **BREAKING (pre-1.0): `migrateBetweenJournals` no longer stops halfway
   through a copy (#740).** Every refusal it can raise — a tag list the
   target's `append` rejects, a compacted prefix the target cannot represent,
