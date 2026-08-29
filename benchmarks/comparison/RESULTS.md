@@ -76,16 +76,16 @@ Create a batch of actors and take them through their full lifecycle — spawn, c
 
 **JavaScript — same machine, same harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | actor-ts [^1] | bun 1.4.0 | 327,380 actor/s | ± 7.8 % | 3.07 µs | 170.41 µs | 2.48 ms | +7.3 MB |
 | nact [^2] | bun 1.4.0 | 925,792 actor/s | ± 8.7 % | 1.09 µs | 73.00 µs | 1.15 ms | +6.3 MB |
 | xstate [^3] | bun 1.4.0 | 251,669 actor/s | ± 5.8 % | 3.99 µs | 283.57 µs | 1.69 ms | +12.8 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | akka-java [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 109,377 actor/s | ± 4.9 % | 9.17 µs | 880.88 µs | 2.08 ms | — |
 | akka.net [^5] | dotnet 10.0.11 | 84,479 actor/s | ± 1.8 % | 11.84 µs | 1.22 ms | 1.62 ms | — |
 | akka-scala [^4] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 101,305 actor/s | ± 4.9 % | 9.90 µs | 933.97 µs | 2.80 ms | — |
@@ -103,16 +103,16 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 **JavaScript — same machine, same harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | actor-ts | bun 1.4.0 | 13,900,648 msg/s | ± 8.0 % | 72 ns | 60.83 µs | 441.44 µs | −1.5 MB |
 | nact | bun 1.4.0 | 1,205,356 msg/s | ± 3.1 % | 830 ns | 783.28 µs | 1.37 ms | −3.5 MB |
 | xstate [^8] | bun 1.4.0 | 837,584 msg/s | ± 10.4 % | 1.21 µs | 1.18 ms | 2.36 ms | −3.0 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 7,198,723 msg/s | ± 13.7 % | 142 ns | 135.54 µs | 481.39 µs | — |
 | akka.net | dotnet 10.0.11 | 5,936,704 msg/s | ± 4.6 % | 169 ns | 167.37 µs | 196.39 µs | — |
 | akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 5,153,375 msg/s | ± 23.8 % | 206 ns | 194.32 µs | 492.92 µs | — |
@@ -126,16 +126,16 @@ Fire-and-forget messages into one actor and read back how many it handled.
 
 **JavaScript — same machine, same harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | actor-ts | bun 1.4.0 | 16,583,656 msg/s | ± 5.3 % | 60 ns | 528.83 µs | 1.04 ms | +0.9 MB |
 | nact | bun 1.4.0 | 1,160,684 msg/s | ± 2.6 % | 862 ns | 8.54 ms | 9.98 ms | +0.6 MB |
 | xstate [^8] | bun 1.4.0 | 868,879 msg/s | ± 8.9 % | 1.16 µs | 11.61 ms | 13.56 ms | +0.2 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,377,695 msg/s | ± 8.1 % | 107 ns | 1.07 ms | 1.59 ms | — |
 | akka.net | dotnet 10.0.11 | 6,379,655 msg/s | ± 3.3 % | 157 ns | 1.56 ms | 1.72 ms | — |
 | akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 9,392,564 msg/s | ± 13.0 % | 108 ns | 1.07 ms | 1.68 ms | — |
@@ -153,16 +153,16 @@ Sequential request/response round trips, depth 1 — a latency measurement, so t
 
 **JavaScript — same machine, same harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | actor-ts | bun 1.4.0 | 817,189 ask/s | ± 7.4 % | 1.23 µs | 786 ns | 3.02 µs | +1.1 MB |
 | nact | bun 1.4.0 | 487,023 ask/s | ± 6.4 % | 2.06 µs | 1.84 µs | 3.84 µs | +0.3 MB |
 | xstate [^11] | bun 1.4.0 | 421,199 ask/s | ± 9.4 % | 2.40 µs | 1.88 µs | 5.53 µs | +1.1 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | akka-java [^12] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 252,433 ask/s | ± 7.5 % | 3.99 µs | 3.58 µs | 8.04 µs | — |
 | akka.net | dotnet 10.0.11 | 309,069 ask/s | ± 3.9 % | 3.24 µs | 3.17 µs | 4.06 µs | — |
 | akka-scala [^13] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 264,659 ask/s | ± 8.1 % | 3.80 µs | 3.46 µs | 8.76 µs | — |
@@ -180,16 +180,16 @@ Two actors volleying — the scheduler with nothing else in the way.
 
 **JavaScript — same machine, same harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | actor-ts | bun 1.4.0 | 2,262,927 exchange/s | ± 7.7 % | 445 ns | 4.43 ms | 5.08 ms | −3.5 MB |
 | nact | bun 1.4.0 | 591,154 exchange/s | ± 3.7 % | 1.69 µs | 16.84 ms | 18.60 ms | −0.2 MB |
 | xstate | bun 1.4.0 | 480,520 exchange/s | ± 6.0 % | 2.09 µs | 21.04 ms | 24.29 ms | +2.5 MB |
 
 **Cross-language — different virtual machine, mirrored harness**
 
-| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |
-| --------- | ------- | ---------- | ------ | --- | --- | ---- |
+| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |
+| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |
 | akka-java | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 2,040,048 exchange/s | ± 3.0 % | 491 ns | 4.92 ms | 5.25 ms | — |
 | akka.net | dotnet 10.0.11 | 494,781 exchange/s | ± 7.4 % | 2.03 µs | 20.02 ms | 28.72 ms | — |
 | akka-scala [^9] | jvm 21.0.10 (OpenJDK 64-Bit Server VM) | 2,010,089 exchange/s | ± 2.7 % | 498 ns | 5.00 ms | 5.32 ms | — |

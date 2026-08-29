@@ -2937,6 +2937,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The comparison tables named seven columns and printed eight, so every
+  column from `per op` onward carried its neighbour's label** (#1390).
+  `report.ts` builds each row as framework / runtime / throughput / spread /
+  per-op / p50 / p99 / ΔRSS and wrote a header that omitted `spread`;
+  Markdown drops cells past the header width, so what the table called `p50`
+  was the per-operation mean, what it called `p99` was p50, and ΔRSS never
+  rendered at all.  In the published `ask-round-trip` table that read as a
+  p50 of 1.23 µs where the measured p50 was 786 ns — 1.23 µs being exactly
+  `1 / 817,189 s`, the throughput on the same row.  The file's own Arms
+  section pointed a reader at "the spread column in the tables below", and
+  there was no such column to find.  `RESULTS.md` is what `README.md` links
+  as "Full tables and methodology", so this sat on the page whose whole job
+  is being precise about the numbers.  The header gains the missing column;
+  every figure is unchanged, because the report only re-renders the result
+  files.
+
 - **`incr` now adopts a counter another call seeded, so a rate-limit
   window is protected whichever call opened it (#1295).** `InMemoryCache`
   keeps two halves and takes its eviction victim from the opportunistic one
