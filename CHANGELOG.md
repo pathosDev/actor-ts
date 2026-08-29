@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-29
+
 ### Added
 
 - **Cluster readiness — wait until the cluster is actually formed**
@@ -236,6 +238,1111 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   coverage gate was measured before and after, as the issue asked rather than
   assumed: 93.68 % to 93.54 %, both far above the 80 % floor.
 
+- **Dead letters can now be replayed to a recipient other than the one they
+  were addressed to — `deadLetterQueue.replay(id, alternateRecipientPath)`
+  (#433).**
+
+  The recorded path is not resolved at all when an alternate is given,
+  because redirecting is most useful exactly when the original address is
+  gone for good (a renamed actor, a shard that moved, a typo in a spawn).
+  Only the destination changes: the sender stays the recorded one, so the
+  recipient's `sender` still answers the actor that sent the message.
+  `max-replays` still applies, so a quarantined letter stays refused
+  however it is addressed — otherwise alternating between two paths would
+  hand back the unbounded retry loop the cap exists to close. If the
+  letter dead-letters again at the alternate it returns as the same entry,
+  now recording the alternate as its `recipientPath`.
+
+- **`ActorSystemOptions.withDeadLetters(...)` configures the dead-letter
+  queue the system actually uses (#433).**
+
+  The `DeadLetterQueueOptions` family shipped complete and publicly
+  exported with no reachable consumer: `system.deadLetterQueue` is
+  readonly, its only construction site read HOCON and nothing else, and
+  nothing installed a hand-built queue as the capture sink — so `new
+  DeadLetterQueue(system, options)` produced a correctly-configured object
+  that never received a letter, which the docs nevertheless advertised.
+  Explicit options now beat HOCON field by field, so naming one knob in
+  code leaves the rest of the `actor-ts.dead-letters` block in effect.
+
+- **A `metrics` dead-letter store: `actor-ts.dead-letters.store = "metrics"`
+  counts every undeliverable message and retains no payload (#433).**
+
+  `store` is now one axis with four rungs ordered by how much is kept —
+  `off`, `metrics`, `memory`, `persistent`. The arm exists because
+  retaining a payload is a different decision from observing a rate: a
+  ring holds a strong reference to every undeliverable message, which is a
+  data-protection question the moment a payload says anything about a
+  person, and a counter is not. It cannot be approximated with a small
+  ring, since `max-entries` must be positive and even the tightest one
+  keeps a live payload for a whole retention window.
+
+- **A named cache can now be sized for its own key space (#607).**
+
+  `CacheExtension`'s in-memory factory reads
+  `actor-ts.cache.<name>.in-memory` layered over the global
+  `actor-ts.cache.in-memory`, leaf by leaf, so `cache('idempotency')` and
+  `cache('rate-limit')` no longer share one `maxEntries`. That is what
+  makes the one-cache-per-consumer advice in three JSDoc headers and six
+  doc pages actionable: sizing one named instance previously required
+  hand-constructing an `InMemoryCache` and injecting it with `setCache`,
+  which nothing recommended for that purpose. The cache factory type
+  `CacheFactory` gains a second `name` parameter so a third-party plugin
+  can read its own per-name block the same way; a one-parameter factory
+  still satisfies it, so existing `registerCache` callers are unaffected.
+  The path carries no `reference.conf` leaf because the name belongs to
+  the application, exactly as `actor-ts.cache.<name>.plugin` does not.
+
+- **Warm hand-over for cluster singletons: a singleton actor that implements
+  `serializeForHandOver()` and `restoreFromHandOver(bytes)` hands its
+  in-memory state to its successor, so a singleton with expensive recovery —
+  thousands of events to replay, a large cache — no longer starts cold every
+  time the host moves. The state rides on the hand-over acknowledgment
+  introduced in #949, which is emitted at the only instant it is final: once
+  the outgoing instance's postStop has completed. The restore runs after the
+  constructor and before preStart, which is the only position from which
+  recovery can still be skipped. It is opted into on the actor rather than
+  through an option, so an actor written before this release is untouched,
+  and it is best-effort throughout: no hooks, an oversized snapshot, a
+  serializer or restore that throws, an instance that died unexpectedly, or
+  a predecessor that was downed rather than asked all fall back to today's
+  cold start with a warning. The snapshot is capped by a new
+  `maxHandOverStateBytes` (1 MiB default) and, independently, by whether it
+  fits the transport's live frame cap once base64-encoded. (#194).**
+
+- **`bun run test:coverage:gate` now enforces per-module line-coverage
+  floors on top of the aggregate one (#541).**
+
+  `src/cluster/` at 90 % and `src/persistence/` at 90 %, computed as the
+  weighted sum of lcov's LH over LF for every record under the path prefix
+  rather than as an average of bun's per-file percentages, which would
+  cancel a ten-line barrel against a thousand-line coordinator. Measured
+  on 2026-08-19 with the CI population (ACTOR_TS_SKIP_FLAKY_MNS=1, 7695
+  tests, bun 1.3.1) the two modules sit at 97.39 % and 95.35 %. The gate
+  also accepts `--log=<bun-test.log> --lcov=<lcov.info>` to gate the
+  artifacts of a run that already happened instead of running the suite
+  itself — both flags or neither, so half the gate can never report as all
+  of it.
+
+- **actor-ts.distributed-data.max-gossip-bytes (default 1M) and the matching
+  DistributedDataOptions.withMaxGossipBytes, bounding one gossip frame's
+  payload (#691).**
+
+  The effective budget is always the smaller of this and the transport's
+  own maxFrameBytes, so lowering the wire cap for a semi-trusted network
+  lowers the gossip budget with it and no setting can put gossip back over
+  the edge. 0 removes the DistributedData-side budget; the clamp still
+  applies.
+
+- **A new counter, distributed_data_gossip_skipped_keys_total, labelled by
+  reason (oversize or unserialisable), plus a rate-limited warning naming
+  the key, its measured size, the budget and the store size (#691).**
+
+  A single key whose own encoding exceeds the budget cannot be sliced —
+  one key's full state is the smallest unit gossip sends, and
+  MAX_CRDT_ENTRIES bounds an entry count rather than a byte size — so it
+  is skipped and does not converge. Making that observable was chosen over
+  a silent skip; it is documented on the replication and stock-metrics
+  pages in both languages.
+
+- **Transport now publishes an optional readonly maxFrameBytes, and
+  TcpTransport's field is public (#691).**
+
+  A sender needs the number before it builds a frame, because nothing on
+  the interface reports failure: send is fire-and-forget and the cap is
+  enforced on the far side. Optional rather than mandatory, since the
+  in-memory, MessageChannel and multi-node transports hand the message
+  object to the peer and enforce no frame cap at all.
+
+- **`handOverTimeoutMs` on `StartSingletonOptions` and
+  `ClusterSingletonManagerOptions` (default 10 s, builder
+  `withHandOverTimeoutMs`): how long an incoming singleton host waits for
+  every eligible peer to confirm it is not hosting before hosting anyway.
+  Reaching it means the uniqueness invariant could not be proven —
+  availability is chosen over it and the manager says so at `warn`. No HOCON
+  leaf yet; that belongs to #855, whose proposed retry-count keys are
+  superseded by this single timeout. (#949).**
+
+- **A scheduled task that throws is now reported instead of vanishing onto
+  the console (#678).**
+
+  `Scheduler` gained an optional `onError` sink and `ActorSystem` fills it
+  in, so a throw out of `scheduleOnceFunction` or
+  `scheduleAtFixedRateFunction` reaches the system logger — and therefore
+  every configured log sink, MDC included — and is published on the event
+  stream as a new `SchedulerError` carrying the `cause`. Both the sink
+  type `SchedulerErrorSink` and the event class are exported.
+  `console.error` survives only as the documented last resort, for a
+  scheduler used outside an actor system; a sink you set yourself is never
+  taken over, and it is handed back when the system terminates.
+
+- **`NodeAddress` carries an optional `incarnation` — which process is
+  answering at a `system@host:port` — minted once per `Cluster.join` from
+  `NodeAddress.mintIncarnation()` (#940).**
+
+  It rides every address-bearing wire field, is bounded on arrival by
+  `MAX_NODE_INCARNATION_LENGTH`, and stays deliberately out of `toString`,
+  `equals` and `compareTo`, so every map keyed on the string form, the
+  leader's lexicographic order and `RefCodec`'s local-vs-remote test are
+  unchanged. Optional in both directions: a peer that predates the field
+  sends none and is understood, and a peer that does not know the field
+  ignores the extra JSON key — so this is not a wire break. No merge rule
+  is keyed on it yet, and that is a decision rather than an omission: an
+  optional field is bypassed by stripping it, so a refusal on a mismatch
+  would be one an attacker opts out of while a legitimate peer of the
+  previous version walks into it. Requiring the field breaks all eight
+  address-bearing frame fields at once and waits on #823. The one
+  comparison that needs no distributed agreement is made: a record a peer
+  sends about the local node keeps the local node's own incarnation, so
+  the leader's promotion — the single claim about itself a node accepts,
+  merged wholesale including the address — can no longer restate it.
+
+- **`actor_mailbox_depth` — a label-free histogram of queue depth, observed
+  once per delivery, with buckets from 1 to 10 000 messages (#196).**
+
+  It is the distribution `actor_mailbox_size` cannot be: that gauge
+  samples an instant every 2 s and mints no series below 10 000 queued
+  messages, because the `path` label it needs to say which actor is behind
+  is only affordable that far up. The range it is blind on is 1-9 999,
+  which is where a burst actually lives, and a spike between two of its
+  ticks was recorded nowhere. The histogram's top bucket boundary is the
+  gauge's floor, so the two now cover everything between them with no gap:
+  read the histogram to learn that a backlog exists and how deep its tail
+  goes, read the gauge to learn whose. Because it carries no labels it
+  costs one series per bucket however many actors or sharded entities
+  exist. Its count matches `actor_messages_delivered_total` exactly, and
+  its floor is 1 rather than 0 because the observation counts the message
+  being delivered — so sizing a bounded mailbox from its p99 is now a
+  measurement rather than a guess.
+
+- **`actor_dispatcher_queue_delay_seconds` — a histogram labelled by
+  `Dispatcher.id`, measuring how long an actor turn waited between being
+  handed to a dispatcher and starting (#196).**
+
+  This is the saturation signal, and it is deliberately not the
+  `dispatcher_saturation_ratio` the issue asked for. A 0-1 busy fraction
+  has no primitive this project can use on all three supported runtimes:
+  `performance.eventLoopUtilization` is absent on Bun 1.3, real on Node
+  26, and a permanent hard-zero stub on Deno 2.6 — measured on each, and
+  now re-checked per runtime by a new cross-runtime smoke case. A ratio
+  built on it would read a flat 0 % on Deno for ever, which is worse than
+  publishing nothing, because an alert on a metric that never fires looks
+  exactly like a system that is never saturated; and even where the
+  reading is real it covers the whole event loop, so it could never have
+  been attributed to one of several dispatchers. Scheduling delay needs
+  nothing but a clock, so it is the same measurement everywhere: at rest
+  it is one hand-off (microseconds), under saturation it grows without
+  bound, and "utilization is at 100 %" becomes "turns are waiting longer
+  than my latency budget", which an alert rule can actually state. Buckets
+  run 10 µs to 10 s. One caveat is documented rather than glossed: on
+  `MicrotaskDispatcher` the delay stays low even while actors starve the
+  event loop, because the queue it measures is the microtask queue the
+  runtime drains first — a low reading there means microtask scheduling is
+  not the bottleneck, not that there is headroom.
+
+- **`PriorityMailboxOptions` gains `onPriorityError` and
+  `withOnPriorityError(cause, message)`, fired whenever `priorityFor` throws
+  or returns something unrankable (#733).**
+
+  Worth wiring, because containment is otherwise invisible: the message
+  still arrives, just last, so nothing else in the system reports that a
+  priority callback is broken. `cause` is what the callback threw, or a
+  `TypeError` describing the value it returned. Record and return from the
+  hook — it runs on the sender's stack too.
+
+- **`ClusterSharding.shardMap(typeName)` returns the last shard map this
+  node was told about as plain JSON (`ShardMapView`), synchronously and with
+  no round trip, no DistributedData extension and no coordinator-state store
+  (#682).**
+
+  It is the serialisable counterpart to `shards()`, which carries a live
+  `ActorRef` and therefore cannot cross a wire. `shardMapViewOf` projects
+  a `ShardMapChanged` event into the same shape for callers that would
+  rather subscribe than poll.
+
+- **`DistributedDataCoordinatorStateStore` and the `CoordinatorStateStore`,
+  `CoordinatorStateData` and `RegionInfoData` types are exported from
+  `actor-ts/cluster` (#682).**
+
+  The sharding options JSDoc instructs callers to pass `new
+  DistributedDataCoordinatorStateStore(...)`, and no public entry point
+  exposed the class, so the opt-in it documents was impossible to perform
+  from outside the repository.
+
+- **Static file serving can now stream instead of buffering (#465).**
+
+  Set `streamThreshold` (builder: `withStreamThreshold(bytes)`) and a body
+  at or above that size is sent as a chunked-read `ReadableStream`, so
+  serving a file larger than the process's memory costs the same as
+  serving a small one. Setting it also retires the `maxFileSize` 413 —
+  safely, not as a waiver: the validator rejects a threshold above
+  `maxFileSize`, which means nothing can buffer past the threshold and the
+  cap becomes unreachable. `Content-Length` is stated on the streamed
+  response, because a backend has nothing to measure on a stream and would
+  otherwise turn every large download chunked. Unset by default, so
+  nothing changes for an existing mount; streaming is opt-in until #674
+  and #979 land, because a one-shot body is still mishandled by the
+  caching and idempotency middleware and by the Express backend's pipe.
+
+- **Three gates for the repeat-run flake harness (scripts/stress-test.mjs),
+  which decided flaky-versus-broken with nothing checking it.
+  tests/unit/ci/StressHarnessAggregation.test.ts drives the JUnit parser and
+  the aggregation over fixtures, including bun's real output with its
+  host-separator file attributes;
+  tests/unit/ci/StressHarnessClassification.test.ts drives the whole script
+  against a synthetic suite that fails in run 3 of 5, one that fails in
+  every run, and one that hangs in the middle of otherwise green runs;
+  tests/unit/ci/StressHarnessQuarantine.test.ts proves
+  ACTOR_TS_SKIP_FLAKY_MNS really is dropped from the child environment and
+  really is set by --skip-quarantined. The script gained exports and an
+  import.meta.main guard so a test can import it without starting a stress
+  run; invoking it as an entry point behaves exactly as before. (#290).**
+
+- **IpAllowlist gained `trustedProxies`, the CIDRs of the reverse proxies in
+  front of the app (#715).**
+
+  Set it and the middleware reads the chain in wire order — forwarded
+  entries first, socket peer last — and walks it from the right, taking
+  the first address that is not one of those proxies. A client that
+  reaches the app directly is the untrusted peer, so its header is never
+  read at all; junk it prepends sits left of its real address and is never
+  reached; an unparseable entry counts as untrusted, ends the walk and
+  then fails the allowlist too. When every entry is trusted the fallback
+  is the socket peer, not the leftmost entry, which is a deliberate
+  divergence from proxy-addr because that value is reachable by a caller
+  behind the proxy. `forwardedHeader` (default x-forwarded-for) points the
+  same walk at a header a vendor sets rather than appends —
+  cf-connecting-ip, true-client-ip, x-real-ip. Trust is expressed as
+  addresses and not as a hop count on purpose: a numeric trust-proxy
+  setting compares indexes and never addresses, so it believes the header
+  on a request that passed no proxy at all. It also means the option needs
+  nothing from the backend and therefore works identically on Fastify,
+  Express and Hono — where trustProxy is respectively reachable, reachable
+  only via a bring-your-own app, and absent. IpAllowlist now also has the
+  standard XOptions family: IpAllowlistOptionsType,
+  IpAllowlistOptionsBuilder, IpAllowlistOptions and
+  IpAllowlistOptionsValidator.
+
+- **`Mailbox.enqueueSignal(envelope)` and `Envelope.undroppable`, the seam
+  that keeps a framework lifecycle notification out of reach of a
+  load-shedding policy (#729).**
+
+  A `Mailbox` subclass of your own that overrides `enqueue` to shed should
+  override `enqueueSignal` too and queue the envelope past its bound; the
+  base implementation delegates to `enqueue`, which is correct for a queue
+  that discards nothing. `BoundedMailbox` and `PriorityMailbox` already
+  override it. Delegating rather than writing straight to the base user
+  queue is deliberate — a subclass may keep its messages elsewhere, and an
+  envelope hidden in a store its own `dequeueUser` never reads is worse
+  than one it dropped.
+
+- **Worker respawns are now delayed and budgeted instead of firing straight
+  from the close listener without limit (#734).**
+
+  Five new options and their builder methods: `restartMinBackoffMs`
+  (default 200), `restartMaxBackoffMs` (default 10000),
+  `restartRandomFactor` (default 0.2), `maxRestarts` (default 10, `-1` for
+  the previous unbounded behaviour) and `restartWindowMs` (default 60000),
+  matching the framework's own ten-restarts-per-minute supervision
+  allowance. A slot whose budget is spent is retired for good and reported
+  once through the new `onWorkerPermanentlyDown` callback, which is the
+  only diagnostic the worker subsystem can offer — it has no logger. A
+  replacement that never becomes ready counts against the same budget as a
+  worker that died. The pending respawn timer is unreferenced so it cannot
+  hold the process open, cancelled by `terminate()`, and re-checks the
+  shutdown flag when it fires; without all three, introducing a delay
+  would have made a previously unreachable broker hole reachable. The
+  knobs are code-only for now and have no config-file equivalent.
+
+- **`MAX_DELIVERY_IDENTIFIER_LENGTH` is exported from the `./delivery` entry
+  point, so an application picking its own `producerId` can read the bound
+  the consumer admits rather than discovering it by having deliveries
+  refused (#727).**
+
+  This mirrors `MAX_PERSISTENCE_ID_LENGTH` on the persistence side.
+
+- **A ratchet over the test tree's fixed-delay waits,
+  `tests/unit/ci/SleepRatchet.test.ts`, following the shape
+  `AwaitConditionBudgets.test.ts` established: a repo-wide invariant
+  expressed as a test, so it needs no new tooling and no workflow change and
+  does not wait on the Biome adoption in #417. Three ledgers, each a ceiling
+  that only ever moves down and each with a zero-cost remedy the failure
+  message names: 93 modules that declare their own `sleep` instead of
+  importing the shared one, 35 hand-rolled polling helpers (`waitFor` /
+  `waitUntil` / `awaitConvergence`), and 486 waits that state no reason,
+  counted per module so a failure names the file. It counts more than the
+  greps this migration has been measured with: beside the 479 `await sleep(`
+  sites the tree holds 60 inline `Bun.sleep(20)` and 72 inline `new
+  Promise((r) => setTimeout(r, 20))`, 611 waits in all, so a fifth of the
+  debt was previously invisible. It is deliberately not a ban on waiting,
+  because 57 of those waits are followed by an assertion that something did
+  not happen and an absence cannot be polled for; what it forbids is an
+  unexplained wait, a re-declared `sleep` and a re-invented poll loop. Also
+  removes the one dead `Bun.sleep` shim, in
+  `tests/unit/ActorSelection.test.ts`, which had zero call sites and
+  survived because no tsconfig sets `noUnusedLocals`. (#418).**
+
+- **Email bridge actor** (#1133).  `EmailBridgeActor` turns a mailbox into a
+  message source and SMTP into a sink — the ops/alerting bridge that otherwise
+  gets hand-rolled per project.  Inbound uses IMAP IDLE via `imapflow` (with a
+  polling fallback for servers that do not offer it, or do not honour it) and is
+  **at-least-once, settled by IMAP flags**: a message is marked `\Seen` — or
+  moved to another mailbox — only once the target actor tells back
+  `{ kind: 'acknowledgment', ackToken }`.  A refusal, a missed deadline, a lost
+  connection and a dead process all end the same way, with the message still
+  unflagged and therefore delivered again; "processed" is a fact on the server,
+  not bookkeeping in memory.  Outbound goes through a pooled `nodemailer`
+  transport, and an SMTP failure is classified before it is escalated — a
+  message the server rejected is dropped rather than re-queued at the head of
+  the buffer behind a torn-down pool.  Reconnection is the `BrokerActor`
+  lifecycle's, since `imapflow` does none of its own.  Both drivers are optional
+  peer dependencies loaded on first connect, so a send-only bridge never imports
+  `imapflow`.  One actor watches one mailbox (an IMAP connection can IDLE only
+  on the mailbox it selected).  Config under
+  `actor-ts.io.broker.email-bridge`; verified against GreenMail in the broker
+  integration suite.
+- **HTML email templates** (#1133).  `EmailTemplate` fills a stored HTML snippet
+  — one from HOCON, a database row, or a file an operator edits — which the
+  `html` tagged template cannot cover, since it needs its markup as a JavaScript
+  literal.  Values are HTML-escaped by default and the one opt-out is the same
+  `SafeHtml` brand the HTTP side uses, so `rawHtml(...)` states the intent at the
+  call site.  Setting a placeholder the template does not declare throws, and
+  rendering with any placeholder still unset throws naming all of them — both
+  are failures that would otherwise only surface in a mail already sent.
+  Deliberately logic-less: it substitutes placeholders, it is not a template
+  engine.
+- **The comparison is complete: eight arms across three runtimes** (#27).  Two
+  .NET arms close the set the issue asked for — the classic actor API on the
+  CLR, and the virtual-actor runtime.  Full table in the README and in
+  `reference/benchmarks`; the short version is that actor-ts sustains **897k
+  messages/second** at a batch of 10 000, against 2.9-3.0M on the JVM, 1.33M on
+  .NET and 600k for virtual actors, while leading every JavaScript arm.
+
+  Having the *same* actor model on three runtimes is what makes the runtime's
+  own contribution visible rather than inferred — and it settled a question the
+  earlier phases could only flag. The ask row splits by **runtime, not
+  framework**: both JVM arms sit near 40-47 µs while both .NET and both
+  JavaScript arms sit under 11 µs. That is the external caller — a microtask on
+  an event loop, an `await` in .NET, a thread parking on a future on the JVM —
+  and the JVM arms lead the tell rows precisely because that cost is not in
+  their path there.
+
+  The virtual-actor arm is the one whose semantics genuinely differ: grains
+  activate on first call and there is no caller-visible create or stop, so
+  three of its four rows measure a named near-equivalent and say so on the row.
+  Its strong ask and weak tell are the same fact twice — request/response is
+  what a grain call is.
+
+- **Both sides of the JVM licence split are measured, and they are the same
+  speed** (#27).  A second JVM arm (`benchmarks/comparison/pekko/`) measures
+  the Apache-licensed fork against the BUSL-1.1 original from Java sources that
+  are identical apart from the package prefix.  They agree to within the noise
+  on every scenario — 2.74M/s against 2.73M/s on tell throughput — so **staying
+  on an OSI-approved licence costs nothing in throughput**, and each arm is a
+  control on the other since they differ only in which dependency they pull.
+  Pinned to the newest *stable* release rather than the available 2.0
+  milestone.
+
+- **The comparison now reaches across the language boundary** (#27).  A JVM arm
+  (`benchmarks/comparison/akka/`, Maven + the Akka Typed Java API) answers the
+  question the issue was opened for: **actor-ts sustains about a third of a
+  mature JVM actor system's message throughput** — 925k/s against 2.85M/s at a
+  batch of 10 000, and 115k/s against 351k/s on a two-actor volley.  It wins
+  the spawn row (48k/s against 25k/s) and the ask row, the latter because every
+  arm drives the system from an external caller, which on an event loop is a
+  microtask and on the JVM is a thread parking on a future.
+
+  Pinned to 2.8.8: releases from 2.9 onwards are published only to a repository
+  that answers 403 to anonymous requests, and a row nobody can reproduce is not
+  evidence.  Its BUSL-1.1 licence is carried into every published table next to
+  the throughput figure.  The harness is mirrored by hand rather than using
+  JMH, so both sides of the table measure the same way — which is also why
+  cross-language rows never share a table with same-runtime ones.
+
+- **Warmup is part of the workload definition, and it had been wrong** (#27).
+  The harness default worked out at three unmeasured iterations for the largest
+  batch — harmless for a JavaScript arm, and measuring a JIT-compiled runtime
+  mid-compilation.  Fixing it moved the JVM arm's tell rate by 130 % and its
+  ask rate by 33 %.  Warmup is now explicit per case, identical across arms, and
+  cross-checked by the report generator like every other workload constant.
+
+- **Framework-comparison benchmarks, and the first numbers this project has
+  ever published** (#27).  `benchmarks/comparison/` measures actor-ts against
+  nact, XState v5 and a no-framework floor across four scenarios — spawn, tell
+  throughput, ask round-trip and ping-pong — and publishes the result in the
+  README, in a bilingual `reference/benchmarks` docs page, and in a generated
+  `RESULTS.md` carrying the hardware, versions, licences and date behind every
+  row.
+
+  The headline: actor-ts sustains ~900k messages/second at a batch of 10 000,
+  2.2× nact and 4.3× XState, and is level with nact on ask latency (7.8 µs vs
+  6.9 µs at p50).  It is behind on spawning (42k/s vs 157k/s) and on two-actor
+  ping-pong (138k/s vs 197k/s), both for the same reason: actor creation goes
+  through a `create` system message and every message through a dispatcher
+  turn, so per-message batching pays when a mailbox has depth and does nothing
+  when a volley alternates.  A mixed result, published as one.
+
+  The methodology is enforced rather than described.  Every arm runs through
+  the *same* harness — same warmup, same clock, same percentile maths — so
+  only the four operation bodies differ.  Every arm reports work the system
+  was **observed** to complete, and the report generator refuses to render a
+  row whose completed count disagrees with what was requested; that guard is
+  the mechanised form of the defect that once had this project publishing a
+  figure roughly 10× too high (#1027).  Arms are interleaved round by round
+  and each published row is the median of nine, because a single round varied
+  by up to 34 % on an ordinary desktop while the ordering of the frameworks
+  never changed.
+
+  The comparison tree carries its own manifest and lockfile, so the measured
+  frameworks never enter the shipped dependency closure, `bun audit`'s surface
+  or `bun run bench`.  `bun run typecheck:compare` is the check that owns it.
+
+- **`bun run bench:compare`, `bench:compare:report` and `typecheck:compare`**
+  (#27) — measure, validate-and-publish, and type-check the comparison tree.
+  `bench:compare -- --rounds=N` runs the arms interleaved and publishes the
+  per-scenario median; `bench:compare:report` refuses to write `RESULTS.md`
+  when any row's completed work disagrees with the workload definition.
+
+- **The bidirectional collections count participants, not only pairs**
+  (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
+  number of distinct participants on each side, both O(1), reading the two
+  backing maps directly.  `size` still counts pairs, which is what a cap is
+  usually written against; the two questions are now both askable without
+  spreading an iterator to measure the answer (`[...map.lefts()].length` was an
+  O(n) allocation to read a number the object already held).  They are correct
+  on an `inverse()` view for free, because the view's forward map *is* the
+  original's reverse one — unlike the pair counter, which needs a shared box
+  for exactly that reason.
+
+  `BidirectionalMap` gained `keySize` and `valueSize` for symmetry.  The
+  relation there is 1:1, so both always equal `size`; they exist so that moving
+  between the two types needs no memory of which one has the accessor.
+  `valueSize` reads the reverse map rather than aliasing the forward one, so it
+  still tells the truth if the invariant it corroborates ever breaks.
+
+- **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
+  two live instances of one persistence-id.  After a partition plus a
+  rebalance — or any orchestration mistake that spawns an entity twice — both
+  recovered, both accepted commands, and both ran `onCommand` side effects.
+  The journal stayed sound, because the conditional append makes one of them
+  lose with `JournalConcurrencyError`; the damage was outside the journal.  By
+  the time the loser found out it had already charged the card or sent the
+  mail, and until its next `persist` it went on answering reads from state the
+  other writer had moved past.
+
+  Two layers now close that, and the first needs no configuration:
+
+  - **A lost race stops the actor.**  `JournalConcurrencyError` is treated as
+    evidence of a second writer rather than a transient fault, so the instance
+    stops instead of propagating an ordinary failure — whose default
+    supervision answer is a *restart*, after which the loser recovers the
+    now-foreign head and carries on as though it owned the entity.
+  - **An optional `lease()` hook**, mirroring the one
+    `ReplicatedEventSourcedActor` has had since #89.  Return a `Lease` and the
+    entity becomes single-writer: the lease is acquired in `preStart`
+    **before recovery**, so a non-owner never even reads the history, and its
+    `persist` is refused up front rather than at the journal.  That is the
+    difference that keeps a duplicated side effect from firing at all — the
+    backstop above can only act after `onCommand` has already run.
+
+  `isLeaseHolder` gates side-effecting work without a try/catch, and
+  `onLeaseLost(reason)` runs when a held lease goes away — defaulting to a
+  stop, since an actor that may not write is rarely usefully alive.  Actors
+  that do not override `lease()` behave exactly as before.
+
+- **`restartOnTermination` on a cluster singleton** (#1175).  Default `true`,
+  and the switch for the fix below: set it to `false` for an actor that uses
+  `stopSelf()` as a terminal state, and the manager releases its lease instead
+  of re-spawning — so another node could host later, rather than the manager
+  holding a lease over a child that is gone.
+
+- **`PriorityMailbox` accepts a capacity and an overflow policy, so
+  priority ordering and a bound are no longer an either/or (#647).**
+
+  Choosing priority meant choosing an unbounded queue, and there was no
+  way around it: `ActorOptions` rejects `withMailbox` combined with
+  `withMailboxCapacity`, because a supplied mailbox brings its own bound,
+  and `PriorityMailboxOptions` had exactly one field. The options type now
+  carries `capacity`, `overflow` and `onDrop`, with matching builder
+  methods and a `PriorityMailboxOptionsValidator` at parity with the
+  bounded one — which also means a missing or non-callable `priorityFor`
+  now throws `OptionsError` at construction rather than surfacing as "is
+  not a function" inside the first sender's `tell`.
+
+  The policies are `drop-lowest-priority`, `drop-new` and `reject`,
+  defaulting to `reject`. `drop-head` is deliberately not among them. On a
+  FIFO queue it means "discard the stalest", which holds because arrival
+  order is the only order there is; on a priority queue the head is the
+  message the priority function called most important, so dropping it
+  defeats the reason for choosing the mailbox. `drop-lowest-priority`
+  sheds from the other end instead, which is O(1) and is the version of
+  shedding load that a priority mailbox exists to express. The arriving
+  message competes on the same terms as the backlog, so one ranked below
+  everything queued is itself the one shed — and is reported as
+  `drop-new`, keeping the metric's closed two-value reason vocabulary
+  honest without widening it.
+
+  Drops flow through the same `onDrop` hook and
+  `actor_mailbox_dropped_total` counter as `BoundedMailbox`, because that
+  bookkeeping moved into a shared `DroppingMailbox` base rather than being
+  copied; the base is exported so a mailbox of your own can inherit it
+  too. Two behaviours are worth knowing: the bound holds while the actor
+  is suspended, which is when it matters most, and `unstashAll()` on a
+  full priority mailbox can now drop, because `prependUser` re-runs the
+  priority function through `enqueue`.
+
+- **`gracefulStop(ref, timeoutMs)` stops one actor after its mailbox
+  drains, and lets you await it (#663).** `ActorRef.stop()` has always
+  meant stop-after-drain — it sends a `PoisonPill`, an ordinary user
+  message ordered behind everything already queued — but it is
+  fire-and-forget, and outside an actor there is no `context.watch` to
+  learn when the stop actually happened.
+
+  The new helper sends the same pill and resolves `true` once the actor is
+  confirmed terminated, or `false` if the budget runs out — and in that
+  case it escalates, enqueueing the system command that jumps the user
+  queue, so a caller who has run out of patience is not also left with a
+  live actor. A timeout resolves rather than rejects because it is an
+  outcome, not an error: the caller asked for a bounded stop and got one,
+  and the two answers differ only in whether the mailbox finished. The
+  budget is a required argument, since a default one would be the number
+  that silently truncates somebody's shutdown.
+
+  The confirmation comes from the target cell's own watcher set, which is
+  why only a locally-hosted actor can be observed this way; a cluster ref
+  still receives the stop but has nothing local to confirm it with, so
+  watch it from inside an actor with `context.watch(ref)` instead.
+  `ActorSystem.stop()`'s JSDoc, which had promised "a promise that
+  resolves once it is fully terminated" above a `void` signature, now says
+  what it actually does and points here.
+
+- **The bundled examples now run in CI, so a framework change that breaks
+  one is a red check (#545).**
+
+  Nothing in CI had ever executed an example.
+  `.github/workflows/examples.yml` installed and built the frontends and
+  ran nothing else, and its path filter carried only `examples/**` - so
+  the failure this most needed to catch, a `src/` change that breaks a
+  snippet, produced zero checks. The only signal was a user running the
+  example.
+
+  `bun run test:examples` spawns each standalone example as its own
+  process, waits, asserts on its output and stops it (~90 s for the whole
+  set). This is a new harness rather than a widening of
+  `tests/smoke/run-cases.mjs`: that runner is in-process, importing the
+  framework once and then `import()`ing each case, which works because a
+  smoke case is a runtime-neutral module exporting `run(context)`. An
+  example is the opposite by design - a standalone script with a top-level
+  `void main()`, its own argv parsing and often a bound port - so
+  importing one would run it in the harness's own process, with the
+  harness's argv, and leave no way to time it out or reclaim the port.
+
+  The output assertion is what makes it a gate rather than the appearance
+  of one. `examples/io/grpc-sensor.ts` exits 0 after ten failed actor
+  starts and a restart-threshold warning, so a case checked on its exit
+  code alone would be checked on nothing; the runner refuses a runnable
+  entry that declares no expected output.
+
+  What gets stopped is the process tree, not the child. While classifying,
+  two of `examples/chat/failover-test.ts`'s three cluster nodes outlived a
+  clean exit and went on holding ports 2552 and 2553, which made every
+  later port-binding example fail with EADDRINUSE and made the chat smoke
+  test pass against a backend that was supposed to be gone. A gate whose
+  cases can poison each other that way reports the run order rather than
+  the code, so teardown signals a process group on POSIX and walks the
+  tree with `taskkill /T` on Windows.
+
+  `tests/examples/examples.manifest.json` classifies all 78 standalone
+  scripts - 68 runnable with an assertion, 10 skipped with the reason,
+  which is a Docker broker, Kubernetes credentials, an optional peer
+  nothing declares, or a file that is not an entry point. The runner fails
+  when the manifest and the tree disagree in either direction, so a new
+  example cannot silently opt out. `examples/chat/smoke-test.ts` gained a
+  `--spawn-backend` flag that brings up its own node on isolated ports
+  against a scratch journal, which is how it and the voice smoke test both
+  run unattended; the default two-terminal invocation is unchanged.
+
+- **BREAKING — Projections gained a handler-failure recovery strategy, and
+  no longer retry a poison event forever (#650).**
+
+  A projection's cursor only advances after a successful `handle`, and
+  `ProjectionActor.onReceive` was a single try/catch that logged the error
+  and re-armed the poll unconditionally. A handler that kept throwing
+  therefore retried the same event once per poll interval for the life of
+  the process, every event behind it waited forever, and the only trace
+  was one error line per second naming the projection.
+
+  `ProjectionOptions` now carries `recoveryStrategy` with four values —
+  the cross product of the only two decisions available, whether to try
+  again and what to do once trying is over: `retry-and-fail` (the
+  default), `retry-and-skip`, `fail`, `skip`. `maxRetries`,
+  `retryBackoffMs` and `maxRetryBackoffMs` tune the exponential backoff,
+  and a `ProjectionOptionsValidator` checks them at spawn time. The
+  default is deliberately not `fail`: a projection is a background pull
+  loop feeding a read model, and the common failure is transient, so
+  stopping on the first blip would turn every read-model deploy into a
+  dead projection nobody notices until the view is visibly stale.
+
+  The `fail` arm stops the actor explicitly instead of letting the error
+  escape the tick. `persistence/projection` has no entry in the system
+  group policies, so it inherits the restarting default — an escaped error
+  would re-run `preStart`, reload the same cursor and fail on the same
+  event, a restart loop that is louder than the spin it replaced and no
+  more useful.
+
+  Deduplicating the log could not land on its own, because that error line
+  was the only existing signal that a projection was wedged, so the
+  structured signals land with it. `onFailure` is called on every attempt
+  with the offending `PersistentEvent`, the error, the attempt number and
+  the action taken; a skipped event is published on the system dead-letter
+  stream so nothing disappears silently; and three stock metrics appear —
+  `persistence_projection_stalled`,
+  `persistence_projection_failures_total{projection,reason}` and
+  `persistence_projection_events_skipped_total`. The log itself now emits
+  one error when a failure streak opens and one when it ends, with the
+  retries in between at `debug`.
+
+  Query and offset-store failures are counted and backed off on the same
+  curve but kept on a separate counter, so a flaky journal cannot spend
+  the retry budget of an event whose handler was never reached.
+
+  *Migration:* A projection whose handler throws permanently used to retry
+  forever; it now retries three times and stops. If you were relying on a
+  projection eventually recovering from a very long outage on its own, set
+  `recoveryStrategy` explicitly — `retry-and-skip` keeps it live at the
+  cost of a hole in the read model, and a large `maxRetries` with
+  `maxRetryBackoffMs` at your outage budget keeps the old shape while
+  still bounding it. Existing code needs no change to keep compiling:
+  every new field is optional.
+
+- **A nightly workflow that runs the three quarantined multi-node suites
+  with `ACTOR_TS_SKIP_FLAKY_MNS` switched off, and a written criterion for
+  lifting the quarantine (#538).**
+
+  `ACTOR_TS_SKIP_FLAKY_MNS=1` removes `LeaseMajority`, `ParallelPubSub`
+  and the `ParallelMultiNodeSpec` self-tests from every CI run, because
+  Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test — the same resource starvation delays
+  LeaseMajority's renewal timer past its lease TTL, so both sides of a
+  partition acquire and the test sees a false split-brain. Nothing
+  re-checked that afterwards, which made the quarantine permanent by
+  default rather than by decision, and every in-repo pointer to the
+  reasoning read "See the [CI] tracking issue" with no number behind it.
+
+  `.github/workflows/nightly-flakes.yml` runs those three suites at 04:00
+  UTC with the flag deliberately absent, three repeats a night, and
+  uploads the per-run JUnit reports and logs — the repository's first
+  artifact upload; the two existing nightlies only echo container logs
+  into the job log, which is unreadable once the log ages out. Both of its
+  jobs are `continue-on-error`: the suites are expected to be red, and a
+  red required check for a known-red measurement is one people learn to
+  ignore, so the result arrives as a run annotation and a step-summary
+  table instead.
+
+  The exit criterion is 14 consecutive green nights — 42 consecutive green
+  executions — stated in the workflow header and in the new `Diagnosing
+  test flakes` documentation page. Two calendar weeks rather than a
+  smaller number because the failure is a property of the runner pool and
+  not of the code: a fortnight spans weekday and weekend pools and several
+  `bun-version: latest` rolls, which is what has to be shown to have
+  stopped happening. A single red night resets the count, and each night's
+  uploaded `summary.json` is the evidence. All eight places that implement
+  or document the quarantine now name #538, including `benchmarks.yml`'s
+  `--exclude=worker`, which shares the cause and would otherwise have been
+  left excluded forever with the reason gone.
+
+- **A repeat-run flake harness (`bun run test:stress`) and a `Diagnosing
+  test flakes` documentation page carrying the catalog of causes this
+  suite has actually had (#290).**
+
+  A single `bun test` answers whether the suite is green right now; it
+  cannot answer which tests are green *most* of the time, which is the
+  only question a flake catalog can be built from.
+  `scripts/stress-test.mjs` runs the suite N times, keeps every run's
+  JUnit report and log, and aggregates failures by test identity —
+  splitting *flaky* (failed in some runs) from *consistently failing*,
+  which is a broken test that repetition tells you nothing new about. It
+  also names two outcomes a naive loop reads as green: a run that produced
+  no JUnit report at all, and a run that exited non-zero with no failing
+  test.
+
+  The harness deletes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it
+  hands to `bun test`. Inheriting it would measure a strictly smaller
+  suite than a local run and then report a reliable pass rate over exactly
+  the three suites known not to be reliable. `--skip-quarantined` opts
+  back in.
+
+  The new documentation page states what repetition can and cannot find,
+  because that is where an afternoon goes: a loop drives up the
+  probability of a load-sensitive flake and says nothing about a
+  deterministic ordering bug, and the worked example is the case that was
+  0 failures in 200 runs at a 1 ms poll interval because the dispatcher
+  schedules via `setImmediate`. Six cause families are catalogued with
+  their status, and five tests observed failing intermittently are listed
+  as open entries without a verdict — ruling causes out is not the same as
+  establishing one.
+
+  Those five have had their fixed sleep, or in one case a hand-rolled
+  deadline loop that fell through silently, replaced by a wait on the
+  state the assertion reads. Every assertion survives verbatim; the
+  timeouts are larger than the sleeps they replace while the tests get
+  faster, because a failure budget is only paid when something is broken.
+
+- **`PersistentActor` and `DurableStateActor` gained an `integrity()`
+  hook, so an actor can declare its own body integrity (#493).**
+
+  `PersistenceOptions.integrity` has existed since #116, and the
+  object-storage stores have honoured it on both the write and the read
+  path since #612, but neither actor base class could reach it —
+  `persistenceOptions()` built `{ compression, encryption }` and dropped
+  integrity on the floor. Override `integrity()` to return `{ mode:
+  'hmac-sha256', integrityKey }` and the stored body is signed;
+  configuring it also makes the tag mandatory on read, with the
+  store-level `allowUntaggedBodies` as the migration window for a
+  pre-integrity corpus.
+
+  Only the object-storage snapshot and durable-state stores read this
+  hook. Ten of the eleven snapshot stores and nine of the ten
+  durable-state stores accept `PersistenceOptions` and never look at it
+  (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
+  in-memory reference store an override buys no tamper detection and
+  raises no error. The persistence docs now state that count in both
+  languages, replacing a sentence that described the same gap as "ignored
+  by stores that don't (in-memory, SQLite)" — the phrasing #960 was filed
+  about, because it reads as a benign footnote rather than a missing
+  control.
+
+- **`InMemorySnapshotStore` now accepts a `keepN` retention bound through
+  the new `InMemorySnapshotStoreOptions` (#493).**
+
+  It was the only snapshot store with no retention at all: nothing but an
+  explicit `delete()` ever shrank the per-`persistenceId` list, so a
+  long-running actor that snapshots on a policy grew the map for the
+  lifetime of the process. Every other store in the family has taken a
+  `keepN` since it was written.
+
+  The default stays keep-everything rather than the family's `3`. This is
+  the store `PersistenceExtension` installs when nothing is configured, so
+  a default bound would silently change what every unconfigured
+  application retains, and retention that only surfaces later as a missing
+  snapshot is a poor thing to opt users into. Set `keepN` explicitly to
+  bound it; `<= 0` keeps everything, matching the rest of the family.
+
+  Re-saving at a sequence number that already exists now replaces that
+  entry instead of appending a second one, matching the relational stores'
+  `(persistence_id, sequence_nr)` primary key. `loadLatest` already
+  returned the newer value, so the duplicate was invisible while retention
+  was unbounded — with a bound it is not, because duplicates counted
+  against it and evicted genuinely older sequences.
+
+- **Postgres and MariaDB projections read the tags index instead of the
+  whole journal (#391).**
+
+  `RelationalJournal` has written an `events_tags` join table on every
+  append since it existed, and nothing in `src/` ever selected from it. A
+  by-tag projection over either backend therefore fell through to
+  `InMemoryQuery`, which lists every persistence id and replays each one
+  from sequence 1 — the whole journal, with no row cap — once per poll
+  interval.
+
+  `RelationalQuery` is the missing reader. It ports the three strategies
+  `SqliteQuery` uses (range-walk the first `all` tag; `t.tag IN (…)` with
+  `DISTINCT` for `any`; the journal scan when only `not` is given) onto
+  canonical `?` SQL expanded through the dialect, so one class serves
+  every `SqlDialect` instead of becoming a copy per backend.
+  `PostgresQuery` and `MariaDbQuery` are named subclasses adding only the
+  name an error reports — the same reasoning behind `LazyStore.storeName`.
+  All three are exported from `actor-ts/persistence`.
+
+  The seam is a new `RelationalJournal.openForQuery()`, modelled on
+  `MongoJournal.openForQuery()`. It hands back four things because that is
+  how many access barriers sit between a query and the index: the pool is
+  behind the protected `LazyStore.ensureOpen`, the table names are
+  private, and the dialect and serializer are protected on
+  `RelationalStore`.
+
+  Nothing changes for a caller who keeps using `InMemoryQuery` — the
+  results were correct before and are correct now, only slower. Pairing
+  the journal with its own query is what buys the index.
+
+- **A per-actor message batch budget: `ActorOptions.withThroughput()` and
+  `actor-ts.actor.throughput` (#409).**
+
+  How many user messages one actor handles per dispatcher turn before it
+  yields. Unset falls through to the HOCON key and then to the built-in
+  default of 16, so the usual precedence applies. Raise it for a
+  short-handler actor that is a throughput bottleneck; lower it toward `1`
+  for an actor whose handler is slow enough that a full batch would keep
+  timers and I/O waiting.
+
+  This is deliberately a separate knob from
+  `actor-ts.dispatcher.throughput`, which counts queued *turns* across
+  actors rather than messages within one. A batch always ends early on an
+  empty mailbox, a stop or suspend, and a throttle bucket that runs out,
+  so the budget is a ceiling rather than a commitment.
+
+- **`actor_mailbox_wait_seconds` — how long a user message waited in the
+  mailbox before it was delivered (#196).**
+
+  The half `actor_message_handler_seconds` could not give you: that
+  histogram starts measuring once a message is already being handled, so
+  an actor that is slow and an actor that is merely behind look identical
+  in it. Read together, the pair separates the two — and mailbox wait is
+  the earlier backlog signal, since `actor_mailbox_size` only mints a
+  series once a queue passes 10 000 messages.
+
+  The family carries no labels, so it adds no cardinality and stays clear
+  of the stock-label policy set in #658. Its buckets are explicit rather
+  than the client-library defaults, running 1 ms to 10 s: the defaults
+  start at 5 ms, where a mailbox that is keeping up drains in well under a
+  millisecond, so reusing them would have reproduced #998 verbatim in a
+  new family. 1 ms is also the finest the metric could be, since the stamp
+  is wall-clock.
+
+  Two populations are deliberately excluded, so the count does not match
+  `actor_messages_delivered_total`. A message replayed out of the stash
+  kept the stamp of its original arrival, and counting it would report
+  however long the actor chose to hold it as queueing delay — enough for
+  one stashing actor to drown every other actor's signal in a metric with
+  no labels to separate them. The explain plan makes the opposite choice
+  on the same field, because there the `stashed` entry that accounts for
+  the span is visible beside it. Messages queued before metrics were
+  switched on carry no stamp and are omitted rather than invented, which
+  corrects itself within one drain. Throttled messages are counted: a
+  parked message really is waiting for an actor that cannot keep up.
+
+  The arrival stamp is gated on a reader existing — an explain plan, or
+  metrics enabled — rather than being taken unconditionally, preserving
+  the property #411 established that a system instrumenting nothing pays
+  no clock read on the receive path. An interleaved A/B on Bun 1.3.1 /
+  Windows 11 finds no cost these benchmarks can resolve: five rounds per
+  arm on `ask` give 100.8k/s before against 99.7k/s after, and three
+  rounds per arm on `tell` land within 3.3% at every batch size. Both
+  differences sit well inside the per-arm run-to-run spread, which is
+  10-14% on `ask` and up to 9% on `tell` — so "no measurable difference"
+  is the whole of what was measured, and a narrower claim than that would
+  be reporting noise.
+
+  New public surface, both additive: `Envelope` gains an optional
+  `replayed` field, and `MAILBOX_WAIT_BUCKETS_SECONDS` is exported from
+  `actor-ts/metrics`, so a dashboard or a recording rule can be built on
+  the same bucket edges the histogram uses.
+
+- **Documented default values are now pinned to the constants they are
+  published from (#470).**
+
+  Every default is written down twice — as a `DEFAULT_*` constant in
+  `src/`, and as a HOCON literal in `REFERENCE_CONF` — and nothing
+  compared the two. The existing guards stop at the same ceiling: they
+  prove a reference, not a correct value, so a wrong number typed into the
+  hand-maintained `REFERENCE_CONF` was copied faithfully onto both
+  language pages with every check still green.
+
+  What the new assertion adds is the half the byte-pin could never reach.
+  `Config.load()` layers reference over application over overrides, so for
+  any key present in `REFERENCE_CONF` the HOCON literal already *is* what
+  ships, and pinning the published page to those bytes was enough to make
+  docs and runtime agree. The `DEFAULT_*` constant is the other value: it
+  is what a consumer that never loads config gets, and nothing compared it
+  to the literal. 93 keys are covered, each linked by importing the
+  constant, so a rename is a compile error rather than a silently dropped
+  assertion. Values are read through `Config`, the loader the runtime
+  uses, rather than a regex — a test that re-implements duration and byte
+  parsing ends up asserting its own arithmetic. Keys where
+  `reference.conf` deliberately overrides a shared constant are recorded
+  as such rather than omitted, because it is a layer above the constants
+  and not a copy of them.
+
+- **A compile harness for the fenced TypeScript samples, run with `bun run
+  check:doc-samples` (#470).**
+
+  Doc fences are the one body of code here that nothing type-checks, and
+  the existing api-drift guard is a literal-substring blocklist that
+  cannot see a name imported from the wrong subpath. This resolves
+  `actor-ts…` through `package.json#exports` — the map is derived from
+  that block rather than hand-written — and reports each failure at its
+  real page and line.
+
+  It is deliberately not wired into CI yet, and the sweep it is waiting on
+  is larger than it first looked. Of the 834 fences that survive the two
+  fragment classifiers, four fail to parse, 254 are already clean, 367
+  fail *only* with "cannot find name" — an identifier a previous fence on
+  the same page introduced — and **209 have a real error**: a wrong
+  argument type, a property that does not exist, an unresolvable module.
+  Those 209 need completing or an explicit exemption before this can be a
+  gate; turning it on first would only add a permanently-red job. The
+  counts are a reading of the tree as it stands and move as pages are
+  edited — `--measure` re-derives the fence classification, and the error
+  split is the `tsc` output grouped per fence. The script's header records
+  the rest of what the sweep decision needs, including the finding that
+  carrying an import does not imply a sample is self-contained.
+
+- **`/health` and `/ready` now aggregate framework-owned health checks
+  instead of an always-empty list (#655).**
+
+  The `HealthCheckRegistry` became an `ActorSystem` extension, reached
+  with `healthChecksOf(system)`. That is what the feature needed: a
+  `Cluster`, a `ShardRegion` or a transport starts long before anyone
+  builds a management route tree, so a registry created inside
+  `managementRoutes` had no component able to register with it. Nothing in
+  `src/` ever called `addLiveness`/`addReadiness` — every caller was an
+  example, a test or a docs snippet — so `/health` returned `{status:'UP',
+  checks:[]}` unconditionally and `/ready` added only self-is-up. A pod
+  whose cluster transport was dead still reported ready and kept taking
+  traffic.
+
+  Three checks ship with it. Liveness gets exactly one, `actor-system`
+  ("has this system shut down?"), and deliberately nothing else: a failing
+  liveness check gets the pod killed, so it may depend on nothing a
+  restart can fix — a check that goes red when a shared database blinks
+  turns one outage into a fleet-wide restart storm. Readiness gets two,
+  registered by `Cluster._start`. They are **not** removed by `leave()`: a
+  left node keeps them, reporting DOWN, because an empty aggregate reads
+  as healthy and un-registering would make a drained node report itself
+  ready. A later `join` on the same system retires the previous pair at
+  registration time.
+
+  `cluster-membership` is the self-is-`up` test the endpoint used to
+  compute inline. `cluster-transport` is new: it fails when the node can
+  reach none of the peers it still expects, where reachable means an open
+  connection to a member the failure detector has not written off. Both
+  halves are needed — an open socket alone proves nothing, because a
+  `DROP` partition produces no FIN and no RST and leaves the sockets
+  established while nothing is exchanged, so the failure detector is the
+  only thing that notices. That is a *total isolation* test, not full
+  reachability: a partial partition leaves the node able to gossip,
+  converge and route, and dropping it from the load balancer would take
+  capacity from a cluster that is coping. Members marked `unreachable`
+  still count as expected, so a partition cannot make the check green by
+  shrinking the set it asks about; a peer that was actually downed stops
+  counting, so a legitimate lone survivor stays ready. A single-node
+  cluster expects nobody and always passes. What it does not catch: the
+  failure detector's own latency, and a one-way partition in which this
+  node still receives.
+
+  The gRPC `grpc.health.v1.Health` service can be made to answer from the
+  very same aggregate, and that is the point of the `health` field on
+  `GrpcServerOptionsType` taking a registry rather than a boolean — pass
+  `healthChecksOf(system)` and the management endpoint and the gRPC
+  service read one instance and apply the same exported `isHealthy` rule.
+  Nothing enforces it, though: the field is whatever the caller supplies,
+  so a bare `new HealthCheckRegistry()` there forks them and only one of
+  the two is the answer a load balancer acts on. `/ready`'s `clusterReady`
+  field is read back out of the aggregate by name rather than recomputed
+  in the handler, for the same reason.
+
+- **`ActorSystem.runUntilTerminated()` — the whole of a service's shutdown
+  in one call (#549).** It installs SIGTERM/SIGINT handlers, resolves once
+  the system is down *and* the CoordinatedShutdown pipeline has finished,
+  and detaches the handlers on the way out.
+
+  The detach is why it is a method rather than a documented three-liner: a
+  `Deno.addSignalListener` listener holds the event loop open and has no
+  `unref`, so a program that shuts down for any other reason — a
+  `terminate()` from inside, an admin endpoint — would never exit. It
+  resolves on the pipeline rather than on `whenTerminated()` alone because
+  a task registered alongside the built-in terminator in the final phase
+  runs in parallel with it.
+
+  Signal delivery now goes through a new `src/runtime/signals/` backend,
+  beside the existing `tcp/`, `http/`, `sqlite/` and `worker/` ones. Bun
+  and Node share Node's `process` events; Deno needs
+  `Deno.addSignalListener`, because its `process` shim carries no signal
+  events at all — so the old `process.on(signal, …)` inside
+  `installProcessHooks` registered nothing there and reported success. A
+  signal the platform cannot deliver is skipped rather than registered, so
+  Windows degrades to SIGINT/SIGBREAK instead of throwing.
+
+- **The framework now registers its own teardown in the shutdown phases
+  (#549).** `Cluster.join()` registers `cluster.leave()` in
+  `cluster-leave`, and every `BrokerActor` closes its connection in
+  `service-stop` — joining the HTTP unbind and the DevTools detach, which
+  were already there.
+
+  Ten of the twelve phases were empty in every deployment before this, and
+  `src/cluster/` contained no reference to CoordinatedShutdown at all. The
+  broker half is an ordering fix rather than a missing teardown:
+  `postStop` always closed the connection and the `/user` stop cascade
+  always reached it, but *last* — so a broker kept publishing while the
+  HTTP server was unbinding and while the node was leaving the cluster.
+
+  Those registrations get an opt-out with a home:
+  `actor-ts.coordinated-shutdown.auto-register-tasks`, default `true`.
+  Setting it `false` keeps the phases and the built-in terminator and
+  hands every resource back to the caller. It is one switch rather than
+  one per subsystem, because the reason to reach for it is "I own the
+  lifecycle", never "unbind the HTTP server but leave the brokers to me".
+
+- **A bounded, optionally durable dead-letter queue with inspection and
+  replay (#433).**
+
+  Until now `DeadLetterRef` published each undeliverable message on the
+  event stream and returned. With no subscriber — the default, and the
+  only in-framework one is the DevTools sampler — the letter was simply
+  gone, so "what did we drop during that incident?" was a question the
+  framework could not answer after the fact.
+
+  `system.deadLetterQueue` is the subscriber that is always there. It
+  hangs on a single sink slot inside `DeadLetterRef.tell`, the one choke
+  point every dead letter already passes through, so nothing has to be
+  routed to it and no emitter has to know it exists.
+  `actor-ts.dead-letters.store` picks between `off` (the default),
+  `memory` (a bounded ring, `max-entries` and `retention`) and
+  `persistent` (additionally an append-only log in the configured journal,
+  read back on the next start). Left `off`, the dead-letter path itself is
+  byte-for-byte what it was — no sink is installed, so `DeadLetterRef.tell`
+  does what it always did — and no shutdown task is registered. Start-up
+  is not literally free, though: every `ActorSystem` reads the five
+  `actor-ts.dead-letters.*` keys, constructs the queue and runs its
+  options validator once, which is a handful of `hasPath` lookups and two
+  small objects.
+
+  Capture runs before publication, deliberately: the sink is the durable
+  record and publishing is an observation with no guaranteed audience, so
+  any future rate limiter or sampler over the dead-letter stream belongs
+  on the publish side of that line rather than in front of it.
+
+  `list({ recipient, sinceMs, untilMs, limit })` returns entries newest
+  first, `recipient` matching a path or its subtree. `replay(id)` resolves
+  the recipient path afresh — the point is that the actor has come back at
+  the same address as a new instance — and every refusal is a named result
+  (`unknown-entry`, `unresolved-recipient`, `degraded-payload`,
+  `quarantined`) rather than a silent no-op. A replayed message that
+  dead-letters again returns as the *same* entry with a higher
+  `replayCount`, so an operator retrying a poison message cannot grow the
+  queue one entry per attempt; past `max-replays` the letter is
+  quarantined.
+
+  Entry identity is a new `DeadLetterEntry` record rather than a fourth
+  field on `DeadLetter`: the event answers what was undeliverable and from
+  and to whom, while the id, the timestamp and the paths belong to the
+  queue. Nothing about `SystemMessages.DeadLetter` changed. A payload the
+  tagged-JSON encoder refuses — a function, a symbol, a `Promise`, a weak
+  collection, a cycle — is kept as `{ kind: 'degraded', className, reason
+  }` in the durable copy rather than lost, and `replay` refuses it because
+  there is nothing left to send; the in-memory entry still holds the live
+  object.
+
+  Durable writes are settled twice, and neither is redundant: a framework
+  task in `before-actor-system-terminate` settles what a running system
+  produced, and a drain once the actor tree is down settles what stopping
+  it produced — stashes discarded, mailboxes emptied past their cell —
+  which is emitted after the last shutdown phase has run and, for a
+  shutting-down system, is most of them. The second also covers a direct
+  `terminate()` with no pipeline at all. A hard kill can still lose
+  in-flight writes; the queue is a diagnostic record, not a transactional
+  outbox.
+
+  The new counter is `actor_dead_letters_total{outcome, recipient}`, with
+  `outcome` one of `captured`, `replayed`, `replay-failed`. Persistence
+  and the codec are reached through dynamic imports, so a queue left `off`
+  costs a consumer's bundle nothing.
+
+  One class of loss is explicitly out of scope: a message discarded by a
+  bounded or priority mailbox never becomes a dead letter at all, because
+  the drop-reporting seam carries a `MailboxDropReason` and never the
+  envelope. That overflow shows up in `actor_mailbox_dropped_total` and
+  nowhere else.
 
 ### Changed
 
@@ -424,7 +1531,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   theme flip. Verified in both directions: flipping the theme repaints the
   cluster ring, and flipping back restores it pixel for pixel.
 
-
 - **The DevTools UI is Angular throughout** (#485, part of #482). The shell and
   all seven panels are components reading Angular signals, routed by Angular's
   router. The hand-rolled framework is gone: `core/signal.ts`, `core/dom.ts`,
@@ -467,7 +1573,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   imperative version had it — and collapsing a branch then updated the model and
   the computed while the DOM did not move. Sweeping now happens on the way in.
   Nothing in this repository can see a stale view; that is what #487 is for.
-
 
 - **The DevTools UI is built by Angular 22 instead of `Bun.build`** (#483, part
   of #482). A build-time change only: no panel is ported, the served UI behaves
@@ -513,7 +1618,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and bootstrap, a `charts` bucket of 150 KiB is declared ahead of #486, and the
   400 KiB total is unchanged. The bundle currently measures about 67 KB gzip
   against that total.
-
 
 - **Example frontend bundles are no longer committed, and the 34 per-broker
   integration scripts are one driver** (#559). Two kinds of build weight,
@@ -562,488 +1666,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nights only while the pin is unchanged (#1330). Validated under 1.4.0
   before pinning: full suite, coverage gate, stress ×5, three-runtime
   smoke, examples, bench:smoke, check:ui, lint:package, lint:audit.
-
-### Fixed
-
-- **`incr` now adopts a counter another call seeded, so a rate-limit
-  window is protected whichever call opened it (#1295).** `InMemoryCache`
-  keeps two halves and takes its eviction victim from the opportunistic one
-  first, but the half was picked at write time and never revisited: `incr`
-  conferred the guarantee only on the branch that *created* an entry, and on
-  an existing one it merely bumped, which re-inserts into whichever half the
-  key already sits in. A window opened with `set(key, 0, windowMs)` therefore
-  stayed opportunistic for its whole life however many finite-TTL `incr` calls
-  followed — evicted first under exactly the key flood the split exists to
-  survive, which is #607's shape at a configuration the operator has been told
-  is hardened.
-
-  The condition is the *entry's* expiry, not `incr`'s `ttlMs` argument: Redis
-  semantics set a TTL only on creation, so the call that drives an existing
-  window normally passes none, and reading the argument would have adopted
-  only the counters that least needed it. Adoption is also separate from the
-  bump rather than folded into the write, because re-inserting a key a `Map`
-  already holds does not reorder it — `incr` owes an entry both the half and
-  the recency, and a test pins each.
-
-  Unchanged in both directions, which is what keeps the policy coherent:
-  `set` still never *manufactures* a guarantee, so a seeded counter nobody has
-  incremented is as evictable as any cached body; and a counter with no TTL is
-  still not adopted, for the same reason an unbounded `setIfAbsent` claim is
-  not — nothing would ever expire it, so protecting it would pin a slot for
-  the life of the process.
-
-  The shipped `rateLimit` always creates its counter through `incr`, so this
-  was a user-code and shared-cache exposure rather than a live bypass of the
-  middleware.
-
-- **BREAKING (pre-1.0): `migrateBetweenJournals` no longer stops halfway
-  through a copy (#740).** Every refusal it can raise — a tag list the
-  target's `append` rejects, a compacted prefix the target cannot represent,
-  a hole in the source's sequence numbers — is now decided in a read-only
-  preflight over the whole run, so a copy either refuses with the target and
-  the progress store untouched, or it runs to completion. It could previously
-  leave behind a partly populated target, one truncated stream, and progress
-  entries claiming the persistence ids before it were done — a shape a re-run
-  with `skipExistingPersistenceIds` walked straight past, because the target
-  held some data for the truncated stream.
-
-  This was found by the wave's own verification pass, as a regression the
-  wave itself introduced: #740's tag rules made `append` reject an empty or
-  repeated tag, and a migration is a read and a write at once. A journal
-  written before those rules could still be replayed but no longer copied,
-  because the copy hands the source's `tags` straight to `target.append`
-  behind a pass-through default `eventTransform`. It now fails with a
-  `MigrationTagError` naming the persistence id and the sequence number.
-  Reading such a stream is still never refused; copying it is a write, and
-  that distinction is now stated on the persistent-actor and
-  migration-recipes pages in both languages.
-
-  `invalidTags: 'sanitize'` is the opt-in repair, and it covers exactly the
-  two shapes a repair can be honest about: an empty member is dropped, a
-  repeat is collapsed, and `MigrateJournalsResult.eventsWithSanitizedTags`
-  counts every list it changed — so rewriting historical data is a number in
-  the result rather than a silent edit. A comma, a control character, an
-  over-long tag or too many tags on one event still refuse under it, because
-  repairing those means inventing a tag or discarding one the caller meant.
-  `eventTransform` is where that decision belongs.
-
-- **The DevTools overview's Throughput chart no longer draws a line from
-  metrics the node could not read (#744).** The tiles fed by an unreadable
-  `MetricsRegistry` were dashed, but the chart below them kept plotting
-  `messages / s` from the same counter — so one panel reported "no reading"
-  and "zero traffic" at once. A blind node reports that counter as 0 on every
-  sample, so the result was not a gap but a flat line along the axis: a
-  positive claim that the system handled nothing, made in the shape readers
-  trust most, at the moment they are scanning a busy system for a slow
-  consumer.
-
-  The chart now leaves the line out, keeps its axis, and names the omission
-  in the legend, in the same warn colour as the dashed tiles. The block is
-  not blanked: `dead letters / s` beside it is counted off the event stream,
-  stays true, and is the series an operator reaches for during exactly the
-  incident this flag appears in. The legend's peak reading is computed over
-  the lines that survive, so it describes what is drawn.
-
-- **`DocSampleHarnessEndToEnd` no longer fails most whole-suite runs on
-  a timeout nobody set (#1282).** Its `beforeAll` runs the doc-sample
-  harness twice, and each of those runs spawns `bunx tsc` twice — the
-  fixture carries an unparseable fence on purpose, so the script's
-  second pass always fires — which puts four compilers in series against
-  bun's undeclared 5 000 ms hook cap. Idle the hook takes 3.1 s and the
-  file passed; inside a full `bun test` it takes 4.3 s and under
-  contention 9.0 s, so it failed roughly three whole-suite runs in four,
-  on clean `develop` as much as on a branch. The compiles are unchanged
-  and still real — reducing them would delete the two properties the file
-  exists to prove. What changed is that the budgets are stated and
-  layered: each spawn carries a 30 s budget and throws an error naming the
-  script, its flags and the elapsed time, and the hook's 90 s cap is a
-  backstop behind it. Measured before and after under identical load
-  (16 repeats, 8 in flight): **0/16 runs green with 17 test executions,
-  against 16/16 green with 208**.
-
-  The failure was also unreadable, which is why it stood for a week: bun
-  reports a hook timeout as `(unnamed)` and calls a `beforeAll` a
-  `beforeEach/afterEach` hook, and the whole 13-test block collapses to
-  one recorded failure. Hence the named error: reaching the hook cap now
-  means the stall was somewhere other than a spawn.
-  `docs/…/testing/diagnosing-flakes.mdx` (EN + DE) carries it as a new
-  catalog family, with the caveat that `bun run test:stress` cannot
-  currently name this shape (#1359).
-
-- **A shard region refused for a `numShards` mismatch now releases the
-  shards it was already hosting (#633).** Refusing a registration only
-  stopped *new* placements, so a region accepted by one leader and refused by
-  its successor — what a rolling deploy that changes the count produces the
-  moment leadership reaches an already-updated node — kept the
-  `shardHomes`/`localShards` the first coordinator gave it, kept delivering
-  out of that cache, and could never be handed off, because the coordinator
-  only sends `HandOff` to a region it has registered. The split routing the
-  refusal exists to prevent therefore survived it. The refusal now stops each
-  hosted shard through the shard actor's own stop, so the entities beneath it
-  run `postStop` and a persistent one flushes rather than being dropped
-  mid-write, and drops the ownership in the same synchronous step.
-
-  A region's `Register` is also re-sent every 500 ms until the coordinator
-  acknowledges or refuses it. `Register` is fire-and-forget at a path that
-  need not exist yet — a node that joins and immediately takes leadership has
-  no coordinator behind that path until its own `sharding.start(...)` runs,
-  and the frame is dropped as an envelope with no handler. Nothing re-sent
-  it, because `ensureRegistered` runs off cluster events and the events for
-  that leadership move have already fired. The region then stayed silently
-  *unregistered*, which is worse than refused: no acknowledgment, no
-  refusal, and a new coordinator that never got the chance to say no to a
-  region still hosting shards.
-
-- **The testkit's multi-node broker validates a brokered frame before
-  dereferencing it (#701)**, the way the production worker broker has since
-  its own fix. `MultiNodeBroker.onMessage` took its argument as a
-  `BrokeredMessage` and read `env.to` straight into `NodeAddress.fromJSON`,
-  so one malformed frame from a worker threw inside `ParallelMultiNodeSpec`'s
-  own `message` listener — where nothing catches it — and failed the whole
-  test process rather than the scenario that sent it. `./testkit` is a
-  published entry point, so this was shipped code.
-
-  The frame guard now lives beside `BrokeredMessage` in
-  `MessageChannelTransport.ts` and is shared by both brokers instead of being
-  private to `WorkerBroker`: a security check copied into two files is how
-  the testkit fork kept the defect through the first fix. As a side effect of
-  the try/catch, a frame the harness forwards to a worker `crash()` has
-  already terminated is dropped instead of throwing `InvalidStateError` out
-  of `postMessage` — that failure used to be attributed to whichever test
-  happened to be running. `tests/unit/testkit/MultiNodeBroker.test.ts` is new
-  and gives that file its first coverage; it drives the broker through an
-  in-memory port shim, so unlike `ParallelMultiNodeSpec.test.ts` it runs in
-  CI rather than behind `ACTOR_TS_SKIP_FLAKY_MNS`.
-
-- **`reEncryptObjectStorage` no longer crashes when `sampleSize` exceeds
-  the object count** (#1353). The pre-sweep keyring-completeness check
-  clamped its sample to the corpus when it picked the default, and not
-  when the caller passed one. A `sampleSize` past the end of the listing
-  walked `items` off its tail and died on `undefined.key` — a bare
-  `TypeError`, thrown before the sweep rewrote a single object.
-
-  The reason this was reachable rather than theoretical is that the
-  master-key rotation runbook suggests it: `operations/upgrades/
-  rolling-migration` shows `sampleSize: 200` as the optional override.
-  Uncomment it on a bucket holding fewer than 200 objects — a staging
-  bucket, a small tenant, a first rehearsal of the rotation — and the
-  operator tool whose whole job is to fail *safely* before touching the
-  corpus instead failed uninformatively.
-
-  The sample is now clamped at the point the default is resolved, so an
-  oversized `sampleSize` samples every object. The documented
-  `min(100, total)` default is unchanged, and the check still refuses a
-  ring that is missing a version the corpus references.
-
-- **A cluster that can never converge now says so** (#1351). Give every
-  node a non-empty seed list and the default `selfElection: 'immediate'`
-  — which self-elects only on an *empty* one — and no node ever reaches
-  `up`: `leader()` is the first of `upMembers()`, and only a leader moves
-  a node from `joining` to `up`. The configuration is documented as one
-  that does not cold-start, but nothing said so at runtime.
-
-  What an operator saw instead was `AskTimeoutError` from a singleton
-  proxy, several subsystems from the cause, because
-  `ClusterSingletonManager` picks its host from `upMembers()` and there
-  was never one to pick.
-
-  The seed retry loop now carries the verdict: it runs exactly while the
-  node is stuck and cancels itself the moment it is not. After
-  `COLD_START_STALL_AFTER_SEED_ROUNDS` fruitless rounds, with no `up`
-  member known and no self-election pending, it logs one WARN — naming
-  the unanswered seed addresses when nothing has replied, and the
-  `seeds` / `selfElection` pairing when every peer is present and every
-  one of them is waiting. Once, not per round.
-
-  The check is exact rather than heuristic, so it does not fire for a
-  node joining a healthy cluster, nor while a deferred self-election is
-  still due. The round threshold exists only because the same condition
-  is briefly true, and harmless, during an ordinary simultaneous start.
-
-- **A healthy cluster no longer logs a WARN on every gossip frame**
-  (#1352). A frame carries the sender's whole member map, so a node's
-  own record comes back to it once per round. `maySpeakFor` refuses a
-  claim about the receiving node — rule 1 of #562, unchanged — but it
-  logged every one of them, including the peer simply echoing the status
-  the node already held. At the default one-second gossip interval that
-  is a WARN per second per peer describing normal operation, and during a
-  two-node bring-up it was the loudest line present and read as the cause
-  of a failure that lay elsewhere.
-
-  An echo is now refused in silence: it would have changed nothing the
-  version comparison in `mergeMember` did not already drop. A peer that
-  *contradicts* us still surfaces, but through the same per-frame
-  machinery as every other guard on that path — one line and one
-  `cluster_gossip_records_refused_total{reason="self-claim"}` increment
-  per frame rather than per record, the property #131 established. The
-  counter still reads zero on a healthy cluster, and what a peer is
-  allowed to say about this node is untouched.
-
-- **A bounded mailbox now applies its capacity, its overflow policy and its
-  drop accounting to the `unstashAll()` replay path (#772).**
-  `BoundedMailbox` overrode `enqueue` and nothing else, so every envelope
-  re-entering through `prependUser` went straight onto the queue, past the
-  capacity check, past the overflow dispatch and past the drop accounting. A
-  `reject` mailbox never threw, a `drop-head` / `drop-new` mailbox never
-  dropped, and `droppedCount` / `actor_mailbox_dropped_total` under-reported
-  by exactly the batch. With the stash capped at 1024 envelopes a
-  `capacity: 10` mailbox could hold 1034 — the advertised memory ceiling was
-  not one.
-
-  The geometry mirrors rather than copies: an arrival lands at the tail and
-  `drop-head` makes room at the head, so a replay lands at the head and makes
-  room at the **tail**. A full mailbox sheds its newest queued messages instead
-  of the ones the actor deliberately parked; evicting the head under a prepend
-  would discard the messages the replay just put back, which is not a bound but
-  a way of making `unstashAll()` a no-op. Once the queue holds nothing
-  droppable the arrival is what goes, reported as `drop-new`. `reject` throws
-  `MailboxFullError` *before admitting anything*, and `ActorCell.unstashAll`
-  restores the stash buffer before the error travels on, so the batch stays
-  parked and `deadLetterStash` still sees it.
-
-  That last sentence holds for the untyped `context.stash()` /
-  `unstashAll()` path only. The typed `Behaviors.withStash` path
-  dead-letters the batch instead, because `StashBuffer` has already emptied
-  itself by the time it calls the cell and there is nothing left to put back.
-  The same split applies to `Envelope.undroppable`: a `Terminated` that
-  round-tripped through the untyped stash is admitted whatever the policy says
-  and is never counted (#729), and the typed buffer has no such path to
-  preserve it.
-
-  New seams, because `Mailbox.userQueue` is private: `RingBuffer.pop()` and a
-  protected `Mailbox.removeNewest()` beside `removeOldest`, both stepping over
-  undroppable envelopes. `PriorityMailbox` overrides `removeNewest` as well —
-  it does not use the base user queue, so an inherited version would return
-  `undefined` forever and any bound built on it would quietly stop enforcing,
-  which is the shape of #407.
-
-  Worth knowing for anyone who opted into a bound: `unstashAll()` on a full
-  bounded mailbox can now drop messages, or throw under `reject`, where it
-  previously always succeeded. Mailboxes are unbounded by default since #1148,
-  so nothing changes for an actor that never called `withMailboxCapacity`.
-
-- **`FilesystemObjectStorageBackend.list` now reads only the directory its
-  prefix names (#746)** — everything up to the prefix's last `/` —
-  instead of walking the whole storage root and filtering afterwards. A snapshot
-  `loadLatest` previously read every *other* entity's directory, turning an
-  O(1) lookup into O(N) in the entity count on the actor's mailbox, and
-  `keepN` pruning re-ran the same LIST after every save. Which keys come back
-  is unchanged; the `startsWith` filter stays as the correctness backstop, so
-  a partial-segment prefix like `mine/e` still matches `mine/e0/…` and
-  `mine/e10/…` alike. The S3 backend was never affected — it passes `Prefix`
-  and `MaxKeys` to `ListObjectsV2Command` — so the defect was invisible to
-  anyone measuring against S3.
-
-  A positive `limit` now stops the walk rather than trimming a finished array,
-  which is the parity with S3's `MaxKeys` the issue asked for; `limit: 0` and
-  negative limits keep their historical `slice` semantics, and under a limit
-  each directory's entries are ordered before descending so the depth-first
-  order agrees with the ascending key order the contract promises — with one
-  bound the code's own JSDoc states and this entry should too: that agreement
-  rests on `localeCompare` being prefix-monotone, which it is not for every
-  character. A key containing U+FF0F FULLWIDTH SOLIDUS, legal on NTFS and
-  POSIX alike, collates so that the early exit can stop one entry too soon.
-  No caller in `src/` passes a limit today. A prefix
-  naming a directory nothing ever wrote to, or one whose directory portion is
-  an ordinary file, now returns an empty listing instead of surfacing
-  ENOENT/ENOTDIR — both became reachable only once the walk started at the
-  prefix. `list` also now runs the same post-resolve root containment check
-  `put` / `get` / `delete` already do, since it joins caller-supplied text
-  into a path for the first time.
-
-  Corrected the `ObjectStorageSnapshotStore` class doc, which described
-  `loadLatest` as "a single LIST with `limit:1` and reverse iteration over the
-  sorted result". It never did that and could not: the contract sorts
-  ascending, so `limit: 1` returns the *oldest* snapshot.
-
-- **A cluster whose nodes all advertised `0.0.0.0` never formed** (#944).
-  The host a node resolved became both its bind address and its identity,
-  and the last resort of that resolution was the wildcard. Every node
-  that reached it advertised the byte-identical
-  `<system>@0.0.0.0:2552`, so each read the others' self-announcements as
-  claims about *itself*, `maySpeakFor` refused them as claims a node may
-  not make about another's status, and every member map held exactly one
-  entry — with nothing in the log to separate that from a cluster that
-  had merely not converged yet.
-
-  The fallback was reachable more often than its position suggested.
-  `POD_IP` exists only where the pod spec exports it; `HOSTNAME` is a
-  shell variable, so a service started by systemd or a process manager
-  sees `process.env.HOSTNAME === undefined`, and where it *is* set it is
-  a pod name that resolves under a StatefulSet with a headless service
-  and nowhere else.
-
-  `resolveAdvertisedHost` now fills the identity from one chain that both
-  `Cluster.join` and `bootstrapCluster` share, and no stage of that chain
-  except an explicitly named value can produce a wildcard — which is what
-  lets `ClusterOptionsValidator` refuse one outright, at construction,
-  instead of leaving a cluster to not converge. `TcpTransport` gained a bind host used for the `listen` call
-  alone, so `self` stays the identity in the handshake and in the peer
-  keys.
-
-  **BREAKING** in behaviour, not in signature: a node that named no host
-  at all used to advertise `0.0.0.0` and now advertises `127.0.0.1`.
-  Nothing configured correctly moves — a routable `host` still wins over
-  the environment — but a multi-node deployment that relied on the old
-  fallback was already broken and is now reachable only on loopback,
-  which the node says out loud at startup. Set `withAdvertisedHost(...)`,
-  `actor-ts.remote.tcp.advertised-host`, or `CLUSTER_HOST` / `POD_IP`.
-
-- **The DevTools tracing panel no longer draws every retained span twice
-  after a re-subscribe (#1350).** `SpanTap.snapshot()` hands a fresh
-  subscriber the server's whole ring, and two paths re-subscribe a stream
-  that is already open: the sequence-gap recovery in `tapClient`, and the
-  re-subscribe of every live stream after a reconnect. The panel appended
-  that snapshot to what it already held, so the flame graph and the
-  waterfall showed each span twice, a trace grew duplicated children, and
-  the span count was simply wrong.
-
-  The other stream consumers survive the same frame because their handlers
-  **replace** — `ActorTreeModel.reset` drops its map, `onClusterSnapshot`
-  calls `members.set(...)`. Tracing is the one that accumulates, so the
-  snapshot meant "here is everything" to them and "here is more" to it. It
-  now keys its ring by `spanId` (16 hex characters of crypto-grade
-  randomness, from W3C trace-context), so a span that arrives twice is
-  recognised rather than recorded again. Insertion order is unchanged: a
-  resent span keeps its own place instead of jumping to the newest end and
-  pushing a genuinely newer one out of the ring.
-
-  Rare enough to have gone unnoticed — a reconnect after a laptop wakes
-  from sleep is the likely first sighting. Not reached by the pause added
-  in #1349, which classifies `spans` as a buffered stream and replays held
-  batches rather than re-subscribing.
-
-- **`RedisStreamsActor` now routes connection loss into the shared
-  `BrokerActor` reconnect machinery (#742).** It was the one subclass that
-  never called `handleConnectionLost`: it registered no listener on either
-  ioredis client, and its consumer loop answered every `XREADGROUP` rejection
-  the same way — warn, sleep 500 ms, retry the same dead client. `_state`
-  stayed `'connected'` for the whole of an outage, so the configured
-  `reconnect` backoff, the circuit breaker and the `BrokerDisconnected` health
-  signal were all inert on the consume path, and the
-  `XGROUP CREATE … MKSTREAM` bootstrap never re-ran — leaving the loop to
-  spin on `NOGROUP` after a Redis restart that lost the group. Only a
-  publishing application recovered, via the outbound path; a pure consumer
-  had no route in at all.
-
-  The driver's `error` / `close` / `end` signals are now wired to
-  `handleConnectionLost`, which also removes ioredis's unhandled-`error`
-  fallback; signals escalate only from clients that finished connecting, so a
-  refused connection is reported once rather than scheduling two competing
-  reconnect loops. The consumer loop classifies its rejections —
-  connection-level ones (socket gone, `ECONNREFUSED`, ioredis exhausting its
-  per-request retries, `NOGROUP`) hand the outage to the configured backoff
-  and leave the loop, command-level ones keep a short local retry. `NOGROUP`
-  counts as connection-level deliberately: re-running the group bootstrap is
-  the only thing that clears it, and that happens on connect. Repeated
-  identical failures collapse into one WARN per 30 s carrying the count it
-  stood in for.
-
-  `connectImplementation` can now fail — the clients are built with
-  `lazyConnect` and their `connect()` awaited, so an unreachable Redis
-  produces a failed attempt and a backoff instead of a `BrokerConnected` for
-  a broker nothing has reached. The consumer loop is bound to the client
-  generation that started it, closing a window in which a loop suspended in
-  `xreadgroup` across a reconnect would resume beside the new one, two
-  readers sharing one consumer name (#982). A `protected createClient(url)`
-  seam mirrors `NatsActor.createNatsConnection`, so all of this is testable
-  without the `ioredis` optional peer.
-
-  The Redis Streams page documents the reconnect behaviour for the first time
-  (EN + DE), and the `BrokerDisconnected` row of the BrokerActor events table
-  is corrected in both languages: it claimed the event fires when "a
-  `disconnectImplementation` ran or a connection failed", but the only
-  publish site sits inside `handleConnectionLost`, so a graceful `postStop`
-  teardown publishes nothing.
-
-- **DevTools grouped large numbers differently depending on the host**
-  (#553). `formatCount` grouped thousands by rewriting the comma out of
-  `toLocaleString('en-US')`, but that separator comes from the runtime's
-  ICU data — it is a comma under Bun and a thin space (U+2009) under the
-  Node that runs the UI test suite, where the rewrite therefore hit
-  nothing. Grouped by hand now, and pinned by a test that asserts the
-  codepoint rather than the shape.
-
-- **The voice sample promised a `Uint8Array` and returned `unknown`, and the
-  one config that could have said so was told not to look** (#1015).
-  `Array.prototype.find` over a union hands back the whole union, so reading
-  `.data` off the result is `unknown`. Both helpers in
-  `examples/voice/smoke-test.ts` reached for it through `(e as any).data` and
-  `?.['data']`, which is precisely what stopped the mismatch from being
-  visible where it was written. They now narrow with a type guard over named
-  `TextEvent` / `BinaryEvent` variants, and the casts are gone. The change is
-  type-level only — the sample still round-trips all three modes.
-
-  Why it survived is the more useful half. `tsconfig.dev.json` excluded the
-  file, excused as a black-box script that "imports nothing from `src/` and
-  this config would catch no API drift in it either way". That does not match
-  the exclude rule stated at the top of that same file — a file is excluded
-  when a manifest *other than the root* resolves its imports, and this one's
-  (`node:*`, `ws`) all come from the root — and drift is not the only thing a
-  typecheck catches. The entry is gone, so the file is gated from now on. The
-  gate was checked in both directions: with the exclusion lifted but the
-  source left unfixed, `typecheck:dev` fails with exactly the reported error,
-  and green only once the narrowing lands. This was the last of the eight
-  errors #1015 inventoried; the other seven had already been fixed in passing
-  by #540's sweep and by #1014.
-
-- **A one-way tell batch could be read before it landed, and one failed arm
-  discarded every arm's rounds** (#1326). Both surfaced on the same run: a
-  hundred-round measurement stopped at round 44 with `completed 993 of 1000
-  operations`.
-
-  The virtual-actor arm sends its batch as one-way RPCs — that runtime's
-  nearest analogue to fire-and-forget — and then read the counter back with a
-  single call. A one-way call completes when the message is *dispatched*, not
-  when the grain has processed it, and the runtime orders it against nothing,
-  so the read could overtake the tail of the batch. No other arm needs care
-  here: their frameworks order messages per sender-recipient pair, so a read
-  issued after N sends observes all N. The read is now a bounded drain that
-  accumulates across reads — delayed messages are counted, and messages that
-  were *dropped* rather than delayed still time out and still fail the row, so
-  it remains a completion check rather than a way of passing one. Both
-  directions are covered by a probe: the same delayed batch fails with the old
-  single read and passes with the drain, and a permanently lost batch fails
-  either way.
-
-  Separately, the driver called `process.exit(1)` before it merged, so one arm
-  failing once at round 44 threw away the other eight arms' hundred rounds as
-  well — hours of measurement, already written per round, discarded over one
-  bad row. It now merges first and reports the failure afterwards. Merging
-  costs no honesty: each merged file records that arm's own round count and
-  `RESULTS.md` prints it per arm, and the driver names any arm that fell short
-  of the requested count.
-
-- **The comparison benchmarks now run on Linux** (#1325). Six of the nine arms
-  failed there. Two separate causes, and they deserved separate treatment.
-
-  The committed POSIX build-tool launchers were recorded at mode `100644`, so
-  `/bin/sh` refused to exec them and every JVM arm died with exit 126 before
-  its build tool was reached. Windows never saw it — there the `.bat` sibling
-  is the entry point and `core.fileMode` is false regardless — and neither did
-  any gate, because nothing in the repository looked at a file mode. The four
-  scripts are now `100755`, asserted against the **git index** by
-  `tests/unit/ci/ComparisonLauncherModes.test.ts`; the working tree cannot
-  answer that question on Windows, so a filesystem check would have passed on
-  the one platform where the bug does not bite.
-
-  Separately, an arm whose toolchain is simply not installed was reported as a
-  failed arm, so a machine without the .NET SDK exited non-zero and buried the
-  arms that did measure under an error summary. The driver now checks each
-  external arm before running it and reports a missing toolchain as **skipped**,
-  naming what to install and keeping the exit code at 0 — `RESULTS.md` dates
-  every arm separately, so a partial run stays legible. Skips are listed in the
-  summary on the success path too, since a partial run reported as a plain
-  green tick is how a release publishes figures for arms that never ran. A
-  launcher that exists but is not executable stays a hard failure: that is a
-  broken checkout, not an environment choice, and the message carries the
-  `chmod` that fixes it.
-
-  The Windows `.bat` is also no longer the reason POSIX goes through a shell.
-  A shell is now used only where one is required, which removes the last place
-  a path containing a space could break the invocation.
-
-### Changed
 
 - **The published comparison figures come from a hundred-round run on Linux**
   (#1327). All nine arms, one run, one machine, one commit — replacing a
@@ -2313,1115 +2935,485 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   hand-rolled `process.on('SIGTERM', …)` this issue exists to delete. Both
   language mirrors.
 
-### Added
-
-- **Dead letters can now be replayed to a recipient other than the one they
-  were addressed to — `deadLetterQueue.replay(id, alternateRecipientPath)`
-  (#433).**
-
-  The recorded path is not resolved at all when an alternate is given,
-  because redirecting is most useful exactly when the original address is
-  gone for good (a renamed actor, a shard that moved, a typo in a spawn).
-  Only the destination changes: the sender stays the recorded one, so the
-  recipient's `sender` still answers the actor that sent the message.
-  `max-replays` still applies, so a quarantined letter stays refused
-  however it is addressed — otherwise alternating between two paths would
-  hand back the unbounded retry loop the cap exists to close. If the
-  letter dead-letters again at the alternate it returns as the same entry,
-  now recording the alternate as its `recipientPath`.
-
-- **`ActorSystemOptions.withDeadLetters(...)` configures the dead-letter
-  queue the system actually uses (#433).**
-
-  The `DeadLetterQueueOptions` family shipped complete and publicly
-  exported with no reachable consumer: `system.deadLetterQueue` is
-  readonly, its only construction site read HOCON and nothing else, and
-  nothing installed a hand-built queue as the capture sink — so `new
-  DeadLetterQueue(system, options)` produced a correctly-configured object
-  that never received a letter, which the docs nevertheless advertised.
-  Explicit options now beat HOCON field by field, so naming one knob in
-  code leaves the rest of the `actor-ts.dead-letters` block in effect.
-
-- **A `metrics` dead-letter store: `actor-ts.dead-letters.store = "metrics"`
-  counts every undeliverable message and retains no payload (#433).**
-
-  `store` is now one axis with four rungs ordered by how much is kept —
-  `off`, `metrics`, `memory`, `persistent`. The arm exists because
-  retaining a payload is a different decision from observing a rate: a
-  ring holds a strong reference to every undeliverable message, which is a
-  data-protection question the moment a payload says anything about a
-  person, and a counter is not. It cannot be approximated with a small
-  ring, since `max-entries` must be positive and even the tightest one
-  keeps a live payload for a whole retention window.
-
-- **A named cache can now be sized for its own key space (#607).**
-
-  `CacheExtension`'s in-memory factory reads
-  `actor-ts.cache.<name>.in-memory` layered over the global
-  `actor-ts.cache.in-memory`, leaf by leaf, so `cache('idempotency')` and
-  `cache('rate-limit')` no longer share one `maxEntries`. That is what
-  makes the one-cache-per-consumer advice in three JSDoc headers and six
-  doc pages actionable: sizing one named instance previously required
-  hand-constructing an `InMemoryCache` and injecting it with `setCache`,
-  which nothing recommended for that purpose. The cache factory type
-  `CacheFactory` gains a second `name` parameter so a third-party plugin
-  can read its own per-name block the same way; a one-parameter factory
-  still satisfies it, so existing `registerCache` callers are unaffected.
-  The path carries no `reference.conf` leaf because the name belongs to
-  the application, exactly as `actor-ts.cache.<name>.plugin` does not.
-
-- **Warm hand-over for cluster singletons: a singleton actor that implements
-  `serializeForHandOver()` and `restoreFromHandOver(bytes)` hands its
-  in-memory state to its successor, so a singleton with expensive recovery —
-  thousands of events to replay, a large cache — no longer starts cold every
-  time the host moves. The state rides on the hand-over acknowledgment
-  introduced in #949, which is emitted at the only instant it is final: once
-  the outgoing instance's postStop has completed. The restore runs after the
-  constructor and before preStart, which is the only position from which
-  recovery can still be skipped. It is opted into on the actor rather than
-  through an option, so an actor written before this release is untouched,
-  and it is best-effort throughout: no hooks, an oversized snapshot, a
-  serializer or restore that throws, an instance that died unexpectedly, or
-  a predecessor that was downed rather than asked all fall back to today's
-  cold start with a warning. The snapshot is capped by a new
-  `maxHandOverStateBytes` (1 MiB default) and, independently, by whether it
-  fits the transport's live frame cap once base64-encoded. (#194).**
-
-- **`bun run test:coverage:gate` now enforces per-module line-coverage
-  floors on top of the aggregate one (#541).**
-
-  `src/cluster/` at 90 % and `src/persistence/` at 90 %, computed as the
-  weighted sum of lcov's LH over LF for every record under the path prefix
-  rather than as an average of bun's per-file percentages, which would
-  cancel a ten-line barrel against a thousand-line coordinator. Measured
-  on 2026-08-19 with the CI population (ACTOR_TS_SKIP_FLAKY_MNS=1, 7695
-  tests, bun 1.3.1) the two modules sit at 97.39 % and 95.35 %. The gate
-  also accepts `--log=<bun-test.log> --lcov=<lcov.info>` to gate the
-  artifacts of a run that already happened instead of running the suite
-  itself — both flags or neither, so half the gate can never report as all
-  of it.
-
-- **actor-ts.distributed-data.max-gossip-bytes (default 1M) and the matching
-  DistributedDataOptions.withMaxGossipBytes, bounding one gossip frame's
-  payload (#691).**
-
-  The effective budget is always the smaller of this and the transport's
-  own maxFrameBytes, so lowering the wire cap for a semi-trusted network
-  lowers the gossip budget with it and no setting can put gossip back over
-  the edge. 0 removes the DistributedData-side budget; the clamp still
-  applies.
-
-- **A new counter, distributed_data_gossip_skipped_keys_total, labelled by
-  reason (oversize or unserialisable), plus a rate-limited warning naming
-  the key, its measured size, the budget and the store size (#691).**
-
-  A single key whose own encoding exceeds the budget cannot be sliced —
-  one key's full state is the smallest unit gossip sends, and
-  MAX_CRDT_ENTRIES bounds an entry count rather than a byte size — so it
-  is skipped and does not converge. Making that observable was chosen over
-  a silent skip; it is documented on the replication and stock-metrics
-  pages in both languages.
-
-- **Transport now publishes an optional readonly maxFrameBytes, and
-  TcpTransport's field is public (#691).**
-
-  A sender needs the number before it builds a frame, because nothing on
-  the interface reports failure: send is fire-and-forget and the cap is
-  enforced on the far side. Optional rather than mandatory, since the
-  in-memory, MessageChannel and multi-node transports hand the message
-  object to the peer and enforce no frame cap at all.
-
-- **`handOverTimeoutMs` on `StartSingletonOptions` and
-  `ClusterSingletonManagerOptions` (default 10 s, builder
-  `withHandOverTimeoutMs`): how long an incoming singleton host waits for
-  every eligible peer to confirm it is not hosting before hosting anyway.
-  Reaching it means the uniqueness invariant could not be proven —
-  availability is chosen over it and the manager says so at `warn`. No HOCON
-  leaf yet; that belongs to #855, whose proposed retry-count keys are
-  superseded by this single timeout. (#949).**
-
-- **A scheduled task that throws is now reported instead of vanishing onto
-  the console (#678).**
-
-  `Scheduler` gained an optional `onError` sink and `ActorSystem` fills it
-  in, so a throw out of `scheduleOnceFunction` or
-  `scheduleAtFixedRateFunction` reaches the system logger — and therefore
-  every configured log sink, MDC included — and is published on the event
-  stream as a new `SchedulerError` carrying the `cause`. Both the sink
-  type `SchedulerErrorSink` and the event class are exported.
-  `console.error` survives only as the documented last resort, for a
-  scheduler used outside an actor system; a sink you set yourself is never
-  taken over, and it is handed back when the system terminates.
-
-- **`NodeAddress` carries an optional `incarnation` — which process is
-  answering at a `system@host:port` — minted once per `Cluster.join` from
-  `NodeAddress.mintIncarnation()` (#940).**
-
-  It rides every address-bearing wire field, is bounded on arrival by
-  `MAX_NODE_INCARNATION_LENGTH`, and stays deliberately out of `toString`,
-  `equals` and `compareTo`, so every map keyed on the string form, the
-  leader's lexicographic order and `RefCodec`'s local-vs-remote test are
-  unchanged. Optional in both directions: a peer that predates the field
-  sends none and is understood, and a peer that does not know the field
-  ignores the extra JSON key — so this is not a wire break. No merge rule
-  is keyed on it yet, and that is a decision rather than an omission: an
-  optional field is bypassed by stripping it, so a refusal on a mismatch
-  would be one an attacker opts out of while a legitimate peer of the
-  previous version walks into it. Requiring the field breaks all eight
-  address-bearing frame fields at once and waits on #823. The one
-  comparison that needs no distributed agreement is made: a record a peer
-  sends about the local node keeps the local node's own incarnation, so
-  the leader's promotion — the single claim about itself a node accepts,
-  merged wholesale including the address — can no longer restate it.
-
-- **`actor_mailbox_depth` — a label-free histogram of queue depth, observed
-  once per delivery, with buckets from 1 to 10 000 messages (#196).**
-
-  It is the distribution `actor_mailbox_size` cannot be: that gauge
-  samples an instant every 2 s and mints no series below 10 000 queued
-  messages, because the `path` label it needs to say which actor is behind
-  is only affordable that far up. The range it is blind on is 1-9 999,
-  which is where a burst actually lives, and a spike between two of its
-  ticks was recorded nowhere. The histogram's top bucket boundary is the
-  gauge's floor, so the two now cover everything between them with no gap:
-  read the histogram to learn that a backlog exists and how deep its tail
-  goes, read the gauge to learn whose. Because it carries no labels it
-  costs one series per bucket however many actors or sharded entities
-  exist. Its count matches `actor_messages_delivered_total` exactly, and
-  its floor is 1 rather than 0 because the observation counts the message
-  being delivered — so sizing a bounded mailbox from its p99 is now a
-  measurement rather than a guess.
-
-- **`actor_dispatcher_queue_delay_seconds` — a histogram labelled by
-  `Dispatcher.id`, measuring how long an actor turn waited between being
-  handed to a dispatcher and starting (#196).**
-
-  This is the saturation signal, and it is deliberately not the
-  `dispatcher_saturation_ratio` the issue asked for. A 0-1 busy fraction
-  has no primitive this project can use on all three supported runtimes:
-  `performance.eventLoopUtilization` is absent on Bun 1.3, real on Node
-  26, and a permanent hard-zero stub on Deno 2.6 — measured on each, and
-  now re-checked per runtime by a new cross-runtime smoke case. A ratio
-  built on it would read a flat 0 % on Deno for ever, which is worse than
-  publishing nothing, because an alert on a metric that never fires looks
-  exactly like a system that is never saturated; and even where the
-  reading is real it covers the whole event loop, so it could never have
-  been attributed to one of several dispatchers. Scheduling delay needs
-  nothing but a clock, so it is the same measurement everywhere: at rest
-  it is one hand-off (microseconds), under saturation it grows without
-  bound, and "utilization is at 100 %" becomes "turns are waiting longer
-  than my latency budget", which an alert rule can actually state. Buckets
-  run 10 µs to 10 s. One caveat is documented rather than glossed: on
-  `MicrotaskDispatcher` the delay stays low even while actors starve the
-  event loop, because the queue it measures is the microtask queue the
-  runtime drains first — a low reading there means microtask scheduling is
-  not the bottleneck, not that there is headroom.
-
-- **`PriorityMailboxOptions` gains `onPriorityError` and
-  `withOnPriorityError(cause, message)`, fired whenever `priorityFor` throws
-  or returns something unrankable (#733).**
-
-  Worth wiring, because containment is otherwise invisible: the message
-  still arrives, just last, so nothing else in the system reports that a
-  priority callback is broken. `cause` is what the callback threw, or a
-  `TypeError` describing the value it returned. Record and return from the
-  hook — it runs on the sender's stack too.
-
-- **`ClusterSharding.shardMap(typeName)` returns the last shard map this
-  node was told about as plain JSON (`ShardMapView`), synchronously and with
-  no round trip, no DistributedData extension and no coordinator-state store
-  (#682).**
-
-  It is the serialisable counterpart to `shards()`, which carries a live
-  `ActorRef` and therefore cannot cross a wire. `shardMapViewOf` projects
-  a `ShardMapChanged` event into the same shape for callers that would
-  rather subscribe than poll.
-
-- **`DistributedDataCoordinatorStateStore` and the `CoordinatorStateStore`,
-  `CoordinatorStateData` and `RegionInfoData` types are exported from
-  `actor-ts/cluster` (#682).**
-
-  The sharding options JSDoc instructs callers to pass `new
-  DistributedDataCoordinatorStateStore(...)`, and no public entry point
-  exposed the class, so the opt-in it documents was impossible to perform
-  from outside the repository.
-
-- **Static file serving can now stream instead of buffering (#465).**
-
-  Set `streamThreshold` (builder: `withStreamThreshold(bytes)`) and a body
-  at or above that size is sent as a chunked-read `ReadableStream`, so
-  serving a file larger than the process's memory costs the same as
-  serving a small one. Setting it also retires the `maxFileSize` 413 —
-  safely, not as a waiver: the validator rejects a threshold above
-  `maxFileSize`, which means nothing can buffer past the threshold and the
-  cap becomes unreachable. `Content-Length` is stated on the streamed
-  response, because a backend has nothing to measure on a stream and would
-  otherwise turn every large download chunked. Unset by default, so
-  nothing changes for an existing mount; streaming is opt-in until #674
-  and #979 land, because a one-shot body is still mishandled by the
-  caching and idempotency middleware and by the Express backend's pipe.
-
-- **Three gates for the repeat-run flake harness (scripts/stress-test.mjs),
-  which decided flaky-versus-broken with nothing checking it.
-  tests/unit/ci/StressHarnessAggregation.test.ts drives the JUnit parser and
-  the aggregation over fixtures, including bun's real output with its
-  host-separator file attributes;
-  tests/unit/ci/StressHarnessClassification.test.ts drives the whole script
-  against a synthetic suite that fails in run 3 of 5, one that fails in
-  every run, and one that hangs in the middle of otherwise green runs;
-  tests/unit/ci/StressHarnessQuarantine.test.ts proves
-  ACTOR_TS_SKIP_FLAKY_MNS really is dropped from the child environment and
-  really is set by --skip-quarantined. The script gained exports and an
-  import.meta.main guard so a test can import it without starting a stress
-  run; invoking it as an entry point behaves exactly as before. (#290).**
-
-- **IpAllowlist gained `trustedProxies`, the CIDRs of the reverse proxies in
-  front of the app (#715).**
-
-  Set it and the middleware reads the chain in wire order — forwarded
-  entries first, socket peer last — and walks it from the right, taking
-  the first address that is not one of those proxies. A client that
-  reaches the app directly is the untrusted peer, so its header is never
-  read at all; junk it prepends sits left of its real address and is never
-  reached; an unparseable entry counts as untrusted, ends the walk and
-  then fails the allowlist too. When every entry is trusted the fallback
-  is the socket peer, not the leftmost entry, which is a deliberate
-  divergence from proxy-addr because that value is reachable by a caller
-  behind the proxy. `forwardedHeader` (default x-forwarded-for) points the
-  same walk at a header a vendor sets rather than appends —
-  cf-connecting-ip, true-client-ip, x-real-ip. Trust is expressed as
-  addresses and not as a hop count on purpose: a numeric trust-proxy
-  setting compares indexes and never addresses, so it believes the header
-  on a request that passed no proxy at all. It also means the option needs
-  nothing from the backend and therefore works identically on Fastify,
-  Express and Hono — where trustProxy is respectively reachable, reachable
-  only via a bring-your-own app, and absent. IpAllowlist now also has the
-  standard XOptions family: IpAllowlistOptionsType,
-  IpAllowlistOptionsBuilder, IpAllowlistOptions and
-  IpAllowlistOptionsValidator.
-
-- **`Mailbox.enqueueSignal(envelope)` and `Envelope.undroppable`, the seam
-  that keeps a framework lifecycle notification out of reach of a
-  load-shedding policy (#729).**
-
-  A `Mailbox` subclass of your own that overrides `enqueue` to shed should
-  override `enqueueSignal` too and queue the envelope past its bound; the
-  base implementation delegates to `enqueue`, which is correct for a queue
-  that discards nothing. `BoundedMailbox` and `PriorityMailbox` already
-  override it. Delegating rather than writing straight to the base user
-  queue is deliberate — a subclass may keep its messages elsewhere, and an
-  envelope hidden in a store its own `dequeueUser` never reads is worse
-  than one it dropped.
-
-- **Worker respawns are now delayed and budgeted instead of firing straight
-  from the close listener without limit (#734).**
-
-  Five new options and their builder methods: `restartMinBackoffMs`
-  (default 200), `restartMaxBackoffMs` (default 10000),
-  `restartRandomFactor` (default 0.2), `maxRestarts` (default 10, `-1` for
-  the previous unbounded behaviour) and `restartWindowMs` (default 60000),
-  matching the framework's own ten-restarts-per-minute supervision
-  allowance. A slot whose budget is spent is retired for good and reported
-  once through the new `onWorkerPermanentlyDown` callback, which is the
-  only diagnostic the worker subsystem can offer — it has no logger. A
-  replacement that never becomes ready counts against the same budget as a
-  worker that died. The pending respawn timer is unreferenced so it cannot
-  hold the process open, cancelled by `terminate()`, and re-checks the
-  shutdown flag when it fires; without all three, introducing a delay
-  would have made a previously unreachable broker hole reachable. The
-  knobs are code-only for now and have no config-file equivalent.
-
-- **`MAX_DELIVERY_IDENTIFIER_LENGTH` is exported from the `./delivery` entry
-  point, so an application picking its own `producerId` can read the bound
-  the consumer admits rather than discovering it by having deliveries
-  refused (#727).**
-
-  This mirrors `MAX_PERSISTENCE_ID_LENGTH` on the persistence side.
-
-- **A ratchet over the test tree's fixed-delay waits,
-  `tests/unit/ci/SleepRatchet.test.ts`, following the shape
-  `AwaitConditionBudgets.test.ts` established: a repo-wide invariant
-  expressed as a test, so it needs no new tooling and no workflow change and
-  does not wait on the Biome adoption in #417. Three ledgers, each a ceiling
-  that only ever moves down and each with a zero-cost remedy the failure
-  message names: 93 modules that declare their own `sleep` instead of
-  importing the shared one, 35 hand-rolled polling helpers (`waitFor` /
-  `waitUntil` / `awaitConvergence`), and 486 waits that state no reason,
-  counted per module so a failure names the file. It counts more than the
-  greps this migration has been measured with: beside the 479 `await sleep(`
-  sites the tree holds 60 inline `Bun.sleep(20)` and 72 inline `new
-  Promise((r) => setTimeout(r, 20))`, 611 waits in all, so a fifth of the
-  debt was previously invisible. It is deliberately not a ban on waiting,
-  because 57 of those waits are followed by an assertion that something did
-  not happen and an absence cannot be polled for; what it forbids is an
-  unexplained wait, a re-declared `sleep` and a re-invented poll loop. Also
-  removes the one dead `Bun.sleep` shim, in
-  `tests/unit/ActorSelection.test.ts`, which had zero call sites and
-  survived because no tsconfig sets `noUnusedLocals`. (#418).**
-
-- **Email bridge actor** (#1133).  `EmailBridgeActor` turns a mailbox into a
-  message source and SMTP into a sink — the ops/alerting bridge that otherwise
-  gets hand-rolled per project.  Inbound uses IMAP IDLE via `imapflow` (with a
-  polling fallback for servers that do not offer it, or do not honour it) and is
-  **at-least-once, settled by IMAP flags**: a message is marked `\Seen` — or
-  moved to another mailbox — only once the target actor tells back
-  `{ kind: 'acknowledgment', ackToken }`.  A refusal, a missed deadline, a lost
-  connection and a dead process all end the same way, with the message still
-  unflagged and therefore delivered again; "processed" is a fact on the server,
-  not bookkeeping in memory.  Outbound goes through a pooled `nodemailer`
-  transport, and an SMTP failure is classified before it is escalated — a
-  message the server rejected is dropped rather than re-queued at the head of
-  the buffer behind a torn-down pool.  Reconnection is the `BrokerActor`
-  lifecycle's, since `imapflow` does none of its own.  Both drivers are optional
-  peer dependencies loaded on first connect, so a send-only bridge never imports
-  `imapflow`.  One actor watches one mailbox (an IMAP connection can IDLE only
-  on the mailbox it selected).  Config under
-  `actor-ts.io.broker.email-bridge`; verified against GreenMail in the broker
-  integration suite.
-- **HTML email templates** (#1133).  `EmailTemplate` fills a stored HTML snippet
-  — one from HOCON, a database row, or a file an operator edits — which the
-  `html` tagged template cannot cover, since it needs its markup as a JavaScript
-  literal.  Values are HTML-escaped by default and the one opt-out is the same
-  `SafeHtml` brand the HTTP side uses, so `rawHtml(...)` states the intent at the
-  call site.  Setting a placeholder the template does not declare throws, and
-  rendering with any placeholder still unset throws naming all of them — both
-  are failures that would otherwise only surface in a mail already sent.
-  Deliberately logic-less: it substitutes placeholders, it is not a template
-  engine.
-- **The comparison is complete: eight arms across three runtimes** (#27).  Two
-  .NET arms close the set the issue asked for — the classic actor API on the
-  CLR, and the virtual-actor runtime.  Full table in the README and in
-  `reference/benchmarks`; the short version is that actor-ts sustains **897k
-  messages/second** at a batch of 10 000, against 2.9-3.0M on the JVM, 1.33M on
-  .NET and 600k for virtual actors, while leading every JavaScript arm.
-
-  Having the *same* actor model on three runtimes is what makes the runtime's
-  own contribution visible rather than inferred — and it settled a question the
-  earlier phases could only flag. The ask row splits by **runtime, not
-  framework**: both JVM arms sit near 40-47 µs while both .NET and both
-  JavaScript arms sit under 11 µs. That is the external caller — a microtask on
-  an event loop, an `await` in .NET, a thread parking on a future on the JVM —
-  and the JVM arms lead the tell rows precisely because that cost is not in
-  their path there.
-
-  The virtual-actor arm is the one whose semantics genuinely differ: grains
-  activate on first call and there is no caller-visible create or stop, so
-  three of its four rows measure a named near-equivalent and say so on the row.
-  Its strong ask and weak tell are the same fact twice — request/response is
-  what a grain call is.
-
-- **Both sides of the JVM licence split are measured, and they are the same
-  speed** (#27).  A second JVM arm (`benchmarks/comparison/pekko/`) measures
-  the Apache-licensed fork against the BUSL-1.1 original from Java sources that
-  are identical apart from the package prefix.  They agree to within the noise
-  on every scenario — 2.74M/s against 2.73M/s on tell throughput — so **staying
-  on an OSI-approved licence costs nothing in throughput**, and each arm is a
-  control on the other since they differ only in which dependency they pull.
-  Pinned to the newest *stable* release rather than the available 2.0
-  milestone.
-
-- **The comparison now reaches across the language boundary** (#27).  A JVM arm
-  (`benchmarks/comparison/akka/`, Maven + the Akka Typed Java API) answers the
-  question the issue was opened for: **actor-ts sustains about a third of a
-  mature JVM actor system's message throughput** — 925k/s against 2.85M/s at a
-  batch of 10 000, and 115k/s against 351k/s on a two-actor volley.  It wins
-  the spawn row (48k/s against 25k/s) and the ask row, the latter because every
-  arm drives the system from an external caller, which on an event loop is a
-  microtask and on the JVM is a thread parking on a future.
-
-  Pinned to 2.8.8: releases from 2.9 onwards are published only to a repository
-  that answers 403 to anonymous requests, and a row nobody can reproduce is not
-  evidence.  Its BUSL-1.1 licence is carried into every published table next to
-  the throughput figure.  The harness is mirrored by hand rather than using
-  JMH, so both sides of the table measure the same way — which is also why
-  cross-language rows never share a table with same-runtime ones.
-
-- **Warmup is part of the workload definition, and it had been wrong** (#27).
-  The harness default worked out at three unmeasured iterations for the largest
-  batch — harmless for a JavaScript arm, and measuring a JIT-compiled runtime
-  mid-compilation.  Fixing it moved the JVM arm's tell rate by 130 % and its
-  ask rate by 33 %.  Warmup is now explicit per case, identical across arms, and
-  cross-checked by the report generator like every other workload constant.
-
-- **Framework-comparison benchmarks, and the first numbers this project has
-  ever published** (#27).  `benchmarks/comparison/` measures actor-ts against
-  nact, XState v5 and a no-framework floor across four scenarios — spawn, tell
-  throughput, ask round-trip and ping-pong — and publishes the result in the
-  README, in a bilingual `reference/benchmarks` docs page, and in a generated
-  `RESULTS.md` carrying the hardware, versions, licences and date behind every
-  row.
-
-  The headline: actor-ts sustains ~900k messages/second at a batch of 10 000,
-  2.2× nact and 4.3× XState, and is level with nact on ask latency (7.8 µs vs
-  6.9 µs at p50).  It is behind on spawning (42k/s vs 157k/s) and on two-actor
-  ping-pong (138k/s vs 197k/s), both for the same reason: actor creation goes
-  through a `create` system message and every message through a dispatcher
-  turn, so per-message batching pays when a mailbox has depth and does nothing
-  when a volley alternates.  A mixed result, published as one.
-
-  The methodology is enforced rather than described.  Every arm runs through
-  the *same* harness — same warmup, same clock, same percentile maths — so
-  only the four operation bodies differ.  Every arm reports work the system
-  was **observed** to complete, and the report generator refuses to render a
-  row whose completed count disagrees with what was requested; that guard is
-  the mechanised form of the defect that once had this project publishing a
-  figure roughly 10× too high (#1027).  Arms are interleaved round by round
-  and each published row is the median of nine, because a single round varied
-  by up to 34 % on an ordinary desktop while the ordering of the frameworks
-  never changed.
-
-  The comparison tree carries its own manifest and lockfile, so the measured
-  frameworks never enter the shipped dependency closure, `bun audit`'s surface
-  or `bun run bench`.  `bun run typecheck:compare` is the check that owns it.
-
-- **`bun run bench:compare`, `bench:compare:report` and `typecheck:compare`**
-  (#27) — measure, validate-and-publish, and type-check the comparison tree.
-  `bench:compare -- --rounds=N` runs the arms interleaved and publishes the
-  per-scenario median; `bench:compare:report` refuses to write `RESULTS.md`
-  when any row's completed work disagrees with the workload definition.
-
-- **The bidirectional collections count participants, not only pairs**
-  (#1199).  `BidirectionalMultiMap` gained `leftSize` and `rightSize` — the
-  number of distinct participants on each side, both O(1), reading the two
-  backing maps directly.  `size` still counts pairs, which is what a cap is
-  usually written against; the two questions are now both askable without
-  spreading an iterator to measure the answer (`[...map.lefts()].length` was an
-  O(n) allocation to read a number the object already held).  They are correct
-  on an `inverse()` view for free, because the view's forward map *is* the
-  original's reverse one — unlike the pair counter, which needs a shared box
-  for exactly that reason.
-
-  `BidirectionalMap` gained `keySize` and `valueSize` for symmetry.  The
-  relation there is 1:1, so both always equal `size`; they exist so that moving
-  between the two types needs no memory of which one has the accessor.
-  `valueSize` reads the reverse map rather than aliasing the forward one, so it
-  still tells the truth if the invariant it corroborates ever breaks.
-
-- **`PersistentActor` can be fenced with a lease** (#1166).  Nothing stopped
-  two live instances of one persistence-id.  After a partition plus a
-  rebalance — or any orchestration mistake that spawns an entity twice — both
-  recovered, both accepted commands, and both ran `onCommand` side effects.
-  The journal stayed sound, because the conditional append makes one of them
-  lose with `JournalConcurrencyError`; the damage was outside the journal.  By
-  the time the loser found out it had already charged the card or sent the
-  mail, and until its next `persist` it went on answering reads from state the
-  other writer had moved past.
-
-  Two layers now close that, and the first needs no configuration:
-
-  - **A lost race stops the actor.**  `JournalConcurrencyError` is treated as
-    evidence of a second writer rather than a transient fault, so the instance
-    stops instead of propagating an ordinary failure — whose default
-    supervision answer is a *restart*, after which the loser recovers the
-    now-foreign head and carries on as though it owned the entity.
-  - **An optional `lease()` hook**, mirroring the one
-    `ReplicatedEventSourcedActor` has had since #89.  Return a `Lease` and the
-    entity becomes single-writer: the lease is acquired in `preStart`
-    **before recovery**, so a non-owner never even reads the history, and its
-    `persist` is refused up front rather than at the journal.  That is the
-    difference that keeps a duplicated side effect from firing at all — the
-    backstop above can only act after `onCommand` has already run.
-
-  `isLeaseHolder` gates side-effecting work without a try/catch, and
-  `onLeaseLost(reason)` runs when a held lease goes away — defaulting to a
-  stop, since an actor that may not write is rarely usefully alive.  Actors
-  that do not override `lease()` behave exactly as before.
-
-- **`restartOnTermination` on a cluster singleton** (#1175).  Default `true`,
-  and the switch for the fix below: set it to `false` for an actor that uses
-  `stopSelf()` as a terminal state, and the manager releases its lease instead
-  of re-spawning — so another node could host later, rather than the manager
-  holding a lease over a child that is gone.
-
-- **`PriorityMailbox` accepts a capacity and an overflow policy, so
-  priority ordering and a bound are no longer an either/or (#647).**
-
-  Choosing priority meant choosing an unbounded queue, and there was no
-  way around it: `ActorOptions` rejects `withMailbox` combined with
-  `withMailboxCapacity`, because a supplied mailbox brings its own bound,
-  and `PriorityMailboxOptions` had exactly one field. The options type now
-  carries `capacity`, `overflow` and `onDrop`, with matching builder
-  methods and a `PriorityMailboxOptionsValidator` at parity with the
-  bounded one — which also means a missing or non-callable `priorityFor`
-  now throws `OptionsError` at construction rather than surfacing as "is
-  not a function" inside the first sender's `tell`.
-
-  The policies are `drop-lowest-priority`, `drop-new` and `reject`,
-  defaulting to `reject`. `drop-head` is deliberately not among them. On a
-  FIFO queue it means "discard the stalest", which holds because arrival
-  order is the only order there is; on a priority queue the head is the
-  message the priority function called most important, so dropping it
-  defeats the reason for choosing the mailbox. `drop-lowest-priority`
-  sheds from the other end instead, which is O(1) and is the version of
-  shedding load that a priority mailbox exists to express. The arriving
-  message competes on the same terms as the backlog, so one ranked below
-  everything queued is itself the one shed — and is reported as
-  `drop-new`, keeping the metric's closed two-value reason vocabulary
-  honest without widening it.
-
-  Drops flow through the same `onDrop` hook and
-  `actor_mailbox_dropped_total` counter as `BoundedMailbox`, because that
-  bookkeeping moved into a shared `DroppingMailbox` base rather than being
-  copied; the base is exported so a mailbox of your own can inherit it
-  too. Two behaviours are worth knowing: the bound holds while the actor
-  is suspended, which is when it matters most, and `unstashAll()` on a
-  full priority mailbox can now drop, because `prependUser` re-runs the
-  priority function through `enqueue`.
-
-- **`gracefulStop(ref, timeoutMs)` stops one actor after its mailbox
-  drains, and lets you await it (#663).** `ActorRef.stop()` has always
-  meant stop-after-drain — it sends a `PoisonPill`, an ordinary user
-  message ordered behind everything already queued — but it is
-  fire-and-forget, and outside an actor there is no `context.watch` to
-  learn when the stop actually happened.
-
-  The new helper sends the same pill and resolves `true` once the actor is
-  confirmed terminated, or `false` if the budget runs out — and in that
-  case it escalates, enqueueing the system command that jumps the user
-  queue, so a caller who has run out of patience is not also left with a
-  live actor. A timeout resolves rather than rejects because it is an
-  outcome, not an error: the caller asked for a bounded stop and got one,
-  and the two answers differ only in whether the mailbox finished. The
-  budget is a required argument, since a default one would be the number
-  that silently truncates somebody's shutdown.
-
-  The confirmation comes from the target cell's own watcher set, which is
-  why only a locally-hosted actor can be observed this way; a cluster ref
-  still receives the stop but has nothing local to confirm it with, so
-  watch it from inside an actor with `context.watch(ref)` instead.
-  `ActorSystem.stop()`'s JSDoc, which had promised "a promise that
-  resolves once it is fully terminated" above a `void` signature, now says
-  what it actually does and points here.
-
-- **The bundled examples now run in CI, so a framework change that breaks
-  one is a red check (#545).**
-
-  Nothing in CI had ever executed an example.
-  `.github/workflows/examples.yml` installed and built the frontends and
-  ran nothing else, and its path filter carried only `examples/**` - so
-  the failure this most needed to catch, a `src/` change that breaks a
-  snippet, produced zero checks. The only signal was a user running the
-  example.
-
-  `bun run test:examples` spawns each standalone example as its own
-  process, waits, asserts on its output and stops it (~90 s for the whole
-  set). This is a new harness rather than a widening of
-  `tests/smoke/run-cases.mjs`: that runner is in-process, importing the
-  framework once and then `import()`ing each case, which works because a
-  smoke case is a runtime-neutral module exporting `run(context)`. An
-  example is the opposite by design - a standalone script with a top-level
-  `void main()`, its own argv parsing and often a bound port - so
-  importing one would run it in the harness's own process, with the
-  harness's argv, and leave no way to time it out or reclaim the port.
-
-  The output assertion is what makes it a gate rather than the appearance
-  of one. `examples/io/grpc-sensor.ts` exits 0 after ten failed actor
-  starts and a restart-threshold warning, so a case checked on its exit
-  code alone would be checked on nothing; the runner refuses a runnable
-  entry that declares no expected output.
-
-  What gets stopped is the process tree, not the child. While classifying,
-  two of `examples/chat/failover-test.ts`'s three cluster nodes outlived a
-  clean exit and went on holding ports 2552 and 2553, which made every
-  later port-binding example fail with EADDRINUSE and made the chat smoke
-  test pass against a backend that was supposed to be gone. A gate whose
-  cases can poison each other that way reports the run order rather than
-  the code, so teardown signals a process group on POSIX and walks the
-  tree with `taskkill /T` on Windows.
-
-  `tests/examples/examples.manifest.json` classifies all 78 standalone
-  scripts - 68 runnable with an assertion, 10 skipped with the reason,
-  which is a Docker broker, Kubernetes credentials, an optional peer
-  nothing declares, or a file that is not an entry point. The runner fails
-  when the manifest and the tree disagree in either direction, so a new
-  example cannot silently opt out. `examples/chat/smoke-test.ts` gained a
-  `--spawn-backend` flag that brings up its own node on isolated ports
-  against a scratch journal, which is how it and the voice smoke test both
-  run unattended; the default two-terminal invocation is unchanged.
-
-- **BREAKING — Projections gained a handler-failure recovery strategy, and
-  no longer retry a poison event forever (#650).**
-
-  A projection's cursor only advances after a successful `handle`, and
-  `ProjectionActor.onReceive` was a single try/catch that logged the error
-  and re-armed the poll unconditionally. A handler that kept throwing
-  therefore retried the same event once per poll interval for the life of
-  the process, every event behind it waited forever, and the only trace
-  was one error line per second naming the projection.
-
-  `ProjectionOptions` now carries `recoveryStrategy` with four values —
-  the cross product of the only two decisions available, whether to try
-  again and what to do once trying is over: `retry-and-fail` (the
-  default), `retry-and-skip`, `fail`, `skip`. `maxRetries`,
-  `retryBackoffMs` and `maxRetryBackoffMs` tune the exponential backoff,
-  and a `ProjectionOptionsValidator` checks them at spawn time. The
-  default is deliberately not `fail`: a projection is a background pull
-  loop feeding a read model, and the common failure is transient, so
-  stopping on the first blip would turn every read-model deploy into a
-  dead projection nobody notices until the view is visibly stale.
-
-  The `fail` arm stops the actor explicitly instead of letting the error
-  escape the tick. `persistence/projection` has no entry in the system
-  group policies, so it inherits the restarting default — an escaped error
-  would re-run `preStart`, reload the same cursor and fail on the same
-  event, a restart loop that is louder than the spin it replaced and no
-  more useful.
-
-  Deduplicating the log could not land on its own, because that error line
-  was the only existing signal that a projection was wedged, so the
-  structured signals land with it. `onFailure` is called on every attempt
-  with the offending `PersistentEvent`, the error, the attempt number and
-  the action taken; a skipped event is published on the system dead-letter
-  stream so nothing disappears silently; and three stock metrics appear —
-  `persistence_projection_stalled`,
-  `persistence_projection_failures_total{projection,reason}` and
-  `persistence_projection_events_skipped_total`. The log itself now emits
-  one error when a failure streak opens and one when it ends, with the
-  retries in between at `debug`.
-
-  Query and offset-store failures are counted and backed off on the same
-  curve but kept on a separate counter, so a flaky journal cannot spend
-  the retry budget of an event whose handler was never reached.
-
-  *Migration:* A projection whose handler throws permanently used to retry
-  forever; it now retries three times and stops. If you were relying on a
-  projection eventually recovering from a very long outage on its own, set
-  `recoveryStrategy` explicitly — `retry-and-skip` keeps it live at the
-  cost of a hole in the read model, and a large `maxRetries` with
-  `maxRetryBackoffMs` at your outage budget keeps the old shape while
-  still bounding it. Existing code needs no change to keep compiling:
-  every new field is optional.
-
-- **A nightly workflow that runs the three quarantined multi-node suites
-  with `ACTOR_TS_SKIP_FLAKY_MNS` switched off, and a written criterion for
-  lifting the quarantine (#538).**
-
-  `ACTOR_TS_SKIP_FLAKY_MNS=1` removes `LeaseMajority`, `ParallelPubSub`
-  and the `ParallelMultiNodeSpec` self-tests from every CI run, because
-  Bun on GitHub's hosted runners cannot respawn functional worker threads
-  after the first worker test — the same resource starvation delays
-  LeaseMajority's renewal timer past its lease TTL, so both sides of a
-  partition acquire and the test sees a false split-brain. Nothing
-  re-checked that afterwards, which made the quarantine permanent by
-  default rather than by decision, and every in-repo pointer to the
-  reasoning read "See the [CI] tracking issue" with no number behind it.
-
-  `.github/workflows/nightly-flakes.yml` runs those three suites at 04:00
-  UTC with the flag deliberately absent, three repeats a night, and
-  uploads the per-run JUnit reports and logs — the repository's first
-  artifact upload; the two existing nightlies only echo container logs
-  into the job log, which is unreadable once the log ages out. Both of its
-  jobs are `continue-on-error`: the suites are expected to be red, and a
-  red required check for a known-red measurement is one people learn to
-  ignore, so the result arrives as a run annotation and a step-summary
-  table instead.
-
-  The exit criterion is 14 consecutive green nights — 42 consecutive green
-  executions — stated in the workflow header and in the new `Diagnosing
-  test flakes` documentation page. Two calendar weeks rather than a
-  smaller number because the failure is a property of the runner pool and
-  not of the code: a fortnight spans weekday and weekend pools and several
-  `bun-version: latest` rolls, which is what has to be shown to have
-  stopped happening. A single red night resets the count, and each night's
-  uploaded `summary.json` is the evidence. All eight places that implement
-  or document the quarantine now name #538, including `benchmarks.yml`'s
-  `--exclude=worker`, which shares the cause and would otherwise have been
-  left excluded forever with the reason gone.
-
-- **A repeat-run flake harness (`bun run test:stress`) and a `Diagnosing
-  test flakes` documentation page carrying the catalog of causes this
-  suite has actually had (#290).**
-
-  A single `bun test` answers whether the suite is green right now; it
-  cannot answer which tests are green *most* of the time, which is the
-  only question a flake catalog can be built from.
-  `scripts/stress-test.mjs` runs the suite N times, keeps every run's
-  JUnit report and log, and aggregates failures by test identity —
-  splitting *flaky* (failed in some runs) from *consistently failing*,
-  which is a broken test that repetition tells you nothing new about. It
-  also names two outcomes a naive loop reads as green: a run that produced
-  no JUnit report at all, and a run that exited non-zero with no failing
-  test.
-
-  The harness deletes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it
-  hands to `bun test`. Inheriting it would measure a strictly smaller
-  suite than a local run and then report a reliable pass rate over exactly
-  the three suites known not to be reliable. `--skip-quarantined` opts
-  back in.
-
-  The new documentation page states what repetition can and cannot find,
-  because that is where an afternoon goes: a loop drives up the
-  probability of a load-sensitive flake and says nothing about a
-  deterministic ordering bug, and the worked example is the case that was
-  0 failures in 200 runs at a 1 ms poll interval because the dispatcher
-  schedules via `setImmediate`. Six cause families are catalogued with
-  their status, and five tests observed failing intermittently are listed
-  as open entries without a verdict — ruling causes out is not the same as
-  establishing one.
-
-  Those five have had their fixed sleep, or in one case a hand-rolled
-  deadline loop that fell through silently, replaced by a wait on the
-  state the assertion reads. Every assertion survives verbatim; the
-  timeouts are larger than the sleeps they replace while the tests get
-  faster, because a failure budget is only paid when something is broken.
-
-- **`PersistentActor` and `DurableStateActor` gained an `integrity()`
-  hook, so an actor can declare its own body integrity (#493).**
-
-  `PersistenceOptions.integrity` has existed since #116, and the
-  object-storage stores have honoured it on both the write and the read
-  path since #612, but neither actor base class could reach it —
-  `persistenceOptions()` built `{ compression, encryption }` and dropped
-  integrity on the floor. Override `integrity()` to return `{ mode:
-  'hmac-sha256', integrityKey }` and the stored body is signed;
-  configuring it also makes the tag mandatory on read, with the
-  store-level `allowUntaggedBodies` as the migration window for a
-  pre-integrity corpus.
-
-  Only the object-storage snapshot and durable-state stores read this
-  hook. Ten of the eleven snapshot stores and nine of the ten
-  durable-state stores accept `PersistenceOptions` and never look at it
-  (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
-  in-memory reference store an override buys no tamper detection and
-  raises no error. The persistence docs now state that count in both
-  languages, replacing a sentence that described the same gap as "ignored
-  by stores that don't (in-memory, SQLite)" — the phrasing #960 was filed
-  about, because it reads as a benign footnote rather than a missing
-  control.
-
-- **`InMemorySnapshotStore` now accepts a `keepN` retention bound through
-  the new `InMemorySnapshotStoreOptions` (#493).**
-
-  It was the only snapshot store with no retention at all: nothing but an
-  explicit `delete()` ever shrank the per-`persistenceId` list, so a
-  long-running actor that snapshots on a policy grew the map for the
-  lifetime of the process. Every other store in the family has taken a
-  `keepN` since it was written.
-
-  The default stays keep-everything rather than the family's `3`. This is
-  the store `PersistenceExtension` installs when nothing is configured, so
-  a default bound would silently change what every unconfigured
-  application retains, and retention that only surfaces later as a missing
-  snapshot is a poor thing to opt users into. Set `keepN` explicitly to
-  bound it; `<= 0` keeps everything, matching the rest of the family.
-
-  Re-saving at a sequence number that already exists now replaces that
-  entry instead of appending a second one, matching the relational stores'
-  `(persistence_id, sequence_nr)` primary key. `loadLatest` already
-  returned the newer value, so the duplicate was invisible while retention
-  was unbounded — with a bound it is not, because duplicates counted
-  against it and evicted genuinely older sequences.
-
-- **Postgres and MariaDB projections read the tags index instead of the
-  whole journal (#391).**
-
-  `RelationalJournal` has written an `events_tags` join table on every
-  append since it existed, and nothing in `src/` ever selected from it. A
-  by-tag projection over either backend therefore fell through to
-  `InMemoryQuery`, which lists every persistence id and replays each one
-  from sequence 1 — the whole journal, with no row cap — once per poll
-  interval.
-
-  `RelationalQuery` is the missing reader. It ports the three strategies
-  `SqliteQuery` uses (range-walk the first `all` tag; `t.tag IN (…)` with
-  `DISTINCT` for `any`; the journal scan when only `not` is given) onto
-  canonical `?` SQL expanded through the dialect, so one class serves
-  every `SqlDialect` instead of becoming a copy per backend.
-  `PostgresQuery` and `MariaDbQuery` are named subclasses adding only the
-  name an error reports — the same reasoning behind `LazyStore.storeName`.
-  All three are exported from `actor-ts/persistence`.
-
-  The seam is a new `RelationalJournal.openForQuery()`, modelled on
-  `MongoJournal.openForQuery()`. It hands back four things because that is
-  how many access barriers sit between a query and the index: the pool is
-  behind the protected `LazyStore.ensureOpen`, the table names are
-  private, and the dialect and serializer are protected on
-  `RelationalStore`.
-
-  Nothing changes for a caller who keeps using `InMemoryQuery` — the
-  results were correct before and are correct now, only slower. Pairing
-  the journal with its own query is what buys the index.
-
-- **A per-actor message batch budget: `ActorOptions.withThroughput()` and
-  `actor-ts.actor.throughput` (#409).**
-
-  How many user messages one actor handles per dispatcher turn before it
-  yields. Unset falls through to the HOCON key and then to the built-in
-  default of 16, so the usual precedence applies. Raise it for a
-  short-handler actor that is a throughput bottleneck; lower it toward `1`
-  for an actor whose handler is slow enough that a full batch would keep
-  timers and I/O waiting.
-
-  This is deliberately a separate knob from
-  `actor-ts.dispatcher.throughput`, which counts queued *turns* across
-  actors rather than messages within one. A batch always ends early on an
-  empty mailbox, a stop or suspend, and a throttle bucket that runs out,
-  so the budget is a ceiling rather than a commitment.
-
-- **`actor_mailbox_wait_seconds` — how long a user message waited in the
-  mailbox before it was delivered (#196).**
-
-  The half `actor_message_handler_seconds` could not give you: that
-  histogram starts measuring once a message is already being handled, so
-  an actor that is slow and an actor that is merely behind look identical
-  in it. Read together, the pair separates the two — and mailbox wait is
-  the earlier backlog signal, since `actor_mailbox_size` only mints a
-  series once a queue passes 10 000 messages.
-
-  The family carries no labels, so it adds no cardinality and stays clear
-  of the stock-label policy set in #658. Its buckets are explicit rather
-  than the client-library defaults, running 1 ms to 10 s: the defaults
-  start at 5 ms, where a mailbox that is keeping up drains in well under a
-  millisecond, so reusing them would have reproduced #998 verbatim in a
-  new family. 1 ms is also the finest the metric could be, since the stamp
-  is wall-clock.
-
-  Two populations are deliberately excluded, so the count does not match
-  `actor_messages_delivered_total`. A message replayed out of the stash
-  kept the stamp of its original arrival, and counting it would report
-  however long the actor chose to hold it as queueing delay — enough for
-  one stashing actor to drown every other actor's signal in a metric with
-  no labels to separate them. The explain plan makes the opposite choice
-  on the same field, because there the `stashed` entry that accounts for
-  the span is visible beside it. Messages queued before metrics were
-  switched on carry no stamp and are omitted rather than invented, which
-  corrects itself within one drain. Throttled messages are counted: a
-  parked message really is waiting for an actor that cannot keep up.
-
-  The arrival stamp is gated on a reader existing — an explain plan, or
-  metrics enabled — rather than being taken unconditionally, preserving
-  the property #411 established that a system instrumenting nothing pays
-  no clock read on the receive path. An interleaved A/B on Bun 1.3.1 /
-  Windows 11 finds no cost these benchmarks can resolve: five rounds per
-  arm on `ask` give 100.8k/s before against 99.7k/s after, and three
-  rounds per arm on `tell` land within 3.3% at every batch size. Both
-  differences sit well inside the per-arm run-to-run spread, which is
-  10-14% on `ask` and up to 9% on `tell` — so "no measurable difference"
-  is the whole of what was measured, and a narrower claim than that would
-  be reporting noise.
-
-  New public surface, both additive: `Envelope` gains an optional
-  `replayed` field, and `MAILBOX_WAIT_BUCKETS_SECONDS` is exported from
-  `actor-ts/metrics`, so a dashboard or a recording rule can be built on
-  the same bucket edges the histogram uses.
-
-- **Documented default values are now pinned to the constants they are
-  published from (#470).**
-
-  Every default is written down twice — as a `DEFAULT_*` constant in
-  `src/`, and as a HOCON literal in `REFERENCE_CONF` — and nothing
-  compared the two. The existing guards stop at the same ceiling: they
-  prove a reference, not a correct value, so a wrong number typed into the
-  hand-maintained `REFERENCE_CONF` was copied faithfully onto both
-  language pages with every check still green.
-
-  What the new assertion adds is the half the byte-pin could never reach.
-  `Config.load()` layers reference over application over overrides, so for
-  any key present in `REFERENCE_CONF` the HOCON literal already *is* what
-  ships, and pinning the published page to those bytes was enough to make
-  docs and runtime agree. The `DEFAULT_*` constant is the other value: it
-  is what a consumer that never loads config gets, and nothing compared it
-  to the literal. 93 keys are covered, each linked by importing the
-  constant, so a rename is a compile error rather than a silently dropped
-  assertion. Values are read through `Config`, the loader the runtime
-  uses, rather than a regex — a test that re-implements duration and byte
-  parsing ends up asserting its own arithmetic. Keys where
-  `reference.conf` deliberately overrides a shared constant are recorded
-  as such rather than omitted, because it is a layer above the constants
-  and not a copy of them.
-
-- **A compile harness for the fenced TypeScript samples, run with `bun run
-  check:doc-samples` (#470).**
-
-  Doc fences are the one body of code here that nothing type-checks, and
-  the existing api-drift guard is a literal-substring blocklist that
-  cannot see a name imported from the wrong subpath. This resolves
-  `actor-ts…` through `package.json#exports` — the map is derived from
-  that block rather than hand-written — and reports each failure at its
-  real page and line.
-
-  It is deliberately not wired into CI yet, and the sweep it is waiting on
-  is larger than it first looked. Of the 834 fences that survive the two
-  fragment classifiers, four fail to parse, 254 are already clean, 367
-  fail *only* with "cannot find name" — an identifier a previous fence on
-  the same page introduced — and **209 have a real error**: a wrong
-  argument type, a property that does not exist, an unresolvable module.
-  Those 209 need completing or an explicit exemption before this can be a
-  gate; turning it on first would only add a permanently-red job. The
-  counts are a reading of the tree as it stands and move as pages are
-  edited — `--measure` re-derives the fence classification, and the error
-  split is the `tsc` output grouped per fence. The script's header records
-  the rest of what the sweep decision needs, including the finding that
-  carrying an import does not imply a sample is self-contained.
-
-- **`/health` and `/ready` now aggregate framework-owned health checks
-  instead of an always-empty list (#655).**
-
-  The `HealthCheckRegistry` became an `ActorSystem` extension, reached
-  with `healthChecksOf(system)`. That is what the feature needed: a
-  `Cluster`, a `ShardRegion` or a transport starts long before anyone
-  builds a management route tree, so a registry created inside
-  `managementRoutes` had no component able to register with it. Nothing in
-  `src/` ever called `addLiveness`/`addReadiness` — every caller was an
-  example, a test or a docs snippet — so `/health` returned `{status:'UP',
-  checks:[]}` unconditionally and `/ready` added only self-is-up. A pod
-  whose cluster transport was dead still reported ready and kept taking
-  traffic.
-
-  Three checks ship with it. Liveness gets exactly one, `actor-system`
-  ("has this system shut down?"), and deliberately nothing else: a failing
-  liveness check gets the pod killed, so it may depend on nothing a
-  restart can fix — a check that goes red when a shared database blinks
-  turns one outage into a fleet-wide restart storm. Readiness gets two,
-  registered by `Cluster._start`. They are **not** removed by `leave()`: a
-  left node keeps them, reporting DOWN, because an empty aggregate reads
-  as healthy and un-registering would make a drained node report itself
-  ready. A later `join` on the same system retires the previous pair at
-  registration time.
-
-  `cluster-membership` is the self-is-`up` test the endpoint used to
-  compute inline. `cluster-transport` is new: it fails when the node can
-  reach none of the peers it still expects, where reachable means an open
-  connection to a member the failure detector has not written off. Both
-  halves are needed — an open socket alone proves nothing, because a
-  `DROP` partition produces no FIN and no RST and leaves the sockets
-  established while nothing is exchanged, so the failure detector is the
-  only thing that notices. That is a *total isolation* test, not full
-  reachability: a partial partition leaves the node able to gossip,
-  converge and route, and dropping it from the load balancer would take
-  capacity from a cluster that is coping. Members marked `unreachable`
-  still count as expected, so a partition cannot make the check green by
-  shrinking the set it asks about; a peer that was actually downed stops
-  counting, so a legitimate lone survivor stays ready. A single-node
-  cluster expects nobody and always passes. What it does not catch: the
-  failure detector's own latency, and a one-way partition in which this
-  node still receives.
-
-  The gRPC `grpc.health.v1.Health` service can be made to answer from the
-  very same aggregate, and that is the point of the `health` field on
-  `GrpcServerOptionsType` taking a registry rather than a boolean — pass
-  `healthChecksOf(system)` and the management endpoint and the gRPC
-  service read one instance and apply the same exported `isHealthy` rule.
-  Nothing enforces it, though: the field is whatever the caller supplies,
-  so a bare `new HealthCheckRegistry()` there forks them and only one of
-  the two is the answer a load balancer acts on. `/ready`'s `clusterReady`
-  field is read back out of the aggregate by name rather than recomputed
-  in the handler, for the same reason.
-
-- **`ActorSystem.runUntilTerminated()` — the whole of a service's shutdown
-  in one call (#549).** It installs SIGTERM/SIGINT handlers, resolves once
-  the system is down *and* the CoordinatedShutdown pipeline has finished,
-  and detaches the handlers on the way out.
-
-  The detach is why it is a method rather than a documented three-liner: a
-  `Deno.addSignalListener` listener holds the event loop open and has no
-  `unref`, so a program that shuts down for any other reason — a
-  `terminate()` from inside, an admin endpoint — would never exit. It
-  resolves on the pipeline rather than on `whenTerminated()` alone because
-  a task registered alongside the built-in terminator in the final phase
-  runs in parallel with it.
-
-  Signal delivery now goes through a new `src/runtime/signals/` backend,
-  beside the existing `tcp/`, `http/`, `sqlite/` and `worker/` ones. Bun
-  and Node share Node's `process` events; Deno needs
-  `Deno.addSignalListener`, because its `process` shim carries no signal
-  events at all — so the old `process.on(signal, …)` inside
-  `installProcessHooks` registered nothing there and reported success. A
-  signal the platform cannot deliver is skipped rather than registered, so
-  Windows degrades to SIGINT/SIGBREAK instead of throwing.
-
-- **The framework now registers its own teardown in the shutdown phases
-  (#549).** `Cluster.join()` registers `cluster.leave()` in
-  `cluster-leave`, and every `BrokerActor` closes its connection in
-  `service-stop` — joining the HTTP unbind and the DevTools detach, which
-  were already there.
-
-  Ten of the twelve phases were empty in every deployment before this, and
-  `src/cluster/` contained no reference to CoordinatedShutdown at all. The
-  broker half is an ordering fix rather than a missing teardown:
-  `postStop` always closed the connection and the `/user` stop cascade
-  always reached it, but *last* — so a broker kept publishing while the
-  HTTP server was unbinding and while the node was leaving the cluster.
-
-  Those registrations get an opt-out with a home:
-  `actor-ts.coordinated-shutdown.auto-register-tasks`, default `true`.
-  Setting it `false` keeps the phases and the built-in terminator and
-  hands every resource back to the caller. It is one switch rather than
-  one per subsystem, because the reason to reach for it is "I own the
-  lifecycle", never "unbind the HTTP server but leave the brokers to me".
-
-- **A bounded, optionally durable dead-letter queue with inspection and
-  replay (#433).**
-
-  Until now `DeadLetterRef` published each undeliverable message on the
-  event stream and returned. With no subscriber — the default, and the
-  only in-framework one is the DevTools sampler — the letter was simply
-  gone, so "what did we drop during that incident?" was a question the
-  framework could not answer after the fact.
-
-  `system.deadLetterQueue` is the subscriber that is always there. It
-  hangs on a single sink slot inside `DeadLetterRef.tell`, the one choke
-  point every dead letter already passes through, so nothing has to be
-  routed to it and no emitter has to know it exists.
-  `actor-ts.dead-letters.store` picks between `off` (the default),
-  `memory` (a bounded ring, `max-entries` and `retention`) and
-  `persistent` (additionally an append-only log in the configured journal,
-  read back on the next start). Left `off`, the dead-letter path itself is
-  byte-for-byte what it was — no sink is installed, so `DeadLetterRef.tell`
-  does what it always did — and no shutdown task is registered. Start-up
-  is not literally free, though: every `ActorSystem` reads the five
-  `actor-ts.dead-letters.*` keys, constructs the queue and runs its
-  options validator once, which is a handful of `hasPath` lookups and two
-  small objects.
-
-  Capture runs before publication, deliberately: the sink is the durable
-  record and publishing is an observation with no guaranteed audience, so
-  any future rate limiter or sampler over the dead-letter stream belongs
-  on the publish side of that line rather than in front of it.
-
-  `list({ recipient, sinceMs, untilMs, limit })` returns entries newest
-  first, `recipient` matching a path or its subtree. `replay(id)` resolves
-  the recipient path afresh — the point is that the actor has come back at
-  the same address as a new instance — and every refusal is a named result
-  (`unknown-entry`, `unresolved-recipient`, `degraded-payload`,
-  `quarantined`) rather than a silent no-op. A replayed message that
-  dead-letters again returns as the *same* entry with a higher
-  `replayCount`, so an operator retrying a poison message cannot grow the
-  queue one entry per attempt; past `max-replays` the letter is
-  quarantined.
-
-  Entry identity is a new `DeadLetterEntry` record rather than a fourth
-  field on `DeadLetter`: the event answers what was undeliverable and from
-  and to whom, while the id, the timestamp and the paths belong to the
-  queue. Nothing about `SystemMessages.DeadLetter` changed. A payload the
-  tagged-JSON encoder refuses — a function, a symbol, a `Promise`, a weak
-  collection, a cycle — is kept as `{ kind: 'degraded', className, reason
-  }` in the durable copy rather than lost, and `replay` refuses it because
-  there is nothing left to send; the in-memory entry still holds the live
-  object.
-
-  Durable writes are settled twice, and neither is redundant: a framework
-  task in `before-actor-system-terminate` settles what a running system
-  produced, and a drain once the actor tree is down settles what stopping
-  it produced — stashes discarded, mailboxes emptied past their cell —
-  which is emitted after the last shutdown phase has run and, for a
-  shutting-down system, is most of them. The second also covers a direct
-  `terminate()` with no pipeline at all. A hard kill can still lose
-  in-flight writes; the queue is a diagnostic record, not a transactional
-  outbox.
-
-  The new counter is `actor_dead_letters_total{outcome, recipient}`, with
-  `outcome` one of `captured`, `replayed`, `replay-failed`. Persistence
-  and the codec are reached through dynamic imports, so a queue left `off`
-  costs a consumer's bundle nothing.
-
-  One class of loss is explicitly out of scope: a message discarded by a
-  bounded or priority mailbox never becomes a dead letter at all, because
-  the drop-reporting seam carries a `MailboxDropReason` and never the
-  envelope. That overflow shows up in `actor_mailbox_dropped_total` and
-  nowhere else.
-
 ### Fixed
+
+- **`incr` now adopts a counter another call seeded, so a rate-limit
+  window is protected whichever call opened it (#1295).** `InMemoryCache`
+  keeps two halves and takes its eviction victim from the opportunistic one
+  first, but the half was picked at write time and never revisited: `incr`
+  conferred the guarantee only on the branch that *created* an entry, and on
+  an existing one it merely bumped, which re-inserts into whichever half the
+  key already sits in. A window opened with `set(key, 0, windowMs)` therefore
+  stayed opportunistic for its whole life however many finite-TTL `incr` calls
+  followed — evicted first under exactly the key flood the split exists to
+  survive, which is #607's shape at a configuration the operator has been told
+  is hardened.
+
+  The condition is the *entry's* expiry, not `incr`'s `ttlMs` argument: Redis
+  semantics set a TTL only on creation, so the call that drives an existing
+  window normally passes none, and reading the argument would have adopted
+  only the counters that least needed it. Adoption is also separate from the
+  bump rather than folded into the write, because re-inserting a key a `Map`
+  already holds does not reorder it — `incr` owes an entry both the half and
+  the recency, and a test pins each.
+
+  Unchanged in both directions, which is what keeps the policy coherent:
+  `set` still never *manufactures* a guarantee, so a seeded counter nobody has
+  incremented is as evictable as any cached body; and a counter with no TTL is
+  still not adopted, for the same reason an unbounded `setIfAbsent` claim is
+  not — nothing would ever expire it, so protecting it would pin a slot for
+  the life of the process.
+
+  The shipped `rateLimit` always creates its counter through `incr`, so this
+  was a user-code and shared-cache exposure rather than a live bypass of the
+  middleware.
+
+- **BREAKING (pre-1.0): `migrateBetweenJournals` no longer stops halfway
+  through a copy (#740).** Every refusal it can raise — a tag list the
+  target's `append` rejects, a compacted prefix the target cannot represent,
+  a hole in the source's sequence numbers — is now decided in a read-only
+  preflight over the whole run, so a copy either refuses with the target and
+  the progress store untouched, or it runs to completion. It could previously
+  leave behind a partly populated target, one truncated stream, and progress
+  entries claiming the persistence ids before it were done — a shape a re-run
+  with `skipExistingPersistenceIds` walked straight past, because the target
+  held some data for the truncated stream.
+
+  This was found by the wave's own verification pass, as a regression the
+  wave itself introduced: #740's tag rules made `append` reject an empty or
+  repeated tag, and a migration is a read and a write at once. A journal
+  written before those rules could still be replayed but no longer copied,
+  because the copy hands the source's `tags` straight to `target.append`
+  behind a pass-through default `eventTransform`. It now fails with a
+  `MigrationTagError` naming the persistence id and the sequence number.
+  Reading such a stream is still never refused; copying it is a write, and
+  that distinction is now stated on the persistent-actor and
+  migration-recipes pages in both languages.
+
+  `invalidTags: 'sanitize'` is the opt-in repair, and it covers exactly the
+  two shapes a repair can be honest about: an empty member is dropped, a
+  repeat is collapsed, and `MigrateJournalsResult.eventsWithSanitizedTags`
+  counts every list it changed — so rewriting historical data is a number in
+  the result rather than a silent edit. A comma, a control character, an
+  over-long tag or too many tags on one event still refuse under it, because
+  repairing those means inventing a tag or discarding one the caller meant.
+  `eventTransform` is where that decision belongs.
+
+- **The DevTools overview's Throughput chart no longer draws a line from
+  metrics the node could not read (#744).** The tiles fed by an unreadable
+  `MetricsRegistry` were dashed, but the chart below them kept plotting
+  `messages / s` from the same counter — so one panel reported "no reading"
+  and "zero traffic" at once. A blind node reports that counter as 0 on every
+  sample, so the result was not a gap but a flat line along the axis: a
+  positive claim that the system handled nothing, made in the shape readers
+  trust most, at the moment they are scanning a busy system for a slow
+  consumer.
+
+  The chart now leaves the line out, keeps its axis, and names the omission
+  in the legend, in the same warn colour as the dashed tiles. The block is
+  not blanked: `dead letters / s` beside it is counted off the event stream,
+  stays true, and is the series an operator reaches for during exactly the
+  incident this flag appears in. The legend's peak reading is computed over
+  the lines that survive, so it describes what is drawn.
+
+- **`DocSampleHarnessEndToEnd` no longer fails most whole-suite runs on
+  a timeout nobody set (#1282).** Its `beforeAll` runs the doc-sample
+  harness twice, and each of those runs spawns `bunx tsc` twice — the
+  fixture carries an unparseable fence on purpose, so the script's
+  second pass always fires — which puts four compilers in series against
+  bun's undeclared 5 000 ms hook cap. Idle the hook takes 3.1 s and the
+  file passed; inside a full `bun test` it takes 4.3 s and under
+  contention 9.0 s, so it failed roughly three whole-suite runs in four,
+  on clean `develop` as much as on a branch. The compiles are unchanged
+  and still real — reducing them would delete the two properties the file
+  exists to prove. What changed is that the budgets are stated and
+  layered: each spawn carries a 30 s budget and throws an error naming the
+  script, its flags and the elapsed time, and the hook's 90 s cap is a
+  backstop behind it. Measured before and after under identical load
+  (16 repeats, 8 in flight): **0/16 runs green with 17 test executions,
+  against 16/16 green with 208**.
+
+  The failure was also unreadable, which is why it stood for a week: bun
+  reports a hook timeout as `(unnamed)` and calls a `beforeAll` a
+  `beforeEach/afterEach` hook, and the whole 13-test block collapses to
+  one recorded failure. Hence the named error: reaching the hook cap now
+  means the stall was somewhere other than a spawn.
+  `docs/…/testing/diagnosing-flakes.mdx` (EN + DE) carries it as a new
+  catalog family, with the caveat that `bun run test:stress` cannot
+  currently name this shape (#1359).
+
+- **A shard region refused for a `numShards` mismatch now releases the
+  shards it was already hosting (#633).** Refusing a registration only
+  stopped *new* placements, so a region accepted by one leader and refused by
+  its successor — what a rolling deploy that changes the count produces the
+  moment leadership reaches an already-updated node — kept the
+  `shardHomes`/`localShards` the first coordinator gave it, kept delivering
+  out of that cache, and could never be handed off, because the coordinator
+  only sends `HandOff` to a region it has registered. The split routing the
+  refusal exists to prevent therefore survived it. The refusal now stops each
+  hosted shard through the shard actor's own stop, so the entities beneath it
+  run `postStop` and a persistent one flushes rather than being dropped
+  mid-write, and drops the ownership in the same synchronous step.
+
+  A region's `Register` is also re-sent every 500 ms until the coordinator
+  acknowledges or refuses it. `Register` is fire-and-forget at a path that
+  need not exist yet — a node that joins and immediately takes leadership has
+  no coordinator behind that path until its own `sharding.start(...)` runs,
+  and the frame is dropped as an envelope with no handler. Nothing re-sent
+  it, because `ensureRegistered` runs off cluster events and the events for
+  that leadership move have already fired. The region then stayed silently
+  *unregistered*, which is worse than refused: no acknowledgment, no
+  refusal, and a new coordinator that never got the chance to say no to a
+  region still hosting shards.
+
+- **The testkit's multi-node broker validates a brokered frame before
+  dereferencing it (#701)**, the way the production worker broker has since
+  its own fix. `MultiNodeBroker.onMessage` took its argument as a
+  `BrokeredMessage` and read `env.to` straight into `NodeAddress.fromJSON`,
+  so one malformed frame from a worker threw inside `ParallelMultiNodeSpec`'s
+  own `message` listener — where nothing catches it — and failed the whole
+  test process rather than the scenario that sent it. `./testkit` is a
+  published entry point, so this was shipped code.
+
+  The frame guard now lives beside `BrokeredMessage` in
+  `MessageChannelTransport.ts` and is shared by both brokers instead of being
+  private to `WorkerBroker`: a security check copied into two files is how
+  the testkit fork kept the defect through the first fix. As a side effect of
+  the try/catch, a frame the harness forwards to a worker `crash()` has
+  already terminated is dropped instead of throwing `InvalidStateError` out
+  of `postMessage` — that failure used to be attributed to whichever test
+  happened to be running. `tests/unit/testkit/MultiNodeBroker.test.ts` is new
+  and gives that file its first coverage; it drives the broker through an
+  in-memory port shim, so unlike `ParallelMultiNodeSpec.test.ts` it runs in
+  CI rather than behind `ACTOR_TS_SKIP_FLAKY_MNS`.
+
+- **`reEncryptObjectStorage` no longer crashes when `sampleSize` exceeds
+  the object count** (#1353). The pre-sweep keyring-completeness check
+  clamped its sample to the corpus when it picked the default, and not
+  when the caller passed one. A `sampleSize` past the end of the listing
+  walked `items` off its tail and died on `undefined.key` — a bare
+  `TypeError`, thrown before the sweep rewrote a single object.
+
+  The reason this was reachable rather than theoretical is that the
+  master-key rotation runbook suggests it: `operations/upgrades/
+  rolling-migration` shows `sampleSize: 200` as the optional override.
+  Uncomment it on a bucket holding fewer than 200 objects — a staging
+  bucket, a small tenant, a first rehearsal of the rotation — and the
+  operator tool whose whole job is to fail *safely* before touching the
+  corpus instead failed uninformatively.
+
+  The sample is now clamped at the point the default is resolved, so an
+  oversized `sampleSize` samples every object. The documented
+  `min(100, total)` default is unchanged, and the check still refuses a
+  ring that is missing a version the corpus references.
+
+- **A cluster that can never converge now says so** (#1351). Give every
+  node a non-empty seed list and the default `selfElection: 'immediate'`
+  — which self-elects only on an *empty* one — and no node ever reaches
+  `up`: `leader()` is the first of `upMembers()`, and only a leader moves
+  a node from `joining` to `up`. The configuration is documented as one
+  that does not cold-start, but nothing said so at runtime.
+
+  What an operator saw instead was `AskTimeoutError` from a singleton
+  proxy, several subsystems from the cause, because
+  `ClusterSingletonManager` picks its host from `upMembers()` and there
+  was never one to pick.
+
+  The seed retry loop now carries the verdict: it runs exactly while the
+  node is stuck and cancels itself the moment it is not. After
+  `COLD_START_STALL_AFTER_SEED_ROUNDS` fruitless rounds, with no `up`
+  member known and no self-election pending, it logs one WARN — naming
+  the unanswered seed addresses when nothing has replied, and the
+  `seeds` / `selfElection` pairing when every peer is present and every
+  one of them is waiting. Once, not per round.
+
+  The check is exact rather than heuristic, so it does not fire for a
+  node joining a healthy cluster, nor while a deferred self-election is
+  still due. The round threshold exists only because the same condition
+  is briefly true, and harmless, during an ordinary simultaneous start.
+
+- **A healthy cluster no longer logs a WARN on every gossip frame**
+  (#1352). A frame carries the sender's whole member map, so a node's
+  own record comes back to it once per round. `maySpeakFor` refuses a
+  claim about the receiving node — rule 1 of #562, unchanged — but it
+  logged every one of them, including the peer simply echoing the status
+  the node already held. At the default one-second gossip interval that
+  is a WARN per second per peer describing normal operation, and during a
+  two-node bring-up it was the loudest line present and read as the cause
+  of a failure that lay elsewhere.
+
+  An echo is now refused in silence: it would have changed nothing the
+  version comparison in `mergeMember` did not already drop. A peer that
+  *contradicts* us still surfaces, but through the same per-frame
+  machinery as every other guard on that path — one line and one
+  `cluster_gossip_records_refused_total{reason="self-claim"}` increment
+  per frame rather than per record, the property #131 established. The
+  counter still reads zero on a healthy cluster, and what a peer is
+  allowed to say about this node is untouched.
+
+- **A bounded mailbox now applies its capacity, its overflow policy and its
+  drop accounting to the `unstashAll()` replay path (#772).**
+  `BoundedMailbox` overrode `enqueue` and nothing else, so every envelope
+  re-entering through `prependUser` went straight onto the queue, past the
+  capacity check, past the overflow dispatch and past the drop accounting. A
+  `reject` mailbox never threw, a `drop-head` / `drop-new` mailbox never
+  dropped, and `droppedCount` / `actor_mailbox_dropped_total` under-reported
+  by exactly the batch. With the stash capped at 1024 envelopes a
+  `capacity: 10` mailbox could hold 1034 — the advertised memory ceiling was
+  not one.
+
+  The geometry mirrors rather than copies: an arrival lands at the tail and
+  `drop-head` makes room at the head, so a replay lands at the head and makes
+  room at the **tail**. A full mailbox sheds its newest queued messages instead
+  of the ones the actor deliberately parked; evicting the head under a prepend
+  would discard the messages the replay just put back, which is not a bound but
+  a way of making `unstashAll()` a no-op. Once the queue holds nothing
+  droppable the arrival is what goes, reported as `drop-new`. `reject` throws
+  `MailboxFullError` *before admitting anything*, and `ActorCell.unstashAll`
+  restores the stash buffer before the error travels on, so the batch stays
+  parked and `deadLetterStash` still sees it.
+
+  That last sentence holds for the untyped `context.stash()` /
+  `unstashAll()` path only. The typed `Behaviors.withStash` path
+  dead-letters the batch instead, because `StashBuffer` has already emptied
+  itself by the time it calls the cell and there is nothing left to put back.
+  The same split applies to `Envelope.undroppable`: a `Terminated` that
+  round-tripped through the untyped stash is admitted whatever the policy says
+  and is never counted (#729), and the typed buffer has no such path to
+  preserve it.
+
+  New seams, because `Mailbox.userQueue` is private: `RingBuffer.pop()` and a
+  protected `Mailbox.removeNewest()` beside `removeOldest`, both stepping over
+  undroppable envelopes. `PriorityMailbox` overrides `removeNewest` as well —
+  it does not use the base user queue, so an inherited version would return
+  `undefined` forever and any bound built on it would quietly stop enforcing,
+  which is the shape of #407.
+
+  Worth knowing for anyone who opted into a bound: `unstashAll()` on a full
+  bounded mailbox can now drop messages, or throw under `reject`, where it
+  previously always succeeded. Mailboxes are unbounded by default since #1148,
+  so nothing changes for an actor that never called `withMailboxCapacity`.
+
+- **`FilesystemObjectStorageBackend.list` now reads only the directory its
+  prefix names (#746)** — everything up to the prefix's last `/` —
+  instead of walking the whole storage root and filtering afterwards. A snapshot
+  `loadLatest` previously read every *other* entity's directory, turning an
+  O(1) lookup into O(N) in the entity count on the actor's mailbox, and
+  `keepN` pruning re-ran the same LIST after every save. Which keys come back
+  is unchanged; the `startsWith` filter stays as the correctness backstop, so
+  a partial-segment prefix like `mine/e` still matches `mine/e0/…` and
+  `mine/e10/…` alike. The S3 backend was never affected — it passes `Prefix`
+  and `MaxKeys` to `ListObjectsV2Command` — so the defect was invisible to
+  anyone measuring against S3.
+
+  A positive `limit` now stops the walk rather than trimming a finished array,
+  which is the parity with S3's `MaxKeys` the issue asked for; `limit: 0` and
+  negative limits keep their historical `slice` semantics, and under a limit
+  each directory's entries are ordered before descending so the depth-first
+  order agrees with the ascending key order the contract promises — with one
+  bound the code's own JSDoc states and this entry should too: that agreement
+  rests on `localeCompare` being prefix-monotone, which it is not for every
+  character. A key containing U+FF0F FULLWIDTH SOLIDUS, legal on NTFS and
+  POSIX alike, collates so that the early exit can stop one entry too soon.
+  No caller in `src/` passes a limit today. A prefix
+  naming a directory nothing ever wrote to, or one whose directory portion is
+  an ordinary file, now returns an empty listing instead of surfacing
+  ENOENT/ENOTDIR — both became reachable only once the walk started at the
+  prefix. `list` also now runs the same post-resolve root containment check
+  `put` / `get` / `delete` already do, since it joins caller-supplied text
+  into a path for the first time.
+
+  Corrected the `ObjectStorageSnapshotStore` class doc, which described
+  `loadLatest` as "a single LIST with `limit:1` and reverse iteration over the
+  sorted result". It never did that and could not: the contract sorts
+  ascending, so `limit: 1` returns the *oldest* snapshot.
+
+- **A cluster whose nodes all advertised `0.0.0.0` never formed** (#944).
+  The host a node resolved became both its bind address and its identity,
+  and the last resort of that resolution was the wildcard. Every node
+  that reached it advertised the byte-identical
+  `<system>@0.0.0.0:2552`, so each read the others' self-announcements as
+  claims about *itself*, `maySpeakFor` refused them as claims a node may
+  not make about another's status, and every member map held exactly one
+  entry — with nothing in the log to separate that from a cluster that
+  had merely not converged yet.
+
+  The fallback was reachable more often than its position suggested.
+  `POD_IP` exists only where the pod spec exports it; `HOSTNAME` is a
+  shell variable, so a service started by systemd or a process manager
+  sees `process.env.HOSTNAME === undefined`, and where it *is* set it is
+  a pod name that resolves under a StatefulSet with a headless service
+  and nowhere else.
+
+  `resolveAdvertisedHost` now fills the identity from one chain that both
+  `Cluster.join` and `bootstrapCluster` share, and no stage of that chain
+  except an explicitly named value can produce a wildcard — which is what
+  lets `ClusterOptionsValidator` refuse one outright, at construction,
+  instead of leaving a cluster to not converge. `TcpTransport` gained a bind host used for the `listen` call
+  alone, so `self` stays the identity in the handshake and in the peer
+  keys.
+
+  **BREAKING** in behaviour, not in signature: a node that named no host
+  at all used to advertise `0.0.0.0` and now advertises `127.0.0.1`.
+  Nothing configured correctly moves — a routable `host` still wins over
+  the environment — but a multi-node deployment that relied on the old
+  fallback was already broken and is now reachable only on loopback,
+  which the node says out loud at startup. Set `withAdvertisedHost(...)`,
+  `actor-ts.remote.tcp.advertised-host`, or `CLUSTER_HOST` / `POD_IP`.
+
+- **The DevTools tracing panel no longer draws every retained span twice
+  after a re-subscribe (#1350).** `SpanTap.snapshot()` hands a fresh
+  subscriber the server's whole ring, and two paths re-subscribe a stream
+  that is already open: the sequence-gap recovery in `tapClient`, and the
+  re-subscribe of every live stream after a reconnect. The panel appended
+  that snapshot to what it already held, so the flame graph and the
+  waterfall showed each span twice, a trace grew duplicated children, and
+  the span count was simply wrong.
+
+  The other stream consumers survive the same frame because their handlers
+  **replace** — `ActorTreeModel.reset` drops its map, `onClusterSnapshot`
+  calls `members.set(...)`. Tracing is the one that accumulates, so the
+  snapshot meant "here is everything" to them and "here is more" to it. It
+  now keys its ring by `spanId` (16 hex characters of crypto-grade
+  randomness, from W3C trace-context), so a span that arrives twice is
+  recognised rather than recorded again. Insertion order is unchanged: a
+  resent span keeps its own place instead of jumping to the newest end and
+  pushing a genuinely newer one out of the ring.
+
+  Rare enough to have gone unnoticed — a reconnect after a laptop wakes
+  from sleep is the likely first sighting. Not reached by the pause added
+  in #1349, which classifies `spans` as a buffered stream and replays held
+  batches rather than re-subscribing.
+
+- **`RedisStreamsActor` now routes connection loss into the shared
+  `BrokerActor` reconnect machinery (#742).** It was the one subclass that
+  never called `handleConnectionLost`: it registered no listener on either
+  ioredis client, and its consumer loop answered every `XREADGROUP` rejection
+  the same way — warn, sleep 500 ms, retry the same dead client. `_state`
+  stayed `'connected'` for the whole of an outage, so the configured
+  `reconnect` backoff, the circuit breaker and the `BrokerDisconnected` health
+  signal were all inert on the consume path, and the
+  `XGROUP CREATE … MKSTREAM` bootstrap never re-ran — leaving the loop to
+  spin on `NOGROUP` after a Redis restart that lost the group. Only a
+  publishing application recovered, via the outbound path; a pure consumer
+  had no route in at all.
+
+  The driver's `error` / `close` / `end` signals are now wired to
+  `handleConnectionLost`, which also removes ioredis's unhandled-`error`
+  fallback; signals escalate only from clients that finished connecting, so a
+  refused connection is reported once rather than scheduling two competing
+  reconnect loops. The consumer loop classifies its rejections —
+  connection-level ones (socket gone, `ECONNREFUSED`, ioredis exhausting its
+  per-request retries, `NOGROUP`) hand the outage to the configured backoff
+  and leave the loop, command-level ones keep a short local retry. `NOGROUP`
+  counts as connection-level deliberately: re-running the group bootstrap is
+  the only thing that clears it, and that happens on connect. Repeated
+  identical failures collapse into one WARN per 30 s carrying the count it
+  stood in for.
+
+  `connectImplementation` can now fail — the clients are built with
+  `lazyConnect` and their `connect()` awaited, so an unreachable Redis
+  produces a failed attempt and a backoff instead of a `BrokerConnected` for
+  a broker nothing has reached. The consumer loop is bound to the client
+  generation that started it, closing a window in which a loop suspended in
+  `xreadgroup` across a reconnect would resume beside the new one, two
+  readers sharing one consumer name (#982). A `protected createClient(url)`
+  seam mirrors `NatsActor.createNatsConnection`, so all of this is testable
+  without the `ioredis` optional peer.
+
+  The Redis Streams page documents the reconnect behaviour for the first time
+  (EN + DE), and the `BrokerDisconnected` row of the BrokerActor events table
+  is corrected in both languages: it claimed the event fires when "a
+  `disconnectImplementation` ran or a connection failed", but the only
+  publish site sits inside `handleConnectionLost`, so a graceful `postStop`
+  teardown publishes nothing.
+
+- **DevTools grouped large numbers differently depending on the host**
+  (#553). `formatCount` grouped thousands by rewriting the comma out of
+  `toLocaleString('en-US')`, but that separator comes from the runtime's
+  ICU data — it is a comma under Bun and a thin space (U+2009) under the
+  Node that runs the UI test suite, where the rewrite therefore hit
+  nothing. Grouped by hand now, and pinned by a test that asserts the
+  codepoint rather than the shape.
+
+- **The voice sample promised a `Uint8Array` and returned `unknown`, and the
+  one config that could have said so was told not to look** (#1015).
+  `Array.prototype.find` over a union hands back the whole union, so reading
+  `.data` off the result is `unknown`. Both helpers in
+  `examples/voice/smoke-test.ts` reached for it through `(e as any).data` and
+  `?.['data']`, which is precisely what stopped the mismatch from being
+  visible where it was written. They now narrow with a type guard over named
+  `TextEvent` / `BinaryEvent` variants, and the casts are gone. The change is
+  type-level only — the sample still round-trips all three modes.
+
+  Why it survived is the more useful half. `tsconfig.dev.json` excluded the
+  file, excused as a black-box script that "imports nothing from `src/` and
+  this config would catch no API drift in it either way". That does not match
+  the exclude rule stated at the top of that same file — a file is excluded
+  when a manifest *other than the root* resolves its imports, and this one's
+  (`node:*`, `ws`) all come from the root — and drift is not the only thing a
+  typecheck catches. The entry is gone, so the file is gated from now on. The
+  gate was checked in both directions: with the exclusion lifted but the
+  source left unfixed, `typecheck:dev` fails with exactly the reported error,
+  and green only once the narrowing lands. This was the last of the eight
+  errors #1015 inventoried; the other seven had already been fixed in passing
+  by #540's sweep and by #1014.
+
+- **A one-way tell batch could be read before it landed, and one failed arm
+  discarded every arm's rounds** (#1326). Both surfaced on the same run: a
+  hundred-round measurement stopped at round 44 with `completed 993 of 1000
+  operations`.
+
+  The virtual-actor arm sends its batch as one-way RPCs — that runtime's
+  nearest analogue to fire-and-forget — and then read the counter back with a
+  single call. A one-way call completes when the message is *dispatched*, not
+  when the grain has processed it, and the runtime orders it against nothing,
+  so the read could overtake the tail of the batch. No other arm needs care
+  here: their frameworks order messages per sender-recipient pair, so a read
+  issued after N sends observes all N. The read is now a bounded drain that
+  accumulates across reads — delayed messages are counted, and messages that
+  were *dropped* rather than delayed still time out and still fail the row, so
+  it remains a completion check rather than a way of passing one. Both
+  directions are covered by a probe: the same delayed batch fails with the old
+  single read and passes with the drain, and a permanently lost batch fails
+  either way.
+
+  Separately, the driver called `process.exit(1)` before it merged, so one arm
+  failing once at round 44 threw away the other eight arms' hundred rounds as
+  well — hours of measurement, already written per round, discarded over one
+  bad row. It now merges first and reports the failure afterwards. Merging
+  costs no honesty: each merged file records that arm's own round count and
+  `RESULTS.md` prints it per arm, and the driver names any arm that fell short
+  of the requested count.
+
+- **The comparison benchmarks now run on Linux** (#1325). Six of the nine arms
+  failed there. Two separate causes, and they deserved separate treatment.
+
+  The committed POSIX build-tool launchers were recorded at mode `100644`, so
+  `/bin/sh` refused to exec them and every JVM arm died with exit 126 before
+  its build tool was reached. Windows never saw it — there the `.bat` sibling
+  is the entry point and `core.fileMode` is false regardless — and neither did
+  any gate, because nothing in the repository looked at a file mode. The four
+  scripts are now `100755`, asserted against the **git index** by
+  `tests/unit/ci/ComparisonLauncherModes.test.ts`; the working tree cannot
+  answer that question on Windows, so a filesystem check would have passed on
+  the one platform where the bug does not bite.
+
+  Separately, an arm whose toolchain is simply not installed was reported as a
+  failed arm, so a machine without the .NET SDK exited non-zero and buried the
+  arms that did measure under an error summary. The driver now checks each
+  external arm before running it and reports a missing toolchain as **skipped**,
+  naming what to install and keeping the exit code at 0 — `RESULTS.md` dates
+  every arm separately, so a partial run stays legible. Skips are listed in the
+  summary on the success path too, since a partial run reported as a plain
+  green tick is how a release publishes figures for arms that never ran. A
+  launcher that exists but is not executable stays a hard failure: that is a
+  broken checkout, not an environment choice, and the message carries the
+  `chmod` that fixes it.
+
+  The Windows `.bat` is also no longer the reason POSIX goes through a shell.
+  A shell is now used only where one is required, which removes the last place
+  a path containing a space could break the invocation.
 
 - **The parallel pubsub end-to-end test waited for its two subscribers by
   polling drain, which empties the probe it reads, so the round in which one
@@ -13418,7 +13410,7 @@ new names.
   `Deno.upgradeWebSocket` has no payload option, and Bun with Express or
   Fastify, where `ws` resolves to Bun's built-in shim, which stores `maxPayload`
   and enforces nothing.  On those two the connection actor's own `maxFrameBytes`
-  check is the guarantee, and it closes 1009.  The `[Unreleased]` entries for
+  check is the guarantee, and it closes 1009.  The `[0.17.0]` entries for
   #373 and #586 are the accurate account.
 - **WS-5 (MEDIUM, partial) — per-route WebSocket connection admission cap**
  .  New opt-in `maxConnections` on `websocket()`

@@ -4,56 +4,71 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.16.0 is out** — the *entry points, logging and old defects* release,
-  and the largest window so far at 181 commits.  Three things landed
-  together.
+- **v0.17.0 is out** — the *dead letters, DevTools and the wire* release, and
+  by a wide margin the largest window the project has had: 820 commits
+  against v0.16.0's 181, and 290 changelog entries, 53 of them breaking.
+  Three things landed together.
 
-  **The root export is core-only (#414).**  `'actor-ts'` used to re-export
-  every subsystem through one barrel, which shipped the testkit in the
-  production entry (#685) and made `import { ActorSystem }` pay for whatever
-  any subsystem pulled in eagerly (#1005).  Core stays at the root; the
-  eighteen subsystems each get their own entry (`actor-ts/persistence`,
-  `/cluster`, `/http`, …), the subpaths the documentation already used
-  finally resolve, and the smoke suite loads every declared entry on Bun,
-  Node and Deno (#1003).  This is the migration cost of the release —
-  `CHANGELOG.md` carries the note.
+  **The cluster wire is a tagged JSON tree (#450).**  Frames were a bare
+  `JSON.stringify`, so the framework contradicted itself across its own
+  boundaries: a `Map` an actor could persist and recover verbatim arrived at
+  a peer as `{}`, a `Date` as a string whose `.getTime()` throws, a
+  `Uint8Array` as an index-keyed object, and a `bigint` threw straight out of
+  the user's `ref.tell`.  One walker now serves all three boundaries — HTTP
+  bodies, journal rows and the wire — so there is no per-transport list of
+  what a message may contain to keep in sync.  This is the migration cost of
+  the release, and it makes this the **second consecutive release to break
+  rolling upgrade**: #112 did it to gossip in v0.16.0, this does it to the
+  frame format, and here a legacy body already shaped like a reserved tag
+  costs the whole connection rather than the one frame.
+  `upgrade-strategies.mdx` now carries a per-release table (#1304).
 
-  **Logging grew a sink architecture (#1150).**  The logger wrote to exactly
-  one place; it now fans one record out to as many destinations as you
-  configure — console, rotating files (#1153), and ten log platforms
-  (#1154–#1161) — each with its own minimum level, bounded delivery and a
-  flush on shutdown.  Every integration is dependency-free, and nothing
-  about the existing surface changed: a system whose config nobody edited
-  logs exactly what it logged yesterday.
+  **Dead letters got somewhere to go (#1000, #433).**  An undeliverable
+  message was published to an event stream that nothing subscribed to by
+  default — which is to say it produced no output at all, while two docs
+  pages claimed the system logged it.  There is now a bounded, optionally
+  durable queue with inspection and replay, including replay to a recipient
+  other than the one the message was addressed to, configured through
+  `withDeadLetters(…)`.
 
-  **The 50-oldest bug/security wave**, 42 of the 50 oldest open defects
-  resolved, including most of the 2026-08-01 security catalogue (#575–#626).
-  The gossip frame gains a required field, so **a rolling upgrade across
-  this release does not converge in either direction** (#112): an upgraded
-  peer refuses an old node's frames, an old node ignores the new one.
-  Upgrade the cluster in one step, or accept that membership does not
-  converge while both versions are running.
+  **DevTools became a tool rather than a demo (#482).**  The UI moved to
+  Angular and gained four panels — dead letters, a live event-stream tail,
+  the resolved configuration with every HOCON key and where it came from,
+  and a send-message action that is off by default (#553) — plus the ability
+  to pause and resume time (#1349).  It also gained roughly 3 000 lines of
+  tests, having had none.
 
-  Alongside, the packaging surface was brought in line with what actually
-  ships: no more dangling source maps (#1007, 1262 files and 35 % of the
-  tarball that could not work), `NodeNext` resolution so the compiler checks
-  the specifiers the real resolver will (#1008), and `@types/node` no longer
-  a silent requirement for reading the public API (#1006).
+  Underneath, the measuring got honest.  `typecheck:dev` went from 320
+  errors to zero and became a gated job (#540) — the only gate that sees the
+  library from a caller's side, and it immediately turned up five exported
+  declarations no caller could use.  The comparison benchmarks are complete
+  at nine arms across three runtimes, measured as a hundred interleaved
+  rounds on one Linux machine rather than ten on a Windows desktop, which
+  moved every absolute number by a factor of two to five (#27, #1327).  The
+  toolchain is pinned to Bun 1.4.0 (#1328), and the coverage gate stopped
+  being two implementations of one parse: CI and `test:coverage:gate` now
+  run the same script, with per-module floors that a rollup of per-file
+  percentages could not express (#541, #1016).
 
 - Next window is open (`[Unreleased]`).  The obvious heads from here: the
   `reference.conf` expansion tracked in #887; the residual security items
   the wave narrowed rather than closed (#112 needs a **required** incarnation
-  on the wire, which is #823's wire break and not #940's optional field;
-  #607's eviction residual is closed by its own `prefixQuotas`, on top of
-  #1080's guarantee split — what remains after both is a flood inside one
-  key prefix, which is configuration rather than policy); #766, whose titled fix turns
-  out to be insufficient on its own; and the fresh audit round
-  #1166–#1193, which is unstarted and holds several `priority: high`
-  correctness defects — `PersistentActor` has no fencing (#1166),
-  `throttle('pause')` livelocks the `MicrotaskDispatcher` (#1167),
-  `KeepMajority` leaves both sides running on an exact tie (#1170), a
-  singleton that exhausts its restart budget is never re-spawned (#1175),
-  and `ShardCoordinator` ignores the configured shard count (#1026).
+  on the wire, which is #823's wire break and not #940's optional field, and
+  #823 is now also the change that would make a mixed-version cluster a
+  supported state rather than a hazard); #766, whose titled fix turns out to
+  be insufficient on its own; and the test-methodology review #1368–#1386
+  under meta #1387, which is unstarted and is the first round to ask what the
+  suite *cannot* find rather than what it has not covered — mutation testing
+  (#1368), generative input for the decoders (#1369), controlled
+  promise-resolution order (#1370), a global factor for the testkit's
+  millisecond deadlines (#1376), and a message that silently loses its
+  prototype on a worker hop (#1386).  Two correctness defects sit outside
+  that round and are worth naming on their own: `ShardCoordinator` hands over
+  on `LeaderChanged` with no acknowledgment from the incoming coordinator, so
+  a leader move reopens the dual-authority window #949 closed for the
+  singleton (#1272); and `ReplicatedEventSourcedActor` never consults
+  `resolver()`, so every documented `ConflictResolver` override is a silent
+  no-op (#1245).
 - **Wave 3 (2026-08-18/19) left eighteen tracked residuals, #1211–#1228.**
   Three are worth reading first, because each is a defect the wave measured
   rather than inferred and then deliberately did not fold in: a broker
@@ -66,12 +81,12 @@ This document tracks the planned direction.  Nothing here is committed work — 
   shipped that no test binds — found by reverting one line at a time, not
   by reading — and they are the honest measure of what a green suite did
   not prove.
-- ~6 250 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~8 470 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- **`[Unreleased]` — the 50-oldest `production-goal` wave:** the 50 oldest
+- **v0.17.0 — the 50-oldest `production-goal` wave:** the 50 oldest
   open `production-goal` issues — the label that answers "what is still
   between us and running this for real" — worked as one unit, in nine batches
   cut by which files they touch rather than by module label.  **14 closed,
